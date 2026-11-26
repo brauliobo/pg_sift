@@ -16,7 +16,7 @@ from duckdb import Session
 
 from . import runcfg
 from .runcfg import FORCED, HERE, IO_HOW, MIN_RUNS, SCAN, die, log
-from .server import Fresh, IDS, build, equal, equal_ties, plan_note, plan_shape, plan_text, psql, server_session, tie_keys
+from .server import Fresh, IDS, apply_settings, build, equal, equal_ties, plan_note, plan_shape, plan_text, psql, server_session, tie_keys
 
 
 def expand(sql, case):
@@ -66,8 +66,11 @@ def measure_query(case, lanes, rounds, runs, keep_plan=True):
             if plan_shape(again) != plan_shape(text):
                 notes[lane] = '%s (the first plan of a backend was %s)' % (plan_note(again), notes[lane])
                 text = texts[lane] = again
+            forbidden = [f for f in case.forbid if re.search(f, text)]
             if keep_plan and not re.search(case.plan, text, re.S):
                 errors[lane] = 'PLAN LOST: expected /%s/, the plan is %s' % (case.plan, notes[lane])
+            elif keep_plan and forbidden:
+                errors[lane] = 'PLAN FORBIDDEN: /%s/ is in the plan %s' % (forbidden[0], notes[lane])
             elif keep_plan and case.fallback and SCAN.search(text):
                 errors[lane] = 'PLAN CHANGED: the planner chooses the scan now (%s): drop the fallback: of the plan column' % notes[lane]
             if case.fallback:
@@ -261,9 +264,7 @@ def measure_load(case, csv, rounds, rows, instr=False, profile=None):
         for lane in names[r % len(names):] + names[:r % len(names)]:
             am, sets = lanes[lane]
             for serial in load_passes(instr):   # the instructions in a pass of their own with no parallel workers: perf follows the children of the backend, and the workers of a VACUUM, a build or a merge are children of the postmaster
-                s = server_session(600)
-                for st in load_settings(case.id, os.environ.get('CASES_WORKERS', '2'), sets, serial):
-                    s.run(st)
+                s = apply_settings(server_session(600), load_settings(case.id, os.environ.get('CASES_WORKERS', '2'), sets, serial), '%s: lane %s' % (case.id, lane))
                 for stmt in re.split(r';[ \t]*\n', case.sec['prepare'].replace('{am}', am).replace('{csv}', csv).replace('{rows}', str(rows))):   # the statements of the preparation, untimed (a VACUUM among them cannot share a transaction)
                     err = s.run(stmt)[2]
                     if err:

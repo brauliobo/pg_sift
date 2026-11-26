@@ -2,6 +2,8 @@
 -- the plan of the timed runs is the one asserted; a first statement of a backend planned another way is named in the note
 -- label: three `UNION ALL` arms over `jsonb_to_recordset(doc -> 'parts')` with a mapping lookup, `count(DISTINCT id)` above a series, `lag()` over the groups
 -- ordered: yes
+-- gap: sift WS-113-6 (S113-05: a range-period join beside an unnest)
+-- forbid: Seq Scan on events\b
 --@ setup
 DROP TABLE IF EXISTS maps;
 CREATE TABLE maps (tier text, kind text, sub text, derived_kind text, derived_sub text);

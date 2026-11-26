@@ -37,6 +37,7 @@ class Case:
         self.label = next((m[10:] for m in head if m.startswith('-- label: ')), self.id)
         self.opt = dict(m[3:].split(': ', 1) for m in head if re.match(r'-- (ordered|vacuum|set|fresh|base|gap|kind|segments): ', m))
         self.load = 'load' in self.sec
+        self.forbid = [m[len('-- forbid: '):] for m in head if m.startswith('-- forbid: ')]   # regular expressions the plan of the sift lane must not match (`Seq Scan on orders`: the heap under the scan)
         self.gap = None   # `-- gap: LANE the patch that closes it`: the plan of that lane is a known gap, reported without failing the run; the run fails when the lane passes
         if 'gap' in self.opt:
             lane, _, patch = self.opt['gap'].partition(' ')

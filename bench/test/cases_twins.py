@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from cases import registry  # noqa: E402
 
 TEXT = '-- x\n-- label: l\n--@ pg\nSELECT pg\n--@ sift\nSELECT sift\n'
-ROW = ['twin_x', '-', 'events', '-', 'SiftAgg', 'native', 'gin:search_path = c_twin_x__gin;sift.enable_agg = off,scan:sift.agg_preagg = off', 'ms', 'faster33', 'no', '-']
+ROW = ['twin_x', '-', 'events', '-', 'SiftAgg', 'native', 'gin:search_path = c_twin_x__gin;sift.enable_agg = off,scan:sift.agg_force = on', 'ms', 'faster33', 'no', '-']
 
 
 class Statements(unittest.TestCase):
@@ -15,7 +15,7 @@ class Statements(unittest.TestCase):
 
     def test_each_lane_runs_its_statement(self):
         case = registry.Case(ROW, TEXT)
-        self.assertEqual(case.variants, [['gin', 'search_path = c_twin_x__gin;sift.enable_agg = off'], ['scan', 'sift.agg_preagg = off']])
+        self.assertEqual(case.variants, [['gin', 'search_path = c_twin_x__gin;sift.enable_agg = off'], ['scan', 'sift.agg_force = on']])
         want = {'native': 'SELECT pg', 'sift': 'SELECT sift', 'scan': 'SELECT sift', 'pg_duckdb': 'SELECT pg'}
         want.update({twin: 'SELECT pg' for twin in registry.PG_TWINS})
         self.assertEqual({lane: case.statement(lane) for lane in want}, want)

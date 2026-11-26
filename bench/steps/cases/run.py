@@ -279,9 +279,9 @@ def selftest_cpus():
         cpus_needed = Case.cpus_needed
 
     w = lambda n: ['workers_%d' % n, 'max_parallel_maintenance_workers = %d' % n]
-    cases = [C('plain', []), C('scan', [['scan', 'sift.agg_preagg=off'], ['g3', 'max_parallel_workers_per_gather = 3']]), C('build', [w(0), w(4), w(8)])]
+    cases = [C('plain', []), C('scan', [['scan', 'sift.enable_agg = off'], ['g3', 'max_parallel_workers_per_gather = 3']]), C('build', [w(0), w(4), w(8)])]
     ok = [lane_cpus(cases[:1], 1) == (1, None), lane_cpus(cases[:2], 1) == (4, 'scan'), lane_cpus(cases, 1) == (9, 'build'), lane_cpus(cases, 16) == (16, None),
-          workers_asked('max_parallel_maintenance_workers=2; x = 1') == 2, workers_asked('sift.agg_preagg=off') == 0]
+          workers_asked('max_parallel_maintenance_workers=2; x = 1') == 2, workers_asked('sift.enable_agg = off') == 0]
     if not all(ok):
         print('cases cpus selftest failed: %s' % ok)
         return 1

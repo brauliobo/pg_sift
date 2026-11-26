@@ -1,7 +1,8 @@
 -- the value of a key read beside the test of the key, `sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'a')`: a document that is no object reads NULL, the rows that hold a value the path cannot store are read again from the heap
 -- label: `sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'a'), count(*) FILTER (WHERE attrs ? 'a')` over {rows} documents of about 400 bytes; the variant `gin` is a heap copy with `GIN (attrs)`
 -- ordered: no
--- set: sift.agg_force = on
+-- gap: sift WS-113-3 (S113-07: FILTER (WHERE doc ? k))
+-- forbid: Seq Scan on kr_fact\b
 --@ setup
 DROP TABLE IF EXISTS kr_fact;
 CREATE TABLE kr_fact (id int, dim_a_id int, attrs jsonb) WITH (autovacuum_enabled = false);

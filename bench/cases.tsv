@@ -11,64 +11,64 @@
 # headline: yes puts the case in the README's table of application-shaped cases
 # peers: `-`, or the engines that answer the case in another results file, as FILE:ARM (generic:clickhouse is the arm clickhouse of docs/results/generic.tsv); `cases coverage` wants a measured row of each
 topn_page_totals	a page of rows with the total of its set	orders	default	Top-N: created_at DESC.*Pushed Aggregates: count\(\*\), sum	native,pg_duckdb	-	ms	faster33	yes	-
-topn_coalesce	`ORDER BY coalesce(<int2, int4, int8, date, timestamp or timestamptz column>	orders	default	Top-N: coalesce\(customer_id, 0\) DESC	native,pg_duckdb	-	ms	faster33	yes	-
-key_presence_distinct	`key_columns` (`sift_col` reloption	orders	default WITH (key_order = 'segment_id')	count\(DISTINCT segment_id\).*[1-9][0-9]* from pre-aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes	-
-cube_minmax_groupby	`cube_minmax` and `superunit` are on by default	orders	default	[1-9][0-9]* from pre-aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
-bulk_copy_wal	`sift.table_bulk_groups` (on by default since 3.3	orders	-	^columns$	native	bulk_off:sift.table_bulk_groups = off	wal_bytes,ms,cpu_ms	faster33	yes	-
-count_distinct_hist	-	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	no	-
-lateral_first_row	a `LIMIT 1` child with an `ORDER BY`	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
-cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
-list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	yes	-
-numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
-cte_series_arms	Three `UNION ALL` arms over the elements of a jsonb array, counted `DISTINCT` above a spine, 100,000 rows	events	-	Custom Scan \(SiftAgg	native	-	ms	faster33	yes	-
-grouping_sets_report	grouping_sets_report	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes	-
-ranked_top_per_group	ranked_top_per_group	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes	-
-window_json_report	window_json_report	orders	default	Pushed Aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes	-
-two_level_spend	two_level_spend	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
-group_by_id_top	group_by_id_top	orders	default+id	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
-count_distinct_unique	count_distinct_unique	orders	default+id	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
-semi_exists_self	semi_exists_self	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
-anti_not_in_self	anti_not_in_self	orders	default	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
+topn_coalesce	`ORDER BY coalesce(<int2, int4, int8, date, timestamp or timestamptz column>	orders	default	Custom Scan \(SiftAggV6\).*Top-N: COALESCE\(customer_id, 0\) DESC	native,pg_duckdb	-	ms	faster33	yes	-
+key_presence_distinct	`key_columns` (`sift_col` reloption	orders	default WITH (key_order = 'segment_id')	Custom Scan \(SiftAggV6\)	native,pg_duckdb	-	ms	faster33	yes	-
+cube_minmax_groupby	`cube_minmax` and `superunit` are on by default	orders	default	Custom Scan \(SiftAggV6\).*preagg=[1-9][0-9]*	native,pg_duckdb	-	ms	faster33	no	-
+bulk_copy_wal	`sift.table_bulk_groups` (on by default since 3.3	orders	-	^columns$	native	-	wal_bytes,ms,cpu_ms	faster33	yes	-
+count_distinct_hist	-	orders	default	Custom Scan \(SiftAggV6\)	native,pg_duckdb	-	ms	faster33	no	-
+lateral_first_row	a `LIMIT 1` child with an `ORDER BY`	events	-	Custom Scan \(SiftAggV6\).*Lookup Joins: l \(subquery\)	native	-	ms	faster33	yes	-
+cte_two_readers	a common table expression that two aggregates read is planned inline	events	-	Custom Scan \(SiftAggV6\).*Group Keys: parent_id, kind	native	-	ms	faster33	yes	-
+list_elements	the backend keeps the decoded list lengths of a unit of an immutable segment	events	-	Custom Scan \(SiftAggV6\).*Unnest:	native	-	ms	faster33	yes	-
+numeric_sum	a sum over a `numeric` column without a precision was priced a tenth of the parallel sequential scan	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: country	native	-	ms	faster33	no	-
+cte_series_arms	Three `UNION ALL` arms over the elements of a jsonb array, counted `DISTINCT` above a spine, 100,000 rows	events	-	Custom Scan \(SiftAggV6\).*Unnest	native	-	ms	faster33	yes	-
+grouping_sets_report	grouping_sets_report	orders	default	Custom Scan \(SiftAggV6\)	native,pg_duckdb	-	ms	faster33	yes	-
+ranked_top_per_group	ranked_top_per_group	orders	default	WindowAgg.*Custom Scan \(SiftAggV6\).*Group Keys: country, category	native,pg_duckdb	-	ms	faster33	yes	-
+window_json_report	window_json_report	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: category, country	native,pg_duckdb	-	ms	faster33	yes	-
+two_level_spend	two_level_spend	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: customer_id	native,pg_duckdb	-	ms	faster33	yes	-
+group_by_id_top	group_by_id_top	orders	default+id	Custom Scan \(SiftAggV6\).*Group Keys: id	native,pg_duckdb	-	ms	faster33	yes	-
+count_distinct_unique	count_distinct_unique	orders	default+id	Custom Scan \(SiftAggV6\).*Group Keys: country	native,pg_duckdb	-	ms	faster33	yes	-
+semi_exists_self	semi_exists_self	orders	default	Custom Scan \(SiftAggV6Push\)	native,pg_duckdb	-	ms	faster33	yes	-
+anti_not_in_self	anti_not_in_self	orders	default	Custom Scan \(SiftAggV6\).*Filters: \(NOT	native,pg_duckdb	-	ms	faster33	yes	-
 keyset_page	keyset_page	orders	default+id	fallback:Index Scan	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	yes	-
-point_agg_fk	point_agg_fk	orders	default WITH (point_tid_columns = 'customer_id')	Pushed Aggregates	native,pg_duckdb	-	ms	faster33	yes	-
+point_agg_fk	point_agg_fk	orders	default WITH (point_tid_columns = 'customer_id')	Index Only Scan using orders_col|Custom Scan \(SiftAggV6\)	native,pg_duckdb	-	ms	faster33	yes	-
 point_agg_id	point_agg_id	orders	default+id WITH (point_tid_columns = 'id')	fallback:Index Scan using orders_pkey	native	forced:enable_indexscan = off;enable_indexonlyscan = off;enable_bitmapscan = off	ms	faster33	yes	-
-keycut_customer_agg	-	orders	default WITH (key_order = 'customer_id')	pruned_key=[1-9][0-9]*	native,pg_duckdb	-	ms	faster33	yes	-
-jsonb_each_member	jsonb_each_member	events	-	Pushed Aggregates	native	-	ms	faster33	yes	-
-softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	[1-9][0-9]* from pre-aggregates	native,pg_duckdb	scan:sift.agg_preagg = off	ms	faster33	yes	-
-point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	orders_col	native,pg_duckdb	-	ms	faster33	yes	-
-window_first_rows	the first N rows of each group asked with a window function	orders	default+id	fallback:Bitmap Heap Scan on orders	native	-	ms	faster33	no	-
-count_distinct_highcard	a hundred thousand groups of a few rows	orders	default	Custom Scan \(SiftAgg	native	-	ms	faster33	no	-
+keycut_customer_agg	-	orders	default WITH (key_order = 'customer_id')	Parts: scanned=[0-9]+ pruned_key=[1-9]	native,pg_duckdb	-	ms	faster33	yes	-
+jsonb_each_member	jsonb_each_member	events	-	Custom Scan \(SiftAggV6\).*Unnest	native	-	ms	faster33	yes	-
+softdel_live_groupby	`x IS NULL` and `x IS NOT NULL` are tests of the NULL count of a unit's zone	orders	default	Custom Scan \(SiftAggV6\).*preagg=[1-9]	native,pg_duckdb	-	ms	faster33	yes	-
+point_in_100	an `IN` list of up to 65,536 keys is looked up in the point directory	orders	default	Bitmap Index Scan on orders_col|Index (Only )?Scan using orders_col	native,pg_duckdb	-	ms	faster33	yes	-
+window_first_rows	the first N rows of each group asked with a window function	orders	default+id	Custom Scan \(SiftAggV6Window\)	native	-	ms	faster33	no	-
+count_distinct_highcard	a hundred thousand groups of a few rows	orders	default	Custom Scan \(SiftAggV6\)	native	-	ms	faster33	no	-
 oltp_insert_index	oltp_insert_index	orders	-	^[0-9]+$	native	-	ms,cpu_ms	faster33	no	-
-group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Group Keys: grp	native	-	ms	faster33	no	-
+group_many_groups	a group by of one integer column with millions of groups takes fewer instructions a row	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: grp	native	-	ms	faster33	no	-
 col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (Only )?Scan using orders_sc_col|Bitmap Heap Scan on orders_sc	native	-	ms	faster33	no	-
-key_table_point	-	orders	default WITH (key_order = 'segment_id')	Parts: scanned=[0-9]+ pruned_key=[1-9][0-9]*	native,pg_duckdb	-	ms	faster33	yes	-
-null_count_zone	reads the null counts of the zones of the units	events	-	[1-9][0-9]* from pre-aggregates	native	scan:sift.agg_preagg = off	ms	faster33	no	-
-jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAgg\)	native	gin:search_path = c_jsonb_contains_object__gin;sift.enable_agg = off	ms	faster33	yes	-
-sum_int_expr	the exact sum of the expression	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
+key_table_point	-	orders	default WITH (key_order = 'segment_id')	Parts: scanned=[0-9]+ pruned_key=[1-9]	native,pg_duckdb	-	ms	faster33	yes	-
+null_count_zone	reads the null counts of the zones of the units	events	-	Custom Scan \(SiftAggV6\).*preagg=[1-9]	native	-	ms	faster33	no	-
+jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAggV6\)	native	gin:search_path = c_jsonb_contains_object__gin;sift.enable_agg = off	ms	faster33	yes	-
+sum_int_expr	the exact sum of the expression	orders	default	Custom Scan \(SiftAggV6\)	native,pg_duckdb	-	ms	faster33	no	-
 search_filter_include	a sift index can name `INCLUDE` columns (`CREATE INDEX ON do	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_join_region	the table of an `IN` test of an `INCLUDE` column	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_filter_recent	a ranked search with a test of an `INCLUDE` column does not read a superblock	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_build_parallel	the participants of a parallel `CREATE INDEX` or `REINDEX` of a `sift` (BM25)	docs	-	^same bytes$	native	workers_0:max_parallel_maintenance_workers = 0,workers_2:max_parallel_maintenance_workers = 2,workers_4:max_parallel_maintenance_workers = 4	ms,wal_bytes	faster33	no	-
-par_many_groups_split_by_key	a scan with workers of many groups (thousands, a key that is an integer, a date or a timestamp)	orders	default	Groups Split By: grp	native	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no	-
+par_many_groups_split_by_key	a scan with workers of many groups (thousands, a key that is an integer, a date or a timestamp)	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: grp	native	one_process:max_parallel_workers_per_gather = 0	ms	faster33	no	-
 col_build_default	-	orders	-	^[0-9]+$	native	workers_0:max_parallel_maintenance_workers = 0,workers_4:max_parallel_maintenance_workers = 4	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
 col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an integer leaf	orders	-	^[0-9]+$	native	-	ms,cpu_ms,wal_bytes,minstr	faster33	no	-
-ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	WindowAgg	native	btree:search_path = c_ordered_window_rank__btree;sift.enable_agg = off	ms	faster33	yes	-
-group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
-float_sum_ungrouped	the sum of a float column that is not grouped	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
-jsonb_key_read	-	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	gin:search_path = c_jsonb_key_read__gin;sift.enable_agg = off	ms	faster33	yes	-
-count_distinct_big_set	-	events	-	Pushed Aggregates	native	-	ms	faster33	no	-
-semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-
-star_snowflake_join	-	events	-	Custom Scan \(SiftAgg.*Lookup Joins: sf_product, sf_category, sf_region	native	-	ms	faster33	yes	-
-partitioned_range_agg	-	events	-	Custom Scan \(SiftAgg.*Partitions: [1-9]	native	-	ms	faster33	yes	-
-filter_pivot_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
-percentile_stddev_agg	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	-	ms	faster33	yes	-
-distinct_on_latest	-	orders	default	Custom Scan \(SiftAgg	native,pg_duckdb	btree:search_path = c_distinct_on_latest__btree;sift.enable_agg = off	ms	faster33	yes	-
+ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	Custom Scan \(SiftAggV6Window\)	native	btree:search_path = c_ordered_window_rank__btree;sift.enable_agg = off	ms	faster33	yes	-
+group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Custom Scan \(SiftAggV6\).*Group Keys: grp	native	-	ms	faster33	no	-
+float_sum_ungrouped	the sum of a float column that is not grouped	events	-	Custom Scan \(SiftAggV6\)	native	-	ms	faster33	no	-
+jsonb_key_read	-	events	-	Custom Scan \(SiftAggV6\)	native	gin:search_path = c_jsonb_key_read__gin;sift.enable_agg = off	ms	faster33	yes	-
+count_distinct_big_set	-	events	-	Custom Scan \(SiftAggV6\).*Group Keys: group_id	native	-	ms	faster33	no	-
+semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	Custom Scan \(SiftAggV6\).*Lookup Joins: sl_members	native	-	ms	faster33	no	-
+star_snowflake_join	-	events	-	Custom Scan \(SiftAggV6\).*Lookup Joins: sf_product, sf_category, sf_region	native	-	ms	faster33	yes	-
+partitioned_range_agg	-	events	-	Custom Scan \(SiftAggV6\).*Partitions: [1-9]	native	-	ms	faster33	yes	-
+filter_pivot_agg	-	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: country	native,pg_duckdb	-	ms	faster33	yes	-
+percentile_stddev_agg	-	orders	default	Custom Scan \(SiftAggV6\).*Group Keys: country	native,pg_duckdb	-	ms	faster33	yes	-
+distinct_on_latest	-	orders	default	Custom Scan \(SiftAggV6First\)	native,pg_duckdb	btree:search_path = c_distinct_on_latest__btree;sift.enable_agg = off	ms	faster33	yes	-
 search_hybrid_groupby	-	events	-	Custom Scan \(SiftHybridAgg	native	gin:search_path = c_search_hybrid_groupby__gin;sift.enable_agg = off	ms	faster33	yes	-
-text_like_prefix_agg	-	events	-	Custom Scan \(SiftAgg	native	btree:search_path = c_text_like_prefix_agg__btree;sift.enable_agg = off	ms	faster33	yes	-
-pg_array_cardinality_agg	-	events	-	Custom Scan \(SiftAgg	native	gin:search_path = c_pg_array_cardinality_agg__gin;sift.enable_agg = off	ms	faster33	yes	-
-calendar_date_trunc_agg	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_calendar_date_trunc_agg__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
-jsonb_scalar_groupby	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_jsonb_scalar_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
-jsonb_path_exists_gin	-	events	-	Custom Scan \(SiftAgg.*Unnest	native	gin:search_path = c_jsonb_path_exists_gin__gin;sift.enable_agg = off	ms	faster33	yes	-
-jsonb_exists_same_elem	-	events	-	Custom Scan \(SiftAgg.*Unnest	native	gin:search_path = c_jsonb_exists_same_elem__gin;sift.enable_agg = off	ms	faster33	yes	-
-jsonb_typeof_groupby	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_jsonb_typeof_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
-jsonb_sift_table_paths	-	events	-	Custom Scan \(SiftAgg.*Table: tbl_j	native	gin:search_path = c_jsonb_sift_table_paths__gin;sift.enable_agg = off	ms	faster33	yes	-
+text_like_prefix_agg	-	events	-	Custom Scan \(SiftAggV6\).*Group Keys: status	native	btree:search_path = c_text_like_prefix_agg__btree;sift.enable_agg = off	ms	faster33	yes	-
+pg_array_cardinality_agg	-	events	-	Custom Scan \(SiftAggV6\).*Group Keys: status	native	gin:search_path = c_pg_array_cardinality_agg__gin;sift.enable_agg = off	ms	faster33	yes	-
+calendar_date_trunc_agg	-	events	-	Custom Scan \(SiftAggV6\)	native	expr_btree:search_path = c_calendar_date_trunc_agg__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_scalar_groupby	-	events	-	Custom Scan \(SiftAggV6\)	native	expr_btree:search_path = c_jsonb_scalar_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_path_exists_gin	-	events	-	Custom Scan \(SiftAggV6\).*Unnest	native	gin:search_path = c_jsonb_path_exists_gin__gin;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_exists_same_elem	-	events	-	Custom Scan \(SiftAggV6\).*Unnest	native	gin:search_path = c_jsonb_exists_same_elem__gin;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_typeof_groupby	-	events	-	Custom Scan \(SiftAggV6\)	native	expr_btree:search_path = c_jsonb_typeof_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_sift_table_paths	-	events	-	Custom Scan \(SiftAggV6\).*Table: tbl_j	native	gin:search_path = c_jsonb_sift_table_paths__gin;sift.enable_agg = off	ms	faster33	yes	-

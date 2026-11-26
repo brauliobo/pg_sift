@@ -1,6 +1,8 @@
 -- a window over the order of a key (`rank() OVER (ORDER BY k)`) reads the key in order from the index, also under an aggregate, where PostgreSQL scans the table and sorts it for the window; the milliseconds are of whole statements, planning included
 -- label: `SELECT max(r) FROM (SELECT rank() OVER (ORDER BY k) r FROM ow) s` over rows rows of a random integer key, `sift_col (k, id)` with its default options; the variant `btree` is the same rows with a b-tree on (k, id)
 -- ordered: yes
+-- gap: sift WS-113-5 (S113-06: a window with no PARTITION BY over an unordered index)
+-- forbid: Seq Scan on ow\b
 --@ setup
 CREATE TABLE ow (id int NOT NULL, k int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO ow SELECT i, ((i::bigint * 2654435761) % 1000003)::int FROM generate_series(1, {rows}) i;

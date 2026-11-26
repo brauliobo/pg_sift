@@ -1,7 +1,7 @@
 -- a count(DISTINCT) of a sparse column whose sets hold millions of pairs with a great deal of hash memory: the pairs go through the sort once the hash set outgrows the cache, where the hash set grew to the whole memory
 -- label: `count(DISTINCT parent_id)` of {rows} rows by 3,000 groups (the pairs unique but for a few), `work_mem = '4GB'`
 -- ordered: yes
--- set: sift.agg_force = on; work_mem = '4GB'
+-- set: work_mem = '4GB'
 --@ setup
 DROP TABLE IF EXISTS cb_child;
 CREATE TABLE cb_child (id int, group_id int, parent_id int) WITH (autovacuum_enabled = false);

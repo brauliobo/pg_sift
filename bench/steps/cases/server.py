@@ -127,28 +127,32 @@ def server_session(timeout):
     return Session(os.environ['PGPORT'], timeout, None, db=DB, host=os.environ['PGHOST'])
 
 
+def apply_settings(session, setup, lane):
+    """the settings of a lane on its session; one the server refuses (a retired setting: `sift is a reserved prefix`) fails the run, since the lane would measure the sift plan again"""
+    for st in setup:
+        err = session.run(st)[2]
+        if err:
+            die('%s: %s: %s' % (lane, st, err))
+    return session
+
+
 class Fresh:
     """a lane whose every statement is the first of a new backend (`-- fresh: yes`): a pooled connection that was reset, a script, the first connection of the day. The library is
     loaded by the server at its start (the cases cluster preloads it), so the plan of the first statement is the one of any other"""
 
-    def __init__(self, setup):
-        self.setup = setup
+    def __init__(self, setup, lane):
+        self.setup, self.lane = setup, lane
 
     def run(self, sql):
         s = server_session(runcfg.TIMEOUT)
         try:
-            for st in self.setup:
-                s.run(st)
-            return s.run(sql)
+            return apply_settings(s, self.setup, self.lane).run(sql)
         finally:
             s.close()
 
     def persistent(self):
         """a new backend with the lane's settings, for the measures that need one backend across statements (steps/iolib.py); the caller closes it"""
-        s = server_session(runcfg.TIMEOUT)
-        for st in self.setup:
-            s.run(st)
-        return s
+        return apply_settings(server_session(runcfg.TIMEOUT), self.setup, self.lane)
 
     def close(self):
         pass
@@ -166,12 +170,9 @@ def lane_sessions(case, engines, duck_port):
     wm = ['SET work_mem = %s' % os.environ['CASES_WORK_MEM']] if os.environ.get('CASES_WORK_MEM') else []   # a large work_mem is 4GB; the cluster default is 64MB
     for lane, sets in lanes.items():
         setup = ['SET search_path = %s, public' % (case.schema() + '_base' if lane == 'base' else case.schema()), 'SET max_parallel_workers_per_gather = %s' % os.environ.get('CASES_WORKERS', '2')] + wm + ['SET %s' % x for x in case.opt.get('set', '').split(';') if x] + sets
-        if case.opt.get('fresh') == 'yes' and not lane.startswith('warm'):   # a lane named warm... keeps its backend: the same statement as the second of a backend
-            out[lane] = Fresh(setup)
-            continue
-        out[lane] = server_session(runcfg.TIMEOUT)
-        for st in setup:
-            out[lane].run(st)
+        name = '%s: lane %s' % (case.id, lane)
+        fresh = case.opt.get('fresh') == 'yes' and not lane.startswith('warm')   # a lane named warm... keeps its backend: the same statement as the second of a backend
+        out[lane] = Fresh(setup, name) if fresh else apply_settings(server_session(runcfg.TIMEOUT), setup, name)
     if 'pg_duckdb' in engines and 'pg_duckdb' in case.baselines and not case.load and duck_port:
         s = Session(duck_port, runcfg.TIMEOUT, None)
         s.run('SET duckdb.force_execution = on')
@@ -181,7 +182,8 @@ def lane_sessions(case, engines, duck_port):
 
 def plan_text(session, sql, analyze=True):
     """EXPLAIN of the statement; ANALYZE (one more run) shows what the scan did: units answered from pre-aggregates, rows scanned"""
-    return '\n'.join(session.run('EXPLAIN (%s) %s' % ('ANALYZE, COSTS OFF, TIMING OFF' if analyze else 'COSTS OFF', sql.rstrip(';')))[1])
+    _, rows, err, _ = session.run('EXPLAIN (%s) %s' % ('ANALYZE, COSTS OFF, TIMING OFF' if analyze else 'COSTS OFF', sql.rstrip(';')))
+    return 'EXPLAIN ERROR: %s' % err if err else '\n'.join(rows)
 
 
 def load_duck(port, csv):
@@ -196,6 +198,8 @@ def load_duck(port, csv):
 
 def plan_note(text):
     """the plan the row says it used: the scan node and the lines that name what it does (or the first scan of PostgreSQL's plan)"""
+    if text.startswith('EXPLAIN ERROR: '):
+        return text[:140]
     sift = [re.sub(r' \(actual[^)]*\)', '', l.strip()) for l in text.split('\n') if re.match(r'\s*(?:->\s*)?(?:Custom Scan \(Sift|Top-N:|Group Keys:|Pushed Aggregates:)', l)]
     if sift:
         return '; '.join(sift)[:140]
