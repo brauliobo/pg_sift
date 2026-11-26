@@ -402,6 +402,7 @@ sift_catalog(void)
 	memset(&catalog, 0, sizeof(catalog));
 	catalog.am = get_index_am_oid("sift", true);
 	catalog.col_am = get_index_am_oid("sift_col", true);
+	catalog.tbl_am = get_table_am_oid("sift_table", true);
 #ifdef SIFT_TESTING
 #endif
 	nsp = get_namespace_oid("sift", true);

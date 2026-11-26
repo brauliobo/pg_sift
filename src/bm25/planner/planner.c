@@ -22,6 +22,7 @@
 #include "agg/join/push.h"
 #include "agg/join/join.h"
 #include "agg/live.h"
+#include "core/catalog.h"
 #include "core/compat.h"
 #include "core/visibility/visibility.h"
 #include "bm25/am.h"
@@ -210,6 +211,8 @@ carry_join_scores(PlannerInfo *root, RelOptInfo *joinrel)
 {
 	List	   *scores = join_scores(root, joinrel);
 
+	if (scores == NIL)
+		return;
 	foreach_ptr(Path, p, joinrel->pathlist)
 		if (!is_append(p))
 			carry_scores(p, scores);
@@ -233,7 +236,7 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 		sift_agg_v6_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 		sift_agg_v6_asof_paths(root, joinrel, outerrel, innerrel, jointype, extra);
 	}
-	if (!holds_all_rels(root, joinrel))
+	if (!holds_all_rels(root, joinrel) && sift_query_touches_sift(root))
 		carry_join_scores(root, joinrel);
 }
 
@@ -378,12 +381,14 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
+	if (!sift_db_has_extension())
+		return;
 	if (rte->rtekind == RTE_RELATION && sift_v6_rels_have_index(root, rel->relids))
 		sift_agg_v6_rel_paths(root, rel, rti, rte);
 	if (!scannable(root, rel, rte))
 		return;
 	/* a relation the planner proved empty is left out of root->total_table_pages, which the page costs of a scan divide by */
-	if (IS_DUMMY_REL(rel))
+	if (IS_DUMMY_REL(rel) || !sift_query_touches_sift(root))
 		return;
 	scores = score_exprs(root, rel);
 	if (is_partition(rel))
@@ -487,11 +492,25 @@ count_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_
 }
 
 static void
+drop_sorted_gathers(RelOptInfo *output_rel)
+{
+	List	   *drop = NIL;
+
+	foreach_ptr(Path, p, output_rel->pathlist)
+		if (sorted_gather_of_ranked(p))
+			drop = lappend(drop, p);
+	foreach_ptr(Path, p, drop)
+		output_rel->pathlist = list_delete_ptr(output_rel->pathlist, p);
+}
+
+static void
 sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel,
 				 void *extra)
 {
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
+	if (!sift_query_touches_sift(root))
+		return;
 	count_upper_paths(root, stage, input_rel, output_rel);
 	sift_agg_v6_upper_paths(root, stage, input_rel, output_rel, extra);
 	sift_agg_v6_live_upper_paths(root, stage, input_rel, output_rel, extra);
@@ -502,9 +521,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 			 planner_rt_fetch(input_rel->relid, root)->inh)
 		carry_parent_scores(root, input_rel);
 	if (stage == UPPERREL_ORDERED)
-		foreach_ptr(Path, p, list_copy(output_rel->pathlist))
-			if (sorted_gather_of_ranked(p))
-				output_rel->pathlist = list_delete_ptr(output_rel->pathlist, p);
+		drop_sorted_gathers(output_rel);
 }
 
 static bool
@@ -576,6 +593,8 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 {
 	PlannedStmt *stmt;
 
+	if (!sift_db_has_extension())
+		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	if ((parse->commandType == CMD_UPDATE || parse->commandType == CMD_DELETE || parse->commandType == CMD_MERGE || parse->rowMarks != NIL) &&
 		sift_enable_scan && sift_catalog()->am != InvalidOid)
 	{

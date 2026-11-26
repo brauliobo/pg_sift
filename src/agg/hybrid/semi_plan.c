@@ -35,6 +35,7 @@
 #include "bm25/planner/int.h"
 #include "col/am.h"
 #include "core/store/ops.h"
+#include "core/catalog.h"
 #include "core/sift.h"
 #include "core/store/ops.h"
 
@@ -120,11 +121,13 @@ col_key_indexed(Oid relid, AttrNumber attno)
 
 	foreach_oid(ixid, RelationGetIndexList(rel))
 	{
-		Relation	ix = index_open(ixid, AccessShareLock);
+		Relation	ix;
 
-		if (sift_store_ops_for_oid(ixid, false) != NULL)
-			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(ix); i++)
-				found |= ix->rd_index->indkey.values[i] == attno;
+		if (sift_store_ops_for_oid(ixid, false) == NULL)
+			continue;
+		ix = index_open(ixid, AccessShareLock);
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(ix); i++)
+			found |= ix->rd_index->indkey.values[i] == attno;
 		index_close(ix, AccessShareLock);
 	}
 	relation_close(rel, AccessShareLock);
@@ -243,7 +246,7 @@ is_hybrid_node(Plan *plan)
 static PlannedStmt *
 semi_planner(SIFT_PLANNER_PARAMS)
 {
-	Query	   *alt = sift_enable_scan ? exists_as_arrays(parse) : NULL;
+	Query	   *alt = sift_enable_scan && sift_db_has_extension() ? exists_as_arrays(parse) : NULL;
 	PlannedStmt *std = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	PlannedStmt *hyb;
 

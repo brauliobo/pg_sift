@@ -20,6 +20,7 @@
 #include "core/quarantine/quarantine.h"
 #include "col/am/int.h"
 #include "core/cachebudget.h"
+#include "core/catalog.h"
 #include "col/v1/conn/conn.h"
 #include "col/scope/scope.h"
 
@@ -615,13 +616,18 @@ sift_col_format_major(Relation index)
 static uint16
 oid_format(Oid indexoid, bool serving)
 {
-	Relation	index = try_relation_open(indexoid, AccessShareLock);
+	Relation	index;
 	uint16		major = 0;
 
+	if (sift_relid_relam(indexoid) != sift_col_am_oid())
+	{
+		SIFT_NOTE_FOREIGN_PROBE();
+		return 0;
+	}
+	index = try_relation_open(indexoid, AccessShareLock);
 	if (index == NULL)
 		return 0;
-	if (index->rd_rel->relam == sift_col_am_oid() &&
-		!(serving && (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || !index->rd_index->indisvalid || sift_index_quarantined(index))))
+	if (!(serving && (index->rd_rel->relkind == RELKIND_PARTITIONED_INDEX || !index->rd_index->indisvalid || sift_index_quarantined(index))))
 		major = sift_col_format_major(index);
 	relation_close(index, AccessShareLock);
 	return major;

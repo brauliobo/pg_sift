@@ -220,6 +220,7 @@ typedef struct SiftCatalog
 {
 	Oid			am;
 	Oid			col_am;			/* sift_col */
+	Oid			tbl_am;			/* sift_table */
 	Oid			match_op;		/* text @@> text */
 	Oid			match_func;		/* sift.match(text, text) */
 	Oid			match_idx_func; /* sift.match_idx(text, text, oid) */

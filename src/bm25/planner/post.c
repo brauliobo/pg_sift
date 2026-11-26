@@ -11,6 +11,7 @@
 #include "nodes/plannodes.h"
 
 #include "bm25/planner/planner.h"
+#include "core/catalog.h"
 #include "bm25/planner/int.h"
 
 /* Does a bitmap index scan that every row of the bitmap went through (not one under an OR) serve the match, exactly, with the index's analyzer? */
@@ -42,16 +43,19 @@ static void
 bitmap_recheck(Plan *plan)
 {
 	BitmapHeapScan *scan = (BitmapHeapScan *) plan;
+	List	   *served = NIL;
 
 	if (!IsA(plan, BitmapHeapScan))
 		return;
-	foreach_ptr(Node, q, list_copy(plan->qual))
+	foreach_ptr(Node, q, plan->qual)
 		if (IsA(q, FuncExpr) && ((FuncExpr *) q)->funcid == sift_catalog()->match_idx_func && IsA(lthird(((FuncExpr *) q)->args), Const) &&
 			bitmap_serves(plan->lefttree, (FuncExpr *) q))
-		{
-			plan->qual = list_delete_ptr(plan->qual, q);
-			scan->bitmapqualorig = lappend(scan->bitmapqualorig, q);
-		}
+			served = lappend(served, q);
+	foreach_ptr(Node, q, served)
+	{
+		plan->qual = list_delete_ptr(plan->qual, q);
+		scan->bitmapqualorig = lappend(scan->bitmapqualorig, q);
+	}
 }
 
 typedef struct ReturningScores
@@ -149,6 +153,8 @@ finish_walk(PlannedStmt *stmt, Plan *plan, bool scans)
 void
 sift_finish_plan(PlannedStmt *stmt, bool scans)
 {
+	if (!sift_db_has_extension())
+		return;
 	finish_walk(stmt, stmt->planTree, scans);
 	foreach_ptr(Plan, p, stmt->subplans)
 		finish_walk(stmt, p, scans);

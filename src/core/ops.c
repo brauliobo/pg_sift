@@ -19,6 +19,7 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
+#include "core/catalog.h"
 #include "core/sift.h"
 #include "bm25/analyze/analyze.h"
 #include "col/am.h"
@@ -162,6 +163,19 @@ index_reloptions_copy(HeapTuple tuple)
 	return isnull ? NULL : DatumGetArrayTypePCopy(d);
 }
 
+/* The stores of the column indexes (col/keystore) hang on the table of an index of sift_col: a table without one has none to follow its owner */
+static bool
+has_col_index(Oid heapoid)
+{
+	Relation	heap = relation_open(heapoid, NoLock);
+	bool		found = false;
+
+	foreach_oid(ixid, RelationGetIndexList(heap))
+		found |= sift_relid_relam(ixid) == sift_catalog()->col_am;
+	relation_close(heap, NoLock);
+	return found;
+}
+
 /*
  * After ALTER INDEX ... SET / RESET (options) of a sift or sift_col index: the new options must fit the index (a name that is not a leaf of it, a type the
  * option does not take), which fails the ALTER and not the queries, inserts and VACUUM that would read them next. An object access hook and not a
@@ -172,29 +186,36 @@ index_reloptions_copy(HeapTuple tuple)
 static void
 sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg)
 {
+	const SiftCatalog *cat;
 	HeapTuple	tuple;
+	Form_pg_class cls;
 	ArrayType  *before = NULL;
-	bool		ours = false,
-				table = false;
+	bool		ours,
+				col,
+				table;
 
 	if (prev_object_access_hook)
 		prev_object_access_hook(access, classId, objectId, subId, arg);
-	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
-		sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
-	if (access != OAT_POST_ALTER || classId != RelationRelationId || subId != 0)
+	if ((access != OAT_DROP && access != OAT_POST_ALTER) || classId != RelationRelationId || subId != 0 || !sift_db_has_extension())
 		return;
+	cat = sift_catalog();
 	tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(objectId));
-	if (HeapTupleIsValid(tuple))
+	if (!HeapTupleIsValid(tuple))
+		return;
+	cls = (Form_pg_class) GETSTRUCT(tuple);
+	table = cls->relkind == RELKIND_RELATION;
+	col = cls->relkind == RELKIND_INDEX && cls->relam == cat->col_am;
+	ours = col || (cls->relkind == RELKIND_INDEX && cls->relam == cat->am);
+	if (ours && access == OAT_POST_ALTER)
+		before = index_reloptions_copy(tuple);
+	ReleaseSysCache(tuple);
+	if (access == OAT_DROP)
 	{
-		Form_pg_class cls = (Form_pg_class) GETSTRUCT(tuple);
-
-		table = cls->relkind == RELKIND_RELATION;
-		ours = cls->relkind == RELKIND_INDEX && (cls->relam == sift_catalog()->am || cls->relam == sift_col_am_oid());
-		if (ours)
-			before = index_reloptions_copy(tuple);
-		ReleaseSysCache(tuple);
+		if (col)
+			sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
+		return;
 	}
-	if (table)
+	if (table && has_col_index(objectId))
 		sift_keystore_follow_owner(objectId);
 	if (!ours)
 		return;

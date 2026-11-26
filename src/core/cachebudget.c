@@ -177,11 +177,10 @@ cache_xact_event(XactEvent event, void *arg)
 		return;
 	used = clock_now != xact_floor;
 	xact_floor = clock_now;
-	if (cache_root == NULL)
+	if (cache_root == NULL || !used)
 		return;
 	sift_cache_room(0);
-	if (used)
-		sift_mem_trim_if_free(CACHE_IDLE_TRIM_FREE_BYTES);
+	sift_mem_trim_if_free(CACHE_IDLE_TRIM_FREE_BYTES);
 }
 
 static void

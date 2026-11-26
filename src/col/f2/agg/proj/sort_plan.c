@@ -43,6 +43,8 @@
 #include "col/col.h"
 #include "col/f2/f2.h"
 #include "col/f2/meta.h"
+#include "agg/join/join.h"
+#include "core/catalog.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
@@ -621,38 +623,53 @@ add_sort_path(SortPlan *p)
 	add_path(p->rel, &cp->path);
 }
 
+/* Does the sift_table keep its rows in Format 2.0 (and so serve the statement itself) */
+static bool
+sort_table_path(SortPlan *p, Oid relid)
+{
+	Relation	heap = table_open(relid, AccessShareLock);
+	bool		f2 = sift_tbl_ops(heap) == &sift_tbl_v2_ops;
+
+	if (f2)
+	{
+		p->owner = heap;
+		if (compile_on(p))
+			add_sort_path(p);
+	}
+	table_close(heap, NoLock);
+	return f2;
+}
+
+static void
+sort_index_paths(SortPlan *p)
+{
+	foreach_ptr(IndexOptInfo, ix, p->rel->indexlist)
+	{
+		Relation	irel;
+
+		if (ix->relam != sift_catalog()->col_am || (ix->indpred != NIL && !ix->predOK) || ix->hypothetical ||
+			sift_col_index_oid_engine(ix->indexoid) != sift_col_v2_ops.format_major)
+			continue;
+		irel = index_open(ix->indexoid, AccessShareLock);
+		p->ix = ix;
+		p->owner = irel;
+		if (!sift_col_rel(irel)->stale && compile_on(p))
+			add_sort_path(p);
+		index_close(irel, NoLock);
+	}
+}
+
 static void
 sort_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 {
 	SortPlan	p = {.root = root,.rel = rel};
-	Relation	heap;
 
 	if (prev_pathlist_hook != NULL)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!shape_ok(root, rel, rte))
+	if (!sift_query_touches_sift(root) || !shape_ok(root, rel, rte))
 		return;
-	heap = table_open(rte->relid, AccessShareLock);
-	if (sift_tbl_is_table(heap) && sift_tbl_ops(heap) == &sift_tbl_v2_ops)
-	{
-		p.owner = heap;
-		if (compile_on(&p))
-			add_sort_path(&p);
-	}
-	else
-		foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		{
-			Relation	irel;
-
-			if ((ix->indpred != NIL && !ix->predOK) || ix->hypothetical || sift_col_index_oid_engine(ix->indexoid) != sift_col_v2_ops.format_major)
-				continue;
-			irel = index_open(ix->indexoid, AccessShareLock);
-			p.ix = ix;
-			p.owner = irel;
-			if (!sift_col_rel(irel)->stale && compile_on(&p))
-				add_sort_path(&p);
-			index_close(irel, NoLock);
-		}
-	table_close(heap, NoLock);
+	if (!sift_relid_is_sift_table(rte->relid) || !sort_table_path(&p, rte->relid))
+		sort_index_paths(&p);
 }
 
 bool

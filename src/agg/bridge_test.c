@@ -499,6 +499,7 @@ static const SiftOrderOps test_order = {.sorted_by = fmt_sorted_by,.topn_open = 
 
 static const SiftStoreOps test_ops = {
 	.name = "test",
+	.any_am = true,
 	.owns_rel = fmt_owns_rel,
 	.schema = fmt_schema,
 	.stats = fmt_stats,

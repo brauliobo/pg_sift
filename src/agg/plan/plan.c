@@ -557,7 +557,7 @@ sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 bool
 sift_v6_index_owned(const IndexOptInfo *ix)
 {
-	return !ix->hypothetical && sift_v6_rel_owned(ix->indexoid, false);
+	return !ix->hypothetical && sift_store_ops_may_own(ix->relam, false) && sift_v6_rel_owned(ix->indexoid, false);
 }
 
 bool

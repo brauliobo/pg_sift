@@ -7,6 +7,7 @@
 #include "executor/executor.h"
 
 #include "col/am.h"
+#include "core/catalog.h"
 
 static ExecutorStart_hook_type prev_executor_start;
 static ExecutorFinish_hook_type prev_executor_finish;
@@ -18,7 +19,7 @@ col_executor_start(QueryDesc *queryDesc, int eflags)
 		prev_executor_start(queryDesc, eflags);
 	else
 		standard_ExecutorStart(queryDesc, eflags);
-	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
+	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY) && sift_db_has_extension())
 	{
 		sift_col_ioss_want(queryDesc);
 		sift_col_stmt_start(queryDesc);
@@ -29,7 +30,8 @@ col_executor_start(QueryDesc *queryDesc, int eflags)
 static void
 col_executor_finish(QueryDesc *queryDesc)
 {
-	sift_col_stmt_finish(queryDesc);
+	if (sift_db_has_extension())
+		sift_col_stmt_finish(queryDesc);
 	if (prev_executor_finish)
 		prev_executor_finish(queryDesc);
 	else

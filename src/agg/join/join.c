@@ -28,36 +28,111 @@
 #include "utils/tuplestore.h"
 
 #include "agg/agg.h"
+#include "core/catalog.h"
 #include "agg/distinct/pg.h"
 #include "agg/join/grace.h"
 #include "agg/join/join.h"
+#include "agg/plan/int.h"
 #include "agg/plan/shape.h"
 #include "agg/vexpr.h"
 #include "agg/settings.h"
 
 #define JOIN_MAX_KEYS	8
 
+/*
+ * What the relations of one planning are to the library, decided once for each: a join search asks for every pair of relations it builds, and every hook of a statement asks whether
+ * the statement has anything to do with it. owned: a format owns the base relation or one of its indexes; touched: owned, or an index of the sift access method (or the relation
+ * is a partition of that kind).
+ */
+typedef struct PlanRels
+{
+	MemoryContextCallback gone;
+	PlannerInfo *root;
+	Relids		decided;
+	Relids		owned;
+	Relids		touched;
+} PlanRels;
+
+static PlanRels *plan_rels;
+
+static void
+plan_rels_gone(void *arg)
+{
+	if (plan_rels == arg)
+		plan_rels = NULL;
+}
+
+static PlanRels *
+plan_rels_of(PlannerInfo *root)
+{
+	PlanRels   *pr = plan_rels;
+
+	if (pr == NULL || pr->root != root)
+	{
+		pr = MemoryContextAllocZero(root->planner_cxt, sizeof(PlanRels));
+		pr->root = root;
+		pr->gone = (MemoryContextCallback) {.func = plan_rels_gone,.arg = pr};
+		MemoryContextRegisterResetCallback(root->planner_cxt, &pr->gone);
+		plan_rels = pr;
+	}
+	return pr;
+}
+
+static void
+decide_rel(PlanRels *pr, int i, const RelOptInfo *r)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(i, pr->root);
+	const Oid	am = sift_catalog()->am;
+	bool		owner = rte->rtekind == RTE_RELATION && sift_v6_rel_owned(rte->relid, true),
+				sifted = false;
+	MemoryContext old = MemoryContextSwitchTo(pr->root->planner_cxt);
+
+	foreach_ptr(IndexOptInfo, ix, r->indexlist)
+	{
+		owner |= sift_v6_index_owned(ix);
+		sifted |= ix->relam == am;
+	}
+	pr->decided = bms_add_member(pr->decided, i);
+	if (owner && r->reloptkind == RELOPT_BASEREL)
+		pr->owned = bms_add_member(pr->owned, i);
+	if (owner || sifted)
+		pr->touched = bms_add_member(pr->touched, i);
+	MemoryContextSwitchTo(old);
+}
+
+static bool
+decidable(const RelOptInfo *r)
+{
+	return r != NULL && (r->reloptkind == RELOPT_BASEREL || r->reloptkind == RELOPT_OTHER_MEMBER_REL);
+}
+
 bool
 sift_v6_rels_have_index(PlannerInfo *root, Relids relids)
 {
+	PlanRels   *pr;
 	int			i = -1;
 
-	if (!sift_store_ops_any())
+	if (!sift_db_has_extension() || !sift_store_ops_any())
 		return false;
+	pr = plan_rels_of(root);
 	while ((i = bms_next_member(relids, i)) >= 0)
-	{
-		const RelOptInfo *r = root->simple_rel_array[i];
-		const RangeTblEntry *rte = planner_rt_fetch(i, root);
+		if (decidable(root->simple_rel_array[i]) && !bms_is_member(i, pr->decided))
+			decide_rel(pr, i, root->simple_rel_array[i]);
+	return bms_overlap(relids, pr->owned);
+}
 
-		if (r == NULL || r->reloptkind != RELOPT_BASEREL)
-			continue;
-		if (rte->rtekind == RTE_RELATION && sift_v6_rel_owned(rte->relid, true))
-			return true;
-		foreach_ptr(IndexOptInfo, ix, r->indexlist)
-			if (!ix->hypothetical && sift_v6_rel_owned(ix->indexoid, false))
-				return true;
-	}
-	return false;
+bool
+sift_query_touches_sift(PlannerInfo *root)
+{
+	PlanRels   *pr;
+
+	if (!sift_db_has_extension())
+		return false;
+	pr = plan_rels_of(root);
+	for (int i = 1; i < root->simple_rel_array_size; i++)
+		if (decidable(root->simple_rel_array[i]) && !bms_is_member(i, pr->decided))
+			decide_rel(pr, i, root->simple_rel_array[i]);
+	return !bms_is_empty(pr->touched);
 }
 
 int

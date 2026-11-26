@@ -13,12 +13,13 @@
 #include "utils/rel.h"
 
 #include "core/cachebudget.h"
+#include "core/catalog.h"
 #include "table/dispatch.h"
 #include "table/wal.h"
 
 static ProcessUtility_hook_type prev_utility;
 
-/* The table the statement is on, locked as the statement will lock it, InvalidOid when it names no sift_table */
+/* The table the statement is on, locked as the statement will lock it, InvalidOid when it names no sift_table: a table of another access method is not locked before the server checks the right to the statement */
 static Oid
 statement_table(Node *parse, LOCKMODE *lock)
 {
@@ -37,7 +38,8 @@ statement_table(Node *parse, LOCKMODE *lock)
 		rv = castNode(AlterObjectSchemaStmt, parse)->relation;
 	else if (IsA(parse, RenameStmt) && castNode(RenameStmt, parse)->renameType == OBJECT_COLUMN && castNode(RenameStmt, parse)->relationType == OBJECT_TABLE)
 		rv = castNode(RenameStmt, parse)->relation;
-	if (rv == NULL || !OidIsValid(relid = RangeVarGetRelid(rv, *lock, true)))
+	if (rv == NULL || !OidIsValid(relid = RangeVarGetRelid(rv, NoLock, true)) || !sift_relid_is_sift_table(relid) ||
+		!OidIsValid(relid = RangeVarGetRelid(rv, *lock, true)))
 		return InvalidOid;
 	rel = relation_open(relid, NoLock);
 	ours = sift_tbl_is_table(rel);

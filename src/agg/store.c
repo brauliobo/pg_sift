@@ -4,7 +4,27 @@
  */
 #include "postgres.h"
 
+#include "fmgr.h"
+
 #include "agg/vexpr.h"
+#include "core/catalog.h"
+
+#ifdef SIFT_TESTING
+uint64		sift_foreign_probes;
+
+PG_FUNCTION_INFO_V1(sift_test_foreign_probes);
+
+/* (reset bool) The relations that are none of ours which a planner hook opened since the last reset: each one is a lock and a relcache lookup a plain statement pays */
+Datum
+sift_test_foreign_probes(PG_FUNCTION_ARGS)
+{
+	int64		n = (int64) sift_foreign_probes;
+
+	if (PG_GETARG_BOOL(0))
+		sift_foreign_probes = 0;
+	PG_RETURN_INT64(n);
+}
+#endif
 
 bool
 sift_v6_rel_owned(Oid relid, bool is_table)

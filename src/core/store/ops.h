@@ -287,6 +287,7 @@ typedef struct SiftStoreOps
 {
 	/* --- 6 mandatory core fields (every format implements these) --- */
 	const char *name;			/* "f2", "v1", "test" */
+	bool		any_am;			/* owns_rel decides by the relation alone: it may own a relation of any access method (a format of ours owns the indexes of sift_col and the tables of sift_table only) */
 	bool		(*owns_rel) (Oid relid, bool is_table);
 	bool		(*schema) (Oid relid, bool is_table, SiftStoreSchema *out);
 	bool		(*stats) (Oid relid, bool is_table, SiftStoreStats *out);
@@ -311,6 +312,8 @@ typedef struct SiftStoreOps
 extern void sift_store_ops_register(const SiftStoreOps *ops);
 extern void sift_store_ops_unregister(const SiftStoreOps *ops);
 extern const SiftStoreOps *sift_store_ops_for_oid(Oid relid, bool is_table);
+/* Can a relation of access method relam be owned by a format: false is the answer for a B-tree, GIN or heap relation, from the catalog cache, with no open and no lock */
+extern bool sift_store_ops_may_own(Oid relam, bool is_table);
 /* The format scans a store for the hybrid aggregate (BM25 hits joined with the store's rows) and folds its rows into groups: both entries of the 7-pointer shape are there */
 static inline bool
 sift_store_ops_serves_hybrid(const SiftStoreOps *ops)

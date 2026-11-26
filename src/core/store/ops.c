@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "core/catalog.h"
 #include "core/store/ops.h"
 
 static const SiftStoreOps *registered_ops[SIFT_STORE_OPS_MAX];
@@ -43,10 +44,29 @@ sift_store_ops_for_oid(Oid relid, bool is_table)
 {
 	if (!OidIsValid(relid))
 		return NULL;
+	if (!sift_store_ops_may_own(sift_relid_relam(relid), is_table))
+	{
+		if (!is_table)
+			SIFT_NOTE_FOREIGN_PROBE();
+		return NULL;
+	}
 	for (int i = 0; i < nregistered_ops; i++)
 		if (registered_ops[i]->owns_rel(relid, is_table))
 			return registered_ops[i];
 	return NULL;
+}
+
+bool
+sift_store_ops_may_own(Oid relam, bool is_table)
+{
+	const SiftCatalog *cat = sift_catalog();
+
+	if (relam == (is_table ? cat->tbl_am : cat->col_am) && relam != InvalidOid)
+		return true;
+	for (int i = 0; i < nregistered_ops; i++)
+		if (registered_ops[i]->any_am)
+			return true;
+	return false;
 }
 
 bool

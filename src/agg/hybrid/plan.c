@@ -41,6 +41,8 @@
 #include "bm25/planner/int.h"
 #include "col/am.h"
 #include "agg/cost/model.h"
+#include "agg/join/join.h"
+#include "core/catalog.h"
 #include "core/store/ops.h"
 #include "table/dispatch.h"
 #include "core/sift.h"
@@ -221,7 +223,7 @@ static IndexOptInfo *
 col_index(RelOptInfo *rel)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns &&
+		if ((ix->indpred == NIL || ix->predOK) && !ix->hypothetical && ix->nkeycolumns == ix->ncolumns && sift_store_ops_may_own(ix->relam, false) &&
 			sift_store_ops_serves_hybrid(sift_store_ops_for_oid(ix->indexoid, false)))
 			return ix;
 	return NULL;
@@ -231,9 +233,7 @@ col_index(RelOptInfo *rel)
 static bool
 pick_store(HybridPlan *h, RangeTblEntry *rte)
 {
-	Relation	heap = table_open(rte->relid, AccessShareLock);
-
-	if (sift_tbl_is_table(heap))
+	if (sift_relid_is_sift_table(rte->relid))
 	{
 		const SiftStoreOps *ops = sift_store_ops_for_oid(rte->relid, true);
 
@@ -242,7 +242,6 @@ pick_store(HybridPlan *h, RangeTblEntry *rte)
 	}
 	else
 		h->store.index = col_index(h->rel);
-	table_close(heap, NoLock);
 	if (h->store.index != NULL)
 		h->colrel = index_open(h->store.index->indexoid, AccessShareLock);
 	return h->store.is_table || h->store.index != NULL;
@@ -625,7 +624,7 @@ sift_hybrid_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntr
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!shape_ok(root, rel, rte))
+	if (!sift_query_touches_sift(root) || !shape_ok(root, rel, rte))
 		return;
 	anded = find_match(&h);
 	if (!(anded ? pick_store(&h, rte) : has_or_clause(rel) && pick_store(&h, rte) && find_or_match(&h)))
@@ -868,7 +867,7 @@ sift_hybrid_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 {
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
-	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_BASEREL)
+	if (stage == UPPERREL_GROUP_AGG && sift_query_touches_sift(root) && input_rel->reloptkind == RELOPT_BASEREL)
 		sift_hybrid_agg_paths(root, input_rel, output_rel, extra);
 }
 

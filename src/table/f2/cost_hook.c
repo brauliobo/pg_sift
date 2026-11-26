@@ -11,6 +11,7 @@
 #include "optimizer/plancat.h"
 #include "utils/rel.h"
 
+#include "core/catalog.h"
 #include "table/dispatch.h"
 #include "table/f2/cost_hook.h"
 
@@ -29,7 +30,7 @@ f2_index_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cos
 static void
 price_fetches(Oid relid, RelOptInfo *rel)
 {
-	if (!sift_tbl_is_f2_oid(relid))
+	if (!sift_relid_is_sift_table(relid) || !sift_tbl_is_f2_oid(relid))
 		return;
 	foreach_node(IndexOptInfo, index, rel->indexlist)
 		index->amcostestimate = f2_index_costestimate;

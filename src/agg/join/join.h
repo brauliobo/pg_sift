@@ -20,6 +20,8 @@ extern void sift_agg_v6_asof_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOp
 
 /* Has a base relation among relids an index of the format of SiftAggV6? The joins are offered for those statements only */
 extern bool sift_v6_rels_have_index(PlannerInfo *root, Relids relids);
+/* Does a relation of the statement belong to the library (a sift_table, or a table with a sift or sift_col index): a statement that has none is no concern of its hooks */
+extern bool sift_query_touches_sift(PlannerInfo *root);
 
 /* The resno of the entry of a plan's target list that is the Var v (varno and varattno), 0 when none is: the column of the child that gives it */
 extern int	sift_v6_child_resno(const List *tlist, const Var *v);

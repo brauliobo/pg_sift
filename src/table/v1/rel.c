@@ -9,6 +9,7 @@
 #include "access/table.h"
 #include "utils/rel.h"
 
+#include "core/catalog.h"
 #include "core/meta_peek.h"
 #include "core/sift.h"
 #include "table/dispatch.h"
@@ -17,9 +18,13 @@
 bool
 sift_v1_tbl_owns(Oid relid)
 {
-	Relation	rel = table_open(relid, AccessShareLock);
-	bool		owns = sift_tbl_is_table(rel) && sift_meta_resolve_major(rel) == SIFT_FORMAT_MAJOR;
+	Relation	rel;
+	bool		owns;
 
+	if (!sift_relid_is_sift_table(relid))
+		return false;
+	rel = table_open(relid, AccessShareLock);
+	owns = sift_meta_resolve_major(rel) == SIFT_FORMAT_MAJOR;
 	table_close(rel, NoLock);
 	return owns;
 }
