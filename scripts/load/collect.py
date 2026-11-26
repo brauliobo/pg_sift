@@ -239,11 +239,7 @@ def ledger_writes(t: str, kinds: tuple = ('tbl', 'col', 'bm'), churn: bool = Tru
         stmts = [row3(f'{t}_{e}', k) for e in kinds] + [f'UPDATE {t}_{e} SET v = v + 1 WHERE id = {old}' for e in kinds if churn and k % 3 == 0]
         stmts += [f'DELETE FROM {t}_{e} WHERE id = {old}' for e in kinds if dele]
         sql = 'BEGIN; ' + '; '.join(stmts) + '; COMMIT'
-        out = w.do(sql, getattr(w, 'allow', ()) + (META,))
-        if out is None and w.last and w.last[0] == META:
-            w.meta = getattr(w, 'meta', 0) + 1
-            out = w.do(sql, getattr(w, 'allow', ()))
-        if out is not None:
+        if w.do(sql, getattr(w, 'allow', ())) is not None:
             w.ids = (w.ids | {k}) - ({old} if dele else set())
     return write
 

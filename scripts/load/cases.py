@@ -146,8 +146,7 @@ def conc_multi_engine_dml(ctx):
         w.ledger += oracles(w)
 
     busy = ctx.phase({'w': (ws[:8], ledger_writes('e')), 'c': (ws[8:], check)}, 1.5)
-    return base(ctx, busy, 'w', **add(multi_kept(ctx.db, 'e', ws[:8]), {'oracle_mismatch': sum(w.ledger for w in ws[8:]) + oracles(ctx.db)}),
-                lc43_retries=sum(getattr(w, 'meta', 0) for w in ws))
+    return base(ctx, busy, 'w', **add(multi_kept(ctx.db, 'e', ws[:8]), {'oracle_mismatch': sum(w.ledger for w in ws[8:]) + oracles(ctx.db)}))
 
 
 def tenants(db, n: int, rows: int):
@@ -381,12 +380,11 @@ def bp_burst_l0_starvation(ctx):
     unconv = until(ctx.db, backlog, drain_cap(ctx))
     left = int(ctx.db.val(f'SELECT coalesce(sum(l0_parts + l0_slabs), 0) {STATUS}'))
     return base(ctx, busy, 'w', **multi_kept(ctx.db, 'e', ws, ('tbl', 'col')), oracle_mismatch=oracle(ctx.db, AGG.format(t='e_col'), 'sift.enable_agg'),
-                peak=peak, l0_per_kop=round(1000.0 * peak / max(busy['w'].ops, 1), 1), unconverged=unconv, l0_left=left, lc43_retries=sum(getattr(w, 'meta', 0) for w in ws))
+                peak=peak, l0_per_kop=round(1000.0 * peak / max(busy['w'].ops, 1), 1), unconverged=unconv, l0_left=left)
 
 
 def bp_burst_meta_race(ctx):
-    """8 writers insert, update and delete in a sift_table and a sift_col index with async maintenance on, until one meets the false corruption of LC-43 or 8 s pass
-    (it shows in about one run of three: the case is intermittent, a run that does not meet it proves no fix)"""
+    """8 writers insert, update and delete in a sift_table and a sift_col index with async maintenance on, for 8 s: none may meet a false corruption (XX002) of the meta of the index"""
     engines(ctx.db, kinds=('tbl', 'col'))
     ws = ctx.sessions(8, 'SET sift.async_maintenance = on')
 
@@ -537,19 +535,19 @@ def fault_kill9_multi_engine(ctx):
 
 
 CASES = (
-    LoadCase('conc_tbl_hotkey_zipf', 'conc', conc_tbl_hotkey_zipf, Ceilings(lwlock_wait_pct=30, coarse_escalations=0, p99_ratio=3.0), open='LC-41'),
+    LoadCase('conc_tbl_hotkey_zipf', 'conc', conc_tbl_hotkey_zipf, Ceilings(lwlock_wait_pct=30, coarse_escalations=0, p99_ratio=3.0)),
     LoadCase('conc_col_slab_comb_scale', 'conc', conc_col_slab_comb_scale, Ceilings(scale_ratio=2.5, lwlock_wait_pct=25), formats=(2,)),
     LoadCase('conc_rowlock_overflow_mix', 'conc', conc_rowlock_overflow_mix, Ceilings(coarse_escalations=0, lwlock_wait_pct=25), formats=(2,)),
     LoadCase('conc_multi_engine_dml', 'conc', conc_multi_engine_dml, Ceilings(lwlock_wait_pct=30)),
     LoadCase('pool_tx_multiplex_iso', 'pool', pool_tx_multiplex_iso, Ceilings(ctx_kb_delta=64, rss_mb_delta=8)),
     LoadCase('pool_prepared_ddl_inval', 'pool', pool_prepared_ddl_inval, Ceilings(ctx_kb_delta=1280)),
     LoadCase('tenant_part_cache_churn', 'tenant', tenant_part_cache_churn, Ceilings(ctx_kb_delta=1280, rss_mb_delta=8, lock_wait_pct=10)),
-    LoadCase('tenant_ddl_drop_shm_reclaim', 'tenant', tenant_ddl_drop_shm_reclaim, Ceilings(shm_used_after=0), open='LC-19,LC-21,LC-42'),
+    LoadCase('tenant_ddl_drop_shm_reclaim', 'tenant', tenant_ddl_drop_shm_reclaim, Ceilings(shm_used_after=0)),
     LoadCase('tenant_multidb_bgw_fair', 'tenant', tenant_multidb_bgw_fair, Ceilings()),
     LoadCase('mix_oltp_par_olap', 'mix', mix_oltp_par_olap, Ceilings(lwlock_wait_pct=25, p99_ratio=2.5)),
     LoadCase('mix_pacer_autovac_iso', 'mix', mix_pacer_autovac_iso, Ceilings(p99_ratio=2.5, p99_read_ratio=2.0)),
     LoadCase('bp_burst_l0_starvation', 'bp', bp_burst_l0_starvation, Ceilings(l0_per_kop=50), formats=(2,)),
-    LoadCase('bp_burst_meta_race', 'bp', bp_burst_meta_race, Ceilings(), formats=(2,), open='LC-43', intermittent=True),
+    LoadCase('bp_burst_meta_race', 'bp', bp_burst_meta_race, Ceilings(), formats=(2,)),
     LoadCase('bp_long_snap_churn_reclaim', 'bp', bp_long_snap_churn_reclaim, Ceilings(pending_after=0)),
     LoadCase('fault_cancel_timeout_storm', 'fault', fault_cancel_timeout_storm, Ceilings()),
     LoadCase('fault_enospc_quarantine_iso', 'fault', fault_enospc_quarantine_iso, Ceilings(), formats=(2,)),
