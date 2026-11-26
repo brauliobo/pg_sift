@@ -26,6 +26,7 @@ typedef struct SiftV6LateralDim
 	int			nkeys;
 	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the expression of the relations before the sub-select that each key is probed with, in the terms of the planner of the node */
 	const Var  *key[SIFT_STAR_MAX_KEYS];	/* the column of rel that holds the key */
+	Oid			coll[SIFT_STAR_MAX_KEYS];	/* the collation the equality compares the key by */
 } SiftV6LateralDim;
 
 /*

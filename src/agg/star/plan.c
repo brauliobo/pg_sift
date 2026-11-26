@@ -56,21 +56,15 @@ text_type(Oid t)
 	return t == TEXTOID || t == VARCHAROID;
 }
 
-/* the join of the keys is one of the bytes' equality of one class: the same type, or two integer types, or two texts of a collation whose equality is the bytes' */
+/* the join of the keys is one of the bytes' equality of one class: the same type, or two integer types, or two texts the equality compares by a collation whose equality is the bytes' (inputcollid of the operator) */
 bool
-sift_v6_key_types_agree(Oid ftype, Oid fcoll, Oid dtype, Oid dcoll)
+sift_v6_key_types_agree(Oid ftype, Oid dtype, Oid inputcollid)
 {
 	if (text_type(ftype) && text_type(dtype))
-		return sift_text_bytes_equal(fcoll) && sift_text_bytes_equal(dcoll);
+		return sift_text_bytes_equal(inputcollid);
 	if (ftype == DATEOID || ftype == TIMESTAMPOID || ftype == TIMESTAMPTZOID)
 		return ftype == dtype;
 	return int_type(ftype) && int_type(dtype);
-}
-
-bool
-sift_v6_keys_agree(const Var *f, const Var *d)
-{
-	return sift_v6_key_types_agree(f->vartype, f->varcollid, d->vartype, d->varcollid);
 }
 
 static int
@@ -83,12 +77,12 @@ dim_of(const StarDim *dims, int nd, Index rti)
 }
 
 static bool
-add_key(StarDim *d, const Var *f, const Var *v)
+add_key(StarDim *d, const Var *f, const Var *v, Oid inputcollid)
 {
 	for (int k = 0; k < d->nkeys; k++)
 		if (d->fvar[k]->varattno == f->varattno && d->dvar[k]->varattno == v->varattno)
 			return true;
-	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_keys_agree(f, v))
+	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_key_types_agree(f->vartype, v->vartype, inputcollid))
 		return false;
 	d->fvar[d->nkeys] = f;
 	d->dvar[d->nkeys++] = v;
@@ -128,7 +122,7 @@ equivalence_keys(PlannerInfo *root, Relids base, Index fact, StarDim *dims, int 
 			const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
 			const int	d = v != NULL && !em->em_is_child ? dim_of(dims, nd, v->varno) : -1;
 
-			if (d >= 0 && !dims[d].left && !add_key(&dims[d], fvar, v))
+			if (d >= 0 && !dims[d].left && !add_key(&dims[d], fvar, v, ec->ec_collation))
 				return false;
 		}
 	}
@@ -158,7 +152,7 @@ clause_key(RestrictInfo *ri, Index fact, StarDim *dims, int nd)
 		b = t;
 	}
 	d = a->varno == fact ? dim_of(dims, nd, b->varno) : -1;
-	return d >= 0 && ri->is_pushed_down != dims[d].left && add_key(&dims[d], a, b);
+	return d >= 0 && ri->is_pushed_down != dims[d].left && add_key(&dims[d], a, b, op->inputcollid);
 }
 
 #define SEEN_STACK	64

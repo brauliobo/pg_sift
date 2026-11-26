@@ -102,12 +102,13 @@ typedef struct Ties
 {
 	List	   *keys;			/* the Var of the table of each equality */
 	List	   *probes;			/* the expression of the outer relations it is equal to, in the terms of the planner of the node */
+	List	   *colls;			/* the collation each equality compares by */
 	List	   *rest;
 	const Index *map;
 } Ties;
 
 static bool
-tie_sides(Ties *t, Node *inner, Node *outer)
+tie_sides(Ties *t, Node *inner, Node *outer, Oid inputcollid)
 {
 	const Var  *key = sift_v6_plain_var(inner);
 	Levels		r = levels_of(outer);
@@ -121,6 +122,7 @@ tie_sides(Ties *t, Node *inner, Node *outer)
 		probe = (Node *) sift_v6_plain_var(probe);
 	t->keys = lappend(t->keys, copyObject((Var *) key));
 	t->probes = lappend(t->probes, probe);
+	t->colls = lappend_oid(t->colls, inputcollid);
 	return l.ok;
 }
 
@@ -138,7 +140,7 @@ tie_clause(Ties *t, Node *qual)
 		return true;
 	}
 	return IsA(qual, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))) &&
-		(tie_sides(t, linitial(op->args), lsecond(op->args)) || tie_sides(t, lsecond(op->args), linitial(op->args)));
+		(tie_sides(t, linitial(op->args), lsecond(op->args), op->inputcollid) || tie_sides(t, lsecond(op->args), linitial(op->args), op->inputcollid));
 }
 
 /* the parser leaves the LIMIT as the cast of its constant to bigint */
@@ -374,6 +376,7 @@ dimension_rel(PlannerInfo *root, const RelOptInfo *lateral, Index relid, Planner
 		add_column_to_pathtarget(target, (Expr *) col, 0);
 		out->key[k] = col;
 		out->probe[k] = list_nth(t->probes, k);
+		out->coll[k] = list_nth_oid(t->colls, k);
 		k++;
 	}
 	set_pathtarget_cost_width(root, target);
@@ -434,7 +437,7 @@ sift_v6_lateral_join_dim(PlannerInfo *root, PlannerInfo *home, const Index *map,
 	{
 		const int	role = sift_v6_join_expr_role(sh, ld.probe[k]);
 
-		if (role == ROLE_NONE || role >= at || (!IsA(ld.probe[k], Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) ld.probe[k])) || !sift_v6_join_add_key(d, ld.probe[k], ld.key[k]))
+		if (role == ROLE_NONE || role >= at || (!IsA(ld.probe[k], Var) && !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) ld.probe[k])) || !sift_v6_join_add_key(d, ld.probe[k], ld.key[k], ld.coll[k]))
 			return false;
 	}
 	return true;

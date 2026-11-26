@@ -50,9 +50,9 @@ typedef struct SiftV6JoinShape
 extern int	sift_v6_join_role(const SiftV6JoinShape *sh, const Var *v);
 /* the part of the latest relation the columns of e are of; ROLE_NONE when it reads a column the join does not know, or none */
 extern int	sift_v6_join_expr_role(const SiftV6JoinShape *sh, const Node *e);
-extern bool sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key);
+extern bool sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key, Oid inputcollid);
 /* the same with a key that an expression of the dimension computes */
-extern bool sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr);
+extern bool sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr, Oid inputcollid);
 extern bool sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode);
 
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */

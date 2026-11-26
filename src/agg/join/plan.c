@@ -176,12 +176,12 @@ same_probe(const Node *a, const Node *b)
 }
 
 bool
-sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr)
+sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr, Oid inputcollid)
 {
 	for (int k = 0; k < d->nkeys; k++)
 		if (same_probe(d->probe[k], probe) && equal(d->kexpr[k], kexpr) && (kexpr != NULL || (d->key[k]->varno == key->varno && d->key[k]->varattno == key->varattno)))
 			return true;
-	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_key_types_agree(exprType(probe), exprCollation(probe), key->vartype, key->varcollid))
+	if (d->nkeys == SIFT_STAR_MAX_KEYS || !sift_v6_key_types_agree(exprType(probe), key->vartype, inputcollid))
 		return false;
 	d->probe[d->nkeys] = probe;
 	d->kexpr[d->nkeys] = kexpr;
@@ -190,9 +190,9 @@ sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, c
 }
 
 bool
-sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key)
+sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var *key, Oid inputcollid)
 {
-	return sift_v6_join_add_expr_key(d, probe, key, NULL);
+	return sift_v6_join_add_expr_key(d, probe, key, NULL, inputcollid);
 }
 
 /* the dimension e is a key of, and the key: a column of it, or an expression of its columns that the plan of the dimension computes (key is then a Var of the type of the expression, and kexpr the expression) */
@@ -361,7 +361,7 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 
 			if (d < 0 || d == probe_role)
 				continue;
-			if ((sh->dim[d].mode != SV6J_INNER_EQUI && sh->dim[d].mode != SV6J_SEMI_EQUI) || !sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr))
+			if ((sh->dim[d].mode != SV6J_INNER_EQUI && sh->dim[d].mode != SV6J_SEMI_EQUI) || !sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr, ec->ec_collation))
 				return false;
 		}
 	}
@@ -419,7 +419,7 @@ place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
 
 	if (d < 0 || sift_v6_join_expr_role(sh, probe) == ROLE_NONE || sift_v6_join_expr_role(sh, probe) >= d)
 		return false;
-	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr);
+	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr, ((const OpExpr *) ri->clause)->inputcollid);
 }
 
 /* a semi or anti join matches a row once, by its first dimension row: a condition on the pairs would decide on that one only */
