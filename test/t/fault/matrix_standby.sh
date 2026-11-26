@@ -3,7 +3,8 @@
 # The fault matrix with a physical standby: for each operation family the primary is stopped in the middle and after the last directory update of the operation (sift.test_crash_dir) by an
 # ERROR and by a SIGKILL of the backend (the server restarts and replays its WAL), the standby replays everything, and on the standby every sift index verifies (heapallindexed), the
 # store check passes and the answers through the indexes equal the plain plan's and what the table held before; the operation runs again on the primary and the standby follows. The
-# standby is promoted at the end and the same checks pass on it. SIFT_FAULT_ONLY (a regex of the operation names) picks the families.
+# standby is promoted at the end and the same checks pass on it. SIFT_FAULT_ONLY (a regex of the operation names) picks the families, SIFT_FAULT_SLICE=K/N the Kth of N slices of them
+# (every Nth family of the list of the families and then the gates).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 # Format 1: the families of Format 1 segments, tombstones and tables; the f2_* families ask for Format 2 themselves (test/t/lib/crash_scenarios.bash)
@@ -26,6 +27,8 @@ FAMILIES=(bm25_promote bm25_merge col_promote col_merge scope_build scope_refill
 GATE_FAMILIES=(tbl_tomb:tombwrite tbl_tomb:tombmerge tbl_seal:tombrewrite tbl_copy:load f2_vacuum:f2manifest f2_compact:f2compact f2_tier:f2tier f2_scope_build:f2scope
 	f2_col_delta:f2coldelta)
 declare -A SETUP OP
+SLICE=${SIFT_FAULT_SLICE:-1/1} picked=0
+mine() { (( picked++ % ${SLICE#*/} == ${SLICE%/*} - 1 )); } # the family is of this slice (the turns of the quick tier count every family, so that the slices run the rows of the whole)
 for row in "${SCENARIOS[@]}"; do IFS='~' read -r name setup op <<<"$row"; SETUP[$name]=$setup; OP[$name]=$op; done
 
 on_standby() { # the checks of a healthy node on the standby: indexes verify, store check, answers equal REF through the indexes and without
@@ -39,7 +42,6 @@ on_standby() { # the checks of a healthy node on the standby: indexes verify, st
 		[[ $(sql sb "$QT tbl") == "$(sql cm "$QT tbl_h")" ]] || { diag "the sift_table of the standby differs from the heap twin of the primary"; return 1; }
 }
 catch_up() { catchup cm sb; }
-restart_primary() { node_stop cm; pg_ctl -D "$D/data" -m immediate -w stop >/dev/null 2>&1; node_start cm; }
 
 # the quick tier runs one diagonal of the (update, fault) square of a family: error in the middle and kill at the end, or kill in the middle and error at the end, by turns, so that
 # every update and every fault is run in each family and all four combinations in the matrix as a whole, and one of the two faults of each gate (cancel and an immediate stop by turns); the full tier runs them all
@@ -47,6 +49,7 @@ fi=0
 for name in "${FAMILIES[@]}"; do
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
 	(( ++fi ))
+	mine || continue
 	fresh "${SETUP[$name]}" || bail "$name: setup"
 	k=$(op_stmts "$name"; sql cm "${OPS[@]}" "SELECT sift._test_dir_updates()" | tail -1) || bail "$name: the operation failed in a clean state"
 	(( k > 0 )) || continue
@@ -81,6 +84,7 @@ for row in "${GATE_FAMILIES[@]}"; do
 	name=${row%:*} gname=${row#*:}
 	[[ -z ${SIFT_FAULT_ONLY:-} || $name =~ $SIFT_FAULT_ONLY ]] || continue
 	(( ++gi ))
+	mine || continue
 	for fault in cancel immediate; do
 		[[ $TIER == full || $fault == $([[ $((gi % 2)) == 1 ]] && echo cancel || echo immediate) ]] || continue
 		fresh "${SETUP[$name]}" || bail "$name: setup"
