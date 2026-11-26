@@ -1,6 +1,6 @@
 -- the elements of an array column (docs/COL-SHRED.md): an index with a path name[] text keeps the elements of a text[] column as the list of a jsonb array, with a
 -- point directory that lists the rows that own a value. Every query runs with and without the pushdown and the rows must be the same; the shapes with 'scan'
--- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time. About 12 s: 54 shapes after each of 9 states
+-- ran the pushdown. The same after every kind of write, and col_verify checks the directory against the chunks each time. About 5 s: 54 shapes after each of 9 states
 -- on ae, the index that keeps no image of the arrays, and on ad, the one that does in the states built, orders, vacuum and reindex (ad gets the same writes in between).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -15,7 +15,7 @@ CREATE FUNCTION gen(a int, b int) RETURNS TABLE(id int, tags text[], ids int[]) 
 	       CASE WHEN i % 11 = 0 THEN NULL WHEN i % 23 = 0 THEN '{}' WHEN i % 29 = 0 THEN ARRAY[1, NULL, 7] ELSE ARRAY[i % 400, i % 5 + 1000, i % 7 + 2000] END
 	FROM generate_series(a, b) i $$;
 CREATE TABLE ae (id int, tags text[], ids int[]) WITH (autovacuum_enabled = false);
-INSERT INTO ae SELECT * FROM gen(1, 30000);
+INSERT INTO ae SELECT * FROM gen(1, 10000);
 CREATE INDEX ae_col ON ae USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
 VACUUM (FREEZE, ANALYZE) ae;
 SELECT sift.col_verify('ae_col', true);
@@ -25,7 +25,7 @@ SELECT sift.col_verify('ae_col', true);
 (1 row)
 
 CREATE TABLE ad (LIKE ae) WITH (autovacuum_enabled = false);
-INSERT INTO ad SELECT * FROM gen(1, 30000);
+INSERT INTO ad SELECT * FROM gen(1, 10000);
 -- the plus keeps the image of tags beside its elements: equality and GROUP BY of whole arrays are answered, the element tests by the directory
 CREATE INDEX ad_col ON ad USING sift_col (id, tags, ids) WITH (paths = '+tags[] text, ids[] int4');
 VACUUM (FREEZE, ANALYZE) ad;
@@ -237,7 +237,7 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
 
 -- the same on arrays that cannot be NULL, where a NOT may be pushed
 CREATE TABLE an (id int, tags text[] NOT NULL, ids int[] NOT NULL) WITH (autovacuum_enabled = false);
-INSERT INTO an SELECT * FROM gen(1, 30000) WHERE tags IS NOT NULL AND ids IS NOT NULL;
+INSERT INTO an SELECT * FROM gen(1, 10000) WHERE tags IS NOT NULL AND ids IS NOT NULL;
 CREATE INDEX an_col ON an USING sift_col (id, tags, ids) WITH (paths = 'tags[] text, ids[] int4');
 VACUUM (FREEZE, ANALYZE) an;
 SELECT * FROM shapes('not null', 'an');
@@ -299,8 +299,8 @@ SELECT * FROM shapes('not null', 'an');
 (53 rows)
 
 DROP TABLE an;
-INSERT INTO ae SELECT * FROM gen(30001, 34000);
-INSERT INTO ad SELECT * FROM gen(30001, 34000);
+INSERT INTO ae SELECT * FROM gen(10001, 14000);
+INSERT INTO ad SELECT * FROM gen(10001, 14000);
 SELECT * FROM shapes('insert', 'ae');
            shape           |   result   
 ---------------------------+------------
@@ -784,8 +784,8 @@ SELECT * FROM shapes('merge', 'ae');
  merge count              | plain same
 (53 rows)
 
-INSERT INTO ae SELECT * FROM gen(40001, 44000);
-INSERT INTO ad SELECT * FROM gen(40001, 44000);
+INSERT INTO ae SELECT * FROM gen(20001, 24000);
+INSERT INTO ad SELECT * FROM gen(20001, 24000);
 SELECT sift.col_merge('ae_col', true) > 0 AS merged, sift.col_merge('ad_col', true) > 0 AS merged;
  merged | merged 
 --------+--------

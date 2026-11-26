@@ -23,16 +23,17 @@ BEGIN
 END $$;
 
 CREATE TABLE runs (id bigint, grp int, tag text);
-INSERT INTO runs SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'tag-' || (i % 500) END FROM generate_series(1, 2000000) i;
+INSERT INTO runs SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE 'tag-' || (i % 500) END FROM generate_series(1, 400000) i;
 SET maintenance_work_mem = '1MB';
+SET sift.test_col_segment_kb = 256;
 CREATE INDEX runs_idx ON runs USING sift_col (id, grp, tag) WITH (key_order = 'id');
 RESET maintenance_work_mem;
 
 SELECT count(*) > 36 AS more_runs_than_one_page, count(DISTINCT part_gen) = count(*) AS one_gen_each, min(level) = 2 AND max(level) = 2 AS level_of_a_compaction,
-	   sum(nrows) = 2000000 AS rows_add_up, sum(ndead) = 0 AS none_dead
+	   sum(nrows) = 400000 AS rows_add_up, sum(ndead) = 0 AS none_dead
 FROM sift._test_f2_parts('runs_idx', 1, NULL);
 SELECT regexp_replace(sift._test_f2_check_keys('runs_idx'), 'parts=\d+ granules=\d+', 'parts=N granules=N') AS keys;
-SELECT f2_same('SELECT id, grp, tag FROM runs WHERE id BETWEEN 1999000 AND 1999500') AS range_read,
+SELECT f2_same('SELECT id, grp, tag FROM runs WHERE id BETWEEN 399000 AND 399500') AS range_read,
 	   f2_same('SELECT grp, count(*), count(tag), count(DISTINCT tag) FROM runs GROUP BY grp') AS aggregate_read,
 	   f2_same('SELECT id FROM runs WHERE tag = ''tag-7'' AND id % 1000 = 7') AS filter_read;
 

@@ -1,6 +1,6 @@
 -- Format 2.0 live progress and one-line summaries (Spec 31 2.2, 2.3, 2.5). Run on a build where new tables and indexes take Format 2.0; needs dblink and pg_sift_test.
 -- Sections 1 and 2 print nothing (the golden output has no NOTICE or INFO line: the silence of a small quick build, of client_min_messages = warning and of a plain VACUUM is the contract).
--- Sections 3 to 5 check themselves: a second connection runs the statement while this one samples the progress views (about 10 s with :rows rows; default 300000).
+-- Sections 3 to 5 check themselves: a second connection runs the statement while this one samples the progress views (about 2 s with :rows rows; default 60000, 8 granules).
 -- Section 6 prints the lines and is run on request: psql -v show_messages=1 (its numbers are the timings and sizes of the machine, so it has no golden output).
 CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -10,7 +10,7 @@ SET max_parallel_maintenance_workers = 0;
 SET statement_timeout = '240s';
 \if :{?rows}
 \else
-\set rows 300000
+\set rows 60000
 \endif
 CREATE SCHEMA ux;
 SET search_path = ux, public;
@@ -57,7 +57,7 @@ BEGIN
 		INSERT INTO samples SELECT clock_timestamp(), phase, tuples_done, tuples_total, blocks_done, blocks_total, partitions_done, partitions_total
 			FROM pg_stat_progress_create_index WHERE relid = rel;
 		COMMIT;
-		PERFORM pg_sleep(0.002);
+		PERFORM pg_sleep(0.010);
 	END LOOP;
 END $$;
 CREATE FUNCTION build_checks(label text, nrows bigint) RETURNS SETOF text LANGUAGE plpgsql AS $$

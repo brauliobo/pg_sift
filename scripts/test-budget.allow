@@ -217,7 +217,6 @@ sql	col/merge/overlay_runs.sql	1	predates the budget of test/README.md
 sql	col/merge/partition_setting.sql	4	predates the budget of test/README.md
 sql	col/merge/runs.sql	1	predates the budget of test/README.md
 sql	col/null_price.sql	1	predates the budget of test/README.md
-sql	col/or_equalities.sql	2	predates the budget of test/README.md
 sql	col/order_layout.sql	1	predates the budget of test/README.md
 sql	col/overlay/gorder_walk.sql	1	predates the budget of test/README.md
 sql	col/overlay/lean.sql	1	predates the budget of test/README.md

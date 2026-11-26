@@ -6,12 +6,12 @@ SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 
--- 60 superblocks (fillfactor 10); addresses with masks, ranges and numerics scattered over them, and the NULLs
+-- 15 superblocks (fillfactor 10); addresses with masks, ranges and numerics scattered over them, and the NULLs
 CREATE TABLE oq (id int, ip inet, r int4range, n numeric(12,2), pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 SELECT setseed(0.5);
 INSERT INTO oq SELECT i, set_masklen('20.0.0.0'::inet + (random() * 16777215)::int, 8 + (random() * 24)::int), int4range(a, a + 1 + (random() * 50)::int),
 	(random() * 1000000)::numeric(12,2), repeat('x', 100)
-FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 100000) i) s;
+FROM (SELECT i, (random() * 30000000)::int a FROM generate_series(1, 25000) i) s;
 INSERT INTO oq VALUES (100001, NULL, NULL, NULL, 'nulls'), (100002, '2001:db8::1', 'empty', 0, 'v6'), (100003, '2001:db8::/32', '(,)', -1.5, 'v6 net'), (100004, '20.5.7.9/32', '[5,6)', 3.25, 'host');
 VACUUM (FREEZE, ANALYZE) oq;
 CREATE INDEX oq_col ON oq USING sift_col (ip, r, n);
@@ -29,7 +29,7 @@ CREATE FUNCTION kept_share(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT sif
 
 CREATE TABLE oq_q (slug text, q text);
 INSERT INTO oq_q SELECT slug, replace(q, '@T@', 'oq') FROM (VALUES
-	('network_equals_either', 'SELECT count(*) FROM @T@ WHERE ip = (SELECT ip FROM @T@ WHERE id = 11) OR ip = (SELECT ip FROM @T@ WHERE id = 99999)'),
+	('network_equals_either', 'SELECT count(*) FROM @T@ WHERE ip = (SELECT ip FROM @T@ WHERE id = 11) OR ip = (SELECT ip FROM @T@ WHERE id = 24999)'),
 	('network_equals_two_hosts', 'SELECT count(*) FROM @T@ WHERE ip = ''20.5.7.9/32'' OR ip = ''2001:db8::1'''),
 	('network_equals_three_commuted', 'SELECT count(*) FROM @T@ WHERE ''20.5.7.9/32'' = ip OR ip = ''2001:db8::/32'' OR ip = ''20.5.7.9/32'''),
 	('network_equals_masked_pair', 'SELECT count(*) FROM @T@ WHERE ip = ''20.0.0.0/8'' OR ip = ''20.0.0.0/9'''),
@@ -59,10 +59,10 @@ SELECT * FROM oq_all();
 
 -- the units: the values of the OR are in the few units of an index cut by the node of the address, as the units of the IN list of the same values
 CREATE TABLE oq6 (id int, ip inet, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
-INSERT INTO oq6 SELECT i, '20.0.0.0'::inet + (random() * 16777215)::int, repeat('x', 100) FROM generate_series(1, 100000) i;
+INSERT INTO oq6 SELECT i, '20.0.0.0'::inet + (random() * 16777215)::int, repeat('x', 100) FROM generate_series(1, 25000) i;
 VACUUM (FREEZE, ANALYZE) oq6;
 CREATE INDEX oq6_col ON oq6 USING sift_col (ip);
-SELECT same('SELECT count(*) FROM oq6 WHERE ip = (SELECT ip FROM oq6 WHERE id = 5) OR ip = (SELECT ip FROM oq6 WHERE id = 77777)');
+SELECT same('SELECT count(*) FROM oq6 WHERE ip = (SELECT ip FROM oq6 WHERE id = 5) OR ip = (SELECT ip FROM oq6 WHERE id = 17777)');
 SELECT kept_share('SELECT count(*) FROM oq6 WHERE ip = ''20.5.7.9'' OR ip = ''20.200.1.1'' OR ip = ''20.99.3.3''') < 0.2 AS or_keeps_few_units,
        kept_share('SELECT count(*) FROM oq6 WHERE ip = ''20.5.7.9'' OR ip = ''20.200.1.1'' OR ip = ''20.99.3.3''') = kept_share('SELECT count(*) FROM oq6 WHERE ip IN (''20.5.7.9'', ''20.200.1.1'', ''20.99.3.3'')') AS same_units_as_in_list;
 

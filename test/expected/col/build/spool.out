@@ -16,14 +16,17 @@ SET sift.test_col_segment_kb = 400;
 SET sift.test_col_spill_run_kb = 400;
 CREATE TABLE sp_all (id int, tenant_id int, parent_id int, status smallint, created_at timestamptz, updated_at timestamptz, a_count int, counter_a int,
 	kind text, label text, body text, doc jsonb) WITH (autovacuum_enabled = false);
+-- the document of a row depends on i % 300 only: the 300 documents are built once
 INSERT INTO sp_all
-SELECT i, i % 40, (i::bigint * 7919 % 3000)::int, (i % 5)::smallint, timestamptz '2026-01-01' + (i * 37 % 100000) * interval '1 minute',
-	timestamptz '2026-02-01' + (i % 777) * interval '1 hour', i % 11, i % 7, 'kind_' || (i % 9), 'label ' || (i % 300), 'sample text number ' || (i % 4000),
+WITH d AS MATERIALIZED (SELECT i AS r,
 	jsonb_build_object('metrics', (SELECT jsonb_object_agg('m' || k, ((i * k) % 50) / 10.0) FROM generate_series(1, 4 + i % 5) k),
 		'items', (SELECT jsonb_agg(jsonb_build_object('category', 'cat_' || ((i + k) % 30), 'strength', CASE (i + k) % 3 WHEN 0 THEN 'pos' WHEN 1 THEN 'neg' ELSE 'neu' END,
 			'score', ((i + k) % 10) / 2.0, 'sub', 'sub_' || ((i * k) % 12))) FROM generate_series(1, 1 + i % 4) k),
-		'label', 'doc ' || (i % 20), 'note', 'note ' || (i % 100))
-FROM generate_series(1, 96000) i;
+		'label', 'doc ' || (i % 20), 'note', 'note ' || (i % 100)) AS doc
+	FROM generate_series(0, 299) i)
+SELECT i, i % 40, (i::bigint * 7919 % 3000)::int, (i % 5)::smallint, timestamptz '2026-01-01' + (i * 37 % 100000) * interval '1 minute',
+	timestamptz '2026-02-01' + (i % 777) * interval '1 hour', i % 11, i % 7, 'kind_' || (i % 9), 'label ' || (i % 300), 'sample text number ' || (i % 4000), d.doc
+FROM generate_series(1, 96000) i JOIN d ON d.r = i % 300 ORDER BY i;
 CREATE FUNCTION sp_same(t regclass) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text; q text;
 BEGIN

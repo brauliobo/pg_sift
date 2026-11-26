@@ -1,4 +1,4 @@
--- The memory of an index build is bounded the way PostgreSQL bounds the memory of a sort or a GIN accumulator: it follows maintenance_work_mem (here the budget of a run is scaled down to 512 kB with
+-- The memory of an index build is bounded the way PostgreSQL bounds the memory of a sort or a GIN accumulator: it follows maintenance_work_mem (here the budget of a run is scaled down to 256 kB with
 -- sift.test_col_segment_kb, so that tables of a few tens of thousands of rows fill many runs, as a table of hundreds of millions fills them at the default) and not the rows of the table.
 -- sift.test_col_build_peak_kb is the most the contexts of the backend held above what they held when the build began (the plain index, a scope of 1 and of 3 entries a row; CREATE INDEX, REINDEX
 -- and CREATE INDEX CONCURRENTLY). For each kind the peak stays within the working set (a few superblocks of rows, their dictionaries and the encoded segment) above 1.25 times maintenance_work_mem, and the
@@ -11,7 +11,7 @@ SET max_parallel_maintenance_workers = 0;
 SET jit = off;
 SET client_min_messages = warning;
 SET maintenance_work_mem = '1MB';
-SET sift.test_col_segment_kb = 512;
+SET sift.test_col_segment_kb = 256;
 
 CREATE TABLE peaks (kind text, mwm_kb int, nrows int, kb int);
 
@@ -32,27 +32,29 @@ $$ BEGIN
 	ANALYZE tenant_scope;
 END $$;
 
--- every build is a statement of its own after its tables are committed, as the build of an application is: the steps are rows that \gexec runs in order
+-- every build is a statement of its own after its tables are committed, as the build of an application is: the steps are rows that \gexec runs in order. The builds on
+-- the same rows and pairs share their tables (a plain index reads the tables of the scope of 3 entries); the last build is the CREATE INDEX of that scope on the most rows.
 CREATE TABLE plan (n serial, kind text, mwm_kb int, nrows int, per_member int, scoped boolean, how text);
 INSERT INTO plan (kind, mwm_kb, nrows, per_member, scoped, how)
+SELECT * FROM (
 	SELECT k.kind, 1024, r.n, k.per_member, k.scoped, k.how
-	FROM (VALUES ('plain', 0, false, 'create'), ('scope 1 entry', 1, true, 'create'), ('scope 3 entries', 3, true, 'create'), ('reindex scope 3', 3, true, 'reindex'),
-				 ('concurrently plain', 0, false, 'concurrently'), ('concurrently scope 3', 3, true, 'concurrently')) k(kind, per_member, scoped, how),
-		 (VALUES (12500), (25000), (50000)) r(n)
+	FROM (VALUES ('plain', 3, false, 'create'), ('scope 1 entry', 1, true, 'create'), ('scope 3 entries', 3, true, 'create'), ('reindex scope 3', 3, true, 'reindex'),
+				 ('concurrently plain', 3, false, 'concurrently'), ('concurrently scope 3', 3, true, 'concurrently')) k(kind, per_member, scoped, how),
+		 (VALUES (6250), (12500), (25000)) r(n)
 	UNION ALL
-	SELECT 'concurrently scope 3', 8192, r.n, 3, true, 'concurrently' FROM (VALUES (12500), (25000), (50000), (100000)) r(n)
+	SELECT 'concurrently scope 3', 8192, r.n, 3, true, 'concurrently' FROM (VALUES (6250), (12500), (25000), (50000)) r(n)
 	UNION ALL
-	SELECT 'concurrently scope 3', 1024, 100000, 3, true, 'concurrently'
+	SELECT 'concurrently scope 3', 1024, 50000, 3, true, 'concurrently'
 	UNION ALL
-	SELECT 'scope 3 entries', 1024, 100000, 3, true, 'create'
-	ORDER BY 4, 2, 1;
+	SELECT 'scope 3 entries', 1024, 50000, 3, true, 'create') u(kind, mwm_kb, nrows, per_member, scoped, how)
+ORDER BY nrows, per_member, kind = 'scope 3 entries', mwm_kb DESC, kind;
 
-CREATE FUNCTION steps(p plan) RETURNS SETOF text LANGUAGE sql AS
+CREATE FUNCTION steps(p plan, fresh boolean) RETURNS SETOF text LANGUAGE sql AS
 $$ SELECT format('SET maintenance_work_mem = %s', p.mwm_kb)
    UNION ALL
-   SELECT CASE WHEN p.mwm_kb = 1024 THEN 'SET sift.test_col_segment_kb = 512' ELSE 'RESET sift.test_col_segment_kb' END
+   SELECT CASE WHEN p.mwm_kb = 1024 THEN 'SET sift.test_col_segment_kb = 256' ELSE 'RESET sift.test_col_segment_kb' END
    UNION ALL
-   SELECT format('SELECT lab(%s, %s)', p.nrows, p.per_member)
+   SELECT CASE WHEN fresh THEN format('SELECT lab(%s, %s)', p.nrows, p.per_member) ELSE 'DROP INDEX events_col' END
    UNION ALL
    SELECT format('CREATE INDEX %s events_col ON events USING sift_col (id, dim_a_id, created_at, kind, value_num, d2, region, status, name, amt, flag, doc) WITH (paths = %L%s)',
 				 CASE WHEN p.how = 'concurrently' THEN 'CONCURRENTLY' ELSE '' END, 'doc->a text, doc->b int, doc->c text',
@@ -63,7 +65,8 @@ $$ SELECT format('SET maintenance_work_mem = %s', p.mwm_kb)
    UNION ALL
    SELECT format('INSERT INTO peaks VALUES (%L, %s, %s, current_setting(%L)::int)', p.kind, p.mwm_kb, p.nrows, 'sift.test_col_build_peak_kb') $$;
 
-SELECT s FROM plan p, LATERAL steps(p) s ORDER BY p.n \gexec
+SELECT s FROM (SELECT p, (p.nrows, p.per_member) IS DISTINCT FROM lag((p.nrows, p.per_member)) OVER (ORDER BY p.n) AS fresh FROM plan p) x, LATERAL steps(x.p, x.fresh) s
+ORDER BY (x.p).n \gexec
 
 \set WORK_KB 40960
 \set SLOPE_KB 8192
@@ -84,7 +87,7 @@ SELECT keys_md5(true) = keys_md5(false) AS keys_are_the_join, (SELECT rows FROM 
 SELECT sift.col_verify('events_col', true);
 
 DROP FUNCTION keys_md5(boolean);
-DROP FUNCTION steps(plan);
+DROP FUNCTION steps(plan, boolean);
 DROP FUNCTION lab(int, int);
 DROP TABLE plan, peaks, events, tenant_scope;
 DROP EXTENSION pg_sift_test;
