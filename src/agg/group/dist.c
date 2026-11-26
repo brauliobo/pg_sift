@@ -149,7 +149,7 @@ dist_of(SiftV6Group *g, V6Set *set)
 	{
 		const uint64 budget = g->dist_budget / (uint64) g->nsets;
 
-		set->dist = set->nk == 0 ? sift_distinct_create(g->cx, budget, 0) : sift_distinct_create_grouped(g->cx, budget, 0, dist_emit, set);
+		set->dist = set->nk == 0 ? sift_distinct_create(g->cx, budget) : sift_distinct_create_grouped(g->cx, budget, dist_emit, set);
 		if (g->dvalued != 0)
 			sift_distinct_visit_values(set->dist, g->dvalued, value_visit, set);
 	}

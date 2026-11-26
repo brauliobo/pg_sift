@@ -200,7 +200,7 @@ export_seen(void *arg, uint32 id, const void *bytes, uint32 len, uint64 hash)
 static SiftDistinct *
 seen_new(ParLocal *l)
 {
-	return sift_distinct_create(l->cx, SEEN_NO_BUDGET, 0);
+	return sift_distinct_create(l->cx, SEEN_NO_BUDGET);
 }
 
 static void

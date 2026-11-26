@@ -5,7 +5,7 @@
  * A key is the bytes of the value, or of the columns of a COUNT(DISTINCT (a, b, ..)) row encoded by SiftDistinctKey so that two rows give the same bytes only when every column is equal (a NULL equals
  * a NULL, as in the comparison of two rows). The set is an open-addressing table over a chunked bump arena that holds the key bytes once; the slot of a key (the group, and the aggregate when a
  * query has several COUNT(DISTINCT)) is part of its identity and has its own count. The bytes the set holds are counted exactly (arena, table, counts) and held to budget_bytes: when the next insert
- * would pass it, the keys of all but one hash partition (sift_spill_nparts, 16..256) leave for temporary files and the rows of those partitions go straight to them; a second overflow sends the
+ * would pass it, the keys of all but one hash partition (16..256, as many as their buffers take half the budget) leave for temporary files and the rows of those partitions go straight to them; a second overflow sends the
  * resident partition away too. sift_distinct_finish reads each partition back through a set of its own (a different hash at each level, so that a partition that is still too large splits again), and
  * adds its counts: the answer equals that of PostgreSQL's sort-and-compare whatever the budget. Past SIFT_DISTINCT_MAX_LEVEL levels a set stops spilling (its keys would have to collide in six
  * independent hashes).
@@ -33,8 +33,7 @@ typedef struct SiftDistinctStats
 
 typedef struct SiftDistinct SiftDistinct;
 
-/* expect_bytes: what the planner expects the keys to need in all (0: unknown), to choose the number of partitions */
-extern SiftDistinct *sift_distinct_create(MemoryContext cx, uint64 budget_bytes, uint64 expect_bytes);
+extern SiftDistinct *sift_distinct_create(MemoryContext cx, uint64 budget_bytes);
 
 /*
  * A grouped set: the groups of a GROUP BY are too many to give each a slot, and a group that leaves the table of the aggregate for a temporary file has no stable number. A key is then the bytes
@@ -45,7 +44,7 @@ extern SiftDistinct *sift_distinct_create(MemoryContext cx, uint64 budget_bytes,
  */
 typedef void (*SiftDistinctGroupEmit) (void *arg, uint32 slot, const uint8 *prefix, uint32 plen, uint64 count);
 
-extern SiftDistinct *sift_distinct_create_grouped(MemoryContext cx, uint64 budget_bytes, uint64 expect_bytes, SiftDistinctGroupEmit emit, void *emit_arg);
+extern SiftDistinct *sift_distinct_create_grouped(MemoryContext cx, uint64 budget_bytes, SiftDistinctGroupEmit emit, void *emit_arg);
 extern void sift_distinct_add(SiftDistinct *d, uint32 slot, const void *key, uint32 len);
 /*
  * The same with the hash of the key given by the caller, which must give the same hash to the same bytes in every add to the set (and never mix with sift_distinct_add in one set): the owner of
