@@ -2,6 +2,8 @@
 -- small for what a statement builds, the statistics of an index and the facts of a planning come out as they do under the default one; a unit buffer that cannot be made leaves nothing behind
 -- for the next segment; and the table of cache kinds has room for every cache of the tree and more.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the units, superunits and unit buffers of Format 1 segments, read by sift._test_col_pre_stats and sift._test_leaf_fold
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -42,6 +44,19 @@ INSERT INTO es SELECT g, g % 6, g * 7, decode(repeat(md5(g::text), 437), 'hex') 
 SELECT count(*), sum(val) FROM es WHERE id IN (1540, 1550, 1599, 7);
 SELECT kind, count(*) FROM es WHERE id > 1536 GROUP BY kind ORDER BY kind;
 SELECT sift._test_cache_stress(false) AS stress;
+
+-- an UPDATE of every row of a Format 1 sift_table under a small budget: the segments that give their unit buffers back while the cache evicts the table's entry evict nothing
+-- more, and the next statements of the session read the table
+\connect
+SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
+CREATE TABLE es_tbl USING sift_table AS SELECT g AS id, g % 7 AS kind, g * 3 AS amount, md5(g::text) AS label FROM generate_series(1, 500) g ORDER BY g;
+SET sift.backend_cache_kb = 64;
+UPDATE es_tbl SET amount = amount + 1;
+SELECT count(*), sum(amount) FROM es_tbl;
+SELECT kind, count(*), sum(amount) FROM es_tbl GROUP BY kind ORDER BY kind;
+RESET sift.backend_cache_kb;
+DROP TABLE es_tbl;
 
 -- the table of kinds: room for 30 more caches than the tree has. The registry is the backend's, so the test ends its session
 SELECT sift._test_cache_kinds_max() >= 32 AS room_for_every_cache;
