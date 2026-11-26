@@ -4,7 +4,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 8
 
-node_init rd 58 "autovacuum = off
+# Format 1: the rows decoded from the write buffer and the marks of the tombstone log, which Format 1 counts in the metapage (core/reads.c)
+node_init rd 58 "sift.test_create_format1 = on
+autovacuum = off
 sift.async_maintenance = off"
 node_start rd || bail "start failed"
 sql rd "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "SET client_min_messages = warning" \

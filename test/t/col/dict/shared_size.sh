@@ -7,7 +7,9 @@
 
 [[ -d /dev/shm && -r /proc/self/maps ]] || { echo "1..0 # SKIP needs /dev/shm and /proc (Linux)"; exit 0; }
 plan 10
-node_init primary 3 "sift.shared_cache_kb = 0"
+# Format 1: the ring of shared dictionaries that the readers of Format 1 segments fill (col/dictshm); Format 2 keeps its dictionaries in its parts
+node_init primary 3 "sift.test_create_format1 = on
+sift.shared_cache_kb = 0"
 node_start primary || bail "primary start failed"
 {
 	echo "CREATE EXTENSION pg_sift;"

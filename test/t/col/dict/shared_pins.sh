@@ -7,7 +7,9 @@ REPO=${SIFT_REPO:?}
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 8
-node_init primary 2 "sift.shared_cache_kb = 32768"
+# Format 1: the records of the ring of shared dictionaries that the readers of Format 1 segments pin (col/dictshm)
+node_init primary 2 "sift.test_create_format1 = on
+sift.shared_cache_kb = 32768"
 node_start primary || bail "primary start failed"
 TABLES=12
 {
