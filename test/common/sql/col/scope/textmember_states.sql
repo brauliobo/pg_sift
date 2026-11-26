@@ -1,4 +1,6 @@
--- shared by col_scope_textmember and col_scope_textmember_collide: the fixtures, the forms and the states of the pairs and of the facts
+-- shared by col_scope_textmember and col_scope_textmember_collide: the fixtures, the forms and the states of the pairs and of the facts. The scope summary is Format 2.0: its key store
+-- holds a member of up to 255 bytes, so the long member is 200 bytes
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE TABLE events (id int PRIMARY KEY, account text, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 -- accounts 'acct-1' to 'acct-400', one in 97 with no account (NULL), one in 89 with the empty account
 INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN '' ELSE 'acct-' || (1 + (i::bigint * 7919) % 400) END,
@@ -7,17 +9,17 @@ INSERT INTO events SELECT i, CASE WHEN i % 97 = 0 THEN NULL WHEN i % 89 = 0 THEN
 CREATE TABLE pairs (account text NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (account, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO pairs SELECT 'acct-' || i, 1 + i % 10 FROM generate_series(1, 360) i;
 INSERT INTO pairs SELECT 'acct-' || i, 1 + (i * 3 + 1) % 10 FROM generate_series(1, 360) i WHERE i % 7 = 0 ON CONFLICT DO NOTHING;
-INSERT INTO pairs SELECT a, 4 FROM unnest(ARRAY['', 'Acct-4', 'acct-4 ', 'ácct-4', repeat('long-', 400)]) a;
+INSERT INTO pairs SELECT a, 4 FROM unnest(ARRAY['', 'Acct-4', 'acct-4 ', 'ácct-4', repeat('long-', 40)]) a;
 UPDATE pairs SET tenant_id = 3 WHERE account = '';
 CREATE INDEX pairs_journal ON pairs USING sift_col (account, tenant_id) WITH (track_changes = 'ctid');
 CREATE INDEX events_col ON events USING sift_col (id, account, created_at, kind, amount) WITH (scope = 'tenant_id: account -> pairs(account, tenant_id)');
 REINDEX INDEX events_col;
 -- a long account on a fact too
-INSERT INTO events VALUES (6001, repeat('long-', 400), date '2025-03-01', 'k1', 7), (6002, 'Acct-4', date '2025-03-02', 'k2', 8), (6003, 'acct-4 ', date '2025-03-03', 'k3', 9), (6004, 'ácct-4', date '2025-03-04', 'k0', 10);
+INSERT INTO events VALUES (6001, repeat('long-', 40), date '2025-03-01', 'k1', 7), (6002, 'Acct-4', date '2025-03-02', 'k2', 8), (6003, 'acct-4 ', date '2025-03-03', 'k3', 9), (6004, 'ácct-4', date '2025-03-04', 'k0', 10);
 REINDEX INDEX events_col;
 
 -- a varchar fact column with a text member of the pairs (the bytes decide both), a uuid member, and a text member with a text key
-CREATE TABLE var_events (id int PRIMARY KEY, account varchar(2000), kind text, amount int) WITH (autovacuum_enabled = false);
+CREATE TABLE var_events (id int PRIMARY KEY, account varchar(255), kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO var_events SELECT id, account, kind, amount FROM events;
 CREATE INDEX var_events_col ON var_events USING sift_col (id, account, kind, amount) WITH (scope = 'tenant_id: account -> pairs(account, tenant_id)');
 REINDEX INDEX var_events_col;
@@ -37,10 +39,9 @@ CREATE INDEX txt_events_col ON txt_events USING sift_col (id, account, kind, amo
 REINDEX INDEX txt_events_col;
 VACUUM (FREEZE, ANALYZE) events, pairs, var_events, uuid_events, uuid_pairs, txt_events, txt_pairs;
 
--- the scope segments of an index with a text, varchar or uuid member are column format 50 (an older library refuses them: its journal records words of bytes)
-SELECT i AS index, format, count(*) AS segments FROM (VALUES ('events_col'), ('var_events_col'), ('uuid_events_col'), ('txt_events_col')) v (i), LATERAL sift.col_segments(i::regclass) GROUP BY 1, 2 ORDER BY 1, 2;
--- the members of the pairs and of the facts, by value: the stored entries are those of the pairs as of the build
-SELECT count(*) AS entries, count(DISTINCT scope) AS scopes FROM sift._test_col_scope_entries('events_col');
+-- an index with a text, varchar or uuid member is Format 2.0 with a scope summary of the keys of its pairs
+SELECT i AS index, s.format_major, s.scopes, k.nkeys FROM (VALUES ('events_col'), ('var_events_col'), ('uuid_events_col'), ('txt_events_col')) v (i), LATERAL sift.status(i::regclass) s,
+	LATERAL sift.scope_stats(i::regclass) k ORDER BY 1;
 SELECT (SELECT count(*) FROM events WHERE account IS NULL) AS null_facts, (SELECT count(*) FROM events WHERE account = '') AS empty_facts, (SELECT count(*) FROM pairs WHERE account = '') AS empty_pairs;
 
 CREATE TABLE forms (name text PRIMARY KEY, q text);
@@ -62,18 +63,14 @@ INSERT INTO forms VALUES
  ('text member, text key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM txt_events e WHERE e.account IN (SELECT account FROM txt_pairs WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
  ('text member, text key, group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM txt_events e JOIN txt_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$);
 
--- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
+-- the plan: the scope node, the plain sift node, else the normal plan
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 
 -- the rows of the statement as planned, with sift.agg_scope off and with sift.enable_agg off (the normal plan)
@@ -99,16 +96,16 @@ BEGIN
 	RETURN a = b AND b = c;
 END $$;
 
--- what the run did: the reader's refusal, the members it listed, else the units
+-- what the run read: the summary (with the changes since it: the delta cube) or the join, NULL: not a scope read
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Read|Cube):' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN nullif(rtrim(r, '; '), '');
 END $$;
 
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
@@ -157,7 +154,7 @@ INSERT INTO txt_events SELECT id, account, kind, amount FROM events;
 SELECT 'facts changed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a list', 'varchar facts, text pairs') ORDER BY name COLLATE "C";
 
--- the stored units and the join agree after the pairs are merged into the index (REINDEX), and read the units again
+-- the summary and the join agree after the pairs are merged into the index (REINDEX), and read the summary again
 VACUUM events, pairs, var_events, uuid_events, uuid_pairs, txt_events, txt_pairs;
 SELECT 'vacuumed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, count(*) AS forms FROM states();
 REINDEX INDEX events_col;
