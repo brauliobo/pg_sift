@@ -10,6 +10,7 @@
 
 done_testing
 node_init ae 1 "autovacuum = off
+sift.test_create_format1 = off
 sift.async_maintenance = on
 sift.maintenance_naptime = 200
 sift.backend_cache_kb = 2MB

@@ -4,7 +4,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 9
-node_init tk 6 "autovacuum = off"
+node_init tk 6 "autovacuum = off
+sift.test_create_format1 = off"
 node_start tk || bail "start failed"
 STORE=$(dir tk)/store
 rows() { echo "INSERT INTO $1 SELECT i, timestamp '2020-01-01' + i * interval '1 hour', i % 100, $4 FROM generate_series($2, $3) i"; }
@@ -55,7 +56,8 @@ check "a backend that reads what another backend cached takes it from the cache 
 
 node_stop tk
 
-node_init sc 7 "autovacuum = off"
+node_init sc 7 "autovacuum = off
+sift.test_create_format1 = off"
 node_start sc || bail "start failed"
 scope_db() {
 	sql sc "CREATE EXTENSION pg_sift" \
