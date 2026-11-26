@@ -18,6 +18,7 @@
 #include "col/f2/store/store.h"
 #include "core/catname.h"
 #include "core/f2/vm_xlog.h"
+#include "core/shm/lease.h"
 #include "core/shm/manifest.h"
 #include "table/f2/tbl.h"
 #include "table/f2/vm/vm.h"
@@ -28,7 +29,7 @@ PG_FUNCTION_INFO_V1(sift_test_vm_redo_set);
 PG_FUNCTION_INFO_V1(sift_test_vm_lease_fill);
 PG_FUNCTION_INFO_V1(sift_test_vm_lease_floor);
 
-/* sift._test_tbl_set_next_vblock(rel regclass, next int8): the vblocks reserved so far, as the metapage says, and the pool of addresses of this backend gone */
+/* sift._test_tbl_set_next_vblock(rel regclass, next int8): the vblocks reserved so far, as the metapage says, and the chunk of the file's lease slot and the pool of addresses of this backend gone */
 Datum
 sift_test_tbl_set_next_vblock(PG_FUNCTION_ARGS)
 {
@@ -41,6 +42,7 @@ sift_test_tbl_set_next_vblock(PG_FUNCTION_ARGS)
 	m->next_vblock = PG_GETARG_INT64(1);
 	sift_meta_seal(p0, m->common.struct_size);
 	sift_xlog_done(&x);
+	sift_lease_vblock_forget(&rel->rd_locator);
 	sift_tbl_f2_tid_reset(sift_f2_store_open(rel));
 	relation_close(rel, NoLock);
 	PG_RETURN_VOID();

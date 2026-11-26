@@ -68,6 +68,8 @@ typedef enum SiftBlock0Site
 
 #ifdef SIFT_TESTING
 extern uint64 sift_lease_block0_x_locks[SIFT_B0_SITES];
+/* Gives up what is left of the chunk of vblocks of the file, so that the next run is asked of Block 0 (the caller holds the relation in AccessExclusiveLock: no writer takes from the chunk meanwhile) */
+extern void sift_lease_vblock_forget(const RelFileLocator *loc);
 #define SIFT_NOTE_BLOCK0_X(site)	(sift_lease_block0_x_locks[site]++)
 #else
 #define SIFT_NOTE_BLOCK0_X(site)	((void) 0)

@@ -326,6 +326,19 @@ sift_lease_vblock_cursor(const RelFileLocator *loc)
 	return pg_atomic_read_u64(&s->seq) == seq ? cur : UINT64_MAX;
 }
 
+#ifdef SIFT_TESTING
+void
+sift_lease_vblock_forget(const RelFileLocator *loc)
+{
+	SiftMetaLeaseTable *t = lease_registry();
+	SiftMetaLeaseSlot *s;
+	uint64		seq;
+
+	if (t != NULL && (s = slot_find(t, loc, &seq)) != NULL)
+		pg_atomic_write_u64(&s->vb_cur, pg_atomic_read_u64(&s->vb_end));
+}
+#endif
+
 /* ---------- the pages ---------- */
 
 bool
