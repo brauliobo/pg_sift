@@ -4,6 +4,8 @@ q() { local n=$1 db=$2; shift 2; PGOPTIONS="-c client_min_messages=warning" psql
 # qs NODE DB: the script on stdin, one statement at a time (CREATE TABLESPACE cannot share a transaction)
 qs() { PGOPTIONS="-c client_min_messages=warning" psql -X -At -q -v ON_ERROR_STOP=1 -h "$(dir "$1")/sock" -p "$(port "$1")" -U postgres -d "$2" -f -; }
 quiet() { "$@" >/dev/null; }
+# publish TMP DEST: TMP renamed to DEST unless another lane published DEST first (rename(2) keeps a populated DEST; BSD mv has no -T)
+publish() { perl -e 'rename $ARGV[0], $ARGV[1] or exit 1' "$1" "$2" || rm -rf "$1"; }
 PG_BINS="postgres initdb pg_ctl pg_upgrade vacuumdb pg_resetwal pg_controldata pg_dump pg_dumpall pg_restore pg_checksums pg_config psql"
 
 # overlay PG_CONFIG DEST ROOT: the server of PG_CONFIG at its absolute paths under DEST, pg_sift of the install ROOT in it
@@ -38,7 +40,7 @@ build_old() {
 		echo "1..0 # SKIP the release $OLD_REF cannot be built for PostgreSQL $OLD_MAJOR"; return 77
 	}
 	env -u SIFT_BUILD_DIR -u SIFT_BUILD_ROOT make -C "$src" USE_PGXS=1 PG_CONFIG="$1" SIFT_TESTING=$testing DESTDIR="$2" install >>"$TAPDIR/old-build.log" 2>&1 || return 1
-	[[ -z $cache ]] || { mkdir -p "${cache%/*}" && tmp=$(mktemp -d "${cache%/*}/.tmp.XXXXXX") && cp -a "$2/." "$tmp/" && { mv -T "$tmp" "$cache" 2>/dev/null || rm -rf "$tmp"; }; }
+	[[ -z $cache ]] || { mkdir -p "${cache%/*}" && tmp=$(mktemp -d "${cache%/*}/.tmp.XXXXXX") && cp -a "$2/." "$tmp/" && publish "$tmp" "$cache"; }
 }
 
 # checksum_template BINDIR: the data directory initdb of BINDIR makes, with data checksums: made once for the binaries of BINDIR under $SIFT_TMP/initdb-k, copied from then on
@@ -47,7 +49,7 @@ checksum_template() {
 	[[ -d $t ]] && { echo "$t"; return; }
 	mkdir -p "${t%/*}" && tmp=$(mktemp -d "$t.XXXXXX") || return 1
 	"$1/initdb" -k --no-sync -D "$tmp" -A trust -U postgres -E UTF8 --no-locale --no-instructions --wal-segsize=1 >"$TAPDIR/initdb-k.log" 2>&1 || { rm -rf "$tmp"; return 1; }
-	mv -T "$tmp" "$t" 2>/dev/null || rm -rf "$tmp"
+	publish "$tmp" "$t"
 	echo "$t"
 }
 
