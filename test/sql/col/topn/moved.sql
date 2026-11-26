@@ -10,7 +10,9 @@ SET sift.async_maintenance = off;
 CREATE TABLE hc (id serial PRIMARY KEY, seq int, g int, pad text DEFAULT repeat('x', 1500));
 ALTER TABLE hc ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO hc (seq, g) SELECT i * 3, i % 5 FROM generate_series(1, 24000) i;
+SET client_min_messages = warning;
 CREATE INDEX hc_col ON hc USING sift_col (id, seq, g) WITH (dead_rewrite_pct = 50);
+RESET client_min_messages;
 VACUUM (ANALYZE) hc;
 
 CREATE FUNCTION hc_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;

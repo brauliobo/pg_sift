@@ -19,7 +19,9 @@ SELECT i % 10, i / 7.0 - 1000, ((hashint4(i) & 2147483647) % 2000000 - 1000000) 
 		ELSE ((hashint4(i + 4) & 2147483647) % 100000 - 50000) / 7.0 END,
 	   ((hashint4(i + 5) & 2147483647) % 20000) / 11.0
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX tf_col ON tf USING sift_col (id, g, f_clu, f_rand, f_edge, f_ties, f_nul, r_edge, r_rand);
+RESET client_min_messages;
 VACUUM (ANALYZE) tf;
 
 CREATE FUNCTION tf_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
