@@ -71,7 +71,6 @@ sift_maint_snapshot(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintRow r
 	}
 	status->workers_active = pg_atomic_read_u32(&m->active_workers);
 	status->workers_max = pg_atomic_read_u32(&m->max_workers);
-	status->cold_deferred = host->defer_cold();
 	qsort(rows, n, sizeof(SiftMaintRow), row_order);
 	return n;
 }

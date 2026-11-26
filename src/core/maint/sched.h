@@ -298,7 +298,6 @@ typedef struct SiftMaintStatus
 	uint32		workers_max;
 	uint32		queued[SIFT_TIERS];
 	uint32		claimed;
-	bool		cold_deferred;
 	SiftMaintStats stats;
 } SiftMaintStatus;
 
