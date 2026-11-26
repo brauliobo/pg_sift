@@ -8,6 +8,7 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "col/source_fold.h"
 #include "col/v1_engine/store_ops_unnest.h"
 #include "core/popcount.h"
 
@@ -395,6 +396,19 @@ setup_clauses(UnRun *u)
 	sift_v1_unnest_setup_tests(u);
 }
 
+/* the quals of the table as the source decides them, so that it reads no unit their bounds leave out (the batches are filtered by them again, with the others) */
+static SiftV6Vexpr *
+source_quals(const UnRun *u, Relation host, SiftV6Input *in)
+{
+	SiftV6Input probe = *in;
+	SiftV6Vexpr *vx = palloc0(sizeof(SiftV6Vexpr));
+
+	if (u->x->where == NIL || !sift_v6_vexpr_quals(CurrentMemoryContext, sift_srcfold_heap_quals(host, u->x->where), 1, NULL, &probe, vx))
+		return NULL;
+	*in = probe;
+	return vx;
+}
+
 static void
 open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 {
@@ -423,7 +437,7 @@ open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->keyed ? 2 : u->nel, leaf, type, u->keyed ? NULL : u->x->elem.col_kind, &u->espec);
 	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET || u->x->elem.fn == SV6E_PATH;
 	scan.elem = u->has_elems ? &u->espec : NULL;
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, NULL, &scan);
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, source_quals(u, u->spec->is_table ? heap : index, &in), &scan);
 }
 
 void

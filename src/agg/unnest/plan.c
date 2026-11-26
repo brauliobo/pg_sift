@@ -224,7 +224,7 @@ sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
 #define HEAVY_AGG_PAIR_FACTOR	6
 
-/* the pairs of the whole table: the batches of the scan come from every granule of the index (the pull prunes none by the quals of the table), so a selective statement costs what the table does */
+/* the pairs of the whole table: the scan skips only the granules the zones of the quals of the table rule out, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {

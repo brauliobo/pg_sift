@@ -4,6 +4,10 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "nodes/nodeFuncs.h"
+
+#include "agg/qual/qual.h"
+#include "col/am/preds.h"
 #include "col/f2/agg/unnest/int.h"
 #include "col/f2/agg/unnest/run.h"
 
@@ -776,6 +780,56 @@ unrun_end(UnRun *u)
 	MemoryContextDelete(u->bcx);
 }
 
+/* a qual of the table on a column of the index (a comparison, an IN list or a null test with constants) as the key an index scan has of it; false for a virtual column */
+static bool
+where_key(Relation index, const Node *q, ScanKeyData *k)
+{
+	const Node *arg = IsA(q, NullTest) ? (const Node *) ((const NullTest *) q)->arg : linitial(IsA(q, OpExpr) ? ((const OpExpr *) q)->args : ((const ScalarArrayOpExpr *) q)->args);
+	const AttrNumber att = ((const Var *) arg)->varattno;
+	const Oid	opno = IsA(q, OpExpr) ? ((const OpExpr *) q)->opno : IsA(q, ScalarArrayOpExpr) ? ((const ScalarArrayOpExpr *) q)->opno : InvalidOid;
+	const Const *c;
+	int			strategy;
+	Oid			lefttype,
+				righttype;
+
+	if (att < 1 || att > IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+	*k = (ScanKeyData) {.sk_attno = att};
+	if (IsA(q, NullTest))
+	{
+		k->sk_flags = SK_ISNULL | (((const NullTest *) q)->nulltesttype == IS_NULL ? SK_SEARCHNULL : SK_SEARCHNOTNULL);
+		return true;
+	}
+	c = lsecond(IsA(q, OpExpr) ? ((const OpExpr *) q)->args : ((const ScalarArrayOpExpr *) q)->args);
+	if (get_op_opfamily_strategy(opno, index->rd_opfamily[att - 1]) == 0)
+		strategy = sift_v6_qual_private_strategy(opno, index->rd_opfamily[att - 1]);
+	else
+		get_op_opfamily_properties(opno, index->rd_opfamily[att - 1], false, &strategy, &lefttype, &righttype);
+	k->sk_strategy = (StrategyNumber) strategy;
+	k->sk_subtype = c->consttype;
+	k->sk_collation = exprInputCollation((const Node *) q);
+	k->sk_argument = c->constvalue;
+	k->sk_flags = IsA(q, ScalarArrayOpExpr) ? SK_SEARCHARRAY : c->constisnull ? SK_ISNULL : 0;
+	return strategy != 0;
+}
+
+/* The quals of the table on columns of the index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) */
+static void
+where_preds(UnRun *u, const SiftColRel *r, Relation index, SiftF2PullSpec *ps)
+{
+	ColKeys		ck = {.defs = r->schema->cols,.ndefs = r->schema->ncols,.first = r->first,.idesc = RelationGetDescr(index)};
+	ScanKeyData *keys = palloc(Max(list_length(u->x->where), 1) * sizeof(ScanKeyData));
+	SiftColPred *preds = palloc(Max(list_length(u->x->where), 1) * sizeof(SiftColPred));
+	int			n = 0;
+
+	foreach_ptr(Node, q, u->x->where)
+		n += where_key(index, q, &keys[n]);
+	if (n == 0 || !sift_col_key_preds(keys, n, &ck, preds))
+		return;
+	ps->npred = sift_col_preds_keep(preds, n);
+	ps->pred = preds;
+}
+
 void
 sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
@@ -795,6 +849,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
 	ps = pull_spec(u);
+	where_preds(u, r, index, &ps);
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
 	ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	ps.gran_arg = map;

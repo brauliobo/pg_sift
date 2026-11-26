@@ -36,8 +36,26 @@ CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_h
 CREATE FUNCTION s_diff(qq text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg_temp(qq) $$;
 SELECT name, s_scan(q) AS scan, s_diff(q) AS differing_rows FROM s_q ORDER BY name;
 
+-- a bound on the key of the table narrows the granules the scan of the elements reads, as it does a scan of the table alone; the rows stay the heap's
+CREATE TABLE ur_p (id int PRIMARY KEY, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ur_p SELECT i, (SELECT jsonb_agg(jsonb_build_object('kind', 'c' || (i + k) % 5, 'n', k)) FROM generate_series(1, 40) k) FROM generate_series(1, 400) i;
+CREATE INDEX ur_p_col ON ur_p USING sift_col (id, items) WITH (paths = 'items[]{kind text, n int4}');
+VACUUM ANALYZE ur_p;
+CREATE FUNCTION s_granules(qq text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || qq LOOP
+		IF l ~ 'Granules: scanned=' THEN RETURN substring(l FROM 'scanned=(\d+)')::int; END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+\set ur_all 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ur_p e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) GROUP BY 1'
+\set ur_few 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ur_p e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id < 40 GROUP BY 1'
+SELECT s_scan(:'ur_few') AS scan, s_diff(:'ur_few') AS differing_rows, s_granules(:'ur_few') < s_granules(:'ur_all') OR s_granules(:'ur_all') = 1 AS fewer_granules;
+
 RESET sift.enable_agg;
-DROP FUNCTION s_scan(text), s_diff(text);
-DROP TABLE s_q, ev, ev2;
+DROP FUNCTION s_scan(text), s_diff(text), s_granules(text);
+DROP TABLE s_q, ev, ev2, ur_p;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
