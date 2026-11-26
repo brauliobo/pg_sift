@@ -7,6 +7,8 @@
  * is held, and a locker that finds the count raised takes the page lock, where the coarse lock then is (the barriers are the full ones of an atomic that is written and one that is added to).
  * A locker counts the slot it takes in fast_active of the stripe of its key before it writes it, and a coarse lock that finds that count zero after it raised its own has no slot to read.
  *
+ * The key and the xid of a slot are written between two raises of its seq, odd while they change: a coarse lock reads them whole, at an even seq that is the same after, or reads again.
+ *
  * The directory of the coarse holders is read here too, for the holder in the way of a request: the xids of a stripe are copied under its lock, and whether they run is asked after.
  */
 #include "postgres.h"
@@ -27,8 +29,17 @@ typedef struct SiftFastIntent
 	TransactionId xid;
 	uint64		part_id;		/* SIFT_ESC_PART_ALL: the relation */
 	pg_atomic_uint32 mode;		/* a LockTupleMode plus one, or 0 for a free slot */
-	uint32		pad;
+	pg_atomic_uint32 seq;		/* odd while the key and the xid change */
 } SiftFastIntent;
+
+/* What a coarse lock reads of a slot, all of it from one moment */
+typedef struct SiftFastSeen
+{
+	RelFileLocator locator;
+	TransactionId xid;
+	uint64		part_id;
+	uint32		mode;
+} SiftFastSeen;
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftFastProc
 {
@@ -94,7 +105,37 @@ sift_fast_intent_init(SiftRowLockShmLayout *s)
 {
 	for (int pn = 0; pn < nprocs(); pn++)
 		for (int j = 0; j < FAST_PER_PROC; j++)
+		{
 			pg_atomic_init_u32(&procs_of(s)[pn].slot[j].mode, 0);
+			pg_atomic_init_u32(&procs_of(s)[pn].slot[j].seq, 0);
+		}
+}
+
+/* The key and the top transaction of a free slot of this process, between the two raises of its seq */
+static void
+slot_own(SiftFastIntent *i, const RelFileLocator *loc, uint64 part_id)
+{
+	pg_atomic_fetch_add_u32(&i->seq, 1);
+	i->locator = *loc;
+	i->part_id = part_id;
+	i->xid = GetTopTransactionId();
+	pg_atomic_fetch_add_u32(&i->seq, 1);
+}
+
+static SiftFastSeen
+slot_read(SiftFastIntent *i)
+{
+	SiftFastSeen seen;
+	uint32		seq;
+
+	do
+	{
+		while ((seq = pg_atomic_read_membarrier_u32(&i->seq)) % 2 != 0)
+			pg_spin_delay();
+		seen = (SiftFastSeen) {i->locator, i->xid, i->part_id, pg_atomic_read_u32(&i->mode)};
+		pg_read_barrier();
+	} while (pg_atomic_read_u32(&i->seq) != seq);
+	return seen;
 }
 
 int
@@ -109,11 +150,7 @@ sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 
 	i = &p->slot[slot];
 	before = pg_atomic_read_u32(&i->mode);
 	if (before == 0)
-	{
-		i->locator = *loc;
-		i->part_id = part_id;
-		i->xid = GetTopTransactionId();
-	}
+		slot_own(i, loc, part_id);
 	slot_write(s, i, mode + 1);
 	if (pg_atomic_read_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active) == 0)
 	{
@@ -141,12 +178,11 @@ sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, ui
 	for (int pn = 0; pn < nprocs(); pn++)
 		for (int j = 0; j < FAST_PER_PROC; j++)
 		{
-			SiftFastIntent *i = &procs[pn].slot[j];
-			uint32		mode = pg_atomic_read_membarrier_u32(&i->mode);
+			SiftFastSeen i = slot_read(&procs[pn].slot[j]);
 
-			if (mode != 0 && i->part_id == part_id && RelFileLocatorEquals(i->locator, *loc) && !TransactionIdIsCurrentTransactionId(i->xid) &&
-				sift_esc_modes_conflict(want, sift_esc_intent_modes((LockTupleMode) (mode - 1))) && TransactionIdIsInProgress(i->xid))
-				return i->xid;
+			if (i.mode != 0 && i.part_id == part_id && RelFileLocatorEquals(i.locator, *loc) && !TransactionIdIsCurrentTransactionId(i.xid) &&
+				sift_esc_modes_conflict(want, sift_esc_intent_modes((LockTupleMode) (i.mode - 1))) && TransactionIdIsInProgress(i.xid))
+				return i.xid;
 		}
 	return InvalidTransactionId;
 }
