@@ -33,6 +33,7 @@
 #include "col/f2/l0/stage.h"
 #include "core/memtrack.h"
 #include "core/quarantine/quarantine.h"
+#include "core/visibility/visibility.h"
 #include "core/ring.h"
 
 static struct
@@ -384,14 +385,22 @@ void
 sift_f2_track_install(Relation heap, Relation index, bool concurrent)
 {
 	HearPlan	plan;
+	bool		may;
 
+#ifdef SIFT_TESTING
+	sift_test_hold(sift_test_col_track_gate);
+#endif
 	sift_col_track_check(heap, index);
 	if (concurrent && OidIsValid(sift_col_swap_origin(heap, index, true)))
 		return;
 	plan = sift_col_hear_plan(heap, index, sift_col_hear_find(index, true));
 	if (!plan.bad && sift_col_hear_plan_empty(&plan))
 		return;
-	if (!sift_col_hear_may_make(heap, index, concurrent))
+	may = sift_col_hear_may_make(heap, index, concurrent);
+#ifdef SIFT_TESTING
+	sift_test_hold(sift_test_col_track_decided_gate);
+#endif
+	if (!may)
 	{
 		ereport(NOTICE, (errmsg("sift_col index \"%s\": its track_changes triggers were not made, so deletes are checked in the heap", sift_col_final_name(index)),
 						 errdetail("Another statement holds the table, or a table above it, and a REINDEX does not wait for it."),
@@ -491,6 +500,19 @@ sift_f2_deletes_heard(Relation index, Relation heap, Snapshot snap)
 	m = sift_col_meta_read(index);
 	return (m.state_flags & SIFT_META_FLAG_DELETES_HEARD) && TransactionIdIsNormal(m.track_xid) && TransactionIdPrecedes(m.track_xid, snap->xmin) &&
 		!AfterTriggerPendingOnRel(RelationGetRelid(heap)) && !sift_quarantine_skips(index, SIFT_SKIP_WRITE) && trigger_state(heap, index, &witness) && witness == m.track_witness;
+}
+
+/* sift.col_tracking: whether the trigger is the one the option made, and whether the word of the build that every delete reaches the index still holds for it */
+void
+sift_f2_track_state(Relation index, bool *triggers, bool *heard)
+{
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	SiftColMetaPageData m = sift_col_meta_read(index);
+	uint32		witness;
+
+	*triggers = trigger_state(heap, index, &witness);
+	*heard = *triggers && (m.state_flags & SIFT_META_FLAG_DELETES_HEARD) && witness == m.track_witness;
+	table_close(heap, AccessShareLock);
 }
 
 /* The table of the index, locked without a wait: the statement holds the index, and a statement that holds the table may be waiting for it */

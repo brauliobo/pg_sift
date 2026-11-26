@@ -4,7 +4,9 @@
 # detected". The window is held open with an advisory lock (sift.test_col_track_gate: the install waits for it before it asks for anything), so that both hold ShareLock before either goes on,
 # and the round does not depend on the speed of the host. A second gate (sift.test_col_track_decided_gate) holds both after each decided and before either goes on or ends, so that each decides
 # while the other still holds its ShareLock: without it the one that is first through ends and releases its lock before the other asks, which then finds no holder and makes the triggers. A REINDEX asks for the lock only when no other session holds one that conflicts with it, and otherwise leaves the triggers: the log is
-# not complete (the reads check the heap) until the maintenance worker makes missing triggers, or ALTER INDEX makes them.
+# not complete (the reads check the heap) until the maintenance worker makes missing triggers, or ALTER INDEX makes them (Format 1: two statement triggers an index, a log that ALTER INDEX completes and a
+# worker that makes triggers); a Format 2.0 index has one row trigger, which ALTER INDEX makes at once (no state with the option set and no trigger: "none" is disabled there),
+# and its word that every delete reaches it is made again by a REINDEX that makes the triggers.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 plan 11
 
@@ -16,6 +18,7 @@ sift.async_maintenance = off
 deadlock_timeout = 200ms"
 node_start n || bail "start failed"
 D=$(dir n)
+TPI=$([[ $(sql n "SHOW sift.test_create_format1") == on ]] && echo 2 || echo 1)
 sql n "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE h (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false)" \
 	"INSERT INTO h SELECT i, i % 10, i FROM generate_series(1, 5000) i" \
@@ -31,12 +34,18 @@ waiting_at() { [[ $(sql n "SELECT count(*) FROM pg_locks WHERE locktype = 'advis
 at_gate() { waiting_at $GATE; }
 at_decided() { waiting_at $DECIDED; }
 deadlocks() { grep -c 'deadlock detected' "$D/postgres.log" || true; }
-both() { [[ $(tracking h_a)'|'$(tracking h_b)'|'$(ntrig) == "t|t|4" ]]; }
+both() { [[ $(tracking h_a)'|'$(tracking h_b)'|'$(ntrig) == "t|t|$((2 * TPI))" ]]; }
+complete_again() {
+	local i
+	for i in h_a h_b; do
+		if ((TPI == 2)); then sql n "ALTER INDEX $i SET (track_changes = 'off')" "ALTER INDEX $i SET (track_changes = 'id')"; else sql n "REINDEX INDEX $i"; fi
+	done >/dev/null
+}
 
 # the state a round starts from: "disabled" (the triggers of both indexes are there and disabled) or "none" (no trigger, and the option of the index unset, as an index of an earlier release has it)
 reset() {
 	local i
-	if [[ $1 == disabled ]]; then
+	if [[ $1 == disabled ]] || ((TPI == 1)); then
 		sql n "ALTER TABLE h DISABLE TRIGGER ALL" >/dev/null || bail "disable failed"
 	else
 		for i in h_a h_b; do sql n "ALTER INDEX $i SET (track_changes = 'off')" "ALTER INDEX $i RESET (track_changes)" >/dev/null || bail "reset failed"; done
@@ -78,11 +87,11 @@ check "both REINDEX hold ShareLock of the table at the gate, the triggers of bot
 check "... and both end without an error" test "$ROUND_RC" == 0 -a "$(deadlocks)" == 0
 rounds disabled
 check "$ROUNDS more rounds, the triggers disabled: no failed statement, no deadlock" test "$ROUND_FAILS|$(deadlocks)" == "0|0"
-check "the triggers are as the REINDEX found them (disabled), and the logs are not complete" test "$(tracking h_a)|$(tracking h_b)|$(sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%' AND tgenabled = 'D'")" == "f|f|4"
+check "the triggers are as the REINDEX found them (disabled), and the logs are not complete" test "$(tracking h_a)|$(tracking h_b)|$(sql n "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'h'::regclass AND tgname LIKE 'sift_track_%' AND tgenabled = 'D'")" == "f|f|$((2 * TPI))"
 check "the reads of the indexes answer as the heap does" test "$(ans free)" == "$(ans heap)"
 sql n "ALTER TABLE h ENABLE TRIGGER ALL" >/dev/null
-for i in h_a h_b; do sql n "ALTER INDEX $i SET (track_changes = 'off')" "ALTER INDEX $i SET (track_changes = 'id')" >/dev/null; done
-check "ALTER INDEX makes the triggers and the logs complete again" both
+complete_again
+check "the triggers and the logs are complete again (Format 1: ALTER INDEX, Format 2.0: REINDEX)" both
 
 # 2. no trigger yet: a REINDEX alone makes them (and the baseline); two at once leave them to the maintenance worker
 reset none
@@ -94,6 +103,11 @@ check "... the REINDEX that found the other one left the triggers, and said so" 
 # a read that checks the heap (rows changed since the VACUUM) asks the maintenance worker, which makes the missing triggers and then the baseline
 sql n "UPDATE h SET v = v + 1 WHERE id % 7 = 0" "DELETE FROM h WHERE id % 11 = 0" >/dev/null
 asking() { read_with on >/dev/null; both; }
-check "the worker makes the missing triggers and the logs are complete" wait_for asking 600
+if ((TPI == 2)); then
+	check "the worker makes the missing triggers and the logs are complete" wait_for asking 600
+else
+	complete_again
+	check "a REINDEX of each index alone makes the missing triggers and the logs are complete" both
+fi
 check "... and the reads answer as the heap does" test "$(ans free)" == "$(ans heap)"
 finish

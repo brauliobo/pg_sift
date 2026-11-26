@@ -573,9 +573,15 @@ static Datum
 f2_tracking(FunctionCallInfo fcinfo)
 {
 	Relation	index = open_f2(PG_GETARG_OID(0));
-	bool		on = sift_col_track_on(index);
-	Datum		v[4] = {BoolGetDatum(on), BoolGetDatum(on), BoolGetDatum(on), BoolGetDatum(on)};
+	bool		triggers,
+				heard;
+	Datum		v[4];
 	bool		nulls[4] = {false};
+
+	sift_f2_track_state(index, &triggers, &heard);
+	v[0] = BoolGetDatum(sift_col_track_on(index));
+	v[1] = BoolGetDatum(triggers);
+	v[2] = v[3] = BoolGetDatum(heard);
 
 	index_close(index, AccessShareLock);
 	return sift_result_row(fcinfo, v, nulls);
