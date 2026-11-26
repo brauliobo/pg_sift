@@ -4,8 +4,9 @@
  *
  * The sweep names everything the relation holds from the metapage down (the directory of the partitions with its lists, the parts with their extent lists and deletion vectors, the micro-slab and
  * the pending deletes of each partition, the wide values of a sift_table that its granules and its micro-slabs refer to, the column delta chains, the scope directory and its summaries, the projections, the key journal, the lists and the queue of the allocator), takes what is
- * free or queued and the free blocks of the slabs, and what is left below the high-water mark is an orphan. It runs only when it has the relation to itself (AccessExclusiveLock without waiting,
- * the load lock, no VACUUM reading the manifest): no writer is between the allocation of an extent and the commit that names it. It frees nothing, and says why at DEBUG1, when the relation
+ * free or queued and the free blocks of the slabs, and what is left below the high-water mark is an orphan. It runs only when no writer has the relation (ExclusiveLock without waiting, the load
+ * lock, no VACUUM reading the manifest): no writer is between the allocation of an extent and the commit that names it. Readers allocate nothing and are not excluded, and the lock, unlike
+ * AccessExclusiveLock, is not replayed by a standby, so the sweep cancels no query there. It frees nothing, and says why at DEBUG1, when the relation
  * holds something it does not name (a part in an object store, a shard directory), when a page is not what its reference says, when
  * two names or a name and a free list overlap, or when the orphans are over half of the index. A page of the extents a part keeps under its generation when its pieces are moved below a cut (col/f2/tail.c) is an orphan like any other when the crash came before the commit that names it: the generation of a page says nothing of whether the live part names it. While a physical standby streams, the
  * orphans enter the quarantine of the allocator as the extents of a compaction do, and the horizon of the standby holds them back.
@@ -685,7 +686,7 @@ sweep_locked(Relation rel)
 	return blocks;
 }
 
-/* The relation is its own: no backend or maintenance worker can hold it, so no writer is between an allocation and its commit */
+/* The relation is its own: no other backend or maintenance worker can write it, so no writer is between an allocation and its commit */
 static bool
 sweep_allowed(Relation rel)
 {
@@ -732,10 +733,10 @@ vacuum_read_by_another(Relation rel)
 uint64
 sift_fsm_sweep_orphans(Relation rel)
 {
-	bool		had_lock = CheckRelationLockedByMe(rel, AccessExclusiveLock, false);
+	bool		had_lock = CheckRelationLockedByMe(rel, ExclusiveLock, true);
 	uint64		freed = 0;
 
-	if (!sweep_allowed(rel) || (!had_lock && (sift_maint_standby_streams() || !ConditionalLockRelation(rel, AccessExclusiveLock))))
+	if (!sweep_allowed(rel) || (!had_lock && !ConditionalLockRelation(rel, ExclusiveLock)))
 		return 0;
 	if (ConditionalLockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock))
 	{
@@ -747,6 +748,6 @@ sift_fsm_sweep_orphans(Relation rel)
 		UnlockPage(rel, SIFT_F2_LOAD_LOCK_BLKNO, ExclusiveLock);
 	}
 	if (!had_lock)
-		UnlockRelation(rel, AccessExclusiveLock);
+		UnlockRelation(rel, ExclusiveLock);
 	return freed;
 }

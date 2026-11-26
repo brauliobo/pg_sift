@@ -146,7 +146,7 @@ extern uint64 sift_fsm_reclaim_exclusive(Relation rel);
 
 /*
  * Gives the extents that nothing names back to the allocator: what a crash, or a failure after the write of a part and before the commit that names it, leaves allocated. It has the relation to itself
- * (AccessExclusiveLock taken without waiting unless held, the load lock, no VACUUM reading the manifest; never while a standby streams) and frees nothing, DEBUG1 says why, when the relation holds
+ * (ExclusiveLock, which no standby replays, taken without waiting unless held, the load lock, no VACUUM reading the manifest) and frees nothing, DEBUG1 says why, when the relation holds
  * what it cannot name (core/f2/fsm/sweep.c); the blocks freed. sift_fsm_tail_shrink, which every VACUUM ends with, runs it once for each relation and server start.
  */
 extern uint64 sift_fsm_sweep_orphans(Relation rel);
