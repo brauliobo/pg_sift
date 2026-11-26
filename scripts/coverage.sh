@@ -60,15 +60,29 @@ log() { printf '[coverage %s] %s\n' "$(date +%T)" "$*" >&2; }
 sql() { PGOPTIONS='-c client_min_messages=warning -c lc_messages=C' SIFT_DB=${SQLDB:-$DB} "$REPO/scripts/pgtest.sh" psql -v ON_ERROR_STOP=1 -qAt "$@"; }
 
 # ---------- the table ----------
-# the features of the rows that are not in this tree yet: " id id ", from the #feature lines (id, branch, marker file that the branch adds)
+# the features of the rows that are not in this tree yet: " id id ", from the #feature lines (id, branch, marker file that the branch adds), in P; found once per table file
+declare -A PENDING=()
 pending_features() {
-	awk -F'\t' -v repo="$REPO" '$1 == "#feature" { f = repo "/" $4; if (system("test -e \"" f "\"" ($5 == "" ? "" : " && grep -Eq -e \"" $5 "\" \"" f "\"")) != 0) p = p " " $2 } END { print p " " }' "$TSV"
+	[[ -n ${PENDING[$TSV]+x} ]] || PENDING[$TSV]=$(awk -F'\t' -v repo="$REPO" '$1 == "#feature" { f = repo "/" $4; if (system("test -e \"" f "\"" ($5 == "" ? "" : " && grep -Eq -e \"" $5 "\" \"" f "\"")) != 0) p = p " " $2 } END { print p " " }' "$TSV")
+	P=${PENDING[$TSV]}
 }
+
+# tree_files: the paths under test/col/fixtures, test/sql, test/t and scripts, relative to the tree, that the proofs and tests of the files name
+tree_files() { (cd "$REPO" && find test/col/fixtures test/sql test/t scripts -mindepth 1); }
+# the awk functions on the names of tree_files (the first file of the awk run): fixture(NAME), test(NAME) (test/sql/NAME.sql or test/t/NAME.*) and script(NAME)
+TREE_AWK='
+	FNR == NR { have[$0] = 1; tn = split($0, tpart, "/"); tb = tpart[tn]; td = substr($0, 1, length($0) - length(tb))
+	            for (ti = 1; ti <= length(tb); ti++) if (substr(tb, ti, 1) == ".") tprefix[td substr(tb, 1, ti - 1)] = 1; next }
+	function fixture(x) { return ("test/col/fixtures/" x ".sql") in have }
+	function test(x) { return ("test/sql/" x ".sql") in have || ("test/t/" x) in tprefix }
+	function script(x) { return ("scripts/" x ".sh") in have }
+'
 
 # validate: the rules of the file; prints the errors and returns 1 when there is one
 validate() {
-	awk -F'\t' '
-		function bad(m) { printf "docs/coverage.tsv:%d: %s: %s\n", NR, $1, m; n++ }
+	pending_features
+	awk -F'\t' "$TREE_AWK"'
+		function bad(m) { printf "docs/coverage.tsv:%d: %s: %s\n", FNR, $1, m; n++ }
 		$1 == "#feature" { if (NF < 4 || NF > 5 || $2 == "" || $4 == "") bad("a #feature line is #feature, id, branch, marker file, optional regex of the file"); feat[$2] = 1; next }
 		/^#/ || $1 == "id" { next }
 		NF != 14 { bad("expected 14 tab separated fields, found " NF); next }
@@ -90,19 +104,19 @@ validate() {
 			if ($10 !~ /^error:/ && $13 != "") bad("only an error row has an avoid setting")
 			if ($14 != "" && $14 !~ /^[0-9][0-9]:./) bad("README family must be NN:short SQL")
 			if ($14 != "") { k = substr($14, 1, 2); if (k in famname && famname[k] != $14) bad("README family " k " has two names"); famname[k] = $14 }
-			if ($11 ~ /^@/ && !pend && system("test -f \"" fx "/" substr($11, 2) ".sql\"") != 0) bad("no fixture " substr($11, 2))
+			if ($11 ~ /^@/ && !pend && !fixture(substr($11, 2))) bad("no fixture " substr($11, 2))
 			np = split($9, pf, ",")
 			for (i = 1; i <= np && !pend; i++) {
 				k = index(pf[i], ":"); kind = substr(pf[i], 1, k - 1); name = substr(pf[i], k + 1)
-				if (kind == "fixture" && system("test -f \"" fx "/" name ".sql\"") != 0) bad("no fixture " name)
-				else if (kind == "test" && system("test -f \"" fx "/../../sql/" name ".sql\" || ls \"" fx "/../../t/" name ".\"* >/dev/null 2>&1") != 0) bad("no test " name)
-				else if (kind == "script" && system("test -f \"" fx "/../../../scripts/" name ".sh\"") != 0) bad("no script " name)
+				if (kind == "fixture" && !fixture(name)) bad("no fixture " name)
+				else if (kind == "test" && !test(name)) bad("no test " name)
+				else if (kind == "script" && !script(name)) bad("no script " name)
 				else if (kind == "scenario" && name !~ /^(insert|update|delete|abort|vacuum|hot|recycle|held|maint)$/) bad("no scenario " name)
 				else if (kind !~ /^(fixture|test|script|scenario)$/) bad("proof must be fixture:NAME, test:NAME, script:NAME or scenario:NAME, not " pf[i])
 			}
 		}
 		END { for (u in used) if (!(u in feat)) bad("since " u " (" used[u] ") is no #feature"); exit n > 0 }
-	' fx="$REPO/test/col/fixtures" rows="$ROWS" P="$(pending_features)" "$TSV"
+	' rows="$ROWS" P="$P" <(tree_files) "$TSV"
 }
 
 # ---------- generation ----------
@@ -185,7 +199,8 @@ lines is the column index at work, `SiftScan` / `SiftCount` is the BM25 index, a
 
 EOF
 	gen_pct
-	awk -F'\t' -v P="$(pending_features)" "$STATUS_AWK"'
+	pending_features
+	awk -F'\t' -v P="$P" "$STATUS_AWK"'
 		/^#/ || $1 == "id" { next }
 		{ n[$4]++; total++; if (pend($12)) npend++; if ($10 ~ /^external:/) ext++; row[++r] = $0 }
 		END {
@@ -233,40 +248,40 @@ readme_with_block() {
 generate() { gen_full >"$1/COVERAGE.md"; readme_with_block >"$1/README.md"; }
 
 # ---------- the proofs ----------
+# the database of the proofs: the format setting first (a new session reads it), then the fixtures in one session (n and seed are fixture.sql's only: coverage_data.sql
+# has its own default size), then VACUUM (FREEZE, ANALYZE) after their commit
 setup_db() {
 	SQLDB=postgres sql -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "DROP ROLE IF EXISTS sift_cov_user" -c "CREATE DATABASE $DB"
 	sql -c "CREATE EXTENSION pg_sift"
 	format_apply "$FORMAT"
-	sql -f "$REPO/test/col/run.sql" -f "$REPO/test/col/coverage.sql"
-	sql -v n="$FIXROWS" -v seed=0 -f "$REPO/test/col/fixture.sql" >/dev/null
-	sql -f "$REPO/test/col/coverage_data.sql"
+	sql -f "$REPO/test/col/run.sql" -f "$REPO/test/col/coverage.sql" -c '\o /dev/null' -c "\\set n $FIXROWS" -c '\set seed 0' -f "$REPO/test/col/fixture.sql" \
+		-c '\o' -c '\unset n' -c '\unset seed' -f "$REPO/test/col/coverage_data.sql"
 	sql -c "VACUUM (FREEZE, ANALYZE)"
 }
 
-# the psql script that runs every selected row, one RESET ALL and one coverage.check each
+# the psql script that runs every selected row, one RESET ALL and one coverage.check each; the query (a fixture's text, or the row's without its `-- pre:` lines) inline,
+# without the last newline, as a backquoted cat gives it
 write_script() {
-	mkdir -p "$OUT/q"
-	awk -F'\t' -v dir="$OUT/q" -v fx="$REPO/test/col/fixtures" -v rows="$ROWS" '
+	awk -F'\t' -v fx="$REPO/test/col/fixtures" -v rows="$ROWS" '
 		function lit(s) { gsub(/\047/, "\047\047", s); return "\047" s "\047" }
+		function quote(s) { if (index(s, "$cov$")) { print "coverage: the query of " $1 " has the quote $cov$ of the proofs script" > "/dev/stderr"; exit 1 }; return "$cov$" s "$cov$" }
 		/^#/ || $1 == "id" || $10 ~ /^external:/ { next }
 		rows != "" && $1 !~ rows { next }
 		{
-			pre = ""
-			if ($11 ~ /^@/) src = fx "/" substr($11, 2) ".sql"
+			pre = ""; body = ""
+			if ($11 ~ /^@/) { src = fx "/" substr($11, 2) ".sql"; while ((getline l < src) > 0) body = body l "\n"; close(src) }
 			else {
-				q = $11; gsub(/\\n/, "\n", q); src = dir "/" $1 ".sql"; n = split(q, ln, "\n"); body = ""
+				q = $11; gsub(/\\n/, "\n", q); n = split(q, ln, "\n")
 				for (i = 1; i <= n; i++) if (ln[i] ~ /^-- pre: /) pre = pre substr(ln[i], 9) "\n"; else body = body ln[i] "\n"
-				printf "%s", body > src; close(src)
 			}
 			printf "%s", pre
 			print "RESET ALL;"
-			print "\\set q `cat " src "`"
-			print "SELECT coverage.check(" lit($1) ", " lit($10) ", :\047q\047, " ($13 == "" ? "NULL" : lit($13)) ");"
-		}' "$TSV" >"$OUT/rows.sql.body"
+			print "SELECT coverage.check(" lit($1) ", " lit($10) ", " quote(substr(body, 1, length(body) - 1)) ", " ($13 == "" ? "NULL" : lit($13)) ");"
+		}' "$TSV" >"$OUT/rows.sql.body" || return 1
 	{ echo "\\set ON_ERROR_STOP 0"; echo "LOAD 'pg_sift';"; echo "\\o /dev/null"; echo "TRUNCATE coverage.results;"; cat "$OUT/rows.sql.body"; echo "\\o"; } >"$OUT/rows.sql"
 }
 
-# ---------- proofs on a second cluster (check external:NAME, the function ext_NAME) ----------
+# ---------- proofs on a second cluster (check external:NAME: the function ext_NAME_prep runs beside the rows, ext_NAME_run, when there is one, after them) ----------
 # side NAME ARGS: scripts/pgtest.sh on the cluster $SIFT_TMP/side-NAME (own data, socket and leak gate; the install and port of this run)
 side() { local n=$1 root=${SIFT_ROOT:-$SIFT_TMP/root}; shift; SIFT_TMP=$SIFT_TMP/side-$n SIFT_ROOT=$root SIFT_PORT=${SIFT_PORT:-56100} "$REPO/scripts/pgtest.sh" "$@"; }
 # side_conf NAME LINES...: the postgresql.conf of a fresh side cluster, small enough to run beside the others
@@ -277,7 +292,7 @@ side_conf() {
 }
 
 # L10: publishing a sift_table under wal_level = logical raises 0A000 at CREATE PUBLICATION without pg_sift in shared_preload_libraries
-ext_logical_run() {
+ext_logical_prep() {
 	local out
 	side logical new-data "$SIFT_TMP/side-logical/data" || return 1
 	side_conf logical "wal_level = logical" || return 1
@@ -293,13 +308,15 @@ ext_logical_run() {
 
 # D07: a hot standby (pg_basebackup of this cluster, then WAL replay of later changes) serves the primary's result from a SiftAgg plan on a
 # sift_col index and on a sift_table, and a BM25 match from a SiftScan / SiftCount plan
-ext_standby_run() {
-	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'damaged'"
-	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
+ext_standby_prep() {
 	pg_basebackup -h "$SIFT_TMP/sock" -p "${SIFT_PORT:-56100}" -U postgres -D "$SIFT_TMP/side-standby/data" -X stream -c fast -R || return 1
 	# pgtest.sh start empties postgresql.auto.conf, where -R wrote primary_conninfo: the standby would stay at the state of the base backup
 	side_conf standby "primary_conninfo = 'host=$SIFT_TMP/sock port=${SIFT_PORT:-56100} user=postgres'" || return 1
-	side standby start || return 1
+	side standby start
+}
+ext_standby_run() {
+	local lsn q want got bm="SELECT count(*) FROM orders WHERE memo @@> 'damaged'"
+	local aggs=('SELECT grp, count(*), sum(v) FROM cv_dml GROUP BY grp' 'SELECT grp, count(*), sum(i4) FROM cv_tt GROUP BY grp')
 	sql -c "INSERT INTO cv_dml SELECT 9000 + i, i % 5, i, i, 'r' FROM generate_series(1, 300) i" -c "INSERT INTO cv_tt SELECT * FROM cv_types WHERE id <= 60" || return 1
 	lsn=$(sql -c "SELECT pg_current_wal_lsn()")
 	for _ in $(seq 150); do
@@ -320,26 +337,49 @@ ext_record() {
 	sql -v id="$1" -v ok="$2" -v detail="$3" <<<"SELECT coverage.record(:'id', 'external', :'ok'::boolean, CASE WHEN :'ok'::boolean THEN 'ok' ELSE 'plan' END, nullif(:'detail', ''), NULL)" >/dev/null
 }
 
-external_proofs() {
-	local id check name msg ok
+# the external rows of this run: id, side name, function prefix
+external_rows() {
+	local id check name
 	while IFS=$'\t' read -r id check; do
 		[[ -z $ROWS || $id =~ $ROWS ]] || continue
-		name=ext_${check#external:}; name=${name//-/_}
-		rm -rf "$SIFT_TMP/side-${check#external:}"; mkdir -p "$SIFT_TMP/side-${check#external:}"
-		ok=true; msg=$("${name}_run" 2>&1) || ok=false
-		side "${check#external:}" stop >/dev/null 2>&1 || true
-		rm -rf "$SIFT_TMP/side-${check#external:}"
-		ext_record "$id" "$ok" "$msg"
+		check=${check#external:}; name=ext_${check//-/_}
+		printf '%s\t%s\t%s\n' "$id" "$check" "$name"
 	done < <(awk -F'\t' '$10 ~ /^external:/ { print $1 "\t" $10 }' "$TSV")
+}
+# external_start: the prep of each external row in the background (its status in $OUT/ext-ID.rc, its messages in $OUT/ext-ID.msg)
+EXT_PIDS=()
+external_start() {
+	local id side name
+	while IFS=$'\t' read -r id side name; do
+		rm -rf "$SIFT_TMP/side-$side"; mkdir -p "$SIFT_TMP/side-$side"
+		{ rc=0; "${name}_prep" >"$OUT/ext-$id.msg" 2>&1 || rc=1; echo $rc >"$OUT/ext-$id.rc"; } &
+		EXT_PIDS+=($!)
+	done < <(external_rows)
+}
+# external_finish: after the rows, the run of each external row whose prep held, its side cluster stopped and its verdict recorded
+external_finish() {
+	local id side name msg ok p
+	for p in ${EXT_PIDS[@]+"${EXT_PIDS[@]}"}; do wait "$p" || true; done
+	EXT_PIDS=()
+	while IFS=$'\t' read -r id side name; do
+		ok=true
+		if [[ $(<"$OUT/ext-$id.rc") != 0 ]]; then ok=false msg=$(<"$OUT/ext-$id.msg")
+		elif declare -F "${name}_run" >/dev/null; then msg=$(cat "$OUT/ext-$id.msg"; "${name}_run" 2>&1) || ok=false
+		else msg=$(<"$OUT/ext-$id.msg"); fi
+		side "$side" stop >/dev/null 2>&1 || true
+		rm -rf "$SIFT_TMP/side-$side" "$OUT/ext-$id".*
+		ext_record "$id" "$ok" "$msg"
+	done < <(external_rows)
 }
 
 # run: the verdict of every row; exit status 1 when a claim is wrong
 run_proofs() {
 	local fails pend
-	write_script
+	write_script || return 1
+	external_start
 	sql -f "$OUT/rows.sql" >/dev/null 2>"$OUT/rows.err" || true
-	external_proofs
-	pend=$(pending_features)
+	external_finish
+	pending_features; pend=$P
 	sql -F $'\t' -c "SELECT id, ok, kind, coverage.nodes(plan), replace(coalesce(detail, ''), E'\n', ' ') FROM coverage.results ORDER BY id" >"$OUT/results.tsv"
 	fails=$(awk -F'\t' -v P="$pend" -v verbose="$VERBOSE" -v rows="$ROWS" '
 		FILENAME == ARGV[1] { if ($0 !~ /^#/ && $1 != "id" && (rows == "" || $1 ~ rows)) { claim[$1] = $10; since[$1] = $12; status[$1] = $4 } ; next }
@@ -383,8 +423,8 @@ selftest() {
 # validate_pct: the results file names tests that exist, and no variant the pushdown answers differs from the normal plan
 validate_pct() {
 	[[ -s $PCT ]] || return 0
-	awk -F'\t' -v root="$REPO" '
-		function bad(m) { printf "%s:%d: %s\n", FILENAME, NR, m; n++ }
+	awk -F'\t' "$TREE_AWK"'
+		function bad(m) { printf "%s:%d: %s\n", FILENAME, FNR, m; n++ }
 		$1 == "family" || /^#/ { next }
 		NF != 10 { bad("expected 10 tab separated fields, found " NF); next }
 		$6 != 0 { bad($1 " " $2 ": " $6 " variants answer differently than the normal plan") }
@@ -392,12 +432,12 @@ validate_pct() {
 			np = split($10, pf, ",")
 			for (i = 1; i <= np; i++) {
 				k = index(pf[i], ":"); kind = substr(pf[i], 1, k - 1); name = substr(pf[i], k + 1)
-				if (kind == "test" && system("test -f \"" root "/test/sql/" name ".sql\" || ls \"" root "/test/t/" name ".\"* >/dev/null 2>&1") != 0) bad("no test " name)
-				else if (kind == "script" && system("test -f \"" root "/scripts/" name ".sh\"") != 0) bad("no script " name)
+				if (kind == "test" && !test(name)) bad("no test " name)
+				else if (kind == "script" && !script(name)) bad("no script " name)
 				else if (kind !~ /^(test|script)$/) bad("tests are test:NAME or script:NAME, not " pf[i])
 			}
 		}
-		END { exit n > 0 }' "$PCT"
+		END { exit n > 0 }' <(tree_files) "$PCT"
 }
 
 # pct: the matrices on this build and, unless --verify, on the last release; the file is written by the full tier only
