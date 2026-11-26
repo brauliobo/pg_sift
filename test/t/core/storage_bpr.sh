@@ -42,12 +42,14 @@ bpr() {
 # measure NODE LEVEL: the runner of the LEVEL cases on NODE, its output, errors and status in the directory of the node. The two clusters measure side by side: each counts
 # the WAL and the disk of its own server, so the other's load moves no byte of its windows
 measure() {
-	local d=$(dir "$1")
+	local d
+	d=$(dir "$1")
 	bpr "$1" --wal-level "$2" >"$d/bpr.out" 2>"$d/bpr.err"
 	echo $? >"$d/bpr.rc"
 }
 report() {
-	local node=$1 level=$2 d=$(dir "$1") out rc
+	local node=$1 level=$2 d out rc
+	d=$(dir "$node")
 	out=$(<"$d/bpr.out") rc=$(<"$d/bpr.rc")
 	[[ -s $d/bpr.err ]] && diag "$(cat "$d/bpr.err")"
 	diag "$out"

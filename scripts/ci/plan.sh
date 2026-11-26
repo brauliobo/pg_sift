@@ -64,7 +64,7 @@ release_library_tests() {
 # release_library_jobs: on the staged release root (scripts/ci-build.sh, PostgreSQL 18 and later) the tests are installed, not built, so they are cut like the regression batches into
 # RELEASE_BATCHES jobs (release-library-regress-1...) of the same measured seconds, which the lanes run side by side, each on a cluster of its own (one job was 270 to 390 lane seconds
 # of a hosted run, the straggler of its shard). Else one job: each batch would copy and build the tree
-RELEASE_BATCHES=6
+RELEASE_BATCHES=6 RELEASE_BATCH_OVERHEAD=6   # the overhead: the install of the staged root, the start and stop of the cluster of the batch
 release_library_jobs() {
 	local i=0 load names tests
 	if (( PG_MAJOR < 18 )) || [[ -z ${SIFT_PREBUILT_RELEASE:-} ]]; then flavor_job release-library-regress release-library-regress "$S/release-library-check.sh" $(release_library_tests); return; fi
@@ -72,7 +72,7 @@ release_library_jobs() {
 	tests=$(release_library_tests)
 	while read -r load names; do
 		queue "release-library-regress-$((++i))" release-library-regress 0 "$S/release-library-check.sh" $names
-		batch_weight "$load"; W_BATCH[release-library-regress-$i]=$(( BATCH_W + RELEASE_BATCH_OVERHEAD ))
+		batch_weight "$load"; W_BATCH["release-library-regress-$i"]=$(( BATCH_W + RELEASE_BATCH_OVERHEAD ))
 	done < <(REGRESS_BATCH_SECS=$(regress_part_secs $RELEASE_BATCHES $tests) regress_pack $tests)
 }
 release_library_jobs

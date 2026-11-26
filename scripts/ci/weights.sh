@@ -37,16 +37,15 @@ regress_part_secs() {
 	for t in "${@:2}"; do echo "${REGRESS_SECS[$t]:-$REGRESS_TEST_SECS}"; done | awk -v n="$n" '{ total += $1 } END { printf "%d", total / n + 1 }'
 }
 REGRESS_BATCH_OVERHEAD=2   # the seconds a batch spends outside its tests: the database, the leak and leftover checks (scripts/pgtest.sh regress)
-RELEASE_BATCH_OVERHEAD=6   # and a batch of the release library: the install of the staged root, the start and stop of its cluster (scripts/release-library-check.sh)
 declare -A W_BATCH=()   # the lane seconds of each regression batch, from the measured seconds of its tests (set by installcheck_batches of scripts/ci/jobs.sh; batch_weights for the plan of every test)
 # batch_weight LOAD: sets BATCH_W to LOAD (one decimal, regress_pack) plus the overhead, rounded half up; no fork for each of the 50 batches of a plan
 batch_weight() { BATCH_W=$(( ${1%.*} + REGRESS_BATCH_OVERHEAD + (${1#*.} >= 5) )); }
 # batch_weights: W_BATCH of the batches of the plan with no filter (the regression tests that are no job of their own), for the checks that weigh a plan they did not make
 batch_weights() {
-	local i=0 t load names slow sel=()
+	local i=0 t load slow sel=()
 	slow=($SLOW_REGRESS)
 	for t in $(tests sql .sql); do [[ " ${slow[*]} " == *" $t "* ]] || regress_solo "$t" || sel+=("$t"); done
-	while read -r load names; do batch_weight "$load"; W_BATCH[installcheck-batch$((++i))]=$BATCH_W; done < <(regress_pack "${sel[@]}")
+	while read -r load _; do batch_weight "$load"; W_BATCH[installcheck-batch$((++i))]=$BATCH_W; done < <(regress_pack "${sel[@]}")
 }
 AFTER_LANES=4   # the lanes of a hosted runner: a job that runs after the pool runs alone, so each second of it costs this many lane seconds of the shard
 # the shards are cut by the lane seconds each job took on its PostgreSQL major in a hosted run (scripts/ci-times.py --weights, the run is named in the header of the file; the other jobs
