@@ -1,12 +1,10 @@
--- A scope read runs with parallel workers as an entity read does: the leader decides the read once (the units of the scope segments, the entity rows of the members listed, or the join as written), the
--- participants read its decision and its directory, and take the units of the scope segments as items; the delta (the rows of the write buffers and of the changed members, copied for each pair) is the leader's. The
--- rows are those of the same read in one process, of the join and of the plain plan, for integer, text and uuid keys and members, one path and two, in every state of the facts and the pairs; EXPLAIN says that the
--- workers started, and a small read keeps one process.
+-- A scope read with parallel workers allowed: the rows are those of the same read in one process, of the join without the scope node and of the plain plan, for integer, text and uuid keys and
+-- members, one path and two, in every state of the facts and the pairs; EXPLAIN says how the scope node read each and whether workers started, and a small read keeps one process.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
 SET jit = off;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
@@ -75,7 +73,7 @@ INSERT INTO forms VALUES
  ('text group by the key', $q$SELECT s.tenant_id, count(*) AS n FROM t_events e JOIN t_pairs s ON s.account = e.account GROUP BY s.tenant_id$q$),
  ('uuid IN, a list', $q$SELECT kind, count(*) AS n, sum(v) AS total FROM u_events e WHERE e.account IN (SELECT account FROM u_pairs WHERE tenant_id IN (md5('tenant-3')::uuid, md5('tenant-8')::uuid)) GROUP BY kind$q$);
 
--- the rows (as md5) of a statement as written, of the same read in one process, of the join the node falls back to, of the join without a scope and of the plain plan; the workers of the scope read and of the fallback
+-- the rows (as md5) of a statement as written, of the same read in one process and again with workers, of the join without the scope node and of the plain plan; the workers of the reads
 CREATE FUNCTION rows_md5(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -85,17 +83,17 @@ BEGIN
 	DROP TABLE scope_rows;
 	RETURN r;
 END $$;
-CREATE FUNCTION launched(q text, OUT workers int, OUT stored boolean) LANGUAGE plpgsql AS $$
+CREATE FUNCTION launched(q text, OUT workers int, OUT route text) LANGUAGE plpgsql AS $$
 DECLARE p jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
 	workers := coalesce(jsonb_path_query_first(p, '$.**."Workers Launched"')::text::int, 0);
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
 END $$;
-CREATE FUNCTION run_form(q text, OUT same boolean, OUT scope_workers int, OUT stored boolean, OUT join_workers int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION run_form(q text, OUT same boolean, OUT scope_workers int, OUT route text, OUT join_workers int) LANGUAGE plpgsql AS $$
 DECLARE a text; one text; fallback text; j text; plain text;
 BEGIN
-	SELECT l.workers, l.stored INTO scope_workers, stored FROM launched(q) l;
+	SELECT l.workers, l.route INTO scope_workers, route FROM launched(q) l;
 	a := rows_md5(q);
 	PERFORM set_config('max_parallel_workers_per_gather', '0', true);
 	one := rows_md5(q);
@@ -111,16 +109,16 @@ BEGIN
 	same := a = one AND one = fallback AND fallback = j AND j = plain;
 END $$;
 -- a state: every form against the others, and how many of the reads had workers
-CREATE FUNCTION state(label text) RETURNS TABLE (state text, differing bigint, units_read bigint, scope_without_workers bigint, join_without_workers bigint, forms bigint) LANGUAGE sql AS $$
-	SELECT label, count(*) FILTER (WHERE NOT r.same), count(*) FILTER (WHERE r.stored), count(*) FILTER (WHERE r.scope_workers = 0), count(*) FILTER (WHERE r.join_workers = 0), count(*)
+CREATE FUNCTION state(label text) RETURNS TABLE (state text, differing bigint, scope_reads bigint, scope_without_workers bigint, join_without_workers bigint, forms bigint) LANGUAGE sql AS $$
+	SELECT label, count(*) FILTER (WHERE NOT r.same), count(*) FILTER (WHERE r.route IS NOT NULL), count(*) FILTER (WHERE r.scope_workers = 0), count(*) FILTER (WHERE r.join_workers = 0), count(*)
 	FROM forms f, LATERAL run_form(f.q) r
 $$;
 
 SELECT * FROM state('built');
--- what the reads are: the units of the scope segments, or the join
-SELECT name, l.stored AS units, l.workers > 0 AS workers FROM forms, LATERAL launched(q) l ORDER BY name COLLATE "C";
+-- what the reads are: the Scope Read of the node, and whether workers started
+SELECT name, l.route, l.workers > 0 AS workers FROM forms, LATERAL launched(q) l ORDER BY name COLLATE "C";
 
--- rows after the build: the write buffers are the leader's delta
+-- rows after the build, in the write buffers
 INSERT INTO events SELECT 30000 + i, 1 + (i * 31) % 640, timestamptz '2026-02-01', i % 7, 3, 'y' FROM generate_series(1, 400) i;
 INSERT INTO gevents SELECT 30000 + i, 1 + (i * 31) % 640, i % 7, 3, 'y' FROM generate_series(1, 400) i;
 INSERT INTO t_events SELECT id, 'acct-' || dim_a_id, kind, v, pad FROM events WHERE id > 30000;
@@ -147,24 +145,22 @@ DELETE FROM events WHERE id % 211 = 0;
 UPDATE gevents SET dim_a_id = 1 + (dim_a_id + 17) % 640 WHERE id % 53 = 0;
 SELECT * FROM state('facts changed');
 
--- a read in a transaction the stored units cannot answer for reads the entity rows of the members listed: the participants read the leader's list
+-- a read of one key in a SERIALIZABLE transaction
 BEGIN ISOLATION LEVEL SERIALIZABLE;
-SELECT (launched($q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 3) GROUP BY kind$q$)).workers > 0 AS entity_rows_with_workers,
-	(run_form($q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 3) GROUP BY kind$q$)).same AS same;
+SELECT (run_form($q$SELECT kind, count(*) AS n, sum(v) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3 GROUP BY kind$q$)).same AS same;
 COMMIT;
 
--- the changed members' entries are rewritten, the buffers promoted and the segments merged
+-- the buffers promoted and the segments merged
 SELECT sift.col_promote('events_col') >= 0 AND sift.col_promote('gevents_col') >= 0 AS promoted;
 SELECT sift.col_merge('events_col', true) >= 0 AND sift.col_merge('gevents_col', true) >= 0 AS merged;
 SELECT * FROM state('promoted and merged');
 SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true), sift.col_verify('t_events_col', true), sift.col_verify('u_events_col', true);
 
--- a small read keeps one process: the units of a key of a few rows are not worth the workers
+-- a small read keeps one process
 RESET sift.test_agg_par_min_rows;
 SELECT (launched($q$SELECT kind, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$)).workers = 0 AS small_read_has_no_workers;
 
 DROP FUNCTION state(text), run_form(text), launched(text), rows_md5(text);
 DROP VIEW pair_set;
 DROP TABLE forms, events, gevents, t_events, u_events, tenant_scope, grants, memberships, t_pairs, u_pairs CASCADE;
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

@@ -1,18 +1,14 @@
--- A scope read through the changed pairs. The stored entries of the dim_a_id whose pairs changed since the scope segments were filled (added, removed, moved) leave the units at the source; the rows of
--- those dim_a_id are read once from the segments of the events, by dim_a_id, and are expanded by the pairs they have now, with the rows of the write buffers (the delta). The read of every key at once,
--- grouped by the key of each pair, and the read of several keys that counts a row for each pair, need no join for that. Table-driven: each state of the pairs and the events (the states accumulate) by each
--- read shape; every read is md5 equal to the plain join, takes the scope units (no "changed pairs" refusal), and reads no more rows than the changed dim_a_id have and the buffers hold: the rows read
--- from the segments are at most those the changed dim_a_id have, the copies of the delta at most those rows and the buffers' times the most keys a dim_a_id has. Counts only, no timings.
--- The statements are the joins as an application writes them, which the planner recognises (agg_scope_recognition, agg_scope_group_key): every key by the key, one key or a list in an IN, a join with several keys.
+-- A scope read through the changed pairs: the dim_a_id whose pairs changed since the scope summary (added, removed, moved) and the rows of the write buffers are the changes since it (Scope Cube:
+-- delta). Table-driven: each state of the pairs and the events (the states accumulate) by each read shape; every read is md5 equal through the scope node, through sift with sift.agg_scope off and
+-- through the normal plan, and says how the node read it. The statements are the joins as an application writes them: every key by the key, one key or a list in an IN, a join with several keys.
+-- Counts only, no timings.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- dim_a_id in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
--- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- 12 keys; dim_a_id d is in 1 + d % 6 of them (1 to 6), 100..109 are in none, 301..320 have events and no pair; 20,000 padded events, some without a dim_a_id
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -27,28 +23,13 @@ REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
 
--- the rows of idx's table whose dim_a_id changed its pairs since the scope segments were filled (the journal says which), and the rows of its write buffers
-CREATE FUNCTION changed_rows(tbl text, idx text) RETURNS bigint LANGUAGE plpgsql AS $$
-DECLARE
-	t record;
-	n bigint;
-BEGIN
-	SELECT lineage, horizon INTO t FROM sift._test_col_conn_stamps(idx::regclass) WHERE ordinal = 0 ORDER BY horizon::text::bigint LIMIT 1;
-	EXECUTE format('SELECT count(*) FROM %I f WHERE f.dim_a_id IN (SELECT key FROM sift._test_scope_journal_changes(%L::regclass, 0, %s, %L::xid))', tbl, idx, t.lineage, t.horizon) INTO n;
-	RETURN n;
-END $$;
-
--- q: a statement the planner reads from the scope units; the same under sift.agg_scope = off and the normal plan. route: the fallback reason or "units"; delta: what the delta read (the rows of the buffers, those of the changed dim_a_id too: patch); bounded: the rows it read are within the bounds above
-CREATE FUNCTION cp_run(q text, tbl text, idx text, OUT same boolean, OUT route text, OUT delta text, OUT bounded boolean) LANGUAGE plpgsql AS $$
+-- q under the planner, under sift.agg_scope = off and the normal plan: the same rows, the Scope Read of the node (none: not a scope read) and its Scope Cube
+CREATE FUNCTION cp_run(q text, OUT same boolean, OUT route text, OUT cube text) LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
 	c text;
-	changed bigint := changed_rows(tbl, idx);
-	buffered bigint;
-	patched int;
-	d int;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	SET LOCAL sift.agg_scope = on;
@@ -60,13 +41,9 @@ BEGIN
 	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
 	SET LOCAL sift.enable_agg = on;
 	SET LOCAL sift.agg_scope = on;
-	SELECT coalesce(sum(rows), 0) INTO buffered FROM sift.col_segments(idx::regclass) WHERE kind = 'buffer';
 	same := a = b AND b = c;
-	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}', CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'units' ELSE 'no scope read' END);
-	patched := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Rows"')::text::int, 0);
-	d := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
-	delta := CASE WHEN d = 0 THEN 'none' WHEN patched = 0 THEN 'buffers' ELSE 'patch' END;
-	bounded := patched <= changed AND d <= (patched + buffered) * 6;
+	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}', 'none');
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
 
 -- the read shapes: the statement over the events %1$I f and the relation of the pairs %2$s m, whose active pairs the condition %3$s says (true: every row is a pair; a partial btree's predicate)
@@ -80,14 +57,14 @@ INSERT INTO shapes VALUES
 	(6, 'a list of keys, a row once', 'SELECT count(*), sum(amount) FROM %1$I f WHERE f.dim_a_id IN (SELECT dim_a_id FROM %2$s m WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s)'),
 	(7, 'four keys, a row for each pair', 'SELECT count(*), sum(amount), min(id) FROM %1$I f JOIN %2$s m ON m.dim_a_id = f.dim_a_id WHERE m.tenant_id IN (3, 5, 7, 11) AND %3$s');
 
--- tbl: the events, idx: their scope index, pairs: the relation of the pairs, active: the condition of its active pairs
-CREATE FUNCTION probe(tbl text, idx text, pairs text, active text DEFAULT 'true') RETURNS TABLE (n int, label text, verdict text, route text, delta text, bounded boolean) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route, r.delta, r.bounded
-	FROM shapes s, LATERAL cp_run(format(s.stmt, tbl, pairs, active), tbl, idx) r
+-- tbl: the events, pairs: the relation of the pairs, active: the condition of its active pairs
+CREATE FUNCTION probe(tbl text, pairs text, active text DEFAULT 'true') RETURNS TABLE (n int, label text, verdict text, route text, cube text) LANGUAGE sql AS $$
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, r.route, r.cube
+	FROM shapes s, LATERAL cp_run(format(s.stmt, tbl, pairs, active)) r
 	ORDER BY s.n
 $$;
 
--- each state: the statements that make it (they accumulate), and then the reads; a pair that changed is a changed pair of the next reads until the index is rebuilt
+-- each state: the statements that make it (they accumulate), and then the reads; a pair that changed is a change since the summary until the index is rebuilt
 CREATE TABLE states (n int, label text, stmt text);
 INSERT INTO states VALUES
 	(1, 'clean', 'SELECT 1'),
@@ -99,15 +76,15 @@ INSERT INTO states VALUES
 	(5, 'dim_a_id that lose every pair', 'DELETE FROM tenant_scope WHERE dim_a_id IN (8, 9, 10, 14)'),
 	(6, 'buffered events of dim_a_id that lost every pair, of changed ones and of ones that did not change',
 		'INSERT INTO events SELECT 20000 + i, CASE WHEN i % 3 = 0 THEN 8 + i % 3 WHEN i % 3 = 1 THEN 1 + i % 7 ELSE 20 + i % 40 END, timestamptz ''2026-02-05'', 4, ''u'' FROM generate_series(1, 150) i'),
-	(7, 'promoted (the buffers are in the segments; the changed pairs still leave their dim_a_id out of the units)', 'SELECT sift.col_promote(''events_col'')'),
+	(7, 'promoted (the buffers are in the parts; the changed pairs are still changes since the summary)', 'SELECT sift.col_promote(''events_col'')'),
 	(8, 'merged', 'SELECT sift.col_merge(''events_col'', true)'),
-	(9, 'rebuilt (nothing changed since the stamp)', 'REINDEX INDEX events_col'),
+	(9, 'rebuilt (nothing changed since the summary)', 'REINDEX INDEX events_col'),
 	(10, 'a pair added after the rebuild, and a buffered event of it', 'INSERT INTO tenant_scope VALUES (5, 11), (6, 11) ON CONFLICT DO NOTHING; INSERT INTO events VALUES (30000, 5, timestamptz ''2026-02-06'', 1, ''v'')');
-SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''events_col'', ''tenant_scope'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
+SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe(''events'', ''tenant_scope'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('events_col', true);
 
 -- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too, so the pairs of a dim_a_id are those of the btree: a restore, a
--- new active pair, a soft delete are changed pairs the read takes through the btree's predicate
+-- new active pair, a soft delete are changes the read takes through the btree's predicate
 CREATE TABLE sd_pairs (dim_a_id int, tenant_id int, deleted_at timestamptz, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 INSERT INTO sd_pairs SELECT d, 1 + (d * 5 + j * 7) % 12, CASE WHEN (d + j) % 5 = 0 THEN now() END FROM generate_series(1, 200) d, generate_series(0, d % 3) j ON CONFLICT DO NOTHING;
 CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, tenant_id) WHERE deleted_at IS NULL;
@@ -118,10 +95,10 @@ CREATE INDEX sd_events_col ON sd_events USING sift_col (id, dim_a_id, created_at
 REINDEX INDEX sd_events_col;
 VACUUM (FREEZE, ANALYZE) sd_events;
 
--- the shapes: how many answer as the join does, are read from the units, read a delta, and read within the bounds
-CREATE FUNCTION sd_probe(OUT same int, OUT units int, OUT with_delta int, OUT bounded int) LANGUAGE sql AS $$
-	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route = 'units'), count(*) FILTER (WHERE delta <> 'none'), count(*) FILTER (WHERE bounded)
-	FROM probe('sd_events', 'sd_events_col', 'sd_pairs', 'm.deleted_at IS NULL')
+-- the shapes: how many answer as the join does, are scope reads, and read the changes since the summary
+CREATE FUNCTION sd_probe(OUT same int, OUT scope_reads int, OUT with_delta int) LANGUAGE sql AS $$
+	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route <> 'none'), count(*) FILTER (WHERE cube = 'delta')
+	FROM probe('sd_events', 'sd_pairs', 'm.deleted_at IS NULL')
 $$;
 CREATE TABLE sd_states (n int, label text, stmt text);
 INSERT INTO sd_states VALUES
@@ -138,6 +115,5 @@ DROP TABLE sd_states, sd_events, sd_pairs;
 DROP FUNCTION sd_probe();
 
 DROP TABLE shapes, states, events, tenant_scope;
-DROP FUNCTION probe(text, text, text, text), cp_run(text, text, text), changed_rows(text, text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION probe(text, text, text), cp_run(text);
 DROP EXTENSION pg_sift;
