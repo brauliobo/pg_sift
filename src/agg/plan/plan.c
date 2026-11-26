@@ -697,7 +697,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 
 	if (!format_serves(p) || !sift_v6_gen_fits(&p->spec, groups))
 		return;
-	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * clause_selectivity(p->root, (Node *) p->text_qual->clause, p->rel->relid, JOIN_INNER, NULL)))
+	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * sift_v6_quals_sel(p->root, list_make1(p->text_qual), p->rel->relid)))
 	{
 		sift_agg_refuse("search", AGG_REFUSE_COST, "a scan of a btree on the other conditions reads fewer rows than the scan walks postings", 0, -1);
 		return;
@@ -705,7 +705,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = p->out;
 	cp->path.pathtarget = p->out->reltarget;
-	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * clauselist_selectivity(p->root, having, 0, JOIN_INNER, NULL));
+	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * sift_v6_quals_sel(p->root, having, 0));
 	scan_cost(p, groups, &cp->path.startup_cost, &cp->path.total_cost);
 	passes = child_paths == NIL ? 0 : passes_cost(p, child_paths, cp->path.total_cost);
 	cp->path.startup_cost += extra_startup + passes;

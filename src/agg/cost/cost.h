@@ -27,4 +27,7 @@ extern void sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total
 /* The number of attributes of the host the spec reads: the keys, the arguments of the aggregates, the columns of the FILTER clauses and of the quals */
 extern int	sift_v6_spec_ncols_read(const SiftV6Spec *spec);
 
+/* The selectivity of conditions a scan prices: the planner's own for a RestrictInfo it estimated, the scan's own estimate for any other (qual_selectivity_estimated counts those) */
+extern Selectivity sift_v6_quals_sel(PlannerInfo *root, List *quals, int var_relid);
+
 #endif							/* SIFT_AGG_V6_COST_H */

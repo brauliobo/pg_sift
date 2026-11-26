@@ -12,6 +12,7 @@
 
 #include "agg/cost/model.h"
 #include "agg/cost/cost.h"
+#include "agg/stats.h"
 
 static void
 add_col(Bitmapset **cols, SiftV6Col c)
@@ -41,6 +42,15 @@ sift_v6_spec_ncols_read(const SiftV6Spec *spec)
 	n = bms_num_members(cols);
 	bms_free(cols);
 	return n;
+}
+
+Selectivity
+sift_v6_quals_sel(PlannerInfo *root, List *quals, int var_relid)
+{
+	foreach_ptr(Node, q, quals)
+		if (!IsA(q, RestrictInfo) || ((RestrictInfo *) q)->norm_selec < 0)
+			sift_stat_add(SIFT_STAT_QUAL_ESTIMATED, 1);
+	return clauselist_selectivity(root, quals, var_relid, JOIN_INNER, NULL);
 }
 
 void

@@ -1,6 +1,6 @@
--- The scan reuses the selectivity the planner kept for each condition of the table (its RestrictInfo) and estimates itself only the conditions the planner has
--- none for: those inside an OR. Estimating a condition again takes a pass over the statistics of the column (an IN list over all its elements), and the
--- same conditions are compiled again for each arm of a statement. sift.stats(local => true) counts the estimates the scan made (qual_selectivity_estimated).
+-- The scan reuses the selectivity the planner kept for each condition of the table (its RestrictInfo), an OR included, and estimates itself only the conditions
+-- the planner has none for: those of a HAVING. Estimating a condition again takes a pass over the statistics of the column (an IN list over all its elements),
+-- and the same conditions are priced again for each arm of a statement. sift.stats(local => true) counts the estimates the scan made (qual_selectivity_estimated).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -19,7 +19,8 @@ END $$;
 
 SELECT estimated('SELECT kind, count(*) FROM qe WHERE amount > 5 AND ts >= date ''2024-03-01'' AND deleted_at IS NULL GROUP BY 1') AS conjuncts;
 SELECT estimated('SELECT kind, count(*) FROM qe WHERE amount > 5 AND kind IN (''cat_0'', ''cat_1'') GROUP BY 1') AS conjunct_and_in;
-SELECT estimated('SELECT kind, count(*) FROM qe WHERE amount > 5 OR ts >= date ''2024-03-01'' GROUP BY 1') > 0 AS inside_or_estimated;
+SELECT estimated('SELECT kind, count(*) FROM qe WHERE amount > 5 OR ts >= date ''2024-03-01'' GROUP BY 1') AS inside_or;
+SELECT estimated('SELECT kind, count(*) FROM qe WHERE amount > 5 GROUP BY 1 HAVING count(*) > 10') > 0 AS having_estimated;
 
 DROP FUNCTION estimated(text);
 DROP TABLE qe;
