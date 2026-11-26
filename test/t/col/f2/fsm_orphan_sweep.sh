@@ -26,6 +26,7 @@ sql "$p" "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "$F2" \
 	"UPDATE h SET a = a + 1 WHERE id % 7 = 0" "DELETE FROM h WHERE id % 11 = 0" >/dev/null || bail "setup failed"
 
 used() { sql "$p" "SELECT used_blocks FROM sift.space('h_col')"; }
+meta_total() { sql "$p" "SELECT split_part(sift._test_f2_fsm('h_col'), '/', 3)"; }
 problems() { sql "$p" "SELECT problem FROM sift.check('$1', true)" 2>&1; }
 leak() { sql "$p" "SELECT sift._test_f2_alloc('h_col', 5)" "SELECT count(*) FROM sift._test_f2_alloc_stream('h_col', 9)" "SELECT sift._test_f2_meta_alloc('h_col')" >/dev/null; }
 LEAKED=14
@@ -41,19 +42,24 @@ agree() { # the plans give the same rows
 sql "$p" "SELECT sift._test_f2_reclaim('h_col')" >/dev/null
 base=$(used)
 coproc HOLD { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock "$p")" -p "$(port "$p")" -U postgres -d "$(node_db "$p")"; }
+holder=$HOLD_PID
 printf '%s\n' "BEGIN;" "SELECT sift._test_f2_alloc('h_col', 5);" "SELECT count(*) FROM sift._test_f2_alloc_stream('h_col', 9);" "SELECT sift._test_f2_meta_alloc('h_col');" "\\echo READY" >&"${HOLD[1]}"
 read -r -u "${HOLD[0]}" ready
 read -r -u "${HOLD[0]}" ready
 read -r -u "${HOLD[0]}" ready
 read -r -u "${HOLD[0]}" ready
 held=$(used)
+held_meta=$(meta_total)
 check "the extents allocated by a session that has not committed are in use ($base -> $held blocks)" test "$held" -ge $((base + LEAKED))
 sql "$p" "VACUUM h" >/dev/null
-# the compaction of the VACUUM puts the blocks of the parts it replaced in the quarantine until the open transaction ends: they are no longer in use, and the leaked ones are
+# the compaction of the VACUUM puts the blocks of the parts it replaced in the quarantine until the open transaction ends: they are no longer in use, and the leaked ones are; a metadata
+# slab with no page in use may be given back, so the blocks counted are those outside the metadata slabs
 held_total=$(sql "$p" "SELECT used_blocks + pending_blocks FROM sift.space('h_col')")
-check "a VACUUM while another session holds the index frees nothing ($held blocks in use, $held_total with the quarantine)" test "$held_total" -ge "$held"
+after_meta=$(meta_total)
+check "a VACUUM while another session holds the index frees nothing ($held blocks in use, $held_total with the quarantine; $held_meta then $after_meta metadata pages)" \
+	test $((held_total - after_meta)) -ge $((held - held_meta))
 printf '%s\n' "COMMIT;" '\q' >&"${HOLD[1]}"
-wait "$HOLD_PID"
+wait "$holder"
 sql "$p" "VACUUM h" >/dev/null
 check "the VACUUM that finds the index alone frees the leaked blocks ($held -> $(used) blocks in use)" test "$(used)" -le $((held - LEAKED))
 out=$(problems h_col)
