@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The WAL a sift_table writes where a reader would not look. The record of VACUUM that sets the bits of the visibility map names the newest transaction whose rows it makes visible to everyone
-# (the horizon a standby ends its queries at): that is the writer of a column delta of a row of the vblock as well as the writers of its parts. A parallel worker that scans a table with a row
+# The WAL a sift_table writes where a reader would not look. The records of VACUUM that make the rows of a vblock visible to everyone name the newest transaction whose rows they are (the horizon
+# a standby ends its queries at), the writer of a column delta of a row of the vblock as well as the writers of its parts: the VACUUM folds the settled delta into a new part, whose commit logs the
+# conflict of the writers it freezes, before the record that sets the bits of the visibility map. A parallel worker that scans a table with a row
 # in a micro-slab reads the slab where it is, as a standby does, and a query that only reads writes no WAL (in a worker the manifest is the leader's to write).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
@@ -20,11 +21,13 @@ from=$(lsn)
 xid=$(sql vw "BEGIN" "UPDATE t SET v = -1 WHERE id = 10" "SELECT pg_current_xact_id()" "COMMIT" | tail -1)
 sql vw "VACUUM (TRUNCATE false) t" >/dev/null || bail "vacuum failed"
 wait_for "wal_flushed vw" 30
-horizon=$(sql vw "SELECT max((regexp_match(description, 'horizon ([0-9]+)'))[1]::bigint) FROM pg_get_wal_records_info('$from', pg_current_wal_insert_lsn())
-	WHERE resource_manager = 'pg_sift_table_vm' AND record_type = 'VM_SET'")
-out="the writer of the column delta is transaction $xid, the horizon of the VACUUM $horizon"
-check "VACUUM sets the bits again over the row with the column delta" test -n "$horizon"
-check "the horizon of the record is not before the writer of the column delta" test "${horizon:-0}" -ge "$xid"
+records() { sql vw "SELECT record_type, coalesce((regexp_match(description, '(?:horizon |snapshotConflictHorizon: [0-9]+:)([0-9]+)'))[1], '-') FROM pg_get_wal_records_info('$from', pg_current_wal_insert_lsn())
+	WHERE (resource_manager, record_type) IN (('pg_sift_table_vm', 'VM_SET'), ('Btree', 'REUSE_PAGE')) AND description LIKE '%/' || pg_relation_filenode('t') || '%' ORDER BY start_lsn"; }
+seen=$(records)
+horizon=$(awk -F'|' '$2 != "-" && $2 + 0 > h { h = $2 + 0 } $1 == "VM_SET" { exit } END { print h + 0 }' <<<"$seen")
+out="the writer of the column delta is transaction $xid, the records of the VACUUM: $(tr '\n' ' ' <<<"$seen")"
+check "VACUUM sets the bits again over the row with the column delta" grep -q '^VM_SET|' <<<"$seen"
+check "the standby ends the queries older than the writer of the column delta before the bits are set" test "$horizon" -ge "$xid"
 
 sql vw "$F2" "CREATE TABLE pt (id int, g int, v int) USING sift_table" "INSERT INTO pt VALUES (1, 1, 1), (2, 1, 2)" >/dev/null || bail "setup of pt failed"
 from=$(lsn)

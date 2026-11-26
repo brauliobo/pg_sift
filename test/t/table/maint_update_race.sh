@@ -2,7 +2,8 @@
 # The rewrite of the parts of a sift_table (VACUUM, sift.maintain) beside UPDATEs that change one column of many rows. A compaction that starts in a partition with no column delta chain writes its outputs and
 # then commits them under the lock: an UPDATE that commits in between puts its column deltas into a chain that names the parts the commit replaces, and the deltas of a part that is gone are dropped, so the
 # UPDATE is lost. The compaction is held after its outputs are written (sift.test_phase_gate, gate SIFT_F2_GATE_COMPACT = 11) while an UPDATE commits, then released: every row the UPDATE changed is changed.
-# Then writers that add one to rows beside the rewrite of the parts, and a churn of the rows beside them, end with the sum of the rows they updated and no statement failed.
+# The workers of sift stay off until then: one would compact the deleted rows of the table first and leave the VACUUM nothing to rewrite.
+# Then, with the workers on, writers that add one to rows beside the rewrite of the parts, and a churn of the rows beside them, end with the sum of the rows they updated and no statement failed.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 G=7600
@@ -13,7 +14,7 @@ ROUNDS=${SIFT_RACE_ROUNDS:-12}
 plan 9
 node_init mr 42 "autovacuum = off
 sift.maintenance_naptime = 200
-sift.async_maintenance = on
+sift.async_maintenance = off
 sift.dead_rewrite_pct = 60
 ${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start mr || bail "start failed"
@@ -52,6 +53,8 @@ check "every row the UPDATE changed is changed" test "$(sql mr "SELECT sum(v) FR
 sql mr "VACUUM dp" >/dev/null
 check "and stays changed after the next VACUUM" test "$(sql mr "SELECT sum(v) FROM dp")" == 400
 
+sql mr "ALTER SYSTEM SET sift.async_maintenance = on" "SELECT pg_reload_conf()" >/dev/null || bail "the workers were not turned on"
+wait_for "setting_is mr sift.async_maintenance on" 30 || bail "the reload did not reach the server"
 sql mr "CREATE TABLE mr (k int PRIMARY KEY, v int, grp int, pad text) USING sift_table WITH (autovacuum_enabled = false)" \
 	"INSERT INTO mr SELECT g, 0, g % 7, repeat('x', 100) FROM generate_series(1, $ROWS) g" >/dev/null || bail "setup failed"
 rm -f "$D"/*.n "$D"/*.err "$D/stop"

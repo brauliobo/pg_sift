@@ -61,8 +61,8 @@ check "and is seen after" agree "$COUNT"
 # the sessions of test/t/table/vm_iso/specs/basic.spec interleave INSERT, UPDATE, DELETE, a prepared DELETE, TRUNCATE and VACUUM with reads through the index and through the table
 ISO=$(dirname "$(pg_config --pgxs)")/../test/isolation/pg_isolation_regress
 isolation() {
-	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="${SIFT_REPO:?}/test/t/table/vm_iso" --outputdir="$(dir primary)/iso" --bindir= tbl_vm \
-		>"$(dir primary)/iso.log" 2>&1 || { out=$(cat "$(dir primary)/iso/results/tbl_vm.out.diff" 2>/dev/null); return 1; }
+	PGUSER=postgres "$ISO" --use-existing --dbname=postgres --host="$(dir primary)/sock" --port="$(port primary)" --inputdir="${SIFT_REPO:?}/test/t/table/vm_iso" --outputdir="$(dir primary)/iso" --bindir= basic \
+		>"$(dir primary)/iso.log" 2>&1 || { out=$(cat "$(dir primary)/iso/regression.diffs" 2>/dev/null); return 1; }
 }
 check "isolation: index-only reads agree with the table across concurrent INSERT, UPDATE, DELETE, 2PC, TRUNCATE and VACUUM" isolation
 
