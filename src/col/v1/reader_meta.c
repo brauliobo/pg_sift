@@ -179,8 +179,8 @@ stats_bygroup(SiftSrcStats *st, const SiftColLeafStats *ls, int ncols)
 /*
  * The per-leaf numbers of SiftSrcStats from the zones and dictionaries, counted over the non-NULL values
  * of the leaf (elements for a child). ndistinct: a text leaf with no inline unit is its largest segment dictionary, exact for one segment
- * and a lower bound for several that hold different values; an integer leaf is bounded by its range (max - min + 1); any leaf by its
- * non-NULL values. min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
+ * and a lower bound for several that hold different values; an integer leaf is its range (max - min + 1) when that is no wider than its
+ * non-NULL values; any other leaf is unknown (0). min and max: integer leaves, as double. elems_per_row: a group's total count over its rows.
  */
 void
 sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *ls, const bool *wovf, const bool *wjnull, SiftSrcStats *st)
@@ -212,15 +212,16 @@ sift_src_leaf_stats(const SiftColDef *cols, int ncols, const SiftColLeafStats *l
 		st->gord_cover[i] = ls[i].nvals > 0 ? Min((ls[i].gord_rows - ls[i].gord_grp_rows + ls[i].gord_ends_rows + st->gord_free[i]) / ls[i].nvals, 1.0) : 0;
 		st->gord_coll[i] = ls[i].gord_coll;
 		st->gord_group[i] = ls[i].nvals > 0 && ls[i].gord_grp_rows > 0 && ls[i].gord_grp_rows + ls[i].gord_free_rows >= 0.9 * ls[i].nvals ? ls[i].gord_gcol : -1;
-		st->ndistinct[i] = nonnull;
 		if (def->store == SIFT_COLS_STR && !ls[i].inl)
 			st->ndistinct[i] = Min(nonnull, ls[i].dict_n);
 		else if (def->store == SIFT_COLS_INT && ls[i].has_range && nonnull > 0 && !leaf_wide(def))
 		{
-			st->ndistinct[i] = Min(nonnull, (double) ls[i].max - (double) ls[i].min + 1);
+			const double span = (double) ls[i].max - (double) ls[i].min + 1.0;
+
+			st->ndistinct[i] = span <= nonnull ? span : 0;
 			st->min[i] = (double) ls[i].min;
 			st->max[i] = (double) ls[i].max;
-			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / ((double) ls[i].max - (double) ls[i].min + 1.0), 1.0);
+			st->zone_span[i] = Min(ls[i].span / Max(ls[i].nzone, 1.0) / span, 1.0);
 		}
 	}	/* an element that overflowed has its row read again: the share of rows is the elements' times those of a row */
 	for (int i = 0; i < ncols && i < SIFT_COLSRC_MAX_LEAVES; i++)

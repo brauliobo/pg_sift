@@ -32,7 +32,7 @@ value_bits(const SiftSrcLeaf *l, const SiftSrcStats *st)
 static bool
 has_range(const SiftSrcLeaf *l, const SiftSrcStats *st)
 {
-	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_I32 || l->vtype == SCV_I64) && st->ndistinct[l->id] > 0 && st->max[l->id] > st->min[l->id];
+	return l->kind == SCL_SCALAR && !l->wide && (l->vtype == SCV_I32 || l->vtype == SCV_I64) && st->max[l->id] > st->min[l->id];
 }
 
 /* the bytes of a row of each leaf: the bytes of the index per row, shared by the width of the values of each leaf (a child's per element, an element count's per row), and no more than that width: the

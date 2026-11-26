@@ -115,7 +115,7 @@ typedef struct SiftSrcStats
 	double		sets_units;
 	bool		scope;			/* the statistics of the scope units of a scope index (SiftSrcProvider.scope_stats): the fields a read of them prices by its units, not the entity units' */
 	bool		miss_pending;	/* the four above are not read yet: counting the sections of the units costs reads, sift_colsrc_miss does it for the plan that prices a pre-aggregate answer */
-	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf (0: unknown) */
+	double		ndistinct[SIFT_COLSRC_MAX_LEAVES];	/* distinct values of a scalar leaf: its dictionary's, or the span of an integer range no wider than its rows (0: unknown) */
 	double		null_frac[SIFT_COLSRC_MAX_LEAVES];	/* the share of the values of a leaf that are NULL (of its elements, for a child) */
 	double		min[SIFT_COLSRC_MAX_LEAVES];		/* numeric leaves: smallest and largest value as double (0, 0 unknown) */
 	double		max[SIFT_COLSRC_MAX_LEAVES];
