@@ -28,10 +28,14 @@ static Oid
 pairs_owner(HeapTupleHeader follow)
 {
 	bool		isnull;
-	Oid			pairs = DatumGetObjectId(GetAttributeByNum(follow, 1, &isnull));
-	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(pairs));
+	Datum		d = GetAttributeByNum(follow, 1, &isnull);
+	Oid			pairs = isnull ? InvalidOid : DatumGetObjectId(d);
+	HeapTuple	tup;
 	Oid			owner;
 
+	if (isnull || !OidIsValid(pairs))
+		sift_rel_missing(pairs);
+	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(pairs));
 	if (!HeapTupleIsValid(tup))
 		sift_rel_missing(pairs);
 	owner = ((Form_pg_class) GETSTRUCT(tup))->relowner;
@@ -43,15 +47,30 @@ pairs_owner(HeapTupleHeader follow)
 Datum
 sift_scope_refresh_as_owner(PG_FUNCTION_ARGS)
 {
-	Oid			argtypes[3] = {get_fn_expr_argtype(fcinfo->flinfo, 0), INT8ARRAYOID, INT8ARRAYOID};
-	Datum		args[3] = {PG_GETARG_DATUM(0), PG_GETARG_DATUM(1), PG_GETARG_DATUM(2)};
-	char		nulls[3] = {' ', PG_ARGISNULL(1) ? 'n' : ' ', PG_ARGISNULL(2) ? 'n' : ' '};
-	Oid			owner = pairs_owner(PG_GETARG_HEAPTUPLEHEADER(0));
+	Oid			argtypes[3];
+	Datum		args[3];
+	char		nulls[3];
+	Oid			owner;
 	Oid			uid;
 	int			sec;
+	bool		prev;
+
+	if (PG_ARGISNULL(0))
+		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("scope follow record must not be null")));
+	argtypes[0] = get_fn_expr_argtype(fcinfo->flinfo, 0);
+	argtypes[1] = INT8ARRAYOID;
+	argtypes[2] = INT8ARRAYOID;
+	args[0] = PG_GETARG_DATUM(0);
+	args[1] = PG_ARGISNULL(1) ? (Datum) 0 : PG_GETARG_DATUM(1);
+	args[2] = PG_ARGISNULL(2) ? (Datum) 0 : PG_GETARG_DATUM(2);
+	nulls[0] = ' ';
+	nulls[1] = PG_ARGISNULL(1) ? 'n' : ' ';
+	nulls[2] = PG_ARGISNULL(2) ? 'n' : ' ';
+	owner = pairs_owner(PG_GETARG_HEAPTUPLEHEADER(0));
 
 	GetUserIdAndSecContext(&uid, &sec);
 	SetUserIdAndSecContext(owner, sec | SECURITY_LOCAL_USERID_CHANGE);
+	prev = refreshing;
 	refreshing = true;
 	PG_TRY();
 	{
@@ -61,7 +80,7 @@ sift_scope_refresh_as_owner(PG_FUNCTION_ARGS)
 	}
 	PG_FINALLY();
 	{
-		refreshing = false;
+		refreshing = prev;
 		SetUserIdAndSecContext(uid, sec);
 	}
 	PG_END_TRY();
