@@ -247,27 +247,23 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 	}
 }
 
-/* the month of a date the way PostgreSQL finds it: date_trunc('month', date)::date, each distinct date once */
+/* the month of a date the way PostgreSQL finds it: date_trunc('month', date)::date, asked in the batch context and kept in the slot of the date (a zeroed slot holds day 0, which
+ * is its own month) */
 static int32
 month_of(UnRun *u, int32 day)
 {
-	uint32		at = ((uint32) day * 2654435761u) >> 20;
+	const uint32 at = ((uint32) day * 2654435761u) >> (32 - MONTH_BITS);
 
-	for (uint32 probe = 0; probe < MONTH_SLOTS; probe++, at = (at + 1) % MONTH_SLOTS)
+	if (u->month_key[at] != day)
 	{
-		if (u->month_val[at] == 0 && u->month_key[at] == 0)
-		{
-			const Datum ts = DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day));
-			const Datum m = DirectFunctionCall2(timestamptz_trunc, CStringGetTextDatum("month"), ts);
+		MemoryContext old = MemoryContextSwitchTo(u->bcx);
+		const Datum ts = DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day));
 
-			u->month_key[at] = day;
-			u->month_val[at] = DatumGetDateADT(DirectFunctionCall1(timestamptz_date, m));
-			return u->month_val[at];
-		}
-		if (u->month_key[at] == day)
-			return u->month_val[at];
+		u->month_val[at] = DatumGetDateADT(DirectFunctionCall1(timestamptz_date, DirectFunctionCall2(timestamptz_trunc, u->month_unit, ts)));
+		u->month_key[at] = day;
+		MemoryContextSwitchTo(old);
 	}
-	return DatumGetDateADT(DirectFunctionCall1(timestamptz_date, DirectFunctionCall2(timestamptz_trunc, CStringGetTextDatum("month"), DirectFunctionCall1(date_timestamptz, DateADTGetDatum(day)))));
+	return u->month_val[at];
 }
 
 /* a leaf of a key of a document, with the value of the rows it could not hold read from the payload of their exception, for the rows the statement keeps */
@@ -745,8 +741,9 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 	}
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
-	u->month_key = palloc0(MONTH_SLOTS * sizeof(int32));
-	u->month_val = palloc0(MONTH_SLOTS * sizeof(int32));
+	u->month_key = palloc0((1 << MONTH_BITS) * sizeof(int32));
+	u->month_val = palloc0((1 << MONTH_BITS) * sizeof(int32));
+	u->month_unit = CStringGetTextDatum("month");
 }
 
 static void
@@ -774,6 +771,8 @@ unrun_end(UnRun *u)
 	sift_v6_vet_end(&u->vet);
 	if (u->estate != NULL)
 		FreeExecutorState(u->estate);
+	if (u->rec != NULL)
+		sift_v6_recfn_free(u->rec);
 	MemoryContextDelete(u->bcx);
 }
 

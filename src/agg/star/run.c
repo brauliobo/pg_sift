@@ -98,12 +98,27 @@ int_of(Oid typid, Datum v)
 	}
 }
 
+/* How a cell of a column of a dimension is read, resolved once a read: its class, its type and, for a type no native vector holds, the length of the type (-1: a varlena) */
+typedef struct StarCell
+{
+	SiftStarCls cls;
+	Oid			typid;
+	bool		native;
+	int16		typlen;
+} StarCell;
+
+typedef struct StarRead
+{
+	SiftStarShape shape;
+	StarCell	key[SIFT_STAR_MAX_KEYS];
+	StarCell	pay[SIFT_STAR_MAX_PAY];
+	TypeCacheEntry *range_tc;	/* SV6J_RANGE_SMALL: the range type of the key */
+} StarRead;
+
 /* the bytes of a datum of a type no native vector holds and that is passed by reference: the whole value, in the memory of the row */
 static void
-datum_bytes(Oid typid, Datum v, const char **p, uint32 *len)
+datum_bytes(int16 typlen, Datum v, const char **p, uint32 *len)
 {
-	const int16 typlen = get_typlen(typid);
-
 	if (typlen == -1)
 	{
 		struct varlena *t = pg_detoast_datum((struct varlena *) DatumGetPointer(v));
@@ -119,28 +134,36 @@ datum_bytes(Oid typid, Datum v, const char **p, uint32 *len)
 }
 
 static void
-put_cell(SiftStarCls cls, Oid typid, Datum v, bool isnull, int64 *i, const char **p, uint32 *len, bool *null)
+put_cell(const StarCell *c, Datum v, bool isnull, int64 *i, const char **p, uint32 *len, bool *null)
 {
 	*null = isnull;
 	if (isnull)
 		return;
-	if (cls == SSC_STR && !sift_v6_type_native(typid))
-		datum_bytes(typid, v, p, len);
-	else if (cls == SSC_STR)
+	if (c->cls == SSC_STR && !c->native)
+		datum_bytes(c->typlen, v, p, len);
+	else if (c->cls == SSC_STR)
 	{
 		struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(v));
 
 		*p = VARDATA_ANY(t);
 		*len = VARSIZE_ANY_EXHDR(t);
 	}
-	else if (cls == SSC_F64)
+	else if (c->cls == SSC_F64)
 	{
-		const double f = typid == FLOAT4OID ? (double) DatumGetFloat4(v) : DatumGetFloat8(v);
+		const double f = c->typid == FLOAT4OID ? (double) DatumGetFloat4(v) : DatumGetFloat8(v);
 
 		memcpy(i, &f, sizeof(double));
 	}
 	else
-		*i = int_of(typid, v);
+		*i = int_of(c->typid, v);
+}
+
+static StarCell
+cell_of(SiftStarCls cls, Oid typid)
+{
+	const bool	native = sift_v6_type_native(typid);
+
+	return (StarCell) {.cls = cls,.typid = typid,.native = native,.typlen = native ? 0 : get_typlen(typid)};
 }
 
 static void
@@ -155,11 +178,23 @@ shape_of(const SiftV6Ext *x, int d, uint64 budget, SiftStarShape *sh)
 		sh->pcls[c] = cls_of_type(xd->ptype[c]);
 }
 
+static void
+read_of(const SiftV6Ext *x, int d, uint64 budget, StarRead *rd)
+{
+	const SiftV6XDim *xd = &x->dim[d];
+
+	shape_of(x, d, budget, &rd->shape);
+	for (int k = 0; k < xd->nkeys; k++)
+		rd->key[k] = cell_of(rd->shape.kcls[k], xd->ktype[k]);
+	for (int c = 0; c < xd->npay; c++)
+		rd->pay[c] = cell_of(rd->shape.pcls[c], xd->ptype[c]);
+	rd->range_tc = xd->mode == SV6J_RANGE_SMALL ? lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO) : NULL;
+}
+
 /* The period a range column holds, as the int64 bounds [lo, hi) of its elements (a date or an int4): the row of an empty or NULL range is no period, and its first key is its lower bound (the one key a period dimension has) */
 static void
-take_period(const SiftV6XDim *xd, Datum v, bool isnull, SiftStarRow *row)
+take_period(const SiftV6XDim *xd, TypeCacheEntry *tc, Datum v, bool isnull, SiftStarRow *row)
 {
-	TypeCacheEntry *tc = lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO);
 	RangeBound	lower,
 				upper;
 	bool		empty = isnull;
@@ -177,7 +212,7 @@ take_period(const SiftV6XDim *xd, Datum v, bool isnull, SiftStarRow *row)
 
 /* The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part, or has a NULL key (joined to nothing; a dimension a RIGHT or FULL join keeps takes it, in part 0) */
 static bool
-take_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, TupleTableSlot *slot, uint32 nparts, uint32 part, SiftStarRow *row)
+take_row(SiftV6StarRun *r, int d, const StarRead *rd, TupleTableSlot *slot, uint32 nparts, uint32 part, SiftStarRow *row)
 {
 	const SiftV6XDim *xd = &r->x->dim[d];
 	bool		anynull = false;
@@ -188,21 +223,21 @@ take_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, TupleTableSlot *slot,
 		const Datum v = slot_getattr(slot, xd->kcol[k], &isnull);
 
 		if (xd->mode == SV6J_RANGE_SMALL)
-			take_period(xd, v, isnull, row);
+			take_period(xd, rd->range_tc, v, isnull, row);
 		else
-			put_cell(sh->kcls[k], xd->ktype[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
+			put_cell(&rd->key[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
 		anynull |= isnull;
 	}
-	if (anynull && !sift_star_preserves_dim(sh->mode))
+	if (anynull && !sift_star_preserves_dim(rd->shape.mode))
 		return false;
-	if (nparts > 1 && sift_star_row_part(sh, row, nparts) != part)
+	if (nparts > 1 && sift_star_row_part(&rd->shape, row, nparts) != part)
 		return false;
 	for (int c = 0; c < xd->npay; c++)
 	{
 		bool		isnull;
 		const Datum v = slot_getattr(slot, xd->pcol[c], &isnull);
 
-		put_cell(sh->pcls[c], xd->ptype[c], v, isnull, &row->pay_i[c], &row->pay_p[c], &row->pay_len[c], &row->pay_null[c]);
+		put_cell(&rd->pay[c], v, isnull, &row->pay_i[c], &row->pay_p[c], &row->pay_len[c], &row->pay_null[c]);
 	}
 	return true;
 }
@@ -232,7 +267,7 @@ rewind_dim(SiftV6StarRun *r, int d)
 
 /* The next row of the plan of dimension d that is of the part (its cells in the memory of the row, until the next call): false at the end */
 static bool
-part_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, uint32 nparts, uint32 part, SiftStarRow *row)
+part_row(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part, SiftStarRow *row)
 {
 	TupleTableSlot *slot;
 
@@ -245,7 +280,7 @@ part_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, uint32 nparts, uint32
 		MemoryContextReset(r->rowcx);
 		old = MemoryContextSwitchTo(r->rowcx);
 		*row = (SiftStarRow) {0};
-		keep = take_row(r, d, sh, slot, nparts, part, row);
+		keep = take_row(r, d, rd, slot, nparts, part, row);
 		MemoryContextSwitchTo(old);
 		if (keep)
 			return true;
@@ -257,15 +292,15 @@ part_row(SiftV6StarRun *r, int d, const SiftStarShape *sh, uint32 nparts, uint32
 static bool
 read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint32 to, uint64 budget)
 {
-	SiftStarShape sh;
+	StarRead	sh;
 	SiftStarDim *dim = &r->dim[d];
 	SiftStarRow row;
 	bool		fits = true;
 	uint32		at = 0;
 
-	shape_of(r->x, d, budget, &sh);
+	read_of(r->x, d, budget, &sh);
 	rewind_dim(r, d);
-	sift_star_dim_init(dim, &sh);
+	sift_star_dim_init(dim, &sh.shape);
 	while (fits && at < to && part_row(r, d, &sh, nparts, part, &row))
 		if (at++ >= from)
 			fits = sift_star_dim_add(dim, &row);
@@ -278,20 +313,20 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint3
 static void
 plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 {
-	SiftStarShape sh;
+	StarRead	sh;
 	SiftStarDim dim;
 	SiftStarRow row;
 	uint32		cap = 8,
 				at = 0;
 
-	shape_of(r->x, d, r->budget, &sh);
+	read_of(r->x, d, r->budget, &sh);
 	rewind_dim(r, d);
 	if (r->cstart[d] != NULL)
 		pfree(r->cstart[d]);
 	r->cstart[d] = palloc(sizeof(uint32) * cap);
 	r->cstart[d][0] = 0;
 	r->nchunks[d] = 1;
-	sift_star_dim_init(&dim, &sh);
+	sift_star_dim_init(&dim, &sh.shape);
 	while (part_row(r, d, &sh, nparts, part, &row))
 	{
 		if (!sift_star_dim_add(&dim, &row))
@@ -300,7 +335,7 @@ plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 				r->cstart[d] = repalloc(r->cstart[d], sizeof(uint32) * (cap *= 2));
 			r->cstart[d][r->nchunks[d]++] = at;
 			sift_star_dim_free(&dim);
-			sift_star_dim_init(&dim, &sh);
+			sift_star_dim_init(&dim, &sh.shape);
 			if (!sift_star_dim_add(&dim, &row))
 				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a dimension of the star join does not fit work_mem"),
 								errhint("Increase work_mem.")));

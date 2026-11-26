@@ -81,6 +81,8 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 	}
 	p->nslots = at;
 	p->type = MemoryContextAlloc(cx, p->nslots * sizeof(SiftVecType));
+	p->typlen = MemoryContextAllocZero(cx, p->nslots * sizeof(int16));
+	p->typbyval = MemoryContextAllocZero(cx, p->nslots * sizeof(bool));
 	for (int i = 0; i < nfact; i++)
 		p->type[i] = ftype[i];
 	for (int d = 0; d < p->ndims; d++)
@@ -89,7 +91,11 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 			const Oid	typid = x->dim[d].ptype[c];
 			const SiftV6Class cls = sift_v6_class(typid);
 
-			p->type[p->pay_slot[d] + c] = !sift_v6_type_native(typid) ? SVEC_DATUM : cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
+			const int	s = p->pay_slot[d] + c;
+
+			p->type[s] = !sift_v6_type_native(typid) ? SVEC_DATUM : cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
+			if (p->type[s] == SVEC_DATUM)
+				get_typlenbyval(typid, &p->typlen[s], &p->typbyval[s]);
 		}
 	p->key_slot = MemoryContextAlloc(cx, Max(spec->nkeys, 1) * sizeof(int));
 	p->arg_slot = MemoryContextAlloc(cx, Max(sift_v6_spec_nvec(spec), 1) * sizeof(int));
@@ -258,7 +264,8 @@ gather_payload(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const uint32 *dim_row, 
 		if (p->type[s] == SVEC_DATUM)
 		{
 			vec.typid = p->spec->ext->dim[d].ptype[c];
-			get_typlenbyval(vec.typid, &vec.typlen, &vec.typbyval);
+			vec.typlen = p->typlen[s];
+			vec.typbyval = p->typbyval[s];
 		}
 		b->vec[s] = vec;
 	}

@@ -28,6 +28,7 @@
 #include "agg/hybrid/core.h"
 #include "agg/hybrid/state.h"
 #include "agg/engine.h"
+#include "col/am.h"
 #include "core/memtrack.h"
 #include "core/compat.h"
 #include "core/u64set.h"
@@ -40,13 +41,14 @@ typedef struct HybridAggState
 	TupleDesc	group_desc;
 	int			ngroup;				/* the entries of the scan tuple the groups fill: the keys and the aggregates; the Vars of the quals that follow are NULL */
 	MemoryContext gcx;
+	MemoryContext batch_cx;		/* what the rows read from the heap take, until their batch is folded */
 	SiftV6Group *group;
 	SiftV6Fold *fold;
 	SiftV6ScanStats fstats;
 	bool		ran;
 	bool		reads_score;		/* an aggregate over sift.score: the hits come ranked, in a bridge that keeps their scores (B) */
 	bool		point_rows;			/* B with a few hits: the rows were read from the heap */
-	int		   *point_leaf;
+	ColView    *point_views;		/* by leaf: the columns of the batch of heap rows */
 	bool		recheck_all;		/* a qual is the heap's: every row of the store is decided by it */
 	SiftHybridRun *a_run;
 	SiftHybridStats a_stats;
@@ -191,17 +193,8 @@ point_cols(HybridAggState *st, const SiftV6FoldCol *cols, int n)
 	return pc;
 }
 
-/* The scaled integer the store holds of a numeric(p, s) with p at most 18 (a typmod keeps the infinities out of the column: its NaN is a NULL the store tags) */
-static int64
-numeric_scaled(Datum d, int scale)
-{
-	int64		pow10 = 1;
-
-	for (int i = 0; i < scale; i++)
-		pow10 *= 10;
-	return DatumGetInt64(DirectFunctionCall1(numeric_int8, DirectFunctionCall2(numeric_mul, d, DirectFunctionCall1(int8_numeric, Int64GetDatum(pow10)))));
-}
-
+/* Row r of the batch the way the store holds it: a numeric(p <= 18, s) as its scaled integer (a typmod keeps the infinities out of the column: its NaN is a NULL the store
+ * tags) */
 static void
 point_put(HybridState *h, PointCol *c, int r)
 {
@@ -231,7 +224,7 @@ point_put(HybridState *h, PointCol *c, int r)
 			c->i[r] = DatumGetInt64(d);
 			break;
 		case NUMERICOID:
-			c->i[r] = numeric_scaled(d, c->scale);
+			c->i[r] = sift_col_numeric_key(c->scale, d, SIFT_COL_ROUND_NEAREST);
 			break;
 		case BOOLOID:
 			c->i[r] = DatumGetBool(d);
@@ -252,30 +245,39 @@ point_put(HybridState *h, PointCol *c, int r)
 	}
 }
 
+/* row r of the batch from the heap row of the slot, in the batch context: what it takes lives until the batch is folded */
 static void
-point_flush(HybridAggState *st, PointCol *pc, int ncols, const uint64 *keys, const float4 *scores, int n)
+point_row(HybridAggState *st, PointCol *pc, int ncols, int r)
 {
-	uint64		live[POINT_BATCH / 64];
-	ColView	   *views;
-	int			nviews = 0;
+	MemoryContext old = MemoryContextSwitchTo(st->batch_cx);
 
 	for (int c = 0; c < ncols; c++)
-		nviews = Max(nviews, st->point_leaf[c] + 1);
-	views = palloc0(nviews * sizeof(ColView));
-	for (int c = 0; c < ncols; c++)
-		views[st->point_leaf[c]] = (ColView) {.i = pc[c].i,.f = pc[c].f,.s = pc[c].s,.slen = pc[c].slen,.isnull = pc[c].isnull,.tag = pc[c].tag};
-	memset(live, 0, sizeof(live));
-	for (int r = 0; r < n; r++)
-		live[r / 64] |= UINT64CONST(1) << (r % 64);
-	st->h.ops->hybrid->fold_batch_scored(st->fold, keys, live, NULL, views, scores, n);
+		point_put(&st->h, &pc[c], r);
+	MemoryContextSwitchTo(old);
 }
 
 static void
-point_leaves(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
+point_flush(HybridAggState *st, const uint64 *keys, const float4 *scores, int n)
 {
-	st->point_leaf = palloc(Max(ncols, 1) * sizeof(int));
+	uint64		live[POINT_BATCH / 64];
+
+	memset(live, 0, sizeof(live));
+	for (int r = 0; r < n; r++)
+		live[r / 64] |= UINT64CONST(1) << (r % 64);
+	st->h.ops->hybrid->fold_batch_scored(st->fold, keys, live, NULL, st->point_views, scores, n);
+	MemoryContextReset(st->batch_cx);
+}
+
+static void
+point_views(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, const PointCol *pc)
+{
+	int			nviews = 0;
+
 	for (int c = 0; c < ncols; c++)
-		st->point_leaf[c] = cols[c].leaf;
+		nviews = Max(nviews, cols[c].leaf + 1);
+	st->point_views = palloc0(Max(nviews, 1) * sizeof(ColView));
+	for (int c = 0; c < ncols; c++)
+		st->point_views[cols[c].leaf] = (ColView) {.i = pc[c].i,.f = pc[c].f,.s = pc[c].s,.slen = pc[c].slen,.isnull = pc[c].isnull,.tag = pc[c].tag};
 }
 
 static void
@@ -289,26 +291,26 @@ fold_point(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointCol *p
 	float4		score;
 	int			n = 0;
 
-	point_leaves(st, cols, ncols);
+	point_views(st, cols, ncols, pc);
 	if (h->rank == NULL)
 		h->rank = sift_rank_begin(h->plan, 0, sift_hybrid_verify_point, h);
 	while (sift_rank_next(h->rank, &hit, &score))
 	{
+		CHECK_FOR_INTERRUPTS();
 		tid = hit;
 		if (!sift_vis_fetch(&h->vis, &tid, h->heapslot))
 			continue;
-		for (int c = 0; c < ncols; c++)
-			point_put(h, &pc[c], n);
+		point_row(st, pc, ncols, n);
 		scores[n] = score;
 		keys[n++] = sift_f2_tid(&hit);
 		if (n == POINT_BATCH)
 		{
-			point_flush(st, pc, ncols, keys, scores, n);
+			point_flush(st, keys, scores, n);
 			n = 0;
 		}
 	}
 	if (n > 0)
-		point_flush(st, pc, ncols, keys, scores, n);
+		point_flush(st, keys, scores, n);
 	st->point_rows = true;
 }
 
@@ -360,7 +362,7 @@ fold_or_matches(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointC
 	void	   *next_arg = st;
 	int			n = 0;
 
-	point_leaves(st, cols, ncols);
+	point_views(st, cols, ncols, pc);
 	sift_hybrid_unscored_plan(h);
 	if (sift_plan_recheck_needed(h->plan))
 	{
@@ -377,23 +379,23 @@ fold_or_matches(HybridAggState *st, const SiftV6FoldCol *cols, int ncols, PointC
 	}
 	while (next(next_arg, &key, &score))
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (sift_u64set_has(&st->taken, key))
 			continue;
 		tid = sift_hybrid_tid_of(key);
 		if (!sift_hybrid_rest_row(h, &tid))
 			continue;
-		for (int c = 0; c < ncols; c++)
-			point_put(h, &pc[c], n);
+		point_row(st, pc, ncols, n);
 		scores[n] = 0;
 		keys[n++] = key;
 		if (n == POINT_BATCH)
 		{
-			point_flush(st, pc, ncols, keys, scores, n);
+			point_flush(st, keys, scores, n);
 			n = 0;
 		}
 	}
 	if (n > 0)
-		point_flush(st, pc, ncols, keys, scores, n);
+		point_flush(st, keys, scores, n);
 	if (st->it != NULL)
 		sift_iter_end(st->it);
 	st->it = NULL;
@@ -468,6 +470,7 @@ agg_run(HybridAggState *st)
 	int			ncols;
 
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift hybrid agg groups");
+	st->batch_cx = sift_mem_allocset_create(st->gcx, "sift hybrid agg heap batch");
 	st->ran = true;
 	MemoryContextSwitchTo(st->gcx);
 	st->group = sift_v6_group_new(st->spec, st->gcx, st->group_desc);
@@ -548,7 +551,7 @@ free_groups(HybridAggState *st)
 	if (st->gcx != NULL)
 		MemoryContextDelete(st->gcx);
 	st->group = NULL;
-	st->gcx = NULL;
+	st->gcx = st->batch_cx = NULL;
 }
 
 static void

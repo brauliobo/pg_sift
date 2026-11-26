@@ -700,12 +700,11 @@ window_begin(CustomScanState *node, EState *estate, int eflags)
 	}
 }
 
-/* The row of the window (tag: what the source fetches its columns by) with the result of each function as a Datum */
+/* The row of the window (tag: what the source fetches its columns by) with the result of each function as a Datum, both made in the row context that the put resets */
 static void
 window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 {
 	const List *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
-	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 	Datum	   *fetched = st->fetched;
 	bool	   *fnull = st->fnull;
 	const bool	have = st->nattrs == 0 || (st->carry != NULL && sift_win_carry_take(st->carry, tag, fetched, fnull)) ||
@@ -729,7 +728,6 @@ window_put(WindowState *st, uint64 tag, const Datum *res, const bool *res_null)
 			st->vals[i] = res[f];
 		}
 	}
-	MemoryContextSwitchTo(old);
 	sift_v6_fifo_put(&st->fifo, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->vals, st->nulls);
 }
 
@@ -737,6 +735,7 @@ static void
 window_emit_vals(void *arg, uint64 tag, const SiftWinVal *val, uint16 nulls)
 {
 	WindowState *st = arg;
+	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 	Datum		res[SIFT_WIN_MAX_FUNCS];
 	bool		res_null[SIFT_WIN_MAX_FUNCS];
 
@@ -746,6 +745,7 @@ window_emit_vals(void *arg, uint64 tag, const SiftWinVal *val, uint16 nulls)
 		res[f] = res_null[f] ? (Datum) 0 : sift_v6_window_datum(st->spec, f, &val[f]);
 	}
 	window_put(st, tag, res, res_null);
+	MemoryContextSwitchTo(old);
 }
 
 static void
@@ -758,6 +758,7 @@ static void
 winx_emit(void *arg, uint64 tag, const SiftWinxVal *v)
 {
 	WindowState *st = arg;
+	MemoryContext old = MemoryContextSwitchTo(st->fifo.row_cx);
 	Datum		res[SIFT_WINX_MAX_FUNCS];
 	bool		res_null[SIFT_WINX_MAX_FUNCS];
 
@@ -767,6 +768,7 @@ winx_emit(void *arg, uint64 tag, const SiftWinxVal *v)
 		res[f] = v[f].null ? (Datum) 0 : sift_v6_winx_datum(st->spec->winx, f, &v[f]);
 	}
 	window_put(st, tag, res, res_null);
+	MemoryContextSwitchTo(old);
 }
 
 static void

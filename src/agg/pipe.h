@@ -38,6 +38,8 @@ typedef struct SiftV6Pipe
 	SiftV6KeyExpr *kexpr[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the keys that are expressions (NULL: the slot of fslot) */
 	int			pay_slot[SIFT_STAR_MAX_DIMS];	/* the first payload slot of each dimension */
 	SiftVecType *type;			/* [nslots] */
+	int16	   *typlen;			/* [nslots]: of a payload slot of SVEC_DATUM, its type's length and passing */
+	bool	   *typbyval;
 	SiftV6Resid *resid;			/* the conditions of the join no key says, run on the pairs that went through every dimension (NULL: none) */
 	int			rslot[SIFT_V6_RESID_COLS];	/* the slot of each of their columns */
 	int		   *key_slot;		/* [nkeys] */

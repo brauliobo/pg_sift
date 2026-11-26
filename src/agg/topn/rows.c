@@ -25,6 +25,7 @@ struct SiftV6Rows
 	MemoryContext tmp;
 	Datum		values[SIFT_V6_MAX_KEYS + 1];
 	bool		isnull[SIFT_V6_MAX_KEYS + 1];
+	Oid			base_typid[SIFT_V6_MAX_KEYS];	/* of each key: the type of a domain's values */
 	char		sbuf[SIFT_V6_MAX_KEYS][SHORT_TEXT_MAX + 1];
 	SiftF2Bound bound;
 	bool		bounded;		/* the first sort column is an integer: the heap's worst row bounds what a granule must hold */
@@ -82,8 +83,10 @@ int_key_datum(Oid typid, int64 x)
 }
 
 static Datum
-key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
+key_datum(const SiftV6Rows *r, int k, const SiftVec *v, uint16 row, bool *isnull, char *sbuf)
 {
+	const SiftV6Col *c = &r->spec->key[k];
+
 	if (v->type == SVEC_DICT32 || ((c->typid == TEXTOID || c->typid == VARCHAROID) && v->type == SVEC_STRVIEW))
 	{
 		uint32		len;
@@ -95,7 +98,7 @@ key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *
 		p = text_at(v, row, &len);
 		return text_datum(p, len, sbuf);
 	}
-	return sift_v6_vec_datum(v, row, getBaseType(c->typid), c->scale, isnull);
+	return sift_v6_vec_datum(v, row, r->base_typid[k], c->scale, isnull);
 }
 
 static Datum
@@ -104,7 +107,7 @@ cand_value(void *ctx, int item, bool *isnull)
 	RowCand    *c = ctx;
 	const int	pos = c->r->spec->topk_item[item].pos;
 
-	return key_datum(&c->r->spec->key[pos], c->keyvec[pos], c->row, isnull, c->sbuf);
+	return key_datum(c->r, pos, c->keyvec[pos], c->row, isnull, c->sbuf);
 }
 
 typedef struct DatumCand
@@ -172,7 +175,10 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	const SiftV6Col *key0 = &spec->key[spec->topk_item[0].pos];
 
 	for (int i = 0; i < spec->nkeys; i++)
+	{
 		TupleDescInitEntry(desc, i + 1, NULL, spec->key[i].typid, -1, 0);
+		r->base_typid[i] = getBaseType(spec->key[i].typid);
+	}
 	TupleDescInitEntry(desc, spec->nkeys + 1, NULL, INT8OID, -1, 0);
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
@@ -260,7 +266,7 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 			if (!sift_v6_topk_run_wants(r->run, cand_value, &c))
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
-				r->values[i] = key_datum(&spec->key[i], keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
+				r->values[i] = key_datum(r, i, keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
 			r->values[spec->nkeys] = Int64GetDatum((int64) (tid[c.row] | r->source));
 			r->isnull[spec->nkeys] = false;
 			sift_v6_topk_run_put(r->run, r->values, r->isnull);

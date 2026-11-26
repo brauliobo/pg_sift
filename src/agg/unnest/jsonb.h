@@ -81,7 +81,7 @@ extern bool sift_v6_unnest_elem_clause(MemoryContext cx, const List *quals, Sift
 typedef struct SiftV6RecFn SiftV6RecFn;
 
 extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x);
-/* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx; returns how many */
+/* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many */
 extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev);
 /*
  * jsonb_each and jsonb_each_text: the value column of the n members of the last call, for the members of keep (NULL: all), which are those that reach the statement's expressions. The cast of a
@@ -89,5 +89,6 @@ extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, Si
  * caller to raise when the pair reaches the groups.
  */
 extern void sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n, ErrorData **late);
+extern void sift_v6_recfn_free(SiftV6RecFn *f);
 
 #endif							/* SIFT_AGG_V6_UNNEST_JSONB_H */

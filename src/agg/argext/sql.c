@@ -3,6 +3,7 @@
  * argMin: the val of the row with the greatest (least) cmp in the btree order of the type of cmp under the collation of the call; a row whose cmp is NULL is ignored; a NULL val on the winning row is the
  * result; no row with a cmp is NULL. The first of the rows that tie on cmp wins in one process; after a parallel combine the choice among tying rows is as unspecified as an ORDER BY that ties.
  * The state is the one best row (its cmp and val are copies in the aggregate's memory context), so it is bounded whatever the number of rows; it is serialized with datumSerialize, which is exact for every type.
+ * What the types of a call are (lengths, the comparison function) is resolved once a call site, in the fn_extra of the function, and shared by the states of all its groups.
  */
 #include "postgres.h"
 
@@ -17,7 +18,7 @@
 #include "agg/argext/argext.h"
 #include "agg/argext/sql.h"
 
-typedef struct SiftArgState
+typedef struct SiftArgMeta
 {
 	Oid			cmp_type;
 	Oid			val_type;
@@ -27,6 +28,11 @@ typedef struct SiftArgState
 	bool		cmp_byval;
 	bool		val_byval;
 	FmgrInfo	cmp_fn;
+} SiftArgMeta;
+
+typedef struct SiftArgState
+{
+	SiftArgMeta *m;
 	bool		has;
 	bool		val_null;
 	Datum		cmp;
@@ -50,20 +56,36 @@ PG_FUNCTION_INFO_V1(sift_argext_serial);
 PG_FUNCTION_INFO_V1(sift_argext_deserial);
 PG_FUNCTION_INFO_V1(sift_argext_final);
 
-static SiftArgState *
-state_new(MemoryContext cx, Oid cmp_type, Oid val_type, Oid collation)
+/* the types of the calls of this call site, made the first time it is called: every call of one site has the same */
+static SiftArgMeta *
+meta_of(FunctionCallInfo fcinfo, Oid cmp_type, Oid val_type, Oid collation)
 {
-	SiftArgState *s = MemoryContextAllocZero(cx, sizeof(SiftArgState));
-	TypeCacheEntry *tce = lookup_type_cache(cmp_type, TYPECACHE_CMP_PROC_FINFO);
+	FmgrInfo   *fl = fcinfo->flinfo;
+	SiftArgMeta *m = fl->fn_extra;
+	TypeCacheEntry *tce;
 
+	if (m != NULL)
+		return m;
+	tce = lookup_type_cache(cmp_type, TYPECACHE_CMP_PROC_FINFO);
 	if (!OidIsValid(tce->cmp_proc_finfo.fn_oid))
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_FUNCTION), errmsg("could not identify a comparison function for type %s", format_type_be(cmp_type))));
-	fmgr_info_copy(&s->cmp_fn, &tce->cmp_proc_finfo, cx);
-	s->cmp_type = cmp_type;
-	s->val_type = val_type;
-	s->collation = collation;
-	get_typlenbyval(cmp_type, &s->cmp_len, &s->cmp_byval);
-	get_typlenbyval(val_type, &s->val_len, &s->val_byval);
+	m = MemoryContextAllocZero(fl->fn_mcxt, sizeof(SiftArgMeta));
+	fmgr_info_copy(&m->cmp_fn, &tce->cmp_proc_finfo, fl->fn_mcxt);
+	m->cmp_type = cmp_type;
+	m->val_type = val_type;
+	m->collation = collation;
+	get_typlenbyval(cmp_type, &m->cmp_len, &m->cmp_byval);
+	get_typlenbyval(val_type, &m->val_len, &m->val_byval);
+	fl->fn_extra = m;
+	return m;
+}
+
+static SiftArgState *
+state_new(MemoryContext cx, SiftArgMeta *m)
+{
+	SiftArgState *s = MemoryContextAllocZero(cx, sizeof(SiftArgState));
+
+	s->m = m;
 	return s;
 }
 
@@ -72,9 +94,9 @@ state_release(SiftArgState *s)
 {
 	if (!s->has)
 		return;
-	if (!s->cmp_byval)
+	if (!s->m->cmp_byval)
 		pfree(DatumGetPointer(s->cmp));
-	if (!s->val_byval && !s->val_null)
+	if (!s->m->val_byval && !s->val_null)
 		pfree(DatumGetPointer(s->val));
 }
 
@@ -82,8 +104,8 @@ static void
 state_set(SiftArgState *s, MemoryContext cx, Datum cmp, Datum val, bool val_null)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Datum		ncmp = datumCopy(cmp, s->cmp_byval, s->cmp_len);
-	Datum		nval = val_null ? (Datum) 0 : datumCopy(val, s->val_byval, s->val_len);
+	Datum		ncmp = datumCopy(cmp, s->m->cmp_byval, s->m->cmp_len);
+	Datum		nval = val_null ? (Datum) 0 : datumCopy(val, s->m->val_byval, s->m->val_len);
 
 	state_release(s);
 	s->cmp = ncmp;
@@ -96,7 +118,7 @@ state_set(SiftArgState *s, MemoryContext cx, Datum cmp, Datum val, bool val_null
 static bool
 state_better(SiftArgState *s, SiftArgDir dir, Datum cmp)
 {
-	int32		c = DatumGetInt32(FunctionCall2Coll(&s->cmp_fn, s->collation, cmp, s->cmp));
+	int32		c = DatumGetInt32(FunctionCall2Coll(&s->m->cmp_fn, s->m->collation, cmp, s->cmp));
 
 	return dir == SIFT_ARG_MAX ? c > 0 : c < 0;
 }
@@ -123,7 +145,7 @@ argext_trans(FunctionCallInfo fcinfo, SiftArgDir dir)
 		PG_RETURN_POINTER(s);
 	}
 	if (s == NULL)
-		s = state_new(cx, get_fn_expr_argtype(fcinfo->flinfo, 2), get_fn_expr_argtype(fcinfo->flinfo, 1), PG_GET_COLLATION());
+		s = state_new(cx, meta_of(fcinfo, get_fn_expr_argtype(fcinfo->flinfo, 2), get_fn_expr_argtype(fcinfo->flinfo, 1), PG_GET_COLLATION()));
 	else if (s->has && !state_better(s, dir, PG_GETARG_DATUM(2)))
 		PG_RETURN_POINTER(s);
 	state_set(s, cx, PG_GETARG_DATUM(2), PG_ARGISNULL(1) ? (Datum) 0 : PG_GETARG_DATUM(1), PG_ARGISNULL(1));
@@ -156,7 +178,7 @@ argext_combine(FunctionCallInfo fcinfo, SiftArgDir dir)
 		PG_RETURN_POINTER(a);
 	}
 	if (a == NULL)
-		a = state_new(cx, b->cmp_type, b->val_type, b->collation);
+		a = state_new(cx, b->m);
 	if (!a->has || state_better(a, dir, b->cmp))
 		state_set(a, cx, b->cmp, b->val, b->val_null);
 	PG_RETURN_POINTER(a);
@@ -178,13 +200,14 @@ Datum
 sift_argext_serial(PG_FUNCTION_ARGS)
 {
 	SiftArgState *s = (SiftArgState *) PG_GETARG_POINTER(0);
-	SiftArgWire w = {s->cmp_type, s->val_type, s->collation, s->has, s->val_null};
+	const SiftArgMeta *m = s->m;
+	SiftArgWire w = {m->cmp_type, m->val_type, m->collation, s->has, s->val_null};
 	Size		sz = sizeof(w);
 	bytea	   *r;
 	char	   *p;
 
 	if (s->has)
-		sz += datumEstimateSpace(s->cmp, false, s->cmp_byval, s->cmp_len) + datumEstimateSpace(s->val, s->val_null, s->val_byval, s->val_len);
+		sz += datumEstimateSpace(s->cmp, false, m->cmp_byval, m->cmp_len) + datumEstimateSpace(s->val, s->val_null, m->val_byval, m->val_len);
 	r = (bytea *) palloc(VARHDRSZ + sz);
 	SET_VARSIZE(r, VARHDRSZ + sz);
 	p = VARDATA(r);
@@ -192,8 +215,8 @@ sift_argext_serial(PG_FUNCTION_ARGS)
 	p += sizeof(w);
 	if (s->has)
 	{
-		datumSerialize(s->cmp, false, s->cmp_byval, s->cmp_len, &p);
-		datumSerialize(s->val, s->val_null, s->val_byval, s->val_len, &p);
+		datumSerialize(s->cmp, false, m->cmp_byval, m->cmp_len, &p);
+		datumSerialize(s->val, s->val_null, m->val_byval, m->val_len, &p);
 	}
 	PG_RETURN_BYTEA_P(r);
 }
@@ -209,7 +232,7 @@ sift_argext_deserial(PG_FUNCTION_ARGS)
 
 	memcpy(&w, p, sizeof(w));
 	p += sizeof(w);
-	s = state_new(cx, w.cmp_type, w.val_type, w.collation);
+	s = state_new(cx, meta_of(fcinfo, w.cmp_type, w.val_type, w.collation));
 	if (w.has)
 	{
 		MemoryContext old = MemoryContextSwitchTo(cx);
@@ -231,7 +254,7 @@ sift_argext_final(PG_FUNCTION_ARGS)
 
 	if (s == NULL || !s->has || s->val_null)
 		PG_RETURN_NULL();
-	PG_RETURN_DATUM(datumCopy(s->val, s->val_byval, s->val_len));
+	PG_RETURN_DATUM(datumCopy(s->val, s->m->val_byval, s->m->val_len));
 }
 
 int

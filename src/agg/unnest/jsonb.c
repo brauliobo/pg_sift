@@ -821,6 +821,7 @@ sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
 	uint32		n;
 
 	f->rsinfo.setResult = NULL;
+	f->econtext->ecxt_per_query_memory = cx;
 	InitFunctionCallInfoData(*fcinfo, &f->flinfo, 1, InvalidOid, NULL, (Node *) &f->rsinfo);
 	fcinfo->args[0].value = doc;
 	fcinfo->args[0].isnull = false;
@@ -855,7 +856,15 @@ sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
 	}
 	if (ts != NULL)
 		tuplestore_end(ts);
+	ResetExprContext(f->econtext);
 	return n;
+}
+
+void
+sift_v6_recfn_free(SiftV6RecFn *f)
+{
+	FreeExprContext(f->econtext, true);
+	ExecDropSingleTupleTableSlot(f->slot);
 }
 
 /* the value of member k of jsonb_each as the statement reads it: the cast of the jsonb, or the input function of the text of the scalar; the errors are those of the statement */

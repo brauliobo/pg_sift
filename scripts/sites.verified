@@ -88,7 +88,7 @@ src/table/v1/seg.c	declared_paths	guarded	reloid is the OID of a table the calle
 src/table/v1/seg.c	sift_table_ddl_check	guarded	the OIDs come from the event trigger's object list of the command and from the open table; the relation is locked by the command
 src/table/v1/seg.c	sift_table_paths_check	fixed	the relation passes sift_rel_must_exist and is open; get_attnum is tested for InvalidAttrNumber; surface_null_args calls it with a dropped relation and NULL
 src/col/f2/track.c	ctx_make	unreachable	the call hashes a pg_class OID for the invalidation callback: it returns a hash and no pointer, whatever the OID
-src/agg/argext/sql.c	state_new	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and the comparison function of the entry is tested with OidIsValid on the next line
+src/agg/argext/sql.c	meta_of	guarded	lookup_type_cache never returns NULL (a type that does not exist is its own error) and the comparison function of the entry is tested with OidIsValid on the next line
 src/agg/inset/inset.c	sift_v6_inset_of	guarded	the result is assigned and compared with NULL in the same condition: a function or operator that is gone is a plan that is not taken
 src/agg/source_rel.c	sift_v6_source_open	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
 src/col/f2/agg/proj/sort_plan.c	sort_begin	guarded	the OID is the relid (or an index) of a relation of the planned or executing statement: its heap is locked by the parser or the plan locks, DROP INDEX locks the heap first and invalidates the plan through it
@@ -137,7 +137,7 @@ src/agg/text_qual.c	sift_text_qual_of	guarded	the name is tested in the same con
 src/agg/plan/cols.c	generated_expr_of	guarded	p->relid is the relation of the scan being planned, which the parser locked: it cannot be dropped before the statement ends; table_open raises for a missing relation
 src/agg/safety.c	one_row_query	guarded	the type is the vartype of a Var of the statement being planned, which the parser resolved; lookup_type_cache raises for an unknown type, it never returns NULL
 src/agg/source_rel.c	sift_v6_source_enter	guarded	the heap is the table of the index of the scan, which the scan holds open with a lock on the heap; table_open raises for a missing relation
-src/agg/star/run.c	take_period	guarded	the type is the key type of a dimension the planner built from a range column of the statement; lookup_type_cache raises for an unknown type, it never returns NULL
+src/agg/star/run.c	read_of	guarded	the type is the key type of a dimension the planner built from a range column of the statement; lookup_type_cache raises for an unknown type, it never returns NULL
 src/agg/unique_key.c	sift_v6_unique_key	guarded	relid is the relid of an RTE_RELATION of the statement being planned (the callers pass rte->relid): the parser locked it; table_open raises for a missing relation
 src/col/f2/track.c	mute_channel	guarded	the index is the one the firing track trigger belongs to (OidIsValid tested): the trigger is dropped with its index and the statement that fired it holds the table; index_open raises for a missing relation
 src/col/f2/uniq/unique.c	key_init	guarded	the type is the type of an attribute of the open index; lookup_type_cache raises for an unknown type, it never returns NULL

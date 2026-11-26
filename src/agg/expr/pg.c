@@ -372,14 +372,28 @@ sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSe
 		}
 }
 
+static void
+resolve_result(SiftV6PgExpr *x)
+{
+	x->res_of = x->restype;
+	x->res_native = sift_v6_type_native(x->restype);
+	x->res_typlen = 0;
+	x->res_typbyval = false;
+	if (!x->res_native)
+		get_typlenbyval(x->restype, &x->res_typlen, &x->res_typbyval);
+}
+
 void
 sift_v6_pgexpr_derive(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs, SiftVxOut *out)
 {
 	const Oid	restype = x->restype;
-	const bool	native = sift_v6_type_native(restype);
-	bool		all_valid = true;
+	bool		native,
+				all_valid = true;
 	MemoryContext old;
 
+	if (x->res_of != restype)
+		resolve_result(x);
+	native = x->res_native;
 	sift_v6_pgexpr_eval(x, in, bs);
 	old = MemoryContextSwitchTo(x->econtext->ecxt_per_tuple_memory);
 	memset(out->valid, 0, sizeof(out->valid));
@@ -399,9 +413,7 @@ sift_v6_pgexpr_derive(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatch
 		}
 	MemoryContextSwitchTo(old);
 	out->vec = (SiftVec) {.data = out->data,.valid = out->valid,.len = bs->n_raw,.all_valid = all_valid,.dense = true,
-	.type = native ? sift_v6_result_vec_type(restype) : SVEC_DATUM,.typid = native ? InvalidOid : restype};
-	if (!native)
-		get_typlenbyval(restype, &out->vec.typlen, &out->vec.typbyval);
+	.type = native ? sift_v6_result_vec_type(restype) : SVEC_DATUM,.typid = native ? InvalidOid : restype,.typlen = x->res_typlen,.typbyval = x->res_typbyval};
 }
 
 SiftV6PgExpr *

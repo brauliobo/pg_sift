@@ -32,6 +32,10 @@ typedef struct SiftV6PgExpr
 {
 	MemoryContext cx;
 	Oid			restype;		/* the base type of the result of a derivation (sift_v6_pgexpr_bind) */
+	Oid			res_of;			/* the restype the next three were resolved for, the first time a derivation ran (the length of a type no native vector holds) */
+	bool		res_native;
+	int16		res_typlen;
+	bool		res_typbyval;
 	ExprState  *state;
 	ExprContext *econtext;
 	TupleTableSlot *slot;

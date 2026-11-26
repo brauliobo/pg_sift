@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_operator_d.h"
+#include "miscadmin.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
@@ -285,6 +286,8 @@ static void
 offer_compact(void *arg, const uint64 *s)
 {
 	CompactOffer *o = arg;
+
+	CHECK_FOR_INTERRUPTS();
 	if (o->bar.set && count_loses_n(o->r, &o->bar, (int64) v6g_compact_count(o->set, s)))
 		return;
 	v6g_compact_acc(o->g, o->set, s, o->acc);
@@ -305,6 +308,7 @@ sift_v6_topk_run_offer_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual,
 	{
 		while (sift_v6_group_next(g, r->values, r->isnull))
 		{
+			CHECK_FOR_INTERRUPTS();
 			offer_whole(r, r->values, r->isnull, qual, ec, slot);
 			tmp_release(r);
 		}
@@ -327,6 +331,7 @@ sift_v6_topk_run_offer_groups(SiftV6TopKRun *r, SiftV6Group *g, ExprState *qual,
 		const SiftAggSlot64 *run[TOPK_RUN];
 		int			n = 0;
 
+		CHECK_FOR_INTERRUPTS();
 		for (; n < TOPK_RUN && at < ht->capacity; at = sift_ht_next_occupied(ht, at + 1))
 		{
 			run[n] = &ht->slots[at];

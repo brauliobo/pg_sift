@@ -39,7 +39,7 @@
 
 
 #define OUT_SLOTS	(SIFT_F2_PULL_MAX_COLS + SIFT_V6_XELEM_COLS + SIFT_V6_MAX_DERIVE + 1 + SIFT_V6_XTESTS)
-#define MONTH_SLOTS	4096
+#define MONTH_BITS	12
 
 StaticAssertDecl(SIFT_V6_XELEM_COLS <= SIFT_F2_PULL_MAX_CHILD, "an element column is a child leaf of the pull");
 
@@ -47,7 +47,7 @@ typedef struct UnCol
 {
 	int			leaf;
 	SiftV6Class cls;
-	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: each distinct date is asked of it once */
+	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: a date is asked of it once while it holds its slot */
 	bool		json;			/* the leaf of a key of a jsonb document: a row that holds a value of another JSON type than the leaf's has it as the payload of an exception */
 	bool		read;			/* the statement reads the column itself; it may be only the source of a member (keyed) */
 	AttrNumber	heap_att;
@@ -139,6 +139,7 @@ typedef struct UnRun
 	uint32		seen;			/* the batches of the first pass (0 in it): those of the batches again that it read have their rows of the heap and their counts in the groups already */
 	int32	   *month_key;
 	int32	   *month_val;
+	Datum		month_unit;
 	uint32	   *pidx;
 	uint32	   *eidx;
 	MemoryContext bcx;			/* the arrays read from the heap for a batch */
