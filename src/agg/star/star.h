@@ -141,6 +141,12 @@ typedef struct SiftStarProbe
  * A dimension too big for its budget is joined in parts: the keys fall into nparts classes by hash, the dimension is read once for each class (its rows of the class only, a row with a NULL key
  * in none: sift_star_row_part gives it part 0 and no row of the part would match it) and the fact rows of the class are probed against it, so that every fact row is joined in exactly one pass.
  */
+/* whether parts split the rows of the dimension: a range join or one with no key puts every row in part 0, so a table too big for its budget is read in chunks */
+static inline bool
+sift_star_parts_split(const SiftStarShape *sh)
+{
+	return sh->mode != SV6J_RANGE_SMALL && sh->nkeys > 0;
+}
 extern uint32 sift_star_row_part(const SiftStarShape *sh, const SiftStarRow *row, uint32 nparts);
 extern uint32 sift_star_probe_part(const SiftStarShape *sh, const SiftStarProbe *p, uint32 r, uint32 nparts);
 

@@ -404,9 +404,10 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 		const SiftStarDim *hit = NULL;
 		SiftV6SharedDim *share = NULL;
 		bool		fits,
-					last;
+					last,
+					whole = true;
 
-		if (!keep && r->nparts[d] == 1)
+		if (!keep && pass == 0 && r->nparts[d] == 1)
 		{
 			shape_of(r->x, d, r->budget, &sh);
 			share = sift_v6_shared_dim_open(r->ps[d], &r->x->dim[d], &sh, &hit);
@@ -424,10 +425,14 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			MemoryContextSwitchTo(sift_v6_shared_dim_cx(share));
 		fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
 		MemoryContextSwitchTo(r->cx);
-		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS;
+		last = pass > 0 || r->nparts[d] >= STAR_MAX_PARTS || !sift_star_parts_split(&r->dim[d].shape);
 		if (!fits && last)
 		{
+			whole = false;
 			sift_star_dim_free(&r->dim[d]);
+			if (share != NULL)
+				sift_v6_shared_dim_abort(share);
+			share = NULL;
 			if (r->x->dim[d].mode == SV6J_INNER_EQUI)
 			{
 				plan_chunks(r, d, r->nparts[d], r->part[d]);
@@ -438,7 +443,7 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 				fits = read_dim(r, d, r->nparts[d], r->part[d], 0, UINT32_MAX, UINT64_MAX);
 		}
 		settled = fits && (last || r->nparts[d] == 1 || r->dim[d].bytes <= r->budget / 2);
-		if (keep && fits)
+		if (keep && fits && whole)
 		{
 			r->built++;
 			r->kept[d] = sift_dimcache_keep(r->dc[d], &r->dim[d]);
