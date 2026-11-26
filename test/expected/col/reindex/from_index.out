@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: a build from the replaced index reads the segments and the tombstone log of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.col_build_source = auto;
 SET max_parallel_workers_per_gather = 0;

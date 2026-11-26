@@ -2,6 +2,8 @@
 -- in one unit and nothing is due after the build (sift_col build spill.c). The runs of the table's order (the setting off) overlap and are rewritten.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: key_cut runs and the units they read are Format 1 segments.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

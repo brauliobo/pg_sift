@@ -3,6 +3,8 @@
 -- duplicates, text and uuid, DML, VACUUM (a unit with a dead row is read instead: its addresses may be used again), the write buffer, a merge, and an index
 -- of the rows-of-the-segment form (minor 14), which is read as before and upgraded by REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the point directory (point_tid_columns) is a Format 1 segment layout.
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)

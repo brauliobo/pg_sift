@@ -306,15 +306,17 @@ DECLARE p text; kept numeric; pruned numeric;
 BEGIN
 	PERFORM set_config('sift.agg_force', 'on', true);
 	p := sift_helpers.plan_text(q, true);
-	kept := coalesce(sift_helpers.plan_last(p, '^ *Units: (\d+)')::numeric, 0);
+	kept := coalesce(sift_helpers.plan_last(p, '^ *Granules: scanned=(\d+)')::numeric, 0);
 	pruned := coalesce(sift_helpers.plan_last(p, '(\d+) pruned')::numeric, 0);
 	RETURN round(kept / nullif(kept + pruned, 0), 1);
 END $$;
 CREATE FUNCTION sift_helpers.units_read_scans_off(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE p text;
 BEGIN
 	PERFORM sift_helpers.set_arm(true);
 	PERFORM sift_helpers.set_scans(false);
-	RETURN sift_helpers.plan_last(sift_helpers.plan_text(q, true), '^ *Units: (\d+)')::int;
+	p := sift_helpers.plan_text(q, true);
+	RETURN CASE WHEN sift_helpers.plan_pushed(p) THEN coalesce(sift_helpers.plan_last(p, '^ *Granules: scanned=(\d+)')::int, 0) END;
 END $$;
 CREATE FUNCTION sift_helpers.agg_filters_in_source(q text) RETURNS bool LANGUAGE plpgsql AS $$
 BEGIN PERFORM sift_helpers.set_arm(true); RETURN sift_helpers.plan_text(q, true) LIKE '%filters in source%'; END $$;
@@ -502,11 +504,18 @@ BEGIN
 	EXECUTE 'SELECT coalesce(string_agg(format(''%s:%s:%s'', tenant_id, n, s), '' '' ORDER BY tenant_id), ''none'') FROM (' || q || ') q' INTO r;
 	RETURN r;
 END $$;
+-- the heap blocks the execution of the aggregate fetched beyond the one every read of a vacuumed table takes: those of the whole statement less those of planning it
+-- (a plan with sift costing samples the heap; the second EXPLAIN is the planning alone)
 CREATE FUNCTION sift_helpers.events_heap_pages() RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE q constant text := 'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY tenant_id'; b0 bigint; b1 bigint; b2 bigint;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY tenant_id' INTO j;
-	RETURN coalesce(jsonb_path_query_first(j, 'strict $.**."Heap Pages"')::int, -1);
+	EXECUTE 'EXPLAIN ' || q;
+	b0 := coalesce(pg_stat_get_xact_blocks_fetched('events'::regclass), 0);
+	EXECUTE 'EXPLAIN ' || q;
+	b1 := coalesce(pg_stat_get_xact_blocks_fetched('events'::regclass), 0);
+	EXECUTE q;
+	b2 := coalesce(pg_stat_get_xact_blocks_fetched('events'::regclass), 0);
+	RETURN b2 - b1 - (b1 - b0) - 1;
 END $$;
 CREATE FUNCTION sift_helpers.tk_sums_with_plan_check(mode int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE p text;

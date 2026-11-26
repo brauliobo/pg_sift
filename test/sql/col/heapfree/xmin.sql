@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and the segment stamps are Format 1 (col/v1/tomblog.c, xstamp.h).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text) WITH (autovacuum_enabled = false, fillfactor = 100);
@@ -15,7 +17,7 @@ VACUUM events;
 -- dynamic SQL: a cached plan of a SQL function would keep the plan of the first call whatever sift.enable_agg says; the plan is asserted to be a SiftAgg plan or not
 CREATE FUNCTION answer(want_sift bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.events_sums_with_plan_check(want_sift) $$;
 
--- heap pages the plan reads, from EXPLAIN ANALYZE of the same query
+-- heap blocks the execution fetches beyond the one every read of the vacuumed table takes (sift_helpers.events_heap_pages)
 CREATE FUNCTION pages() RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.events_heap_pages() $$;
 
 -- one row per case: the three answers agree, and what the heap-free read saved

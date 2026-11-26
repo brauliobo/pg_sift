@@ -4,6 +4,8 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: a merge of segments streams the dictionaries of its inputs in Format 1 only.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
@@ -25,6 +27,7 @@ SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM ds WHERE
 -- a backend that finds no dictionary in the cache or in the ring, as a worker that merges what another session wrote
 \c
 SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
 SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SELECT parsed = 0 AS reset FROM sift._test_col_stream_dicts(true);
@@ -52,6 +55,7 @@ SELECT md5(string_agg(id || txt, ',' ORDER BY id)) AS before_merge FROM dk WHERE
 
 \c
 SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
 SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SELECT sift.col_merge('dk_ix', true) >= 0 AS merged;
@@ -70,6 +74,7 @@ BEGIN
 END $$;
 \c
 SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
 SET sift.shared_cache_kb = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_merge_eager = on;

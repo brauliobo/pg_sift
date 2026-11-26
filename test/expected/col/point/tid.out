@@ -4,6 +4,8 @@
 -- of the rows-of-the-segment form (minor 14), which is read as before and upgraded by REINDEX.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+-- Format 1: the point directory (point_tid_columns) is a Format 1 segment layout.
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
@@ -388,9 +390,9 @@ BEGIN
 	RETURN trim(r);
 END $$;
 SELECT pt_plan('SELECT count(*) FROM pt WHERE s LIKE ''s5999%''') AS prefix_count, pt_plan('SELECT count(*) FROM pt WHERE s ^@ ''s4321''') AS starts_with_count;
-             prefix_count              |           starts_with_count           
----------------------------------------+---------------------------------------
- Aggregate Index Scan using pt_t on pt | Aggregate Index Scan using pt_t on pt
+                        prefix_count                        |                     starts_with_count                      
+------------------------------------------------------------+------------------------------------------------------------
+ Aggregate Bitmap Heap Scan on pt Bitmap Index Scan on pt_t | Aggregate Bitmap Heap Scan on pt Bitmap Index Scan on pt_t
 (1 row)
 
 DROP FUNCTION pt_plan(text);
