@@ -160,6 +160,7 @@ requeue(const SiftCombArena *a, SiftCombQueue *q, CombLead *ld)
 	{
 		SiftCombHdr *s = slot_at(a, ld->idx[i]);
 
+		Assert(kept <= i);
 		if (ld->fin[i] != SIFT_COMB_RETRY)
 		{
 			ld->idx[kept] = ld->idx[i];
