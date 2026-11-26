@@ -39,7 +39,7 @@ sift_scope_cut(const SiftColRel *r, int scope, int *cut)
 	return n;
 }
 
-/* The members asked and their keys are remembered up to a quarter of maintenance_work_mem, then forgotten at the next batch (a batch needs all of its own) */
+/* The members asked and their keys are remembered up to a quarter of maintenance_work_mem, then forgotten before the next row (sift_scope_fill_expand) */
 #define PROBE_CACHE_DIVISOR	4
 #define SEEN_ENTRY_BYTES	48
 
@@ -508,54 +508,65 @@ probe_cache_full(const ScopeProbe *p)
 	return hash_get_num_entries(p->seen) * SEEN_ENTRY_BYTES + p->npool * sizeof(SiftScopePair) > (uint64) maintenance_work_mem * 1024 / PROBE_CACHE_DIVISOR;
 }
 
-/* The answers for every value of the batch (nulls: bit set = NULL, NULL: none) are in the cache */
-static void
-probe_values(ScopeProbe *p, const int64 *vals, const uint64 *nulls, uint32 n)
+/* One probe of an expansion: its scan, and the tracker of what its cache holds */
+typedef struct ProbeRun
 {
+	ScopeProbe *p;
 	SiftConnProbeScan s;
-	SiftMemTracker mt_col_scope_probe;
+	SiftMemTracker mt;
+} ProbeRun;
 
-	sift_mem_init_sub(&mt_col_scope_probe, "col_scope_probe", p->cache, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
-
-	if (probe_cache_full(p))
-	{
-		MemoryContextReset(p->cache);
-		p->seen = seen_new(p->cache);
-		p->pool = NULL;
-		p->npool = p->poolcap = 0;
-	}
-	sift_conn_probe_open(p->probe, &s);
+static void
+run_open(ProbeRun *r, ScopeProbe *p)
+{
+	r->p = p;
+	sift_mem_init_sub(&r->mt, "col_scope_probe", p->cache, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
+	sift_conn_probe_open(p->probe, &r->s);
 	if (p->km != NULL)
 		sift_keymap_hold(p->km);
-	for (uint32 i = 0; i < n; i++)
-	{
-		bool		hit;
-		ScopeSeen  *e;
-		ProbeKeys	pk;
-
-		if (nulls != NULL && sift_col_bit_test(nulls, i))
-			continue;
-		e = hash_search(p->seen, &vals[i], HASH_ENTER, &hit);
-		if (hit)
-			continue;
-		e->start = p->npool;
-		e->n = 0;
-		pk = (ProbeKeys) {p, e, vals[i]};
-		sift_conn_probe_key(p->probe, &s, vals[i], collect_key, &pk);
-		e->n = sift_scope_pairs_distinct(p->pool + e->start, e->n);
-		p->npool = e->start + e->n;
-	}
-	if (p->km != NULL)
-		sift_keymap_release(p->km);
-	sift_conn_probe_close(&s);
-	sift_mem_assert_within(&mt_col_scope_probe);
 }
 
-/* The answer of the cache for a value it holds */
-static const ScopeSeen *
-seen_of(const ScopeProbe *p, int64 val)
+static void
+run_close(ProbeRun *r)
 {
-	return hash_search(p->seen, &val, HASH_FIND, NULL);
+	if (r->p->km != NULL)
+		sift_keymap_release(r->p->km);
+	sift_conn_probe_close(&r->s);
+	sift_mem_assert_within(&r->mt);
+}
+
+/* Between two rows, a cache over its share of maintenance_work_mem forgets its answers: the rows before are expanded already */
+static void
+run_trim(ProbeRun *r)
+{
+	ScopeProbe *p = r->p;
+
+	if (!probe_cache_full(p))
+		return;
+	MemoryContextReset(p->cache);
+	p->seen = seen_new(p->cache);
+	p->pool = NULL;
+	p->npool = p->poolcap = 0;
+}
+
+/* The keys of val: the answer the cache holds, or the probe's, which the cache keeps */
+static const ScopeSeen *
+run_answer(ProbeRun *r, int64 val)
+{
+	ScopeProbe *p = r->p;
+	bool		hit;
+	ScopeSeen  *e = hash_search(p->seen, &val, HASH_ENTER, &hit);
+	ProbeKeys	pk;
+
+	if (hit)
+		return e;
+	e->start = p->npool;
+	e->n = 0;
+	pk = (ProbeKeys) {p, e, val};
+	sift_conn_probe_key(p->probe, &r->s, val, collect_key, &pk);
+	e->n = sift_scope_pairs_distinct(p->pool + e->start, e->n);
+	p->npool = e->start + e->n;
+	return e;
 }
 
 static uint32
@@ -570,46 +581,6 @@ entries_refuse(void)
 	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the rows of a batch expand to more than %u scope entries", batch_entries_max()),
 					errdetail("Each row has an entry for every scope key of its member."),
 					errhint("Declare the scope with fewer keys for each member, or build the index on partitions of the table.")));
-}
-
-/* Appends k values to the array a of *n, grown as it needs (*cap) */
-static void
-append_i64(int64 **a, uint64 *cap, uint64 *n, const int64 *src, uint64 k)
-{
-	if (*n + k > *cap)
-	{
-		*cap = Max(*cap * 2, *n + k);
-		/* check-memory: allow the values of one batch or one member, as many as the answers of the caches hold for them */
-		*a = *a == NULL ? palloc_extended(*cap * sizeof(int64), MCXT_ALLOC_HUGE) : repalloc_huge(*a, *cap * sizeof(int64));
-	}
-	memcpy(*a + *n, src, k * sizeof(int64));
-	*n += k;
-}
-
-/* The via values of the members of the batch are in the cache of the joined relation */
-static void
-probe_groups(ScopeMap *m, const int64 *fk, const uint64 *nulls, uint32 nrows)
-{
-	int64	   *vias = NULL;
-	uint64		n = 0,
-				cap = 0;
-
-	for (uint32 r = 0; r < nrows; r++)
-		if (!sift_col_bit_test(nulls, r))
-		{
-			const ScopeSeen *e = seen_of(&m->v, fk[r]);
-
-			for (uint32 j = 0; j < e->n; j++)
-				append_i64(&vias, &cap, &n, &m->v.pool[e->start + j].key, 1);
-		}
-	if (n > 0)
-	{
-		if (n > batch_entries_max())
-			entries_refuse();
-		probe_values(&m->g, vias, NULL, (uint32) n);
-	}
-	if (vias != NULL)
-		pfree(vias);
 }
 
 static void
@@ -660,20 +631,20 @@ append_pairs(SiftScopePair **a, uint64 *cap, uint64 *n, int64 member, const Sift
 		(*a)[(*n)++] = (SiftScopePair) {member, src[i].key};
 }
 
-/* The pairs of a member of a scope of two paths: those of its direct rows and of each of its via values, each once, ascending by key, in *pairs (grown as it needs) */
+/* The pairs of a member of a scope of two paths (run: the probes d, v and g): those of its direct rows and of each of its via values, each once, ascending by key, in *pairs (grown as it needs) */
 static uint64
-member_pairs(const ScopeMap *m, int64 member, SiftScopePair **pairs, uint64 *cap)
+member_pairs(ProbeRun *run, int64 member, SiftScopePair **pairs, uint64 *cap)
 {
-	const ScopeSeen *d = seen_of(&m->d, member),
-			   *v = seen_of(&m->v, member);
+	const ScopeSeen *d = run_answer(&run[0], member),
+			   *v = run_answer(&run[1], member);
 	uint64		n = 0;
 
-	append_pairs(pairs, cap, &n, member, m->d.pool + d->start, d->n);
+	append_pairs(pairs, cap, &n, member, run[0].p->pool + d->start, d->n);
 	for (uint32 j = 0; j < v->n; j++)
 	{
-		const ScopeSeen *e = seen_of(&m->g, m->v.pool[v->start + j].key);
+		const ScopeSeen *e = run_answer(&run[2], run[1].p->pool[v->start + j].key);
 
-		append_pairs(pairs, cap, &n, member, m->g.pool + e->start, e->n);
+		append_pairs(pairs, cap, &n, member, run[2].p->pool + e->start, e->n);
 	}
 	return sift_scope_pairs_distinct(*pairs, n);
 }
@@ -717,31 +688,31 @@ uint32
 sift_scope_fill_expand(SiftScopeFill *f, int scope, const int64 *fk, const uint64 *nulls, uint32 nrows, uint32 **row, int64 **key, uint32 *cap)
 {
 	ScopeMap   *m = &f->m[scope];
+	ScopeProbe *probes[] = {&m->d, &m->v, &m->g};
+	int			nrun = m->d.probe == NULL ? 0 : m->hops ? 3 : 1;
+	ProbeRun	run[lengthof(probes)];
 	SiftScopePair *own = NULL;
 	uint64		owncap = 0;
 	uint32		n = 0;
 
-	if (m->d.probe != NULL)
-		probe_values(&m->d, fk, nulls, nrows);
-	if (m->d.probe != NULL && m->hops)
-	{
-		probe_values(&m->v, fk, nulls, nrows);
-		probe_groups(m, fk, nulls, nrows);
-	}
+	for (int i = 0; i < nrun; i++)
+		run_open(&run[i], probes[i]);
 	for (uint32 r = 0; r < nrows; r++)
 	{
 		if (sift_col_bit_test(nulls, r))
 			continue;
-		if (m->d.probe != NULL && m->hops)
+		for (int i = 0; i < nrun; i++)
+			run_trim(&run[i]);
+		if (nrun == lengthof(probes))
 		{
-			uint64		nk = member_pairs(m, fk[r], &own, &owncap);
+			uint64		nk = member_pairs(run, fk[r], &own, &owncap);
 
 			for (uint64 j = 0; j < nk; j++)
 				put(&n, row, key, cap, r, own[j].key);
 		}
-		else if (m->d.probe != NULL)
+		else if (nrun == 1)
 		{
-			const ScopeSeen *e = seen_of(&m->d, fk[r]);
+			const ScopeSeen *e = run_answer(&run[0], fk[r]);
 
 			for (uint32 j = 0; j < e->n; j++)
 				put(&n, row, key, cap, r, m->d.pool[e->start + j].key);
@@ -750,6 +721,8 @@ sift_scope_fill_expand(SiftScopeFill *f, int scope, const int64 *fk, const uint6
 			for (uint64 i = pairs_first(m, fk[r]); i < m->npairs && m->pairs[i].member == fk[r]; i++)
 				put(&n, row, key, cap, r, m->pairs[i].key);
 	}
+	for (int i = 0; i < nrun; i++)
+		run_close(&run[i]);
 	if (own != NULL)
 		pfree(own);
 	return n;

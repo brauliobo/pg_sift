@@ -23,7 +23,7 @@ CREATE FUNCTION scope_try(label text, pairs text) RETURNS text LANGUAGE plpgsql 
 DECLARE st text := 'ok'; same boolean; ntmp bigint;
 BEGIN
 	BEGIN
-		EXECUTE format('CREATE INDEX sp_ix ON sp_t USING sift_col (id, m, v) WITH (scope = %L)', 't: m -> ' || pairs || '(m, t)');
+		EXECUTE format('CREATE INDEX sp_ix ON sp_t USING sift_col (id, m, v) WITH (scope = %L)', 't: m -> ' || pairs || '(m, t) max_multiplicity(16)');
 		EXECUTE format('SELECT bool_and(r.a = r.b) AND bool_or(r.b <> ''0:'') FROM (SELECT
 			(SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM sp_t f WHERE sift.in_scope(''sp_ix''::regclass, ''t'', f.m, ARRAY[k]::int8[])) a,
 			(SELECT count(*) || '':'' || coalesce(sum(id), 0) FROM sp_t f WHERE f.m IN (SELECT m FROM %s WHERE t = k)) b
