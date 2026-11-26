@@ -22,8 +22,12 @@ import datetime
 import hashlib
 import os
 import re
+import select
 import subprocess
 import sys
+import tempfile
+import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -66,10 +70,29 @@ SAMPLES = {   # typcategory -> expressions of v (an integer of the row) tried in
 }
 
 
-def indexable(typ, expr):
-    e = expr.format(v='(i % 3000)', t=typ)
-    _, err = psql(DB, f"DROP TABLE IF EXISTS probe; CREATE TEMP TABLE probe AS SELECT {e} AS c FROM generate_series(1, 5) i; CREATE INDEX ON probe USING sift_col (c);", check=False)
-    return 'ERROR' not in err
+def dollar(s):
+    assert '$mx$' not in s, s
+    return f'$mx${s}$mx$'
+
+
+def indexable_all(pairs):
+    """the (type, value expression) pairs whose one-column sift_col index can be built, each tried in a subtransaction of one session"""
+    exprs = ', '.join(dollar(expr.format(v='(i % 3000)', t=typ)) for typ, expr in pairs)
+    out, _ = psql(DB, f"""CREATE TEMP TABLE mx_ok (k int);
+DO $$
+BEGIN
+	FOR k IN 1..{len(pairs)} LOOP
+		BEGIN
+			EXECUTE 'DROP TABLE IF EXISTS probe';
+			EXECUTE format('CREATE TEMP TABLE probe AS SELECT %s AS c FROM generate_series(1, 5) i', (ARRAY[{exprs}]::text[])[k]);
+			EXECUTE 'CREATE INDEX ON probe USING sift_col (c)';
+			INSERT INTO mx_ok VALUES (k - 1);
+		EXCEPTION WHEN OTHERS THEN NULL;
+		END;
+	END LOOP;
+END $$;
+SELECT k FROM mx_ok;""")
+    return {pairs[int(k)] for k in out.split()}
 
 
 def key_types():
@@ -77,14 +100,14 @@ def key_types():
     cands, _ = psql('postgres', """SELECT t.typname, t.oid::regtype, t.typcategory FROM pg_type t JOIN pg_opclass oc ON oc.opcdefault AND oc.opcintype = t.oid
 		JOIN pg_am am ON am.oid = oc.opcmethod AND am.amname = 'btree' WHERE t.typtype = 'b' AND t.typnamespace = 'pg_catalog'::regnamespace
 		AND t.typcategory <> 'A' AND t.oid NOT IN ('oid'::regtype, 'regclass'::regtype) ORDER BY t.oid""")
+    rows = [line.split('|') for line in cands.split('\n') if line]
+    ok = indexable_all([(typ, expr) for _, typ, cat in rows for expr in SAMPLES.get(cat, [])])
     out = []
-    for line in cands.split('\n'):
-        if line:
-            name, typ, cat = line.split('|')
-            for expr in SAMPLES.get(cat, []):
-                if indexable(typ, expr):
-                    out.append((name.strip('_'), typ, cat, expr))
-                    break
+    for name, typ, cat in rows:
+        for expr in SAMPLES.get(cat, []):
+            if (typ, expr) in ok:
+                out.append((name.strip('_'), typ, cat, expr))
+                break
     return out
 
 
@@ -92,12 +115,20 @@ def aggregates():
     """the aggregates with one argument and a scalar result that accept an integer column, by name"""
     names, _ = psql('postgres', """SELECT DISTINCT p.proname FROM pg_aggregate a JOIN pg_proc p ON p.oid = a.aggfnoid
 		WHERE a.aggkind = 'n' AND p.pronargs = 1 AND p.pronamespace = 'pg_catalog'::regnamespace ORDER BY 1""")
-    out = []
-    for n in names.split():
-        o, e = psql(DB, f"SELECT {n}(DISTINCT c_int4) FROM facts_c", check=False)
-        if 'ERROR' not in e and not re.search(r'[\[{]', o):
-            out.append(n)
-    return out
+    names = names.split()
+    res, _ = psql(DB, f"""CREATE TEMP TABLE mx_agg (k int, v text);
+DO $$ DECLARE v text;
+BEGIN
+	FOR k IN 1..{len(names)} LOOP
+		BEGIN
+			EXECUTE format('SELECT %s(DISTINCT c_int4)::text FROM facts_c', (ARRAY[{', '.join(dollar(n) for n in names)}]::text[])[k]) INTO v;
+			INSERT INTO mx_agg VALUES (k - 1, v);
+		EXCEPTION WHEN OTHERS THEN NULL;
+		END;
+	END LOOP;
+END $$;
+SELECT k, coalesce(v, '') FROM mx_agg ORDER BY k;""")
+    return [names[int(k)] for k, v in (r.split('|', 1) for r in res.split('\n') if r) if not re.search(r'[\[{]', v)]
 
 
 def functions():
@@ -354,7 +385,8 @@ def build_data(rows, types=None, fmt='f2'):
     psql(DB, open(f'{HERE}/data.sql').read().replace(':rows', str(rows)))
     types = types or key_types()[:30]
     cols = ', '.join(f"CASE WHEN i % {17 + j} = 0 THEN NULL ELSE {expr.format(v=f'(mx_h(i, {10 + j}) % 3000)', t=typ)} END AS c_{n}" for j, (n, typ, _, expr) in enumerate(types))
-    keys = ', '.join(['id', 'cat'] + [f'c_{n}' for n, typ, _, expr in types if indexable(typ, expr)])
+    ok = indexable_all([(typ, expr) for _, typ, _, expr in types])
+    keys = ', '.join(['id', 'cat'] + [f'c_{n}' for n, typ, _, expr in types if (typ, expr) in ok])
     ddl = f"""CREATE TABLE facts_src AS SELECT i AS id, mx_h(i, 1) % 40 AS cat, CASE WHEN i % 41 = 0 THEN NULL ELSE mx_words(i) END AS body, {cols} FROM generate_series(1, {rows}) i;
 CREATE TABLE facts_c (LIKE facts_src, pad text DEFAULT repeat('x', 1500), PRIMARY KEY (id));
 ALTER TABLE facts_c ALTER COLUMN pad SET STORAGE PLAIN;
@@ -387,6 +419,55 @@ def section(text, name):
     return m.group(1) if m else ''
 
 
+class Session:
+    """one psql of the variants kept open: a script ends at the line @@END of its stdout, its stderr is what the file of the session took meanwhile; a
+    variant starts from DISCARD ALL (the state of a new session); a psql that ended (the server lost the connection) is started again for the next one"""
+
+    def __init__(self):
+        self.err = tempfile.TemporaryFile()
+        self.p = subprocess.Popen(['psql', '-X', '-q', '-At', '-F', '|', '-d', DB], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, env=ENV)
+        self.buf = b''
+
+    def run(self, script, timeout):
+        err = self.err
+        off = os.fstat(err.fileno()).st_size
+        out, end = [], time.time() + timeout
+        try:
+            self.p.stdin.write(('DISCARD ALL;\n' + script).encode())
+            self.p.stdin.flush()
+            while not out or out[-1] != b'@@END\n':
+                while b'\n' not in self.buf:
+                    if not select.select([self.p.stdout], [], [], max(0, end - time.time()))[0]:
+                        self.p.kill()
+                        raise subprocess.TimeoutExpired('psql', timeout)
+                    data = os.read(self.p.stdout.fileno(), 1 << 20)
+                    if not data:
+                        raise BrokenPipeError
+                    self.buf += data
+                line, _, self.buf = self.buf.partition(b'\n')
+                out.append(line + b'\n')
+        except BrokenPipeError:
+            self.p.wait()
+            out.append(self.buf)
+            self.__init__()
+        fd = err.fileno()
+        return b''.join(out).decode(errors='replace'), os.pread(fd, os.fstat(fd).st_size - off, off).decode(errors='replace')
+
+    def close(self):
+        self.p.stdin.close()
+        self.p.wait()
+
+
+SESSIONS, LOCAL = [], threading.local()
+
+
+def session():
+    if not hasattr(LOCAL, 's'):
+        LOCAL.s = Session()
+        SESSIONS.append(LOCAL.s)
+    return LOCAL.s
+
+
 def run_one(v):
     if v.prep:
         head = f'PREPARE q({v.prep[0]}) AS {v.sql}; SET plan_cache_mode = force_generic_plan;'
@@ -410,8 +491,7 @@ SET sift.explain_refusals = off;
 \\echo @@END
 \\warn @@END
 """
-    p = subprocess.run(['psql', '-X', '-q', '-At', '-F', '|', '-d', DB], input=script, capture_output=True, text=True, env=ENV, timeout=240)
-    return p.stdout, p.stderr
+    return session().run(script, 240)
 
 
 def close(a, b):
@@ -470,6 +550,8 @@ def run(args):
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(args.jobs) as ex:
         outs = list(ex.map(run_one, variants))
+    for s in SESSIONS:
+        s.close()
     rows = []
     for v, (o, e) in zip(variants, outs):
         st, slug = classify(v, o, e, slugs)
@@ -547,7 +629,7 @@ if __name__ == '__main__':
     r.add_argument('--format', default='f2', choices=['f2', 'f1', 'release'])
     r.add_argument('--tier', default='full', choices=['quick', 'full'])
     r.add_argument('--rows', type=int, default=24000)
-    r.add_argument('--jobs', type=int, default=2)
+    r.add_argument('--jobs', type=int, default=4, help='the psql sessions that run the variants')
     r.add_argument('--by-design', help='the result file of another run: its by-design flag per variant')
     r.add_argument('--fixtures', help='the database of a scripts/coldiff.sh --keep run: its fixture results join the variants')
     r.add_argument('--save', help='write the types and variants of this run (JSON)')
