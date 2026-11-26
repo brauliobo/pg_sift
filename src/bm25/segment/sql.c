@@ -624,7 +624,7 @@ disjoint_from_earlier(Bm25Verify *bv, SiftSegment *seg)
 			continue;
 		MemoryContext earliercx = sift_mem_allocset_create(bv->cxt, "sift verify earlier segment");
 
-		earlier = sift_seg_open(bv->index, e, earliercx);
+		earlier = sift_seg_open_once(bv->index, e, earliercx);
 		verify_disjoint(bv->index, earlier, seg);
 		sift_seg_close(earlier);
 		MemoryContextDelete(earliercx);
@@ -715,7 +715,7 @@ disjoint_from_seen(Bm25Verify *bv, SiftSegment *seg)
 		disjoint_from_earlier(bv, seg);
 }
 
-/* One segment, under the maintenance lock for its length alone: a promotion or merge waits for one segment, not for the index (the snapshot keeps the others readable) */
+/* One segment, under the maintenance lock for its length alone: a promotion or merge waits for one segment, not for the index (the snapshot keeps the others readable); opened once: verify reads the bytes of the relation, not what the backend kept of an intact copy */
 static void
 step_segment(void *arg)
 {
@@ -734,7 +734,7 @@ step_segment(void *arg)
 	{
 		bv->ndocs += e->ndocs;
 		bv->sum_dl += e->sum_dl;
-		seg = sift_seg_open(bv->index, e, segcx);
+		seg = sift_seg_open_once(bv->index, e, segcx);
 		old = MemoryContextSwitchTo(bv->walk);
 		sift_seg_walk(seg, &ref, true, &st, NULL, NULL);
 		bv->nelems += st.postings + e->ndocs;
