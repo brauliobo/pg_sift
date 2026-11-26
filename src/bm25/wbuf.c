@@ -649,7 +649,8 @@ sift_wbuf_stage_init(void)
 
 /*
  * A doc of a speculative insertion (ON CONFLICT) that loses is dead at once and VACUUM may reuse its address before the statement ends, so its doc is written and not staged;
- * of a table that is not a heap there is no telling. A non-unique index is told UNIQUE_CHECK_NO under ON CONFLICT too, so the heap tuple is read only while such a statement runs.
+ * of a table that is not a heap there is no telling under ON CONFLICT. A non-unique index is told UNIQUE_CHECK_NO under ON CONFLICT too, so the heap tuple is read only while
+ * such a statement runs.
  */
 static bool
 stageable(Relation heap, ItemPointer tid)
@@ -658,10 +659,10 @@ stageable(Relation heap, ItemPointer tid)
 	Page		page;
 	bool		ok;
 
-	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID)
-		return false;
 	if (speculating == 0)
 		return true;
+	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID)
+		return false;
 	buf = ReadBuffer(heap, ItemPointerGetBlockNumber(tid));
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
