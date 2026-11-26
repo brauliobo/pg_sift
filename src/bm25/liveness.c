@@ -527,18 +527,24 @@ sift_seg_live_rank(SiftSegment *seg, SiftKey key)
 	SiftDocChunk dc;
 	uint64		present[SIFT_OFFMASK_WORDS],
 				live[SIFT_OFFMASK_WORDS],
-				rank;
+				rank = 0;
+	bool		found = false;
 
-	if (!sift_seg_docs(seg, sift_block_sb(blk), &dc) || !(dc.pagemask[page / 64] >> (page % 64) & 1))
-		return -1;
-	sift_seg_page(seg, &dc, page, present, NULL);
-	sift_seg_page_live(seg, &dc, page, live);
-	if (!(live[off / 64] >> (off % 64) & 1))
-		return -1;
-	rank = dc.rank_base + docmap(seg)->before[page];
-	for (int w = 0; w < off / 64; w++)
-		rank += pg_popcount64(present[w]);
-	return rank + pg_popcount64(present[off / 64] & ((UINT64CONST(1) << (off % 64)) - 1));
+	if (sift_seg_docs(seg, sift_block_sb(blk), &dc) && (dc.pagemask[page / 64] >> (page % 64) & 1))
+	{
+		sift_seg_page(seg, &dc, page, present, NULL);
+		sift_seg_page_live(seg, &dc, page, live);
+		found = live[off / 64] >> (off % 64) & 1;
+	}
+	if (found)
+	{
+		rank = dc.rank_base + docmap(seg)->before[page];
+		for (int w = 0; w < off / 64; w++)
+			rank += pg_popcount64(present[w]);
+		rank += pg_popcount64(present[off / 64] & ((UINT64CONST(1) << (off % 64)) - 1));
+	}
+	sift_sr_release(&seg->sr);
+	return found ? (int64) rank : -1;
 }
 
 /*
