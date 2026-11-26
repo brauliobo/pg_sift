@@ -21,9 +21,14 @@ needs_git_history() {
 	[[ -v NEEDS_HISTORY[$1] ]] || { _needs_history "$1" && NEEDS_HISTORY[$1]=0 || NEEDS_HISTORY[$1]=1; }
 	return "${NEEDS_HISTORY[$1]}"
 }
-# uses_toolchain FILE, uses_history FILE: the code of the test (not its comments, which say "make" and "pg_upgrade" of tests that do neither) builds or reads the tags
-uses_toolchain() { grep -vE '^[[:space:]]*#' "$1" | grep -E "$TOOLCHAIN_USE" >/dev/null; }
-uses_history() { grep -vE '^[[:space:]]*#' "$1" | grep -E "$HISTORY_USE" >/dev/null; }
+# uses_toolchain FILE, uses_history FILE: the code of the test (not its comments, which say "make" and "pg_upgrade" of tests that do neither) builds or reads the tags.
+# One grep of test/t for each, not two forks for each of the 400 TAP jobs of every plan (the selftest makes a hundred plans)
+code_files() { grep -rHE --include='*.sh' --include='*.pl' "$1" "$REPO/test/t" | grep -vE '^[^:]*:[[:space:]]*#' | cut -d: -f1 | sort -u; }
+declare -A USES_TOOLCHAIN=() USES_HISTORY=()
+while IFS= read -r f; do USES_TOOLCHAIN[$f]=1; done < <(code_files "$TOOLCHAIN_USE")
+while IFS= read -r f; do USES_HISTORY[$f]=1; done < <(code_files "$HISTORY_USE")
+uses_toolchain() { [[ -v USES_TOOLCHAIN[$1] ]]; }
+uses_history() { [[ -v USES_HISTORY[$1] ]]; }
 # test_file ID: the script of a TAP job
 test_file() {
 	local f=${1#tap-shell-}

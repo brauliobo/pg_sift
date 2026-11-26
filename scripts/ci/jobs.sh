@@ -9,11 +9,17 @@ declare -A J_SUITE J_CLUSTER J_CMD J_AFTER
 J_ID=() SUITES=()
 # skipped ID: the run never queues the job (SKIP_RE of config.sh). A Format 1.0 run queues no job that builds an older release either: those test the upgrade from released formats, which the Format 2.0 run covers
 skipped() { [[ -n $SKIP_RE && $1 =~ $SKIP_RE ]] || { [[ $FORMAT == 1 ]] && needs_git_history "$1"; }; }
-job() {
+# kept ID: whether the filters of the run keep the job (SIFT_CI_JOBS, SIFT_CI_AFFECTED, skipped); a family of batches asks it for the name of the family
+kept() {
+	[[ -z ${SIFT_CI_JOBS:-} || $1 =~ $SIFT_CI_JOBS ]] || return 1
+	[[ $1 == installcheck-batch* || $1 =~ ${SIFT_CI_AFFECTED:-.} ]] || return 1   # affected: the batches are cut from the tests that match (installcheck_batches)
+	! skipped "$1"
+}
+job() { ! kept "$1" || queue "$@"; }
+# queue ID SUITE CLUSTER CMD...: the job, past the filters (a job keeps its first place in the queue)
+queue() {
 	local id=$1
-	[[ -z ${SIFT_CI_JOBS:-} || $id =~ $SIFT_CI_JOBS ]] && [[ ! -v J_SUITE[$id] ]] || return 0   # a job keeps its first place in the queue
-	[[ $id == installcheck-batch* || $id =~ ${SIFT_CI_AFFECTED:-.} ]] || return 0   # affected: the batches are cut from the tests that match (installcheck_batches)
-	skipped "$id" && return 0
+	[[ ! -v J_SUITE[$id] ]] || return 0
 	J_ID+=("$id")
 	J_SUITE[$id]=$2 J_CLUSTER[$id]=$3
 	[[ " ${SUITES[*]-} " == *" $2 "* ]] || SUITES+=("$2")
@@ -95,7 +101,7 @@ installcheck_batches() {
 	while read -r load names; do
 		read -ra b <<<"$names"
 		job "installcheck-batch$((++i))" installcheck 1 "$S/pgtest.sh" regress "${b[@]}"
-		W_BATCH[installcheck-batch$i]=$(batch_weight "$load")
+		batch_weight "$load"; W_BATCH[installcheck-batch$i]=$BATCH_W
 		EST_MB[installcheck-batch$i]=${EST_MB[installcheck-batch$i]:-$BATCH_MB}
 	done < <(regress_pack "${sel[@]}")
 }

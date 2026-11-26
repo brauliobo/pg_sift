@@ -87,7 +87,6 @@ installcheck-batch16	220
 tap-shell-col/build/slices	220
 tap-shell-col/wbuf/crash	220
 tap-shell-maint/memory	210
-installcheck-table/bigtx	200
 installcheck-table/writepath	190
 tap-shell-col/auto_merge/slices	190
 tap-shell-fault/matrix_standby	190
@@ -98,7 +97,6 @@ tap-shell-col/reindex/concurrent	180
 tap-shell-col/vacuum/space_idle	180
 tap-shell-core/replication	180
 installcheck-batch18	170
-installcheck-bm25/insert_backpressure	170
 tap-table/promote	170
 tap-table/hot_update	170
 tap-shell-table/load_workers	170

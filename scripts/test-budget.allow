@@ -3,7 +3,7 @@
 #   sql    a test/sql/*.sql with generate_series above 50000 rows and no comment that says why; COUNT is the number of calls
 #   slow   the names in SLOW_REGRESS (scripts/ci/weights.sh)
 # A row only goes down: a count that grew or a new site fails, a row whose site was fixed is deleted (scripts/check-test-budget.sh --list prints the rows of the tree as it is).
-slow	-	20	predates the budget of test/README.md
+slow	-	16	predates the budget of test/README.md
 sql	agg/append_children.sql	1	predates the budget of test/README.md
 sql	agg/array/image_cost.sql	1	predates the budget of test/README.md
 sql	agg/array/image_native.sql	1	predates the budget of test/README.md
