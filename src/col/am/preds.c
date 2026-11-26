@@ -540,11 +540,8 @@ key_exists_pred(ColKeys *k, const ScanKeyData *key, SiftColPred *p)
 
 	if (key->sk_flags & SK_ISNULL)
 		return false;
-	if (k->key_leaf == NULL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the operator ? of sift.col_jsonb_ops needs an index of format major 2"),
-						errhint("REINDEX INDEX CONCURRENTLY rebuilds the index in format major 2.")));
 	name = DatumGetTextPP(key->sk_argument);
-	*p = (SiftColPred) {.col = k->key_leaf(k->key_leaf_arg, key->sk_attno, VARDATA_ANY(name), VARSIZE_ANY_EXHDR(name)),.op = SIFT_COLOP_KEY_EXISTS};
+	*p = (SiftColPred) {.col = k->key_leaf == NULL ? -1 : k->key_leaf(k->key_leaf_arg, key->sk_attno, VARDATA_ANY(name), VARSIZE_ANY_EXHDR(name)),.op = SIFT_COLOP_KEY_EXISTS};
 	k->recheck |= p->col < 0;
 	return true;
 }

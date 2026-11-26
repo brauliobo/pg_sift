@@ -135,6 +135,16 @@ SELECT 'ho' AS idx, hk_flags('ho_col', '2 segments, 2 flagged') AS flags UNION A
 SELECT * FROM hk_run('ho');
 SELECT * FROM hk_run('hm');
 
+-- an index scan of doc ? 'k': a key no leaf keeps leaves its rows to the heap, on either format
+CREATE TABLE kq (id int, doc jsonb);
+INSERT INTO kq SELECT i, CASE WHEN i % 3 = 0 THEN jsonb_build_object('k', i) ELSE jsonb_build_object('z', i) END FROM generate_series(1, 300) i;
+CREATE INDEX kq_col ON kq USING sift_col (id, doc sift.col_jsonb_ops) WITH (paths = 'doc.z int');
+VACUUM ANALYZE kq;
+SET enable_seqscan = off; SET enable_indexscan = on; SET sift.enable_agg = off;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM kq WHERE doc ? 'k';
+SELECT (SELECT count(*) FROM kq WHERE doc ? 'k') AS undeclared, (SELECT count(*) FROM kq WHERE doc ? 'z') AS declared;
+DROP TABLE kq;
+
 DROP TABLE hk_q;
 DROP FUNCTION hk_run(text), hk_check(text), hk_rows(text, bool), hk_flags(regclass, text);
 DROP TABLE hk, ho, hm, hc;
