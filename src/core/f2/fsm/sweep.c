@@ -611,12 +611,40 @@ server_start(void)
 	return (uint32) (PgStartTime / 1000) | 1;
 }
 
+/*
+ * The relations this backend found nothing to sweep in: a sweep that frees nothing from a root whose pool window is clear changes nothing but the stamp of the server, which is not worth a
+ * record. A backend never outlives the server, so its memory of a clean sweep is of this server; another backend sweeps once more and finds the same.
+ */
+#define SWEPT_CLEAN_SLOTS	64
+
+static RelFileLocator swept_clean[SWEPT_CLEAN_SLOTS];
+static uint32 nswept_clean;
+
+static bool
+swept_clean_here(Relation rel)
+{
+	for (uint32 i = 0; i < Min(nswept_clean, SWEPT_CLEAN_SLOTS); i++)
+		if (RelFileLocatorEquals(swept_clean[i], rel->rd_locator))
+			return true;
+	return false;
+}
+
+static void
+remember_swept_clean(Relation rel)
+{
+	swept_clean[nswept_clean++ % SWEPT_CLEAN_SLOTS] = rel->rd_locator;
+}
+
 bool
 sift_fsm_sweep_due(Relation rel)
 {
-	Buffer		buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
-	bool		due = FSMM(BufferGetPage(buf))->swept_start != server_start();
+	Buffer		buf;
+	bool		due;
 
+	if (swept_clean_here(rel))
+		return false;
+	buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
+	due = FSMM(BufferGetPage(buf))->swept_start != server_start();
 	UnlockReleaseBuffer(buf);
 	return due;
 }
@@ -706,7 +734,10 @@ sweep_locked(Relation rel)
 	}
 	if (blocks > 0)
 		ereport(LOG, (errmsg("sift index \"%s\": the orphan sweep freed %llu blocks", RelationGetRelationName(rel), (unsigned long long) blocks)));
-	mark_swept(rel, complete);
+	if (complete && blocks == 0 && FSMM(s.root.data)->pool_mask == 0)
+		remember_swept_clean(rel);
+	else
+		mark_swept(rel, complete);
 	return blocks;
 }
 
