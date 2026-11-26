@@ -125,7 +125,6 @@ int_datum(const SiftVec *v, uint16 r, Oid typid, int scale)
 Datum
 sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale)
 {
-	typid = getBaseType(typid);
 	switch (v->type)
 	{
 		case SVEC_BOOL:
@@ -188,7 +187,7 @@ sift_v6_result_vec_type(Oid typid)
 void
 sift_v6_result_put(Oid typid, void *data, uint16 r, Datum d)
 {
-	switch (getBaseType(typid))
+	switch (typid)
 	{
 		case INT2OID:
 			((int64 *) data)[r] = DatumGetInt16(d);
@@ -236,6 +235,7 @@ sift_v6_key_codes(SiftGenKey *k, const SiftVec *v, Oid typid, int scale, const S
 {
 	MemoryContext old = MemoryContextSwitchTo(scratch);
 
+	typid = getBaseType(typid);
 	memset(valid, 0, sizeof(uint64) * SIFT_VEC_WORDS);
 	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)

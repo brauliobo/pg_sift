@@ -332,7 +332,10 @@ sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const Sif
 	x->nin = nin;
 	memcpy(x->in, in, nin * sizeof(SiftV6PgIn));
 	for (int i = 0; i < nin; i++)
+	{
 		TupleDescInitEntry(desc, (AttrNumber) (i + 1), NULL, in[i].typid, -1, 0);
+		x->in[i].typid = getBaseType(in[i].typid);
+	}
 	if (nin == 0)
 		TupleDescInitEntry(desc, 1, NULL, INT4OID, -1, 0);
 	sift_tupdesc_finalize(desc);

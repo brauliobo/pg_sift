@@ -33,17 +33,17 @@ extern bool sift_v6_type_native(Oid typid);
 extern bool sift_v6_key_generic(Oid typid);
 
 /*
- * The Datum of row r of a native vector, as a value of typid (scale: the digits after the point of a numeric the vector holds as scaled integers); a value passed by reference is made in the
+ * The Datum of row r of a native vector, as a value of the base type typid (scale: the digits after the point of a numeric the vector holds as scaled integers); a value passed by reference is made in the
  * current memory context. The vector is of the class of typid: a numeric of NUM64 or NUM128 or of the scaled integers of an INT64 column, an integer of any width, a float, a string view, a uuid or an interval.
  */
 extern Datum sift_v6_native_datum(const SiftVec *v, uint16 r, Oid typid, int scale);
 
 /* The numeric NaN */
 extern Datum sift_v6_numeric_nan(void);
-/* The same for a row that may be NULL or a NaN (a numeric whose NaN the vector marks and calls invalid): *isnull says NULL, and a NaN is the datum PostgreSQL has for it */
+/* The same (typid a base type) for a row that may be NULL or a NaN (a numeric whose NaN the vector marks and calls invalid): *isnull says NULL, and a NaN is the datum PostgreSQL has for it */
 extern Datum sift_v6_vec_datum(const SiftVec *v, uint16 r, Oid typid, int scale, bool *isnull);
 
-/* The result d of a PostgreSQL expression of the native type typid, into row r of the data of a native vector: an integer, a double or a string view of the bytes of the datum */
+/* The result d of a PostgreSQL expression of the native base type typid, into row r of the data of a native vector: an integer, a double or a string view of the bytes of the datum */
 extern void sift_v6_result_put(Oid typid, void *data, uint16 r, Datum d);
 /* The type of the native vector the results of typid are (SVEC_I64, SVEC_F64 or SVEC_STRVIEW) */
 extern SiftVecType sift_v6_result_vec_type(Oid typid);

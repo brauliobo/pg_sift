@@ -95,7 +95,7 @@ key_datum(const SiftV6Col *c, const SiftVec *v, uint16 row, bool *isnull, char *
 		p = text_at(v, row, &len);
 		return text_datum(p, len, sbuf);
 	}
-	return sift_v6_vec_datum(v, row, c->typid, c->scale, isnull);
+	return sift_v6_vec_datum(v, row, getBaseType(c->typid), c->scale, isnull);
 }
 
 static Datum
