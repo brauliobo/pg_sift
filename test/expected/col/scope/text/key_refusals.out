@@ -5,6 +5,8 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE DOMAIN dom_text AS text;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, member_text text, member_char char(8), member_ci text COLLATE ci, created_at date, amount int) WITH (autovacuum_enabled = false);
@@ -87,21 +89,19 @@ SELECT n, what, sift_helpers.try_sql(format('CREATE INDEX events_col_%s ON event
 -- the text key that qualifies reads like the join, and a condition under a nondeterministic collation does not take the scope
 REINDEX INDEX events_col_1;
 VACUUM (FREEZE, ANALYZE) events, pairs_text;
-SET seq_page_cost = 1000;
-SET random_page_cost = 1000;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l || E'\n'; END LOOP;
-	RETURN CASE WHEN plan ~ 'Scope Index: ' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg, the join' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg, the join' ELSE 'normal plan' END;
 END $$;
-SELECT plan_of(format('SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM pairs_text WHERE tenant_id = %L %s)', 't2', coll)) AS plan, coll
+SELECT plan_of(format('SELECT count(*) FROM events e JOIN pairs_text p ON p.dim_a_id = e.dim_a_id WHERE p.tenant_id = %L %s', 't2', coll)) AS plan, coll
 	FROM (VALUES (''), ('COLLATE "C"'), ('COLLATE ci')) c (coll);
-       plan        |    coll     
--------------------+-------------
- scope read        | 
- scope read        | COLLATE "C"
- SiftAgg, the join | COLLATE ci
+    plan     |    coll     
+-------------+-------------
+ scope read  | 
+ scope read  | COLLATE "C"
+ normal plan | COLLATE ci
 (3 rows)
 
 INSERT INTO pairs_text VALUES (7, 'T2');

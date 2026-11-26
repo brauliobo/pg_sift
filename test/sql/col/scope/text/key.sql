@@ -1,13 +1,12 @@
--- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the scope key store of the key column of the pairs, and every read
+-- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope summary is cut by the code of the key in the scope key store of the key column of the pairs, and every read
 -- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
--- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
+-- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (the summary has none of it, and its pairs are all delta), and for a key that left every pair.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
-SET default_statistics_target = 1000;
-SET seq_page_cost = 1000;
-SET random_page_cost = 1000;
 
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
@@ -71,8 +70,8 @@ INSERT INTO forms VALUES
  ('group by the key, every key', $q$SELECT s.tenant_id, count(*) AS n, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('group by the key and a column', $q$SELECT s.tenant_id, kind, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id, kind$q$),
  ('group by the key, a table of keys', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = 1 GROUP BY s.tenant_id$q$),
- ('miss: group by the key, ordered', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY s.tenant_id$q$),
- ('miss: group by the key, ordered and limited', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY n DESC, s.tenant_id LIMIT 3$q$),
+ ('group by the key, ordered', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY s.tenant_id$q$),
+ ('group by the key, ordered and limited', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY n DESC, s.tenant_id LIMIT 3$q$),
  ('group by the key, varchar', $q$SELECT s.tenant_id, count(*) AS n FROM var_events e JOIN var_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('group by the key, uuid', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('varchar key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
@@ -80,18 +79,14 @@ INSERT INTO forms VALUES
  ('uuid key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id IN (md5('tenant-4')::uuid, md5('tenant-5')::uuid)) GROUP BY kind$q$),
  ('uuid key, a literal', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id = '00000000-0000-0000-0000-000000000001') GROUP BY kind$q$);
 
--- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
+-- the plan: the scope node, the plain sift node, else the normal plan
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 
 -- the rows of the statement as planned, with sift.agg_scope off and with sift.enable_agg off (the normal plan)
@@ -108,16 +103,16 @@ BEGIN
 	RETURN a = b AND b = c;
 END $$;
 
--- what the run did: the reader's refusal, the keys it patched, the members it listed, else the units
+-- what the run read: the summary (with the changes since it: the delta cube) or the join, NULL: not a scope read
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Read|Cube):' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN nullif(rtrim(r, '; '), '');
 END $$;
 
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";

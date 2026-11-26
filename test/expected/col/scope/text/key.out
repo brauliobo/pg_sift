@@ -1,13 +1,12 @@
--- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope segments are cut by the code of the key in the scope key store of the key column of the pairs, and every read
+-- A scope key may be text, varchar or uuid (docs/COL-SCOPE.md "Key types"): the scope summary is cut by the code of the key in the scope key store of the key column of the pairs, and every read
 -- (IN, EXISTS, join, ANY, a list, a parameter, a table of keys) translates the keys it is given through the map of its statement. The rows are those of the join in every state the integer
--- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (it has no stored unit, and its pairs are all delta), and for a key that left every pair.
+-- key is exact in: after pairs are added, removed and re-keyed, for a key the store has never seen (the summary has none of it, and its pairs are all delta), and for a key that left every pair.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
-SET default_statistics_target = 1000;
-SET seq_page_cost = 1000;
-SET random_page_cost = 1000;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, created_at date, kind text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT i, 1 + (i::bigint * 7919) % 400, date '2025-01-01' + i % 300, 'k' || i % 4, i % 100 FROM generate_series(1, 6000) i;
 -- entities 1 to 360 are members of tenant 'tenant-' (1 + id % 10), one in seven of a second tenant; the others are in no tenant
@@ -68,26 +67,22 @@ INSERT INTO forms VALUES
  ('group by the key, every key', $q$SELECT s.tenant_id, count(*) AS n, sum(amount) AS total FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('group by the key and a column', $q$SELECT s.tenant_id, kind, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id, kind$q$),
  ('group by the key, a table of keys', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id JOIN my_tenants k ON k.tenant_id = s.tenant_id WHERE k.user_id = 1 GROUP BY s.tenant_id$q$),
- ('miss: group by the key, ordered', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY s.tenant_id$q$),
- ('miss: group by the key, ordered and limited', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY n DESC, s.tenant_id LIMIT 3$q$),
+ ('group by the key, ordered', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY s.tenant_id$q$),
+ ('group by the key, ordered and limited', $q$SELECT s.tenant_id, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id ORDER BY n DESC, s.tenant_id LIMIT 3$q$),
  ('group by the key, varchar', $q$SELECT s.tenant_id, count(*) AS n FROM var_events e JOIN var_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('group by the key, uuid', $q$SELECT s.tenant_id, count(*) AS n FROM uuid_events e JOIN uuid_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id$q$),
  ('varchar key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id IN ('tenant-4', 'tenant-5')) GROUP BY kind$q$),
  ('varchar key, a text parameter type', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM var_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM var_scope WHERE tenant_id = 'tenant-4'::text) GROUP BY kind$q$),
  ('uuid key', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id IN (md5('tenant-4')::uuid, md5('tenant-5')::uuid)) GROUP BY kind$q$),
  ('uuid key, a literal', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM uuid_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM uuid_scope WHERE tenant_id = '00000000-0000-0000-0000-000000000001') GROUP BY kind$q$);
--- the plan: the scope read (its keys and semantics), or the join and the reason the scope pass gave (sift.explain_why, arm scope), else the plan
+-- the plan: the scope node, the plain sift node, else the normal plan
 CREATE FUNCTION label(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text; plan text := '';
+DECLARE l text; plan text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		plan := plan || l || E'\n';
 	END LOOP;
-	IF plan ~ 'Scope Index: ' THEN
-		RETURN 'scope read, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
-	END IF;
-	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';
-	RETURN CASE WHEN r IS NOT NULL THEN 'join, ' || r WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'SiftAggV6Scope' THEN 'scope read' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 -- the rows of the statement as planned, with sift.agg_scope off and with sift.enable_agg off (the normal plan)
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -102,81 +97,81 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
 END $$;
--- what the run did: the reader's refusal, the keys it patched, the members it listed, else the units
+-- what the run read: the summary (with the changes since it: the delta cube) or the join, NULL: not a scope read
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN
+		IF l ~ 'Scope (Read|Cube):' THEN
 			r := r || regexp_replace(l, '^ *Scope ', '') || '; ';
 		END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN nullif(rtrim(r, '; '), '');
 END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COLLATE "C";
-                    name                     |                                                                    plan                                                                     | same_rows 
----------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------+-----------
- EXISTS                                      | scope read, once                                                                                                                            | t
- IN, ANY of an array                         | scope read, once                                                                                                                            | t
- IN, a case other than the stored            | scope read, once                                                                                                                            | t
- IN, a key only the pairs added later have   | scope read, once                                                                                                                            | t
- IN, a key the store has not                 | scope read, once                                                                                                                            | t
- IN, a list                                  | scope read, once                                                                                                                            | t
- IN, a long key                              | scope read, once                                                                                                                            | t
- IN, a space and an accent                   | scope read, once                                                                                                                            | t
- IN, nested IN                               | scope read, once                                                                                                                            | t
- IN, nested IN, no keys                      | scope read, once                                                                                                                            | t
- IN, no key the store has                    | scope read, once                                                                                                                            | t
- IN, one key                                 | scope read, once                                                                                                                            | t
- IN, the empty key                           | scope read, once                                                                                                                            | t
- group by the key and a column               | scope read, per pair                                                                                                                        | t
- group by the key, a list                    | scope read, per pair                                                                                                                        | t
- group by the key, a table of keys           | scope read, per pair                                                                                                                        | t
- group by the key, every key                 | scope read, per pair                                                                                                                        | t
- group by the key, uuid                      | scope read, per pair                                                                                                                        | t
- group by the key, varchar                   | scope read, per pair                                                                                                                        | t
- join, a list, a row for each pair           | scope read, per pair                                                                                                                        | t
- join, a table of keys, one key              | scope read, per pair                                                                                                                        | t
- join, one key                               | scope read, per pair                                                                                                                        | t
- miss: group by the key, ordered             | join, the statement groups by a text or uuid scope key and orders or limits its rows: the codes of a key are not in the order of its values | t
- miss: group by the key, ordered and limited | join, the statement groups by a text or uuid scope key and orders or limits its rows: the codes of a key are not in the order of its values | t
- uuid key                                    | scope read, once                                                                                                                            | t
- uuid key, a literal                         | scope read, once                                                                                                                            | t
- varchar key                                 | scope read, once                                                                                                                            | t
- varchar key, a text parameter type          | scope read, once                                                                                                                            | t
+                   name                    |    plan     | same_rows 
+-------------------------------------------+-------------+-----------
+ EXISTS                                    | normal plan | t
+ IN, ANY of an array                       | normal plan | t
+ IN, a case other than the stored          | normal plan | t
+ IN, a key only the pairs added later have | normal plan | t
+ IN, a key the store has not               | normal plan | t
+ IN, a list                                | normal plan | t
+ IN, a long key                            | normal plan | t
+ IN, a space and an accent                 | normal plan | t
+ IN, nested IN                             | normal plan | t
+ IN, nested IN, no keys                    | normal plan | t
+ IN, no key the store has                  | normal plan | t
+ IN, one key                               | normal plan | t
+ IN, the empty key                         | normal plan | t
+ group by the key and a column             | SiftAgg     | t
+ group by the key, a list                  | scope read  | t
+ group by the key, a table of keys         | SiftAgg     | t
+ group by the key, every key               | scope read  | t
+ group by the key, ordered                 | scope read  | t
+ group by the key, ordered and limited     | scope read  | t
+ group by the key, uuid                    | scope read  | t
+ group by the key, varchar                 | scope read  | t
+ join, a list, a row for each pair         | normal plan | t
+ join, a table of keys, one key            | normal plan | t
+ join, one key                             | normal plan | t
+ uuid key                                  | normal plan | t
+ uuid key, a literal                       | normal plan | t
+ varchar key                               | normal plan | t
+ varchar key, a text parameter type        | normal plan | t
 (28 rows)
 
 SELECT name, run_of(q) AS run FROM forms ORDER BY name COLLATE "C";
-                    name                     |                       run                        
----------------------------------------------+--------------------------------------------------
- EXISTS                                      | units
- IN, ANY of an array                         | units
- IN, a case other than the stored            | units
- IN, a key only the pairs added later have   | units
- IN, a key the store has not                 | units
- IN, a list                                  | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, a long key                              | units
- IN, a space and an accent                   | units
- IN, nested IN                               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, nested IN, no keys                      | units
- IN, no key the store has                    | units
- IN, one key                                 | units
- IN, the empty key                           | units
- group by the key and a column               | units
- group by the key, a list                    | units
- group by the key, a table of keys           | units
- group by the key, every key                 | units
- group by the key, uuid                      | units
- group by the key, varchar                   | units
- join, a list, a row for each pair           | units
- join, a table of keys, one key              | units
- join, one key                               | units
- miss: group by the key, ordered             | units
- miss: group by the key, ordered and limited | units
- uuid key                                    | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- uuid key, a literal                         | units
- varchar key                                 | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- varchar key, a text parameter type          | units
+                   name                    |            run             
+-------------------------------------------+----------------------------
+ EXISTS                                    | 
+ IN, ANY of an array                       | 
+ IN, a case other than the stored          | 
+ IN, a key only the pairs added later have | 
+ IN, a key the store has not               | 
+ IN, a list                                | 
+ IN, a long key                            | 
+ IN, a space and an accent                 | 
+ IN, nested IN                             | 
+ IN, nested IN, no keys                    | 
+ IN, no key the store has                  | 
+ IN, one key                               | 
+ IN, the empty key                         | 
+ group by the key and a column             | 
+ group by the key, a list                  | Read: summary; Cube: clean
+ group by the key, a table of keys         | 
+ group by the key, every key               | Read: summary; Cube: clean
+ group by the key, ordered                 | Read: summary; Cube: clean
+ group by the key, ordered and limited     | Read: summary; Cube: clean
+ group by the key, uuid                    | Read: summary; Cube: clean
+ group by the key, varchar                 | Read: summary; Cube: clean
+ join, a list, a row for each pair         | 
+ join, a table of keys, one key            | 
+ join, one key                             | 
+ uuid key                                  | 
+ uuid key, a literal                       | 
+ varchar key                               | 
+ varchar key, a text parameter type        | 
 (28 rows)
 
 -- a prepared statement: the keys are the value of its parameters at each execution (a text, an array, a key the store has not)
@@ -192,7 +187,7 @@ SELECT same('EXECUTE one(''tenant-4'')') AS one_4, same('EXECUTE one(''tenant-no
 SELECT run_of('EXECUTE one(''tenant-4'')') AS run_one, run_of('EXECUTE many(''{tenant-4,tenant-8}'')') AS run_many;
  run_one | run_many 
 ---------+----------
- units   | units
+         | 
 (1 row)
 
 RESET plan_cache_mode;
@@ -210,11 +205,11 @@ SELECT 'added' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing, cou
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'join, a list, a row for each pair') ORDER BY name COLLATE "C";
-               name                |               run                
------------------------------------+----------------------------------
- IN, a key the store has not       | Changed Keys: 2; Patched Keys: 2
- IN, one key                       | Changed Keys: 2; Patched Keys: 2
- join, a list, a row for each pair | Changed Keys: 2; Patched Keys: 2
+               name                | run 
+-----------------------------------+-----
+ IN, a key the store has not       | 
+ IN, one key                       | 
+ join, a list, a row for each pair | 
 (3 rows)
 
 DELETE FROM tenant_scope WHERE tenant_id = 'tenant-4' AND dim_a_id % 5 = 0;
@@ -274,11 +269,11 @@ SELECT 'reindexed' AS state, count(*) FILTER (WHERE NOT same_rows) AS differing,
 (1 row)
 
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, one key', 'IN, a key the store has not', 'IN, nested IN') ORDER BY name COLLATE "C";
-            name             |                       run                        
------------------------------+--------------------------------------------------
- IN, a key the store has not | units
- IN, nested IN               | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 2
- IN, one key                 | units
+            name             | run 
+-----------------------------+-----
+ IN, a key the store has not | 
+ IN, nested IN               | 
+ IN, one key                 | 
 (3 rows)
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('var_events_col', true), sift.col_verify('uuid_events_col', true);

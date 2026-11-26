@@ -1,11 +1,11 @@
 -- The journal of a scope relation tags each record with the scope key of its row, so that a read of one key is not charged for the pairs that changed in other keys. A text, varchar or uuid key is
--- tagged by the word of its bytes, as an integer key is by its value: a read of one key lists as changed, and patches, the members of the pairs that changed in that key only. A record of a journal made
--- before the tags (none) stays one of every key. Each state (they accumulate) is read for each key: the rows are the join's, and the changed and patched members are those of the key (-1: the read has no member to patch).
+-- tagged by the word of its bytes, as an integer key is by its value: the scope summary reads a key whose pairs changed with the changes since it (Scope Cube: delta), and every other key as it is
+-- (clean). Each state (they accumulate) is read for each key: the rows are the heap's (sift.enable_agg = off), and the Scope Read and Scope Cube of the node say how it read the key.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
-SET sift.agg_force = on;
-SET sift.test_scope_patch = on;
 -- 60 members of 100 facts, the groups of ten members, the tenants 1 to 6 (a text key) each with the members of one group
 CREATE TABLE facts (id int PRIMARY KEY, m text, at timestamptz, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, 'acct-' || (1 + (i - 1) / 100), timestamptz '2026-01-01' + i * interval '9 minutes', i % 10 FROM generate_series(1, 6000) i;
@@ -39,15 +39,15 @@ REINDEX INDEX facts_two;
 CREATE INDEX u_facts_one ON u_facts USING sift_col (id, m, amount) WITH (scope = 'k: m -> u_pairs(m, k)');
 REINDEX INDEX u_facts_one;
 VACUUM (FREEZE, ANALYZE) facts, pairs, var_pairs, u_pairs, u_facts, grants, group_grants, memberships;
--- what a read of the key reports: the rows against the join's, the members changed and patched
-CREATE FUNCTION tag_read(form text, key text, OUT same boolean, OUT changed_keys int, OUT patched_keys int)
+-- what a read of the key reports: the rows against the heap's, the Scope Read and the Scope Cube of the node
+CREATE FUNCTION tag_read(form text, key text, OUT same boolean, OUT route text, OUT cube text)
 LANGUAGE plpgsql AS $$
 DECLARE
 	q text := CASE form
-		WHEN 'one' THEN format('SELECT count(*), sum(amount) FROM facts e WHERE e.m IN (SELECT m FROM pairs WHERE k = %L)', key)
-		WHEN 'varchar' THEN format('SELECT count(*), sum(amount) FROM facts e WHERE e.m IN (SELECT m FROM var_pairs WHERE k = %L)', key)
-		WHEN 'two' THEN format('SELECT count(*), sum(amount) FROM facts e WHERE e.m IN (SELECT m FROM both_pairs WHERE k = %L)', key)
-		WHEN 'uuid' THEN format('SELECT count(*), sum(amount) FROM u_facts e WHERE e.m IN (SELECT m FROM u_pairs WHERE k = md5(%L)::uuid)', key)
+		WHEN 'one' THEN format('SELECT count(*), sum(amount) FROM facts e JOIN pairs p ON p.m = e.m WHERE p.k = %L', key)
+		WHEN 'varchar' THEN format('SELECT count(*), sum(amount) FROM facts e JOIN var_pairs p ON p.m = e.m WHERE p.k = %L', key)
+		WHEN 'two' THEN format('SELECT count(*), sum(amount) FROM facts e JOIN both_pairs p ON p.m = e.m WHERE p.k = %L', key)
+		WHEN 'uuid' THEN format('SELECT count(*), sum(amount) FROM u_facts e JOIN u_pairs p ON p.m = e.m WHERE p.k = md5(%L)::uuid', key)
 	END;
 	p jsonb;
 	a text;
@@ -59,87 +59,87 @@ BEGIN
 	EXECUTE 'SELECT row(t.*)::text FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	changed_keys := coalesce(jsonb_path_query_first(p, '$.**."Scope Changed Keys"')::text::int, -1);
-	patched_keys := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Keys"')::text::int, -1);
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
-CREATE FUNCTION tag_states(state text) RETURNS TABLE (form text, key text, same boolean, changed_keys int, patched_keys int)
+CREATE FUNCTION tag_states(state text) RETURNS TABLE (form text, key text, same boolean, route text, cube text)
 LANGUAGE sql AS $$
-	SELECT f, k, r.same, r.changed_keys, r.patched_keys FROM (VALUES ('one'), ('varchar'), ('two'), ('uuid')) f (f),
+	SELECT f, k, r.same, r.route, r.cube FROM (VALUES ('one'), ('varchar'), ('two'), ('uuid')) f (f),
 		(VALUES ('tenant-1'), ('tenant-2'), ('tenant-6'), ('tenant-9')) k (k), LATERAL tag_read(f, k) r ORDER BY 1, 2
 $$;
--- no change: nothing is changed in any key
+-- no change: every key is clean
 SELECT * FROM tag_states('stored');
-  form   |   key    | same | changed_keys | patched_keys 
----------+----------+------+--------------+--------------
- one     | tenant-1 | t    |           -1 |           -1
- one     | tenant-2 | t    |           -1 |           -1
- one     | tenant-6 | t    |           -1 |           -1
- one     | tenant-9 | t    |           -1 |           -1
- two     | tenant-1 | t    |           -1 |           -1
- two     | tenant-2 | t    |           -1 |           -1
- two     | tenant-6 | t    |           -1 |           -1
- two     | tenant-9 | t    |           -1 |           -1
- uuid    | tenant-1 | t    |           -1 |           -1
- uuid    | tenant-2 | t    |           -1 |           -1
- uuid    | tenant-6 | t    |           -1 |           -1
- uuid    | tenant-9 | t    |           -1 |           -1
- varchar | tenant-1 | t    |           -1 |           -1
- varchar | tenant-2 | t    |           -1 |           -1
- varchar | tenant-6 | t    |           -1 |           -1
- varchar | tenant-9 | t    |           -1 |           -1
+  form   |   key    | same |  route  | cube  
+---------+----------+------+---------+-------
+ one     | tenant-1 | t    | summary | clean
+ one     | tenant-2 | t    | summary | clean
+ one     | tenant-6 | t    | summary | clean
+ one     | tenant-9 | t    | summary | clean
+ two     | tenant-1 | t    |         | 
+ two     | tenant-2 | t    |         | 
+ two     | tenant-6 | t    |         | 
+ two     | tenant-9 | t    |         | 
+ uuid    | tenant-1 | t    | summary | clean
+ uuid    | tenant-2 | t    | summary | clean
+ uuid    | tenant-6 | t    | summary | clean
+ uuid    | tenant-9 | t    | summary | clean
+ varchar | tenant-1 | t    | summary | clean
+ varchar | tenant-2 | t    | summary | clean
+ varchar | tenant-6 | t    | summary | clean
+ varchar | tenant-9 | t    | summary | clean
 (16 rows)
 
--- a member of tenant 2 gets a pair in tenant 1 (as a direct grant, a group grant and for the uuid key): only the reads of tenant 1 list a changed member
+-- a member of tenant 2 gets a pair in tenant 1 (as a direct grant, a group grant and for the uuid key): only the reads of tenant 1 take the changes
 INSERT INTO pairs VALUES ('acct-15', 'tenant-1');
 INSERT INTO var_pairs VALUES ('acct-15', 'tenant-1');
 INSERT INTO u_pairs VALUES (md5('acct-15')::uuid, md5('tenant-1')::uuid);
 INSERT INTO grants VALUES ('acct-15', 'tenant-1');
 SELECT * FROM tag_states('one pair of tenant 1');
-  form   |   key    | same | changed_keys | patched_keys 
----------+----------+------+--------------+--------------
- one     | tenant-1 | t    |            1 |            1
- one     | tenant-2 | t    |           -1 |           -1
- one     | tenant-6 | t    |           -1 |           -1
- one     | tenant-9 | t    |           -1 |           -1
- two     | tenant-1 | t    |            1 |            1
- two     | tenant-2 | t    |           -1 |           -1
- two     | tenant-6 | t    |           -1 |           -1
- two     | tenant-9 | t    |           -1 |           -1
- uuid    | tenant-1 | t    |            1 |            1
- uuid    | tenant-2 | t    |           -1 |           -1
- uuid    | tenant-6 | t    |           -1 |           -1
- uuid    | tenant-9 | t    |           -1 |           -1
- varchar | tenant-1 | t    |            1 |            1
- varchar | tenant-2 | t    |           -1 |           -1
- varchar | tenant-6 | t    |           -1 |           -1
- varchar | tenant-9 | t    |           -1 |           -1
+  form   |   key    | same |  route  | cube  
+---------+----------+------+---------+-------
+ one     | tenant-1 | t    | summary | delta
+ one     | tenant-2 | t    | summary | clean
+ one     | tenant-6 | t    | summary | clean
+ one     | tenant-9 | t    | summary | clean
+ two     | tenant-1 | t    |         | 
+ two     | tenant-2 | t    |         | 
+ two     | tenant-6 | t    |         | 
+ two     | tenant-9 | t    |         | 
+ uuid    | tenant-1 | t    | summary | delta
+ uuid    | tenant-2 | t    | summary | clean
+ uuid    | tenant-6 | t    | summary | clean
+ uuid    | tenant-9 | t    | summary | clean
+ varchar | tenant-1 | t    | summary | delta
+ varchar | tenant-2 | t    | summary | clean
+ varchar | tenant-6 | t    | summary | clean
+ varchar | tenant-9 | t    | summary | clean
 (16 rows)
 
--- a pair of tenant 6 ends and a pair of a key no one reads begins: the reads of tenant 6 list one changed member, those of the other keys what they did
+-- a pair of tenant 6 ends and a pair of a key no one reads begins: the reads of tenant 6 take the changes too, those of the other keys what they did
 DELETE FROM pairs WHERE m = 'acct-51' AND k = 'tenant-6';
 DELETE FROM var_pairs WHERE m = 'acct-51' AND k = 'tenant-6';
 DELETE FROM u_pairs WHERE m = md5('acct-51')::uuid AND k = md5('tenant-6')::uuid;
 DELETE FROM grants WHERE m = 'acct-52' AND k = 'tenant-6';
 INSERT INTO pairs VALUES ('acct-30', 'tenant-3 other');
 SELECT * FROM tag_states('one pair of tenant 6 ended');
-  form   |   key    | same | changed_keys | patched_keys 
----------+----------+------+--------------+--------------
- one     | tenant-1 | t    |            1 |            1
- one     | tenant-2 | t    |           -1 |           -1
- one     | tenant-6 | t    |            1 |            0
- one     | tenant-9 | t    |           -1 |           -1
- two     | tenant-1 | t    |            1 |            1
- two     | tenant-2 | t    |           -1 |           -1
- two     | tenant-6 | t    |            1 |            0
- two     | tenant-9 | t    |           -1 |           -1
- uuid    | tenant-1 | t    |            1 |            1
- uuid    | tenant-2 | t    |           -1 |           -1
- uuid    | tenant-6 | t    |            1 |            0
- uuid    | tenant-9 | t    |           -1 |           -1
- varchar | tenant-1 | t    |            1 |            1
- varchar | tenant-2 | t    |           -1 |           -1
- varchar | tenant-6 | t    |            1 |            0
- varchar | tenant-9 | t    |           -1 |           -1
+  form   |   key    | same |  route  | cube  
+---------+----------+------+---------+-------
+ one     | tenant-1 | t    | summary | delta
+ one     | tenant-2 | t    | summary | clean
+ one     | tenant-6 | t    | summary | delta
+ one     | tenant-9 | t    | summary | clean
+ two     | tenant-1 | t    |         | 
+ two     | tenant-2 | t    |         | 
+ two     | tenant-6 | t    |         | 
+ two     | tenant-9 | t    |         | 
+ uuid    | tenant-1 | t    | summary | delta
+ uuid    | tenant-2 | t    | summary | clean
+ uuid    | tenant-6 | t    | summary | delta
+ uuid    | tenant-9 | t    | summary | clean
+ varchar | tenant-1 | t    | summary | delta
+ varchar | tenant-2 | t    | summary | clean
+ varchar | tenant-6 | t    | summary | delta
+ varchar | tenant-9 | t    | summary | clean
 (16 rows)
 
 DROP FUNCTION tag_states(text);
