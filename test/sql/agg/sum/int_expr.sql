@@ -65,8 +65,11 @@ SELECT q FROM si_q WHERE answer(q, true) <> answer(q, false);
 
 SET sift.agg_force = on;
 SELECT sum((s + 1) * 3), sum(s * 3 + 1), avg((s + 1) * 3), sum(n * 3 + 100) FROM si;
+-- the error, not the context of the store that read the row
+\set VERBOSITY terse
 SELECT sum(s * 100000) FROM sx;
 SELECT sum((s + 1) * 100000) FROM sx;
+\set VERBOSITY default
 EXPLAIN (COSTS OFF) SELECT sum((s + 1) * 3), avg(s * 3 + 1) FROM si;
 RESET sift.agg_force;
 

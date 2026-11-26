@@ -63,25 +63,23 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
 -- the window stays above the scan, and a query without a window keeps its plan
 SET sift.enable_agg = on;
 SELECT * FROM agg_plan('SELECT g, count(*), rank() OVER (ORDER BY count(*) DESC, g) FROM wn GROUP BY g');
-                 agg_plan                  
--------------------------------------------
+               agg_plan               
+--------------------------------------
  WindowAgg
    ->  Sort
          Sort Key: (count(*)) DESC, g
-         ->  Custom Scan (SiftAgg)
+         ->  Custom Scan (SiftAggV6)
                Index: wn_col
                Group Keys: g
-               Pushed Aggregates: count(*)
-(7 rows)
+(6 rows)
 
 SELECT * FROM agg_plan('SELECT g, count(*) FROM wn GROUP BY g');
-           agg_plan            
--------------------------------
- Custom Scan (SiftAgg)
+        agg_plan         
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: wn_col
    Group Keys: g
-   Pushed Aggregates: count(*)
-(4 rows)
+(3 rows)
 
 DROP TABLE wn, agg_q;
 DROP FUNCTION agg_rows, agg_pushed, agg_plan;
