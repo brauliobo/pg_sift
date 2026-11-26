@@ -79,3 +79,87 @@ step s2w_k: INSERT INTO iso_k VALUES (200001, 1, 5);
 step s1c: COMMIT;
 step s2c: COMMIT;
 ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_ios s2b_ios s1r_dk s2r_dk s1d_k s2d_k s1c s2c
+step s1b_ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_dk: SELECT count(*) AS n FROM iso_k WHERE grp = 60;
+n
+-
+1
+(1 row)
+
+step s2r_dk: SELECT count(*) AS n FROM iso_k WHERE grp = 61;
+n
+-
+1
+(1 row)
+
+step s1d_k: DELETE FROM iso_k WHERE id = 90002;
+step s2d_k: DELETE FROM iso_k WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_bmp s2b_bmp s1r_dk s2r_dk s1d_k s2d_k s1c s2c
+step s1b_bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_dk: SELECT count(*) AS n FROM iso_k WHERE grp = 60;
+n
+-
+1
+(1 row)
+
+step s2r_dk: SELECT count(*) AS n FROM iso_k WHERE grp = 61;
+n
+-
+1
+(1 row)
+
+step s1d_k: DELETE FROM iso_k WHERE id = 90002;
+step s2d_k: DELETE FROM iso_k WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_ord s2b_ord s1r_dord s2r_dord s1d_o s2d_o s1c s2c
+step s1b_ord: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s2b_ord: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL sift.enable_agg = off;
+step s1r_dord: SELECT bal FROM iso_o WHERE grp = 60 ORDER BY grp;
+bal
+---
+  7
+(1 row)
+
+step s2r_dord: SELECT bal FROM iso_o WHERE grp = 61 ORDER BY grp;
+bal
+---
+  7
+(1 row)
+
+step s1d_o: DELETE FROM iso_o WHERE id = 90002;
+step s2d_o: DELETE FROM iso_o WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b_grp s2b_grp s1r_dgrp s2r_dgrp s1d_k s2d_k s1c s2c
+step s1b_grp: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b_grp: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1r_dgrp: SELECT grp, sum(bal) AS total FROM iso_k WHERE grp = 60 GROUP BY grp;
+grp|total
+---+-----
+ 60|    7
+(1 row)
+
+step s2r_dgrp: SELECT grp, sum(bal) AS total FROM iso_k WHERE grp = 61 GROUP BY grp;
+grp|total
+---+-----
+ 61|    7
+(1 row)
+
+step s1d_k: DELETE FROM iso_k WHERE id = 90002;
+step s2d_k: DELETE FROM iso_k WHERE id = 90001;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
