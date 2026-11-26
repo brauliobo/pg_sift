@@ -645,16 +645,12 @@ flush_largest(void)
 		if (big == NULL || st->mem_bytes + st->host_mem > big->mem_bytes + big->host_mem)
 			big = st;
 	rel = try_relation_open(big->relid, RowExclusiveLock);
-	if (rel == NULL)
-	{
-		sift_stage_discard(big->relid);
-		return;
-	}
-	if (RelFileLocatorEquals(big->locator, rel->rd_locator))
+	if (rel != NULL && RelFileLocatorEquals(big->locator, rel->rd_locator))
 		flush_stage_rows(rel, big, false);
 	else
 		sift_stage_discard(big->relid);
-	relation_close(rel, NoLock);
+	if (rel != NULL)
+		relation_close(rel, NoLock);
 }
 
 /* The stages of the transaction (partitions of a table, their indexes) hold twice the budget of a bulk insert at most: the largest are written down to half, while a write frees memory */
