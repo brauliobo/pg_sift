@@ -5,11 +5,13 @@
 # have). Those pairs were written before the journal began, by transactions that finished before the lock that began it, so a read whose snapshot sees the transaction that made the journal does not
 # need a record of them (col_scope_journal_standby holds the read that does not): the pass writes the pairs into the index and no journal record. Every pair written after the journal began is recorded by its own writer, whatever the
 # pass is doing meanwhile: this holds the pass at its gate (sift.test_phase_gate + 6, after the journal is ready for writes and before it reads), changes the pairs and the facts, and checks that
-# the log holds exactly the records of those changes, that the stamp (taken after the pass) sees them, and that the read of the scope is the join's.
+# the log holds exactly the records of those changes, that the read of the scope patches them into the summary of the parts of the first pass, and that it is the join's.
+# The index is of Format 2.0 on both runs: a Format 1 index has no scope read of its own.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 15
-node_init jv 30 "autovacuum = off"
+plan 14
+node_init jv 30 "autovacuum = off
+sift.test_create_format1 = off"
 node_start jv || bail "start failed"
 D=$(dir jv)
 sql jv "CREATE EXTENSION pg_sift_test CASCADE" \
@@ -20,18 +22,13 @@ sql jv "CREATE EXTENSION pg_sift_test CASCADE" \
 	"VACUUM (FREEZE, ANALYZE) events, tenant_scope" >/dev/null || bail "setup failed"
 PAIRS=$(sql jv "SELECT count(*) FROM tenant_scope")
 SCOPE="scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) max_multiplicity(8)'"
-READ="SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, 12)"
-PLAIN="SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 12)"
+READ() { echo "SELECT count(*), sum(v) FROM events e JOIN tenant_scope p ON p.dim_a_id = e.dim_a_id WHERE p.tenant_id = $1"; }
 journal() { sql jv "SELECT i.indexrelid::regclass FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_am a ON a.oid = c.relam WHERE i.indrelid = 'tenant_scope'::regclass AND a.amname = 'sift_col'"; }
 records() { sql jv "SELECT records FROM sift._test_conn_gen('$(journal)'::regclass)"; }
-verdict() { # the verdict of the scope read: its fallback, "units" when it read the units
-	local p
-	p=$(sql jv "SET sift.agg_force = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $READ")
-	grep -o 'Scope Fallback: .*' <<<"$p" || { grep -q 'Scope Units' <<<"$p" && echo units || echo "no scope read"; }
-}
-same() { [[ $(sql jv "SET sift.agg_force = on" "$READ") == "$(sql jv "SET sift.enable_agg = off" "$PLAIN")" ]]; }
-changed() { sql jv "SELECT count(c.key) FROM (SELECT s.lineage, s.horizon::text::xid AS horizon FROM sift._test_col_scope_stamps('events_col') s
-	WHERE s.family = 'scope' AND s.scope = 0 ORDER BY s.horizon LIMIT 1) t, LATERAL sift._test_scope_journal_changes('events_col', 0, t.lineage, t.horizon) c"; }
+explain() { sql jv "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $(READ 12)"; }
+verdict() { explain | sed -n 's/^ *Scope Read: //p' | grep . || echo "no scope read"; }
+cube() { explain | sed -n 's/^ *Scope Cube: //p'; }
+same() { [[ $(sql jv "$(READ 12)") == "$(sql jv "SET sift.enable_agg = off" "$(READ 12)")" ]]; }
 
 GATE=7300
 rm -f "$D/held"
@@ -55,17 +52,16 @@ wait "$BUILDER"; built=$?
 check "the build ends beside the writers" test "$built" == 0
 check "the log holds the records of the writers and none of the $PAIRS pairs the pass added" test "$(records)" == 10
 check "the index is valid and the journal is valid" test "$(sql jv "SELECT count(*) FROM pg_index WHERE NOT indisvalid")" == 0
-check "the read is from the units ($(verdict))" test "$(verdict)" == units
+check "the read is from the summary ($(verdict))" test "$(verdict)" == summary
 check "... and is the join's, with the pairs the writers changed" same
-check "the stamp is of a snapshot that sees what the writers did: no member changed since it" test "$(changed)" == 0
+check "the summary is of the parts of the first pass: the members the writers changed are patched in from the log ($(cube))" test "$(cube)" == delta
 check "the index verifies" test -z "$(sql jv "SELECT sift.col_verify('events_col', true)" 2>&1)"
-check "... and no key differs from the join" test "$(sql jv "SELECT count(*) FROM sift.col_scope_verify('events_col', 1000) WHERE problem <> 'unverified'")" == 0
 
 # nothing written during the pass: the journal is empty when the statement ends, and records the next pair
 sql jv "DROP INDEX events_col" "VACUUM tenant_scope" >/dev/null
 check "a build with no writers leaves the journal with no record" test "$(sql jv "CREATE INDEX CONCURRENTLY events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH ($SCOPE)" >/dev/null; records)" == 0
 sql jv "INSERT INTO tenant_scope SELECT min(m), 12 FROM generate_series(1, 400) m WHERE NOT EXISTS (SELECT 1 FROM tenant_scope t WHERE t.dim_a_id = m AND t.tenant_id = 12)" >/dev/null
-check "... and the first pair written after it is its first record and the one changed member" test "$(records)|$(changed)" == "1|1"
+check "... and the first pair written after it is its first record and a changed member the read patches in" test "$(records)|$(cube)" == "1|delta"
 check "... and the read patches it and is the join's" same
 
 # writers of the pairs and the facts run while builds that make their own journal run one after the other (each DROP INDEX takes the journal with it): every tenant reads as the join does
@@ -98,8 +94,7 @@ check "the writers had no failed transaction and $ROUNDS builds ran" test "$PRC"
 every_tenant() {
 	local t
 	for t in $(seq 1 14); do
-		[[ $(sql jv "SET sift.agg_force = on" "SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, $t)") == \
-			"$(sql jv "SET sift.enable_agg = off" "SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $t)")" ]] || { diag "tenant $t differs"; return 1; }
+		[[ $(sql jv "$(READ "$t")") == "$(sql jv "SET sift.enable_agg = off" "$(READ "$t")")" ]] || { diag "tenant $t differs"; return 1; }
 	done
 }
 check "every tenant reads as the join does after the writers ($(verdict))" every_tenant
