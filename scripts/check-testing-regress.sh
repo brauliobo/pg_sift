@@ -23,6 +23,7 @@ mapfile -t needing < <(SHIPPED=$shipped perl -0777 -ne '
 	BEGIN { $shipped = qr/^(?:$ENV{SHIPPED})$/ }
 	if (/sift\._test_|^create extension (?:if not exists )?pg_sift_test/mi) { print "$ARGV\n"; next }
 	my %probed = map { $_ => 1 } /current_setting\(\s*\x27(sift\.test_\w+)\x27\s*,\s*true\s*\)/g;
+	if (!/^[ \t]*\\if\b/m && grep { !/$shipped/ } /^[ \t]*(?:set|reset)[ \t]+(?:(?:local|session)[ \t]+)?(sift\.test_\w+)/gmi) { print "$ARGV\n"; next }
 	for (/sift\.test_\w+/g) { if (!$probed{$_} && !/$shipped/) { print "$ARGV\n"; last } }
 ' "${sqls[@]}")
 for f in "${needing[@]}"; do
