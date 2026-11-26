@@ -372,7 +372,7 @@ run_guarded(SiftMaintShmem *m, Oid db, bool *yielded)
 	return n;
 }
 
-/* A dynamic worker drains the highest priority requests of its database and leaves after SIFT_MAINT_IDLE_NAPS naps with nothing to do */
+/* A dynamic worker drains the highest priority requests of its database and leaves after SIFT_MAINT_IDLE_NAPS naps with nothing to do and nothing due soon */
 void
 sift_maint_sched_worker_main(Datum main_arg)
 {
@@ -399,7 +399,7 @@ sift_maint_sched_worker_main(Datum main_arg)
 	for (int idle = 0; idle < SIFT_MAINT_IDLE_NAPS && !yielded;)
 	{
 		reload_config();
-		idle = run_guarded(m, db, &yielded) > 0 ? 0 : idle + 1;
+		idle = run_guarded(m, db, &yielded) > 0 || sift_maint_due_soon(m, &sift_maint_server_host, db) ? 0 : idle + 1;
 		sift_maint_reap(m, &sift_maint_server_host);
 		if (idle < SIFT_MAINT_IDLE_NAPS && !yielded)
 			nap(m->naptime_ms);

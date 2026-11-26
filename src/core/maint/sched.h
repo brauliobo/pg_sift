@@ -357,6 +357,7 @@ extern void sift_maint_progress(SiftMaintShmem *m, const SiftMaintClaim *claim, 
 /* Claim, run and complete until there is no runnable request, max_steps steps ran or the pacer asks the worker to leave (*yielded): the loop of a worker and of sift.maintain() */
 extern int	sift_maint_run(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, int max_steps, SiftMaintStepFn step, void *arg, bool *yielded);
 extern bool sift_maint_has_work(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, bool allow_cold);
+extern bool sift_maint_due_soon(SiftMaintShmem *m, const SiftMaintHost *host, Oid db);
 
 /* The claims of a pid that is gone, the workers that never started or died; returns the claims given back. A table with no request and no worker is left alone */
 extern int	sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host);

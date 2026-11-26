@@ -674,6 +674,20 @@ sift_maint_has_work(SiftMaintShmem *m, const SiftMaintHost *host, Oid db, bool a
 	return found;
 }
 
+/* A request of the database is queued to run within SIFT_MAINT_DEFER_US (a step that found its lock busy or deferred itself): a dynamic worker that left now would leave it to no one */
+bool
+sift_maint_due_soon(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
+{
+	TimestampTz horizon = host->now() + SIFT_MAINT_DEFER_US;
+	bool		found = false;
+
+	sift_shm_lock(&m->lock);
+	for (int i = 0; i < SIFT_MAINT_SLOTS && !found; i++)
+		found = m->khash[i] != 0 && runnable(&m->slot[i], db, true, horizon);
+	sift_shm_unlock(&m->lock);
+	return found;
+}
+
 void
 sift_maint_worker_free(SiftMaintShmem *m, int w)
 {

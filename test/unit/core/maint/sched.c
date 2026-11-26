@@ -1,6 +1,7 @@
 /*
  * test/unit/core/maint/sched.c - the queue of core/maint/sched.c on a fake host: one busy database gets as many workers as it has runnable requests (up to the cap), a request that
- * coalesces into a stranded one (no worker is there for it) still starts one, and the queue holds a request for every partition of a large server.
+ * coalesces into a stranded one (no worker is there for it) still starts one, a request put back for a busy lock keeps the worker of its database, and the queue holds a request for every
+ * partition of a large server.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -161,6 +162,31 @@ test_coalesced_kick(void)
 	SIFT_CHECKF(spawns == 2, "and none once one is there: %d spawns", spawns);
 }
 
+/* A step that found its lock busy is due again within SIFT_MAINT_DEFER_US: no kick starts a worker for it before then, so the worker of its database waits for it; a failure backed off past that does not hold one */
+static void
+test_busy_keeps_worker(void)
+{
+	SiftMaintClaim c;
+
+	fresh(4);
+	(void) enq(5, 1, SIFT_MK_COMPACT_PART);
+	SIFT_CHECK(sift_maint_claim(m, &host, 5, true, &c));
+	SIFT_CHECK(sift_maint_complete(m, &host, &c, SIFT_MSTEP_BUSY));
+	SIFT_CHECKF(!sift_maint_has_work(m, &host, 5, true) && sift_maint_kick(m, &host) == SIFT_KICK_NONE, "the busy request is not runnable yet: nothing starts a worker");
+	SIFT_CHECKF(sift_maint_due_soon(m, &host, 5) && !sift_maint_due_soon(m, &host, 6), "it is due soon in its database only");
+	clock_now += SIFT_MAINT_BUSY_US;
+	SIFT_CHECKF(sift_maint_has_work(m, &host, 5, true), "the worker that waited claims it");
+	for (int i = 0; i < 12; i++)
+	{
+		SIFT_CHECK(sift_maint_claim(m, &host, 5, true, &c));
+		SIFT_CHECK(sift_maint_complete(m, &host, &c, SIFT_MSTEP_FAILED));
+		clock_now += sift_maint_backoff_us(m, m->slot[c.slot].failures);
+	}
+	SIFT_CHECK(sift_maint_claim(m, &host, 5, true, &c));
+	SIFT_CHECK(sift_maint_complete(m, &host, &c, SIFT_MSTEP_FAILED));
+	SIFT_CHECKF(!sift_maint_due_soon(m, &host, 5), "a request backed off for its failures keeps no worker");
+}
+
 /* A queued tail shrink (P3) asked for again at P0 is an upgrade the launcher is woken for */
 static void
 test_upgrade(void)
@@ -202,6 +228,7 @@ main(void)
 	test_held_db();
 	test_hold_count();
 	test_coalesced_kick();
+	test_busy_keeps_worker();
 	test_upgrade();
 	test_capacity_and_drop();
 	free(m);
