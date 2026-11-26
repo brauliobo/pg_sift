@@ -18,7 +18,8 @@
 # FZ_SKIP / test/fuzz/ubsan.supp until they are fixed (FZ_SKIP= and FZ_NO_SUPP=1 run strict); bm25-raw is the query path on bytes
 # nobody verified (clean since 2.0.2). FZ_SECS sets the seconds of each coverage-guided target, FZ_KERNELS_MILLIONS the millions of random calls of the kernels
 # target and FZ_GRID_STRIDE runs every Nth combination of its exhaustive BM25 grid, FZ_CODEC_ITERS and
-# FZ_ANALYZE_ITERS the iterations of those two (scripts/ci.sh quick: 2, 0.05, 7, 100 and 5000). Exit 1 on any finding.
+# FZ_ANALYZE_ITERS the iterations of those two (scripts/ci.sh quick: 2, 0.05, 7, 100 and 5000). Every harness is built once, before the first pass;
+# the standalone ones run FZ_JOBS (default 4) at a time while the server ones (canary query sql) run one after the other. Exit 1 on any finding.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -27,7 +28,8 @@ eval "$("$REPO/scripts/pgtest.sh" env)"
 export PGDATABASE=sift_fuzz PGOPTIONS='-c client_min_messages=warning' ASAN_OPTIONS=detect_leaks=$([[ $(uname -s) == Linux ]] && echo 1 || echo 0)
 TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$TMP/fuzz
-SCALE=10 SEED=1 BUDGET=0
+SCALE=10 SEED=1 BUDGET=0 JOBS=${FZ_JOBS:-4}
+SERVER=' canary query sql '
 SAN='-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=all'
 while [[ ${1:-} == --* ]]; do
 	case $1 in --scale) SCALE=$2 ;; --seed) SEED=$2 ;; --budget) BUDGET=$2 ;; *) sed -n '2,16p' "$0"; exit 1 ;; esac
@@ -60,42 +62,38 @@ canary() {
 	echo "ASan aborted the backend and reported the overflow"
 }
 
-codec() {
-	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/test" && "$OUT/codec/test" "${FZ_CODEC_ITERS:-$((300 * SCALE))}"
+# prep TARGET: the build of the harness of TARGET, once before the passes (the standalone ones run in parallel on what it built)
+prep() {
+	case $1 in
+		codec|blob) CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/test" "$OUT/codec/fuzz" ;;
+		kernels|colwide|gquant) build -C "$REPO/tools/$1" SANITIZE=1 OUT="$OUT/$1" "$OUT/$1/test" ;;
+		analyze|query) build -C "$REPO/tools/$1" -B SANITIZE=1 harness && mv "$REPO/tools/$1/harness" "$OUT/$1-harness" ;;
+		colchunk|bm25|shred) build -C "$REPO/test/fuzz" OUT="$OUT/lf" "$OUT/lf/$1" ;;
+		bm25-raw) prep bm25 ;;
+	esac
 }
 
-blob() {
-	CFLAGS="$SAN" build -C "$REPO/tools/codec" OUT="$OUT/codec" "$OUT/codec/fuzz" && "$OUT/codec/fuzz" -s "$SEED" -n $((2000 * SCALE))
-}
+codec() { "$OUT/codec/test" "${FZ_CODEC_ITERS:-$((300 * SCALE))}"; }
 
-kernels() {
-	build -C "$REPO/tools/kernels" SANITIZE=1 OUT="$OUT/kernels" "$OUT/kernels/test" &&
-		"$OUT/kernels/test" "${FZ_KERNELS_MILLIONS:-$(awk -v s="$SCALE" 'BEGIN { print s / 5 }')}" "${FZ_GRID_STRIDE:-1}"
-}
+blob() { "$OUT/codec/fuzz" -s "$SEED" -n $((2000 * SCALE)); }
+
+kernels() { "$OUT/kernels/test" "${FZ_KERNELS_MILLIONS:-$(awk -v s="$SCALE" 'BEGIN { print s / 5 }')}" "${FZ_GRID_STRIDE:-1}"; }
 
 # the portable value code of the wide leaf types (128-bit lanes, interval totals, numeric images): random and boundary tests, FZ_COLWIDE_N scales them
-colwide() {
-	build -C "$REPO/tools/colwide" SANITIZE=1 OUT="$OUT/colwide" "$OUT/colwide/test" && "$OUT/colwide/test" "${FZ_COLWIDE_N:-$SCALE}"
-}
+colwide() { "$OUT/colwide/test" "${FZ_COLWIDE_N:-$SCALE}"; }
 
 # the quantized keys of a compact chunk: every decoder level against the scalar one, on sound and damaged blobs
-gquant() {
-	build -C "$REPO/tools/gquant" SANITIZE=1 OUT="$OUT/gquant" "$OUT/gquant/test" && "$OUT/gquant/test" "${FZ_GQUANT_N:-$SCALE}"
-}
+gquant() { "$OUT/gquant/test" "${FZ_GQUANT_N:-$SCALE}"; }
 
 # the header-only structures (core/u64set.h, table/f2/lock/touched.c, table/v1/keyidx.h) against the scans they replace, under ASan and UBSan (test/bench_on)
 bench_on() { "$REPO/test/bench_on/run.sh"; }
 
-analyze() {
-	build -C "$REPO/tools/analyze" -B SANITIZE=1 harness && mv "$REPO/tools/analyze/harness" "$OUT/analyze-harness" &&
-		"$OUT/analyze-harness" fuzz "${FZ_ANALYZE_ITERS:-$((20000 * SCALE))}" "$SEED"
-}
+analyze() { "$OUT/analyze-harness" fuzz "${FZ_ANALYZE_ITERS:-$((20000 * SCALE))}" "$SEED"; }
 
-# libfuzz TARGET: a test/fuzz target for 6 s per scale step (FZ_SECS: that many seconds instead; the seeds and the inputs of the fixed findings run first either way); a kept corpus in $OUT/lf-TARGET, crash files in $OUT/lf-TARGET/artifacts
+# libfuzz TARGET [NAME]: a test/fuzz target for 6 s per scale step (FZ_SECS: that many seconds instead; the seeds and the inputs of the fixed findings run first either way); a kept corpus in $OUT/lf-NAME (default TARGET), crash files in $OUT/lf-NAME/artifacts
 libfuzz() {
-	local t=$1 d=$OUT/lf-$1 known=${FZ_SKIP-} supp="$REPO/test/fuzz/ubsan.supp"
+	local t=$1 d=$OUT/lf-${2:-$1} known=${FZ_SKIP-} supp="$REPO/test/fuzz/ubsan.supp"
 	[[ -z ${FZ_NO_SUPP:-} ]] || supp=/dev/null
-	build -C "$REPO/test/fuzz" OUT="$OUT/lf" "$OUT/lf/$t" || return 1
 	rm -rf "$d/seeds" && mkdir -p "$d/corpus" "$d/artifacts"
 	FZ_GEN="$d/seeds" "$OUT/lf/$t" >/dev/null 2>&1 && cp -n "$d"/seeds/* "$d/corpus/" || { echo "no seeds"; return 1; }
 	find "$REPO/test/fuzz/regress" -name "$t-*" -exec cp -n {} "$d/corpus/" \;		# the inputs of the fixed findings run first
@@ -108,11 +106,10 @@ colchunk() { libfuzz colchunk; }
 shred() { libfuzz shred; }
 # the checked blobs only: sift_blob_check must keep every cursor inside the blob (the unverified query path is bm25-raw)
 bm25() { FZ_MODE=1 libfuzz bm25; }
-bm25-raw() { FZ_MODE= libfuzz bm25; }
+bm25-raw() { FZ_MODE= libfuzz bm25 bm25-raw; }
 
 query() {
-	build -C "$REPO/tools/query" -B harness && mv "$REPO/tools/query/harness" "$OUT/query-harness" &&
-		python3 -I "$REPO/tools/query/gen.py" --mode fuzz -n $((2000 * SCALE)) --seed "$SEED" -o "$OUT/queries.copy" &&
+	python3 -I "$REPO/tools/query/gen.py" --mode fuzz -n $((2000 * SCALE)) --seed "$SEED" -o "$OUT/queries.copy" &&
 		"$OUT/query-harness" "$OUT/queries.copy" && q -v file="$OUT/queries.copy" -f "$REPO/tools/query/fuzz.sql"
 }
 
@@ -133,22 +130,31 @@ sql() {
 mkdir -p "$OUT"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS sift_fuzz WITH (FORCE)" -c "CREATE DATABASE sift_fuzz"
 q -c "CREATE EXTENSION pg_sift"
-status=0
+status=0 ready=() deadline=$((SECONDS + BUDGET))
+for t in ${TARGETS[*]}; do
+	if prep "$t"; then ready+=("$t"); else echo "FAIL fuzz $t: build"; status=1; fi
+done
+one() { local rc=0; "$1" >"$OUT/log/$1" 2>&1 || rc=$?; echo "$rc" >"$OUT/log/$1.rc"; }
+server() { local t; for t in "$@"; do [[ $SERVER != *" $t "* ]] || one "$t"; done; }
+# run TARGET...: one pass, the output of each target in the order given
 run() {
-	local t
+	local t n=0
+	rm -rf "$OUT/log" && mkdir -p "$OUT/log"
+	server "$@" &
+	for t in "$@"; do
+		[[ $SERVER != *" $t "* ]] || continue
+		(( n++ < JOBS )) || wait -n
+		one "$t" &
+	done
+	wait
 	for t in "$@"; do
 		echo "== fuzz $t (seed $SEED)"
-		if "$t" 2>&1 | tail -25; then
-			echo "PASS fuzz $t"
-		else
-			echo "FAIL fuzz $t"
-			status=1
-		fi
+		tail -25 "$OUT/log/$t"
+		if [[ $(<"$OUT/log/$t.rc") == 0 ]]; then echo "PASS fuzz $t"; else echo "FAIL fuzz $t"; status=1; fi
 	done
 }
-deadline=$((SECONDS + BUDGET))
-run ${TARGETS[*]}
-seeded=$(printf '%s\n' ${TARGETS[*]} | grep -x -E 'blob|analyze|query|sql|colchunk|bm25|shred' || true)
+(( ${#ready[@]} == 0 )) || run "${ready[@]}"
+seeded=$(printf '%s\n' "${ready[@]}" | grep -x -E 'blob|analyze|query|sql|colchunk|bm25|shred' || true)
 while [[ -n $seeded ]] && (( SECONDS < deadline && status == 0 )); do
 	SEED=$((SEED + 1))
 	run $seeded

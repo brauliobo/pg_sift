@@ -58,7 +58,7 @@ all: $(addprefix $(OUT)/,colchunk bm25 shred)
 
 $(OUT)/obj/%.o: $(SRC)/%.c $(HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
+	$(CCACHE) $(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
 # the cpu stand-in of test/common, instrumented; it leaves sift_k to the real one of bm25/bitmap/bitmap.c
 CFLAGS_cpushim = $(COV) -DSIFT_CPUSHIM_NO_SIFT_K
@@ -69,16 +69,16 @@ $(eval $(call common_obj,$(OUT),pgshim))
 
 $(OUT)/c/shim.o: c/shim.c $(HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CCACHE) $(CC) $(CFLAGS) -c -o $@ $<
 
 $(OUT)/c/%.o: c/%.c $(HDR)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) $(COV) -c -o $@ $<
+	$(CCACHE) $(CC) $(CFLAGS) $(COV) -c -o $@ $<
 
 # the driver is not instrumented: it is the callback
 $(OUT)/c/driver.o: c/driver.c
 	@mkdir -p $(@D)
-	$(CC) -O1 -g $(DSAN) -c -o $@ $<
+	$(CCACHE) $(CC) -O1 -g $(DSAN) -c -o $@ $<
 
 $(OUT)/colchunk: $(OUT)/c/colchunk.o $(OBJ) $(DRIVER)
 	$(CC) $(CFLAGS) $(LINKFZ) -o $@ $^ $(LDLIBS)
