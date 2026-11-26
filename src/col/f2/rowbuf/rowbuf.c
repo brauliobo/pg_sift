@@ -551,12 +551,10 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 		MemoryContextSwitchTo(col_cx);
 		if (constant)
 		{
-			SiftCell	k = pc < 0 ? remap->missing[c] : null_cell;
+			const SiftCell *k = pc < 0 ? &remap->missing[c] : &null_cell;
 
-			k.tag = 0;
-			k.xplen = 0;
 			for (int i = 0; i < cnt; i++)
-				set_cell(rb, base + i, c, &k);
+				set_cell(rb, base + i, c, k);
 		}
 		else
 		{
