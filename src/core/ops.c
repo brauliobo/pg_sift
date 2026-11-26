@@ -9,6 +9,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_index.h"
+#include "catalog/storage.h"
 #include "commands/defrem.h"
 #include "access/reloptions.h"
 #include "miscadmin.h"
@@ -178,14 +179,25 @@ has_col_index(Oid heapoid)
 	return found;
 }
 
-/* The file of a dropped relation is gone: its slot of the registry of the manifests (core/shm/manifest.h) is given back, with the snapshot it holds */
+/*
+ * Every file the transaction deletes at its commit (DROP, TRUNCATE, REINDEX, VACUUM FULL, CLUSTER, a rewrite) gives back its slot of the registry of the manifests (core/shm/manifest.h), with
+ * the snapshot it holds: the relation keeps its exclusive lock to the end, so no reader publishes the old file again
+ */
 static void
-forget_shared_manifest(Oid relid)
+forget_deleted_files(XactEvent event, void *arg pg_attribute_unused())
 {
-	Relation	rel = relation_open(relid, NoLock);
+	RelFileLocator *files;
+	int			n;
 
-	sift_shm_manifest_invalidate(&rel->rd_locator, false);
-	relation_close(rel, NoLock);
+	if (event != XACT_EVENT_PRE_COMMIT && event != XACT_EVENT_PRE_PREPARE)
+		return;
+	n = smgrGetPendingDeletes(true, &files);
+	if (n == 0)
+		return;
+	if (sift_db_has_extension())
+		for (int i = 0; i < n; i++)
+			sift_shm_manifest_invalidate(&files[i], false);
+	pfree(files);
 }
 
 /* The queued maintenance of a dropped relation gives its slots back at once: a step would only find the relation gone */
@@ -238,7 +250,7 @@ sift_object_access(ObjectAccessType access, Oid classId, Oid objectId, int subId
 		if (col)
 			sift_col_track_dropping(objectId), sift_keystore_note_drop(objectId);
 		if (stored)
-			forget_shared_manifest(objectId), forget_queued_maintenance(objectId);
+			forget_queued_maintenance(objectId);
 		return;
 	}
 	if (table && has_col_index(objectId))
@@ -275,6 +287,7 @@ sift_ops_init(void)
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	prev_object_access_hook = object_access_hook;
 	object_access_hook = sift_object_access;
+	RegisterXactCallback(forget_deleted_files, NULL);
 	sift_col_track_init();
 	sift_keystore_init();
 }

@@ -494,6 +494,37 @@ SELECT sift._test_f2_plan_cache_shm(true) AS "loaded_from_shm,published", (sift.
 (1 row)
 
 DROP FUNCTION plan_buffers(text);
+-- REINDEX, VACUUM FULL and TRUNCATE give the index a new file: the slot of the old one goes back with its snapshot at the commit, and the registry holds no more slots than before
+CREATE TEMP TABLE before_rewrite AS SELECT sift._test_shm_manifest_stat('slots_valid') AS slots;
+REINDEX INDEX live_i;
+SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200;
+ count 
+-------
+   101
+(1 row)
+
+VACUUM FULL live;
+SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200;
+ count 
+-------
+   101
+(1 row)
+
+TRUNCATE live;
+INSERT INTO live SELECT i, i % 10 FROM generate_series(1, 20000) i;
+SELECT count(*) FROM live WHERE id BETWEEN 100 AND 200;
+ count 
+-------
+   101
+(1 row)
+
+SELECT sift._test_shm_manifest_stat('slots_valid') - slots AS slots_kept_of_old_files FROM before_rewrite;
+ slots_kept_of_old_files 
+-------------------------
+                       0
+(1 row)
+
+DROP TABLE before_rewrite;
 -- DROP gives the slot of the index back, with its snapshot: the registry holds no slot of a file that is gone
 CREATE TEMP TABLE before_drop AS SELECT sift._test_shm_manifest_stat('slots_valid') AS slots;
 DROP TABLE live;
