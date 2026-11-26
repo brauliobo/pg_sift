@@ -168,6 +168,7 @@ LEAK_IDLE_LOCKS="SELECT format('session %s %s holds %s on %s', a.pid, a.state, l
 # A primary reads them through a temporary function of the session over the C function of the library (no database or extension to create and drop); a standby cannot
 # create one: it reads them in postgres when the extension replicated there, and has none to read without it.
 # The maintenance launcher of a preloaded server (a child of the postmaster in DATA) maps the tables of its scheduler for as long as it lives: that is its mapping, not a session's
+# A maintenance worker maps the tables of its work while it naps between runs: the check ends the workers first, and their exit gives back what they mapped
 LEAK_LAUNCHER_TABLES='{sift_maint_v6,sift_workers_2,sift_pacer_1}'
 LEAK_DSM_FN="CREATE FUNCTION pg_temp.leak_dsm_entries(OUT name text, OUT build text, OUT size int8, OUT handle int8, OUT users int4) RETURNS SETOF record
 	AS 'pg_sift', 'sift_test_dsm_entries' LANGUAGE C"
@@ -188,6 +189,7 @@ leak_shared_tables() {
 		WHEN NOT pg_is_in_recovery() THEN 'primary' WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test') THEN 'standby' ELSE 'none' END")
 	[[ $mode != none ]] || return 0
 	[[ $mode != primary ]] || make=(-c "$LEAK_DSM_FN") fn=pg_temp.leak_dsm_entries
+	leak_psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'" >/dev/null
 	for _ in $(seq 100); do
 		out=$(leak_psql "${make[@]}" -c "SELECT format('shared table %s is mapped by %s backend(s) with no session left', name, users)
 			FROM $fn() WHERE users > CASE WHEN name = ANY ('$LEAK_LAUNCHER_TABLES') THEN $(leak_launchers "$1") ELSE 0 END")
