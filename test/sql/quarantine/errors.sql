@@ -34,7 +34,7 @@ DROP ROLE quarantine_errors_reader;
 SELECT count(*) AS recorded_after_permissions FROM sift.quarantine;
 
 -- the same index, damaged: recorded, whatever the code the caller expects
-SELECT sift._test_poke('t_col', 2, 8176, 9, 2);
+SELECT sift._test_poke('t_col', min(first_block), 8176, 9, 2) FROM sift.col_extents('t_col') WHERE what IN ('segment extent', 'part');
 SELECT expect($$ SELECT count(*) FROM t WHERE v = 3 $$) AS damage;
 SELECT index, error_code, detections FROM sift.quarantine;
 SELECT s AS sqlstate, expect(format('SELECT sift._test_raise(%L::regclass, %L)', 't_bm25', s)) AS raised, (SELECT count(*) FROM sift.quarantine) AS recorded

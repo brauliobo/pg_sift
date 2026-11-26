@@ -81,7 +81,7 @@ SELECT count(*) AS recorded_after_permissions FROM sift.quarantine;
 (1 row)
 
 -- the same index, damaged: recorded, whatever the code the caller expects
-SELECT sift._test_poke('t_col', 2, 8176, 9, 2);
+SELECT sift._test_poke('t_col', min(first_block), 8176, 9, 2) FROM sift.col_extents('t_col') WHERE what IN ('segment extent', 'part');
  _test_poke 
 ------------
  

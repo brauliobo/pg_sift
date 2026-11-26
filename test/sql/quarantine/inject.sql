@@ -1,6 +1,8 @@
 -- The test hooks that damage a private copy of a healthy index read it through the real readers and catch what they refuse: that is no damage of the index, so it stays in service and its writes
 -- are indexed. Damage of the index that a caller catches still takes it out of service, and the log says why (SQLSTATE and text of the first cause).
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the superunit and point-file damage hooks read Format 1 files (col/v1)
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.on_corruption = quarantine;
 SET max_parallel_maintenance_workers = 0;

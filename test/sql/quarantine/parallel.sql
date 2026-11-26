@@ -13,6 +13,15 @@ EXCEPTION WHEN OTHERS THEN
 	GET STACKED DIAGNOSTICS c = PG_EXCEPTION_CONTEXT;
 	RETURN CASE WHEN SQLSTATE IN ('XX002', '40001') THEN 'XX002 or 40001' ELSE SQLSTATE END || ' from ' || CASE WHEN c ~ 'parallel worker' THEN 'a parallel worker' ELSE 'the leader' END;
 END $$;
+CREATE FUNCTION workers_of(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; w int := 0; node boolean := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		node := node OR l ~ 'Parallel Custom Scan \(SiftAggV6\)';
+		IF l ~ 'Workers Planned: ' THEN w := substring(l from 'Workers Planned: (\d+)')::int; END IF;
+	END LOOP;
+	RETURN CASE WHEN node THEN w ELSE 0 END;
+END $$;
 CREATE FUNCTION flagged_in(seconds int) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE
 	stop timestamptz := clock_timestamp() + make_interval(secs => seconds);
@@ -33,17 +42,21 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET parallel_leader_participation = off;
+-- the workers the settings allow, on a table far under the rows a parallel aggregate scan launches them for
+SET sift.test_agg_par_min_rows = 0;
 CREATE TABLE p (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false, parallel_workers = 2);
-INSERT INTO p SELECT i, i % 5, i FROM generate_series(1, 40000) i;
-CREATE INDEX p_c ON p USING sift_col (g, id, v);
+-- values no codec shrinks, so that the rows of a part are on data pages; without pre-aggregates a worker reads them, where the leader reads only the part headers
+INSERT INTO p SELECT i, i % 5, hashint4(i) % 100000 FROM generate_series(1, 40000) i;
+CREATE INDEX p_c ON p USING sift_col (g, id, v) WITH (preagg = off);
 VACUUM (FREEZE, ANALYZE) p;
 CREATE TABLE answer AS SELECT count(*) AS n, sum(v) AS total FROM p WHERE g = 2;
 SELECT (SELECT count(*) FROM sift.quarantine) AS listed_before;
-EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM p WHERE g = 2;
+SELECT workers_of('SELECT count(*), sum(v) FROM p WHERE g = 2') AS sift_scan_workers;
 
-SELECT sift._test_poke('p_c', 2, 8176, 9, 2);
+SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('p_c', b, 8176, 9, 2) FROM sift.col_extents('p_c'), generate_series(first_block, first_block + nblocks - 1) b
+	WHERE what IN ('segment extent', 'part') AND (sift._test_page('p_c', b)).type = 4) d;
 SELECT diag($$ SELECT count(*), sum(v) FROM p WHERE g = 2 $$) AS detecting_statement;
-SELECT index, error_code, detections FROM sift.quarantine;
+SELECT index, error_code, detections > 0 AS detected FROM sift.quarantine;
 SELECT count(*), sum(v) FROM p WHERE g = 2 EXCEPT SELECT n, total FROM answer;
 EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM p WHERE g = 2;
 SELECT flagged_in(20) AS flagged_by_the_worker_the_plan_asked_for;
@@ -52,6 +65,6 @@ REINDEX INDEX p_c;
 SELECT count(*) AS listed_after_reindex FROM sift.quarantine;
 
 DROP TABLE p, answer;
-DROP FUNCTION diag(text), flagged_in(int);
+DROP FUNCTION diag(text), workers_of(text), flagged_in(int);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

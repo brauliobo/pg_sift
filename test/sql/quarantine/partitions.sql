@@ -11,7 +11,7 @@ CREATE INDEX p_idx ON p USING sift_col (id, v);
 ANALYZE p;
 SELECT count(*) AS partition_indexes FROM pg_index WHERE indrelid IN ('p1'::regclass, 'p2'::regclass) AND indexrelid::regclass::text LIKE 'p%_id_v_idx';
 SELECT (SELECT count(*) FROM p WHERE v = 3) AS threes \gset
-SELECT sift._test_poke('p1_id_v_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('p1_id_v_idx', min(first_block), 8176, 9, 2) FROM sift.col_extents('p1_id_v_idx') WHERE what IN ('segment extent', 'part');
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM p WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index FROM sift.quarantine;
 SELECT count(*) = :threes AS parent_is_exact FROM p WHERE v = 3;

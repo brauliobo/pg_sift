@@ -49,7 +49,7 @@ EXECUTE by_v;
   2857
 (1 row)
 
-SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('t_idx', min(first_block), 8176, 9, 2) FROM sift.col_extents('t_idx') WHERE what IN ('segment extent', 'part');
  _test_poke 
 ------------
  

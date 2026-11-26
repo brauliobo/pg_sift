@@ -3,6 +3,8 @@
 -- (the statement that meets the damage fails once).
 -- A scenario is a row of `scenario`; a failing one ends the session or leaves a count that is not the rows written.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the damaged pages are the segment data and write-buffer pages of Format 1, which the reasons name
+SET sift.test_create_format1 = on;
 SET client_min_messages = error;
 SET check_function_bodies = off;
 SET min_parallel_index_scan_size = 0;

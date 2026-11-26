@@ -37,7 +37,7 @@ SET plan_cache_mode = force_generic_plan;
 PREPARE by_v AS SELECT count(*) FROM t WHERE v = 3;
 EXECUTE by_v;
 
-SELECT sift._test_poke('t_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('t_idx', min(first_block), 8176, 9, 2) FROM sift.col_extents('t_idx') WHERE what IN ('segment extent', 'part');
 SELECT sift_helpers.statement_outcome($$ SELECT count(*) FROM t WHERE v = 3 $$, ': ') AS detecting_statement;
 SELECT index, error_code, detections FROM sift.quarantine;
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_after;

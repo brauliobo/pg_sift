@@ -10,6 +10,7 @@
 #include "utils/catcache.h"
 #include "utils/timestamp.h"
 
+#include "core/cachebudget.h"
 #include "core/damage.h"
 #include "core/errctx.h"
 #include "core/extlock.h"
@@ -346,7 +347,7 @@ sift_test_page(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(sift_result_row(fcinfo, values, nulls));
 }
 
-/* Overwrites width bytes at offset with a little-endian value, without WAL */
+/* Overwrites width bytes at offset with a little-endian value, without WAL; the caches of the backend let go of what they decoded, so that its next read meets the damage */
 Datum
 sift_test_poke(PG_FUNCTION_ARGS)
 {
@@ -363,6 +364,7 @@ sift_test_poke(PG_FUNCTION_ARGS)
 	MarkBufferDirty(buf);
 	UnlockReleaseBuffer(buf);
 	relation_close(index, RowExclusiveLock);
+	sift_cache_discard_all();
 	PG_RETURN_VOID();
 }
 

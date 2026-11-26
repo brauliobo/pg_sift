@@ -1,4 +1,6 @@
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the liveness run of a segment, the damage reasons and the build advice it prints are those of Format 1 (col/v1)
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_helpers;
 
 -- Damage found by a sift_col index is recorded in the registry of the server; sift.on_corruption = error records nothing; a function that reports damage does not record it;

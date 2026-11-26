@@ -1,6 +1,8 @@
 -- An index that tracks changes of its table with triggers leaves service like any other: the writes that fire the triggers go on, the rows are exact, and the rebuild
 -- brings the index back with the rows written while it was out
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the triggers and the row queue of track_changes are Format 1 (col/v1/track)
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE

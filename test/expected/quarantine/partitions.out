@@ -17,7 +17,7 @@ SELECT count(*) AS partition_indexes FROM pg_index WHERE indrelid IN ('p1'::regc
 (1 row)
 
 SELECT (SELECT count(*) FROM p WHERE v = 3) AS threes \gset
-SELECT sift._test_poke('p1_id_v_idx', 2, 8176, 9, 2);
+SELECT sift._test_poke('p1_id_v_idx', min(first_block), 8176, 9, 2) FROM sift.col_extents('p1_id_v_idx') WHERE what IN ('segment extent', 'part');
  _test_poke 
 ------------
  
