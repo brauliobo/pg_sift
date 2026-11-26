@@ -802,13 +802,13 @@ typedef struct DependentCols
 } DependentCols;
 
 /* a column the output reads that is no key and no argument of an aggregate: PostgreSQL allows it only when the keys decide it (a primary key), so it is one more key that splits no group.
- * So is a key of the statement PostgreSQL dropped (a constant of its equivalence class): it is the key, not the columns it reads, which may split its groups */
+ * So is a key of the statement PostgreSQL dropped (a constant of its equivalence class) that reads a column: it is the key, not the columns it reads, which may split its groups */
 static bool
 dependent_cols(Node *n, DependentCols *c)
 {
 	if (n == NULL || list_member(c->keys, n) || IsA(n, Aggref) || IsA(n, GroupingFunc) || IsA(n, WindowFunc))
 		return false;
-	if ((IsA(n, Var) && ((Var *) n)->varlevelsup == 0) || list_member(c->grouped, n))
+	if ((IsA(n, Var) && ((Var *) n)->varlevelsup == 0) || (list_member(c->grouped, n) && contain_var_clause(n)))
 	{
 		c->keys = lappend(c->keys, n);
 		return false;
