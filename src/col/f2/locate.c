@@ -583,6 +583,22 @@ hashed_granules(VisitPart *vp, SiftF2PartPin *pin, const SiftPartitionEntry *ent
 	return n;
 }
 
+/* The one granule whose range of addresses holds the address, or -1 when none or several do: the address hash is read only to tell those apart */
+static int
+sole_granule(const SiftF2PartPin *pin, uint64 tid)
+{
+	int			sole = -1;
+
+	for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
+		if (pin->tidx[g].tid_min <= tid && tid <= pin->tidx[g].tid_max)
+		{
+			if (sole >= 0)
+				return -1;
+			sole = (int) g;
+		}
+	return sole;
+}
+
 static bool
 visit_part(const TidSlot *slot, void *arg)
 {
@@ -594,9 +610,13 @@ visit_part(const TidSlot *slot, void *arg)
 
 	PG_TRY();
 	{
-		bool		hashed = vp->lo == vp->hi && sift_part_section(pin->part, SEC_TID_HASH) != NULL;
+		bool		point = vp->lo == vp->hi && pin->tid_max >= vp->lo && pin->tid_min <= vp->hi;
+		int			sole = point && vp->packed == NULL ? sole_granule(pin, vp->lo) : -1;
+		bool		hashed = point && sole < 0 && sift_part_section(pin->part, SEC_TID_HASH) != NULL;
 
-		if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || (vp->load != NULL && ng > GRAN_INDEX_MIN_GRANULES)))
+		if (sole >= 0)
+			stop = visit_granule(vp, pin, entry, (uint32) sole);
+		else if (pin->tid_max >= vp->lo && pin->tid_min <= vp->hi && (hashed || (vp->load != NULL && ng > GRAN_INDEX_MIN_GRANULES)))
 		{
 			uint32	   *gids;
 			int			n = hashed ? hashed_granules(vp, pin, entry, &gids) : part_granules(vp->rel, pin, vp->lo, vp->hi, &gids);
