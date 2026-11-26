@@ -920,7 +920,12 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 		}
 		hold_prepared(locks[i]);
 	}
-	/* after the markers and before the coarse counts go: a backend that probed before them sees the epoch move */
+}
+
+/* After every marker, those of the rows included, and before the coarse counts go: a backend that probed before them sees the epoch move */
+void
+sift_esc_prepared(void)
+{
 	if (shm != NULL && nlocks > 0)
 		pg_atomic_fetch_add_u32(&shm->prepared_epoch, 1);
 }

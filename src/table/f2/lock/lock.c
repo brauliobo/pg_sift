@@ -29,6 +29,7 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
+#include "core/compat.h"
 #include "table/f2/lock/2pc.h"
 #include "table/f2/lock/esc.h"
 #include "table/f2/lock/int.h"
@@ -536,8 +537,10 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 	if (event == XACT_EVENT_PRE_PREPARE)
 	{
 		sift_esc_pre_prepare(sift_rowlock_release_tier1);
+		SIFT_POINT("sift-rowlock-prepare-rows");
 		for (uint32 i = 0; i < sift_touched_count(); i++)
 			prepare_row(sift_touched_at(i));
+		sift_esc_prepared();
 		return;
 	}
 	if (event != XACT_EVENT_PREPARE && !commit && event != XACT_EVENT_ABORT && event != XACT_EVENT_PARALLEL_ABORT)
