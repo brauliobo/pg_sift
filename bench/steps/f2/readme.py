@@ -23,6 +23,7 @@ import resultfile  # noqa: E402
 import scope_stock_tables  # noqa: E402
 import benchmarks  # noqa: E402
 from benchmarks import DASH, bold_best, ms, x  # noqa: E402
+from charts.data import PG_FLAGSHIP, measured  # noqa: E402
 from charts.theme import fmt_ms  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(STEPS))
@@ -35,7 +36,7 @@ SEARCH_LABEL = {'Exact count(*)': 'Exact `count(*)`', 'Phrase "a b"': 'Phrase `"
 COLD_BASELINE = {'sift': (1.03, 5.50), 'es': (3.11, 4.77), 'paradedb': (13.12, 17.08)}   # p50 ms range over the classes of the committed `slim-cold` run
 COLD_ENGINE = {'sift': 'sift', 'es': 'elasticsearch', 'paradedb': 'pg_search'}
 COLD_NAME = {'sift': '`pg_sift`', 'es': 'Elasticsearch', 'paradedb': 'ParadeDB'}
-PG_FLAGSHIP = ('softdel_live_groupby', 'lateral_first_row', 'cte_series_arms', 'jsonb_each_member', 'grouping_sets_report', 'keyset_page')
+PG_PENDING_RUN = 'bench/bench cases --headline --rows 300000 --docs'
 CLICKBENCH_ARMS = (('pg', 'PG 18'), ('sift_table', '`sift_table`'), ('sift_col', '`sift_col`'), ('ch', 'ClickHouse'), ('ch_proj', 'CH + PROJECTION'), ('duckdb', 'DuckDB'))
 
 
@@ -99,30 +100,41 @@ def analytics(data, root):
 # ---- PostgreSQL-specific queries ----------------------------------------------------------------------------------------------------------
 
 def pg_loss(r):
-    """where PG 18 wins a case: its shape, ratio and what pg_sift still saves"""
-    why = ", where PG's B-tree answers in tens of microseconds and the planner keeps it" if r['against'] == 'b-tree' else ''
+    """where PG 18 wins a case: its shape, ratio, the index that answers it and what pg_sift still saves"""
+    why = f", where PG's {r['against']} index answers in {fmt_ms(r['pg']['ms'])}" if r['against'] != 'heap plan' else ''
     s, p = r['sift']['buffers'], r['pg']['buffers']
     saves = f', while `pg_sift` touches {x(p / s)} fewer blocks: `{s:,.0f}` vs `{p:,.0f}`' if s and p and p > s else ''
     return f'{r["shape"][0].lower()}{r["shape"][1:]} (`{r["case"]}`, {x(r["ratio"])}{why}{saves})'
 
 
+def pg_flagship_row(r):
+    shape = f'{r["shape"]} (`{r["case"]}`)'
+    if r['ratio'] is None:
+        return [shape, r['against'], '*pending 6.0 run*', DASH, DASH]
+    times = bold_best([(r['sift']['ms'], fmt_ms(r['sift']['ms'])), (r['pg']['ms'], fmt_ms(r['pg']['ms']))], min)
+    return [shape, r['against'], *times, f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])]
+
+
 def pg_queries(data, root):
     rows = data['pg_cases']['rows']
-    won, lost = [r for r in rows if r['ratio'] > 1], [r for r in rows if r['ratio'] <= 1]
+    done = measured(rows)
+    won, lost = [r for r in done if r['ratio'] > 1], [r for r in done if r['ratio'] <= 1]
     lo, hi = x(min(r['ratio'] for r in won)), x(max(r['ratio'] for r in won))
-    meta = data['pg_cases']['meta']
+    meta, pending = data['pg_cases']['meta'], len(rows) - len(done)
     flag = {r['case']: r for r in rows}
-    body = [[f'{r["shape"]} (`{r["case"]}`)', r['against'], *bold_best([(r['sift']['ms'], fmt_ms(r['sift']['ms'])), (r['pg']['ms'], fmt_ms(r['pg']['ms']))], min),
-             f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])] for r in map(flag.get, PG_FLAGSHIP)]
-    table = resultfile.table(['PostgreSQL shape', 'Against', '`pg_sift`', 'PG 18', 'Speedup'], body, ['---', '---', '---:', '---:', '---:'])
-    take = [f'`pg_sift` wins {len(won)} of {len(rows)} PostgreSQL-native query shapes (`LATERAL`, multi-reader `CTE`, `JSONB` arrays and `jsonb_each`, `GROUPING SETS`, '
-            f'window reports, `SEMI`/`ANTI` joins, soft-delete pre-aggregates, `IN`-list lookups) by {lo}–{hi} against stock PG 18 '
-            f'({meta["orders"] / 1000:,.0f}k rows, warm median, exact answer equality; the faster of the heap plan and the B-tree).']
+    table = resultfile.table(['PostgreSQL shape', 'Against', '`pg_sift`', 'PG 18', 'Speedup'], [pg_flagship_row(flag[c]) for c in PG_FLAGSHIP],
+                             ['---', '---', '---:', '---:', '---:'])
+    take = [f'`pg_sift` wins {len(won)} of {len(done)} measured PostgreSQL-native query shapes (shredded `JSONB`, `LATERAL`, `CTE`s and joins, `GROUPING SETS`, '
+            f'window reports, soft-delete pre-aggregates, `IN`-list lookups) by {lo}–{hi} against stock PG 18 '
+            f'({meta["orders"] / 1000:,.0f}k rows, warm median, exact answer equality; the fastest of the heap plan, B-tree, expression B-tree and `GIN`).']
+    if pending:
+        take.append(f'{pending} of the {len(rows)} headline cases (`JSONB` against `GIN`, hybrid BM25 + SQL, snowflake and partitioned joins, `FILTER`, `percentile_cont`, '
+                    f'`DISTINCT ON`, arrays) are pending the 6.0 run: `{PG_PENDING_RUN}` measures them.')
     if lost:
         take.append('Where PG 18 wins (amber in the chart): ' + '; '.join(pg_loss(r) for r in lost) + '.')
-    summary = f'<b>PostgreSQL-specific queries</b> — <code>pg_sift</code> wins {len(won)} of {len(rows)} SQL shapes against PG 18 ({lo}–{hi})' + (
-        f'; PG B-tree/COPY leads {len(lost)}' if lost else '')
-    alt = f'Speedup over PG 18 of {len(rows)} PostgreSQL-specific queries by family: pg_sift wins {len(won)} ({lo}–{hi}); PG 18 wins in amber.'
+    summary = f'<b>PostgreSQL-specific queries</b> — <code>pg_sift</code> wins {len(won)} of {len(done)} measured SQL shapes against PG 18 ({lo}–{hi})' + (
+        f'; PG leads {len(lost)}' if lost else '') + (f'; {pending} new cases pending' if pending else '')
+    alt = f'Speedup over PG 18 of {len(done)} of {len(rows)} PostgreSQL-specific queries by family: pg_sift wins {len(won)} ({lo}–{hi}); PG 18 wins in amber.'
     return details('pg-queries', summary, alt, [*paragraphs(take), *table])
 
 

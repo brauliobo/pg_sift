@@ -20,6 +20,7 @@ import scaling_io  # noqa: E402
 import benchmarks  # noqa: E402
 import readme  # noqa: E402
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
+from charts import data as chart_data, pg_queries, theme  # noqa: E402
 
 
 def store_json(path, rows):
@@ -166,6 +167,80 @@ class BenchmarksBlocks(unittest.TestCase):
                 found = set(re.findall(r'<!-- bench:(v6-[\w-]+):begin', f.read()))
             self.assertEqual(found, set(names), slug)
         self.assertEqual({n for names in benchmarks.PAGES.values() for n in names}, set(benchmarks.BLOCKS))
+
+
+def write_cases(path, ratios):
+    """a docs/results/cases.tsv shaped file: per case, the sift lane at 1 ms and each rival lane at sift ms × its ratio"""
+    rows = [dict(case=case, arm=arm, metric=m, value=v) for case, rivals in ratios.items() for arm, ms in (('sift', 1.0), *((a, r) for a, r in rivals.items()))
+            for m, v in (('ms', ms), ('minstr', ms * 10), ('buffers', 100))]
+    resultfile.write(path, 'cases', dict(orders=300000, postgresql='18.6', pg_sift='6.0', build='abcdef', date='2026-12-01'), rows)
+
+
+class PgQueries(unittest.TestCase):
+    def data(self, ratios=None):
+        with tempfile.TemporaryDirectory() as d:
+            if ratios:
+                write_cases(os.path.join(d, 'cases.tsv'), ratios)
+            return readme_charts.load_live_data(d)
+
+    def svgs(self, data):
+        return {mode: pg_queries.render(data, mode) for mode in ('light', 'dark')}   # render runs Canvas.check: no label overlaps or leaves the canvas
+
+    def every_case(self):
+        ratios = {r['case']: {'native': 50.0} for r in chart_data.baseline()['pg_cases']['rows']}
+        ratios['jsonb_path_exists_gin'] = {'native': 40.0, 'gin': 0.5}
+        ratios['jsonb_typeof_groupby'] = {'native': 9.0, 'expr_btree': 3.0}
+        ratios['keyset_page'] = {'native': 20.0, 'btree': 0.4}
+        return ratios
+
+    def test_without_results_the_24_baseline_cases_are_measured_and_the_17_new_ones_pending(self):
+        data = self.data()
+        rows = data['pg_cases']['rows']
+        self.assertEqual((len(rows), len(chart_data.measured(rows))), (41, 24))
+        self.assertEqual({r['case'] for r in rows if r['ratio'] is None and r['sift']['ms'] is None and r['pg']['ms'] is None}, {r['case'] for r in rows} - {
+            r['case'] for r in chart_data.measured(rows)})
+        svg = self.svgs(data)['light']
+        self.assertIn('4 new 6.0 cases · pending bench/bench cases --headline --docs', svg)
+        self.assertIn('bm25_hybrid_groupby pending', svg)
+        self.assertEqual(svg.count('pending 6.0 run'), 1)
+
+    def test_every_case_measured_picks_the_fastest_rival_and_a_gin_win_is_amber(self):
+        data = self.data(self.every_case())
+        self.assertEqual(data['pg_cases']['meta']['source'], 'live')
+        rows = {r['case']: r for r in data['pg_cases']['rows']}
+        self.assertEqual((rows['jsonb_path_exists_gin']['against'], rows['jsonb_path_exists_gin']['ratio']), ('GIN', 0.5))
+        self.assertEqual((rows['jsonb_typeof_groupby']['against'], rows['jsonb_typeof_groupby']['ratio']), ('expr b-tree', 3.0))
+        svg = self.svgs(data)
+        self.assertNotIn('pending', svg['light'])
+        amber = theme.PALETTE['light']['amber']
+        self.assertIn('<circle cx="%s" cy="88" r="5" fill="%s"/>' % (theme.n(pg_queries.X(0.5)), amber), svg['light'])
+
+    def test_a_run_of_some_cases_overlays_them_on_the_baseline(self):
+        data = self.data({'bm25_hybrid_groupby': {'native': 30.0, 'gin': 6.0}, 'softdel_live_groupby': {'native': 100.0}})
+        meta, rows = data['pg_cases']['meta'], {r['case']: r for r in data['pg_cases']['rows']}
+        self.assertEqual((meta['source'], meta['live']), ('mixed', 2))
+        self.assertEqual((rows['bm25_hybrid_groupby']['ratio'], rows['softdel_live_groupby']['ratio'], rows['lateral_first_row']['ratio']), (6.0, 100.0, 347))
+        self.assertEqual(len(chart_data.measured(data['pg_cases']['rows'])), 25)
+        self.svgs(data)
+
+    def test_the_readme_table_is_one_flagship_per_family(self):
+        for ratios, pending in ((None, 1), (self.every_case(), 0)):
+            with tempfile.TemporaryDirectory() as root:
+                os.makedirs(os.path.join(root, 'docs', 'results'))
+                if ratios:
+                    write_cases(os.path.join(root, 'docs', 'results', 'cases.tsv'), ratios)
+                lines = readme.pg_queries(readme_charts.load_live_data(os.path.join(root, 'docs', 'results')), root)
+            table = [l for l in lines if l.startswith('| ') and not l.startswith('| PostgreSQL shape')]
+            self.assertEqual(len(table), 6)
+            self.assertTrue(all(l.count(' | ') == 4 for l in table))
+            self.assertEqual(sum('*pending 6.0 run*' in l for l in table), pending)
+
+    def test_the_docs_table_groups_the_41_cases_by_family(self):
+        with tempfile.TemporaryDirectory() as root:
+            lines = benchmarks.render_pg_queries(root)
+        self.assertEqual(sum(l.startswith('| `') for l in lines), 41)
+        self.assertEqual(sum('*pending 6.0 run*' in l for l in lines), 17)
+        self.assertEqual([l for l in lines if l.startswith('**')][3], '**Text, Search & Native Types** (4 cases)')
 
 
 class ReadStreamSwitch(unittest.TestCase):

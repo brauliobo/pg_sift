@@ -8,7 +8,7 @@
 #   scope-stock      the scope index against the tuned stock arms and ClickHouse (ch_join, ch_proj; the standard size)
 #   v6-core          the 6.0 scaling ladder, 10k, 40k, 160k and 1M rows: memory flatness, compression, WAL, soft delete, planning, idle memory (bench/run_round.sh)
 #   scaling-io       warm compute on 1, 2, 4 and 8 workers, cold I/O io_uring / worker / sync, 1, 4 and 16 writers at 2M rows (bench/scaling.sh)
-#   v6-cases         the headline cases of bench/cases.tsv at 300,000 rows, planned, timed against PostgreSQL and pg_duckdb, every answer compared
+#   v6-cases         the 41 headline cases of bench/cases.tsv at 300,000 rows, planned, timed against PostgreSQL (heap, B-tree, expression B-tree, GIN) and pg_duckdb, every answer compared
 #   cov-plan         the coverage and plan-gate queries against PostgreSQL and 5.1.0 (bench/bench cov-plan)
 #   gpu              only with --gpu: the Vulkan path against the CPU one on 1M and 10M orders (bench/gpu/pg.sh, a server named by PGHOST and PGPORT)
 # The engines that are not pg_sift (Elasticsearch, ClickHouse, Citus, pg_ivm, the stock arms, the other text engines) are measured once per host, dataset, settings and adapter and then read
@@ -89,7 +89,7 @@ stage_minutes() { # STAGE: planned minutes of the tiers above (Spec 94), from th
     scope-stock:1) echo 2 ;; scope-stock:0) echo 7 ;;
     v6-core:*) [[ -n $QUICK ]] && echo 1 || echo 2 ;;
     scaling-io:*) [[ -n $QUICK ]] && echo 1 || echo 4 ;;
-    v6-cases:*) echo 3 ;;
+    v6-cases:*) echo 5 ;;
     cov-plan:*) echo 2 ;;
     gpu:*) echo 2 ;;
   esac

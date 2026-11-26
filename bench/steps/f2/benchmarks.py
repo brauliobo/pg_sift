@@ -10,7 +10,8 @@ Two kinds of blocks, both functions of the results files only (no figure of a bl
   store-scaling.json, store.json, articles.tsv, duckdb-10000000.tsv (`bench/bench store|all|duckdb --docs`): the cross-engine tables. A block whose results are not
   in docs/results/ keeps the committed measurement it holds.
     v6-orders-10m, v6-orders-1m, v6-search-warm, v6-search-cold, v6-search-10m, v6-size-orders, v6-size-bm25
-  v6-pg-queries: the 24 headline cases of bench/cases.tsv against PG 18 (cases.tsv of `bench/bench cases --headline --docs`, the committed v4.0 baseline of readme_charts.py without it).
+  v6-pg-queries: the 41 headline cases of bench/cases.tsv by family against the fastest PG 18 plan (cases.tsv of `bench/bench cases --headline --docs`; a case it lacks keeps the committed
+  v4.0 baseline of charts/data.py or is pending the 6.0 run).
   v6-scope-baseline is the committed 5.0 scope suite of scope_stock_tables.py (always rendered).
 """
 import argparse
@@ -26,10 +27,12 @@ import readme_charts  # noqa: E402
 import resultfile  # noqa: E402
 import scope_stock_tables  # noqa: E402
 from readme_charts import QUERY_SLUG, read_tsv  # noqa: E402
+from charts.data import PG_FAMILIES  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(STEPS))
 BASELINE = readme_charts.MEMORY_BASELINE
 TBD = '*TBD*'
+PENDING = '*pending 6.0 run*'
 DASH = '—'
 TARGET = {'cic_rss_anon_b_per_row': '≤ 0.5 B/row', 'oltp_ins1_wal_b_per_row': '≤ 220 B/row', 'delete_2pct_wal_b_per_row': '≤ 45 B/row'}   # the 6.0 gates the README states too
 
@@ -358,10 +361,22 @@ def case_cell(side):
     return f'{sig(side["ms"])} ms · {sig(side["minstr"])} M · {sig(side["buffers"])}'
 
 
+def pg_case_row(r):
+    if r['ratio'] is None:
+        return [f'`{r["case"]}`: {r["shape"]}', r['against'], PENDING, DASH, DASH]
+    return [f'`{r["case"]}`: {r["shape"]}', r['against'], case_cell(r['sift']), case_cell(r['pg']), f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])]
+
+
 def render_pg_queries(root):
+    """the headline cases, one table per family of PG_FAMILIES; a case not measured yet is pending, never estimated"""
     rows = readme_charts.load_live_data(os.path.join(root, 'docs', 'results'))['pg_cases']['rows']
-    body = [[f'`{r["case"]}`: {r["shape"]}', r['against'], case_cell(r['sift']), case_cell(r['pg']), f'**{x(r["ratio"])}**' if r['ratio'] > 1 else x(r['ratio'])] for r in rows]
-    return resultfile.table(['Case', 'Against', '`pg_sift`: ms · M instr · blocks', 'PG 18: ms · M instr · blocks', 'PG ÷ `pg_sift`'], body, ['---'] * 2 + ['---:'] * 3)
+    out = []
+    for family in PG_FAMILIES:
+        got = [r for r in rows if r['family'] == family]
+        out += [f'**{family}** ({len(got)} cases)', '']
+        out += resultfile.table(['Case', 'Against', '`pg_sift`: ms · M instr · blocks', 'PG 18: ms · M instr · blocks', 'PG ÷ `pg_sift`'], [pg_case_row(r) for r in got],
+                                ['---'] * 2 + ['---:'] * 3) + ['']
+    return out[:-1]
 
 
 def render_scope_baseline(root):

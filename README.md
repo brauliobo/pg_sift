@@ -154,24 +154,26 @@ ClickHouse runs a plain `MergeTree`; `sift_col` keeps pre-aggregates. Cold runs,
 
 <!-- bench:readme-pg-queries:begin -->
 <details>
-<summary><b>PostgreSQL-specific queries</b> — <code>pg_sift</code> wins 21 of 24 SQL shapes against PG 18 (5.6×–891×); PG B-tree/COPY leads 3</summary>
+<summary><b>PostgreSQL-specific queries</b> — <code>pg_sift</code> wins 21 of 24 measured SQL shapes against PG 18 (5.6×–891×); PG leads 3; 17 new cases pending</summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/charts/readme-pg-queries-dark.svg">
-  <img alt="Speedup over PG 18 of 24 PostgreSQL-specific queries by family: pg_sift wins 21 (5.6×–891×); PG 18 wins in amber." src="docs/charts/readme-pg-queries-light.svg" width="860">
+  <img alt="Speedup over PG 18 of 24 of 41 PostgreSQL-specific queries by family: pg_sift wins 21 (5.6×–891×); PG 18 wins in amber." src="docs/charts/readme-pg-queries-light.svg" width="860">
 </picture>
 
-`pg_sift` wins 21 of 24 PostgreSQL-native query shapes (`LATERAL`, multi-reader `CTE`, `JSONB` arrays and `jsonb_each`, `GROUPING SETS`, window reports, `SEMI`/`ANTI` joins, soft-delete pre-aggregates, `IN`-list lookups) by 5.6×–891× against stock PG 18 (300k rows, warm median, exact answer equality; the faster of the heap plan and the B-tree).
+`pg_sift` wins 21 of 24 measured PostgreSQL-native query shapes (shredded `JSONB`, `LATERAL`, `CTE`s and joins, `GROUPING SETS`, window reports, soft-delete pre-aggregates, `IN`-list lookups) by 5.6×–891× against stock PG 18 (300k rows, warm median, exact answer equality; the fastest of the heap plan, B-tree, expression B-tree and `GIN`).
 
-Where PG 18 wins (amber in the chart): bulk `COPY` into `sift_table` (`bulk_copy_wal`, 0.5×, while `pg_sift` touches 15× fewer blocks: `802` vs `12,061`); keyset page `(created_at, id)` (`keyset_page`, 0.4×, where PG's B-tree answers in tens of microseconds and the planner keeps it); primary-key point aggregate (`point_agg_id`, 0.3×, where PG's B-tree answers in tens of microseconds and the planner keeps it).
+17 of the 41 headline cases (`JSONB` against `GIN`, hybrid BM25 + SQL, snowflake and partitioned joins, `FILTER`, `percentile_cont`, `DISTINCT ON`, arrays) are pending the 6.0 run: `bench/bench cases --headline --rows 300000 --docs` measures them.
+
+Where PG 18 wins (amber in the chart): bulk `COPY` into `sift_table` (`bulk_copy_wal`, 0.5×, while `pg_sift` touches 15× fewer blocks: `802` vs `12,061`); keyset page `(created_at, id)` (`keyset_page`, 0.4×, where PG's b-tree index answers in 0.04 ms); primary-key point aggregate (`point_agg_id`, 0.3×, where PG's b-tree index answers in 0.01 ms).
 
 | PostgreSQL shape | Against | `pg_sift` | PG 18 | Speedup |
 |---|---|---:|---:|---:|
-| Soft-delete `GROUP BY` (`softdel_live_groupby`) | heap plan | **0.06 ms** | 50.8 ms | **891×** |
-| `LATERAL ... ORDER BY LIMIT 1` (`lateral_first_row`) | heap plan | **4.17 ms** | 1,449 ms | **347×** |
-| 3-arm `CTE` + `UNION ALL` + `DISTINCT` (`cte_series_arms`) | heap plan | **8.76 ms** | 858 ms | **98×** |
 | `LEFT JOIN LATERAL jsonb_each` (`jsonb_each_member`) | heap plan | **3.35 ms** | 117 ms | **35×** |
+| `LATERAL ... ORDER BY LIMIT 1` (`lateral_first_row`) | heap plan | **4.17 ms** | 1,449 ms | **347×** |
 | 4-level `GROUPING SETS` report (`grouping_sets_report`) | heap plan | **2.85 ms** | 65.9 ms | **23×** |
+| BM25 match + `GROUP BY` (`bm25_hybrid_groupby`) | heap plan · GIN | *pending 6.0 run* | — | — |
+| Soft-delete `GROUP BY` (`softdel_live_groupby`) | heap plan | **0.06 ms** | 50.8 ms | **891×** |
 | Keyset page `(created_at, id)` (`keyset_page`) | b-tree | 0.10 ms | **0.04 ms** | 0.4× |
 
 [Full tables and methodology](docs/benchmarks/pg-queries.md)

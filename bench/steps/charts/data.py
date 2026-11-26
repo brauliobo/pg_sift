@@ -2,7 +2,7 @@
 
 A series nobody measured yet is absent (None or missing), never estimated: its chart says `not measured yet`. Baseline sources: store-scaling.json (10M-c3), store.json (1M-c3),
 duckdb-10000000.tsv, articles.tsv (slim, slim-cold), scope-stock.tsv (v5.0, 2,400,007 events), v6-core.tsv and bench/baselines/v510.tsv (5.1), all committed on 2026-10-27; the
-PostgreSQL-specific cases: the 24 headline cases of bench/cases.tsv in the v5.1.0 README (release 4.0, run 3c5e625dfb80-20261103T202442Z-8ca1, 300,000 orders, PG 18.6).
+PostgreSQL-specific cases: the 41 headline cases of bench/cases.tsv, 24 of them in the v5.1.0 README (release 4.0, run 3c5e625dfb80-20261103T202442Z-8ca1, 300,000 orders, PG 18.6), 17 not measured yet.
 """
 import csv
 import json
@@ -52,35 +52,53 @@ SCOPES = {'cells': 72, 'read_ms': {'sift_scope': 2.18, 'stock_default': 542.0, '
           'tally': {'stock_default': (72, 0, 0), 'semijoin': (63, 2, 7), 'denorm_flat': (51, 2, 19), 'denorm_part': (54, 4, 14), 'rollup': (54, 5, 5), 'pg_ivm': (32, 2, 30)}}
 SCOPE_BUILD = [('plain scoped CREATE INDEX', '1.79× entity', '≤ 1.15×'), ('scoped CIC pass 2', '107% of pass 1', '≤ 15%'),
                ('scope build temp I/O', '249 B/row', '0 B'), ('scope disk vs entity', '+98.3%', '≤ 5%')]
-PG_FAMILIES = ('Soft-delete & lookups', 'LATERAL & CTEs', 'JSONB & arrays', 'Top-N & joins', 'Reports, windows & distinct', 'B-tree & COPY')
-PG_CASES_300K = [  # family, case, shape, against, pg_sift (ms, M instr, blocks), PG 18 (ms, M instr, blocks), PG 18 ÷ pg_sift as audited
-    (0, 'softdel_live_groupby', 'Soft-delete `GROUP BY`', 'heap plan', (0.057, 0.667, 32), (50.8, 596, 4107), 891),
-    (0, 'key_presence_distinct', '`count(DISTINCT key)` of a whole table', 'heap plan', (0.14, 2.09, 26), (56.7, 410, 4105), 405),
-    (0, 'key_table_point', 'Rows of three foreign keys', 'heap plan', (0.075, 0.748, 28), (19.3, 273, 4107), 257),
-    (0, 'point_in_100', '`IN` list of 100 ids', 'heap plan', (0.076, 1.07, 143), (14.8, 161, 4107), 195),
-    (0, 'point_agg_fk', 'Aggregate of one foreign key, no B-tree', 'heap plan', (0.063, 0.391, 95), (10.7, 121, 4107), 170),
-    (0, 'keycut_customer_agg', 'Aggregate of one customer (arrival order)', 'heap plan', (0.069, 0.719, 34), (10.3, 121, 4107), 150),
+PG_FAMILIES = ('Shredded JSONB', 'LATERAL, CTEs & Joins', 'Reports, Windows & Distinct', 'Text, Search & Native Types', 'Soft-delete, Top-N & Lookups', 'B-tree & COPY')
+PG_FLAGSHIP = ('jsonb_each_member', 'lateral_first_row', 'grouping_sets_report', 'bm25_hybrid_groupby', 'softdel_live_groupby', 'keyset_page')   # one case per family
+PG_CASES_300K = [  # family, case, shape, against, pg_sift (ms, M instr, blocks), PG 18 (ms, M instr, blocks), PG 18 ÷ pg_sift as audited; None: not measured yet
+    (0, 'jsonb_each_member', '`LEFT JOIN LATERAL jsonb_each`', 'heap plan', (3.35, 35.9, 673), (117, 916, 13639), 35),
+    (0, 'list_elements', '`jsonb` array elements with a filter', 'heap plan', (3.36, 35.9, 623), (113, 781, 13639), 34),
+    (0, 'jsonb_contains_object', '`jsonb @>` of a nested object', 'heap plan · GIN', None, None, None),
+    (0, 'jsonb_key_read', '`sum(attrs->>k) FILTER (WHERE attrs ? k)`', 'heap plan · GIN', None, None, None),
+    (0, 'jsonb_scalar_groupby', '`GROUP BY doc->>k, doc[k]`', 'heap plan · expr b-tree', None, None, None),
+    (0, 'jsonb_path_exists_gin', '`jsonb_path_exists` filter `GROUP BY`', 'heap plan · GIN', None, None, None),
+    (0, 'jsonb_exists_same_elem', '`EXISTS` of one `jsonb` array element', 'heap plan · GIN', None, None, None),
+    (0, 'jsonb_typeof_groupby', '`GROUP BY jsonb_typeof` of mixed values', 'heap plan · expr b-tree', None, None, None),
+    (0, 'jsonb_sift_table_paths', '`jsonb_to_recordset` on `sift_table` paths', 'heap plan · GIN', None, None, None),
     (1, 'lateral_first_row', '`LATERAL ... ORDER BY LIMIT 1`', 'heap plan', (4.17, 65.6, 2973), (1449, 25536, 455241), 347),
     (1, 'cte_series_arms', '3-arm `CTE` + `UNION ALL` + `DISTINCT`', 'heap plan', (8.76, 133, 768), (858, 8283, 13731), 98),
     (1, 'cte_two_readers', '`CTE` read by two aggregates', 'heap plan', (2.48, 25.8, 500), (68.4, 542, 13639), 28),
-    (2, 'jsonb_each_member', '`LEFT JOIN LATERAL jsonb_each`', 'heap plan', (3.35, 35.9, 673), (117, 916, 13639), 35),
-    (2, 'list_elements', '`jsonb` array elements with a filter', 'heap plan', (3.36, 35.9, 623), (113, 781, 13639), 34),
-    (3, 'topn_coalesce', '`ORDER BY coalesce(...) LIMIT n`', 'heap plan', (0.40, 5.58, 98), (32.1, 299, 4105), 80),
-    (3, 'topn_page_totals', 'Page of rows with its set total', 'heap plan', (0.61, 7.69, 473), (29.0, 374, 4107), 48),
-    (3, 'semi_exists_self', 'Self `EXISTS` semi join', 'heap plan', (2.77, 19.3, 4381), (57.2, 468, 8212), 21),
-    (3, 'anti_not_in_self', 'Self `NOT IN` anti join', 'heap plan', (10.1, 76.6, 4464), (56.1, 577, 8212), 5.6),
-    (4, 'count_distinct_unique', '`count(DISTINCT)` of a unique key', 'heap plan', (1.13, 14.7, 126), (238, 2962, 4105), 211),
-    (4, 'grouping_sets_report', '4-level `GROUPING SETS` report', 'heap plan', (2.85, 38.9, 198), (65.9, 744, 4107), 23),
-    (4, 'ranked_top_per_group', 'Window top 3 per group', 'heap plan', (2.82, 33.1, 248), (63.2, 645, 4105), 22),
-    (4, 'window_json_report', 'Ranked window report as `jsonb`', 'heap plan', (4.53, 61.8, 298), (71.5, 724, 4105), 16),
-    (4, 'group_by_id_top', '`GROUP BY` primary key, top 10', 'heap plan', (13.0, 103, 253), (162, 1936, 4105), 12),
-    (4, 'two_level_spend', 'Aggregate of an aggregate', 'heap plan', (24.4, 245, 338), (153, 748, 4105), 6.3),
+    (1, 'semi_exists_self', 'Self `EXISTS` semi join', 'heap plan', (2.77, 19.3, 4381), (57.2, 468, 8212), 21),
+    (1, 'anti_not_in_self', 'Self `NOT IN` anti join', 'heap plan', (10.1, 76.6, 4464), (56.1, 577, 8212), 5.6),
+    (1, 'star_snowflake_join', 'Snowflake join of 3 dimensions', 'heap plan', None, None, None),
+    (1, 'partitioned_range_agg', 'Range-partitioned monthly `GROUP BY`', 'heap plan', None, None, None),
+    (2, 'count_distinct_unique', '`count(DISTINCT)` of a unique key', 'heap plan', (1.13, 14.7, 126), (238, 2962, 4105), 211),
+    (2, 'grouping_sets_report', '4-level `GROUPING SETS` report', 'heap plan', (2.85, 38.9, 198), (65.9, 744, 4107), 23),
+    (2, 'ranked_top_per_group', 'Window top 3 per group', 'heap plan', (2.82, 33.1, 248), (63.2, 645, 4105), 22),
+    (2, 'window_json_report', 'Ranked window report as `jsonb`', 'heap plan', (4.53, 61.8, 298), (71.5, 724, 4105), 16),
+    (2, 'group_by_id_top', '`GROUP BY` primary key, top 10', 'heap plan', (13.0, 103, 253), (162, 1936, 4105), 12),
+    (2, 'two_level_spend', 'Aggregate of an aggregate', 'heap plan', (24.4, 245, 338), (153, 748, 4105), 6.3),
+    (2, 'ordered_window_rank', '`rank() OVER (ORDER BY k)`', 'heap plan · b-tree', None, None, None),
+    (2, 'filter_pivot_agg', '`FILTER (WHERE ...)` pivot report', 'heap plan', None, None, None),
+    (2, 'percentile_stddev_agg', '`percentile_cont` and `stddev` by group', 'heap plan', None, None, None),
+    (2, 'distinct_on_latest', '`DISTINCT ON` latest row per customer', 'heap plan · b-tree', None, None, None),
+    (3, 'bm25_hybrid_groupby', 'BM25 match + `GROUP BY`', 'heap plan · GIN', None, None, None),
+    (3, 'text_like_prefix_agg', 'Prefix `LIKE` + `GROUP BY`', 'heap plan · b-tree', None, None, None),
+    (3, 'pg_array_cardinality_agg', '`text[] @>` + `cardinality`', 'heap plan · GIN', None, None, None),
+    (3, 'calendar_date_trunc_agg', '`date_trunc` month calendar report', 'heap plan · expr b-tree', None, None, None),
+    (4, 'softdel_live_groupby', 'Soft-delete `GROUP BY`', 'heap plan', (0.057, 0.667, 32), (50.8, 596, 4107), 891),
+    (4, 'key_presence_distinct', '`count(DISTINCT key)` of a whole table', 'heap plan', (0.14, 2.09, 26), (56.7, 410, 4105), 405),
+    (4, 'key_table_point', 'Rows of three foreign keys', 'heap plan', (0.075, 0.748, 28), (19.3, 273, 4107), 257),
+    (4, 'point_in_100', '`IN` list of 100 ids', 'heap plan', (0.076, 1.07, 143), (14.8, 161, 4107), 195),
+    (4, 'point_agg_fk', 'Aggregate of one foreign key, no B-tree', 'heap plan', (0.063, 0.391, 95), (10.7, 121, 4107), 170),
+    (4, 'keycut_customer_agg', 'Aggregate of one customer (arrival order)', 'heap plan', (0.069, 0.719, 34), (10.3, 121, 4107), 150),
+    (4, 'topn_coalesce', '`ORDER BY coalesce(...) LIMIT n`', 'heap plan', (0.40, 5.58, 98), (32.1, 299, 4105), 80),
+    (4, 'topn_page_totals', 'Page of rows with its set total', 'heap plan', (0.61, 7.69, 473), (29.0, 374, 4107), 48),
     (5, 'bulk_copy_wal', 'Bulk `COPY` into `sift_table`', 'heap plan', (422, 5210, 802), (229, 3164, 12061), 0.5),
     (5, 'keyset_page', 'Keyset page `(created_at, id)`', 'b-tree', (0.104, 0.997, 91), (0.039, 0.491, 56), 0.4),
     (5, 'point_agg_id', 'Primary-key point aggregate', 'b-tree', (0.035, 0.339, 25), (0.012, 0.173, 5), 0.3)]
 PG_CASES_META = {'source': 'baseline', 'orders': 300000, 'postgresql': '18.6', 'pg_sift': '4.0', 'build': '3c5e625d', 'date': '2026-11-03'}
 PG_METRICS = ('ms', 'minstr', 'buffers')
-PG_RIVALS = {'native': 'heap plan', 'btree': 'b-tree'}
+PG_RIVALS = {'native': 'heap plan', 'btree': 'b-tree', 'expr_btree': 'expr b-tree', 'gin': 'GIN'}
 WAL = [('1-row INSERT WAL', 460, 495.7, 220), ('2% DELETE WAL', 60, 98.7, 45), ('bulk build WAL', None, 111.8, 45)]   # B/row: PG 18 heap, pg_sift 5.1 measured, 6.0 gate
 
 
@@ -100,13 +118,18 @@ def baseline():
 
 
 def pg_cases_baseline():
-    side = lambda v: dict(zip(PG_METRICS, v))  # noqa: E731
-    return {'meta': dict(PG_CASES_META), 'rows': [{'family': PG_FAMILIES[f], 'case': c, 'shape': shape, 'against': against, 'sift': side(s), 'pg': side(p), 'ratio': r}
-                                                  for f, c, shape, against, s, p, r in PG_CASES_300K]}
+    side = lambda v: dict(zip(PG_METRICS, v or (None,) * len(PG_METRICS)))  # noqa: E731
+    return {'meta': dict(PG_CASES_META, live=0), 'rows': [{'family': PG_FAMILIES[f], 'case': c, 'shape': shape, 'against': against, 'sift': side(s), 'pg': side(p), 'ratio': r}
+                                                          for f, c, shape, against, s, p, r in PG_CASES_300K]}
+
+
+def measured(rows):
+    """the rows that have a ratio: a case not measured yet has none"""
+    return [r for r in rows if r['ratio'] is not None]
 
 
 def live_pg_case(base, got):
-    """the row of a headline case from docs/results/cases.tsv: the sift lane against the faster of `native` and `btree`; None when the run lacks it"""
+    """the row of a headline case from docs/results/cases.tsv: the sift lane against the fastest PG 18 rival lane of PG_RIVALS; None when the run lacks it"""
     side = lambda arm: {m: got.get((base['case'], arm, m)) for m in PG_METRICS}  # noqa: E731
     rivals = {arm: side(arm) for arm in PG_RIVALS if got.get((base['case'], arm, 'ms'))}
     sift = side('sift')
@@ -117,14 +140,22 @@ def live_pg_case(base, got):
 
 
 def load_pg_cases(results_dir):
-    """{'meta', 'rows'} of the headline cases: docs/results/cases.tsv when it measured every one of them, the committed v4.0 baseline otherwise (a missing case is never estimated)"""
+    """{'meta', 'rows'} of the headline cases: each case docs/results/cases.tsv measured is its live row, the others keep the committed v4.0 baseline or stay unmeasured (never estimated);
+    meta['source'] is `live` when the file measured every case, `mixed` when some, `baseline` when none"""
+    import resultfile
     base = pg_cases_baseline()
-    meta, rows = read_tsv(os.path.join(results_dir, 'cases.tsv'))
-    got = {(r['case'], r['arm'], r['metric']): float(r.get('median') or r['value']) for r in rows if r['metric'] in PG_METRICS and r['value'] not in ('', 'NA', 'error')}
-    live = [row for b in base['rows'] for row in [live_pg_case(b, got)] if row]
-    if len(live) < len(base['rows']):
+    path = os.path.join(results_dir, 'cases.tsv')
+    if not os.path.exists(path):
         return base
-    return {'meta': {'source': 'live', 'orders': int(meta['orders']), **{k: meta[k] for k in ('postgresql', 'pg_sift', 'build', 'date')}}, 'rows': live}
+    meta, rows = resultfile.read(path)
+    got = {(r['case'], r['arm'], r['metric']): float(r['value']) for r in rows if r['metric'] in PG_METRICS and r['value'] not in ('', 'NA', 'error')}
+    live = [live_pg_case(b, got) for b in base['rows']]
+    n = sum(1 for row in live if row)
+    if not n:
+        return base
+    source = 'live' if n == len(live) else 'mixed'
+    return {'meta': {'source': source, 'live': n, 'orders': int(meta['orders']), **{k: meta[k] for k in ('postgresql', 'pg_sift', 'build', 'date')}},
+            'rows': [row or b for row, b in zip(live, base['rows'])]}
 
 
 def read_tsv(path):

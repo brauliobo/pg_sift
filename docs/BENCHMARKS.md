@@ -5,7 +5,7 @@ Methodology, fairness rules and reproduction of every `pg_sift` number. Each fig
 | Page | Measures |
 |---|---|
 | [Analytics](benchmarks/analytics.md) | 10M and 1M orders: `sift_col`, `sift_table`, ClickHouse (with and without `PROJECTION`), DuckDB, Elasticsearch, PG 18 |
-| [PG-specific queries](benchmarks/pg-queries.md) | 24 PostgreSQL-native SQL shapes (`LATERAL`, `CTE`, `JSONB`, `GROUPING SETS`, windows, soft-delete, `IN`-lists, B-tree baselines) |
+| [PG-specific queries](benchmarks/pg-queries.md) | 41 PostgreSQL-native SQL shapes in 6 families against the fastest stock PG 18 index: shredded `JSONB` vs `GIN`, `LATERAL`/`CTE`/snowflake/partitioned joins, `GROUPING SETS`, windows, `FILTER`/`percentile_cont`/`DISTINCT ON`, hybrid BM25 + SQL, arrays, soft-delete, `IN`-lists, B-tree/`COPY` baselines |
 | [ClickBench](benchmarks/clickbench.md) | The 43 queries `Q0`-`Q42` on `hits`, every arm `md5_equal` |
 | [Search](benchmarks/search.md) | Exact BM25 against Elasticsearch, ParadeDB, `rum`, `pg_textsearch` and GIN; autocomplete |
 | [Scopes](benchmarks/scopes.md) | Entity-Once scopes against stock PG, `pg_ivm` and ClickHouse: 72 cells, build and write cost |
