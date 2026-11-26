@@ -128,7 +128,10 @@ sift_v6_text_usable(IndexOptInfo *text, List *queries)
 	return usable;
 }
 
-/* The hits cost the dictionary lookups and a little each to read and to put in the bridge: the rows the scan decodes are those of the granules the hits are in */
+/* the operators of a posting walked and put in the bridge, at the scan's own price of a millisecond (0.41 ms more for 5,000 postings of a word than for one) */
+#define SEARCH_BRIDGE_OPS	6.0
+
+/* The hits cost the dictionary lookups and each posting its walk into the bridge: the rows the scan decodes are those of the granules the hits are in */
 double
 sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch)
 {
@@ -137,7 +140,7 @@ sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, Restri
 				sel = clause_selectivity(root, (Node *) ri->clause, rel->relid, JOIN_INNER, NULL);
 
 	*touch = sift_hybrid_granule_hit(sel, rows / granules);
-	return sift_dict_cost(text, queries) + rows * sel * cpu_tuple_cost * 0.25;
+	return sift_dict_cost(text, queries) + rows * sel * SEARCH_BRIDGE_OPS * cpu_operator_cost;
 }
 
 /* the instructions to walk a posting of the word, and to read the row a key gives and check its text */
