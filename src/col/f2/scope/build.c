@@ -26,7 +26,7 @@ write_object(Relation rel, int ord, const StringInfoData *obj, uint64 gen, uint3
 	StringInfoData packed;
 	SiftSecInput sec = {.tag = SEC_SCOPE_HDR,.flags = SIFT_SEC_FLAG_REQUIRED};
 	SiftPartIn	in = {.part_id = 0,.part_gen = gen,.level = 0,.ncols = 0,.flags = SIFT_PART_FLAG_SCOPE,.nrows = nkeys,.ngranules = 0,.granule_rows = SIFT_GRANULE_ROWS,
-	.min_xid = sift_xid_to_fxid(FrozenTransactionId),.max_xid = sift_xid_to_fxid(FrozenTransactionId),.sections = &sec,.nsections = 1,.inline_extent_cap = -1};
+	.min_xid = sift_xid_to_fxid(FrozenTransactionId),.max_xid = sift_xid_to_fxid(FrozenTransactionId),.sections = &sec,.nsections = 1,.inline_extent_cap = -1,.bulk_tail = true};
 	SiftPartDesc d;
 
 	sift_f2_scope_pack(obj, &packed);
@@ -284,7 +284,8 @@ sift_f2_scope_build(Relation heap, Relation rel)
 /*
  * The refresh of a summary that is not what the parts and the pairs are now: when only the parts changed (a compaction retired some, an insert or a flush wrote others) the nodes with a retired ref
  * are built again and the new granules are added (sift_scope_refresh_parts); when only some pairs changed (the journal names their members) the nodes that may hold a changed member are built
- * again (sift_scope_refresh_dirty). Both at once, or pairs the journal cannot name, build the summary again.
+ * again (sift_scope_refresh_dirty). Both at once, or pairs the journal cannot name, build the summary again. So do new parts of more rows than the summary holds: the refresh keeps the
+ * nodes of the parts it names and adds those of the new ones, which a build over all of them packs several times tighter.
  */
 #define REFRESH_MEMBERS_MAX	8192
 
@@ -448,6 +449,12 @@ refresh_object(const SiftScopeMeta *old, const SiftScopeBuildSpec *spec, SiftSco
 	}
 }
 
+static bool
+rebuild_smaller(const PartDiff *d)
+{
+	return d->added_rows > d->kept_rows;
+}
+
 /* The parts added since the summary are left to the overlay of the reads while they are a tenth of the rows it names at most and fewer than half of the rows an overlay may hold */
 static bool
 overlay_serves(const PartDiff *d)
@@ -495,7 +502,7 @@ refresh_one(Relation heap, Relation rel, SiftF2Store *store, const SiftF2ScopeCf
 		sift_scope_meta_close(&old);
 		return (SiftManifestScopeRef) {0};
 	}
-	if (!known || (changed.n == 0 && diff.nretired == 0 && diff.nadded == 0))
+	if (!known || (changed.n == 0 && diff.nretired == 0 && diff.nadded == 0) || rebuild_smaller(&diff))
 	{
 		sift_scope_meta_close(&old);
 		sift_f2_scope_refreshes.full++;
