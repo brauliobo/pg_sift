@@ -14,7 +14,7 @@ MB=1048576
 node_init bb 58 "autovacuum = off
 sift.async_maintenance = off
 shared_buffers = 64MB
-max_wal_size = 2GB
+max_wal_size = 256MB
 temp_file_limit = -1"
 node_start bb || bail "start failed"
 sql bb "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
