@@ -234,6 +234,18 @@ sift_cdi_scan_remaps(const F2Scan *s, uint32 g)
 	return sift_cdi_gran_remaps(scan_granule_map(s, g));
 }
 
+const SiftColDeltaPartMap *
+sift_cdi_scan_swap_map(F2Scan *s, const SiftColDeltaPartMap *map)
+{
+	const SiftColDeltaPartMap *had;
+
+	if (s->cd == NULL)
+		return NULL;
+	had = s->cd->map;
+	s->cd->map = map;
+	return had;
+}
+
 /* ---- the UPDATE ---- */
 
 /*

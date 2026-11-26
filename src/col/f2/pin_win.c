@@ -431,6 +431,7 @@ sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
 	const SiftPartDesc *part;
 	bool		tids_unneeded;
 	struct SiftPinWin *taken;
+	const SiftColDeltaPartMap *map;
 
 	if (pt->host != NULL)
 	{
@@ -443,6 +444,7 @@ sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
 	s->pinwin = NULL;
 	s->part = &pt->pin->desc;
 	s->tids_unneeded = pt->tids_unneeded;
+	map = sift_cdi_scan_swap_map(s, NULL);
 	PG_TRY();
 	{
 		if (s->part_sink != NULL)
@@ -454,6 +456,7 @@ sift_pin_win_replay(SiftPinWin *w, uint32 jobno)
 		s->pinwin = taken;
 		s->part = part;
 		s->tids_unneeded = tids_unneeded;
+		sift_cdi_scan_swap_map(s, map);
 	}
 	PG_END_TRY();
 }

@@ -144,6 +144,8 @@ extern void sift_cdi_scan_remap_tids(const struct F2Scan *s, uint32 g, uint64 *t
 extern bool sift_cdi_scan_remaps(const struct F2Scan *s, uint32 g);
 /* Whether a column delta changes a value of granule g of the part being scanned */
 extern bool sift_cdi_scan_granule_patched(const struct F2Scan *s, uint32 g);
+/* The map the scan patches its granules with (NULL: none), and the one it had: a granule of another part read again later is read with the map of that part */
+extern const SiftColDeltaPartMap *sift_cdi_scan_swap_map(struct F2Scan *s, const SiftColDeltaPartMap *map);
 
 /*
  * The update of a row of the index from oldt (at old_tid) to newt as a record of the chain, when the row is in a part, none of its key or partial-index columns changed, its leaves that changed
