@@ -689,6 +689,7 @@ seed_key_expr(ResidCtx *rc, const SiftV6JoinShape *sh, int dim, const Node *prob
 	return true;
 }
 
+/* the unnest of the join: the pairs of a sift_table's rows go through a pipe of their own (agg/unnest/jsonb.h), which no dimension is probed in */
 static bool
 seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 {
@@ -696,7 +697,7 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 
 	if (sh->elem != NULL)
 	{
-		if (!sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
+		if (p->is_table || !sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
 			return false;
 		x = p->xseed;
 		x->elem.semi = sh->semi;
