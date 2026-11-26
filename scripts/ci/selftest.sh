@@ -343,6 +343,8 @@ if [[ $MODE == --selftest ]]; then
 		[[ $out == *'  SKIP a: a reason'* && $out == *'2 jobs: 1 pass, 0 fail, 1 skip; 1 report skips'* ]] || { echo "FAIL: summary_report does not list the skips and count the states: $out"; bad=1; }
 		printf 'c\tPASS\t4\t50\t1\t%s\n' "$NO_REASON" >>"$ST/jobs.tsv"
 		summary_report "$ST/jobs.tsv" >/dev/null && { echo "FAIL: summary_report passes a skip with no reason"; bad=1; }
+		printf '%s\n' 'ok 1' '# SLOPE case_a 3.1 B/row' >"$t"
+		[[ $(slope_lines tap-shell-mem/slope-1 "$t") == '  tap-shell-mem/slope-1 # SLOPE case_a 3.1 B/row' ]] || { echo "FAIL: slope_lines does not lead the slope lines of a job whose id has a slash with the job"; bad=1; }
 		for f in $(git -C "$REPO" ls-files 'test/t/*.sh' 'test/t/*.bash'); do
 			! grep -qE "(# SKIP|^[[:space:]]*skip [0-9]+)[[:space:]'\"]*(;|\$)" "$REPO/$f" || { echo "FAIL: $f says a skip and gives no reason"; bad=1; }
 		done

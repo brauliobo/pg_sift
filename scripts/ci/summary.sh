@@ -64,7 +64,7 @@ if [[ -n ${STATS:-} ]]; then
 	cat "$LOG/stats.txt"
 fi
 # the slope of every case of the memory gates, passed or not: the hosted logs of each major and architecture are where their spread is read (a case at its ceiling is a flake in waiting)
-slopes=$(for id in "${J_ID[@]}"; do key=${id//\//__}; [[ $id == tap-shell-mem/slope* ]] && grep -h '^# SLOPE ' "$LOG/$key.log" 2>/dev/null | sed "s/^/  $id /"; done)
+slopes=$(for id in "${J_ID[@]}"; do [[ $id == tap-shell-mem/slope* ]] && slope_lines "$id" "$LOG/${id//\//__}.log"; done)
 [[ -z $slopes ]] || { echo "memory slopes by case (job, B/row, peaks, ceiling):"; echo "$slopes"; }
 # the skips, with their reasons (the logs of the jobs that passed are gone with the scratch directory; the retained summary has them), and the jobs that outgrew their estimate
 echo "jobs by state, and the skips with their reasons:"

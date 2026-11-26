@@ -31,6 +31,8 @@ summary_report() {
 		{ n[$2]++ }
 		END { printf "%d jobs: %d pass, %d fail, %d skip; %d report skips\n", NR, n["PASS"], n["FAIL"], n["SKIP"], skipped; exit bad > 0 }' "$@"
 }
+# slope_lines ID LOG: the slope lines of the log of a memory gate job, each led by the job (an id has a slash, which no sed delimiter of the line may take)
+slope_lines() { awk -v id="$1" '/^# SLOPE / { print "  " id " " $0 }' "$2" 2>/dev/null; }
 # scratch_table TABLE FILE...: the rows of scripts/scratch.tsv (job, MB) after the retained summaries: a job they measured at 150 MB or more gets its largest peak plus 5%, to ten; one they measured
 # below that loses its row (the default estimate holds); a job they do not have keeps the row it had. A job that failed (or whose servers a run past its cap stopped) only raises its row: its peak is
 # at least what it needs, and a run in which every job fails would otherwise leave the table as it was and trip the cap again. The comment lines of TABLE stay first; the rows are largest first
