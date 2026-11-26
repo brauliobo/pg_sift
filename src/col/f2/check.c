@@ -333,22 +333,17 @@ heap_tid_cb(Relation index, ItemPointer tid, Datum *values, bool *isnull, bool a
 		SIFT_CORRUPT(w->index, "The heap tuple (%u,%u) is visible to the snapshot and is not in the index.", ItemPointerGetBlockNumber(tid), (unsigned) ItemPointerGetOffsetNumber(tid));
 }
 
-/* The alive heap tuples of the blocks [from, from + span) that the window does not hold are not in the index (a heap scan stops at the end of the relation, the other table access methods count their own blocks) */
+/* The heap tuples of the blocks [from, from + span) that the snapshot of the index scan sees and the window does not hold are not in the index */
 static void
-heap_window_check(Relation heap, Relation index, HeapWindow *w, BlockNumber span)
+heap_window_check(Relation heap, Relation index, Snapshot snap, HeapWindow *w, BlockNumber span)
 {
-	IndexInfo  *info = BuildIndexInfo(index);
+	ItemPointerData lo,
+				hi;
 
-	if (heap->rd_tableam == GetHeapamTableAmRoutine())
-	{
-		BlockNumber blocks = RelationGetNumberOfBlocks(heap);
-
-		if (w->from >= blocks)
-			return;
-		span = Min(span, blocks - w->from);
-	}
-	info->ii_Concurrent = true;
-	table_index_build_range_scan(heap, index, info, false, false, false, w->from, span, heap_tid_cb, w, NULL);
+	ItemPointerSet(&lo, w->from, FirstOffsetNumber);
+	ItemPointerSet(&hi, span == InvalidBlockNumber ? MaxBlockNumber : w->from + span - 1, MaxOffsetNumber);
+	table_index_build_range_scan(heap, index, BuildIndexInfo(index), true, false, false, 0, InvalidBlockNumber, heap_tid_cb, w,
+								 table_beginscan_tidrange(heap, snap, &lo, &hi));
 }
 
 static void
@@ -393,11 +388,11 @@ sift_f2_check_heap(Relation index)
 	{
 		memset(w.seen, 0, bytes);
 		index_window_fill(heap, index, snap, &w);
-		heap_window_check(heap, index, &w, w.nblocks);
+		heap_window_check(heap, index, snap, &w, w.nblocks);
 		w.from += w.nblocks;
 	} while (w.from <= w.max_index_block);
 	w.nblocks = 0;
-	heap_window_check(heap, index, &w, InvalidBlockNumber);
+	heap_window_check(heap, index, snap, &w, InvalidBlockNumber);
 	pfree(w.seen);
 	UnregisterSnapshot(snap);
 	table_close(heap, AccessShareLock);
