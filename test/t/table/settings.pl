@@ -1,4 +1,4 @@
-# sift_table options (sift.table_set_option) are read by the backend that does the work. Which option a segment is written under: the option
+# The options of a Format 1 sift_table, the format with write buffers (sift.table_set_option), are read by the backend that does the work. Which option a segment is written under: the option
 # of the table, whoever writes or runs VACUUM, for inline promotion, for the session that runs VACUUM and for autovacuum alike; a table that
 # sets none is written under the default, and so is every other table of the database.
 # The compression written is read back from the size of the column segments (sift.table_segments): the rows are one compressible text.
@@ -15,7 +15,7 @@ my $inline = 12000;		# rows that close several write buffers, promoted while the
 my $settled = 6000;		# rows that stay in the write buffer (inline_promote = off) until a VACUUM
 
 my $node = sift_node('scope');
-$node->append_conf('postgresql.conf', "autovacuum_naptime = 1s\nlog_autovacuum_min_duration = 0\nautovacuum_vacuum_insert_threshold = 500\nautovacuum_vacuum_insert_scale_factor = 0\n"
+$node->append_conf('postgresql.conf', "sift.test_create_format1 = on\nautovacuum_naptime = 1s\nlog_autovacuum_min_duration = 0\nautovacuum_vacuum_insert_threshold = 500\nautovacuum_vacuum_insert_scale_factor = 0\n"
 	. "autovacuum_vacuum_threshold = 500\nautovacuum_vacuum_scale_factor = 0");
 $node->start;
 install_sift($node);
