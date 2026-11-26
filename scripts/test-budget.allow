@@ -111,7 +111,6 @@ sql	agg/par/distinct_dict_robust.sql	1	predates the budget of test/README.md
 sql	agg/par/topk_ext.sql	1	predates the budget of test/README.md
 sql	agg/parallel_2stage.sql	1	predates the budget of test/README.md
 sql	agg/parallel_2stage_robust.sql	1	predates the budget of test/README.md
-sql	agg/parallel_col_delta.sql	1	predates the budget of test/README.md
 sql	agg/params_float_exec.sql	1	predates the budget of test/README.md
 sql	agg/topn_card_vexpr.sql	1	predates the budget of test/README.md
 sql	agg/vet_dirty_cost.sql	1	predates the budget of test/README.md

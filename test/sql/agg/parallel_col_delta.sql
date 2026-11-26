@@ -15,7 +15,7 @@ INSERT INTO entity_parents SELECT e, 1 + e % 7 FROM generate_series(1, 200) e;
 CREATE TABLE ev (id int PRIMARY KEY, entity_id int NOT NULL, day date NOT NULL, qty int, amount numeric(12,2), note text, doc jsonb) WITH (autovacuum_enabled = false);
 CREATE TABLE evh (LIKE ev INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT g, 1 + g % 200, date '2030-01-01' + g % 90, g % 13, (g % 1000) / 8.0, 'note ' || g, jsonb_build_object('flag', CASE WHEN g % 3 = 0 THEN 'a' ELSE 'b' END, 'n', g)
-FROM generate_series(1, 60000) g;
+FROM generate_series(1, 36000) g;
 INSERT INTO evh SELECT * FROM ev;
 SET maintenance_work_mem = '64MB';
 CREATE INDEX ev_sift ON ev USING sift_col (id, entity_id, day, qty, amount, note, doc)
@@ -62,16 +62,16 @@ END $$;
 
 SELECT * FROM check_all('built');
 
-UPDATE ev SET note = 'upd ' || id WHERE id % 7 = 0;
-UPDATE evh SET note = 'upd ' || id WHERE id % 7 = 0;
+UPDATE ev SET note = 'upd ' || id WHERE id % 47 = 0;
+UPDATE evh SET note = 'upd ' || id WHERE id % 47 = 0;
 -- an integer leaf is not patched by a column delta: the rows whose qty changes are replaced
-UPDATE ev SET qty = qty + 1 WHERE id % 7 = 0 AND id % 2 = 0;
-UPDATE evh SET qty = qty + 1 WHERE id % 7 = 0 AND id % 2 = 0;
-SELECT dead() < 8571 AS some_rows_patched_in_place, dead() > 0 AS some_rows_replaced;
+UPDATE ev SET qty = qty + 1 WHERE id % 47 = 0 AND id % 2 = 0;
+UPDATE evh SET qty = qty + 1 WHERE id % 47 = 0 AND id % 2 = 0;
+SELECT dead() < 765 AS some_rows_patched_in_place, dead() > 0 AS some_rows_replaced;
 SELECT * FROM check_all('patched');
 
-UPDATE ev SET note = note || ' again', doc = doc || '{"flag": "z"}' WHERE id % 11 = 0;
-UPDATE evh SET note = note || ' again', doc = doc || '{"flag": "z"}' WHERE id % 11 = 0;
+UPDATE ev SET note = note || ' again', doc = doc || '{"flag": "z"}' WHERE id % 67 = 0;
+UPDATE evh SET note = note || ' again', doc = doc || '{"flag": "z"}' WHERE id % 67 = 0;
 SELECT * FROM check_all('patched twice');
 
 DELETE FROM ev WHERE id % 13 = 0;
@@ -79,8 +79,8 @@ DELETE FROM evh WHERE id % 13 = 0;
 SELECT * FROM check_all('deleted');
 
 BEGIN;
-UPDATE ev SET note = 'own ' || id WHERE id % 5 = 0;
-UPDATE evh SET note = 'own ' || id WHERE id % 5 = 0;
+UPDATE ev SET note = 'own ' || id WHERE id % 41 = 0;
+UPDATE evh SET note = 'own ' || id WHERE id % 41 = 0;
 SELECT * FROM check_all('own transaction');
 ROLLBACK;
 SELECT * FROM check_all('rolled back');
