@@ -235,3 +235,6 @@ CREATE FUNCTION sift._test_par_group(workers int4, rows int4, groups int4, loops
 
 -- Every cube of every granule of every part of an index against the values it was made of: the parts, those with SEC_PREAGG, the cubes, the granules, the cubes that leave a granule out, the cells and the cells that differ (src/col/f2/preagg/test.c)
 CREATE FUNCTION sift._test_preagg_v2_check(index regclass, OUT parts int4, OUT with_preagg int4, OUT cubes int4, OUT granules int4, OUT skipped int4, OUT cells int8, OUT mismatched int4) RETURNS SETOF record AS 'MODULE_PATHNAME', 'sift_test_preagg_v2_check' LANGUAGE C STRICT;
+
+-- The runs of column deltas the backend encoded again since the last call: the parts they named left their partition between the encoding and the lock (src/table/f2/col_delta/flush.c)
+CREATE FUNCTION sift._test_col_delta_reencodes() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_col_delta_reencodes' LANGUAGE C STRICT;

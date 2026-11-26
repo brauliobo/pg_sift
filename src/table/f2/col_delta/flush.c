@@ -6,6 +6,7 @@
 
 #include "access/transam.h"
 #include "access/xact.h"
+#include "fmgr.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
@@ -27,6 +28,15 @@ gens_of(SiftU64Set *gens, const SiftPartDesc *parts, int nparts)
 	sift_u64set_init(gens, nparts);
 	for (int p = 0; p < nparts; p++)
 		(void) sift_u64set_add(gens, parts[p].part_gen);
+}
+
+static uint64
+rec_part_gen(const uint8 *rec)
+{
+	SiftColDeltaEntryHdr h;
+
+	memcpy(&h, rec, sizeof(h));
+	return h.part_gen;
 }
 
 /* The record goes to the partition that holds its row now: the books of the stage follow it */
@@ -124,9 +134,32 @@ release_run(SiftColDeltaStage *cd, const int *ord, int lo, int hi)
 
 #define SIFT_COL_DELTA_REGROUPS 8	/* merges of partitions that one flush meets before it gives up: each is a merge another session committed while it ran */
 
+#ifdef SIFT_TESTING
+static uint64 sift_col_delta_reencodes = 0;
+#endif
+
+/* Every record of the run names a part the partition has under its lock: the run encoded on an older list of the partition is the run of this one */
+static bool
+run_still_placed(Relation rel, const SiftPartitionEntry *locked, const SiftColDeltaStage *cd, const int *ord, int lo, int hi)
+{
+	int			nparts = 0;
+	SiftPartDesc *parts = sift_manifest_read_parts(rel, locked, &nparts);
+	SiftU64Set	gens;
+	bool		placed = true;
+
+	gens_of(&gens, parts, nparts);
+	for (int k = lo; k < hi && placed; k++)
+		placed = cd->items[ord[k]].rec == NULL || sift_u64set_has(&gens, rec_part_gen(cd->items[ord[k]].rec));
+	sift_u64set_free(&gens);
+	if (parts != NULL)
+		pfree(parts);
+	return placed;
+}
+
 /* The records of ord[lo..hi), all of one partition, into its chain. Returns 0, or the records that a merge of the partitions since they were staged sent to the partition that holds their rows
  * now: nothing is written then, and the stage is grouped again. The lookups of the rows and the encoding of the run are made before the lock of the partition, on the parts the manifest has then;
- * under the lock the manifest generation of the partition must still be that of the parts, or a compaction, a split or a merge rewrote them and the work is made again */
+ * under the lock every part the run names must still be a part of the partition, or a compaction, a split or a merge rewrote them and the work is made again (a part another writer added, or the
+ * chain it appended to, moves the manifest generation of the partition and leaves the run as it is) */
 static int
 flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *ord, int lo, int hi, FullTransactionId next)
 {
@@ -150,8 +183,10 @@ flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *o
 		if (moved != 0 || parts == NULL)
 			break;
 		b = run_batch(cd, ord, lo, hi, next);
+		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA_RUN);
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		stable = sift_manifest_find_entry(rel, part_id, key_lo, &locked) && locked.manifest_gen == e.manifest_gen;
+		stable = sift_manifest_find_entry(rel, part_id, key_lo, &locked)
+			&& (locked.manifest_gen == e.manifest_gen || run_still_placed(rel, &locked, cd, ord, lo, hi));
 		if (stable)
 		{
 			if (b.nentries > 0)
@@ -165,6 +200,9 @@ flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *o
 		pfree(parts);
 		if (stable)
 			break;
+#ifdef SIFT_TESTING
+		sift_col_delta_reencodes++;
+#endif
 	}
 	if (npages >= SIFT_COL_DELTA_FOLD_PAGES)
 		(void) sift_f2_maint_request(rel, SIFT_MK_COMPACT_PART, part_id);
@@ -235,3 +273,16 @@ sift_col_delta_stage_event(Relation rel, SiftTxnStage *st, SiftStageEvent ev, Su
 }
 
 
+#ifdef SIFT_TESTING
+PG_FUNCTION_INFO_V1(sift_test_col_delta_reencodes);
+
+/* The runs of column deltas this backend encoded again since the last call, because the parts they named left their partition while the lock was not held */
+Datum
+sift_test_col_delta_reencodes(PG_FUNCTION_ARGS)
+{
+	int64		n = (int64) sift_col_delta_reencodes;
+
+	sift_col_delta_reencodes = 0;
+	PG_RETURN_INT64(n);
+}
+#endif
