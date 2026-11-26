@@ -94,6 +94,13 @@ ours_of(List *relids)
 	return ours;
 }
 
+/* The table the statement names, locked once its owner is the role that runs it: a role without the right fails before it waits for the lock */
+static Oid
+lock_owned(RangeVar *rv, LOCKMODE lock)
+{
+	return RangeVarGetRelidExtended(rv, lock, RVR_MISSING_OK, RangeVarCallbackOwnsRelation, NULL);
+}
+
 /*
  * The sift_tables the statement changes, locked as the statement will lock them: the one it names and, unless it says ONLY, those that inherit from it. A table of another access method is not
  * locked before the server checks the right to the statement, but for one whose inheritors are sift_tables: the statement locks the inheritors after it, and they are locked in that order.
@@ -108,10 +115,10 @@ statement_tables(Node *parse, LOCKMODE *lock, Oid *named)
 		return NIL;
 	if (rv->inh && inherited_statement(parse) != NULL && has_subclass(relid) && any_sift_table(find_all_inheritors(relid, NoLock, NULL)))
 	{
-		relid = *named = RangeVarGetRelidExtended(rv, *lock, RVR_MISSING_OK, RangeVarCallbackOwnsRelation, NULL);
+		relid = *named = lock_owned(rv, *lock);
 		return OidIsValid(relid) ? ours_of(find_all_inheritors(relid, *lock, NULL)) : NIL;
 	}
-	if (!sift_relid_is_sift_table(relid) || !OidIsValid(relid = *named = RangeVarGetRelid(rv, *lock, true)))
+	if (!sift_relid_is_sift_table(relid) || !OidIsValid(relid = *named = lock_owned(rv, *lock)))
 		return NIL;
 	return ours_of(list_make1_oid(relid));
 }
