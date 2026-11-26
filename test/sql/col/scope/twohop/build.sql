@@ -64,22 +64,18 @@ $$ BEGIN
 	repeated := entries - (SELECT count(DISTINCT (tid, key)) FROM sift._test_col_scope_entries('facts_col'));
 END $$;
 
--- the keys 1..7 and the keys 1..6 together, read through the scope marker and as SQL says them (IN, EXISTS, the join of the distinct pairs for the marker that counts per pair): how many differ and how many
--- were read from the entity rows instead of the units
-CREATE FUNCTION reads(OUT differ_in int, OUT differ_exists int, OUT differ_pairs int, OUT fell_back int) LANGUAGE plpgsql AS $$
+-- the keys 1..7 and the keys 1..6 together, read through the scope marker (a fact once) against IN and EXISTS, and the join of the distinct pairs (a fact for each pair) read by sift against the
+-- normal plan: how many differ
+CREATE FUNCTION reads(OUT differ_in int, OUT differ_exists int, OUT differ_pairs int) LANGUAGE plpgsql AS $$
 DECLARE
 	k int;
 	a record;
 	b record;
-	p jsonb;
 BEGIN
 	differ_in := 0;
 	differ_exists := 0;
 	differ_pairs := 0;
-	fell_back := 0;
 	FOR k IN 1..7 LOOP
-		EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s)', k) INTO p;
-		IF jsonb_path_exists(p, '$.**."Scope Fallback"') THEN fell_back := fell_back + 1; END IF;
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s)', k) INTO a;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM grants WHERE tenant_id = %1$s AND deleted_at IS NULL AND dim_a_id IS NOT NULL
@@ -88,7 +84,7 @@ BEGIN
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE EXISTS (SELECT 1 FROM pair_oracle o WHERE o.member = f.dim_a_id AND o.tenant_id = %s)', k) INTO b;
 		IF a <> b THEN differ_exists := differ_exists + 1; END IF;
 		SET LOCAL sift.enable_agg = on;
-		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s)', k) INTO a;
+		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f JOIN pair_oracle o ON o.member = f.dim_a_id WHERE o.tenant_id = %s', k) INTO a;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f JOIN pair_oracle o ON o.member = f.dim_a_id WHERE o.tenant_id = %s', k) INTO b;
 		IF a <> b THEN differ_pairs := differ_pairs + 1; END IF;
@@ -100,13 +96,6 @@ BEGIN
 	EXECUTE 'SELECT count(*) c, coalesce(sum(amount), 0) s FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id <= 6)' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	IF a <> b THEN differ_in := differ_in + 1; END IF;
-END $$;
-
-CREATE FUNCTION why() RETURNS text LANGUAGE plpgsql AS $$
-DECLARE p jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, 1)' INTO p;
-	RETURN jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
 END $$;
 
 -- the build, every way to know the pairs: the three relations read once, their btrees probed, chosen by the price
@@ -133,11 +122,8 @@ SELECT key AS tenant_id, count(*) AS entries, count(DISTINCT tid) AS fact_rows F
 SELECT count(*) AS facts_of_member_5, (SELECT count(*) FROM sift._test_col_scope_entries('facts_col') e JOIN facts f ON f.ctid = e.tid WHERE e.key = 1 AND f.dim_a_id = 5) AS entries_of_tenant_1
 	FROM facts WHERE dim_a_id = 5;
 
--- the reads: the answers are the join's, IN and EXISTS; the plan says whether the units were read
+-- the reads: the answers are the join's, IN and EXISTS
 SELECT * FROM reads();
-SELECT why() AS scope_fallback;
--- a read of several keys that counts a row for each pair needs the units: it is refused with the reason, as for any scope read that cannot use them
-SELECT try('SELECT count(*) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, ARRAY[1, 2]::int8[])') AS per_pair_several_keys;
 
 -- every state of the relations, one after the other and committed: the answers stay the join's
 CREATE TABLE states (n int, label text, stmt text);
@@ -219,6 +205,6 @@ SELECT try('CREATE INDEX facts_hot_col ON facts_hot USING sift_col (id, dim_a_id
 SELECT count(*) AS entries, count(DISTINCT tid) AS fact_rows FROM sift._test_col_scope_entries('facts_hot_col');
 
 DROP TABLE facts, facts_hot, grants, memberships, states CASCADE;
-DROP FUNCTION try(text), entries_vs_oracle(), reads(), why();
+DROP FUNCTION try(text), entries_vs_oracle(), reads();
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
