@@ -845,6 +845,8 @@ core/retired.c
 core/ring_test.c
 core/shm/combiner.c
 core/shm/combiner.h
+core/shm/lease.h
+core/shm/lease_test.c
 core/shm/manifest.c
 core/shm/manifest.h
 core/shm/manifest_int.h

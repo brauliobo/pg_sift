@@ -25,15 +25,21 @@
 #define DEFER_LOG_AFTER_US	(60 * USECS_PER_SEC)		/* the deferral is said at LOG after this long without a quiet moment, once per DEFER_LOG_EVERY_US */
 #define DEFER_LOG_EVERY_US	(10 * USECS_PER_MINUTE)
 #define FOREGROUND_EVERY	64
+#define FG_RECORD_EVERY_US	(50 * INT64CONST(1000))	/* a backend feeds the averages at most this often */
 #define FG_IDLE_US			USECS_PER_SEC				/* a foreground that reported nothing for this long has ended: its averages fall back to the usual */
 #define FG_QUIET_US			(100 * INT64CONST(1000))	/* the same when no backend is running: nobody is left for the spike to protect */
 
-typedef struct SiftPacerTelemetry
+/* The foreground backends write their line, the workers theirs: a scan that reports its duration does not take the line of the decision away from the worker that reads it */
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftPacerForeground
 {
 	pg_atomic_uint64 fg_lat_ewma_us;	/* fast average (1/16) of the duration of a scan of the foreground */
 	pg_atomic_uint64 fg_lat_base_us;	/* slow average (1/256) of the same, never below LAT_FLOOR_US */
-	pg_atomic_uint64 last_sample_ts;	/* the last look at the backends */
 	pg_atomic_uint64 last_fg_ts;		/* the last operation of the foreground that fed the averages */
+} SiftPacerForeground;
+
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftPacerWorker
+{
+	pg_atomic_uint64 last_sample_ts;	/* the last look at the backends */
 	pg_atomic_uint64 defer_until;		/* a P2 or P3 step does not start before this */
 	pg_atomic_uint64 deferred_since;	/* the first deferral of this heavy spell, 0 when there is none */
 	pg_atomic_uint64 defer_logged_at;
@@ -43,6 +49,12 @@ typedef struct SiftPacerTelemetry
 	pg_atomic_uint32 share_pm;
 	pg_atomic_uint32 eff_delay_ms;		/* the delay of a P1 step now */
 	pg_atomic_uint32 lock_yields;
+} SiftPacerWorker;
+
+typedef struct SiftPacerTelemetry
+{
+	SiftPacerForeground fg;
+	SiftPacerWorker w;
 } SiftPacerTelemetry;
 
 BufferAccessStrategy sift_maint_ring;
@@ -51,22 +63,22 @@ uint32		sift_pacer_fg_ops = 15;
 static void
 telemetry_init(SIFT_DSM_INIT_ARGS)
 {
-	SiftPacerTelemetry *t = ptr;
+	SiftPacerTelemetry *t = (SiftPacerTelemetry *) TYPEALIGN(PG_CACHE_LINE_SIZE, ptr);
 
-	pg_atomic_init_u64(&t->fg_lat_ewma_us, 0);
-	pg_atomic_init_u64(&t->fg_lat_base_us, 0);
-	pg_atomic_init_u64(&t->last_sample_ts, 0);
-	pg_atomic_init_u64(&t->last_fg_ts, 0);
-	pg_atomic_init_u64(&t->defer_until, 0);
-	pg_atomic_init_u64(&t->deferred_since, 0);
-	pg_atomic_init_u64(&t->defer_logged_at, 0);
+	pg_atomic_init_u64(&t->fg.fg_lat_ewma_us, 0);
+	pg_atomic_init_u64(&t->fg.fg_lat_base_us, 0);
+	pg_atomic_init_u64(&t->w.last_sample_ts, 0);
+	pg_atomic_init_u64(&t->fg.last_fg_ts, 0);
+	pg_atomic_init_u64(&t->w.defer_until, 0);
+	pg_atomic_init_u64(&t->w.deferred_since, 0);
+	pg_atomic_init_u64(&t->w.defer_logged_at, 0);
 	for (int i = 0; i < SIFT_TIERS; i++)
-		pg_atomic_init_u64(&t->starved_at[i], 0);
-	pg_atomic_init_u32(&t->active_oltp, 0);
-	pg_atomic_init_u32(&t->pacer_mode, SIFT_PACE_FULL);
-	pg_atomic_init_u32(&t->share_pm, 0);
-	pg_atomic_init_u32(&t->eff_delay_ms, 0);
-	pg_atomic_init_u32(&t->lock_yields, 0);
+		pg_atomic_init_u64(&t->w.starved_at[i], 0);
+	pg_atomic_init_u32(&t->w.active_oltp, 0);
+	pg_atomic_init_u32(&t->w.pacer_mode, SIFT_PACE_FULL);
+	pg_atomic_init_u32(&t->w.share_pm, 0);
+	pg_atomic_init_u32(&t->w.eff_delay_ms, 0);
+	pg_atomic_init_u32(&t->w.lock_yields, 0);
 }
 
 static SiftPacerTelemetry *
@@ -75,8 +87,12 @@ telemetry(void)
 	static SiftPacerTelemetry own;
 	static SiftPacerTelemetry *t;
 
-	/* MEM[MEM-SHM-11]: DSM pacer telemetry sift_pacer_1 (112 B fixed) */
-	if (t == NULL && (t = sift_dsm_try(TELEMETRY_NAME, sizeof(own), telemetry_init)) == NULL)
+	/* MEM[MEM-SHM-11]: DSM pacer telemetry sift_pacer_1 (2 lines fixed) */
+	void	   *raw;
+
+	if (t == NULL && (raw = sift_dsm_try(TELEMETRY_NAME, sizeof(own) + PG_CACHE_LINE_SIZE, telemetry_init)) != NULL)
+		t = (SiftPacerTelemetry *) TYPEALIGN(PG_CACHE_LINE_SIZE, raw);
+	if (t == NULL)
 	{
 		SIFT_DSM_INIT_CALL(telemetry_init, &own);
 		t = &own;
@@ -149,63 +165,71 @@ static SiftPaceDecision
 current(SiftPacerTelemetry *t, bool observer)
 {
 	TimestampTz now = GetCurrentTimestamp();
-	uint64		last = pg_atomic_read_u64(&t->last_sample_ts);
+	uint64		last = pg_atomic_read_u64(&t->w.last_sample_ts);
 
-	if (now - (TimestampTz) last >= SAMPLE_US && pg_atomic_compare_exchange_u64(&t->last_sample_ts, &last, now))
+	if (now - (TimestampTz) last >= SAMPLE_US && pg_atomic_compare_exchange_u64(&t->w.last_sample_ts, &last, now))
 	{
 		uint32		running = (uint32) sift_pacer_running_backends(InvalidOid);
 		uint32		active = running - (observer && running > 0);
 		SiftPaceLoad load;
 		SiftPaceDecision d;
 
-		if (now - (TimestampTz) pg_atomic_read_u64(&t->last_fg_ts) >= (active == 0 ? FG_QUIET_US : FG_IDLE_US))
-			pg_atomic_write_u64(&t->fg_lat_ewma_us, pg_atomic_read_u64(&t->fg_lat_base_us));
+		if (now - (TimestampTz) pg_atomic_read_u64(&t->fg.last_fg_ts) >= (active == 0 ? FG_QUIET_US : FG_IDLE_US))
+			pg_atomic_write_u64(&t->fg.fg_lat_ewma_us, pg_atomic_read_u64(&t->fg.fg_lat_base_us));
 		load = (SiftPaceLoad) {
 			.active_oltp = active,
 			.cpu_slots = Max(2, max_parallel_workers),
-			.lat_ewma_us = pg_atomic_read_u64(&t->fg_lat_ewma_us),
-			.lat_base_us = pg_atomic_read_u64(&t->fg_lat_base_us),
-			.lock_yields = observer ? pg_atomic_read_u32(&t->lock_yields) : pg_atomic_exchange_u32(&t->lock_yields, 0)
+			.lat_ewma_us = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us),
+			.lat_base_us = pg_atomic_read_u64(&t->fg.fg_lat_base_us),
+			.lock_yields = observer ? pg_atomic_read_u32(&t->w.lock_yields) : pg_atomic_exchange_u32(&t->w.lock_yields, 0)
 		};
 		d = sift_pacer_decide(&load);
-		if (d.mode == SIFT_PACE_THROTTLED && now < (TimestampTz) pg_atomic_read_u64(&t->defer_until))
+		if (d.mode == SIFT_PACE_THROTTLED && now < (TimestampTz) pg_atomic_read_u64(&t->w.defer_until))
 			d.mode = SIFT_PACE_DEFERRED;
 		if (d.mode < SIFT_PACE_THROTTLED)
 		{
-			pg_atomic_write_u64(&t->deferred_since, 0);
-			pg_atomic_write_u64(&t->defer_until, 0);
+			pg_atomic_write_u64(&t->w.deferred_since, 0);
+			pg_atomic_write_u64(&t->w.defer_until, 0);
 		}
-		pg_atomic_write_u32(&t->active_oltp, load.active_oltp);
-		pg_atomic_write_u32(&t->share_pm, d.share_pm);
-		pg_atomic_write_u32(&t->pacer_mode, d.mode);
-		pg_atomic_write_u32(&t->eff_delay_ms, Max(0, sift_pacer_delay_ms(&d, SIFT_TIER_P1, sift_maintenance_cost_delay)));
+		pg_atomic_write_u32(&t->w.active_oltp, load.active_oltp);
+		pg_atomic_write_u32(&t->w.share_pm, d.share_pm);
+		pg_atomic_write_u32(&t->w.pacer_mode, d.mode);
+		pg_atomic_write_u32(&t->w.eff_delay_ms, Max(0, sift_pacer_delay_ms(&d, SIFT_TIER_P1, sift_maintenance_cost_delay)));
 	}
-	return (SiftPaceDecision) {pg_atomic_read_u32(&t->pacer_mode), (int) pg_atomic_read_u32(&t->share_pm)};
+	return (SiftPaceDecision) {pg_atomic_read_u32(&t->w.pacer_mode), (int) pg_atomic_read_u32(&t->w.share_pm)};
 }
 
 void
 sift_pacer_snapshot(SiftPacerSnapshot *out)
 {
 	SiftPacerTelemetry *t = telemetry();
-	uint64		last = pg_atomic_read_u64(&t->last_sample_ts);
+	uint64		last = pg_atomic_read_u64(&t->w.last_sample_ts);
 
 	if (last != 0 && GetCurrentTimestamp() - (TimestampTz) last >= 2 * SAMPLE_US)
 		(void) current(t, MyBackendType == B_BACKEND);
-	out->active_oltp = pg_atomic_read_u32(&t->active_oltp);
-	out->mode = (SiftPacerMode) pg_atomic_read_u32(&t->pacer_mode);
-	out->delay_ms = (int) pg_atomic_read_u32(&t->eff_delay_ms);
+	out->active_oltp = pg_atomic_read_u32(&t->w.active_oltp);
+	out->mode = (SiftPacerMode) pg_atomic_read_u32(&t->w.pacer_mode);
+	out->delay_ms = (int) pg_atomic_read_u32(&t->w.eff_delay_ms);
 }
 
 void
 sift_pacer_record_foreground(int64 usecs)
 {
+	static TimestampTz recorded_at;
 	SiftPacerTelemetry *t = telemetry();
-	uint64		ewma = pg_atomic_read_u64(&t->fg_lat_ewma_us);
-	uint64		base = pg_atomic_read_u64(&t->fg_lat_base_us);
+	TimestampTz now = GetCurrentTimestamp();
+	uint64		ewma,
+				base;
 
-	pg_atomic_write_u64(&t->fg_lat_ewma_us, ewma == 0 ? (uint64) usecs : (ewma * 15 + usecs) >> 4);
-	pg_atomic_write_u64(&t->fg_lat_base_us, base == 0 ? Max((uint64) usecs, LAT_FLOOR_US) : Max((base * 255 + Min((uint64) usecs, base * 2)) >> 8, LAT_FLOOR_US));
-	pg_atomic_write_u64(&t->last_fg_ts, GetCurrentTimestamp());
+	if (now - recorded_at < FG_RECORD_EVERY_US)
+		return;
+	recorded_at = now;
+	ewma = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us);
+	base = pg_atomic_read_u64(&t->fg.fg_lat_base_us);
+
+	pg_atomic_write_u64(&t->fg.fg_lat_ewma_us, ewma == 0 ? (uint64) usecs : (ewma * 15 + usecs) >> 4);
+	pg_atomic_write_u64(&t->fg.fg_lat_base_us, base == 0 ? Max((uint64) usecs, LAT_FLOOR_US) : Max((base * 255 + Min((uint64) usecs, base * 2)) >> 8, LAT_FLOOR_US));
+	pg_atomic_write_u64(&t->fg.last_fg_ts, now);
 }
 
 void
@@ -220,13 +244,13 @@ sift_pacer_note_foreground(int64 usecs)
 void
 sift_pacer_note_lock_yield(void)
 {
-	pg_atomic_fetch_add_u32(&telemetry()->lock_yields, 1);
+	pg_atomic_fetch_add_u32(&telemetry()->w.lock_yields, 1);
 }
 
 void
 sift_pacer_note_starved(SiftPacerTier tier, TimestampTz now)
 {
-	pg_atomic_write_u64(&telemetry()->starved_at[tier], now);
+	pg_atomic_write_u64(&telemetry()->w.starved_at[tier], now);
 }
 
 bool
@@ -236,7 +260,7 @@ sift_pacer_should_yield(SiftPacerTier tier, TimestampTz now)
 	int64		window = (int64) Max(sift_maintenance_naptime, 1000) * 1000;
 
 	for (int higher = SIFT_TIER_P0; higher < (int) tier; higher++)
-		if (now - (TimestampTz) pg_atomic_read_u64(&t->starved_at[higher]) < window)
+		if (now - (TimestampTz) pg_atomic_read_u64(&t->w.starved_at[higher]) < window)
 			return true;
 	return false;
 }
@@ -244,16 +268,16 @@ sift_pacer_should_yield(SiftPacerTier tier, TimestampTz now)
 static void
 say_deferral(SiftPacerTelemetry *t, TimestampTz now)
 {
-	uint64		since = pg_atomic_read_u64(&t->deferred_since);
-	uint64		logged = pg_atomic_read_u64(&t->defer_logged_at);
+	uint64		since = pg_atomic_read_u64(&t->w.deferred_since);
+	uint64		logged = pg_atomic_read_u64(&t->w.defer_logged_at);
 	bool		long_enough = since != 0 && now - (TimestampTz) since >= DEFER_LOG_AFTER_US &&
-		now - (TimestampTz) logged >= DEFER_LOG_EVERY_US && pg_atomic_compare_exchange_u64(&t->defer_logged_at, &logged, now);
+		now - (TimestampTz) logged >= DEFER_LOG_EVERY_US && pg_atomic_compare_exchange_u64(&t->w.defer_logged_at, &logged, now);
 
 	if (since == 0)
-		pg_atomic_write_u64(&t->deferred_since, now);
+		pg_atomic_write_u64(&t->w.deferred_since, now);
 	ereport(long_enough ? LOG : DEBUG1,
 			(errmsg("sift maintenance pacer defers background space and structural work (%u client backends running, a step of the worker sleeps %u ms)",
-					pg_atomic_read_u32(&t->active_oltp), pg_atomic_read_u32(&t->eff_delay_ms))));
+					pg_atomic_read_u32(&t->w.active_oltp), pg_atomic_read_u32(&t->w.eff_delay_ms))));
 }
 
 bool
@@ -266,13 +290,13 @@ sift_pacer_defer(SiftPacerTier tier)
 	if (tier < SIFT_TIER_P2)
 		return false;
 	d = current(t, false);
-	if (now >= (TimestampTz) pg_atomic_read_u64(&t->defer_until))
+	if (now >= (TimestampTz) pg_atomic_read_u64(&t->w.defer_until))
 	{
 		if (d.mode != SIFT_PACE_THROTTLED)
 			return false;
-		pg_atomic_write_u64(&t->defer_until, now + (int64) (DEFER_MIN_MS + (int64) DEFER_SPAN_MS * d.share_pm / 1000) * 1000);
+		pg_atomic_write_u64(&t->w.defer_until, now + (int64) (DEFER_MIN_MS + (int64) DEFER_SPAN_MS * d.share_pm / 1000) * 1000);
 	}
-	pg_atomic_write_u32(&t->pacer_mode, SIFT_PACE_DEFERRED);
+	pg_atomic_write_u32(&t->w.pacer_mode, SIFT_PACE_DEFERRED);
 	say_deferral(t, now);
 	return true;
 }
@@ -321,8 +345,8 @@ sift_pacer_test_state(uint64 *ewma_us, uint64 *base_us)
 {
 	SiftPacerTelemetry *t = telemetry();
 
-	*ewma_us = pg_atomic_read_u64(&t->fg_lat_ewma_us);
-	*base_us = pg_atomic_read_u64(&t->fg_lat_base_us);
+	*ewma_us = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us);
+	*base_us = pg_atomic_read_u64(&t->fg.fg_lat_base_us);
 }
 
 void

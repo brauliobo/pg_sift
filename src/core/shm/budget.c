@@ -45,9 +45,11 @@ StaticAssertDecl(sizeof(SiftShmPoolSlot) == PG_CACHE_LINE_SIZE, "a pool of the l
 typedef struct SiftShmLedger
 {
 	SiftShmPoolSlot pool[SIFT_SHM_NPOOL];
+	pg_atomic_uint64 limit_hwm;		/* the highest limit any backend has seen, a line of its own: the pools hold within their shares of it, and the total is added up only when a limit is under it */
+	char		pad[PG_CACHE_LINE_SIZE - sizeof(pg_atomic_uint64)];
 } SiftShmLedger;
 
-StaticAssertDecl(sizeof(SiftShmLedger) == SIFT_SHM_NPOOL * PG_CACHE_LINE_SIZE, "the ledger is one cache line per pool");
+StaticAssertDecl(sizeof(SiftShmLedger) == (SIFT_SHM_NPOOL + 1) * PG_CACHE_LINE_SIZE, "the ledger is one cache line per pool and one for the limit");
 
 static SiftShmLedger *ledger;
 static int64 local_credit[SIFT_SHM_NPOOL];
@@ -93,6 +95,7 @@ ledger_init(SIFT_DSM_INIT_ARGS)
 		pg_atomic_init_u64(&l->pool[i].refusals, 0);
 		pg_atomic_init_u64(&l->pool[i].evictions, 0);
 	}
+	pg_atomic_init_u64(&l->limit_hwm, 0);
 }
 
 static SiftShmLedger *
@@ -100,7 +103,7 @@ ledger_get(void)
 {
 	if (ledger == NULL)
 	{
-		/* MEM[MEM-SHM-02]: DSM ledger sift_shm_ledger (768 B fixed; 5x128 B pool counters) */
+		/* MEM[MEM-SHM-02]: DSM ledger sift_shm_ledger (fixed; a line a pool and one for the limit) */
 		void	   *raw = sift_dsm_try(LEDGER_NAME, sizeof(SiftShmLedger) + PG_CACHE_LINE_SIZE, ledger_init);
 
 		if (raw != NULL)
@@ -111,7 +114,7 @@ ledger_get(void)
 
 /* adds bytes to a counter that may not pass limit */
 static bool
-add_within(pg_atomic_uint64 *counter, Size bytes, Size limit)
+add_within(pg_atomic_uint64 *counter, Size bytes, Size limit, uint64 *after)
 {
 	uint64		used = pg_atomic_read_u64(counter);
 
@@ -120,7 +123,19 @@ add_within(pg_atomic_uint64 *counter, Size bytes, Size limit)
 		if (used + bytes > limit)
 			return false;
 	} while (!pg_atomic_compare_exchange_u64(counter, &used, used + bytes));
+	*after = used + bytes;
 	return true;
+}
+
+/* The limit is raised in the ledger when it is the highest seen; true where it is under the highest, which is where the pools may hold more than the total allows */
+static bool
+limit_shrank(SiftShmLedger *l, Size limit)
+{
+	uint64		hwm = pg_atomic_read_u64(&l->limit_hwm);
+
+	while (limit > hwm && !pg_atomic_compare_exchange_u64(&l->limit_hwm, &hwm, limit))
+		;
+	return limit < hwm;
 }
 
 static void
@@ -146,15 +161,19 @@ static bool
 ledger_take(SiftShmLedger *l, SiftShmPoolId pool, Size bytes)
 {
 	SiftShmPoolSlot *s = &l->pool[pool];
+	Size		limit = sift_shm_limit_bytes();
+	Size		pool_limit = sift_shm_pool_bytes(pool);
+	bool		shrank = limit_shrank(l, limit);
+	uint64		used;
 
-	if (!add_within(&s->bytes_used, bytes, sift_shm_pool_bytes(pool)))
+	if (!add_within(&s->bytes_used, bytes, pool_limit, &used))
 		return false;
-	if (ledger_total(l) > sift_shm_limit_bytes())
+	if ((shrank || used > pool_limit - pool_limit / 8) && ledger_total(l) > limit)
 	{
 		pg_atomic_fetch_sub_u64(&s->bytes_used, bytes);
 		return false;
 	}
-	note_peak(&s->peak_bytes, pg_atomic_read_u64(&s->bytes_used));
+	note_peak(&s->peak_bytes, used);
 	return true;
 }
 

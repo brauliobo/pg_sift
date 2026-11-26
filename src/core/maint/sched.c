@@ -114,6 +114,8 @@ sift_maint_shmem_init(SiftMaintShmem *m, int tranche_id, uint32 max_workers, uin
 	pg_atomic_init_u32(&m->launcher, 0);
 	pg_atomic_init_u64(&m->fg_write_ops, 0);
 	pg_atomic_init_u64(&m->fg_read_ops, 0);
+	for (int i = 0; i < SIFT_MAINT_COALESCED_SHARDS; i++)
+		pg_atomic_init_u64(&m->coalesced[i].n, 0);
 	for (int i = 0; i < SIFT_MAINT_HEAT; i++)
 		pg_atomic_init_u32(&m->heat[i], 0);
 	pg_atomic_init_u64(&m->bgw_sample_ts_us, 0);
@@ -138,7 +140,7 @@ void
 sift_maint_begin(SiftMaintShmem *m)
 {
 	sift_shm_lock(&m->lock);
-	pg_atomic_fetch_add_u32(&m->seq, 1);
+	pg_atomic_write_u32(&m->seq, pg_atomic_read_u32(&m->seq) + 1);
 	pg_write_barrier();
 }
 
@@ -146,7 +148,7 @@ void
 sift_maint_end(SiftMaintShmem *m)
 {
 	pg_write_barrier();
-	pg_atomic_fetch_add_u32(&m->seq, 1);
+	pg_atomic_write_u32(&m->seq, pg_atomic_read_u32(&m->seq) + 1);
 	sift_shm_unlock(&m->lock);
 }
 
@@ -313,18 +315,42 @@ enqueue_locked(SiftMaintShmem *m, const SiftMaintReq *r, SiftPacerTier tier, uin
 	return res;
 }
 
+/* A request that a queued one already covers (its score is as high, its partition the same) changes nothing: it is found by a read of the table that no writer was changing, and counted on a line of its own */
+static bool
+covered(SiftMaintShmem *m, const SiftMaintReq *r, uint32 score)
+{
+	uint32		seq = pg_atomic_read_u32(&m->seq);
+	bool		hit;
+	int			i;
+
+	if (seq & 1)
+		return false;
+	pg_read_barrier();
+	i = find(m, key_hash(r->db, r->rel, r->kind), r);
+	hit = i >= 0 && m->slot[i].state == SIFT_SLOT_QUEUED && m->slot[i].score >= score && m->slot[i].part_id == r->part_id;
+	pg_read_barrier();
+	if (!hit || pg_atomic_read_u32(&m->seq) != seq)
+		return false;
+	pg_atomic_fetch_add_u64(&m->coalesced[sift_shm_my_procno() % SIFT_MAINT_COALESCED_SHARDS].n, 1);
+	return true;
+}
+
 SiftMaintEnq
 sift_maint_enqueue(SiftMaintShmem *m, const SiftMaintHost *host, const SiftMaintReq *req)
 {
 	SiftPacerTier tier = request_tier(req);
 	TimestampTz now = host->now();
 	SiftMaintEnq res;
+	uint32		score;
 
 	if (m == NULL)
 		return SIFT_ENQ_UNAVAILABLE;
 	sift_maint_heat_decay_due(m, now);
+	score = request_score(m, req, tier);
+	if (covered(m, req, score))
+		return SIFT_ENQ_COALESCED;
 	sift_maint_begin(m);
-	res = enqueue_locked(m, req, tier, request_score(m, req, tier), now);
+	res = enqueue_locked(m, req, tier, score, now);
 	sift_maint_end(m);
 	return res;
 }

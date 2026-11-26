@@ -45,6 +45,7 @@ typedef enum SiftPacerTier
 
 #define SIFT_MAINT_SLOTS			2048
 #define SIFT_MAINT_HEAT				1024
+#define SIFT_MAINT_COALESCED_SHARDS	8
 #define SIFT_MAINT_MAX_WORKERS		16
 #define SIFT_MAINT_AGE_QUANTUM_US	(60 * USECS_PER_SEC)
 #define SIFT_MAINT_AGE_STEP			1000
@@ -214,6 +215,11 @@ typedef struct SiftMaintStats
 	uint64		lease_lapsed;
 } SiftMaintStats;
 
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMaintCoalesced
+{
+	pg_atomic_uint64 n;
+} SiftMaintCoalesced;
+
 typedef struct SiftMaintShmem
 {
 	union
@@ -242,13 +248,15 @@ typedef struct SiftMaintShmem
 	};
 	union
 	{
-		struct
-		{
-			pg_atomic_uint64 fg_write_ops;	/* sampled 1 in 64 by the foreground, a line of their own */
-			pg_atomic_uint64 fg_read_ops;
-		};
+		pg_atomic_uint64 fg_write_ops;	/* sampled 1 in 64 by the foreground, a line of its own */
 		char		pad2[PG_CACHE_LINE_SIZE];
 	};
+	union
+	{
+		pg_atomic_uint64 fg_read_ops;
+		char		pad2b[PG_CACHE_LINE_SIZE];
+	};
+	SiftMaintCoalesced coalesced[SIFT_MAINT_COALESCED_SHARDS];	/* the requests a queued request already covers, counted without the lock */
 	SiftMaintWorkerSlot worker[SIFT_MAINT_MAX_WORKERS];
 	uint8		pad3[PG_CACHE_LINE_SIZE];
 	SiftStandbyHorizon horizon;		/* the primary's horizon as it was a minute ago: what a maintenance pass strips at (core/f2/pace.h) */
@@ -376,6 +384,17 @@ extern void sift_maint_worker_free(SiftMaintShmem *m, int w);
 extern TimestampTz sift_maint_backoff_us(const SiftMaintShmem *m, uint32 failures);
 /* Enqueue, then start or wake what drains it as the mode says */
 extern SiftMaintEnq sift_maint_request(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintMode mode, const SiftMaintReq *req);
+
+static inline uint32
+sift_fmix32(uint32 h)
+{
+	h ^= h >> 16;
+	h *= 0x85ebca6b;
+	h ^= h >> 13;
+	h *= 0xc2b2ae35;
+	h ^= h >> 16;
+	return h;
+}
 
 extern void sift_maint_heat_note(SiftMaintShmem *m, Oid rel);
 extern uint32 sift_maint_heat(SiftMaintShmem *m, Oid rel);

@@ -167,13 +167,13 @@ sift_maint_heat_note(SiftMaintShmem *m, Oid rel)
 	SIFT_SHM_BACKEND_LOCAL uint32 reads;
 
 	if ((++reads & 127) == 0)
-		pg_atomic_fetch_add_u32(&m->heat[rel % SIFT_MAINT_HEAT], 1);
+		pg_atomic_fetch_add_u32(&m->heat[sift_fmix32(rel) % SIFT_MAINT_HEAT], 1);
 }
 
 uint32
 sift_maint_heat(SiftMaintShmem *m, Oid rel)
 {
-	return pg_atomic_read_u32(&m->heat[rel % SIFT_MAINT_HEAT]);
+	return pg_atomic_read_u32(&m->heat[sift_fmix32(rel) % SIFT_MAINT_HEAT]);
 }
 
 void

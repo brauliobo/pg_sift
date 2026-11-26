@@ -16,7 +16,7 @@ row_order(const void *a, const void *b)
 }
 
 static int
-copy_rows(const SiftMaintShmem *m, TimestampTz now, SiftMaintRow rows[SIFT_MAINT_SLOTS], SiftMaintStatus *st)
+copy_rows(SiftMaintShmem *m, TimestampTz now, SiftMaintRow rows[SIFT_MAINT_SLOTS], SiftMaintStatus *st)
 {
 	int			n = 0;
 
@@ -39,6 +39,8 @@ copy_rows(const SiftMaintShmem *m, TimestampTz now, SiftMaintRow rows[SIFT_MAINT
 			st->claimed++;
 	}
 	st->stats = m->stats;
+	for (int i = 0; i < SIFT_MAINT_COALESCED_SHARDS; i++)
+		st->stats.coalesced += pg_atomic_read_u64(&m->coalesced[i].n);
 	return n;
 }
 
