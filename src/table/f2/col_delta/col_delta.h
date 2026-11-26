@@ -408,6 +408,9 @@ extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *pa
 extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
 extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 
+/* One record (a row of a batch as a record of its own) collected, whatever its writer: the reader decided it counts */
+extern void sift_col_delta_collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEntryHdr *h);
+
 /* A shared map is immutable and lives in a context of its own: whoever holds a granule's patches (a scan, a slot, a page, a granule buffer) holds a reference, and the last one to give it back frees all of it at once */
 static inline SiftColDeltaPartMap *
 sift_col_delta_part_map_ref(SiftColDeltaPartMap *map)
@@ -458,10 +461,11 @@ typedef struct SiftColDeltaCells
 /* Writes the patches of the column over its cells; a cell that held a wide value or an exception loses its tag. Returns the cells written */
 extern int	sift_col_delta_apply_cells(SiftColDeltaCells *cells, const SiftColDeltaGranMap *gm, int16 attnum);
 
-/* The same for a view the aggregate scan holds read-only: the column is copied (nrows rows) into cx and the view points at the copy; no patch, no copy */
-extern void sift_col_delta_patch_colview(ColView *view, uint16 nrows, const SiftColDeltaGranMap *gm, int16 attnum, MemoryContext cx);
+/* A patch of a numeric column taken as a scaled integer of scale (a part written before ALTER TABLE .. TYPE widened the column) made the numeric the column keeps now; others are left */
+extern void sift_col_delta_patch_widen(SiftColDeltaPatch *p, uint8 scale);
 
-/* The patches of a granule on their own, in cx, to outlive the map of the part they came from */
+/* The patches of the granule buffer over the numerics the scan widened from its scaled integers of scale (the rows of the arrays, allocated in the current context) */
+extern void sift_col_delta_patch_widened(const SiftF2GranuleBuf *gb, int16 attnum, uint8 scale, bool *isnull, const char **s, uint32 *slen);
 
 /* A point read: the latest patch the snapshot sees of each column of one row, without a map of the part; returns how many (at most cap, the columns of the table) */
 extern int	sift_col_delta_fetch_row(const SiftColDeltaChain *chain, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops, SiftColDeltaPatch *out, int cap);
@@ -675,6 +679,13 @@ extern bool sift_col_delta_compact_changes(const SiftColDeltaPageSource *src, co
 extern void sift_col_delta_compact_plan(const SiftColDeltaChain *chain, const uint64 *gens, int ngens, const uint64 *live, int nlive, const SiftColDeltaHorizon *hz, uint32 fold_limit,
 										SiftColDeltaCompactPlan *plan);
 extern void sift_col_delta_compact_plan_free(SiftColDeltaCompactPlan *plan);
+
+/* The patches a compaction folds, by part (gen: its place in the parts rewritten, ascending) and granule, the newest of each cell: added as the pass that classifies the chain meets them */
+typedef struct SiftColDeltaFoldIdx SiftColDeltaFoldIdx;
+extern SiftColDeltaFoldIdx *sift_col_delta_fold_idx_new(const uint64 *gens, int ngens);
+extern void sift_col_delta_fold_idx_add(SiftColDeltaFoldIdx *x, int gen, const uint8 *rec, const SiftColDeltaEntryHdr *h);
+extern void sift_col_delta_fold_idx_seal(SiftColDeltaFoldIdx *x);
+extern const SiftColDeltaPartMap *sift_col_delta_fold_idx_part(const SiftColDeltaFoldIdx *x, int gen);
 
 /* One fold written over the row of a granule's buffer (leaf: the column of the attribute there); true when it replaced a wide value, whose reference is left in old_ref */
 extern bool sift_col_delta_fold_apply(SiftRowBuf *rb, int leaf, const SiftColDeltaPatch *p, const char **old_ref, uint32 *old_ref_len);

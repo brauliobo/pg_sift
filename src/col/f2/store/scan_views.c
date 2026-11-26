@@ -152,6 +152,7 @@ widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
 			lens[r] = VARSIZE_ANY(ss[r]);
 		}
 	}
+	sift_col_delta_patch_widened(gb, p->s->store->leaf_attno[leaf], scale, nulls, ss, lens);
 	MemoryContextSwitchTo(old);
 	return (ColView) {.kind = SIFT_CELL_STR,.isnull = nulls,.s = ss,.slen = lens};
 }

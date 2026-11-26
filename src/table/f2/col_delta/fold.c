@@ -2,10 +2,9 @@
  * table/f2/col_delta/fold.c - the column deltas of a partition folded into the parts its compaction rewrites (the host side of SiftCompactFold, col/f2/compact/compact.h).
  *
  * open reads the chain once, a page at a time, and classifies it (f2_col_delta_compact.c): the records of the parts rewritten whose writers committed before the horizon are folds, and
- * what it keeps of them is which parts and leaves they patch and the pages the chain has. A granule is folded by reading the pages that can hold its records, again, as the compaction
- * reads it: a page at a time, the rows of its records that stay held back from the fold by the pass that classifies them. Under the partition lock the chain is read once more and classified
- * with only the records seen by open allowed to fold (the others came while the parts were written): what stays is written as the chain of the new parts, its records of a rewritten part
- * sent to the row it is now. Nothing of the chain is held but the page being read and the records that stay.
+ * it keeps their patches, the newest of each cell, by part and granule (fold_idx.c), with the pages the chain has; the rows of a record that stays are held back from the fold by the pass
+ * that classifies them. A granule is folded, as the compaction reads it, from its patches alone. Under the partition lock the chain is read once more and classified with only the records
+ * seen by open allowed to fold (the others came while the parts were written): what stays is written as the chain of the new parts, its records of a rewritten part sent to the row it is now.
  */
 #include "postgres.h"
 
@@ -27,15 +26,12 @@
 
 /* ---- the pages of a chain, one at a time ---- */
 
-/* What is known of a page without reading it again: where its records start in the chain, how many there are, and the part and granules they are for (part_gen 0: several parts) */
+/* What is known of a page without reading it again: where its records start in the chain and how many there are */
 typedef struct TrailPage
 {
 	BlockNumber blk;
 	uint32		first_seq;
 	uint32		nrecords;
-	uint64		part_gen;
-	uint32		granule_lo;
-	uint32		granule_hi;
 } TrailPage;
 
 typedef struct Trail
@@ -108,7 +104,7 @@ trail_summarize(Trail *t, const BlockNumber *blks)
 		if (FullTransactionIdIsValid(page_min) && (!FullTransactionIdIsValid(t->min_xid) || FullTransactionIdPrecedes(page_min, t->min_xid)))
 			t->min_xid = page_min;
 		sift_col_delta_page_summary(t->page.data, &seen);
-		t->pages[i] = (TrailPage) {blks[i], t->nrecords, seen.nentries, seen.part_gen, seen.granule_lo, seen.granule_hi};
+		t->pages[i] = (TrailPage) {blks[i], t->nrecords, seen.nentries};
 		t->nrecords += seen.nentries;
 	}
 	return why;
@@ -235,12 +231,18 @@ typedef struct Fold
 	int			ngens;
 	uint64	   *live;			/* of every part of the partition, ascending */
 	int			nlive;
+	SiftPartDesc *parts;		/* of the partition */
+	int			nparts;
+	MemoryContext cx;			/* of the fold: what it keeps lives as long as it */
 	bool		had_chain;
 	Trail		trail;			/* the chain as open read it */
 	uint32		nrecords;		/* its records: the ones that may fold under the lock */
+	SiftColDeltaFoldIdx *idx;	/* the patches that fold, by part and granule */
 	bool	   *folded_leaf;
 	uint64	   *folded_gens;	/* ascending */
 	int			nfolded_gens;
+	uint64		remap_gen;		/* the part remap was built for, 0: none */
+	const SiftColRemap *remap;
 } Fold;
 
 /* The leaf a patch is of: a sift_col index names it (its attribute is the leaf plus one), a table by the number of its column; -1 for the address of the row */
@@ -287,63 +289,53 @@ gen_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The columns of the record, as the patches they are for the row of the record */
+/* The leaves the patches of a part's map write */
 static void
-rec_patches(const RecIter *it, SiftColDeltaPatch *out, int k)
+note_leaves(Fold *f, const SiftColDeltaPartMap *m)
 {
-	const uint8 *p = it->rec + sizeof(SiftColDeltaEntryHdr);
+	for (uint32 g = 0; g < m->ndirty_granules; g++)
+		for (uint32 k = 0; k < m->grans[g].npatches; k++)
+		{
+			int			leaf = patch_leaf(f->store, m->grans[g].patches[k].attnum);
 
-	for (int c = 0; c <= k; c++)
-	{
-		p = sift_col_delta_decode_col(p, it->rec + it->h.rec_bytes, out);
-		SIFT_INVARIANT(p != NULL, "a column delta page was read before it was checked");
-	}
-	out->row_ordinal = it->h.row_ordinal;
+			if (leaf >= 0)
+				f->folded_leaf[leaf] = true;
+		}
 }
 
-/* What the records that fold are: the leaves they patch and the parts they are of (has: a flag for each of the parts rewritten) */
-static void
-note_fold(Fold *f, const RecIter *it, bool *has)
-{
-	for (int k = 0; k < it->h.ncols; k++)
-	{
-		SiftColDeltaPatch pt;
-		int			leaf;
-
-		rec_patches(it, &pt, k);
-		leaf = patch_leaf(f->store, pt.attnum);
-		if (leaf >= 0)
-			f->folded_leaf[leaf] = true;
-	}
-	has[gen_at(f->gens, f->ngens, it->h.part_gen)] = true;
-}
-
-/* One pass over the chain as open reads it: its records, and the leaves and parts of those that fold */
+/* One pass over the chain as open reads it: its records, the patches of those that fold by part and granule, and the leaves and parts they are of */
 static void
 survey(Fold *f)
 {
 	SiftColDeltaPass *pass = sift_col_delta_pass_begin(f->gens, f->ngens, f->live, f->nlive, &f->hz, UINT32_MAX);
-	bool	   *has = palloc0(sizeof(bool) * Max(f->ngens, 1));
 
+	f->idx = sift_col_delta_fold_idx_new(f->gens, f->ngens);
 	for (int i = 0; i < f->trail.npages; i++)
 	{
 		RecIter		it = trail_iter(&f->trail, i);
 
+		CHECK_FOR_INTERRUPTS();
 		while (rec_next(&it))
 		{
 			bool		settled;
 			FullTransactionId fxid;
 
 			if (sift_col_delta_pass_class(pass, it.rec, it.seq, &settled, &fxid) == SIFT_CDC_FOLD)
-				note_fold(f, &it, has);
+				sift_col_delta_fold_idx_add(f->idx, gen_at(f->gens, f->ngens, it.h.part_gen), it.rec, &it.h);
 		}
 	}
 	sift_col_delta_pass_end(pass);
+	sift_col_delta_fold_idx_seal(f->idx);
 	f->folded_gens = palloc(sizeof(uint64) * Max(f->ngens, 1));
 	for (int g = 0; g < f->ngens; g++)
-		if (has[g])
-			f->folded_gens[f->nfolded_gens++] = f->gens[g];
-	pfree(has);
+	{
+		const SiftColDeltaPartMap *m = sift_col_delta_fold_idx_part(f->idx, g);
+
+		if (m == NULL)
+			continue;
+		f->folded_gens[f->nfolded_gens++] = f->gens[g];
+		note_leaves(f, m);
+	}
 }
 
 static void *
@@ -360,6 +352,9 @@ fold_open(Relation rel, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	qsort(f->gens, ngens, sizeof(uint64), gen_cmp);
 	f->live = sift_col_delta_sorted_gens(parts, nparts);
 	f->nlive = nparts;
+	f->parts = memcpy(palloc(sizeof(SiftPartDesc) * Max(nparts, 1)), parts, sizeof(SiftPartDesc) * nparts);
+	f->nparts = nparts;
+	f->cx = CurrentMemoryContext;
 	f->folded_leaf = palloc0(sizeof(bool) * Max(f->store->ncols, 1));
 	f->had_chain = trail_open(&f->trail, rel, entry);
 	if (f->had_chain)
@@ -394,54 +389,57 @@ release_wide(Relation rel, const char *ref, uint32 len, SiftExtent **release, in
 	pfree(v.ext);
 }
 
-/* The record laid over the rows; a patch of a record later than another of the row is laid over it, the latest of a column is the one the row keeps */
-static void
-fold_record(Fold *f, const RecIter *it, SiftRowBuf *rows, SiftExtent **release, int *nrelease)
+/* The scale of the scaled integers the part keeps the leaf as: a part written before a numeric ALTER TABLE .. TYPE widened the column */
+static uint8
+part_scale(Fold *f, uint64 part_gen, int leaf)
 {
-	for (int k = 0; k < it->h.ncols; k++)
+	if (f->remap_gen != part_gen)
 	{
-		SiftColDeltaPatch pt;
-		int			leaf;
-		const char *old;
-		uint32		oldlen;
+		MemoryContext old = MemoryContextSwitchTo(f->cx);
+		int			k = 0;
 
-		rec_patches(it, &pt, k);
-		leaf = patch_leaf(f->store, pt.attnum);
-		if (pt.attnum == SIFT_CD_ATT_TID_REMAP)
-			sift_rowbuf_set_tid(rows, pt.row_ordinal, (uint64) pt.val.i);
-		else if (leaf >= 0 && sift_col_delta_fold_apply(rows, leaf, &pt, &old, &oldlen))
-			release_wide(f->rel, old, oldlen, release, nrelease);
+		while (k < f->nparts && f->parts[k].part_gen != part_gen)
+			k++;
+		SIFT_INVARIANT(k < f->nparts && f->store->host->build_col_remap != NULL, "a column delta of leaf %d is of another kind than its column", leaf);
+		f->remap = f->store->host->build_col_remap(f->store, f->rel, sift_part_open(f->rel, f->parts[k].header_blk, part_gen, (uint32) f->trail.part_id), f->cx);
+		f->remap_gen = part_gen;
+		MemoryContextSwitchTo(old);
 	}
+	SIFT_INVARIANT(f->remap != NULL && f->remap->num64_scale != NULL && f->remap->num64_scale[leaf] >= 0, "a column delta of leaf %d is of another kind than its column", leaf);
+	return (uint8) f->remap->num64_scale[leaf];
 }
 
-/* The pages that can hold a record of the granule are read again, in the order of the chain as open saw it, and classified as open did: only the rows of the granule are held back */
+/* The patch in the kind the rows have the leaf in: a patch written before a numeric ALTER TABLE .. TYPE widened the column is a scaled integer of the scale of its part */
+static const SiftColDeltaPatch *
+patch_as_now(Fold *f, uint64 part_gen, const SiftRowBuf *rows, int leaf, SiftColDeltaPatch *p)
+{
+	if (SIFT_CDCOL_KIND(p->flags) != rows->kinds[leaf])
+		sift_col_delta_patch_widen(p, part_scale(f, part_gen, leaf));
+	return p;
+}
+
+/* The folds of the granule, the newest of each cell, laid over its rows */
 static void
 fold_apply(void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, SiftExtent **release, int *nrelease)
 {
 	Fold	   *f = fold;
-	SiftColDeltaPass *pass;
+	const SiftColDeltaGranMap *gm;
 
 	if (!fold_folds_part(f, part_gen))
 		return;
-	pass = sift_col_delta_pass_begin(f->gens, f->ngens, f->live, f->nlive, &f->hz, UINT32_MAX);
-	for (int i = 0; i < f->trail.npages; i++)
+	gm = sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id);
+	for (uint32 k = 0; gm != NULL && k < gm->npatches; k++)
 	{
-		const TrailPage *tp = &f->trail.pages[i];
-		RecIter		it;
+		SiftColDeltaPatch pt = gm->patches[k];
+		int			leaf = patch_leaf(f->store, pt.attnum);
+		const char *old;
+		uint32		oldlen;
 
-		if ((tp->part_gen != 0 && tp->part_gen != part_gen) || granule_id < tp->granule_lo || granule_id > tp->granule_hi)
-			continue;
-		it = trail_iter(&f->trail, i);
-		while (rec_next(&it))
-		{
-			bool		settled;
-			FullTransactionId fxid;
-
-			if (it.h.part_gen == part_gen && it.h.granule_id == granule_id && sift_col_delta_pass_class(pass, it.rec, it.seq, &settled, &fxid) == SIFT_CDC_FOLD)
-				fold_record(f, &it, rows, release, nrelease);
-		}
+		if (pt.attnum == SIFT_CD_ATT_TID_REMAP)
+			sift_rowbuf_set_tid(rows, pt.row_ordinal, (uint64) pt.val.i);
+		else if (leaf >= 0 && sift_col_delta_fold_apply(rows, leaf, patch_as_now(f, part_gen, rows, leaf, &pt), &old, &oldlen))
+			release_wide(f->rel, old, oldlen, release, nrelease);
 	}
-	sift_col_delta_pass_end(pass);
 }
 
 /* ---- where the rows went ---- */
@@ -528,6 +526,7 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 		{
 			uint64	   *tids;
 
+			CHECK_FOR_INTERRUPTS();
 			if (!wanted_in(want, nwant, tix[g].tid_min, tix[g].tid_max))
 				continue;
 			MemoryContextSwitchTo(gcx);

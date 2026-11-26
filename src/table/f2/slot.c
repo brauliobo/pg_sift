@@ -155,12 +155,12 @@ fill_att(Relation rel, SiftF2Store *store, const CellSource *src, const SiftColD
 	if (a > store->natts || (leaf = store->att_first[a]) < 0)
 		return false;
 	phys = map != NULL ? map->phys_col[leaf] : leaf;
-	gm = gm != NULL || phys >= 0 || *src->gb == NULL ? gm : (*src->gb)->patch_arg;
+	gm = gm != NULL || (phys >= 0 && (map == NULL || map->phys_kind[leaf] == store->kinds[leaf])) || *src->gb == NULL ? gm : (*src->gb)->patch_arg;
 	p = gm != NULL ? sift_col_delta_find_row(gm, (int16) a, src->row) : NULL;
 	if (p != NULL)
 	{
 		slot->tts_isnull[a - 1] = (p->flags & SIFT_CDCOL_IS_NULL) != 0;
-		slot->tts_values[a - 1] = slot->tts_isnull[a - 1] ? (Datum) 0 : patch_datum(store, att, store->kinds[leaf], store->scales[leaf], p, cx);
+		slot->tts_values[a - 1] = slot->tts_isnull[a - 1] ? (Datum) 0 : patch_datum(store, att, SIFT_CDCOL_KIND(p->flags), map != NULL ? map->old_scale[leaf] : store->scales[leaf], p, cx);
 		return false;
 	}
 	if (phys < 0)

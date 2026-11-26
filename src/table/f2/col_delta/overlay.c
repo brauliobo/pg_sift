@@ -139,8 +139,8 @@ collect_done(SiftColDeltaCollector *c, const SiftColDeltaEntryHdr *h)
 	c->tid_bloom |= sift_cd_tid_bit(sift_col_delta_hdr_tid(h));
 }
 
-static void
-collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEntryHdr *h)
+void
+sift_col_delta_collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEntryHdr *h)
 {
 	const uint8 *p = rec + sizeof(*h),
 			   *end = rec + h->rec_bytes;
@@ -186,7 +186,7 @@ sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 f
 				return false;
 			}
 			if (rec != NULL)
-				collect_record(c, rec, &h);
+				sift_col_delta_collect_record(c, rec, &h);
 			else
 				collect_batch_row(c, &recs, &h);
 		}
@@ -516,70 +516,6 @@ sift_col_delta_apply_cells(SiftColDeltaCells *cells, const SiftColDeltaGranMap *
 		}
 	}
 	return (int) (hi - lo);
-}
-
-static void *
-copy_of(MemoryContext cx, const void *src, Size n)
-{
-	void	   *dst = MemoryContextAllocZero(cx, Max(n, 1));
-
-	if (src != NULL)
-		memcpy(dst, src, n);
-	return dst;
-}
-
-void
-sift_col_delta_patch_colview(ColView *view, uint16 nrows, const SiftColDeltaGranMap *gm, int16 attnum, MemoryContext cx)
-{
-	uint32		lo,
-				hi;
-	bool	   *isnull;
-	uint8	   *tag = NULL;
-	int64	   *i = NULL;
-	double	   *f = NULL;
-	const char **s = NULL;
-	uint32	   *slen = NULL;
-
-	sift_col_delta_patch_slice(gm, attnum, &lo, &hi);
-	if (lo == hi)
-		return;
-	isnull = copy_of(cx, view->isnull, sizeof(bool) * nrows);
-	if (view->tag != NULL)
-		tag = copy_of(cx, view->tag, nrows);
-	if (view->kind == SIFT_CELL_INT)
-		i = copy_of(cx, view->i, sizeof(int64) * nrows);
-	else if (view->kind == SIFT_CELL_F8)
-		f = copy_of(cx, view->f, sizeof(double) * nrows);
-	else
-	{
-		s = copy_of(cx, view->s, sizeof(char *) * nrows);
-		slen = copy_of(cx, view->slen, sizeof(uint32) * nrows);
-	}
-	for (uint32 k = lo; k < hi; k++)
-	{
-		const SiftColDeltaPatch *p = &gm->patches[k];
-		uint16		r = p->row_ordinal;
-
-		SIFT_INVARIANT(SIFT_CDCOL_KIND(p->flags) == view->kind, "a column delta of attribute %d is of another kind than its column", attnum);
-		isnull[r] = patch_is_null(p);
-		if (tag != NULL)
-			tag[r] = 0;
-		if (i != NULL)
-			i[r] = patch_is_null(p) ? 0 : p->val.i;
-		else if (f != NULL)
-			f[r] = patch_is_null(p) ? 0 : p->val.f;
-		else
-		{
-			s[r] = patch_is_null(p) ? NULL : p->val.s;
-			slen[r] = patch_is_null(p) ? 0 : p->vlen;
-		}
-	}
-	view->isnull = isnull;
-	view->tag = tag;
-	view->i = i;
-	view->f = f;
-	view->s = s;
-	view->slen = slen;
 }
 
 /* ---- one row ---- */

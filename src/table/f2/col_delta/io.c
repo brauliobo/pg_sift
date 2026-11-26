@@ -17,7 +17,6 @@
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 #include "utils/memutils.h"
-#include "utils/numeric.h"
 #include "utils/rel.h"
 
 #include "col/f2/meta.h"
@@ -308,7 +307,10 @@ sift_col_delta_scan_part_map(const SiftColDeltaScan *ds)
 	return ds->cur != NULL ? ds->cur->map : NULL;
 }
 
-/* The cells of column phys of the granule have just been decoded: the patches of the leaf that has it go over them */
+/*
+ * The cells of column phys of the granule have just been decoded: the patches of the leaf that has it go over them. A part that holds the leaf in another kind than the column has now (a
+ * numeric ALTER TABLE .. TYPE widened) is patched after the scan widens it (sift_col_delta_patch_widened)
+ */
 static void
 patch_decoded(SiftF2GranuleBuf *gb, int phys)
 {
@@ -317,7 +319,7 @@ patch_decoded(SiftF2GranuleBuf *gb, int phys)
 	int			leaf = map == NULL ? phys : phys < map->phys_ncols ? map->leaf_of_phys[phys] : -1;
 	SiftColDeltaCells cells;
 
-	if (leaf < 0)
+	if (leaf < 0 || (map != NULL && map->phys_kind[leaf] != store->kinds[leaf]))
 		return;
 	cells = (SiftColDeltaCells) {.kind = store->kinds[leaf],.i = gb->col_i[phys],.f = gb->col_f[phys],.s = gb->col_s[phys],.isnull = gb->col_isnull[phys],
 								 .tag = gb->col_tag[phys],.cx = gb->cx};
@@ -581,13 +583,6 @@ too_big(Form_pg_attribute att, Datum d)
 	return strlen(DatumGetCString(d)) + 1 > SIFT_COL_DELTA_MAX_PAYLOAD;
 }
 
-/* A value the record cannot carry: a null cell that keeps the datum in an exception (the NaN of a numeric) */
-static bool
-fits_cell(Form_pg_attribute att, Datum d)
-{
-	return !sift_f2_attr_may_have_exceptions(att) || !numeric_is_nan(DatumGetNumeric(d));
-}
-
 static uint8
 time_flag_of(const SiftF2Store *store, int16 attnum)
 {
@@ -632,7 +627,7 @@ diff_row(Relation rel, SiftF2Store *store, TupleTableSlot *old, TupleTableSlot *
 		d->hits_index |= member_of(x->hot_blocking_attrs, a);
 		d->hits_summarized |= member_of(x->summarized_attrs, a);
 		d->hits_protected |= member_of(x->protected_attrs, a);
-		d->oversize |= !new->tts_isnull[a - 1] && (too_big(att, new->tts_values[a - 1]) || !fits_cell(att, new->tts_values[a - 1]));
+		d->oversize |= !new->tts_isnull[a - 1] && too_big(att, new->tts_values[a - 1]);
 		plan->flags |= time_flag_of(store, (int16) a);
 		if (d->nchanged < SIFT_COL_DELTA_MAX_COLS_PER_REC && !d->oversize)
 		{
@@ -643,6 +638,8 @@ diff_row(Relation rel, SiftF2Store *store, TupleTableSlot *old, TupleTableSlot *
 			c->cell = (SiftCell) {.isnull = new->tts_isnull[a - 1]};
 			if (!c->cell.isnull)
 				sift_f2_cell_of_datum(store, att, new->tts_values[a - 1], CurrentMemoryContext, false, &c->cell);
+			/* a value the record cannot carry: a null cell that keeps the datum in an exception (a NaN or an infinity of a numeric) */
+			d->oversize |= c->cell.isnull != new->tts_isnull[a - 1];
 		}
 		d->nchanged++;
 	}
