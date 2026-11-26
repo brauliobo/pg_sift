@@ -6,7 +6,6 @@
 
 #include <stdalign.h>
 
-#include "catalog/pg_collation_d.h"
 #include "catalog/pg_type_d.h"
 #include "executor/executor.h"
 #include "nodes/makefuncs.h"
@@ -516,7 +515,7 @@ collect_funcs(WinPlan *p, const WindowClause *wc)
 	return p->funcs != NIL;
 }
 
-/* The Vars of a PARTITION BY or an ORDER BY clause of any direction, and for an order the flags of each key; a text key only where the bytes are the order (the C collation) */
+/* The Vars of a PARTITION BY or an ORDER BY clause of any direction, and for an order the flags of each key; a text key only where the bytes are the order (a collation that is C) */
 static bool
 vars_any(WinPlan *p, const List *clauses, List **vars, List **flags)
 {
@@ -525,7 +524,7 @@ vars_any(WinPlan *p, const List *clauses, List **vars, List **flags)
 		Var		   *v = clause_var(p->root, sgc, p->rel->relid);
 		bool		desc;
 
-		if (v == NULL || !OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &desc)) || (sift_v6_class(v->vartype) == SV6C_TEXT && v->varcollid != C_COLLATION_OID))
+		if (v == NULL || !OidIsValid(get_equality_op_for_ordering_op(sgc->sortop, &desc)) || (sift_v6_class(v->vartype) == SV6C_TEXT && !sift_collate_is_c(v->varcollid)))
 			return false;
 		*vars = lappend(*vars, v);
 		if (flags != NULL)
@@ -571,38 +570,59 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	}
 }
 
+/*
+ * DISTINCT ON over parts sorted by the keys and the order (the first or, for the reverse order, the last row of each partition), sorted by the keys only (each partition is sorted by the
+ * order of the statement), or not sorted (the rows of each partition are put together first, and leave in no order)
+ */
+static bool
+distinct_try(WinPlan *p, const List *keys, const List *rest, WinPartMode mode)
+{
+	const bool	sorted = mode != WIN_REGROUP;
+
+	*p = (WinPlan) {.root = p->root,.rel = p->rel,.out = p->out,.src = p->src,.mode = SWIN_MODE_DISTINCT_FIRST,.topk_func = -1,.part_mode = mode};
+	if (mode == WIN_EXACT)
+	{
+		if (!vars_of(p, keys, false, &p->part))
+			return false;
+		if (!vars_of(p, rest, false, &p->ord))
+		{
+			p->ord = NIL;
+			p->mode = SWIN_MODE_DISTINCT_LAST;
+			if (!vars_of(p, rest, true, &p->ord))
+				return false;
+		}
+	}
+	else if (!(sorted ? vars_of(p, keys, false, &p->part) : vars_any(p, keys, &p->part, NULL) && int_vars(p->part)) || !vars_any(p, rest, &p->ord, &p->ord_flags))
+		return false;
+	p->scan_tlist = sift_v6_scan_tlist(p->out->reltarget->exprs, p->rel->relid, T_Invalid);
+	foreach_node(TargetEntry, te, p->scan_tlist)
+		if (((Var *) te->expr)->varattno <= 0)
+			return false;
+	return window_finish(p, sorted ? p->root->distinct_pathkeys : NIL, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL));
+}
+
 static void
 distinct_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
 	const Query *q = root->parse;
 	const int	nd = list_length(q->distinctClause);
+	const List *keys = q->sortClause == NIL ? q->distinctClause : list_copy_head(q->sortClause, nd);
+	const List *rest = list_copy_tail(q->sortClause, nd);
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!q->hasDistinctOn || q->hasWindowFuncs || q->sortClause == NIL || list_length(q->sortClause) < nd)
+	if (!q->hasDistinctOn || q->hasWindowFuncs || (q->sortClause != NIL && list_length(q->sortClause) < nd))
 		return;
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
-		WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.mode = SWIN_MODE_DISTINCT_FIRST,.topk_func = -1};
-		List	   *rest = list_copy_tail(q->sortClause, nd);
-		List	   *keys = list_copy_head(q->sortClause, nd);
+		WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i]};
 
-		if (!sift_v6_source_usable(&src[i]) || !sift_v6_rel_ordered(src[i].reloid, src[i].is_table) || !vars_of(&p, keys, false, &p.part))
+		if (!sift_v6_source_usable(&src[i]))
 			continue;
-		if (rest != NIL && !vars_of(&p, rest, false, &p.ord))
-		{
-			p.ord = NIL;
-			p.mode = SWIN_MODE_DISTINCT_LAST;
-			if (!vars_of(&p, rest, true, &p.ord))
-				continue;
-		}
-		p.scan_tlist = sift_v6_scan_tlist(output_rel->reltarget->exprs, input_rel->relid, T_Invalid);
-		foreach_node(TargetEntry, te, p.scan_tlist)
-			if (((Var *) te->expr)->varattno <= 0)
-				p.scan_tlist = NIL;
-		if (p.scan_tlist != NIL && window_finish(&p, root->distinct_pathkeys, estimate_num_groups(root, (List *) p.part, input_rel->rows, NULL, NULL)))
-			return;
+		for (WinPartMode mode = WIN_EXACT; mode <= WIN_REGROUP; mode++)
+			if (distinct_try(&p, keys, rest, mode))
+				return;
 	}
 }
 

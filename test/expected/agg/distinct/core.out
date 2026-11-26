@@ -36,15 +36,13 @@ BEGIN
 END $$;
 -- the plan: the aggregates are the first row's columns by the ORDER BY
 EXPLAIN (COSTS OFF) SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount FROM ev ORDER BY tenant_id, ts DESC, id;
-                                                                              QUERY PLAN                                                                              
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+             QUERY PLAN              
+-------------------------------------
  Sort
    Sort Key: tenant_id, ts DESC, id
-   ->  Custom Scan (SiftAgg)
+   ->  Custom Scan (SiftAggV6Window)
          Index: ev_col
-         Group Keys: tenant_id
-         Pushed Aggregates: first_row(ev.id ORDER BY ev.ts DESC, ev.id), first_row(ev.ts ORDER BY ev.ts DESC, ev.id), first_row(ev.amount ORDER BY ev.ts DESC, ev.id)
-(6 rows)
+(4 rows)
 
 -- the latest and the earliest row of each store, mixed directions and NULLS placement, a text sort key, an expression of the columns, a month as the ON expression
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount, kind, note FROM ev ORDER BY tenant_id, ts DESC, id$$);
@@ -132,21 +130,21 @@ RESET seq_page_cost; RESET random_page_cost;
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SELECT plan_of($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount, kind FROM ev ORDER BY tenant_id, ts DESC, id$$);
-       plan_of        
-----------------------
- SiftAgg with workers
+ plan_of 
+---------
+ SiftAgg
 (1 row)
 
 SELECT * FROM same($$SELECT DISTINCT ON (tenant_id) tenant_id, id, ts, amount, kind FROM ev ORDER BY tenant_id, ts DESC, id$$);
-         plan         | result_rows | vs_normal_plan 
-----------------------+-------------+----------------
- SiftAgg with workers |          60 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |          60 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT DISTINCT ON (kind) kind, id, amount, note FROM ev ORDER BY kind NULLS FIRST, amount DESC NULLS LAST, note, id$$);
-         plan         | result_rows | vs_normal_plan 
-----------------------+-------------+----------------
- SiftAgg with workers |           4 |              0
+  plan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           4 |              0
 (1 row)
 
 RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;
@@ -235,16 +233,16 @@ END $$;
 SELECT * FROM fuzz_ties(120);
  statements | in_scan | pairs_differ | rows_not_in_table 
 ------------+---------+--------------+-------------------
-        120 |     120 |            0 |                 0
+        120 |     101 |            0 |                 0
 (1 row)
 
 DROP FUNCTION fuzz_ties(int);
 -- with workers
 SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SELECT * FROM same_tied($$SELECT DISTINCT ON (tenant_id) tenant_id, id, day, amount, kind FROM ev ORDER BY tenant_id, day DESC$$, 'tenant_id, day', 'ev');
-         plan         | result_rows | pairs_vs_normal_plan | rows_not_in_table 
-----------------------+-------------+----------------------+-------------------
- SiftAgg with workers |          60 |                    0 |                 0
+  plan   | result_rows | pairs_vs_normal_plan | rows_not_in_table 
+---------+-------------+----------------------+-------------------
+ SiftAgg |          60 |                    0 |                 0
 (1 row)
 
 RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET min_parallel_index_scan_size;

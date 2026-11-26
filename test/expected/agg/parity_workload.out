@@ -91,11 +91,11 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, count(*), sum(count(*)) OVER () FROM pw GROUP BY g',
 	'SELECT DISTINCT ON (g) g, count(*) FROM pw GROUP BY g ORDER BY g, count(*) DESC'
 ]) q;
-                                            same                                             
----------------------------------------------------------------------------------------------
+                                           same                                            
+-------------------------------------------------------------------------------------------
  same node SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM pw GROUP BY g
  same node SELECT g, count(*), sum(count(*)) OVER () FROM pw GROUP BY g
- same normal SELECT DISTINCT ON (g) g, count(*) FROM pw GROUP BY g ORDER BY g, count(*) DESC
+ same node SELECT DISTINCT ON (g) g, count(*) FROM pw GROUP BY g ORDER BY g, count(*) DESC
 (3 rows)
 
 -- Q-A04. stddev, variance, bool_or, bool_and of floats and booleans, min and max of a text in the C collation (a collation that sorts otherwise runs through the aggregate's own function)

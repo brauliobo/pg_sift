@@ -1,4 +1,4 @@
--- DISTINCT ON without a sorted index (SiftAggV6First) and the per-order arms over a CTE (SiftAggV6 with a column of the order that its key decides) on Format 2.0: each statement runs with the cost
+-- DISTINCT ON without a sorted index (SiftAggV6Window, which puts the rows of each partition together in memory, or SiftAggV6First over the rows) and the per-order arms over a CTE (SiftAggV6 with a column of the order that its key decides) on Format 2.0: each statement runs with the cost
 -- settings of the coverage proofs (a page costs 10000) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run; spilled says that the groups outgrew
 -- the hash memory of the node and went to partitions on temporary files.
 CREATE EXTENSION pg_sift;
@@ -39,6 +39,7 @@ BEGIN
 	END IF;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAggV6First)%' THEN engine := 'SiftAggV6First'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6Window)%' THEN engine := 'SiftAggV6Window'; END IF;
 		IF l LIKE '%Custom Scan (SiftAggV6)%' AND engine = 'normal' THEN engine := 'SiftAggV6'; END IF;
 		IF l ~ 'Spilled Rows: [1-9]' THEN spilled := true; END IF;
 	END LOOP;
@@ -92,28 +93,28 @@ INSERT INTO stmts VALUES
             'SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, count(DISTINCT pid) AS tenants FROM (SELECT rid, pid, k, avg(n) AS a FROM base GROUP BY rid, pid, k UNION ALL SELECT rid, pid, NULL::text, avg(n) FROM base GROUP BY rid, pid) x GROUP BY k ORDER BY k NULLS FIRST'),
 (20, false, 'SELECT o.id, o.status, i.category, sum(i.qty) AS qty FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE o.tenant < 8 GROUP BY o.id, i.category ORDER BY o.id, i.category');
 SELECT s.id, r.engine, r.spilled, r.result_rows, r.vs_heap FROM stmts s, LATERAL same(s.q, s.forced) r ORDER BY s.id;
- id |     engine     | spilled | result_rows | vs_heap 
-----+----------------+---------+-------------+---------
-  1 | SiftAggV6First | f       |          40 |       0
-  2 | SiftAggV6First | f       |          40 |       0
-  3 | SiftAggV6First | f       |          80 |       0
-  4 | SiftAggV6First | f       |          80 |       0
-  5 | SiftAggV6First | f       |           6 |       0
-  6 | SiftAggV6First | f       |           6 |       0
-  7 | SiftAggV6First | f       |          40 |       0
-  8 | SiftAggV6First | f       |          40 |       0
-  9 | SiftAggV6First | f       |          40 |       0
- 10 | SiftAggV6First | f       |          40 |       0
- 11 | SiftAggV6First | f       |           6 |       0
- 12 | SiftAggV6First | f       |           4 |       0
- 13 | SiftAggV6First | f       |           7 |       0
- 14 | SiftAggV6First | f       |           3 |       0
- 15 | normal         | f       |           0 |       0
- 16 | SiftAggV6First | t       |        1501 |       0
- 17 | SiftAggV6First | t       |        3000 |       0
- 18 | SiftAggV6      | f       |           6 |       0
- 19 | SiftAggV6      | f       |           6 |       0
- 20 | SiftAggV6      | f       |         925 |       0
+ id |     engine      | spilled | result_rows | vs_heap 
+----+-----------------+---------+-------------+---------
+  1 | SiftAggV6Window | f       |          40 |       0
+  2 | SiftAggV6Window | f       |          40 |       0
+  3 | SiftAggV6First  | f       |          80 |       0
+  4 | SiftAggV6First  | f       |          80 |       0
+  5 | SiftAggV6First  | f       |           6 |       0
+  6 | SiftAggV6First  | f       |           6 |       0
+  7 | SiftAggV6Window | f       |          40 |       0
+  8 | SiftAggV6Window | f       |          40 |       0
+  9 | SiftAggV6First  | f       |          40 |       0
+ 10 | SiftAggV6First  | f       |          40 |       0
+ 11 | SiftAggV6First  | f       |           6 |       0
+ 12 | SiftAggV6First  | f       |           4 |       0
+ 13 | SiftAggV6Window | f       |           7 |       0
+ 14 | SiftAggV6First  | f       |           3 |       0
+ 15 | SiftAggV6Window | f       |           0 |       0
+ 16 | SiftAggV6First  | t       |        1501 |       0
+ 17 | SiftAggV6First  | t       |        3000 |       0
+ 18 | SiftAggV6       | f       |           6 |       0
+ 19 | SiftAggV6       | f       |           6 |       0
+ 20 | SiftAggV6       | f       |         925 |       0
 (20 rows)
 
 DROP FUNCTION same(text, boolean);

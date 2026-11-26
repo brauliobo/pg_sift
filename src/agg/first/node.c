@@ -182,22 +182,41 @@ static Plan *first_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *bes
 
 static const CustomPathMethods first_path_methods = {"SiftAggV6First", first_plan_path, NULL};
 
+/* the inputs the node can take: the cheapest path of the rows, and the rows of the cheapest partial path gathered from the workers */
+static List *
+first_children(PlannerInfo *root, RelOptInfo *input_rel)
+{
+	List	   *out = input_rel->cheapest_total_path != NULL ? list_make1(input_rel->cheapest_total_path) : NIL;
+	Path	   *partial = input_rel->partial_pathlist != NIL ? linitial(input_rel->partial_pathlist) : NULL;
+
+	if (partial != NULL && input_rel->consider_parallel && partial->param_info == NULL)
+		out = lappend(out, create_gather_path(root, input_rel, partial, partial->pathtarget, NULL, NULL));
+	return out;
+}
+
+static void first_add_path(PlannerInfo *root, RelOptInfo *output_rel, Path *child);
+
 void
 sift_agg_v6_first_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
 	const Query *q = root->parse;
-	const Path *child;
+
+	if (stage != UPPERREL_DISTINCT || !sift_enable_agg || !q->hasDistinctOn || !reads_owned_table(root))
+		return;
+	foreach_ptr(Path, child, first_children(root, input_rel))
+		first_add_path(root, output_rel, child);
+}
+
+static void
+first_add_path(PlannerInfo *root, RelOptInfo *output_rel, Path *child)
+{
 	SiftV6FirstKeys keys = {0};
 	List	   *key_exprs = NIL;
 	CustomPath *cp;
 	Cost		total;
 	double		groups;
 
-	if (stage != UPPERREL_DISTINCT || !sift_enable_agg || !q->hasDistinctOn || q->sortClause == NIL)
-		return;
-	child = input_rel->cheapest_total_path;
-	if (child == NULL || child->param_info != NULL || contain_volatile_functions((Node *) child->pathtarget->exprs) || !reads_owned_table(root) ||
-		!first_keys(q, child->pathtarget, &keys))
+	if (child->param_info != NULL || contain_volatile_functions((Node *) child->pathtarget->exprs) || !first_keys(root->parse, child->pathtarget, &keys))
 		return;
 	for (int i = 0; i < keys.nkey; i++)
 		key_exprs = lappend(key_exprs, list_nth(child->pathtarget->exprs, keys.key_att[i] - 1));
@@ -207,6 +226,7 @@ sift_agg_v6_first_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOpt
 	cp->path.parent = output_rel;
 	cp->path.pathtarget = child->pathtarget;
 	cp->path.parallel_safe = child->parallel_safe;
+	cp->path.disabled_nodes = child->disabled_nodes;
 	cp->path.pathkeys = root->sort_pathkeys;
 	cp->path.rows = clamp_row_est(groups);
 	cp->path.startup_cost = total;
@@ -214,6 +234,7 @@ sift_agg_v6_first_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOpt
 	cp->custom_paths = list_make1((Path *) child);
 	cp->custom_private = list_make1(keys_pack(&keys));
 	cp->methods = &first_path_methods;
+	sift_v6_force_price(&cp->path);
 	add_path(output_rel, &cp->path);
 }
 
@@ -243,6 +264,7 @@ typedef struct FirstState
 	SiftV6First *first;
 	Tuplesortstate *sorted;
 	SiftV6FirstStats done;
+	bool		ran;			/* the input is read: the groups are in first, or sorted when the statement has an order */
 } FirstState;
 
 static void
@@ -268,6 +290,7 @@ first_release(FirstState *st)
 	st->first = NULL;
 	st->sorted = NULL;
 	st->cx = NULL;
+	st->ran = false;
 }
 
 /* the groups' first rows into a sort in the order of the statement, so that no sort of the rows of the input and none of the groups' is left above the node; the groups are gone before the sort merges */
@@ -311,8 +334,21 @@ first_run(FirstState *st)
 		ResetExprContext(econtext);
 	}
 	MemoryContextSwitchTo(st->cx);
-	first_sort(st);
+	if (st->keys.nsort > 0)
+		first_sort(st);
 	MemoryContextSwitchTo(old);
+	st->ran = true;
+}
+
+/* the next group of a statement with no order, as the groups leave the passes */
+static bool
+first_group(FirstState *st, TupleTableSlot *slot)
+{
+	MemoryContext old = MemoryContextSwitchTo(st->cx);
+	const bool	got = sift_v6_first_next(st->first, slot);
+
+	MemoryContextSwitchTo(old);
+	return got;
 }
 
 static TupleTableSlot *
@@ -321,9 +357,11 @@ first_next(ScanState *ss)
 	FirstState *st = (FirstState *) ss;
 	TupleTableSlot *slot = ss->ss_ScanTupleSlot;
 
-	if (st->sorted == NULL)
+	if (!st->ran)
 		first_run(st);
 	ExecClearTuple(slot);
+	if (st->sorted == NULL)
+		return first_group(st, slot) ? slot : NULL;
 	return tuplesort_gettupleslot(st->sorted, true, false, slot, NULL) ? slot : NULL;
 }
 
@@ -363,7 +401,7 @@ static void
 first_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	FirstState *st = (FirstState *) node;
-	const SiftV6FirstStats *s = &st->done;
+	const SiftV6FirstStats *s = st->first != NULL ? sift_v6_first_stats(st->first) : &st->done;
 
 	ExplainPropertyInteger("Distinct On Columns", NULL, st->keys.nkey, es);
 	ExplainPropertyInteger("Order Columns", NULL, st->keys.nord, es);

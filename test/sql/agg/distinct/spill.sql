@@ -24,8 +24,8 @@ CREATE FUNCTION dk_same(q text) RETURNS TABLE (pushed boolean, spilled boolean, 
 DECLARE plan text := ''; line text;
 BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
-	pushed := plan ~ 'first_row';
-	spilled := plan ~ 'group table spill';
+	pushed := plan ~ 'Custom Scan \(SiftAgg';
+	spilled := plan ~ 'Spilled Rows: [1-9]';
 	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;

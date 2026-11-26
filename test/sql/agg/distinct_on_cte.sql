@@ -1,4 +1,4 @@
--- DISTINCT ON without a sorted index (SiftAggV6First) and the per-order arms over a CTE (SiftAggV6 with a column of the order that its key decides) on Format 2.0: each statement runs with the cost
+-- DISTINCT ON without a sorted index (SiftAggV6Window, which puts the rows of each partition together in memory, or SiftAggV6First over the rows) and the per-order arms over a CTE (SiftAggV6 with a column of the order that its key decides) on Format 2.0: each statement runs with the cost
 -- settings of the coverage proofs (a page costs 10000) and with sift.enable_agg = off, and the rows must be the same. The engine column is the plan of the first run; spilled says that the groups outgrew
 -- the hash memory of the node and went to partitions on temporary files.
 CREATE EXTENSION pg_sift;
@@ -42,6 +42,7 @@ BEGIN
 	END IF;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAggV6First)%' THEN engine := 'SiftAggV6First'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6Window)%' THEN engine := 'SiftAggV6Window'; END IF;
 		IF l LIKE '%Custom Scan (SiftAggV6)%' AND engine = 'normal' THEN engine := 'SiftAggV6'; END IF;
 		IF l ~ 'Spilled Rows: [1-9]' THEN spilled := true; END IF;
 	END LOOP;

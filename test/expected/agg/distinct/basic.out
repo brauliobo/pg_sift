@@ -58,23 +58,21 @@ SELECT query, pushed, same FROM (SELECT q AS query, agg_pushed(q) AS pushed, agg
 
 SET sift.enable_agg = on;
 EXPLAIN (COSTS OFF) SELECT DISTINCT g, k FROM ds;
-      QUERY PLAN       
------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: ds_col
    Group Keys: g, k
 (3 rows)
 
 EXPLAIN (COSTS OFF) SELECT DISTINCT ON (g) g, k FROM ds ORDER BY g, k;
-                        QUERY PLAN                        
-----------------------------------------------------------
- Sort
-   Sort Key: g, k
-   ->  Custom Scan (SiftAgg)
-         Index: ds_col
-         Group Keys: g
-         Pushed Aggregates: first_row(ds.k ORDER BY ds.k)
-(6 rows)
+          QUERY PLAN          
+------------------------------
+ Custom Scan (SiftAggV6First)
+   Distinct On Columns: 1
+   Order Columns: 1
+   ->  Seq Scan on ds
+(4 rows)
 
 DROP TABLE ds, ds_dim, agg_q;
 DROP FUNCTION agg_rows, agg_pushed;
