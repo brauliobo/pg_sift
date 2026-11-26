@@ -1,0 +1,107 @@
+# Seconds of each isolation spec, the mean of 5 runs on F2 and 5 on F1 with 4 jobs (scripts/isolation.sh packs --slice and --jobs by them, longest first; a spec not listed counts 1 s).
+# quiet: the spec reads a horizon of the whole cluster (the xmin of a snapshot) and fails while the specs of the other databases hold transactions open; it runs alone.
+agg/correlated_snapshot	0.1
+agg/dimmap	0.5
+agg/dimmap_conn	0.7
+agg/dirty_recheck	0.1
+agg/join_filter	0.1
+agg/lookup_cache	0.4
+agg/lookup_index_keys	0.2
+agg/lookup_shared	0.3
+agg/overflow	0.2
+agg/par_directory	0.2
+agg/par_directory_part	0.3
+agg/par_table	4.4
+agg/partitions	1.8
+agg/preagg_v2_snapshot	2.6
+agg/scalar_overflow	0.3
+agg/share_lookups	0.1
+agg/vleaf_overflow	0.2
+bm25/build_progress	0.2
+bm25/cic_insert	0.4
+bm25/dir_full	4.8
+bm25/facet_counts_writes	1.0
+bm25/facets_writes	1.2
+bm25/filter_pushdown	2.2
+bm25/merge_ranked	2.8
+bm25/par_dir	0.5
+bm25/parallel_scan	2.4
+bm25/rank_partition	2.3
+bm25/score_epq	0.1
+bm25/seal_promote	1.3
+bm25/serializable	0.0
+bm25/truncate_hint	5.2	quiet
+bm25/unique_concurrent	0.1
+bm25/vacuum_scan	1.3
+bm25/vacuum_truncate	6.1
+col/auto_merge	0.8
+col/build_progress	0.3
+col/conn/ddl	0.4
+col/conn/found	0.1
+col/conn/inserted	0.0	quiet
+col/conn/journal_cache	0.1	quiet
+col/conn/lock	0.1
+col/f2/compact_snapshot	1.0	quiet
+col/f2/preagg_table_snapshot	3.5
+col/f2/proj_ddl_locks	0.1
+col/f2/ssi_scans	0.8
+col/f2/ssi_table_agg	0.1
+col/f2/stage_rollback_commit	0.0
+col/fold_marks	0.3	quiet
+col/key_cut_merge_lock	2.2
+col/merge_keys	0.7
+col/proj_concurrent_dml	0.6
+col/refresh	0.5
+col/reindex_readers	0.1
+col/scope/par_edits	0.7
+col/scope/read_directory	0.1
+col/scope/twohop_snapshot	0.1
+col/scope/verify_snapshot	0.2
+col/topn_parallel	0.2
+col/track/alter_deadlock	0.2
+col/track/convert_drop	0.1
+col/track/drop_lock	0.1
+col/track/own_baseline	0.4
+col/unique_concurrent	0.2
+col/unique_shm	2.7
+col/unique_subxact_race	0.1
+col/v1_cic_concurrent_dml	3.7
+col/wbuf/batch	0.1
+col/wbuf/order	0.2
+col/wbuf/version	0.5	quiet
+quarantine/scan	0.3
+quarantine/vacuum	0.2
+table/backpressure	0.8
+table/bigtx	3.1
+table/bm25_invalidate	0.1	quiet
+table/bulk_groups	0.6
+table/concurrency	0.2
+table/f2/autottl_rr	0.1
+table/f2/col_delta_dir	1.4
+table/f2/col_delta_epq	0.2
+table/f2/col_delta_long_chain	0.2
+table/f2/col_delta_rollback	0.4
+table/f2/drop_parts_rr	0.1
+table/f2/lock_esc	42.3
+table/f2/lock_esc_col_delta_epq	1.9
+table/f2/lock_esc_held_max	0.5
+table/f2/lock_esc_savepoint_2pc	3.9
+table/f2/lock_esc_shared	1.5
+table/f2/mvcc_snapshot_aba	0.0
+table/f2/onconflict_dirty	0.1
+table/f2/pk_concurrent	0.1
+table/f2/speculative_ssi	0.0
+table/f2/ssi_delvec	0.1
+table/fetch_past_dir	2.4
+table/maintain	2.0	quiet
+table/par_scan	0.6
+table/preagg	3.3
+table/preagg_calendar	6.1
+table/scan_private	2.6
+table/sysattr	0.0
+table/sysattr_groups	1.3	quiet
+table/tomb_follow	0.3
+table/topn	4.3
+table/vacuum_promoted	0.3
+table/wbuf_promote	0.3
+table/writepath	10.3

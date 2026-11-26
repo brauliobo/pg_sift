@@ -8,7 +8,10 @@
 # implemented". --emulate runs every spec against a stand-in (GIN index DDL,
 # SQL-reference matching; test/isolation/emulate.sql) to validate the specs,
 # their choreography and the expected output before the features land.
-# --slice K/N runs the Kth of N slices of the specs (every Nth one, in name order). Results in $SIFT_TMP/isolation/<mode>. Exit 1 on any failure.
+# --slice K/N runs the Kth of N slices of the specs, of about the same time each: the longest spec first, each into the slice that has the least so far, by the
+# seconds of scripts/isolation-weights.tsv (1 for a spec it does not list). --jobs J (SIFT_ISO_JOBS, default 4) runs the slice as J pg_isolation_regress at once,
+# each in a database of its own of the cluster, packed the same way. A spec the weights mark quiet reads a horizon of the whole cluster (the xmin of a snapshot), which the
+# transactions the specs of the other databases keep open hold back: those run one after the other once the jobs are done. Results in $SIFT_TMP/isolation/<mode>/<job>. Exit 1 on any failure.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
@@ -20,13 +23,21 @@ MODE=sift
 [[ ${1:-} == --emulate ]] && { MODE=emulate; shift; }
 OUT=${SIFT_TMP:-/tmp/sift-arch}/isolation/$MODE
 DB=sift_iso_$MODE
-SLICE=1/1
-[[ ${1:-} == --slice ]] && { SLICE=$2; shift 2; }
+SLICE=1/1 JOBS=${SIFT_ISO_JOBS:-4}
+while [[ ${1:-} == --slice || ${1:-} == --jobs ]]; do
+	if [[ $1 == --slice ]]; then SLICE=$2; else JOBS=$2; fi
+	shift 2
+done
 SPECS=("$@")
 (( ${#SPECS[@]} )) || mapfile -t SPECS < <(cd "$REPO/test/isolation/specs" && find . -name '*.spec' | sed 's|^\./||; s|\.spec$||' | LC_ALL=C sort)
-SLICED=()
-for i in "${!SPECS[@]}"; do (( i % ${SLICE#*/} == ${SLICE%/*} - 1 )) && SLICED+=("${SPECS[i]}"); done
-SPECS=("${SLICED[@]}")
+
+# pack N: the specs on stdin as "bin<TAB>spec", bin 1..N: the longest first, each into the bin that holds the fewest seconds so far (the lowest on a tie)
+WEIGHTS=$REPO/scripts/isolation-weights.tsv
+pack() {
+	awk 'FNR == NR { if ($1 !~ /^#/) w[$1] = $2; next } { print ($0 in w ? w[$0] : 1), $0 }' "$WEIGHTS" - | LC_ALL=C sort -k1,1nr -k2,2 |
+		awk -v n="$1" '{ b = 1; for (i = 2; i <= n; i++) if (load[i] < load[b]) b = i; load[b] += $1; print b "\t" $2 }'
+}
+mapfile -t SPECS < <(printf '%s\n' "${SPECS[@]}" | pack "${SLICE#*/}" | awk -F'\t' -v k="${SLICE%/*}" '$1 == k { print $2 }')
 
 # Emulation swaps sift index DDL for GIN, in specs and expected output alike
 translate() {
@@ -37,12 +48,6 @@ translate() {
 	fi
 }
 db() { psql -X -v ON_ERROR_STOP=1 -qAt -d "$DB" "$@"; }
-# A feature is missing only while sift says so; other errors surface in the specs
-has() {
-	local err
-	err=$(db -c "$1" 2>&1 >/dev/null) || true
-	[[ $err != *"not implemented"* ]]
-}
 
 rm -rf "$OUT" && mkdir -p "$OUT/in/specs" "$OUT/in/expected"
 psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS $DB WITH (FORCE)" -c "CREATE DATABASE $DB"
@@ -50,24 +55,11 @@ declare -A ok=([build]=1 [insert]=1 [vacuum]=1 [scan]=1 [promote]=1 [merge]=1 [v
 if [[ $MODE == emulate ]]; then
 	db -v sift_ref_lib=1 -f "$REPO/test/sql/bm25/reference.sql" -f "$REPO/test/isolation/emulate.sql"
 else
-	db -c "CREATE EXTENSION pg_sift" -c "ALTER DATABASE $DB SET iso.mode = 'sift'" -v sift_ref_lib=1 -f "$REPO/test/sql/bm25/reference.sql"
+	db -c "CREATE EXTENSION pg_sift" -v sift_ref_lib=1 -f "$REPO/test/sql/bm25/reference.sql"
 	ok[facets]=1 ok[index_info]=1
-	db -c "SELECT 1 FROM pg_am WHERE amname = 'sift_table'" | grep 1 >/dev/null && ok[tam]=1
-	db -c "SELECT 1 FROM pg_am WHERE amname = 'sift_col'" | grep 1 >/dev/null && ok[col]=1
+	[[ -n $(db -c "SELECT 1 FROM pg_am WHERE amname = 'sift_table'") ]] && ok[tam]=1
+	[[ -n $(db -c "SELECT 1 FROM pg_am WHERE amname = 'sift_col'") ]] && ok[col]=1
 	db -c "LOAD 'pg_sift'" -c "SHOW sift.test_phase_gate" >/dev/null 2>&1 && ok[gates]=1
-	db -c "CREATE TABLE iso_probe (id int, body text)" -c "INSERT INTO iso_probe VALUES (1, 'probe')"
-	has "CREATE INDEX iso_probe_idx ON iso_probe USING sift (body)" || ok=()
-	if [[ -n ${ok[build]:-} ]]; then
-		has "INSERT INTO iso_probe VALUES (2, 'probe two')" || unset 'ok[insert]'
-		has "VACUUM iso_probe" || unset 'ok[vacuum]'
-		has "SET enable_seqscan = off; SELECT count(*) FROM iso_probe WHERE body @@> 'probe'" || unset 'ok[scan]'
-		has "SELECT sift.promote('iso_probe_idx')" || unset 'ok[promote]'
-		has "SELECT sift.merge('iso_probe_idx')" || unset 'ok[merge]'
-		has "SELECT sift.verify('iso_probe_idx')" || unset 'ok[verify]'
-		has "SET enable_seqscan = off; SELECT sift.score(ctid) FROM iso_probe WHERE body @@> 'probe' ORDER BY 1 DESC LIMIT 1" ||
-			unset 'ok[score]'
-	fi
-	db -c "DROP TABLE iso_probe"
 fi
 db -f "$REPO/test/isolation/helpers.sql"
 
@@ -79,7 +71,7 @@ for s in "${SPECS[@]}"; do
 		echo "SKIP $s (not implemented yet: $(echo $missing))"
 		continue
 	fi
-	mkdir -p "$OUT/in/specs/$(dirname "$s")" "$OUT/in/expected/$(dirname "$s")" "$OUT/results/$(dirname "$s")"
+	mkdir -p "$OUT/in/specs/$(dirname "$s")" "$OUT/in/expected/$(dirname "$s")"
 	translate <"$f" >"$OUT/in/specs/$s.spec"
 	for e in "$REPO/test/isolation/expected/$s.out" "$REPO/test/isolation/expected/${s}"_[0-9].out; do
 		[[ ! -f $e ]] || translate <"$e" >"$OUT/in/expected/${e#"$REPO/test/isolation/expected/"}"
@@ -89,8 +81,32 @@ done
 (( ${#run[@]} )) || { echo "isolation ($MODE): nothing runnable yet"; exit 0; }
 source "$REPO/scripts/leakcheck.sh"
 TMP=${SIFT_TMP:-/tmp/sift-arch}
-leak_before "isolation-$MODE" "$TMP/postgres.log"
+
+# job NAME SPEC...: the specs in the database $DB_NAME (a copy of $DB), the output in $OUT/NAME, under the leak gate of that database
+job() {
+	local j=$1 jdb=${DB}_$1 rc=0
+	shift
+	printf "$OUT/$j/results/%s\n" "${@%/*}" | xargs mkdir -p
+	psql -X -qAt -d postgres -c "DROP DATABASE IF EXISTS $jdb WITH (FORCE)" -c "CREATE DATABASE $jdb TEMPLATE $DB"
+	[[ $MODE == emulate ]] || psql -X -qAt -d postgres -c "ALTER DATABASE $jdb SET iso.mode = 'sift'"
+	leak_before "isolation-$MODE-$j" "$TMP/postgres.log"
+	"$ISO" --use-existing --dbname="$jdb" --inputdir="$OUT/in" --outputdir="$OUT/$j" --bindir= "$@" >"$OUT/$j.log" 2>&1 || rc=1
+	leak_after "isolation-$MODE-$j" "$TMP/data" "$jdb" >>"$OUT/$j.log" 2>&1 || rc=1
+	psql -X -qAt -d postgres -c "DROP DATABASE $jdb" || rc=1
+	echo "== job $j"
+	cat "$OUT/$j.log"
+	return $rc
+}
+mapfile -t quiet < <(printf '%s\n' "${run[@]}" | grep -Fxf <(awk -F'\t' '$3 == "quiet" { print $1 }' "$WEIGHTS") || true)
+mapfile -t busy < <(printf '%s\n' "${run[@]}" | grep -vFxf <(printf '%s\n' "${quiet[@]}") || true)
+(( JOBS <= ${#busy[@]} )) || JOBS=${#busy[@]}
+pids=()
+for ((j = 1; j <= JOBS; j++)); do
+	mapfile -t specs < <(printf '%s\n' "${busy[@]}" | pack "$JOBS" | awk -F'\t' -v j="$j" '$1 == j { print $2 }')
+	job "$j" "${specs[@]}" >"$OUT/$j.report" &
+	pids+=($!)
+done
 rc=0
-"$ISO" --use-existing --dbname="$DB" --inputdir="$OUT/in" --outputdir="$OUT" --bindir= "${run[@]}" || rc=1
-leak_after "isolation-$MODE" "$TMP/data" "$DB" || rc=1
+for ((j = 1; j <= JOBS; j++)); do wait "${pids[j - 1]}" || rc=1; cat "$OUT/$j.report"; done
+(( ! ${#quiet[@]} )) || job quiet "${quiet[@]}" || rc=1
 exit $rc

@@ -101,7 +101,7 @@
 ^scripts/hardened\.sh$	^hardened$
 ^scripts/isa_check\.sh$	^isa-baseline$
 ^scripts/release-library-check\.sh$	^release-library-regress(-[12])?$
-^scripts/isolation\.sh$	^isolation
+^scripts/isolation(\.sh|-weights\.tsv)$	^isolation
 ^scripts/plangate\.sh$	^plan-gate
 ^scripts/fast-gate\.sh$	^(fast-gate-|compat-f1-fast-gate$)
 ^(scripts/exec-budget\.sh|bench/steps/cases\.sh|bench/steps/cases/.*|test/plan/execution\.tsv)$	^exec-budget$
