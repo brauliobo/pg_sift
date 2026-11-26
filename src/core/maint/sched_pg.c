@@ -422,7 +422,10 @@ sift_maint_launcher_register(void)
 	RegisterBackgroundWorker(&bw);
 }
 
-/* Sleeps on its latch with no timer while the queue is off or empty and no worker runs: it looks at nothing, so it counts nothing; a request or a reload wakes it, and it starts the worker of the database that has the best request waiting */
+/*
+ * Sleeps on its latch with no timer while the queue is empty and no worker runs: it looks at nothing, so it counts nothing; a request or a reload wakes it, and it starts the worker of the
+ * database that has the best request waiting. Whether a request is queued is the setting of the session that asks (sift.async_maintenance), not the launcher's
+ */
 void
 sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 {
@@ -438,7 +441,7 @@ sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 	for (;;)
 	{
 		reload_config();
-		if (!cfg.async || sift_maint_idle(m))
+		if (sift_maint_idle(m))
 		{
 			sleep_until_woken();
 			continue;
