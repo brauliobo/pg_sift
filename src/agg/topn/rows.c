@@ -137,7 +137,7 @@ sift_v6_rows_put(SiftV6Rows *r, const Datum *values, const bool *isnull, uint64 
 		return;
 	memcpy(r->values, values, nkeys * sizeof(Datum));
 	memcpy(r->isnull, isnull, nkeys * sizeof(bool));
-	r->values[nkeys] = Int64GetDatum((int64) tid);
+	r->values[nkeys] = Int64GetDatum((int64) (tid | r->source));
 	r->isnull[nkeys] = false;
 	sift_v6_topk_run_put(r->run, r->values, r->isnull);
 }
@@ -319,7 +319,7 @@ sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, c
 		else
 			r->values[i] = int_key_datum(spec->key[i].typid, ival[i]);
 	}
-	r->values[spec->nkeys] = Int64GetDatum((int64) tid);
+	r->values[spec->nkeys] = Int64GetDatum((int64) (tid | r->source));
 	r->isnull[spec->nkeys] = false;
 	if (sift_v6_topk_run_wants(r->run, put_value, &(PutCand) {r, r->values, r->isnull}))
 		sift_v6_topk_run_put(r->run, r->values, r->isnull);
