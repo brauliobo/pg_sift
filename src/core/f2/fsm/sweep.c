@@ -28,6 +28,7 @@
 #include "core/f2/fsm/int.h"
 #include "core/f2/manifest/manifest.h"
 #include "core/f2/proj.h"
+#include "core/ring.h"
 #include "core/maint/maint.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -558,12 +559,13 @@ server_start(void)
 #define SWEPT_CLEAN_SLOTS	64
 
 static RelFileLocator swept_clean[SWEPT_CLEAN_SLOTS];
-static uint32 nswept_clean;
+static SiftRing swept_clean_ring;
+static uint32 swept_clean_used;
 
 static bool
 swept_clean_here(Relation rel)
 {
-	for (uint32 i = 0; i < Min(nswept_clean, SWEPT_CLEAN_SLOTS); i++)
+	for (uint32 i = 0; i < swept_clean_used; i++)
 		if (RelFileLocatorEquals(swept_clean[i], rel->rd_locator))
 			return true;
 	return false;
@@ -572,7 +574,9 @@ swept_clean_here(Relation rel)
 static void
 remember_swept_clean(Relation rel)
 {
-	swept_clean[nswept_clean++ % SWEPT_CLEAN_SLOTS] = rel->rd_locator;
+	swept_clean[SIFT_RING_SLOT(swept_clean_ring, SWEPT_CLEAN_SLOTS)] = rel->rd_locator;
+	if (swept_clean_used < SWEPT_CLEAN_SLOTS)
+		swept_clean_used++;
 }
 
 bool

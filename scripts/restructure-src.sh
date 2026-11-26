@@ -31,7 +31,7 @@ check_layout() {
 }
 
 # the tracked text files whose references are checked
-EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|docs/results/|bench/xbench/|LICENSE$|scripts/(restructure-src|refactor-subfolders|check-path-redundancy)\.|scripts/test-perf-select\.py$)'
+EXCLUDE='^(releases/|results/|docs/results/|docs/releases/|bench/xbench/|LICENSE$|scripts/old-lib-patches/|scripts/(restructure-src|refactor-subfolders|check-path-redundancy)\.|scripts/test-perf-select\.py$)'
 files() { git grep -I -l -e '' -- . | grep -Ev "$EXCLUDE" || true; }
 
 read -r -d '' PERL <<'EOF' || true
