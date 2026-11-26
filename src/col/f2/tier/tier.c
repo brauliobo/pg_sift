@@ -184,7 +184,7 @@ sift_tier_check_object(SiftTierBackend *be, const char *key, const SiftTierPartR
 }
 
 static SiftTierStatus
-remote_load(SiftTierRemote *r, SiftTierErr *err)
+remote_load(const SiftTierVia *via, SiftTierRemote *r, SiftTierErr *err)
 {
 	uint8		first[sizeof(SiftRemotePartHeader)];
 	SiftTierStatus st;
@@ -192,16 +192,16 @@ remote_load(SiftTierRemote *r, SiftTierErr *err)
 
 	if (r->ref.byte_len < sizeof(first))
 		return sift_tier_fail(err, SIFT_TIER_E_MISMATCH, "the directory names an object shorter than its header");
-	if ((st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, 0, sizeof(first), first, err)) != SIFT_TIER_OK ||
+	if ((st = sift_tier_cache_read(via->cache, via->be, r->key, &r->ref, 0, sizeof(first), first, err)) != SIFT_TIER_OK ||
 		(st = sift_tier_obj_parse_header(first, &r->hdr, err)) != SIFT_TIER_OK || (st = header_names_ref(&r->hdr, &r->ref, r->key, err)) != SIFT_TIER_OK)
 		return st;
 	r->image = palloc(r->hdr.header_len);
-	if ((st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, sizeof(first), r->hdr.header_len, r->image, err)) != SIFT_TIER_OK)
+	if ((st = sift_tier_cache_read(via->cache, via->be, r->key, &r->ref, sizeof(first), r->hdr.header_len, r->image, err)) != SIFT_TIER_OK)
 		return st;
 	if (sift_tier_crc32c_extend(0, r->image, r->hdr.header_len) != r->hdr.image_crc32c)
 		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "the header image of object %s has the wrong checksum", r->key);
 	tail = palloc(r->hdr.total_len - r->hdr.footer_off);
-	st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, r->hdr.footer_off, r->hdr.total_len - r->hdr.footer_off, tail, err);
+	st = sift_tier_cache_read(via->cache, via->be, r->key, &r->ref, r->hdr.footer_off, r->hdr.total_len - r->hdr.footer_off, tail, err);
 	if (st == SIFT_TIER_OK)
 		st = sift_tier_obj_parse_tail(&r->hdr, tail, &r->ranges, err);
 	if (st == SIFT_TIER_OK)
@@ -211,7 +211,7 @@ remote_load(SiftTierRemote *r, SiftTierErr *err)
 }
 
 SiftTierStatus
-sift_tier_remote_open(SiftTierBackend *be, SiftTierCache *cache, const char *key, const SiftTierPartRef *ref, SiftTierRemote **out, SiftTierErr *err)
+sift_tier_remote_open(const SiftTierVia *via, const char *key, const SiftTierPartRef *ref, SiftTierRemote **out, SiftTierErr *err)
 {
 	SiftTierRemote *r = palloc0(sizeof(SiftTierRemote));
 	SiftTierStatus st;
@@ -222,11 +222,9 @@ sift_tier_remote_open(SiftTierBackend *be, SiftTierCache *cache, const char *key
 		pfree(r);
 		return sift_tier_fail(err, SIFT_TIER_E_ARG, "%s is not an object name", key);
 	}
-	r->be = be;
-	r->cache = cache;
 	snprintf(r->key, sizeof(r->key), "%s", key);
 	r->ref = *ref;
-	st = remote_load(r, err);
+	st = remote_load(via, r, err);
 	if (st != SIFT_TIER_OK)
 	{
 		sift_tier_remote_close(r);
@@ -262,16 +260,16 @@ range_verified(const SiftTierRemote *r, uint32 i)
 
 /* Range i whole from the cache or the store into buf, matched with its checksum: bytes that do not match leave no chunk behind */
 static SiftTierStatus
-range_verify(SiftTierRemote *r, uint32 i, void *buf, SiftTierErr *err)
+range_verify(const SiftTierVia *via, SiftTierRemote *r, uint32 i, void *buf, SiftTierErr *err)
 {
 	const SiftRemoteRange *g = &r->ranges[i];
-	SiftTierStatus st = sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, stream_base(r) + g->off, g->len, buf, err);
+	SiftTierStatus st = sift_tier_cache_read(via->cache, via->be, r->key, &r->ref, stream_base(r) + g->off, g->len, buf, err);
 
 	if (st != SIFT_TIER_OK)
 		return st;
 	if (sift_tier_crc32c_extend(0, buf, g->len) != g->crc32c)
 	{
-		sift_tier_cache_forget(r->cache, &r->ref, stream_base(r) + g->off, g->len);
+		sift_tier_cache_forget(via->cache, &r->ref, stream_base(r) + g->off, g->len);
 		return sift_tier_fail(err, SIFT_TIER_E_CORRUPT, "range %u of object %s has the wrong checksum", i, r->key);
 	}
 	r->verified[i / 8] |= 1 << (i % 8);
@@ -279,7 +277,7 @@ range_verify(SiftTierRemote *r, uint32 i, void *buf, SiftTierErr *err)
 }
 
 SiftTierStatus
-sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err)
+sift_tier_remote_read(const SiftTierVia *via, SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err)
 {
 	uint32		first = 0,
 				n;
@@ -294,8 +292,8 @@ sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, Sift
 		const SiftRemoteRange *g = &r->ranges[i];
 		uint64		to = Min(off + len, g->off + g->len);
 		char	   *whole = range_verified(r, i) ? NULL : palloc(g->len);
-		SiftTierStatus st = whole != NULL ? range_verify(r, i, whole, err) :
-		sift_tier_cache_read(r->cache, r->be, r->key, &r->ref, stream_base(r) + at, to - at, (char *) dst + (at - off), err);
+		SiftTierStatus st = whole != NULL ? range_verify(via, r, i, whole, err) :
+		sift_tier_cache_read(via->cache, via->be, r->key, &r->ref, stream_base(r) + at, to - at, (char *) dst + (at - off), err);
 
 		if (st == SIFT_TIER_OK && whole != NULL)
 			memcpy((char *) dst + (at - off), whole + (at - g->off), to - at);

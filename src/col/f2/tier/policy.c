@@ -213,6 +213,7 @@ typedef struct Opened
 {
 	uint32		policy_id;
 	bool		loaded;
+	bool		retired;		/* the id names another location now: what it opened is closed once no statement of the transaction may read through it */
 	SiftTierPolicy policy;
 	SiftTierBackend *backend;
 	SiftTierCache *cache;
@@ -323,7 +324,7 @@ same_location(const SiftTierPolicy *a, const SiftTierPolicy *b)
 
 /*
  * The catalog says again what each id a session opened names. An id that names another location now (DROP EXTENSION and CREATE EXTENSION start the ids again at 1) is another policy: what was
- * opened for the old one stays with the session, as a statement may still read through it, and the id is opened afresh.
+ * opened for the old one is closed once no statement of the transaction may read through it, and the id is opened afresh. A slot whose policy was never read has nothing to check.
  */
 static void
 revalidate(void)
@@ -332,11 +333,22 @@ revalidate(void)
 	for (int i = 0; i < nopened; i++)
 	{
 		SiftTierPolicy now;
-		bool		same = policy_row("policy_id = $1", INT4OID, Int32GetDatum((int32) opened[i].policy_id), &now) && same_location(&now, &opened[i].policy);
 
-		if (!same)
-			opened[i] = (Opened) {.policy_id = opened[i].policy_id,.cx = opened[i].cx,.used = opened[i].used};
+		if (opened[i].loaded && !(policy_row("policy_id = $1", INT4OID, Int32GetDatum((int32) opened[i].policy_id), &now) && same_location(&now, &opened[i].policy)))
+			opened[i].retired = true;
 	}
+}
+
+/* The slots of ids that name another location, closed when the transaction no longer reads through them */
+static void
+close_retired(void)
+{
+	for (int i = nopened - 1; i >= 0; i--)
+		if (opened[i].retired && !sift_cache_used_in_xact(opened[i].used))
+		{
+			opened_close(&opened[i]);
+			opened[i] = opened[--nopened];
+		}
 }
 
 static Opened *
@@ -346,8 +358,9 @@ opened_for(uint32 policy_id)
 
 	if (policies_stale)
 		revalidate();
+	close_retired();
 	for (int i = 0; i < nopened && o == NULL; i++)
-		if (opened[i].policy_id == policy_id)
+		if (opened[i].policy_id == policy_id && !opened[i].retired)
 			o = &opened[i];
 	if (o == NULL)
 	{

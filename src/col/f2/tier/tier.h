@@ -294,11 +294,16 @@ extern SiftTierStatus sift_tier_verify_object(SiftTierBackend *be, const char *k
  */
 extern SiftTierStatus sift_tier_check_object(SiftTierBackend *be, const char *key, const SiftTierPartRef *ref, SiftTierErr *err);
 
-/* A part in the store, open: its header, image and range table in memory, its stream through the cache */
-typedef struct SiftTierRemote
+/* What a read of a remote part goes through: the backend and the cache the session has for the policy now, asked for at each read, as a part stays open longer than they may */
+typedef struct SiftTierVia
 {
 	SiftTierBackend *be;
 	SiftTierCache *cache;
+} SiftTierVia;
+
+/* A part in the store, open: its header, image and range table in memory, its stream through the cache */
+typedef struct SiftTierRemote
+{
 	char		key[160];
 	SiftTierPartRef ref;
 	SiftRemotePartHeader hdr;
@@ -307,11 +312,11 @@ typedef struct SiftTierRemote
 	uint8	   *verified;		/* a bit for each range whose checksum the bytes of the store matched */
 } SiftTierRemote;
 
-extern SiftTierStatus sift_tier_remote_open(SiftTierBackend *be, SiftTierCache *cache, const char *key, const SiftTierPartRef *ref, SiftTierRemote **out, SiftTierErr *err);
+extern SiftTierStatus sift_tier_remote_open(const SiftTierVia *via, const char *key, const SiftTierPartRef *ref, SiftTierRemote **out, SiftTierErr *err);
 extern void sift_tier_remote_close(SiftTierRemote *r);
 
 /* Bytes [off, off + len) of the stream. Each range of the object that holds any of them is read whole and matched with its checksum once per open part: bytes of the store that differ are SIFT_TIER_E_CORRUPT and are not kept in the cache */
-extern SiftTierStatus sift_tier_remote_read(SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err);
+extern SiftTierStatus sift_tier_remote_read(const SiftTierVia *via, SiftTierRemote *r, uint64 off, uint64 len, void *dst, SiftTierErr *err);
 
 /* When the sweep may delete: the clock and the WAL position now, the grace of the standbys, and the oldest WAL position a replication slot still needs (0: no slot keeps any) */
 typedef struct SiftTierSweepGate

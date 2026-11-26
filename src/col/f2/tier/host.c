@@ -13,6 +13,14 @@
 #include "core/damage.h"
 #include "core/part_lock.h"
 
+/* The backend and the cache of the policy that names the part, as the session has them now */
+static SiftTierVia
+via_of(Relation rel, uint32 policy_id, SiftTierPolicy *policy)
+{
+	sift_tier_policy_by_id(rel, policy_id, policy);
+	return (SiftTierVia) {.be = sift_tier_backend(policy),.cache = sift_tier_cache(policy)};
+}
+
 void
 sift_tier_host_open(Relation rel, const SiftPartDesc *d, char **image, uint32 *image_len, SiftTierRemote **remote)
 {
@@ -20,6 +28,7 @@ sift_tier_host_open(Relation rel, const SiftPartDesc *d, char **image, uint32 *i
 	const SiftTierPartRef *refs = sift_tier_refs(rel, &n);
 	const SiftTierPartRef *ref = refs != NULL ? sift_tier_refs_find(refs, n, d->part_gen) : NULL;
 	SiftTierPolicy policy;
+	SiftTierVia via;
 	SiftTierErr err = {0};
 	SiftTierStatus st;
 	char		key[160];
@@ -27,9 +36,9 @@ sift_tier_host_open(Relation rel, const SiftPartDesc *d, char **image, uint32 *i
 	if (ref == NULL)
 		SIFT_DAMAGE_DATA(rel, errmsg("sift index \"%s\": part %llu is in object storage and the tier directory has no ref for it", RelationGetRelationName(rel),
 									 (unsigned long long) d->part_gen));
-	sift_tier_policy_by_id(rel, ref->policy_id, &policy);
+	via = via_of(rel, ref->policy_id, &policy);
 	sift_tier_ref_key(key, sizeof(key), policy.scope_id, ref);
-	st = sift_tier_remote_open(sift_tier_backend(&policy), sift_tier_cache(&policy), key, ref, remote, &err);
+	st = sift_tier_remote_open(&via, key, ref, remote, &err);
 	if (st != SIFT_TIER_OK)
 		sift_tier_raise(st, &err, "cannot open a part in object storage");
 	*image = (char *) (*remote)->image;
@@ -39,8 +48,10 @@ sift_tier_host_open(Relation rel, const SiftPartDesc *d, char **image, uint32 *i
 void
 sift_tier_host_read(Relation rel, SiftTierRemote *remote, uint64 off, uint64 len, void *dst)
 {
+	SiftTierPolicy policy;
+	SiftTierVia via = via_of(rel, remote->ref.policy_id, &policy);
 	SiftTierErr err = {0};
-	SiftTierStatus st = sift_tier_remote_read(remote, off, len, dst, &err);
+	SiftTierStatus st = sift_tier_remote_read(&via, remote, off, len, dst, &err);
 
 	if (st != SIFT_TIER_OK)
 		sift_tier_raise(st, &err, "cannot read a part in object storage");
