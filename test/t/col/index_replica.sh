@@ -63,6 +63,8 @@ node_start standby || bail "standby start failed"
 ok "standby streaming from a base backup"
 
 P=$(dir primary)
+# the horizon of the primary is past what it has done so far, with the feedback of the standby (a reload makes the walreceiver send it now)
+feedback_past() { pg_ctl -D "$(dir standby)/data" reload >/dev/null; horizon_past primary standby; }
 cat >"$P/ins.sql" <<'EOF'
 INSERT INTO orders (tenant_id, status, qty, doc) SELECT (random() * 50)::int, 'paid', i,
 	jsonb_build_object('items', jsonb_build_array(jsonb_build_object('category', 'c' || i % 5, 'qty', i % 7))) || weight_doc((random() * 1000)::int) FROM generate_series(1, 20) i;
@@ -167,8 +169,8 @@ SELECT kept_same('kept_a') AND kept_same('kept_b') AND kept_same('kept_c') AND o
 EOF
 psql -X -At -q -h "$(dir standby)/sock" -p "$(port standby)" -U postgres -d postgres -f "$P/kept.sql" >"$P/kept.log" 2>&1 &
 KEPT=$!
-for _ in $(seq 100); do [[ -s $P/kept.log ]] && break; sleep 0.1; done
-sleep 2   # the standby's feedback holds the horizon below the deletes until it reports its session done, and a VACUUM below it removes nothing
+wait_for "[[ -s $P/kept.log ]]" 10
+feedback_past   # the standby's feedback holds the horizon below the deletes until it reports its session done, and a VACUUM below it removes nothing
 sql primary "SET sift.async_maintenance = off" "VACUUM kept_a, kept_b, kept_c, kept_o" >/dev/null
 catchup primary standby
 VAFTER=$(sql standby "$VERS")
@@ -183,7 +185,7 @@ check "a session of the standby that read the write buffer reads the heap as it 
 sql primary "SET sift.async_maintenance = off" "CREATE TABLE net_d (id int PRIMARY KEY, k int NOT NULL, grp int NOT NULL, v int NOT NULL, doc jsonb)" \
 	"INSERT INTO net_d SELECT i, i % 3000, i % 40, i % 17, jsonb_build_object('a', i % 9) FROM generate_series(1, 40000) i" "CREATE INDEX net_d_col ON net_d USING sift_col (id, k, grp, v, doc)" "VACUUM (FREEZE, ANALYZE) net_d" \
 	"DELETE FROM net_d WHERE id % 23 = 1" >/dev/null
-sleep 2   # the standby's feedback holds the horizon below the delete until it reports again
+feedback_past   # the standby's feedback holds the horizon below the delete until it reports again
 sql primary "SET sift.async_maintenance = off" "VACUUM (disable_page_skipping) net_d" >/dev/null
 catchup primary standby
 MINMAX="SELECT grp, min(v), max(v), count(*) FROM net_d GROUP BY grp ORDER BY grp"
@@ -193,7 +195,7 @@ check "... and gives the groups of the heap" test "$(sql standby "SET seq_page_c
 check "... and the index verifies there" test -z "$(sql standby "SELECT sift.col_verify('net_d_col', true)" 2>&1)"
 
 node_promote standby
-for _ in $(seq 100); do [[ $(sql standby "SELECT pg_is_in_recovery()") == f ]] && break; sleep 0.1; done
+wait_for "[[ \$(sql standby \"SELECT pg_is_in_recovery()\") == f ]]" 10
 sql standby "INSERT INTO orders (tenant_id, status, qty, doc) SELECT 1, 'paid', i, '{\"items\": [{\"category\": \"c1\", \"qty\": 1}]}' FROM generate_series(1, 500) i" \
 	"SELECT sift.col_promote('o_col')" "SELECT sift.col_merge('o_col', true)" "VACUUM orders" >/dev/null
 check "the promoted standby takes writes and its index verifies" test -z "$(sql standby "SELECT sift.col_verify('o_col', true)" 2>&1)"

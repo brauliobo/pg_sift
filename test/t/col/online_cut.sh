@@ -69,8 +69,11 @@ build_idx() {
 	bail "no build left its free run at the end of the file"
 }
 # a transaction after the build moves the horizon past the blocks it released (a server in use has them all the time), and the feedback of the standby tells the primary
-# the standby reports its horizon every second (hot_standby_feedback)
-past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; catchup primary standby; sleep 1.2; }
+# (a reload makes the walreceiver send it now, not at the next wal_receiver_status_interval)
+feedback_now() { pg_ctl -D "$(dir standby)/data" reload >/dev/null; }
+past() { sql primary "SELECT pg_current_xact_id()" >/dev/null; feedback_now; horizon_past primary standby; }
+# the slot of the standby holds a horizon (feedback on) or none (off): the primary has the feedback of the setting the standby reloaded
+slot_xmin() { [[ $(sql primary "SELECT xmin IS NOT NULL FROM pg_replication_slots WHERE slot_name = 'standby'") == "$1" ]]; }
 bloat() { drop_idx; build_idx; past; }
 # hold SECONDS: a transaction of the standby that reads the table, then waits for release (SECONDS at most), then reads the index
 hold() {
@@ -128,7 +131,7 @@ check "... the index counts as the table" test "$(answer primary)" == "$(table_a
 
 # 3. a standby without feedback: the reuse record is the recovery conflict that waits for or cancels its snapshot
 sql standby "ALTER SYSTEM SET hot_standby_feedback = off" "ALTER SYSTEM SET max_standby_streaming_delay = '2s'" "SELECT pg_reload_conf()" >/dev/null
-sleep 2
+standby_setting standby max_standby_streaming_delay 2s && wait_for "slot_xmin f" 30 || bail "the standby did not turn its feedback off"
 drop_idx
 hold 15
 build_idx
@@ -139,7 +142,7 @@ echo "# no feedback: $(cat "$D/hold.out" | tr '\n' ' ' | cut -c1-200)" >&2
 check "a standby without feedback: its query is cancelled by the recovery conflict or reads what the primary has" bash -c "grep -q -E 'conflict with recovery' '$D/hold.out' || grep -q after '$D/hold.out'"
 check "... and never reads a block past the end of the file" bash -c "! grep -q -i -E 'could not read block|read only 0 of' '$D/hold.out'"
 sql standby "ALTER SYSTEM SET hot_standby_feedback = on" "ALTER SYSTEM SET max_standby_streaming_delay = -1" "SELECT pg_reload_conf()" >/dev/null
-sleep 2
+standby_setting standby max_standby_streaming_delay -1 && wait_for "slot_xmin t" 30 || bail "the standby did not turn its feedback on"
 
 # 4. churn: scans, inserts and VACUUMs on the primary, a long query on the standby, a cut now and then
 bloat
@@ -159,7 +162,7 @@ check "... the standby verifies the index" test -z "$(sql standby "SELECT sift.c
 bloat
 SIFT_TMP=$(dir primary) leak_expect 1 "terminated by signal 9"
 sql primary "SET sift.async_maintenance = off" "SET sift.test_space_crash = 3" "VACUUM t" >/dev/null 2>&1
-for _ in $(seq 100); do [[ -f $D/data/postmaster.pid ]] || break; sleep 0.1; done
+wait_for "[[ ! -f $D/data/postmaster.pid ]]" 10
 node_start primary || bail "primary did not restart"
 check "a kill before the truncation: the primary verifies the index" test -z "$(sql primary "SELECT sift.col_verify('t_idx', true)" 2>&1)"
 vacuum

@@ -39,6 +39,9 @@ check "every segment reads back on the standby" test "$(sql standby "SELECT bool
 	FROM sift._test_segments('t_idx')")" == t
 
 IDX=r_idx
+# the slot of the standby holds a horizon (feedback on) or none (off): the primary has the feedback of the setting the standby reloaded
+slot_xmin() { [[ $(sql primary "SELECT xmin IS NOT NULL FROM pg_replication_slots WHERE slot_name = 'standby'") == "$1" ]]; }
+feedback() { sql standby "ALTER SYSTEM SET hot_standby_feedback = $1" "SELECT pg_reload_conf()" >/dev/null; wait_for "slot_xmin $([[ $1 == on ]] && echo t || echo f)" 30 || bail "the feedback did not turn $1"; }
 # Recycle under a standby reader: g is dropped, recycled and overwritten; $2 runs first on the primary
 recycle_race() {
 	local g out
@@ -48,10 +51,7 @@ recycle_race() {
 	sql standby "\\set VERBOSITY verbose" "SELECT sift._test_seg_read('$IDX', $g, 0, $READER_MS)" >"$S/reader.out" 2>&1 &
 	READER=$!
 	# the reader is running (it found its segment within a moment of that): the time it holds is all for the primary's work, not for the start of a backend
-	for _ in $(seq 100); do
-		[[ $(sql standby "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' AND query LIKE '%_test_seg_read%' AND pid <> pg_backend_pid()") == 1 ]] && break
-		sleep 0.1
-	done
+	wait_for "running standby '%_test_seg_read%'" 10
 	sleep 0.3
 	sql primary "${2:-SELECT 1}" "SELECT sift._test_seg_drop('$IDX', $g)" "SELECT sift._test_recycle('$IDX')" \
 		"SELECT sift._test_seg_write('$IDX', 20000000, $(($1 + 1)))" >/dev/null
@@ -65,8 +65,7 @@ check "feedback off: blocks reused in place, reader gets 40001" \
 	test "$GREW|$(head -1 "$S/reader.out")" == "f|ERROR:  40001: sift segment recycled during scan, retry"
 diag "$(cat "$S/reader.out")"
 
-sql standby "ALTER SYSTEM SET hot_standby_feedback = on" "SELECT pg_reload_conf()" >/dev/null
-sleep 2
+feedback on
 recycle_race 200 "SET sift.standby_conflicts = off"
 check "feedback on: blocks stay pending, the primary grows, reader succeeds" \
 	test "$GREW|$(cat "$S/reader.out")" == "t|20000000"
@@ -76,8 +75,7 @@ catchup primary standby
 # replay waits for the reader
 IDX=c_idx
 sql primary "CREATE TABLE c (v int)" "CREATE INDEX c_idx ON c USING sift_store_test (v)" >/dev/null
-sql standby "ALTER SYSTEM SET hot_standby_feedback = off" "SELECT pg_reload_conf()" >/dev/null
-sleep 2
+feedback off
 recycle_race 300
 check "conflicts on, feedback off: blocks reused in place, replay waits, reader succeeds" \
 	test "$GREW|$(cat "$S/reader.out")" == "f|20000000"

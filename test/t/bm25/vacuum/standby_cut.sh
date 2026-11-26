@@ -46,16 +46,17 @@ rm -f "$D/locked" "$D/release"
 	echo "COMMIT;"
 } | sql standby >"$D/query.out" 2>&1 &
 HOLDER=$!
-until [[ -e $D/locked ]]; do sleep 0.05; done
-# the feedback of the standby (wal_receiver_status_interval) tells the primary the transaction's snapshot: until it arrives the horizon does not hold the blocks
-sleep 3
+wait_for "[[ -e $D/locked ]]" 60 || bail "the standby transaction did not start"
+# the feedback of the standby tells the primary the transaction's snapshot: until it arrives the horizon does not hold the blocks (a reload makes the walreceiver send it now)
+HOLD_XMIN=$(sql standby "SELECT backend_xmin FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()")
+pg_ctl -D "$D/data" reload >/dev/null
+wait_for "[[ \$(sql primary \"SELECT xmin::text::int8 <= $HOLD_XMIN FROM pg_replication_slots WHERE slot_name = 'standby'\") == t ]]" 30 || bail "the feedback of the standby did not reach the primary"
 
 rewrite
 grown=$(size)
 sql primary "SET sift.async_maintenance = off" "VACUUM t" >/dev/null || bail "vacuum failed"
 LSN=$(sql primary "SELECT pg_current_wal_insert_lsn()")
-sleep 3
-check "a standby streams: the replay of VACUUM does not wait for its long query" test "$(sql standby "SELECT pg_last_wal_replay_lsn() >= '$LSN'")" == t
+check "a standby streams: the replay of VACUUM does not wait for its long query" wait_for "[[ \$(sql standby \"SELECT pg_last_wal_replay_lsn() >= '$LSN'\") == t ]]" 3
 # the free blocks at the end of the file that were released before the standby's snapshot began are behind the horizon and are cut when they are over a sixteenth of the file (25 of 256 blocks at the quick size; 12 of 441 at the full size, which stay); what the
 # rewrite released after it is held by the feedback of the standby, and no cut may take it: every held record is still inside the file
 held_in_file() { test "$(sql primary "SELECT coalesce(sum(nblocks), 0) > 0 AND coalesce(max(start + nblocks), 0) <= (SELECT relation_blocks FROM sift.col_index_info('t_idx')) FROM sift._test_freelist('t_idx') WHERE pending")" == t; }
