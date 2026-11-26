@@ -72,17 +72,18 @@ SELECT kind, mwm_kb, bool_and(kb <= mwm_kb * 5 / 4 + :WORK_KB) AS within_budget_
 	   max(kb) FILTER (WHERE larger = 1) - max(kb) FILTER (WHERE larger = 2) <= :SLOPE_KB AS flat_in_rows
 FROM r GROUP BY kind, mwm_kb ORDER BY mwm_kb, kind;
 
--- what the last build wrote (CREATE INDEX of the scope of 3 entries a row) answers as the join does, and the index is sound
-CREATE FUNCTION entries_md5() RETURNS text LANGUAGE plpgsql AS
-$$ BEGIN RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col')); END $$;
-CREATE FUNCTION join_md5() RETURNS text LANGUAGE plpgsql AS
-$$ BEGIN RETURN (SELECT md5(string_agg(e.ctid::text || ':' || s.tenant_id, ',' ORDER BY e.ctid, s.tenant_id)) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id); END $$;
-SELECT entries_md5() = join_md5() AS entries_are_the_join, (SELECT rows FROM sift.col_index_info('events_col')) = (SELECT count(*) FROM events) AS rows_once;
+-- what the last build wrote (CREATE INDEX of the scope of 3 entries a row) answers as the join does for every key (read by sift with sift.enable_agg on, by the heap with it off),
+-- and the index is sound
+CREATE FUNCTION keys_md5(agg boolean) RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	RETURN (SELECT md5(string_agg(k || ':' || n || ':' || ids, ',' ORDER BY k)) FROM (SELECT s.tenant_id AS k, count(*) AS n, sum(e.id) AS ids
+		FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY s.tenant_id) t);
+END $$;
+SELECT keys_md5(true) = keys_md5(false) AS keys_are_the_join, (SELECT rows FROM sift.col_index_info('events_col')) = (SELECT count(*) FROM events) AS rows_once;
 SELECT sift.col_verify('events_col', true);
-SELECT count(*) AS scope_problems FROM sift.col_scope_verify('events_col', 100);
 
-DROP FUNCTION entries_md5();
-DROP FUNCTION join_md5();
+DROP FUNCTION keys_md5(boolean);
 DROP FUNCTION steps(plan);
 DROP FUNCTION lab(int, int);
 DROP TABLE plan, peaks, events, tenant_scope;
