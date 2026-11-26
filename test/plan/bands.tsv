@@ -150,8 +150,8 @@ stock	star_selective_dim	scan	0.079	0.32
 stock	star_snowflake_sip	scan	0.060	0.24
 stock	star_two_dims	scan	0.070	0.28
 stock	sub_latest_id_per_parent	normal	40	160
-stock	sub_latest_time_per_parent	normal	170	700
-stock	sub_latest_time_rare_status	either	1.3	5.3
+stock	sub_latest_time_per_parent	normal	11	45
+stock	sub_latest_time_rare_status	either	0.054	0.22
 stock	sum_by_kind_month	scan	0.14	0.58
 stock	sum_by_parent	scan	0.10	0.42
 stock	sum_of_maxima_by_month	scan	0.15	0.61
@@ -327,8 +327,8 @@ stock4t	star_selective_dim	scan	0.079	0.32
 stock4t	star_snowflake_sip	scan	0.060	0.24
 stock4t	star_two_dims	scan	0.070	0.28
 stock4t	sub_latest_id_per_parent	normal	40	160
-stock4t	sub_latest_time_per_parent	normal	170	700
-stock4t	sub_latest_time_rare_status	either	1.3	5.3
+stock4t	sub_latest_time_per_parent	normal	11	45
+stock4t	sub_latest_time_rare_status	either	0.054	0.22
 stock4t	sum_by_kind_month	scan	0.14	0.58
 stock4t	sum_by_parent	scan	0.10	0.42
 stock4t	sum_of_maxima_by_month	scan	0.15	0.61
@@ -820,7 +820,7 @@ table	star_selective_dim	scan	0.20	0.81
 table	star_snowflake_sip	scan	0.20	0.80
 table	star_two_dims	scan	0.20	0.80
 table	sub_latest_id_per_parent	normal	14	56
-table	sub_latest_time_per_parent	normal	38	150
+table	sub_latest_time_per_parent	normal	2.2	8.9
 table	sub_latest_time_rare_status	either	0.47	1.9
 table	sum_by_kind_month	scan	0.29	1.2
 table	sum_by_parent	scan	0.32	1.3
@@ -1155,8 +1155,8 @@ tabletuned	star_selective_dim	scan	0.0072	0.029
 tabletuned	star_snowflake_sip	scan	0.014	0.056
 tabletuned	star_two_dims	scan	0.0092	0.037
 tabletuned	sub_latest_id_per_parent	normal	1.3	5.1
-tabletuned	sub_latest_time_per_parent	normal	1.3	5.3
-tabletuned	sub_latest_time_rare_status	either	-	-
+tabletuned	sub_latest_time_per_parent	normal	0.54	2.1
+tabletuned	sub_latest_time_rare_status	either	0.061	0.24
 tabletuned	sum_by_kind_month	scan	0.046	0.18
 tabletuned	sum_by_parent	scan	0.026	0.11
 tabletuned	sum_of_maxima_by_month	scan	0.047	0.19
@@ -1490,8 +1490,8 @@ tuned	star_selective_dim	scan	0.15	0.59
 tuned	star_snowflake_sip	scan	0.078	0.31
 tuned	star_two_dims	scan	0.074	0.30
 tuned	sub_latest_id_per_parent	normal	31	130
-tuned	sub_latest_time_per_parent	normal	79	310
-tuned	sub_latest_time_rare_status	either	4.5	18
+tuned	sub_latest_time_per_parent	normal	5.4	22
+tuned	sub_latest_time_rare_status	either	0.016	0.064
 tuned	sum_by_kind_month	scan	0.0025	0.010
 tuned	sum_by_parent	scan	0.056	0.22
 tuned	sum_of_maxima_by_month	scan	0.073	0.29
