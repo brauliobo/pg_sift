@@ -297,39 +297,44 @@ SELECT t_check('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''numb
 -- the shape of the plan
 SET sift.enable_agg = on;
 EXPLAIN (COSTS OFF) SELECT count(*), sum((attrs->>'m')::float8) FROM t WHERE jsonb_typeof(attrs->'m') = 'number';
-       QUERY PLAN        
--------------------------
+                                   QUERY PLAN                                    
+---------------------------------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
-(2 rows)
+   Pushed Aggregates: count(*), sum(((t.attrs ->> 'm'::text))::double precision)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'s') IN ('string');
-       QUERY PLAN        
--------------------------
+          QUERY PLAN           
+-------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
-(2 rows)
+   Pushed Aggregates: count(*)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'m') <> 'number';
-       QUERY PLAN        
--------------------------
+          QUERY PLAN           
+-------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
-(2 rows)
+   Pushed Aggregates: count(*)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT jsonb_typeof(attrs->'m') AS ty, count(*) FROM t GROUP BY 1;
-       QUERY PLAN        
--------------------------
+          QUERY PLAN           
+-------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
-(2 rows)
+   Pushed Aggregates: count(*)
+(3 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->'s') = 'string' OR id < 5) FROM t;
-       QUERY PLAN        
--------------------------
+                                                      QUERY PLAN                                                      
+----------------------------------------------------------------------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
-(2 rows)
+   Pushed Aggregates: count(*) FILTER (WHERE ((jsonb_typeof((t.attrs -> 's'::text)) = 'string'::text) OR (t.id < 5)))
+(3 rows)
 
 RESET sift.enable_agg;
 -- a value the leaf cannot hold (a number out of the range of the type, a non-integer for an integer leaf, a string for a number) is an error

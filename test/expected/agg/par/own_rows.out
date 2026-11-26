@@ -85,10 +85,11 @@ CREATE INDEX zev_c ON zev USING sift_col (id, zone_id);
 VACUUM (FREEZE, ANALYZE) zones, zev;
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1;
-                QUERY PLAN                
-------------------------------------------
+                 QUERY PLAN                  
+---------------------------------------------
  Custom Scan (SiftAggV6)
    Index: zev_c
+   Pushed Aggregates: count(*)
    Star Dimensions: 1
    Lookup Joins: s (subquery)
    ->  Subquery Scan on s
@@ -97,7 +98,7 @@ EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name
                Order Columns: 1
                ->  Seq Scan on zones z
                      Disabled: true
-(10 rows)
+(11 rows)
 
 BEGIN;
 INSERT INTO zones VALUES (60, 'new');
@@ -144,16 +145,17 @@ INSERT INTO pt SELECT i, i % 5, i FROM generate_series(1, 19999) i;
 CREATE INDEX pt_c ON pt USING sift_col (id, g, v);
 VACUUM (FREEZE, ANALYZE) pt;
 EXPLAIN (COSTS OFF) SELECT g, count(*), sum(v) FROM pt GROUP BY g;
-               QUERY PLAN               
-----------------------------------------
+                   QUERY PLAN                   
+------------------------------------------------
  Gather
    Workers Planned: 1
    ->  Parallel Custom Scan (SiftAggV6)
          Index: pt1_id_g_v_idx
          Partitions: 2
          Group Keys: g
+         Pushed Aggregates: count(*), sum(pt.v)
          Parallel Strategy: two-stage
-(7 rows)
+(8 rows)
 
 BEGIN;
 INSERT INTO pt VALUES (9000, 1, 9000);

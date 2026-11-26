@@ -59,32 +59,35 @@ BEGIN
 END $$;
 -- Q-01. The plans of the three coverage rows: the keys of the map are the groups and its value the argument, as the text of the scalar, as the jsonb cast to the number, and as the text of jsonb_each_text
 EXPLAIN (COSTS OFF) SELECT kv.key, avg((kv.value #>> '{}')::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1;
-           QUERY PLAN            
----------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: em_col
+   Pushed Aggregates: avg(((kv.value #>> '{}'::text[]))::double precision)
    Unnest: lateral columnar
    Unnest Value: metrics.*.value
-(4 rows)
+(5 rows)
 
 EXPLAIN (COSTS OFF) SELECT kv.key, avg(kv.value::float8) FROM em o, jsonb_each(o.metrics) kv GROUP BY 1;
-           QUERY PLAN            
----------------------------------
+                       QUERY PLAN                       
+--------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: em_col
+   Pushed Aggregates: avg((kv.value)::double precision)
    Unnest: lateral columnar
    Unnest Value: metrics.*.value
-(4 rows)
+(5 rows)
 
 EXPLAIN (COSTS OFF) SELECT m.key, count(*), sum(m.value::float8), avg(m.value::float8), min(m.value::float8), max(m.value::float8)
 FROM em o CROSS JOIN LATERAL jsonb_each_text(o.metrics) m WHERE m.key IN ('m_total', 'packaging') OR m.key LIKE 'check%' GROUP BY m.key;
-           QUERY PLAN            
----------------------------------
+                                                                              QUERY PLAN                                                                               
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: em_col
+   Pushed Aggregates: count(*), sum((m.value)::double precision), avg((m.value)::double precision), min((m.value)::double precision), max((m.value)::double precision)
    Unnest: lateral columnar
    Unnest Value: metrics.*.value
-(4 rows)
+(5 rows)
 
 -- Q-02. The values of the groups
 SELECT kv.key, count(*), round(avg((kv.value #>> '{}')::float8)::numeric, 3) AS mean FROM em o, jsonb_each(o.metrics) kv GROUP BY 1 ORDER BY 1;

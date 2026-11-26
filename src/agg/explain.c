@@ -14,6 +14,7 @@
 #include "utils/ruleutils.h"
 
 #include "agg/explain.h"
+#include "agg/expr/num.h"
 #include "agg/topn/topn.h"
 #include "core/compat.h"
 #include "core/explain.h"
@@ -230,6 +231,34 @@ sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es)
 		appendStringInfo(&buf, "%s%s", i ? ", " : "", name);
 	}
 	ExplainPropertyText("Group Keys", buf.data, es);
+}
+
+static bool
+collect_aggs(Node *n, List **aggs)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Aggref))
+	{
+		*aggs = lappend(*aggs, n);
+		return false;
+	}
+	return expression_tree_walker(n, collect_aggs, aggs);
+}
+
+void
+sift_v6_explain_pushed_aggs(CustomScanState *css, List *ancestors, ExplainState *es)
+{
+	List	   *dpcontext = set_deparse_context_plan(es->deparse_cxt, css->ss.ps.plan, ancestors);
+	List	   *aggs = NIL;
+	StringInfoData buf;
+
+	collect_aggs(sift_vn_rewrite_aggs((Node *) ((CustomScan *) css->ss.ps.plan)->custom_scan_tlist), &aggs);
+	initStringInfo(&buf);
+	foreach_ptr(Node, a, aggs)
+		appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", deparse_expression(a, dpcontext, true, false));
+	if (buf.len)
+		ExplainPropertyText("Pushed Aggregates", buf.data, es);
 }
 
 typedef struct TopNKey

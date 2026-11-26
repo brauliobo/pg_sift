@@ -19,11 +19,11 @@ CREATE INDEX items_col ON items USING sift_col (id, store, price, qty, rate, wei
 ANALYZE items;
 -- the plans: a numeric predicate, a numeric key, an expression, count(DISTINCT)
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 10.005 AND weight IN (1, 2.5, 3) GROUP BY store;
-                           QUERY PLAN                           
-----------------------------------------------------------------
- Custom Scan (SiftAgg)
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: items_col
-   Filters: price > 10.005 AND weight IN '{1,2.5,3}'::numeric[]
+   Filters: (price > 10.005) AND (weight = ANY ('{1,2.5,3}'::numeric[]))
    Group Keys: store
    Pushed Aggregates: count(*)
 (5 rows)
@@ -31,18 +31,18 @@ EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 10.005 AND w
 EXPLAIN (COSTS OFF) SELECT price, count(*) FROM items GROUP BY price;
           QUERY PLAN           
 -------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
-   Group Keys: items.price
+   Group Keys: price
    Pushed Aggregates: count(*)
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT store, sum(price * qty), max(round(rate, 2) - price) FROM items WHERE price * 2 <= rate GROUP BY store;
                                                 QUERY PLAN                                                 
 -----------------------------------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
-   Filters: (items.price * '2'::numeric) <= items.rate
+   Filters: ((price * '2'::numeric) <= rate)
    Group Keys: store
    Pushed Aggregates: sum((items.price * (items.qty)::numeric)), max((round(items.rate, 2) - items.price))
 (5 rows)
@@ -50,7 +50,7 @@ EXPLAIN (COSTS OFF) SELECT store, sum(price * qty), max(round(rate, 2) - price) 
 EXPLAIN (COSTS OFF) SELECT store, count(DISTINCT price), count(DISTINCT round(price, 0)) FROM items GROUP BY store;
                                        QUERY PLAN                                        
 -----------------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
    Group Keys: store
    Pushed Aggregates: count(DISTINCT items.price), count(DISTINCT round(items.price, 0))
@@ -60,36 +60,35 @@ EXPLAIN (COSTS OFF) SELECT store, count(DISTINCT price), count(DISTINCT round(pr
 EXPLAIN (COSTS OFF) SELECT store, sum(price / 3) FROM items GROUP BY store;
                        QUERY PLAN                       
 --------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
    Group Keys: store
    Pushed Aggregates: sum((items.price / '3'::numeric))
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 1.5::float8 GROUP BY store;
-                                  QUERY PLAN                                   
--------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+                            QUERY PLAN                            
+------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: items_col
-   Filters: price: ((items.price)::double precision > '1.5'::double precision)
+   Filters: ((price)::double precision > '1.5'::double precision)
    Group Keys: store
    Pushed Aggregates: count(*)
 (5 rows)
 
 EXPLAIN (COSTS OFF) SELECT price % 7 AS k, max(sqrt(abs(rate))) FROM items GROUP BY 1;
-                    QUERY PLAN                     
----------------------------------------------------
- Custom Scan (SiftAgg)
+                   QUERY PLAN                    
+-------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: items_col
-   Group Keys: price: (items.price % '7'::numeric)
    Pushed Aggregates: max(sqrt(abs(items.rate)))
-(4 rows)
+(3 rows)
 
 -- more digits than the 128-bit programs hold: PostgreSQL adds the products; the integer sum of an expression PostgreSQL evaluates: a generic aggregate
 EXPLAIN (COSTS OFF) SELECT store, sum(price * rate * rate) FROM items GROUP BY store;
                              QUERY PLAN                              
 ---------------------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
    Group Keys: store
    Pushed Aggregates: sum(((items.price * items.rate) * items.rate))
@@ -98,7 +97,7 @@ EXPLAIN (COSTS OFF) SELECT store, sum(price * rate * rate) FROM items GROUP BY s
 EXPLAIN (COSTS OFF) SELECT store, sum(qty / 2) FROM items GROUP BY store;
                 QUERY PLAN                 
 -------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: items_col
    Group Keys: store
    Pushed Aggregates: sum((items.qty / 2))

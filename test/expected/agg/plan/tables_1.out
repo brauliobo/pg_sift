@@ -202,18 +202,20 @@ EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM
 ------------------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: ev_col
+   Pushed Aggregates: count(*)
    Star Dimensions: 1
    Lookup Joins: s (subquery)
    ->  Subquery Scan on s
          ->  Limit
                ->  Index Scan using tenants_pkey on tenants
-(7 rows)
+(8 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
                     QUERY PLAN                     
 ---------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: ev_col
+   Pushed Aggregates: count(*)
    Star Dimensions: 1
    Lookup Joins: unnamed_subquery (subquery) (semi)
    ->  Subquery Scan on unnamed_subquery
@@ -223,7 +225,7 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE
                      Query: 'cable'::text
                      Order: score DESC
                      Limit Hint: 100
-(11 rows)
+(12 rows)
 
 -- what keeps the normal plan: a volatile side. A side above the memory a lookup table may take (half of work_mem) is read in parts, with the same rows.
 -- A nullable fact table joined to a sub-select also keeps the normal plan (the preserved side: docs/AGG.md).

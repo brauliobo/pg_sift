@@ -253,12 +253,13 @@ SELECT sift.table_maintain('ns') IS NOT NULL AS maintained_again;
 (1 row)
 
 SELECT plan('SELECT t, count(*) FROM ns GROUP BY t') AS text_key;
-        text_key         
--------------------------
+          text_key           
+-----------------------------
  Custom Scan (SiftAggV6)
  Table: ns
  Group Keys: t
-(3 rows)
+ Pushed Aggregates: count(*)
+(4 rows)
 
 SELECT plan('SELECT v, count(*) FROM ns WHERE t = ''text 3'' GROUP BY v') AS text_filter;
           text_filter          
@@ -267,7 +268,8 @@ SELECT plan('SELECT v, count(*) FROM ns WHERE t = ''text 3'' GROUP BY v') AS tex
  Table: ns
  Filters: (t = 'text 3'::text)
  Group Keys: v
-(4 rows)
+ Pushed Aggregates: count(*)
+(5 rows)
 
 -- an UPDATE of a few columns of a wide table keeps the address of the row and patches the columns (SIFT_PT_COL_DELTA)
 CREATE FUNCTION delta_pages(rel regclass) RETURNS int LANGUAGE sql AS $$

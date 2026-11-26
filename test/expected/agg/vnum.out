@@ -31,9 +31,9 @@ VACUUM (ANALYZE) v;
 EXPLAIN (COSTS OFF) SELECT g6, sum(a * (1 - b) * (1 + c)) FROM v WHERE id <= 6000 GROUP BY g6;
                                    QUERY PLAN                                    
 ---------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: v_col
-   Filters: id <= 6000
+   Filters: (id <= 6000)
    Group Keys: g6
    Pushed Aggregates: sum(((v.a * ('1'::numeric - v.b)) * ('1'::numeric + v.c)))
 (5 rows)

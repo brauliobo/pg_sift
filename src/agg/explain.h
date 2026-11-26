@@ -16,6 +16,8 @@
 extern void sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es);
 /* Group Keys: the columns the groups are of, when the statement names them as they are */
 extern void sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es);
+/* Pushed Aggregates: the aggregates the scan runs (a CASE of an aggregate as its FILTER), as the statement names their columns */
+extern void sift_v6_explain_pushed_aggs(CustomScanState *css, List *ancestors, ExplainState *es);
 /* Lookup Joins: the relations the plans of the dimensions of a star join read */
 extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es);
 

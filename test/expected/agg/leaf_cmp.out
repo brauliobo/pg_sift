@@ -32,13 +32,14 @@ FROM generate_series(1, 3001) i;
 CREATE INDEX t_col ON t USING sift_col (id, g, a2, b2, a4, b4, a8, b8, da, db, ta, tb, tza, tzb, fa4, fb4, fa8, fb8, f4x, f8y);
 VACUUM (ANALYZE) t;
 EXPLAIN (COSTS OFF) SELECT g, count(*) FROM t WHERE da < db GROUP BY g;
-       QUERY PLAN        
--------------------------
+          QUERY PLAN           
+-------------------------------
  Custom Scan (SiftAggV6)
    Index: t_col
    Filters: (da < db)
    Group Keys: g
-(4 rows)
+   Pushed Aggregates: count(*)
+(5 rows)
 
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.agg_rows_as_json_equal(q) $$;
 -- one query for each pair of columns and operator, counted by group, then a few mixed filters

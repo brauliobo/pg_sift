@@ -133,12 +133,13 @@ SELECT sift.table_maintain('lg') IS NOT NULL AS maintained_rewritten;
 
 ANALYZE lg;
 SELECT plan('SELECT t, count(*) FROM lg GROUP BY t') AS rewritten_text_key;
-   rewritten_text_key    
--------------------------
+     rewritten_text_key      
+-----------------------------
  Custom Scan (SiftAggV6)
  Table: lg
  Group Keys: t
-(3 rows)
+ Pushed Aggregates: count(*)
+(4 rows)
 
 SELECT steps('rewritten');
             steps             
