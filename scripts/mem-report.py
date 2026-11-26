@@ -21,7 +21,7 @@ LEAK_SET_SECONDS = 900
 ALLOW_CLASSES = {"pg-owned", "per-process", "bounded-cache", "entry-lifetime", "statement-context"}
 REGRESS_KB = 256          # growth of a path against the baseline that is flagged (and at least REGRESS_PCT)
 REGRESS_PCT = 25
-SIFT_FRAME = re.compile(r"(/src/(?:agg|bm25|col|core|table)/(?!memcensus\.c)|pg_sift\.so)")
+SIFT_FRAME = re.compile(r"((?<![\w.-])src/(?:agg|bm25|col|core|table)/(?!memcensus\.c)|pg_sift\.so)")
 PG_CACHE = re.compile(r"\b(standard_planner|standard_ExecutorStart|standard_ExecutorRun|standard_ProcessUtility|relation_open|index_open|RelationIdGetRelation|RelationBuildDesc|RelationInitIndexAccessInfo|SearchCatCache\w*|SearchSysCache\w*|lookup_ts_\w+_cache|mdopenfork|smgropen|CatalogCacheCreateEntry|load_relcache_init_file)\b")
 KV = re.compile(r'(\w+)=("[^"]*"|\S+)')
 
