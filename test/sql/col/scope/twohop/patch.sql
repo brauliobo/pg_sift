@@ -1,14 +1,13 @@
--- A scope of two paths (the grants a tenant has on a member, and on the groups of the member) keeps the units of its distinct pairs and the stamps of the three journals its pairs depend on:
--- the grants keyed by member (J1), the grants keyed by group (J2) and the memberships keyed by member (J3). What changed since the stamps is the members of J1 and J3 and the members the
--- memberships list for each group of J2; a read takes the units less those members and reads their entity rows. Every state below is built from fresh stamps (REINDEX), edited once in the way
--- that exercises one of the dependencies, and read in the shapes a scope has (IN, EXISTS, GROUP BY, a join counting each pair, one key and several, top-N): the answers are the join's, and a read
--- that does not take the units says why (scope_reason_ok).
+-- A scope of two paths (the grants a tenant has on a member, and on the groups of the member) depends on three journals: the grants keyed by member, the grants keyed by group and the memberships
+-- keyed by member. What changed since the scope summary is the members of the first and the third and the members the memberships list for each group of the second; the summary reads a key
+-- with those changes (Scope Cube: delta). Every state below is built again (REINDEX), edited once in the way that exercises one of the dependencies, and read in the shapes a scope has (IN,
+-- EXISTS, GROUP BY, a join counting each pair, one key and several, top-N): the answers are the join's through the scope node, through sift with sift.agg_scope off and through the normal plan.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \ir test/common/sql/col/scope/base.sql
 
 CREATE TABLE grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz, note text) WITH (autovacuum_enabled = false);
@@ -49,80 +48,32 @@ CREATE VIEW pair_oracle AS
 
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount)
 	WITH (scope = 'tenant_id: dim_a_id -> grants(dim_a_id, tenant_id) | grants(group_id, tenant_id) via memberships(group_id, dim_a_id)');
--- built before the journals existed: the stamps are the next build's
 REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (ANALYZE) grants, memberships;
 
--- the shapes, each over the keys 1..6 one at a time and over the keys {1..6} and {2, 5} together: the marker of the scope (once, or a row for each pair) and the plain statement it stands for
-CREATE TABLE shapes (n int, label text, q text, plain text);
+-- the shapes, each over the keys 1..6 one at a time and over the keys {1..6} and {2, 5} together
+CREATE TABLE shapes (n int, label text, q text);
 INSERT INTO shapes VALUES
-	(1, 'IN', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, KEYS)',
-		'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST)'),
-	(2, 'EXISTS', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, KEYS)',
-		'SELECT count(*), sum(amount) FROM facts f WHERE EXISTS (SELECT 1 FROM pair_oracle o WHERE o.member = f.dim_a_id AND o.tenant_id IN LIST)'),
-	(3, 'GROUP BY', 'SELECT amount, count(*) FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, KEYS) GROUP BY amount ORDER BY amount',
-		'SELECT amount, count(*) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST) GROUP BY amount ORDER BY amount'),
-	(4, 'join, a row for each pair', 'SELECT count(*), sum(amount) FROM facts f WHERE sift.in_scope_pairs(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, KEYS)',
-		'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.member = f.dim_a_id WHERE o.tenant_id IN LIST'),
-	(5, 'top-N', 'SELECT id, created_at FROM facts f WHERE sift.in_scope(''facts_col''::regclass, ''tenant_id'', f.dim_a_id, KEYS) ORDER BY created_at DESC, id DESC LIMIT 20',
-		'SELECT id, created_at FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST) ORDER BY created_at DESC, id DESC LIMIT 20');
-CREATE TABLE key_sets (keys text, list text);
-INSERT INTO key_sets SELECT k::text, '(' || k || ')' FROM generate_series(1, 6) k;
-INSERT INTO key_sets VALUES ('ARRAY[1, 2, 3, 4, 5, 6]::int8[]', '(1, 2, 3, 4, 5, 6)'), ('ARRAY[2, 5]::int8[]', '(2, 5)');
-CREATE TABLE reads AS SELECT s.n, s.label, replace(s.q, 'KEYS', k.keys) AS q, replace(s.plain, 'LIST', k.list) AS plain FROM shapes s, key_sets k;
+	(1, 'IN', 'SELECT count(*), sum(amount) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST)'),
+	(2, 'EXISTS', 'SELECT count(*), sum(amount) FROM facts f WHERE EXISTS (SELECT 1 FROM pair_oracle o WHERE o.member = f.dim_a_id AND o.tenant_id IN LIST)'),
+	(3, 'GROUP BY', 'SELECT amount, count(*) FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST) GROUP BY amount ORDER BY amount'),
+	(4, 'join, a row for each pair', 'SELECT count(*), sum(amount) FROM facts f JOIN pair_oracle o ON o.member = f.dim_a_id WHERE o.tenant_id IN LIST'),
+	(5, 'top-N', 'SELECT id, created_at FROM facts f WHERE f.dim_a_id IN (SELECT member FROM pair_oracle WHERE tenant_id IN LIST) ORDER BY created_at DESC, id DESC LIMIT 20');
+CREATE TABLE key_sets (list text);
+INSERT INTO key_sets SELECT '(' || k || ')' FROM generate_series(1, 6) k;
+INSERT INTO key_sets VALUES ('(1, 2, 3, 4, 5, 6)'), ('(2, 5)');
+CREATE TABLE reads AS SELECT s.n, s.label, replace(s.q, 'LIST', k.list) AS q FROM shapes s, key_sets k;
 
--- a read of the scope against its plain statement (scope_run of test/common/sql/col/scope/base.sql also runs the marker as a row filter, which counts a row once: not the join of a statement that counts each pair).
--- A read of several keys that counts each pair and has a patched member in two of them has no entity path: it is refused with its reason, which is a documented one
-CREATE FUNCTION read_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched boolean, OUT path_ok boolean) LANGUAGE plpgsql AS $$
-DECLARE
-	p jsonb;
-	a text;
-	b text;
-BEGIN
-	SET LOCAL sift.enable_agg = on;
-	BEGIN
-		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
-	EXCEPTION WHEN feature_not_supported THEN
-		why := substring(SQLERRM FROM '"(.*)"$');
-		path_ok := scope_reason_ok(why);
-		stored := false;
-		patched := false;
-		RETURN;
-	END;
-	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
-	SET LOCAL sift.enable_agg = on;
-	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	patched := coalesce((jsonb_path_query_first(p, '$.**."Scope Patched Keys"') #>> '{}')::int, 0) > 0;
-	path_ok := stored OR scope_reason_ok(why);
-END $$;
-
--- one line for all the reads: how many, how many differ from the plain statement, how many took the units, how many patched members, how many were refused for the join, how many are not
--- accounted for (neither the units nor a documented reason), and the reasons
-CREATE FUNCTION verdict(OUT reads int, OUT differ int, OUT units int, OUT patched int, OUT refused int, OUT unaccounted int, OUT reasons text) LANGUAGE sql AS $$
-	SELECT count(*)::int, count(*) FILTER (WHERE NOT r.same)::int, count(*) FILTER (WHERE r.stored)::int, count(*) FILTER (WHERE r.patched)::int, count(*) FILTER (WHERE r.same IS NULL)::int,
-		count(*) FILTER (WHERE NOT r.path_ok)::int, coalesce(string_agg(DISTINCT r.why, ', '), '-')
-	FROM reads, LATERAL read_run(reads.q, reads.plain) r
-$$;
--- the members whose pairs changed since the stamps of the scope segments, as the journals tell them
-CREATE FUNCTION changed(OUT why text, OUT dim_b int8[]) LANGUAGE sql AS $$
-	SELECT min(c.why), array_agg(c.key ORDER BY c.key) FILTER (WHERE c.key IS NOT NULL)
-	FROM (SELECT * FROM sift._test_col_scope_journal_stamps('facts_col') WHERE family = 'scope' AND journal = 0 LIMIT 1) a,
-		(SELECT * FROM sift._test_col_scope_journal_stamps('facts_col') WHERE family = 'scope' AND journal = 1 LIMIT 1) b,
-		(SELECT * FROM sift._test_col_scope_journal_stamps('facts_col') WHERE family = 'scope' AND journal = 2 LIMIT 1) c3,
-		LATERAL sift._test_scope_journal_changes('facts_col', 0, a.lineage, a.horizon, 1000000, b.lineage, c3.lineage) c
+-- one line for all the reads: how many, how many differ, how many are scope reads, and how many of those read the changes since the summary
+CREATE FUNCTION verdict(OUT reads int, OUT differ int, OUT scope_reads int, OUT delta int) LANGUAGE sql AS $$
+	SELECT count(*)::int, count(*) FILTER (WHERE NOT r.same)::int, count(*) FILTER (WHERE r.route IS NOT NULL)::int, count(*) FILTER (WHERE r.cube = 'delta')::int
+	FROM reads, LATERAL scope_read(reads.q) r
 $$;
 
--- the stamps: one for each of the three journals, in every segment, from the lineage of its journal index
-SELECT journal, count(DISTINCT lineage) AS lineages, count(DISTINCT horizon::text) AS horizons, count(*) AS segments FROM sift._test_col_scope_journal_stamps('facts_col') GROUP BY journal ORDER BY journal;
-SELECT format AS column_format, count(*) AS segments FROM sift.col_segments('facts_col') WHERE kind = 'immutable' GROUP BY 1;
-SELECT 'built' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'built' AS state, v.* FROM verdict() v;
 
--- each state: what it does first (the stamps are taken after it), the edit, the members the journals say changed, and the reads
+-- each state: what it does first (the summary is built after it), the edit, and the reads
 CREATE TABLE states (n int, label text, setup text, edit text);
 INSERT INTO states VALUES
 	(1, 'a grant to a member', NULL, 'INSERT INTO grants VALUES (101, 3, 30, NULL, NULL)'),
@@ -151,34 +102,32 @@ INSERT INTO states VALUES
 SELECT stmt FROM (SELECT n, 0 AS k, setup AS stmt FROM states WHERE setup IS NOT NULL
 	UNION ALL SELECT n, 1, 'REINDEX INDEX facts_col' FROM states
 	UNION ALL SELECT n, 2, edit FROM states
-	UNION ALL SELECT n, 3, format('SELECT %s AS n, %L AS state, c.*, v.* FROM changed() c, verdict() v', n, label) FROM states) t WHERE stmt IS NOT NULL ORDER BY n, k \gexec
+	UNION ALL SELECT n, 3, format('SELECT %s AS n, %L AS state, v.* FROM verdict() v', n, label) FROM states) t WHERE stmt IS NOT NULL ORDER BY n, k \gexec
 
--- the edits of the whole run are in the pairs now: a rebuild has nothing to patch
+-- the edits of the whole run are in the pairs now: a rebuild has no change since it
 REINDEX INDEX facts_col;
-SELECT 'rebuilt' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'rebuilt' AS state, v.* FROM verdict() v;
 
 -- the changes of this transaction are in its own reads before it commits, and gone with a rollback
 BEGIN;
 DELETE FROM memberships WHERE group_id = 6;
 INSERT INTO grants VALUES (110, 2, 33, NULL, NULL);
-SELECT 'own transaction' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'own transaction' AS state, v.* FROM verdict() v;
 ROLLBACK;
-SELECT 'after the rollback' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'after the rollback' AS state, v.* FROM verdict() v;
 
--- facts written after the build are in a write buffer, then in the scope segments of a promotion (the pairs of the relations as they are then), and a merge keeps the stamps: with edits since
+-- facts written after the build are in a write buffer, then in the parts of a promotion, then merged: with pair edits in between
 INSERT INTO facts SELECT i, 1 + (i * 7) % 60, timestamptz '2026-03-01' + i * interval '9 minutes', i % 10 FROM generate_series(3001, 3400) i;
 UPDATE memberships SET group_id = 4 WHERE group_id = 5 AND dim_a_id = 41;
-SELECT 'facts in a write buffer' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'facts in a write buffer' AS state, v.* FROM verdict() v;
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;
-SELECT 'promoted' AS state, c.*, v.* FROM changed() c, verdict() v;
+SELECT 'promoted' AS state, v.* FROM verdict() v;
 UPDATE grants SET deleted_at = now() WHERE id = 14;
 SELECT sift.col_merge('facts_col', true) >= 0 AS merged;
-SELECT 'merged' AS state, c.*, v.* FROM changed() c, verdict() v;
-SELECT journal, count(DISTINCT lineage) AS lineages, count(DISTINCT horizon::text) AS horizons FROM sift._test_col_scope_journal_stamps('facts_col') GROUP BY journal ORDER BY journal;
+SELECT 'merged' AS state, v.* FROM verdict() v;
 SELECT sift.col_verify('facts_col', true);
 
--- workers allowed and the price of a Gather at zero: a scope read is decided once, by the leader (the verdict, the changed members and the patch are made from the snapshot of the statement), so a read with
--- the patch of each of the three journals is one process, and answers as the join
+-- workers allowed and the price of a Gather at zero: a read after an edit of each of the three journals answers as the join
 SET max_parallel_workers_per_gather = 4;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -191,7 +140,7 @@ INSERT INTO parallel_states VALUES
 	(4, 'the three at once, workers allowed', 'INSERT INTO grants VALUES (203, 6, 34, NULL, NULL); INSERT INTO grants VALUES (204, 6, NULL, 5, NULL); UPDATE memberships SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id = 1');
 SELECT stmt FROM (SELECT n, 0 AS k, 'REINDEX INDEX facts_col' AS stmt FROM parallel_states
 	UNION ALL SELECT n, 1, edit FROM parallel_states
-	UNION ALL SELECT n, 2, format('SELECT %s AS n, %L AS state, c.*, v.* FROM changed() c, verdict() v', n, label) FROM parallel_states) t ORDER BY n, k \gexec
+	UNION ALL SELECT n, 2, format('SELECT %s AS n, %L AS state, v.* FROM verdict() v', n, label) FROM parallel_states) t ORDER BY n, k \gexec
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
@@ -199,6 +148,5 @@ RESET min_parallel_table_scan_size;
 SELECT sift.col_verify('facts_col', true);
 
 DROP TABLE facts, grants, memberships, shapes, key_sets, reads, states, parallel_states CASCADE;
-DROP FUNCTION verdict(), changed(), read_run(text, text), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION verdict(), scope_run(text, text), scope_group_run(text), scope_reason_ok(text), scope_read(text);
 DROP EXTENSION pg_sift;
