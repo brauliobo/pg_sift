@@ -74,12 +74,6 @@ host_attno(const V6Plan *p, AttrNumber attno)
 	return 0;
 }
 
-static int
-host_nleaves(const V6Plan *p, int att)
-{
-	return p->is_table ? p->sch.att_nleaves[att] : p->colrel->nleaves[att];
-}
-
 /* the relation holds attribute att in one leaf the scan decodes as the class says */
 static bool
 host_holds(const V6Plan *p, int att, SiftV6Class cls)
@@ -167,34 +161,18 @@ datum_column_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
-/* A text column of a sift_table: its cells are the datums, so its bytes are read after the header; no scan key may compare them (the leaf is lossy) */
-static bool
-table_text_of(V6Plan *p, const Expr *e, SiftV6Col *out)
-{
-	const Var  *v = (const Var *) e;
-	int			att;
-
-	if (!p->is_table || e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || sift_v6_class(v->vartype) != SV6C_TEXT)
-		return false;
-	att = host_attno(p, v->varattno);
-	if (att == 0 || host_nleaves(p, att) != 1)
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype};
-	return true;
-}
-
-/* A column of the kernels' classes or the text of a table: the values the scan holds in a native vector, which an ordering of them follows */
+/* A column of the kernels' classes: the values the scan holds in a native vector, which an ordering of them follows */
 bool
 sift_v6_plan_native_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
-	return column_of(p, e, false, out) || table_text_of(p, e, out);
+	return column_of(p, e, false, out);
 }
 
-/* A column the scan reads as a value of any type: the columns of the kernels, the text of a table, the datums, and the payload of a dimension or the element of the unnest */
+/* A column the scan reads as a value of any type: the columns of the kernels, the datums, and the payload of a dimension or the element of the unnest */
 bool
 sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
-	return column_of(p, e, numeric_ok, out) || table_text_of(p, e, out) || datum_column_of(p, e, out) ||
+	return column_of(p, e, numeric_ok, out) || datum_column_of(p, e, out) ||
 		sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out));
 }
 

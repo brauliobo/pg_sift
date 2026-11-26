@@ -63,8 +63,10 @@ sift_f2_ops_leaf_holds(Oid relid, bool is_table, int att, int cls)
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 	const SiftColDef *d;
 
-	if ((SiftV6Class) cls == SV6C_DATUM || (st->host->host_kind != SIFT_F2_HOST_INDEX && (SiftV6Class) cls == SV6C_TEXT))
+	if ((SiftV6Class) cls == SV6C_DATUM)
 		return datum_leaf(st, att);
+	if (st->host->host_kind != SIFT_F2_HOST_INDEX && (SiftV6Class) cls == SV6C_TEXT)
+		return datum_leaf(st, att) && !(st->schema->cols[st->att_first[att]].flags & SIFT_COLD_LOSSY);
 	d = scalar_leaf(st, att);
 
 	if (d == NULL)

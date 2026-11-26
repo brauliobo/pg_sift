@@ -137,7 +137,8 @@ SELECT plan('SELECT t, count(*) FROM lg GROUP BY t') AS rewritten_text_key;
 -------------------------
  Custom Scan (SiftAggV6)
  Table: lg
-(2 rows)
+ Group Keys: t
+(3 rows)
 
 SELECT steps('rewritten');
             steps             
