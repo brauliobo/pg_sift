@@ -19,6 +19,7 @@
 #                       otherwise), 1500 fixture rows, --scenario-slices 3 and --sift-check
 #   --sift-check        sift.check finds no problem in the fixture indexes and tables after the dml and vacuum scenarios
 #   --fail-fast         a stage that failed ends the run after its own report (the full tier: a red slice does not run the scenarios after it)
+#   --jobs N            the files of a corpus run in N sessions at once (default 2; 1 with --bench and in the held snapshot scenarios)
 #   --corpus REGEX      only the queries whose file name matches (name@K400 is the query on the set K400)
 #   --variants LIST     comma separated: off-par on on-par on-scalar on-par-scalar (the reference "off" always runs; default all five)
 #   --scenarios LIST    fixtures: insert update delete abort vacuum hot recycle held maint, or all (default) or none; dml (the inserts, updates and
@@ -57,7 +58,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 export SIFT_TMP=${SIFT_TMP:-/tmp/sift-arch}
 OUT=$SIFT_TMP/coldiff
 SUITE=all CORPUS= ROWS=20000 STORES= BENCH= BENCH_WORKERS=0 RUNS=5 STRICT= KEEP= NOINDEX= MUTATE= SELFTEST= SEED=0 FIXROWS= DEFAULT_COSTS=0 CAPABILITY=0 REL=1e-9 ABS=1e-12
-FORMAT=f2 VARIANTS= SCENARIOS= FAST= SIFTCHECK= DUPLICATES= SLICES= COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
+FORMAT=f2 JOBS=2 VARIANTS= SCENARIOS= FAST= SIFTCHECK= DUPLICATES= SLICES= COL_AM= COL_INDEX= VERBOSE= TBL= SLICE_K=1 SLICE_N=1 LIST= FAILFAST=
 COL_PATHS='attributes->channel text, attributes->normalized bool, attributes->weight float8, attributes->tier text, attributes->code astext, metrics.* float8, items[]{category text, sku text, kind text, qty int4, price float8, discount float8}, notes[]{type text, author_kind text}'
 ANALYTICS_DIR=${SIFT_ANALYTICS_DIR:-$REPO/bench/sql/analytics}
 QUERIES=
@@ -66,18 +67,18 @@ DB_PREFIX=${COLDIFF_DB:-sift_coldiff}
 while (( $# )); do
 	case $1 in
 		--bench) BENCH=1 ;; --bench-workers) BENCH_WORKERS=$2; shift ;; --strict-shape) STRICT=1 ;; --keep) KEEP=1 ;; --no-index) NOINDEX=1 ;; --table) TBL=1 ;; --selftest) SELFTEST=1 ;; --list) LIST=1 ;; -v|--verbose) VERBOSE=1 ;;
-		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,52p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
+		--slice) [[ $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] && (( BASH_REMATCH[1] <= BASH_REMATCH[2] )) || { sed -n '2,53p' "$0"; exit 1; }; SLICE_K=${BASH_REMATCH[1]} SLICE_N=${BASH_REMATCH[2]}; shift ;;
 		--suite) SUITE=$2; shift ;; --corpus) CORPUS=$2; shift ;; --rows) ROWS=$2; shift ;; --stores) STORES=$2; shift ;; --runs) RUNS=$2; shift ;;
 		--variants) VARIANTS=$2; shift ;; --scenarios) SCENARIOS=$2; shift ;; --rel) REL=$2; shift ;; --abs) ABS=$2; shift ;;
 		--col-am) COL_AM=$2; shift ;; --col-paths) COL_PATHS=$2; shift ;; --col-index) COL_INDEX=$2; shift ;; --mutate) MUTATE=$2; shift ;;
-		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --format) FORMAT=$2; shift ;; --fast) FAST=1 ;; --sift-check) SIFTCHECK=1 ;; --duplicates) DUPLICATES=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
-		*) sed -n '2,52p' "$0"; exit 1 ;;
+		--fixture-rows) FIXROWS=$2; shift ;; --scenario-slices) SLICES=$2; shift ;; --default-costs) DEFAULT_COSTS=1 ;; --fail-fast) FAILFAST=1 ;; --jobs) JOBS=$2; shift ;; --format) FORMAT=$2; shift ;; --fast) FAST=1 ;; --sift-check) SIFTCHECK=1 ;; --duplicates) DUPLICATES=1 ;; --capability) CAPABILITY=1 ;; --seed) SEED=$2; shift ;; --analytics-dir) ANALYTICS_DIR=$2; shift ;; --queries) QUERIES=$2; shift ;;
+		*) sed -n '2,53p' "$0"; exit 1 ;;
 	esac
 	shift
 done
-[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,52p' "$0"; exit 1; }
+[[ $SUITE == fixtures || $SUITE == analytics || $SUITE == all ]] || { sed -n '2,53p' "$0"; exit 1; }
 . "$REPO/test/col/format.sh"
-format_valid "$FORMAT" || { sed -n '2,52p' "$0"; exit 1; }
+format_valid "$FORMAT" || { sed -n '2,53p' "$0"; exit 1; }
 [[ -z $FAST ]] || { : "${VARIANTS:=on,on-par}" "${SCENARIOS:=dml,abort,vacuum}" "${FIXROWS:=1500}" "${SLICES:=3}"; SIFTCHECK=1; [[ $SUITE != all ]] || SUITE=fixtures; }
 : "${VARIANTS:=off-par,on,on-par,on-scalar,on-par-scalar}" "${SCENARIOS:=all}" "${FIXROWS:=4000}" "${SLICES:=1}"
 [[ -n $STORES ]] || STORES=$(( ROWS / 30 > 100 ? ROWS / 30 : 100 ))
@@ -121,11 +122,11 @@ resolve_am() {
 }
 
 # ---------- corpus ----------
-# fixture_name FILE: the name of a fixture is its path under test/col/fixtures without .sql (a file elsewhere, an analytics query, is its base name)
+# fixture_name FILE: the name of a fixture is its path under test/col/fixtures without .sql (a file elsewhere, an analytics query, is its base name), in FXNAME
 fixture_name() {
 	local f=$1
 	if [[ $f == "$REPO/test/col/fixtures/"* ]]; then f=${f#"$REPO/test/col/fixtures/"}; else f=${f##*/}; fi
-	echo "${f%.sql}"
+	FXNAME=${f%.sql}
 }
 all_fixtures() { find "$REPO/test/col/fixtures" -name '*.sql' | LC_ALL=C sort; }
 
@@ -134,52 +135,60 @@ all_fixtures() { find "$REPO/test/col/fixtures" -name '*.sql' | LC_ALL=C sort; }
 files() {
 	local f i=0
 	for f in "$@"; do
-		[[ -z $CORPUS || $(fixture_name "$f") =~ $CORPUS ]] || continue
+		[[ -z $CORPUS ]] || { fixture_name "$f"; [[ $FXNAME =~ $CORPUS ]]; } || continue
 		(( i++ % SLICE_N == SLICE_K - 1 )) && echo "$f"
 	done
 	return 0
 }
 
-# run_corpus SCEN FILES...: the files in one psql session of the database $DB, each in a transaction of its own (isolation of its tag);
-# HELD=1: all in one REPEATABLE READ transaction whose snapshot is taken first (SNAP_SYNC=1: then wait for $OUT/snap.go, after
+# corpus_scripts SCEN JOBS FILES...: the psql scripts $OUT/SCEN.K.psql (K < JOBS) of run_corpus, the files dealt to them in turn, each file's text inline (the first
+# newline at its end off, as a backquoted cat gives it); prints the names of the files the scripts run
+corpus_scripts() {
+	local scen=$1 jobs=$2 head
+	shift 2
+	head=$(printf '%s\n' "\\set ON_ERROR_STOP 0" "LOAD 'pg_sift';" "SET coldiff.bench_workers = $BENCH_WORKERS;" "SET coldiff.default_costs = $DEFAULT_COSTS;" \
+		"SET coldiff.capability = $CAPABILITY;" "SET coldiff.no_index = '${NOINDEX:+1}';" "SET coldiff.on_table = '${TBL:+1}';" "\\o /dev/null")
+	[[ -z ${HELD:-} ]] || head+=$'\nBEGIN ISOLATION LEVEL REPEATABLE READ;\nSELECT count(*) FROM orders;'
+	[[ -z ${SNAP_SYNC:-} ]] || head+=$'\n'"\\! touch '$OUT/snap.taken'"$'\n'"\\! while [ ! -e '$OUT/snap.go' ]; do sleep 0.1; done"
+	HEAD=$head awk -v held="${HELD:-}" -v jobs="$jobs" -v base="$OUT/$scen" -v scen="$scen" -v fx="$REPO/test/col/fixtures/" '
+		BEGIN { for (k = 0; k < jobs; k++) print ENVIRON["HEAD"] > (base "." k ".psql") }
+		function flush(   name, k, lit, sc) {
+			if (file == "" || (held && iso)) return
+			if (index(body, "$cdf$")) { print "coldiff: " file " has the quote $cdf$ of the corpus scripts" > "/dev/stderr"; exit 1 }
+			name = file
+			if (index(file, fx) == 1) name = substr(file, length(fx) + 1); else sub(/.*\//, "", name)
+			sub(/\.sql$/, "", name); print name
+			k = n++ % jobs; sc = base "." k ".psql"; lit = "$cdf$" body "$cdf$"
+			if (!held) { print "SELECT coldiff.iso(" lit ") AS iso \\gset" > sc; print "BEGIN ISOLATION LEVEL :iso;" > sc }
+			print "SELECT coldiff.run_query(:\047scen\047, \047" name "\047, " lit ", :\047variants\047::text[], :runs, nullif(:\047mutate\047, \047\047), :\047rel\047::float8, :\047abs\047::float8);" > sc
+			if (!held) print "COMMIT;" > sc
+			# the output of the queries goes to /dev/null: a line on stderr every 50 files says how far the run is
+			if (n % 50 == 0) print "\\! date +\047[coldiff %T] " scen ": " n " files done\047 >&2" > sc
+		}
+		FNR == 1 { flush(); file = FILENAME; body = ""; iso = 0 }
+		{ body = FNR == 1 ? $0 : body "\n" $0 }
+		/^-- isolation:/ { iso = 1 }
+		END { flush(); if (held) for (k = 0; k < jobs; k++) print "COMMIT;" > (base "." k ".psql") }' "$@"
+}
+
+# run_corpus SCEN FILES...: the files in --jobs psql sessions of the database $DB, each in a transaction of its own (isolation of its tag);
+# HELD=1: all in one REPEATABLE READ transaction of one session whose snapshot is taken first (SNAP_SYNC=1: then wait for $OUT/snap.go, after
 # announcing the snapshot in $OUT/snap.taken); a file with an isolation tag does not run held. Results go to coldiff.results.
 run_corpus() {
-	local scen=$1 f name names=()
-	local script=$OUT/$scen.psql
+	local scen=$1 names=() jobs=$JOBS k pids=()
 	shift
-	{
-		echo "\\set ON_ERROR_STOP 0"
-		echo "LOAD 'pg_sift';"
-		echo "SET coldiff.bench_workers = $BENCH_WORKERS;"
-		echo "SET coldiff.default_costs = $DEFAULT_COSTS;"
-		echo "SET coldiff.capability = $CAPABILITY;"
-		echo "SET coldiff.no_index = '${NOINDEX:+1}';"
-		echo "SET coldiff.on_table = '${TBL:+1}';"
-		echo "\\o /dev/null"
-		[[ -z ${HELD:-} ]] || {
-			echo "BEGIN ISOLATION LEVEL REPEATABLE READ;"
-			echo "SELECT count(*) FROM orders;"
-			[[ -z ${SNAP_SYNC:-} ]] || { echo "\\! touch '$OUT/snap.taken'"; echo "\\! while [ ! -e '$OUT/snap.go' ]; do sleep 0.1; done"; }
-		}
-		for f in "$@"; do
-			name=$(fixture_name "$f")
-			if [[ -n ${HELD:-} ]] && grep -q '^-- isolation:' "$f"; then continue; fi
-			names+=("$name")
-			echo "\\set f \`cat '$f'\`"
-			if [[ -z ${HELD:-} ]]; then
-				echo "SELECT coldiff.iso(:'f') AS iso \\gset"
-				echo "BEGIN ISOLATION LEVEL :iso;"
-			fi
-			echo "SELECT coldiff.run_query(:'scen', '$name', :'f', :'variants'::text[], :runs, nullif(:'mutate', ''), :'rel'::float8, :'abs'::float8);"
-			[[ -n ${HELD:-} ]] || echo "COMMIT;"
-			# the output of the queries goes to /dev/null: a line on stderr every 50 files says how far the session is
-			(( ${#names[@]} % 50 )) || echo "\\! date +'[coldiff %T] $scen: ${#names[@]} files done' >&2"
-		done
-		[[ -z ${HELD:-} ]] || echo "COMMIT;"
-	} >"$script"
+	[[ -z ${HELD:-} && -z $BENCH ]] || jobs=1
+	(( $# >= jobs )) || jobs=$(( $# ? $# : 1 ))
+	rm -f "$OUT/$scen".*.psql "$OUT/$scen.names"
+	corpus_scripts "$scen" "$jobs" "$@" </dev/null >"$OUT/$scen.names" || { FAILED=1; log "FAIL $scen: the corpus scripts were not written"; return 0; }
+	mapfile -t names <"$OUT/$scen.names"
 	rm -f "$OUT/snap.go" "$OUT/snap.taken"
-	[[ -z ${VERBOSE:-} ]] || log "$scen: ${#names[@]} files ($script)"
-	sql -v scen="$scen" -v variants="$VARIANT_ARRAY" -v runs="${RUNS_NOW:-1}" -v mutate="$MUTATE" -v rel="$REL" -v abs="$ABS" -f "$script" >/dev/null || true
+	[[ -z ${VERBOSE:-} ]] || log "$scen: ${#names[@]} files in $jobs sessions ($OUT/$scen.*.psql)"
+	for (( k = 0; k < jobs; k++ )); do
+		sql -v scen="$scen" -v variants="$VARIANT_ARRAY" -v runs="${RUNS_NOW:-1}" -v mutate="$MUTATE" -v rel="$REL" -v abs="$ABS" -f "$OUT/$scen.$k.psql" >/dev/null &
+		pids+=($!)
+	done
+	for k in "${pids[@]}"; do wait "$k" || true; done
 	# a file without a result raised an error that the runner did not catch
 	local missing
 	missing=$(sql -v scen="$scen" -v names="{$(IFS=,; echo "${names[*]-}")}" <<-'SQL'
@@ -260,8 +269,8 @@ fixture_indexes() {
 		-c "CREATE INDEX orders_fts ON orders USING sift (memo)"
 }
 
-# col_index TABLE: the column index of a fixture table; the first one decides whether the suite runs
-col_index() {
+# col_ddl TABLE: the DDL of the column index of a fixture table (the paths of the orders tables in the psql variable paths)
+col_ddl() {
 	local ddl
 	case $1 in
 		orders|orders_odd|orders_part)
@@ -292,7 +301,16 @@ col_index() {
 					   CREATE INDEX t_part_op_b_col ON t_part_op_b USING $AM (id, grp, d, qty, doc) WITH (paths = 'doc->k int8')" ;;
 		t_inh) ddl="CREATE INDEX t_inh_a_col ON t_inh_a USING $AM (id, grp, d, qty); CREATE INDEX t_inh_b_col ON t_inh_b USING $AM (id, grp, d, qty)" ;;
 	esac
-	printf '%s\n' "$ddl" | sql -v paths="$COL_PATHS"
+	printf '%s\n' "$ddl"
+}
+# col_index TABLE: the column index of a fixture table; the first one decides whether the suite runs
+col_index() { col_ddl "$1" | sql -v paths="$COL_PATHS"; }
+# col_indexes TABLE...: the column indexes of the tables in one session; a table whose index fails is named with its error, its queries run plain against plain
+col_indexes() {
+	local t
+	for t in "$@"; do printf '\\warn @@%s\n' "$t"; col_ddl "$t"; echo ";"; done | sql -v ON_ERROR_STOP=0 -v paths="$COL_PATHS" 2>&1 >/dev/null |
+		awk '/^@@/ { t = substr($0, 3); next } /ERROR:/ && !(t in seen) { seen[t]; sub(/.*ERROR: */, ""); print t "\t" $0 }' |
+		while IFS=$'\t' read -r t msg; do log "NOTE: no column index on $t, its queries run plain against plain: $msg"; done
 }
 
 # col_paths COLUMN: the entries of COL_PATHS for one jsonb column (a table declares them per column), split at the commas outside braces
@@ -326,15 +344,13 @@ fixture_tables() {
 		done
 		sql -c "VACUUM FULL $t" || return 1
 	done
-	for t in orders_part t_part t_part_ni t_part_op t_inh t_work t_rc t_vd t_partial t_partial_hidden; do AM=sift_col col_index $t >/dev/null 2>&1 || log "NOTE: no column index on $t"; done
+	AM=sift_col col_indexes orders_part t_part t_part_ni t_part_op t_inh t_work t_rc t_vd t_partial t_partial_hidden
 }
 
 fixture_col_indexes() {
-	local err t
+	local err
 	if ! err=$(col_index orders 2>&1); then skip "CREATE INDEX USING $AM failed: ${err#*ERROR:  }"; return 1; fi
-	for t in pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_chars t_coal t_dist t_wide t_jp t_eo t_rc t_vd t_work t_misc t_net t_tags t_partial t_partial_hidden orders_odd orders_part t_part t_part_ni t_part_op t_inh; do
-		err=$(col_index $t 2>&1) || log "NOTE: no column index on $t, its queries run plain against plain: ${err#*ERROR:  }"
-	done
+	col_indexes pf_fact pf_fact_empty t_int t_float t_num t_nan t_text t_chars t_coal t_dist t_wide t_jp t_eo t_rc t_vd t_work t_misc t_net t_tags t_partial t_partial_hidden orders_odd orders_part t_part t_part_ni t_part_op t_inh
 }
 
 # fast_files FILES...: the fixtures of --fast, one per shape and table of its FROM clause (the first in name order that runs the scenarios, else the first)
@@ -381,7 +397,7 @@ sound() {
 	[[ -z $found ]] || { FAILED=1; log "FAIL sift.check after $1:"; printf '%s\n' "$found" >&2; }
 }
 
-scenario_files() { local f; for f in "$@"; do grep -q '^-- scenario: yes' "$f" && echo "$f"; done; }
+scenario_files() { (( $# )) || return 0; grep -l '^-- scenario: yes' "$@" || true; }
 
 # wait_for FILE: until a script of this harness announces itself (60 s)
 wait_for() { local i; for (( i = 0; i < 600; i++ )); do [[ -e $1 ]] && return 0; sleep 0.1; done; log "FAIL: timeout waiting for $1"; FAILED=1; return 1; }
@@ -543,7 +559,7 @@ selftest() {
 }
 
 if [[ -n $DUPLICATES ]]; then duplicates; exit; fi
-if [[ -n $LIST ]]; then fixture_files | while IFS= read -r f; do echo "$(fixture_name "$f").sql"; done; exit 0; fi
+if [[ -n $LIST ]]; then fixture_files | while IFS= read -r f; do fixture_name "$f"; echo "$FXNAME.sql"; done; exit 0; fi
 if [[ -n $SELFTEST ]]; then selftest; exit $FAILED; fi
 [[ $SUITE == analytics ]] || fixtures_suite
 [[ $SUITE == fixtures ]] || { stop_early && exit $FAILED; analytics_suite; }
