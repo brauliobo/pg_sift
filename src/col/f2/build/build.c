@@ -129,6 +129,7 @@ write_run(BuildState *bs)
 	if (bs->rb->n == 0)
 		return;
 	sift_f2_progress_phase(SIFT_F2_PHASE_WRITE);
+	SIFT_F2_GATE(SIFT_F2_GATE_BUILD_WRITE);
 	old = MemoryContextSwitchTo(bs->runcx);
 	cols = palloc(bs->f->ncols * sizeof(SiftColIn));
 	sift_rowbuf_sort(bs->rb, &bs->f->spec);
@@ -345,6 +346,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_col_meta_init(index, SIFT_AM_COL, sift_col_track_on(index) ? SIFT_COMPAT_TRACK_DELETES : 0, sift_col_rel(index)->schema->hash, meta_flags(bs->f, pending));
 		sift_f2_progress_heap(heap);
 		sift_f2_progress_phase(SIFT_F2_PHASE_SCAN);
+		SIFT_F2_GATE(SIFT_F2_GATE_BUILD_SCAN);
 		if (!sift_f2_build_par(heap, index, info, bs, res))
 			res->heap_tuples = sift_f2_build_scan(bs, info, NULL, true);
 	}

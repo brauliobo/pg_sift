@@ -9,6 +9,8 @@
 #ifdef SIFT_TESTING
 #include "bm25/build/build.h"
 
+#define SIFT_F2_GATE_BUILD_SCAN	2	/* a build scans the table: the number of the phase of format major 1 (col/v1/build.h), so a test holds one gate for either format */
+#define SIFT_F2_GATE_BUILD_WRITE	3	/* a build writes a run of parts */
 #define SIFT_F2_GATE_MANIFEST	10	/* a commit of the manifest, before it takes a page */
 #define SIFT_F2_GATE_COMPACT	11	/* the outputs of a compaction are written and nothing names them */
 #define SIFT_F2_GATE_TIER		12	/* a part is in the object store and the manifest does not name it */
