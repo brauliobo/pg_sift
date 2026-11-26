@@ -2,7 +2,7 @@
 # do not run link as stubs that trap (AUTOSTUB), so that a test that reaches one fails. col/f2/preagg_join links its source.
 XFLAGS_BASE = -D_GNU_SOURCE -DSIFT_TESTING -Wno-unused-function
 
-F2_TESTS = core/xid_cache col/f2/delta_locate col/f2/scaling col/f2/tier_guard col/f2/tier_cache col/f2/tier_curl col/f2/shard_dir table/f2/col_delta_compact table/f2/col_delta_merge table/f2/col_delta_batch table/f2/rowlock_contend table/f2/lock/fast_intent table/f2/lock/ovf
+F2_TESTS = core/xid_cache col/f2/delta_locate col/f2/scaling col/f2/tier_guard col/f2/tier_cache col/f2/tier_curl col/f2/shard_dir table/f2/col_delta_compact table/f2/col_delta_merge table/f2/col_delta_batch table/f2/col_delta_sub_abort table/f2/rowlock_contend table/f2/lock/fast_intent table/f2/lock/ovf
 
 TESTS    += col/f2/preagg_join $(F2_TESTS)
 AUTOSTUB += $(F2_TESTS)

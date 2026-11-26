@@ -209,6 +209,9 @@ sift_col_delta_stage_event(Relation rel, SiftTxnStage *st, SiftStageEvent ev, Su
 	{
 		case SIFT_STAGE_SUB_ABORT:
 			sift_col_delta_stage_drop_sub(cd, sub);
+			if (cd->bytes == 0)
+				st->host_pending = 0;
+			sift_stage_host_staged(st, cd->bytes);
 			break;
 		case SIFT_STAGE_SUB_COMMIT:
 			sift_col_delta_stage_promote_sub(cd, sub, parent);
