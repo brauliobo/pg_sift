@@ -465,8 +465,8 @@ target_of(const SiftF2Loc *loc, uint64 tid)
 	return (SiftColDeltaTarget) {.part_gen = loc->gb->pin->part_gen,.granule_id = loc->gb->granule_id,.row_ordinal = loc->row,.tid = tid};
 }
 
-static SiftColDeltaLast
-latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
+SiftColDeltaLast
+sift_col_delta_latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 {
 	SiftColDeltaOps ops;
 	SiftColDeltaTarget t = target_of(loc, tid);
@@ -498,7 +498,7 @@ sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, Co
 {
 	SiftTblVis	vis;
 	SiftColDeltaOps ops;
-	SiftColDeltaLast last = latest_of(rel, loc, tid);
+	SiftColDeltaLast last = sift_col_delta_latest_of(rel, loc, tid);
 
 	sift_tbl_f2_vis_begin(&vis, rel, snap);
 	sift_col_delta_ops_init(&ops, &vis);
@@ -508,7 +508,7 @@ sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, Co
 void
 sift_col_delta_ack_latest(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid)
 {
-	SiftColDeltaLast last = latest_of(rel, loc, tid);
+	SiftColDeltaLast last = sift_col_delta_latest_of(rel, loc, tid);
 
 	if (last.found)
 		sift_epq_ack_record(&rel->rd_locator, tid, cid, &last);

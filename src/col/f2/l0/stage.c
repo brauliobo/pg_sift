@@ -150,14 +150,20 @@ flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
 
 /* The rows first, then the deletes of what is staged: each delete keeps the xid of the (sub)transaction that made it, so that a rollback to its savepoint hides it by the status of that xid */
 static void
+flush_rows_and_deletes(Relation rel, SiftTxnStage *st)
+{
+	flush_stage_rows(rel, st, false);
+	sift_stage_flush_deletes(rel, st, false);
+	del_htab_rebuild(st);
+}
+
+static void
 flush_deletes_chunk(SiftTxnStage *st)
 {
 	Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
-	flush_stage_rows(rel, st, false);
-	sift_stage_flush_deletes(rel, st, false);
+	flush_rows_and_deletes(rel, st);
 	relation_close(rel, NoLock);
-	del_htab_rebuild(st);
 }
 
 static void
@@ -324,7 +330,7 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 		return st;
 	if (st != NULL)
 	{
-		flush_stage_rows(rel, st, false);
+		flush_rows_and_deletes(rel, st);
 		sift_stage_discard(RelationGetRelid(rel));
 	}
 	if (!callbacks_registered)
@@ -711,6 +717,23 @@ sift_stage_cancel_insert(SiftTxnStage *st, uint64 tid)
 	return sift_stage_cancel_tid(st, tid);
 }
 
+bool
+sift_stage_find_insert(Relation rel, uint64 tid, TransactionId *xmin, CommandId *cmin)
+{
+	SiftTxnStage *st = stage_of(rel);
+	uint32		part_idx,
+				row_idx;
+
+	if (st == NULL || st->total_rows == 0 || tid < st->tid_min || tid > st->tid_max)
+		return false;
+	tid_htab_ensure(st);
+	if (!tid_last_row(st, tid, &part_idx, &row_idx))
+		return false;
+	*xmin = st->parts[part_idx].rb->xmin[row_idx];
+	*cmin = st->parts[part_idx].rb->cmin[row_idx];
+	return true;
+}
+
 static bool
 part_holds_in(const SiftStagePart *p, uint64 lo, uint64 hi)
 {
@@ -802,6 +825,15 @@ sift_stage_flush(Relation rel)
 
 	if (st != NULL)
 		flush_stage_rows(rel, st, false);
+}
+
+void
+sift_stage_flush_with_deletes(Relation rel)
+{
+	SiftTxnStage *st = stage_of(rel);
+
+	if (st != NULL)
+		flush_rows_and_deletes(rel, st);
 }
 
 void

@@ -15,6 +15,7 @@
 #include "col/f2/l0/stage.h"
 #include "table/f2/chain_cache.h"
 #include "table/f2/col_delta/col_delta.h"
+#include "table/f2/lock/rowlock.h"
 #include "table/f2/row/state.h"
 #include "table/f2/gcache.h"
 #include "table/f2/tbl.h"
@@ -110,6 +111,58 @@ SiftRowState
 sift_row_state_read_settled(Relation rel, uint64 tid)
 {
 	return row_state(rel, tid, sift_f2_locate_settled);
+}
+
+/* The writer of the latest column delta of a row of a part: the chain of its partition says */
+static SiftColDeltaLast
+delta_on_disk(Relation rel, uint64 tid)
+{
+	SiftF2Loc	loc;
+	SiftColDeltaLast last = {0};
+
+	if (!sift_f2_locate_cached(rel, sift_f2_store_open(rel), tid, &loc))
+		return last;
+	if ((loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
+		last = sift_col_delta_latest_of(rel, &loc, tid);
+	sift_f2_gbuf_unref(loc.gb);
+	return last;
+}
+
+SiftRowState
+sift_row_sysattr_read(Relation rel, uint64 tid)
+{
+	SiftRowState rs = sift_row_state_read(rel, tid);
+	SiftRowLockPeek held = sift_tbl_rowlock_peek(rel, tid);
+	SiftColDeltaLast delta = {.found = TransactionIdIsValid(held.delta_xid),.xid = held.delta_xid,.cid = held.delta_cid};
+
+	if (!rs.found)
+	{
+		rs.found = sift_stage_find_insert(rel, tid, &rs.xmin, &rs.cmin);
+		stage_state(rel, tid, &rs);
+	}
+	else if (!delta.found)
+		delta = delta_on_disk(rel, tid);
+	if (delta.found)
+	{
+		rs.xmin = delta.xid;
+		rs.cmin = delta.cid;
+	}
+	else if (!TransactionIdIsValid(rs.xmax))
+		rs.xmax = held.locker;
+	return rs;
+}
+
+void
+sift_tbl_f2_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
+{
+	Relation	rel = scan->rs_rd;
+	uint64		cur = sift_tbl_tid_pack(tid),
+				succ;
+
+	sift_stage_flush(rel);
+	while (sift_row_visible_successor(rel, cur, scan->rs_snapshot, &succ) && succ != SIFT_MOVED_PARTITIONS_TID)
+		cur = succ;
+	sift_tbl_tid_unpack(tid, cur);
 }
 
 TM_Result

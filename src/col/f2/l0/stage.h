@@ -139,6 +139,9 @@ extern void sift_stage_delete_update(SiftTxnStage *st, const uint8 *key, uint64 
 /* The delete of the address the transaction still holds in memory (not one it has written): true with who deleted it, when, and the version that replaced it */
 extern bool sift_stage_find_delete(Relation rel, uint64 tid, TransactionId *xmax, CommandId *cmax, bool *has_succ, uint64 *succ);
 
+/* The row the transaction staged at the address and did not write yet: true with its inserter and command */
+extern bool sift_stage_find_insert(Relation rel, uint64 tid, TransactionId *xmin, CommandId *cmin);
+
 /* The row staged at the address is dropped, as if it had never been staged: false when it is not in memory (the stage was written since). Only a row nothing has read yet may go: the new version of an UPDATE the same statement made */
 extern bool sift_stage_cancel_tid(SiftTxnStage *st, uint64 tid);
 
@@ -162,6 +165,9 @@ extern void sift_stage_flush(Relation rel);
 #ifdef SIFT_TESTING
 extern uint64 sift_stage_flushes;
 #endif
+
+/* The same with the deletes too: the workers of a parallel scan have no stage, so what the leader deleted must be on disk for them */
+extern void sift_stage_flush_with_deletes(Relation rel);
 
 /* Writes everything the transaction staged, for every relation: before a worker, which has no stage of its own, reads the indexes */
 extern void sift_stage_flush_all(void);

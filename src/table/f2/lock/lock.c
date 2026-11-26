@@ -37,8 +37,6 @@
 #include "table/f2/spec.h"
 #include "table/f2/tbl.h"
 
-#define MOVED_PARTITIONS_TID	((UINT64CONST(0xFFFFFFFF) << 16) | 0xFFFD)
-
 SIFT_BACKEND_LOCAL SiftRowLockTable *rows = NULL;
 
 static bool
@@ -127,10 +125,17 @@ removable(Relation rel, const SiftRowLockEntry *e)
 	return (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && GlobalVisCheckRemovableFullXid(rel, e->updater_fxid);
 }
 
+/* An entry of the table of its stripe, not of a chunk that the stripe took: a chunk is given back when it is empty, which a last locker would prevent */
+static bool
+in_table(int si, const SiftRowLockEntry *e)
+{
+	return e >= rows->stripes[si].entries && e < rows->stripes[si].entries + SIFT_ROWLOCK_BUCKETS;
+}
+
 static bool
 idle(const SiftRowLockEntry *e)
 {
-	return e->flags == 0 && e->nholders == 0 && !MultiXactIdIsValid(e->overflow_mxid);
+	return (e->flags & ~SIFT_ROWLOCK_LAST_LOCKER) == 0 && e->nholders == 0 && !MultiXactIdIsValid(e->overflow_mxid);
 }
 
 static bool
@@ -151,6 +156,13 @@ reclaimable(SiftRowLockEntry *e, void *arg)
 {
 	reap_prepared(e, NULL);
 	return ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && FullTransactionIdPrecedes(e->updater_fxid, *(FullTransactionId *) arg)) || idle(e);
+}
+
+/* The end of a transaction keeps the xmax its locks left: only a stripe that has no room for an entry gives those up */
+static bool
+reclaimable_keeping_lockers(SiftRowLockEntry *e, void *arg)
+{
+	return (e->flags & SIFT_ROWLOCK_LAST_LOCKER) == 0 && reclaimable(e, arg);
 }
 
 static bool
@@ -215,7 +227,7 @@ reclaim_overflowed(void)
 		{
 			horizon = FullTransactionIdIsValid(horizon) ? horizon : oldest_needed();
 			LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
-			sift_rowlock_sweep(rows, si, reclaimable, &horizon);
+			sift_rowlock_sweep(rows, si, reclaimable_keeping_lockers, &horizon);
 			LWLockRelease(stripe_lock(si));
 		}
 	memset(overflowed, 0, sizeof(overflowed));
@@ -259,6 +271,7 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 	SiftRowLockEntry *e;
 	MultiXactId overflow = InvalidMultiXactId;
 	bool		settled;
+	int			nholders;
 
 	LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
 	overflowed[si / 64] |= (uint64) (rows->overflow[si] != InvalidDsaPointer) << (si % 64);
@@ -267,6 +280,7 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 	if (e != NULL && settled)
 	{
 		sift_spec_end(e, t->xid);
+		nholders = e->nholders;
 		for (int i = 0; i < e->nholders;)
 			if (e->holders[i].xid == t->xid)
 				sift_hold_drop(e, i);
@@ -279,9 +293,14 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 			else
 				clear_updater(e);
 		}
-		if (idle(e))
+		if (idle(e) && e->nholders < nholders && in_table(si, e))
+		{
+			e->flags = SIFT_ROWLOCK_LAST_LOCKER;
+			e->updater_fxid = FullTransactionIdFromU64(t->xid);
+		}
+		else if (idle(e))
 			sift_rowlock_remove(rows, si, e);
-		else if (e->flags == 0 && e->nholders == 0)
+		else if ((e->flags & ~SIFT_ROWLOCK_LAST_LOCKER) == 0 && e->nholders == 0)
 			overflow = e->overflow_mxid;
 	}
 	LWLockRelease(stripe_lock(si));
@@ -554,7 +573,7 @@ sift_tbl_rowlock_mark_updated(Relation rel, uint64 old_tid, uint64 new_tid, Comm
 		return;
 	e->flags = (e->flags & ~(SIFT_ROWLOCK_COMMITTED_UPD | SIFT_ROWLOCK_COL_DELTA)) |
 		(deleted && !moved_partition ? SIFT_ROWLOCK_DELETED : SIFT_ROWLOCK_UPDATE_CHAIN);
-	e->updated_tid = moved_partition ? MOVED_PARTITIONS_TID : new_tid;
+	e->updated_tid = moved_partition ? SIFT_MOVED_PARTITIONS_TID : new_tid;
 	e->updater_fxid = GetCurrentFullTransactionId();
 	e->updater_cid = cid;
 	LWLockRelease(stripe_lock(si));
@@ -675,23 +694,45 @@ sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid)
 	return token;
 }
 
-bool
-sift_tbl_rowlock_successor(Relation rel, uint64 old_tid, uint64 *succ)
+SiftRowLockPeek
+sift_tbl_rowlock_peek(Relation rel, uint64 tid)
 {
-	SiftRowLockKey k = key_of(&rel->rd_locator, old_tid);
+	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
 	int			si = stripe_of(&k);
 	SiftRowLockEntry *e;
-	bool		found;
+	SiftRowLockPeek p = {0};
 
 	if (!tier1_attached())
-		return false;
+		return p;
 	LWLockAcquire(stripe_lock(si), LW_SHARED);
 	e = sift_rowlock_find(rows, si, &k);
-	found = e != NULL && (e->flags & SIFT_ROWLOCK_UPDATE_CHAIN) != 0;
-	if (found)
-		*succ = e->updated_tid;
+	if (e != NULL && (e->flags & SIFT_ROWLOCK_COL_DELTA) != 0 && (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) == 0)
+		p = (SiftRowLockPeek) {.delta_xid = XidFromFullTransactionId(e->updater_fxid),.delta_cid = e->updater_cid};
+	else if (e != NULL && (e->flags & SIFT_ROWLOCK_COL_DELTA) == 0 && e->nholders > 0)
+		p.locker = e->holders[0].xid;
+	else if (e != NULL && (e->flags & SIFT_ROWLOCK_LAST_LOCKER) != 0)
+		p.locker = XidFromFullTransactionId(e->updater_fxid);
 	LWLockRelease(stripe_lock(si));
-	return found;
+	return p;
+}
+
+static bool
+last_locker_in(SiftRowLockEntry *e, void *loc)
+{
+	return (e->flags & SIFT_ROWLOCK_LAST_LOCKER) != 0 && idle(e) && in_relation(e, loc);
+}
+
+void
+sift_tbl_rowlock_clear_lockers(Relation rel)
+{
+	if (!tier1_attached())
+		return;
+	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
+	{
+		LWLockAcquire(stripe_lock(si), LW_EXCLUSIVE);
+		sift_rowlock_sweep(rows, si, last_locker_in, &rel->rd_locator);
+		LWLockRelease(stripe_lock(si));
+	}
 }
 
 bool
@@ -908,14 +949,6 @@ sift_tbl_f2_record_delete(Relation rel, uint64 tid, CommandId cid, bool changing
 	sift_tbl_rowlock_mark_updated(rel, tid, 0, cid, true, changing_part);
 }
 
-static void
-fetch_locked(Relation rel, ItemPointer tid, TupleTableSlot *slot)
-{
-	bool		found = sift_tbl_f2_tuple_fetch_row_version(rel, tid, SnapshotAny, slot);
-
-	SIFT_INVARIANT(found, "a locked row of table \"%s\" is gone", RelationGetRelationName(rel));
-}
-
 TM_Result
 sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 					   uint8 flags, TM_FailureData *tmfd)
@@ -948,7 +981,9 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 		}
 		if (res == TM_Ok)
 		{
-			fetch_locked(rel, &cur, slot);
+			bool		found = sift_tbl_f2_tuple_fetch_row_version(rel, &cur, SnapshotAny, slot);
+
+			SIFT_INVARIANT(found, "a locked row of table \"%s\" is gone", RelationGetRelationName(rel));
 			sift_tbl_f2_predicate_point(rel, sift_tbl_tid_pack(&cur), snapshot);
 			if (at_latest)
 				sift_row_delta_ack(rel, sift_tbl_tid_pack(&cur), cid);
@@ -959,17 +994,4 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 		}
 		return res;
 	}
-}
-
-void
-sift_tbl_f2_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
-{
-	Relation	rel = scan->rs_rd;
-	uint64		cur = sift_tbl_tid_pack(tid),
-				succ;
-
-	sift_stage_flush(rel);
-	while (sift_row_visible_successor(rel, cur, scan->rs_snapshot, &succ) && succ != MOVED_PARTITIONS_TID)
-		cur = succ;
-	sift_tbl_tid_unpack(tid, cur);
 }

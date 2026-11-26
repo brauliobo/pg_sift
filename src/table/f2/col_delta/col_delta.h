@@ -845,6 +845,9 @@ extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *en
 extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_release(SiftColDeltaWatchRead *r);
 
+/* The writer and the command of the latest patch of the row that its writer did not abort */
+extern SiftColDeltaLast sift_col_delta_latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid);
+
 /* A modify of the row: what its latest patch makes of it for the statement cid and the snapshot, and the acknowledgement of EvalPlanQual */
 extern SiftColDeltaVerdict sift_col_delta_modify_verdict(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid, Snapshot snap);
 extern void sift_col_delta_ack_latest(Relation rel, const SiftF2Loc *loc, uint64 tid, CommandId cid);

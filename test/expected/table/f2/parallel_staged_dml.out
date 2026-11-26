@@ -1,0 +1,99 @@
+-- sift_table: a parallel sequential scan of a transaction sees what the transaction staged, as a serial one does: its inserts, its deletes and the two
+-- versions of its wide updates. The workers have no stage: what the leader staged is written before the scan is sized (the leader does not scan, so that
+-- every row is read by a worker).
+CREATE EXTENSION pg_sift;
+CREATE TABLE t (id int, v text) USING sift_table;
+INSERT INTO t SELECT g, 'old' FROM generate_series(1, 20000) g;
+VACUUM t;
+CREATE FUNCTION parallel_plan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Parallel Seq Scan%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+CREATE FUNCTION shape() RETURNS text LANGUAGE sql AS $$
+	SELECT format('total %s, inserted %s, deleted %s, updated %s (distinct %s)', count(*), count(*) FILTER (WHERE id > 20000), count(*) FILTER (WHERE id <= 100),
+		count(*) FILTER (WHERE id BETWEEN 101 AND 200), count(DISTINCT id) FILTER (WHERE id BETWEEN 101 AND 200)) FROM t
+$$;
+SET sift.enable_agg = off;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SET parallel_leader_participation = off;
+SELECT parallel_plan('SELECT * FROM t WHERE id > 20000') AS parallel;
+ parallel 
+----------
+ t
+(1 row)
+
+BEGIN;
+INSERT INTO t SELECT g, 'new' FROM generate_series(20001, 20100) g;
+SELECT count(*) AS inserted FROM t WHERE id > 20000;
+ inserted 
+----------
+      100
+(1 row)
+
+ROLLBACK;
+BEGIN;
+DELETE FROM t WHERE id <= 100;
+SELECT count(*) AS deleted FROM t WHERE id <= 100;
+ deleted 
+---------
+       0
+(1 row)
+
+SELECT count(*) AS total FROM t;
+ total 
+-------
+ 19900
+(1 row)
+
+ROLLBACK;
+BEGIN;
+UPDATE t SET v = repeat('x', 3000) WHERE id BETWEEN 101 AND 200;
+SELECT count(*) AS updated, count(DISTINCT id) AS ids FROM t WHERE id BETWEEN 101 AND 200;
+ updated | ids 
+---------+-----
+     100 | 100
+(1 row)
+
+ROLLBACK;
+BEGIN;
+INSERT INTO t SELECT g, 'new' FROM generate_series(20001, 20100) g;
+DELETE FROM t WHERE id <= 100;
+INSERT INTO t VALUES (20101, 'last');
+UPDATE t SET v = repeat('x', 3000) WHERE id BETWEEN 101 AND 200;
+INSERT INTO t VALUES (20102, 'last');
+SELECT shape();
+                              shape                               
+------------------------------------------------------------------
+ total 20002, inserted 102, deleted 0, updated 100 (distinct 100)
+(1 row)
+
+SET LOCAL max_parallel_workers_per_gather = 0;
+SELECT shape();
+                              shape                               
+------------------------------------------------------------------
+ total 20002, inserted 102, deleted 0, updated 100 (distinct 100)
+(1 row)
+
+ROLLBACK;
+BEGIN;
+SAVEPOINT a;
+DELETE FROM t WHERE id <= 100;
+ROLLBACK TO a;
+SELECT count(*) AS total, count(*) FILTER (WHERE id <= 100) AS back FROM t;
+ total | back 
+-------+------
+ 20000 |  100
+(1 row)
+
+ROLLBACK;
+DROP FUNCTION shape();
+DROP FUNCTION parallel_plan(text);
+DROP TABLE t;
+DROP EXTENSION pg_sift;

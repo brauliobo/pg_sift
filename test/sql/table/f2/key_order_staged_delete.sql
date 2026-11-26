@@ -1,0 +1,21 @@
+-- sift_table: a transaction that deleted or wide-updated rows and then changed the order the rows are keyed by (a primary key on another column gives the
+-- automatic key_order a new column) keeps its deletes: the stage is made again under the new order, and what the old one held goes to the table first, rows and deletes.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE t (id int, k int, v text) USING sift_table;
+INSERT INTO t SELECT g, g, 'init' FROM generate_series(1, 20) g;
+VACUUM t;
+
+BEGIN;
+DELETE FROM t WHERE id <= 5;
+UPDATE t SET v = repeat('x', 3000) WHERE id BETWEEN 6 AND 8;
+ALTER TABLE t ADD PRIMARY KEY (k);
+INSERT INTO t VALUES (21, 21, 'after');
+SELECT count(*) AS total, count(*) FILTER (WHERE id <= 5) AS deleted, count(*) FILTER (WHERE id BETWEEN 6 AND 8) AS updated,
+	count(*) FILTER (WHERE id = 21) AS inserted FROM t;
+COMMIT;
+SELECT count(*) AS total, count(*) FILTER (WHERE id <= 5) AS deleted, count(*) FILTER (WHERE id BETWEEN 6 AND 8) AS updated,
+	count(*) FILTER (WHERE id = 21) AS inserted FROM t;
+
+DROP TABLE t;
+DROP EXTENSION pg_sift;

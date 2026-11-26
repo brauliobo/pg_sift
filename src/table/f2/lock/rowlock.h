@@ -31,6 +31,8 @@
 #define SIFT_ROWLOCK_STAGED_INSERT	(UINT16_C(1) << 6)	/* the row is in the stage of its inserter (updater_fxid), not in a part yet (table/f2/spec.h) */
 #define SIFT_ROWLOCK_NEED_FLUSH		(UINT16_C(1) << 7)	/* a probe of a dirty snapshot asked the inserter to write the stage */
 
+#define SIFT_ROWLOCK_LAST_LOCKER	(UINT16_C(1) << 8)	/* nobody holds the row now; updater_fxid is the last transaction that did, for the xmax of the row: the first entry a full stripe gives up */
+
 #define SIFT_ROWLOCK_ENDING_FLAGS	(SIFT_ROWLOCK_UPDATE_CHAIN | SIFT_ROWLOCK_DELETED | SIFT_ROWLOCK_COL_DELTA)
 
 #ifdef SIFT_LOCK_ESC_STANDALONE
@@ -94,13 +96,25 @@ extern void sift_tbl_rowlock_mark_updated(Relation rel, uint64 old_tid, uint64 n
 
 /* The row is changed in place by a column delta of the current transaction: the entry keeps its address, the writer and the delta count */
 extern void sift_tbl_rowlock_mark_col_delta(Relation rel, uint64 tid, CommandId cid);
+
+/* What the entry of the row says to its system columns: the transaction that last locked it, and the writer of a column delta that did not commit yet (then the row has no xmax) */
+typedef struct SiftRowLockPeek
+{
+	TransactionId locker;
+	TransactionId delta_xid;
+	CommandId	delta_cid;
+} SiftRowLockPeek;
+
+extern SiftRowLockPeek sift_tbl_rowlock_peek(Relation rel, uint64 tid);
+
+/* VACUUM FREEZE: the xmax a lock left on the rows of the relation is cleared */
+extern void sift_tbl_rowlock_clear_lockers(Relation rel);
 extern bool sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token);
 extern uint32 sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid);
 
 /* The speculative insert of the row ended (table/f2/spec.h): true when a probe asked for the stage that holds it to be written; the stage was written; what a dirty probe of an address no part holds learns */
 extern bool sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded);
 extern void sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid);
-extern bool sift_tbl_rowlock_successor(Relation rel, uint64 old_tid, uint64 *succ);
 
 /* The transaction holds a partition or the relation, not row by row (f2_lock_esc.h) */
 extern bool sift_tbl_rowlock_is_escalated(Relation rel);

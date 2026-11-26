@@ -1,0 +1,61 @@
+-- sift_table system columns of a row the statement just wrote or locked, against a heap twin: RETURNING xmin, xmax, cmin and tableoid of an INSERT,
+-- an UPDATE that is a column delta (the address stays) and a wide UPDATE; the locker's xmax after COMMIT, after ROLLBACK and once VACUUM FREEZE cleared it.
+-- The two tables run the same statements, each in a transaction of its own, so that their command ids are the same.
+CREATE EXTENSION pg_sift;
+
+CREATE TABLE h (id int PRIMARY KEY, v int, w text) USING heap;
+CREATE TABLE s (id int PRIMARY KEY, v int, w text) USING sift_table;
+INSERT INTO h SELECT g, g, 'w' FROM generate_series(1, 5) g;
+INSERT INTO s SELECT g, g, 'w' FROM generate_series(1, 5) g;
+VACUUM s;
+
+-- a row staged by the statement: xmin is the inserter's, xmax is 0, tableoid the table's
+BEGIN;
+INSERT INTO h VALUES (10, 10, 'new') RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_inserter, xmax::text AS xmax, cmin::text AS cmin, tableoid = 'h'::regclass AS tableoid;
+SELECT xmin = pg_current_xact_id()::xid AS xmin_is_inserter, xmax::text AS xmax, cmin::text AS cmin FROM h WHERE id = 10;
+ROLLBACK;
+BEGIN;
+INSERT INTO s VALUES (10, 10, 'new') RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_inserter, xmax::text AS xmax, cmin::text AS cmin, tableoid = 's'::regclass AS tableoid;
+SELECT xmin = pg_current_xact_id()::xid AS xmin_is_inserter, xmax::text AS xmax, cmin::text AS cmin FROM s WHERE id = 10;
+ROLLBACK;
+
+-- an UPDATE of one column of a row in a part keeps the address: the row has the updater's xmin and cmin, and no xmax
+BEGIN;
+UPDATE h SET v = v + 100 WHERE id = 2 RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax, cmin::text AS cmin, tableoid = 'h'::regclass AS tableoid;
+SELECT xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax FROM h WHERE id = 2;
+COMMIT;
+BEGIN;
+UPDATE s SET v = v + 100 WHERE id = 2 RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax, cmin::text AS cmin, tableoid = 's'::regclass AS tableoid;
+SELECT xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax FROM s WHERE id = 2;
+COMMIT;
+SELECT (SELECT xmin::text FROM s WHERE id = 2) <> (SELECT xmin::text FROM s WHERE id = 3) AS updated_row_has_its_own_xmin;
+
+-- a wide UPDATE
+BEGIN;
+UPDATE h SET w = repeat('x', 3000) WHERE id = 3 RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax;
+COMMIT;
+BEGIN;
+UPDATE s SET w = repeat('x', 3000) WHERE id = 3 RETURNING xmin = pg_current_xact_id()::xid AS xmin_is_updater, xmax::text AS xmax;
+COMMIT;
+
+-- the locker's xmax: while it holds the row, after its COMMIT and after its ROLLBACK; VACUUM FREEZE clears it
+BEGIN;
+SELECT id FROM s WHERE id = 4 FOR UPDATE;
+SELECT xmax = pg_current_xact_id()::xid AS locker_in_xact FROM s WHERE id = 4;
+COMMIT;
+SELECT xmax::text <> '0' AS locker_kept_after_commit FROM s WHERE id = 4;
+BEGIN;
+SELECT id FROM s WHERE id = 5 FOR UPDATE;
+ROLLBACK;
+SELECT xmax::text <> '0' AS locker_kept_after_rollback FROM s WHERE id = 5;
+VACUUM FREEZE s;
+SELECT count(*) FILTER (WHERE xmax::text <> '0') AS xmax_after_freeze FROM s;
+
+-- the transaction that locked and then deleted the row: xmax is the deleter's
+BEGIN;
+SELECT id FROM s WHERE id = 1 FOR UPDATE;
+DELETE FROM s WHERE id = 1 RETURNING xmax = pg_current_xact_id()::xid AS deleter;
+ROLLBACK;
+
+DROP TABLE h, s;
+DROP EXTENSION pg_sift;

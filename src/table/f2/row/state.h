@@ -22,7 +22,12 @@ typedef struct SiftRowState
 	uint64		part_id;		/* the partition the row is in */
 } SiftRowState;
 
+#define SIFT_MOVED_PARTITIONS_TID	((UINT64CONST(0xFFFFFFFF) << 16) | 0xFFFD)
+
 extern SiftRowState sift_row_state_read(Relation rel, uint64 tid);
+
+/* What the system columns of the row say: its inserter (a row only staged included), the writer of its latest column delta, and its deleter or last locker */
+extern SiftRowState sift_row_sysattr_read(Relation rel, uint64 tid);
 
 /* The same for a row that is not in the stage of the transaction, without writing the stage */
 extern SiftRowState sift_row_state_read_settled(Relation rel, uint64 tid);

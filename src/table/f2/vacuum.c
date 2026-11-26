@@ -220,6 +220,14 @@ granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, u
 	return n;
 }
 
+/* The pin of a part that VACUUM reads once, to find its dead rows or settle its deletion vector, goes with its last release: the cache of pins keeps nothing of a part about to be rewritten */
+static void
+release_unkept(SiftF2PartPin *pin)
+{
+	pin->stale = true;
+	sift_f2_pin_release(pin);
+}
+
 static void
 collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const SiftPartDesc *d, TransactionId oldest)
 {
@@ -246,7 +254,7 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 	}
 	PG_FINALLY();
 	{
-		sift_f2_pin_release(pin);
+		release_unkept(pin);
 	}
 	PG_END_TRY();
 	MemoryContextDelete(gcx);
@@ -283,7 +291,7 @@ settle_dv(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *cur, Fu
 	}
 	PG_FINALLY();
 	{
-		sift_f2_pin_release(pin);
+		release_unkept(pin);
 	}
 	PG_END_TRY();
 }
@@ -384,7 +392,7 @@ collect_partition(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *cand
 	parts = sift_manifest_read_parts(rel, &e, &np);
 	for (int i = 0; i < np; i++)
 	{
-		if (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0)
+		if (vc->nindexes > 0 && (parts[i].ndead > 0 || (parts[i].flags & SIFT_PART_FLAG_UNFROZEN) != 0))
 			collect_part(vc, store, &e, &parts[i], cutoffs->OldestXmin);
 		sift_f2_vacuum_progress_scanned(Min(++vc->parts_done, vc->parts_total) * VAC_PROGRESS_STEPS, vc->parts_total * VAC_PROGRESS_STEPS);
 	}
@@ -754,6 +762,8 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	if (vc.tids != NULL)
 		drop_tids(&vc);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_VACUUM_HEAP);
+	if (aggressive)
+		sift_tbl_rowlock_clear_lockers(rel);
 	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks, elevel);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);

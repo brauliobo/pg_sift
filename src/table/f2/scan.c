@@ -140,9 +140,12 @@ Size
 sift_tbl_f2_parallelscan_estimate(Relation rel)
 {
 	MemoryContext cx = sift_mem_allocset_create(TopTransactionContext, "sift table parallel scan units");
-	MemoryContext old = MemoryContextSwitchTo(cx);
-	ParImage   *im = palloc(sizeof(ParImage));
+	MemoryContext old;
+	ParImage   *im;
 
+	sift_stage_flush_with_deletes(rel);
+	old = MemoryContextSwitchTo(cx);
+	im = palloc(sizeof(ParImage));
 	im->relid = RelationGetRelid(rel);
 	im->cx = cx;
 	im->units = list_units(rel, sift_f2_store_open(rel), &im->nunits);

@@ -16,6 +16,7 @@
 #include "table/f2/row/state.h"
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
+#include "core/catname.h"
 #include "core/host.h"
 
 /* The part map a slot reads the patches of its rows from, kept across the rows of a partition: given back when the slot goes or its memory does (the holder lives in the slot's own context, which is what ends on an error) */
@@ -310,7 +311,7 @@ sift_f2_slot_getattr_single(TupleTableSlot *slot, int attnum, bool *isnull)
 static Datum
 f2_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 {
-	SiftF2Slot *ss = (SiftF2Slot *) slot;
+	Relation	rel;
 	SiftRowState rs;
 
 	if (attnum != MinTransactionIdAttributeNumber && attnum != MinCommandIdAttributeNumber && attnum != MaxTransactionIdAttributeNumber && attnum != MaxCommandIdAttributeNumber)
@@ -318,9 +319,11 @@ f2_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	*isnull = false;
 	if (!ItemPointerIsValid(&slot->tts_tid))
 		return (Datum) 0;
-	rs = sift_row_state_read(ss->rel, sift_tbl_tid_pack(&slot->tts_tid));
+	rel = sift_relation_get(slot->tts_tableOid);
+	rs = sift_row_sysattr_read(rel, sift_tbl_tid_pack(&slot->tts_tid));
 	SIFT_INVARIANT(rs.found, "the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid), ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid),
-				   RelationGetRelationName(ss->rel));
+				   RelationGetRelationName(rel));
+	RelationClose(rel);
 	switch (attnum)
 	{
 		case MinTransactionIdAttributeNumber:
@@ -332,6 +335,15 @@ f2_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 		default:
 			return CommandIdGetDatum(rs.cmax);
 	}
+}
+
+/* Did the current transaction make the row (the integrity trigger of a foreign key asks of the old row of an UPDATE)? A frozen row and a row not stored yet did not come from it */
+static bool
+f2_slot_is_current_xact_tuple(TupleTableSlot *slot)
+{
+	bool		isnull;
+
+	return TransactionIdIsCurrentTransactionId(DatumGetTransactionId(f2_slot_getsysattr(slot, MinTransactionIdAttributeNumber, &isnull)));
 }
 
 /* Decodes what is left: the callbacks below read tts_values of every attribute */
@@ -361,6 +373,7 @@ slot_copy_heap_tuple(TupleTableSlot *slot)
 	realize(slot);
 	tuple = TTSOpsVirtual.copy_heap_tuple(slot);
 	tuple->t_self = slot->tts_tid;
+	tuple->t_tableOid = slot->tts_tableOid;
 	return tuple;
 }
 
@@ -392,6 +405,7 @@ sift_f2_slot_ops(void)
 		f2_slot_ops.clear = slot_clear;
 		f2_slot_ops.getsomeattrs = f2_slot_getsomeattrs;
 		f2_slot_ops.getsysattr = f2_slot_getsysattr;
+		f2_slot_ops.is_current_xact_tuple = f2_slot_is_current_xact_tuple;
 		f2_slot_ops.materialize = slot_materialize;
 		f2_slot_ops.copy_heap_tuple = slot_copy_heap_tuple;
 		f2_slot_ops.copy_minimal_tuple = slot_copy_minimal_tuple;
@@ -446,6 +460,7 @@ store_source(TupleTableSlot *slot, Relation rel, SiftF2PartPin *pin, uint32 gran
 		slot->tts_nvalid = 0;
 	}
 	ItemPointerSet(&slot->tts_tid, (BlockNumber) (tid >> 16), (OffsetNumber) (tid & 0xFFFF));
+	slot->tts_tableOid = RelationGetRelid(rel);
 }
 
 void
