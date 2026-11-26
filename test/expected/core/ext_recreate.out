@@ -14,6 +14,9 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+-- the plans of the index and of the aggregate pushdown whatever their cost on a small table: what is under test is that the planner finds them again
+SET sift.agg_force = on;
+SET enable_seqscan = off;
 DROP TABLE IF EXISTS re_t, re_doc, re_ev, re_pairs;
 CREATE TABLE re_t (id int PRIMARY KEY, g int, uid uuid, url text) WITH (autovacuum_enabled = off);
 INSERT INTO re_t SELECT i, i % 10, ('00000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, md5(i::text) FROM generate_series(1, 5000) i;
@@ -67,9 +70,9 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT id FROM re_t WHERE g = 3');
 (1 row)
 
 SELECT arm, used FROM sift.explain_why('SELECT g, count(*) FROM re_t GROUP BY g');
-  arm   | used 
---------+------
- single | t
+  arm  | used 
+-------+------
+ index | t
 (1 row)
 
 SELECT g, count(*), sum(id) FROM re_t GROUP BY g ORDER BY g LIMIT 3;
@@ -130,6 +133,9 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+-- the plans of the index and of the aggregate pushdown whatever their cost on a small table: what is under test is that the planner finds them again
+SET sift.agg_force = on;
+SET enable_seqscan = off;
 DROP TABLE IF EXISTS re_t, re_doc, re_ev, re_pairs;
 CREATE TABLE re_t (id int PRIMARY KEY, g int, uid uuid, url text) WITH (autovacuum_enabled = off);
 INSERT INTO re_t SELECT i, i % 10, ('00000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, md5(i::text) FROM generate_series(1, 5000) i;
@@ -183,9 +189,9 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT id FROM re_t WHERE g = 3');
 (1 row)
 
 SELECT arm, used FROM sift.explain_why('SELECT g, count(*) FROM re_t GROUP BY g');
-  arm   | used 
---------+------
- single | t
+  arm  | used 
+-------+------
+ index | t
 (1 row)
 
 SELECT g, count(*), sum(id) FROM re_t GROUP BY g ORDER BY g LIMIT 3;

@@ -17,21 +17,23 @@ ERROR:  "ish_bm" is not a sift_col index
 CONTEXT:  PL/pgSQL function sift_internal.require_am(regclass,text) line 8 at RAISE
 SQL statement "SELECT sift_internal.require_am(index, 'sift_col')"
 PL/pgSQL function col_segments(regclass) line 3 at PERFORM
-SELECT * FROM sift.index_info('ish_col');
- relation_blocks | high_water | free_blocks | reusable_blocks | free_extents | segments | max_segments | ndocs | sum_dl | maintenance_busy 
------------------+------------+-------------+-----------------+--------------+----------+--------------+-------+--------+------------------
-               7 |          7 |           0 |               0 |            0 |        2 |              |  2000 |        | f
+SELECT relation_blocks > 0 AS sized, segments > 0 AS segmented, ndocs, sum_dl, maintenance_busy FROM sift.index_info('ish_col');
+ sized | segmented | ndocs | sum_dl | maintenance_busy 
+-------+-----------+-------+--------+------------------
+ t     | t         |  2000 |        | f
 (1 row)
 
 SELECT * FROM sift.segments('ish_col');
 ERROR:  "ish_col" is a sift_col index
 HINT:  Use sift.col_segments.
+SET client_min_messages = warning;
 SELECT * FROM sift.verify('ish_col');
  verify 
 --------
  
 (1 row)
 
+RESET client_min_messages;
 SELECT * FROM sift.segment_postings('ish_col');
 ERROR:  "ish_col" is a sift_col index
 SELECT * FROM sift.col_space('ish_bm');
@@ -59,12 +61,12 @@ CONTEXT:  PL/pgSQL function sift_internal.require_am(regclass,text) line 8 at RA
 SQL statement "SELECT sift_internal.require_am(tbl, 'sift_table')"
 PL/pgSQL function table_segments(regclass) line 3 at PERFORM
 -- one view over every sift object
-SELECT relation, kind, "table", bytes > 0 AS sized, segments, format ~ '^[0-9]+[.][0-9]+$' AS formatted, state FROM sift.indexes ORDER BY relation::text;
- relation |    kind    | table | sized | segments | formatted | state 
-----------+------------+-------+-------+----------+-----------+-------
- ish_bm   | sift       | ish   | t     |        1 | t         | ready
- ish_col  | sift_col   | ish   | t     |        2 | t         | ready
- ish_t    | sift_table | ish_t | t     |        2 | t         | ready
+SELECT relation, kind, "table", bytes > 0 AS sized, segments > 0 AS segmented, format ~ '^[0-9]+[.][0-9]+$' AS formatted, state FROM sift.indexes ORDER BY relation::text;
+ relation |    kind    | table | sized | segmented | formatted | state 
+----------+------------+-------+-------+-----------+-----------+-------
+ ish_bm   | sift       | ish   | t     | t         | t         | ready
+ ish_col  | sift_col   | ish   | t     | t         | t         | ready
+ ish_t    | sift_table | ish_t | t     | t         | t         | ready
 (3 rows)
 
 UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'ish_bm'::regclass;

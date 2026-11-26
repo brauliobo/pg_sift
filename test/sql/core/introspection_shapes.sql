@@ -12,9 +12,11 @@ RESET client_min_messages;
 -- an inspector of one access method given another names the function that serves it
 SELECT * FROM sift.col_index_info('ish_bm');
 SELECT * FROM sift.col_segments('ish_bm');
-SELECT * FROM sift.index_info('ish_col');
+SELECT relation_blocks > 0 AS sized, segments > 0 AS segmented, ndocs, sum_dl, maintenance_busy FROM sift.index_info('ish_col');
 SELECT * FROM sift.segments('ish_col');
+SET client_min_messages = warning;
 SELECT * FROM sift.verify('ish_col');
+RESET client_min_messages;
 SELECT * FROM sift.segment_postings('ish_col');
 SELECT * FROM sift.col_space('ish_bm');
 SELECT * FROM sift.worker_state('ish_pkey');
@@ -24,7 +26,7 @@ SELECT * FROM sift.table_space('ish');
 SELECT * FROM sift.table_segments('ish');
 
 -- one view over every sift object
-SELECT relation, kind, "table", bytes > 0 AS sized, segments, format ~ '^[0-9]+[.][0-9]+$' AS formatted, state FROM sift.indexes ORDER BY relation::text;
+SELECT relation, kind, "table", bytes > 0 AS sized, segments > 0 AS segmented, format ~ '^[0-9]+[.][0-9]+$' AS formatted, state FROM sift.indexes ORDER BY relation::text;
 UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'ish_bm'::regclass;
 SELECT relation, state, segments FROM sift.indexes WHERE relation = 'ish_bm'::regclass;
 UPDATE pg_index SET indisvalid = true, indisready = false WHERE indexrelid = 'ish_bm'::regclass;

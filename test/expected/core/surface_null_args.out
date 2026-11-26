@@ -69,8 +69,8 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''9:eq:1'')'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')')
 ) v(call) ORDER BY call;
-                                    call                                    |                              sna_state                              
-----------------------------------------------------------------------------+---------------------------------------------------------------------
+                                    call                                    |                              sna_state                               
+----------------------------------------------------------------------------+----------------------------------------------------------------------
  SELECT * FROM sift.index_choices('sna_part_col'::regclass)                 | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT * FROM sift.segments((SELECT gone FROM sna_oids)::regclass)         | 42P01 relation with OID N does not exist
  SELECT * FROM sift.tokenize('x', 0::oid::regclass)                         | 42P01 relation with OID 0 does not exist
@@ -95,7 +95,7 @@ SELECT call, sna_state(call) FROM (VALUES
  SELECT sift.col_index_info((SELECT gone FROM sna_oids)::regclass)          | 42P01 relation with OID N does not exist
  SELECT sift.col_promote('sna_part_col'::regclass)                          | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.col_verify((SELECT gone FROM sna_oids)::regclass)              | 42P01 relation with OID N does not exist
- SELECT sift.drop_parts_before(0::oid::regclass, now())                     | 42P01 relation with OID 0 does not exist
+ SELECT sift.drop_parts_before(0::oid::regclass, now())                     | 25001 sift.drop_parts_before() cannot run inside a transaction block
  SELECT sift.index_format('sna_heap'::regclass)                             | 42809 "sna_heap" is not a sift index
  SELECT sift.index_format('sna_part_col'::regclass)                         | 42809 "sna_part_col" is a partitioned index, which holds no data
  SELECT sift.index_format((SELECT gone FROM sna_oids)::regclass)            | 42P01 relation with OID N does not exist

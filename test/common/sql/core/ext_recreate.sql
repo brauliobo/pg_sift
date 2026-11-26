@@ -4,6 +4,9 @@ CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
+-- the plans of the index and of the aggregate pushdown whatever their cost on a small table: what is under test is that the planner finds them again
+SET sift.agg_force = on;
+SET enable_seqscan = off;
 DROP TABLE IF EXISTS re_t, re_doc, re_ev, re_pairs;
 
 CREATE TABLE re_t (id int PRIMARY KEY, g int, uid uuid, url text) WITH (autovacuum_enabled = off);

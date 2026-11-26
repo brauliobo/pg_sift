@@ -17,6 +17,8 @@ CREATE TABLE one (id int, v text);
 INSERT INTO one VALUES (1, repeat('x', 200));
 CREATE TABLE many (id int, v text);
 INSERT INTO many SELECT i, repeat(chr(96 + i), 60) FROM generate_series(1, 5) i;
+-- Format 1: the limits of its units, leaves, write buffers and key options, which Format 2.0 does not have, are reached on Format 1 relations
+SET sift.test_create_format1 = on;
 -- a string over the limit, and the strings of one unit over it
 SET sift.test_limits = 'string_bytes=100';
 SELECT expect('CREATE INDEX ON one USING sift_col (id, v)');
@@ -83,6 +85,7 @@ SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
    hint: Set sift.table_wide_rows = on to accept it (up to 1 GB), raise sift.table_write_buffer_limit (up to 8192 kB), or keep the document outside the row.
 (1 row)
 
+RESET sift.test_create_format1;
 -- sift.explain_why takes one statement; a score of a ctid that is no column of a table says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
                                                                        expect                                                                       
@@ -147,6 +150,7 @@ SELECT expect($$CREATE INDEX ON docs USING sift_col (id, payload) WITH (paths = 
    hint: Name the type of every path, 'doc.id int4, doc.items[]{sku text}'; 'auto' lets the build choose the paths from the documents.
 (1 row)
 
+SET sift.test_create_format1 = on;
 SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = 'nope')$$);
                                     expect                                    
 ------------------------------------------------------------------------------
@@ -165,6 +169,7 @@ SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_cut = 'v')
  22023 invalid key_cut option "v": "v" is not an integer, date, timestamp, numeric or float column of the index (at most 4)
 (1 row)
 
+RESET sift.test_create_format1;
 DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
 DROP EXTENSION pg_sift_test;

@@ -20,6 +20,8 @@ INSERT INTO one VALUES (1, repeat('x', 200));
 CREATE TABLE many (id int, v text);
 INSERT INTO many SELECT i, repeat(chr(96 + i), 60) FROM generate_series(1, 5) i;
 
+-- Format 1: the limits of its units, leaves, write buffers and key options, which Format 2.0 does not have, are reached on Format 1 relations
+SET sift.test_create_format1 = on;
 -- a string over the limit, and the strings of one unit over it
 SET sift.test_limits = 'string_bytes=100';
 SELECT expect('CREATE INDEX ON one USING sift_col (id, v)');
@@ -42,6 +44,7 @@ SELECT expect(format('CREATE INDEX ON many USING sift_col (id) WITH (paths = %L)
 SELECT sift.table_set_option('tbl', 'write_buffer_limit', '2048');
 SELECT sift.table_set_option('tbl', 'wide_rows', 'off');
 SELECT expect($$INSERT INTO tbl VALUES (1, repeat('z', 3000000))$$);
+RESET sift.test_create_format1;
 
 -- sift.explain_why takes one statement; a score of a ctid that is no column of a table says where it exists
 SELECT expect($$SELECT * FROM sift.explain_why('select 1; select 2')$$);
@@ -61,9 +64,11 @@ SELECT count(*) FROM alt WHERE v @@> 'al*';
 
 -- a paths spec that names a column, not a path with its type, and the lists of columns of the options: the name, what is wrong with it, what to write
 SELECT expect($$CREATE INDEX ON docs USING sift_col (id, payload) WITH (paths = 'payload')$$);
+SET sift.test_create_format1 = on;
 SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = 'nope')$$);
 SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_columns = '"v')$$);
 SELECT expect($$CREATE INDEX ON many USING sift_col (id, v) WITH (key_cut = 'v')$$);
+RESET sift.test_create_format1;
 
 DROP TABLE one, many, tbl, docs, alt;
 DROP FUNCTION expect(text);
