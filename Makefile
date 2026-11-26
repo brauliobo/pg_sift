@@ -627,6 +627,7 @@ TESTING_REGRESS += col/track/own_statement_reads
 TESTING_REGRESS += col/track/rebaseline
 TESTING_REGRESS += col/track/trigger_names
 TESTING_REGRESS += col/track/update_skip
+TESTING_REGRESS += col/track/update_visibility
 TESTING_REGRESS += col/track/updates_supersede
 TESTING_REGRESS += col/unique_stage
 TESTING_REGRESS += col/unit_floor

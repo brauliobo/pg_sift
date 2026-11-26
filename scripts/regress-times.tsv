@@ -852,6 +852,7 @@ col/track/pending	0.12
 col/track/reads	0.44
 col/track/rebaseline	0.27
 col/track/update_skip	1.46
+col/track/update_visibility	1.00
 col/track/update_window	0.09
 col/track/updates_option	0.12
 col/track/updates_supersede	0.26

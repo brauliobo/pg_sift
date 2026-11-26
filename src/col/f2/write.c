@@ -58,11 +58,18 @@ sift_f2_stage_row(Relation index, const Datum *values, const bool *isnull, ItemP
 	pfree(cells);
 }
 
+/* indexUnchanged is derived from the SET list: a BEFORE UPDATE row trigger may change an indexed column the list does not name */
+static bool
+index_columns_kept(Relation heap, bool indexUnchanged)
+{
+	return indexUnchanged && !(heap->trigdesc != NULL && heap->trigdesc->trig_update_before_row);
+}
+
 bool
 sift_f2_aminsert(Relation index, Datum *values, bool *isnull, ItemPointer heap_tid, Relation heap, IndexUniqueCheck checkUnique, bool indexUnchanged, IndexInfo *indexInfo)
 {
 	sift_f2_journal_added(index);
-	if (indexUnchanged)
+	if (index_columns_kept(heap, indexUnchanged))
 		sift_f2_track_note_unchanged(index, heap_tid);
 	if (checkUnique != UNIQUE_CHECK_NO)
 		return sift_f2_unique_insert(index, heap, values, isnull, heap_tid, checkUnique, indexInfo);

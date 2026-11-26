@@ -621,7 +621,7 @@ add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, Tran
 		st->dels = st->dels ? repalloc(st->dels, st->capdels * sizeof(SiftStageDel)) : palloc(st->capdels * sizeof(SiftStageDel));
 	}
 	MemoryContextSwitchTo(old);
-	st->dels[st->ndels] = (SiftStageDel) {.tid = tid,.succ_tid = succ_tid,.xmax = xmax,.cmax = GetCurrentCommandId(false),
+	st->dels[st->ndels] = (SiftStageDel) {.tid = tid,.succ_tid = succ_tid,.xmax = xmax,.cmax = GetCurrentCommandId(true),
 		.subxid = GetCurrentSubTransactionId(),.is_update = is_update};
 	memcpy(st->dels[st->ndels++].key, key, SIFT_BOUND_BYTES);
 	if (st->del_htab == NULL || (uint32) st->ndels * 4 > st->del_htab_cap * 3)
