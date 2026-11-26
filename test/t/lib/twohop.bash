@@ -102,6 +102,22 @@ twohop_stat() {
 
 twohop_vouch() { ${TWOHOP_SQL:-sql} "$1" "SELECT hop_vouch()"; }
 
+# twohop_read NODE [TENANT]: what the Format 2.0 scope read of the join of one tenant read ("summary", or "join ..." when the summary is not exact for the snapshot), "no scope read" when the plan has none
+TWOHOP_J_ONE="SELECT count(*), sum(e.v) FROM hop_events e JOIN hop_pairs s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id ="
+twohop_read() {
+	${TWOHOP_SQL:-sql} "$1" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $TWOHOP_J_ONE ${2:-5}" |
+		sed -n 's/^ *Scope Read: //p' | grep . || echo "no scope read"
+}
+
+# twohop_joins NODE: the Format 2.0 reads of the join of every tenant against the join without sift: same or DIFFERENT
+twohop_joins() {
+	local t Q=${TWOHOP_SQL:-sql}
+	for t in $(seq 1 17); do
+		[[ $($Q "$1" "$TWOHOP_J_ONE $t") == "$($Q "$1" "SET sift.enable_agg = off" "$TWOHOP_J_ONE $t")" ]] || { diag "tenant $t: $($Q "$1" "$TWOHOP_J_ONE $t") join $($Q "$1" "SET sift.enable_agg = off" "$TWOHOP_J_ONE $t")" >&2; echo DIFFERENT; return; }
+	done
+	echo same
+}
+
 # twohop_files NODE: the pgbench arguments of scripts that edit the three tables and the facts, each in a transaction that cannot fail on a key
 twohop_files() {
 	local d
