@@ -20,8 +20,8 @@
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
 
-#define SIFT_LEASE_SLOTS			2048
-#define SIFT_LEASE_PROBES			8
+#define SIFT_LEASE_SLOTS			4096
+#define SIFT_LEASE_PROBES			32
 #define SIFT_LEASE_GEN_CHUNK		1024
 #define SIFT_LEASE_VBLOCK_CHUNK		4096
 #define SIFT_LEASE_PAGES			32
@@ -55,6 +55,10 @@ extern bool sift_lease_page_room(const RelFileLocator *loc, bool *lost);
 extern int	sift_lease_page_fill(const BlockNumber *blks, int n);
 /* Takes every page of the pool of the file out (blks holds SIFT_LEASE_PAGES); how many */
 extern int	sift_lease_page_drain(const RelFileLocator *loc, BlockNumber *blks);
+
+/* The file is gone (DROP, TRUNCATE, a rewrite), or every file of the database is: their slots are given up with what is left of their chunks and pools, for the next file to take */
+extern void sift_lease_invalidate(const RelFileLocator *loc);
+extern void sift_lease_invalidate_db(Oid db);
 
 /* Where a writer locks Block 0 exclusively (counted by the testing library: sift._test_lease_block0_x) */
 typedef enum SiftBlock0Site

@@ -178,7 +178,7 @@ extern bool sift_shm_manifest_publish(const SiftShmIndexMeta *meta, const SiftSh
 /* An index that is committing version `version` of its manifest, with Block 0 locked and before it changes: the registry serves no snapshot of it and takes no older version of it until the commit publishes, even if the publication fails */
 extern void sift_shm_manifest_hold(const RelFileLocator *locator, uint64 version);
 
-/* The index is no longer what the registry says (DROP, REINDEX, a damaged manifest): readers find nothing, the snapshot is released; quarantine keeps the slot as one that is not to be trusted */
+/* The index is no longer what the registry says (DROP, REINDEX, a damaged manifest): readers find nothing, the snapshot is released, the lease slot of the file (core/shm/lease.h) is given up; quarantine keeps the slot as one that is not to be trusted */
 extern void sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine);
 
 /* The pins of the snapshot of the index that found it and that did not, since the registry took the index; false: the registry has no slot for it */

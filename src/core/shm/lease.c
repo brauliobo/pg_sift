@@ -11,6 +11,7 @@
 
 #include "common/hashfn.h"
 #include "port/pg_bitutils.h"
+#include "storage/ipc.h"
 #include "storage/proc.h"
 #include "utils/timestamp.h"
 
@@ -61,6 +62,7 @@ static SiftMetaLeaseTable *lease_table;
 static bool lease_tried;
 static SiftMetaLeaseSlot *filling_slot;
 static uint64 filling_seq;
+static bool fill_exit_registered;
 
 static SiftMetaLeaseTable *
 table_base(void *raw)
@@ -99,7 +101,7 @@ lease_registry(void)
 {
 	if (lease_table == NULL && !lease_tried)
 	{
-		/* MEM[MEM-SHM-10]: DSM lease table sift_shm_lease (786432 B fixed; 2048x384 B slots of leased numbers and metadata pages) */
+		/* MEM[MEM-SHM-10]: DSM lease table sift_shm_lease (1572864 B fixed; 4096x384 B slots of leased numbers and metadata pages) */
 		void	   *raw = sift_dsm_try(LEASE_NAME, sizeof(SiftMetaLeaseTable) + PG_CACHE_LINE_SIZE, table_init);
 
 		lease_tried = true;
@@ -150,11 +152,15 @@ slot_holds_pages(SiftMetaLeaseSlot *s)
 	return POOL_MASK(pg_atomic_read_u64(&s->pool.word)) != 0;
 }
 
-/* What it costs to give the slot up: an empty one nothing, one with no pages next, a pool that was used lately never */
-static bool
-slot_claimable(SiftMetaLeaseSlot *s, TimestampTz now)
+/* What it costs to give the slot up: an empty one nothing, one with no pages next, then a pool that was not used lately; one that was is never given up (-1) */
+static int
+slot_cost(SiftMetaLeaseSlot *s, TimestampTz now)
 {
-	return !s->live || !slot_holds_pages(s) || now - (TimestampTz) pg_atomic_read_u64(&s->tick) > LEASE_IDLE_US;
+	if (!s->live)
+		return 0;
+	if (!slot_holds_pages(s))
+		return 1;
+	return now - (TimestampTz) pg_atomic_read_u64(&s->tick) > LEASE_IDLE_US ? 2 : -1;
 }
 
 static void
@@ -177,15 +183,22 @@ slot_take(SiftMetaLeaseTable *t, const RelFileLocator *loc, TimestampTz now, uin
 {
 	uint32		h = slot_hash(loc);
 	SiftMetaLeaseSlot *best = NULL;
+	int			best_cost = 0;
 
 	for (int p = 0; p < SIFT_LEASE_PROBES; p++)
 	{
 		SiftMetaLeaseSlot *s = &t->slot[(h + p) & (SIFT_LEASE_SLOTS - 1)];
+		int			cost = slot_cost(s, now);
 
-		if (!slot_claimable(s, now))
+		if (cost < 0)
 			continue;
-		if (best == NULL || !s->live || (best->live && pg_atomic_read_u64(&s->tick) < pg_atomic_read_u64(&best->tick)))
+		if (best == NULL || cost < best_cost || (cost == best_cost && pg_atomic_read_u64(&s->tick) < pg_atomic_read_u64(&best->tick)))
+		{
 			best = s;
+			best_cost = cost;
+		}
+		if (cost == 0)
+			break;
 	}
 	if (best == NULL || !LWLockConditionalAcquire(&best->lock, LW_EXCLUSIVE))
 		return NULL;
@@ -226,6 +239,53 @@ slot_get(SiftMetaLeaseTable *t, const RelFileLocator *loc, uint64 *seq)
 	SiftMetaLeaseSlot *s = slot_find(t, loc, seq);
 
 	return s != NULL ? s : slot_claim(t, loc, seq);
+}
+
+/* The slot is of no file (claim_lock held): a claim moves its seq, so whoever noted the one before finds its use void, and what its chunks and its pool held is let go */
+static void
+slot_forget(SiftMetaLeaseSlot *s)
+{
+	uint64		q;
+
+	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
+	q = pg_atomic_read_u64(&s->seq);
+	Assert((q & 1) == 0);
+	pg_atomic_write_u64(&s->seq, q + 1);
+	pg_write_barrier();
+	slot_reset(s, &s->locator, q + 1, 0);
+	s->live = 0;
+	pg_write_barrier();
+	pg_atomic_write_u64(&s->seq, q + 2);
+	LWLockRelease(&s->lock);
+}
+
+void
+sift_lease_invalidate(const RelFileLocator *loc)
+{
+	SiftMetaLeaseTable *t = lease_registry();
+	SiftMetaLeaseSlot *s;
+	uint64		seq;
+
+	if (t == NULL)
+		return;
+	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
+	if ((s = slot_find(t, loc, &seq)) != NULL)
+		slot_forget(s);
+	LWLockRelease(&t->claim_lock);
+}
+
+void
+sift_lease_invalidate_db(Oid db)
+{
+	SiftMetaLeaseTable *t = lease_registry();
+
+	if (t == NULL)
+		return;
+	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
+	for (int i = 0; i < SIFT_LEASE_SLOTS; i++)
+		if (t->slot[i].live && t->slot[i].locator.dbOid == db)
+			slot_forget(&t->slot[i]);
+	LWLockRelease(&t->claim_lock);
 }
 
 /* ---------- the numbers ---------- */
@@ -371,6 +431,17 @@ sift_lease_page_pop(const RelFileLocator *loc, BlockNumber *blk)
 	}
 }
 
+/* The filling of a pool that a backend ends by exiting (FATAL runs no PG_CATCH): the pool is left empty for the next backend to fill */
+static void
+fill_exit(int code, Datum arg)
+{
+	uint32		flag = ((uint32) SEQ_CLAIM(filling_seq) << 1) | 1;
+
+	if (filling_slot != NULL)
+		(void) pg_atomic_compare_exchange_u32(&filling_slot->pool.filling, &flag, 0);
+	filling_slot = NULL;
+}
+
 bool
 sift_lease_page_room(const RelFileLocator *loc, bool *lost)
 {
@@ -388,6 +459,11 @@ sift_lease_page_room(const RelFileLocator *loc, bool *lost)
 	*lost = POOL_FILLS(w) == 0;
 	filling_slot = s;
 	filling_seq = seq;
+	if (!fill_exit_registered)
+	{
+		before_shmem_exit(fill_exit, 0);
+		fill_exit_registered = true;
+	}
 	return true;
 }
 

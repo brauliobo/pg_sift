@@ -10,6 +10,7 @@
 #include "col/dsmreg.h"
 #include "core/cachebudget.h"
 #include "core/shm/budget.h"
+#include "core/shm/lease.h"
 #include "core/shm/manifest_int.h"
 
 /* What a slot costs to give up: a dead one nothing, a live one its cache; a quarantined one is not given up, it keeps the index from being trusted */
@@ -260,6 +261,7 @@ sift_shm_manifest_invalidate(const RelFileLocator *locator, bool quarantine)
 	dsa_area   *a = NULL;
 	dsa_pointer old = InvalidDsaPointer;
 
+	sift_lease_invalidate(locator);
 	if (!sift_shm_manifest_enabled() || (t = sift_shm_registry()) == NULL)
 		return;
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
