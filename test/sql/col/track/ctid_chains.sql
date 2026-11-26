@@ -4,6 +4,8 @@
 -- mutants that tombstone the member, or nothing, must give other rows.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log of the chain roots and the row queue of track_changes are Format 1 (col/v1/track, col/v1/tomblog.c).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
@@ -26,11 +28,17 @@ BEGIN
 	RETURN r;
 END $$;
 
+-- the heap blocks the aggregate fetched beyond the one every read of a vacuumed table takes: those of the statement less those of planning it (the second EXPLAIN alone)
 CREATE FUNCTION pages() RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE q constant text := 'SELECT g, count(*), sum(w) FROM chains GROUP BY g'; b0 bigint; b1 bigint; b2 bigint;
 BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT g, count(*), sum(w) FROM chains GROUP BY g' INTO j;
-	RETURN coalesce(jsonb_path_query_first(j, 'strict $.**."Heap Pages"')::int, -1);
+	EXECUTE 'EXPLAIN ' || q;
+	b0 := coalesce(pg_stat_get_xact_blocks_fetched('chains'::regclass), 0);
+	EXECUTE 'EXPLAIN ' || q;
+	b1 := coalesce(pg_stat_get_xact_blocks_fetched('chains'::regclass), 0);
+	EXECUTE q;
+	b2 := coalesce(pg_stat_get_xact_blocks_fetched('chains'::regclass), 0);
+	RETURN b2 - b1 - (b1 - b0) - 1;
 END $$;
 
 CREATE FUNCTION chk(what text, OUT test text, OUT same_as_heap_check bool, OUT same_as_no_sift bool, OUT free_reads_heap bool)
