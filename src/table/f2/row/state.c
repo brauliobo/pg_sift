@@ -120,42 +120,79 @@ sift_row_state_read_settled(Relation rel, uint64 tid)
 	return row_state(rel, tid, locate_in_place);
 }
 
-/* The writer of the latest column delta of a row of a part: the chain of its partition says */
-static SiftColDeltaLast
-delta_on_disk(Relation rel, uint64 tid)
+/* The version of the row a reader holds: every one its own transaction wrote (the new row an UPDATE returns included), else what its snapshot sees */
+static bool
+reader_sees(void *ctx, TransactionId xmin, CommandId cid)
 {
-	SiftF2Loc	loc;
-	SiftColDeltaLast last = {0};
-
-	if (!sift_f2_locate_cached_read(rel, sift_f2_store_open(rel), tid, &loc))
-		return last;
-	if ((loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
-		last = sift_col_delta_latest_of(rel, &loc, tid);
-	sift_f2_gbuf_unref(loc.gb);
-	return last;
+	return TransactionIdIsCurrentTransactionId(xmin) || sift_tbl_f2_delta_visible((SiftTblVis *) ctx, xmin, cid);
 }
 
+/* The writers of the column deltas of a row of a part, as the chain of its partition says and the reader sees them */
+static SiftColDeltaWriters
+deltas_on_disk(Relation rel, uint64 tid, const SiftColDeltaOps *ops)
+{
+	SiftF2Loc	loc;
+	SiftColDeltaWriters w = {0};
+
+	if (!sift_f2_locate_cached_read(rel, sift_f2_store_open(rel), tid, &loc))
+		return w;
+	w = sift_col_delta_writers_of(rel, &loc, tid, ops);
+	sift_f2_gbuf_unref(loc.gb);
+	return w;
+}
+
+/* The writers of the column deltas of the row: the one whose entry of the row lock has not committed is the newest, wherever its record is */
+static SiftColDeltaWriters
+delta_writers(Relation rel, uint64 tid, Snapshot snap, const SiftRowLockPeek *held)
+{
+	SiftTblVis	vis;
+	SiftColDeltaOps ops;
+	SiftColDeltaWriters w;
+	SiftColDeltaLast pending = {.found = TransactionIdIsValid(held->delta_xid),.xid = held->delta_xid,.cid = held->delta_cid};
+
+	sift_tbl_f2_vis_begin(&vis, rel, snap);
+	sift_col_delta_ops_make(&ops, &vis, reader_sees);
+	w = deltas_on_disk(rel, tid, &ops);
+	if (!pending.found)
+		return w;
+	w.newest = pending;
+	if (reader_sees(&vis, pending.xid, pending.cid))
+		w.seen = pending;
+	return w;
+}
+
+/*
+ * A column delta is a new version of the row in place: the snapshot sees the version of the newest delta it sees (the insert without one), and a newer delta that it does not see is the
+ * update that ended that version, as the xmax of the old tuple of a heap UPDATE is
+ */
 SiftRowState
-sift_row_sysattr_read(Relation rel, uint64 tid)
+sift_row_sysattr_read(Relation rel, uint64 tid, Snapshot snap)
 {
 	SiftRowState rs = sift_row_state_read(rel, tid);
 	SiftRowLockPeek held = sift_tbl_rowlock_peek(rel, tid);
-	SiftColDeltaLast delta = {.found = TransactionIdIsValid(held.delta_xid),.xid = held.delta_xid,.cid = held.delta_cid};
+	SiftColDeltaWriters w = {0};
 
 	if (!rs.found)
 	{
 		rs.found = sift_stage_find_insert(rel, tid, &rs.xmin, &rs.cmin);
 		stage_state(rel, tid, &rs);
 	}
-	else if (!delta.found)
-		delta = delta_on_disk(rel, tid);
-	if (delta.found)
+	else
+		w = delta_writers(rel, tid, snap, &held);
+	if (w.seen.found)
 	{
-		rs.xmin = delta.xid;
-		rs.cmin = delta.cid;
+		rs.xmin = w.seen.xid;
+		rs.cmin = w.seen.cid;
 	}
-	else if (!TransactionIdIsValid(rs.xmax))
+	if (TransactionIdIsValid(rs.xmax))
+		return rs;
+	if (!w.newest.found)
 		rs.xmax = held.locker;
+	else if (!w.seen.found || w.seen.xid != w.newest.xid || w.seen.cid != w.newest.cid)
+	{
+		rs.xmax = w.newest.xid;
+		rs.cmax = w.newest.cid;
+	}
 	return rs;
 }
 

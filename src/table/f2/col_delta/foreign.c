@@ -275,10 +275,11 @@ log_of(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *
 	return &flog;
 }
 
-SiftColDeltaLast
-sift_col_delta_foreign_latest(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops)
+SiftColDeltaWriters
+sift_col_delta_foreign_writers(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops)
 {
 	const ForeignLog *l = log_of(rel, entry, anchor);
+	SiftColDeltaWriters w = {0};
 	int			lo = 0,
 				hi = l->n;
 
@@ -294,7 +295,7 @@ sift_col_delta_foreign_latest(Relation rel, const SiftPartitionEntry *entry, con
 	for (hi = lo; hi < l->n && l->recs[hi].tid == t->tid; hi++)
 		;
 	for (int i = hi - 1; i >= lo; i--)
-		if (sift_col_delta_rec_is_of_row(&l->recs[i].hdr, t) && !ops->is_aborted(ops->ctx, l->recs[i].hdr.xmin))
-			return (SiftColDeltaLast) {.found = true,.xid = l->recs[i].hdr.xmin,.cid = l->recs[i].hdr.cid};
-	return (SiftColDeltaLast) {0};
+		if (sift_col_delta_rec_is_of_row(&l->recs[i].hdr, t) && sift_col_delta_writers_add(&w, &l->recs[i].hdr, ops))
+			break;
+	return w;
 }

@@ -463,31 +463,37 @@ target_of(const SiftF2Loc *loc, uint64 tid)
 	return (SiftColDeltaTarget) {.part_gen = loc->gb->pin->part_gen,.granule_id = loc->gb->granule_id,.row_ordinal = loc->row,.tid = tid};
 }
 
+SiftColDeltaWriters
+sift_col_delta_writers_of(Relation rel, const SiftF2Loc *loc, uint64 tid, const SiftColDeltaOps *ops)
+{
+	SiftColDeltaTarget t = target_of(loc, tid);
+	SiftColDeltaWriters w = {0};
+	const SiftColDeltaLog *log;
+	SiftColDeltaAnchor anchor;
+
+	if ((loc->entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
+		return w;
+	anchor = sift_manifest_read_col_delta(rel, &loc->entry);
+	if (!sift_col_delta_log_fits(&anchor))
+		return sift_col_delta_foreign_writers(rel, &loc->entry, &anchor, &t, ops);
+	log = sift_col_delta_log(rel, &loc->entry);
+	for (int i = log == NULL ? -1 : sift_col_delta_log_newest(log, tid); i >= 0; i = sift_col_delta_log_prev(log, i))
+	{
+		const SiftColDeltaEntryHdr *h = sift_col_delta_log_hdr(log, i);
+
+		if (sift_col_delta_rec_is_of_row(h, &t) && sift_col_delta_writers_add(&w, h, ops))
+			break;
+	}
+	return w;
+}
+
 SiftColDeltaLast
 sift_col_delta_latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid)
 {
 	SiftColDeltaOps ops;
-	SiftColDeltaTarget t = target_of(loc, tid);
-	const SiftColDeltaLog *log;
-	SiftColDeltaAnchor anchor;
 
 	sift_col_delta_ops_init(&ops, NULL);
-	if ((loc->entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
-		return (SiftColDeltaLast) {0};
-	anchor = sift_manifest_read_col_delta(rel, &loc->entry);
-	if (!sift_col_delta_log_fits(&anchor))
-		return sift_col_delta_foreign_latest(rel, &loc->entry, &anchor, &t, &ops);
-	log = sift_col_delta_log(rel, &loc->entry);
-	if (log == NULL)
-		return (SiftColDeltaLast) {0};
-	for (int i = sift_col_delta_log_newest(log, tid); i >= 0; i = sift_col_delta_log_prev(log, i))
-	{
-		const SiftColDeltaEntryHdr *h = sift_col_delta_log_hdr(log, i);
-
-		if (sift_col_delta_rec_is_of_row(h, &t) && !ops.is_aborted(ops.ctx, h->xmin))
-			return (SiftColDeltaLast) {.found = true,.xid = h->xmin,.cid = h->cid};
-	}
-	return (SiftColDeltaLast) {0};
+	return sift_col_delta_writers_of(rel, loc, tid, &ops).newest;
 }
 
 SiftColDeltaVerdict

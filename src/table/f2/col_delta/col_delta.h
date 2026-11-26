@@ -479,6 +479,28 @@ typedef struct SiftColDeltaLast
 	CommandId	cid;
 } SiftColDeltaLast;
 
+/* The writers of the records of a row: the newest that its writer did not abort, and the newest the snapshot of the ops sees (none for ops without one) */
+typedef struct SiftColDeltaWriters
+{
+	SiftColDeltaLast newest;
+	SiftColDeltaLast seen;
+} SiftColDeltaWriters;
+
+/* Takes record h of the row, the records given newest first: true once the older records change nothing */
+static inline bool
+sift_col_delta_writers_add(SiftColDeltaWriters *w, const SiftColDeltaEntryHdr *h, const SiftColDeltaOps *ops)
+{
+	SiftColDeltaLast l = {.found = true,.xid = h->xmin,.cid = h->cid};
+
+	if (ops->is_aborted(ops->ctx, h->xmin))
+		return false;
+	if (!w->newest.found)
+		w->newest = l;
+	if (ops->ctx != NULL && ops->visible(ops->ctx, h->xmin, h->cid))
+		w->seen = l;
+	return ops->ctx == NULL || w->seen.found;
+}
+
 /* The newest record of the row that its writer did not abort */
 extern SiftColDeltaLast sift_col_delta_latest_for_row(const SiftColDeltaChain *chain, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops);
 
@@ -853,6 +875,8 @@ extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *en
 extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_release(SiftColDeltaWatchRead *r);
 
+/* The writers of the patches of the row, as ops judge them (sift_col_delta_writers_add) */
+extern SiftColDeltaWriters sift_col_delta_writers_of(Relation rel, const SiftF2Loc *loc, uint64 tid, const SiftColDeltaOps *ops);
 /* The writer and the command of the latest patch of the row that its writer did not abort */
 extern SiftColDeltaLast sift_col_delta_latest_of(Relation rel, const SiftF2Loc *loc, uint64 tid);
 

@@ -9,6 +9,7 @@
 #include "catalog/pg_type.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 #include "col/f2/store/schema.h"
 #include "table/f2/gcache.h"
@@ -320,7 +321,7 @@ f2_slot_getsysattr(TupleTableSlot *slot, int attnum, bool *isnull)
 	if (!ItemPointerIsValid(&slot->tts_tid))
 		return (Datum) 0;
 	rel = sift_relation_get(slot->tts_tableOid);
-	rs = sift_row_sysattr_read(rel, sift_tbl_tid_pack(&slot->tts_tid));
+	rs = sift_row_sysattr_read(rel, sift_tbl_tid_pack(&slot->tts_tid), GetActiveSnapshot());
 	SIFT_INVARIANT(rs.found, "the row (%u,%u) of \"%s\" is gone", ItemPointerGetBlockNumberNoCheck(&slot->tts_tid), ItemPointerGetOffsetNumberNoCheck(&slot->tts_tid),
 				   RelationGetRelationName(rel));
 	RelationClose(rel);
