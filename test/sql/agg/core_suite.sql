@@ -357,14 +357,12 @@ CREATE FUNCTION kdiff(prog text, pgx text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE n bigint;
 BEGIN
 	EXECUTE format($q$
-		SELECT count(*) FROM (
-			((SELECT c.chunk, e.ord, e.res FROM kd c, sift._test_vexpr(%1$L, c.i, c.j, c.k, c.x, c.x, c.m, c.d, NULL, NULL, NULL, c.t, NULL) AS e)
-			 EXCEPT ALL
-			 (SELECT chunk, ord, (%2$s)::text FROM kr))
-			UNION ALL
-			((SELECT chunk, ord, (%2$s)::text FROM kr)
-			 EXCEPT ALL
-			 (SELECT c.chunk, e.ord, e.res FROM kd c, sift._test_vexpr(%1$L, c.i, c.j, c.k, c.x, c.x, c.m, c.d, NULL, NULL, NULL, c.t, NULL) AS e))) AS d
+		SELECT coalesce(sum(abs(n)), 0) FROM (
+			SELECT sum(w) AS n FROM (
+				SELECT c.chunk, e.ord, e.res, 1 AS w FROM kd c, sift._test_vexpr(%1$L, c.i, c.j, c.k, c.x, c.x, c.m, c.d, NULL, NULL, NULL, c.t, NULL) AS e
+				UNION ALL
+				SELECT chunk, ord, (%2$s)::text, -1 FROM kr) AS u
+			GROUP BY chunk, ord, res) AS d
 	$q$, prog, pgx) INTO n;
 	RETURN n;
 END $$;
