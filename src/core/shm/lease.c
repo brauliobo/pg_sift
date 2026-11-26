@@ -24,7 +24,7 @@
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMetaPagePool
 {
-	pg_atomic_uint64 word;		/* the claim of the slot (16 bits), the fillings since the slab was claimed, up to 65535 (16 bits), the pages that are in the pool (32 bits, one for each of page[]) */
+	pg_atomic_uint64 word;		/* the claim of the slot (16 bits), the fillings since the slot was claimed, 0 for none and from 1 again after 65535 (16 bits), the pages that are in the pool (32 bits, one for each of page[]) */
 	pg_atomic_uint32 filling;	/* the claim of the slot (16 bits) and 1 in the lowest bit while a backend takes pages for the pool, else 0 */
 	pg_atomic_uint32 page[SIFT_LEASE_PAGES];
 } SiftMetaPagePool;
@@ -46,12 +46,14 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftMetaLeaseSlot
 typedef struct SiftMetaLeaseTable
 {
 	int			tranche;
+	LWLock		claim_lock;		/* the claims of slots: a backend that finds no slot of its file looks again under it */
 	SiftMetaLeaseSlot slot[SIFT_LEASE_SLOTS];
 } SiftMetaLeaseTable;
 
 #define POOL_MASK(w)	((uint32) (w))
 #define POOL_CLAIM(w)	((uint32) ((w) >> 48))
 #define POOL_FILLS(w)	((uint16) ((w) >> 32))
+#define POOL_FILLS_NEXT(w)	(POOL_FILLS(w) == PG_UINT16_MAX ? 1 : POOL_FILLS(w) + 1)
 #define POOL_WORD(claim, count, mask)	(((uint64) (uint16) (claim) << 48) | ((uint64) (uint16) (count) << 32) | (mask))
 #define SEQ_CLAIM(seq)	((uint16) ((seq) >> 1))
 
@@ -73,6 +75,7 @@ table_init(SIFT_DSM_INIT_ARGS)
 
 	memset(t, 0, sizeof(*t));
 	t->tranche = sift_tranche_new(LEASE_TRANCHE);
+	LWLockInitialize(&t->claim_lock, t->tranche);
 	for (int i = 0; i < SIFT_LEASE_SLOTS; i++)
 	{
 		SiftMetaLeaseSlot *s = &t->slot[i];
@@ -168,12 +171,11 @@ slot_reset(SiftMetaLeaseSlot *s, const RelFileLocator *loc, uint64 odd_seq, Time
 	pg_atomic_write_u64(&s->pool.word, POOL_WORD(SEQ_CLAIM(odd_seq + 1), 0, 0));
 }
 
-/* The slot of the file, claimed for it when it has none: an empty slot of the probe window, else the one that costs least; NULL when every slot of the window holds pages that were used lately */
+/* A slot of the probe window claimed for the file: an empty one, else the one that costs least; NULL when every slot of the window holds pages that were used lately */
 static SiftMetaLeaseSlot *
-slot_claim(SiftMetaLeaseTable *t, const RelFileLocator *loc, uint64 *seq)
+slot_take(SiftMetaLeaseTable *t, const RelFileLocator *loc, TimestampTz now, uint64 *seq)
 {
 	uint32		h = slot_hash(loc);
-	TimestampTz now = GetCurrentTimestamp();
 	SiftMetaLeaseSlot *best = NULL;
 
 	for (int p = 0; p < SIFT_LEASE_PROBES; p++)
@@ -202,6 +204,20 @@ slot_claim(SiftMetaLeaseTable *t, const RelFileLocator *loc, uint64 *seq)
 	}
 	LWLockRelease(&best->lock);
 	return best;
+}
+
+/* The slot of the file, claimed for it when it has none: the window is looked at again under the claim lock, which every claim holds, so that two backends that found none get one slot */
+static SiftMetaLeaseSlot *
+slot_claim(SiftMetaLeaseTable *t, const RelFileLocator *loc, uint64 *seq)
+{
+	TimestampTz now = GetCurrentTimestamp();
+	SiftMetaLeaseSlot *s;
+
+	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
+	if ((s = slot_find(t, loc, seq)) == NULL)
+		s = slot_take(t, loc, now, seq);
+	LWLockRelease(&t->claim_lock);
+	return s;
 }
 
 static SiftMetaLeaseSlot *
@@ -384,7 +400,7 @@ sift_lease_page_fill(const BlockNumber *blks, int n)
 			pg_atomic_write_u32(&s->pool.page[i], blks[kept++]);
 			fresh |= UINT32_C(1) << i;
 		}
-		while (fresh != 0 && !pg_atomic_compare_exchange_u64(&s->pool.word, &w, POOL_WORD(POOL_CLAIM(w), Min(POOL_FILLS(w) + 1, PG_UINT16_MAX), POOL_MASK(w) | fresh)))
+		while (fresh != 0 && !pg_atomic_compare_exchange_u64(&s->pool.word, &w, POOL_WORD(POOL_CLAIM(w), POOL_FILLS_NEXT(w), POOL_MASK(w) | fresh)))
 			;
 		pg_atomic_write_u64(&s->tick, (uint64) GetCurrentTimestamp());
 	}
