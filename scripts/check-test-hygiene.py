@@ -7,7 +7,8 @@
 Manifests (no PostgreSQL, no build):
   - scripts/regress-times.tsv names no test that test/sql no longer has, and no test twice;
   - every TESTING_REGRESS line of the Makefile names a test (or a pattern with %) that test/sql has;
-  - scripts/weights-*.tsv, scratch.tsv name no job twice (the loader keeps the last row, so the first one lied).
+  - scripts/weights-*.tsv, scratch.tsv name no job twice (the loader keeps the last row, so the first one lied);
+  - a `# tap: pooled` shell test (test/t) that runs CREATE DATABASE pins no sift. setting in node_init: the pool sets it on the database of the node alone, never on the ones the test creates.
 High-level harnesses (test/{corpus,col,plan,fuzz,matrix}/, scripts/{corpus,coldiff,plangate,coverage,fast-gate}.sh) run on Format 1, Format 2.0 and the release library:
   - a plan node is matched by its prefix (`Custom Scan (SiftAgg` or "SiftAgg), never `Custom Scan (SiftAgg)` or "SiftAgg", which SiftAggV6, SiftAggV6Sip, SiftAggV6TopN... are not;
   - the maintenance and the explanation go through the public 6.0 API (sift.promote, sift.merge, sift.maintain, sift.explain_why), never through the retired
@@ -86,6 +87,25 @@ def check_weights(root):
     return errs
 
 
+POOLED_PIN = re.compile(r'node_init \S+ \d+ "([^"]*)"')
+
+
+def check_pooled_taps(root):
+    errs = []
+    for r, _, files in os.walk(os.path.join(root, 'test/t')):
+        for f in sorted(x for x in files if x.endswith('.sh')):
+            rel = os.path.relpath(os.path.join(r, f), root)
+            with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as fh:
+                text = fh.read()
+            if '\n# tap: pooled\n' not in text or 'CREATE DATABASE' not in text:
+                continue
+            for m in POOLED_PIN.finditer(text):
+                if re.search(r'^sift\.[a-z0-9_]+ = ', m.group(1), re.M):
+                    errs.append(f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: a pooled node pins a sift. setting and the test runs CREATE DATABASE, where the pool never sets it: "
+                                "drop `# tap: pooled`, so the setting is the server's")
+    return sorted(errs)
+
+
 def harness_files(root):
     out = [f for f in HARNESS_FILES if os.path.isfile(os.path.join(root, f))]
     for d in HARNESS_DIRS:
@@ -126,7 +146,7 @@ def check_harnesses(root, strict):
 
 def run(root, strict):
     tests = sql_tests(root)
-    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root)
+    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root) + check_pooled_taps(root)
     h_errs, notes = check_harnesses(root, strict)
     return errs + h_errs, notes
 
@@ -175,6 +195,13 @@ def selftest():
         ('a TESTING_REGRESS pattern with no test', {'Makefile': 'TESTING_REGRESS += zz%\n'}, False, {}, ['Makefile:1: TESTING_REGRESS zz% matches no test']),
         ('a duplicate weights key', {'scripts/weights-quick.tsv': 'j1\t1\nj1\t2\n'}, False, {}, ['weights-quick.tsv:2: j1 twice']),
         ('a duplicate scratch key', {'scripts/scratch.tsv': 'j1\t1\nj1\t2\n'}, False, {}, ['scratch.tsv:2: j1 twice']),
+        ('a pooled test that pins a setting and creates a database',
+         {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\nnode_init r 3 "autovacuum = off\nsift.test_create_format1 = on"\nq "CREATE DATABASE d"\n'}, False, {},
+         ['test/t/x.sh:3: a pooled node pins a sift. setting']),
+        ('a pooled test that pins a setting in its own database is fine', {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\nnode_init r 3 "sift.test_create_format1 = on"\n'}, False, {}, []),
+        ('a server of its own may pin and create databases', {'test/t/x.sh': '#!/bin/bash\nnode_init r 3 "sift.test_create_format1 = on"\nq "CREATE DATABASE d"\n'}, False, {}, []),
+        ('a pooled test that creates databases without a pin is fine',
+         {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\nnode_init r 3 "autovacuum = off"\nq "CREATE DATABASE d"\n'}, False, {}, []),
         ('an exact SiftAgg node in a harness', {'test/col/run.sql': "SELECT 1 WHERE p LIKE '%Custom Scan (SiftAgg)%';\n"}, False, {}, ['test/col/run.sql:1: an exact SiftAgg plan node']),
         ('an exact JSON SiftAgg node', {'test/plan/run.sql': "j::text LIKE '%\"SiftAgg\"%'\n"}, False, {}, ['test/plan/run.sql:1: an exact SiftAgg plan node']),
         ('a retired call in a fuzzer', {'test/fuzz/x.py': "q('SELECT sift.col_merge(i)')\n"}, False, {}, ['test/fuzz/x.py:1: a retired SQL name']),

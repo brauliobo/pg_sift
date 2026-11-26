@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# tap: pooled
 # Tables with a primary key and a sift_col index (track_changes is on by default and pg_dump writes it as the key's name) restored from pg_dump: the custom archive serially and
 # in parallel (pg_restore -j makes the index and the key in either order), a plain dump through psql, and a dump whose indexes come before the keys, the order a restore
 # for pg_upgrade has and the one the dumps of 4.0.0 hold. Every restore must be without an error, keep the indexes tracked, and answer as the heap does.

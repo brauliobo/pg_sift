@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# tap: pooled
 # A sift_col index with the reloption scope (a second one with two scopes) restored from pg_dump: the custom archive serially and in parallel (eight runs), and a plain dump through psql. The text of the option is in
 # the dump, the relation of the pairs and its unique btree (and the index that journals it) are made before the index that reads them (it depends on them), and the restore ends with the same index: the same
 # options, the dependency on the btree (DROP INDEX of it is refused), the scope segments written by the restore (the scope entries are the join of the facts and the pairs), and the reads of one key, a set

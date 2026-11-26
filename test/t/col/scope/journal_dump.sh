@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# tap: pooled
 # The journal index that CREATE INDEX of a scope index made (src/col/scope/make.c) through pg_dump and restore: the dump holds the journal as an index with its comment (the mark that it goes with the last scope
 # index that uses it) before the scope indexes that read it, and the restore, serial, in parallel (six runs) and through psql, ends with the same journals: the same names, comments and dependencies, none made twice, and
 # the scope indexes that read them. Dropping the restored scope indexes drops the journals, as in the source; a journal of the user's (no comment) stays. A scope of two paths (three journals) and two scope indexes that

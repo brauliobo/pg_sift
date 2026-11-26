@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# tap: pooled
 # The multiplicity limit of a scope is a property of the index: CREATE INDEX records the limit it accepted the scope under in the option (max_multiplicity(n)), so a REINDEX, a restore of
 # a dump and the rebuild after pg_upgrade (which run in a session with the default setting) check that limit, not their session's, and no build is paid for a refusal. A declaration may state it.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
