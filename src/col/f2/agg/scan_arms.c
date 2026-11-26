@@ -111,7 +111,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	a.s = sift_palloc0_aligned(V6Scan, cohort->narms);
 	for (int i = 0; i < cohort->narms; i++)
 	{
-		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate};
+		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate,.host = index};
 		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 		nleaves += a.s[i].ncols;
 	}
