@@ -98,7 +98,7 @@ make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		rest = bms_del_member(rest, sh->elem->relid);
 	foreach_node(SpecialJoinInfo, sj, root->join_info_list)
 	{
-		if (!bms_is_empty(sj->commute_above_l) || !bms_is_empty(sj->commute_above_r) || !bms_is_empty(sj->commute_below_l) || !bms_is_empty(sj->commute_below_r))
+		if (!bms_is_empty(sj->commute_above_r) || !bms_is_empty(sj->commute_below_r))
 			return false;
 		if (sh->elem != NULL && sj->jointype == JOIN_LEFT && bms_equal(sj->min_righthand, bms_make_singleton(sh->elem->relid)))
 		{
@@ -458,14 +458,17 @@ place_on(SiftV6JoinShape *sh, RestrictInfo *ri)
 	return true;
 }
 
-/* where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place for it */
+/*
+ * where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place
+ * for it. A clone (is_clone) is the form of the clause for an order of commuting outer joins other than the statement's, the order the pipe joins in: the clause it is a clone of is placed
+ */
 static bool
 place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 {
 	const OpExpr *op = (const OpExpr *) ri->clause;
 
-	if (ri->has_clone || ri->is_clone)
-		return false;
+	if (ri->is_clone)
+		return true;
 	if (within_one_dim(sh, ri->required_relids))
 		return true;
 	if (place_period(sh, ri))
