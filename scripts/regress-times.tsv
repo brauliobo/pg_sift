@@ -944,6 +944,7 @@ col/f2/heapref_l0_wal	0.24
 col/f2/index_format_compat	0.25
 col/f2/inspect_sql	0.26
 col/f2/inval_truncate	0.24
+col/f2/json_leaf_tail_batch	0.30
 col/f2/key_order	2.36
 col/f2/limits	0.57
 col/f2/limits_ios	0.63

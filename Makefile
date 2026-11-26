@@ -345,6 +345,7 @@ TESTING_REGRESS += col/f2/inspect_sql
 TESTING_REGRESS += col/f2/inspect_tiered
 TESTING_REGRESS += col/f2/inval_truncate
 TESTING_REGRESS += col/f2/journal_ddl
+TESTING_REGRESS += col/f2/json_leaf_tail_batch
 TESTING_REGRESS += col/f2/key_order
 TESTING_REGRESS += col/f2/limits
 TESTING_REGRESS += col/f2/limits_ios

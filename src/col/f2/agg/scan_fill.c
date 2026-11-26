@@ -188,8 +188,6 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 			((SiftStrView *) v->data)[i] = strview_of(text, tlen);
 		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
 	}
-	v->valid = c->valid;
-	v->all_valid = false;
 }
 
 void
