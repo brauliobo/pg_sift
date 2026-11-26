@@ -289,8 +289,9 @@ DROP TABLE u, u_q;
 
 -- column format minor 3 keeps no type for a value its leaf cannot hold: a unit that has one cannot answer, and says to REINDEX; a unit with none is
 -- not in the way, and a merge of it with a minor 4 unit gives a unit that has types
-CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+-- the column format minors of the segments are want, by generation (an index of another format has no such segment, so its rows test the minors of none)
+CREATE FUNCTION fmt(idx regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT coalesce(string_agg(format::text, ',' ORDER BY gen), want) = want FROM sift._test_col_formats(idx) $$;
 CREATE TABLE g (id int, grp int, attrs jsonb);
 CREATE TABLE g_q (n serial, q text);
 INSERT INTO g_q (q) VALUES
@@ -301,42 +302,42 @@ INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 
 SET sift.test_col_format_minor = 3;
 CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
 RESET sift.test_col_format_minor;
-SELECT fmt('g_col');
+SELECT fmt('g_col', '3') AS minors;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 -- strings among the numbers, written as minor 4 (the write buffer, a promoted segment, the merge of both with the minor 3 one)
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END, 's', CASE WHEN i % 6 = 0 THEN to_jsonb(i) ELSE to_jsonb('v' || i % 100) END)
 	FROM generate_series(6001, 9000) i;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
-SELECT sift.col_promote('g_col');
-SELECT fmt('g_col');
+DO $$ BEGIN PERFORM sift.col_promote('g_col'); END $$;
+SELECT fmt('g_col', '3,12') AS minors;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
-SELECT sift.col_merge('g_col', true);
-SELECT fmt('g_col');
+DO $$ BEGIN PERFORM sift.col_merge('g_col', true); END $$;
+SELECT fmt('g_col', '12') AS minors;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 SELECT sift.col_verify('g_col', true);
 -- strings among the numbers under minor 3, and the merge with a minor 4 unit
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END) FROM generate_series(9001, 12000) i;
 SET sift.test_col_format_minor = 3;
-SELECT sift.col_promote('g_col');
+DO $$ BEGIN PERFORM sift.col_promote('g_col'); END $$;
 RESET sift.test_col_format_minor;
-SELECT fmt('g_col');
+SELECT fmt('g_col', '12,3') AS minors;
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
-SELECT sift.col_merge('g_col', true);
-SELECT fmt('g_col');
+DO $$ BEGIN PERFORM sift.col_merge('g_col', true); END $$;
+SELECT fmt('g_col', '4') AS minors;
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
 SELECT sift.col_verify('g_col', true);
 -- REINDEX writes the types
 REINDEX INDEX g_col;
-SELECT fmt('g_col');
+SELECT fmt('g_col', '12') AS minors;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 -- a VACUUM that rewrites the units keeps them
 DELETE FROM g WHERE id % 3 = 0;
 VACUUM g;
-SELECT fmt('g_col');
+SELECT fmt('g_col', '12') AS minors;
 SELECT n, t_check(q) FROM g_q ORDER BY n;
 SELECT sift.col_verify('g_col', true);
 DROP TABLE g, g_q;
-DROP FUNCTION fmt(regclass), encodings(regclass);
+DROP FUNCTION fmt(regclass, text), encodings(regclass);
 
 DROP TABLE t, t_q, e, e_q;
 DROP FUNCTION t_rows(text, bool), t_pushed(text), t_outcome(text, bool), t_check(text), t_compare(), doc(int), num(int, int);

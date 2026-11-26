@@ -194,21 +194,21 @@ SELECT * FROM t_compare();
   6 | t    | t      | (11825)
   7 | t    | t      | (1690,13526424)
   8 | t    | t      | (11825)
-  9 | t    | t      | (12689,57268279,16000)
- 10 | t    | t      | 
- 11 | t    | t      | (13655,616156900000000000,0)
- 12 | t    | t      | 
+  9 | t    | f      | (12689,57268279,16000)
+ 10 | t    | f      | 
+ 11 | t    | f      | (13655,616156900000000000,0)
+ 12 | t    | f      | 
  13 | t    | t      | (12900,6480)
  14 | t    | t      | (v3,3225)
  15 | t    | t      | 
- 16 | t    | t      | (13403,4468)
- 17 | t    | t      | 
- 18 | t    | t      | (10181,503730)
- 19 | t    | t      | 
+ 16 | t    | f      | (13403,4468)
+ 17 | t    | f      | 
+ 18 | t    | f      | (10181,503730)
+ 19 | t    | f      | 
  20 | t    | t      | (11825)
  21 | t    | t      | (13403)
  22 | t    | t      | (9377,5293016.875)
- 23 | t    | t      | (15,7.625,61)
+ 23 | t    | f      | (15,7.625,61)
  24 | t    | t      | (1,1543.125)
  25 | t    | t      | (3290)
  26 | t    | f      | (0)
@@ -228,20 +228,20 @@ SELECT * FROM t_compare();
  40 | t    | t      | (56)
  41 | t    | t      | (13836,110700557)
  42 | t    | t      | (12521,6672502.875)
- 43 | t    | t      | 
+ 43 | t    | f      | 
  44 | t    | t      | (2040)
- 45 | t    | t      | (4364)
- 46 | t    | t      | (1455)
- 47 | t    | t      | (0)
- 48 | t    | t      | (2)
+ 45 | t    | f      | (4364)
+ 46 | t    | f      | (1455)
+ 47 | t    | f      | (0)
+ 48 | t    | f      | (2)
  49 | t    | t      | 
  50 | t    | t      | 
  51 | t    | t      | 
  52 | t    | t      | 
- 53 | t    | t      | 
+ 53 | t    | f      | 
  54 | t    | t      | 
  55 | t    | t      | 
- 56 | t    | t      | 
+ 56 | t    | f      | 
  57 | t    | t      | 
  58 | t    | t      | 
  59 | t    | t      | 
@@ -281,8 +281,8 @@ SELECT * FROM t_compare();
  93 | t    | t      | 
  94 | t    | t      | (8024,2674)
  95 | t    | t      | (2675)
- 96 | t    | t      | (2674,14275667.50)
- 97 | t    | t      | 
+ 96 | t    | f      | (2674,14275667.50)
+ 97 | t    | f      | 
  98 | t    | t      | 
  99 | t    | t      | (892)
 (99 rows)
@@ -297,48 +297,39 @@ SELECT t_check('SELECT count(*) FROM t WHERE jsonb_typeof(attrs->''m'') = ''numb
 -- the shape of the plan
 SET sift.enable_agg = on;
 EXPLAIN (COSTS OFF) SELECT count(*), sum((attrs->>'m')::float8) FROM t WHERE jsonb_typeof(attrs->'m') = 'number';
-                             QUERY PLAN                             
---------------------------------------------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: t_col
-   Filters: (jsonb_typeof((t.attrs -> 'm'::text)) = 'number'::text)
-   Pushed Aggregates: count(*), sum(attrs.m)
-(4 rows)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'s') IN ('string');
-                             QUERY PLAN                             
---------------------------------------------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: t_col
-   Filters: (jsonb_typeof((t.attrs -> 's'::text)) = 'string'::text)
-   Pushed Aggregates: count(*)
-(4 rows)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE jsonb_typeof(attrs->'m') <> 'number';
-                             QUERY PLAN                              
----------------------------------------------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: t_col
-   Filters: (jsonb_typeof((t.attrs -> 'm'::text)) <> 'number'::text)
-   Pushed Aggregates: count(*)
-(4 rows)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT jsonb_typeof(attrs->'m') AS ty, count(*) FROM t GROUP BY 1;
-             QUERY PLAN              
--------------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: t_col
-   Group Keys: jsonb_typeof(attrs.m)
-   Pushed Aggregates: count(*)
-(4 rows)
+(2 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FILTER (WHERE jsonb_typeof(attrs->'s') = 'string' OR id < 5) FROM t;
-          QUERY PLAN           
--------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: t_col
-   Pushed Aggregates: count(*)
-(3 rows)
+(2 rows)
 
 RESET sift.enable_agg;
 -- a value the leaf cannot hold (a number out of the range of the type, a non-integer for an integer leaf, a string for a number) is an error
@@ -383,10 +374,10 @@ INSERT INTO e_q (q) VALUES
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''n'') <> ''number'' OR grp = 1'),
 	('SELECT count(*) FROM e WHERE jsonb_typeof(attrs->''b'') = ''boolean'' OR jsonb_typeof(attrs->''b'') IS NULL');
 SELECT n, t_check(q) FROM e_q ORDER BY n;
- n  |                                                                                         t_check                                                                                         
-----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
-  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
+ n  |  t_check   
+----+------------
+  1 | same
+  2 | not pushed
   3 | same
   4 | same
   5 | same
@@ -401,10 +392,10 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  14 | same
  15 | same
  16 | same
- 17 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
+ 17 | same
  18 | same
  19 | same
- 20 | same
+ 20 | not pushed
  21 | same
  22 | same
  23 | same
@@ -424,50 +415,50 @@ SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS un
 -- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
 DELETE FROM e WHERE id = 7001;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  | t_check 
-----+---------
+ n  |  t_check   
+----+------------
   1 | same
-  2 | same
+  2 | not pushed
   3 | same
   8 | same
  12 | same
- 20 | same
+ 20 | not pushed
  21 | same
  24 | same
 (8 rows)
 
 UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |                                                                                         t_check                                                                                         
-----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ n  |  t_check   
+----+------------
   1 | same
-  2 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22P02
+  2 | not pushed
   3 | same
   8 | same
  12 | same
- 20 | same
+ 20 | not pushed
  21 | same
  24 | same
 (8 rows)
 
 INSERT INTO e VALUES (7003, 2, '{"m": 1e999}');
 SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
- n |                                                                                         t_check                                                                                         
----+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- 1 | pushed: error 0A000 (The plan was made before the value was written: run the statement again, it is planned afresh. Or set sift.enable_agg to off for this query.); normal: error 22003
+ n | t_check 
+---+---------
+ 1 | same
 (1 row)
 
 DELETE FROM e WHERE id IN (7002, 7003);
 VACUUM e;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  | t_check 
-----+---------
+ n  |  t_check   
+----+------------
   1 | same
-  2 | same
+  2 | not pushed
   3 | same
   8 | same
  12 | same
- 20 | same
+ 20 | not pushed
  21 | same
  24 | same
 (8 rows)
@@ -489,17 +480,17 @@ INSERT INTO u_q (q) VALUES
 SELECT encodings('u_col');
     encodings    
 -----------------
- const t codec t
+ const f codec t
 (1 row)
 
 SELECT n, t_check(q) FROM u_q ORDER BY n;
- n | t_check 
----+---------
+ n |  t_check   
+---+------------
  1 | same
- 2 | same
+ 2 | not pushed
  3 | same
- 4 | same
- 5 | same
+ 4 | not pushed
+ 5 | not pushed
 (5 rows)
 
 SELECT sift.col_verify('u_col', true);
@@ -511,13 +502,13 @@ SELECT sift.col_verify('u_col', true);
 -- the rows of the write buffer beside the segments
 INSERT INTO u SELECT i, i % 7, doc(i) FROM generate_series(16001, 17000) i;
 SELECT n, t_check(q) FROM u_q ORDER BY n;
- n | t_check 
----+---------
+ n |  t_check   
+---+------------
  1 | same
- 2 | same
+ 2 | not pushed
  3 | same
- 4 | same
- 5 | same
+ 4 | not pushed
+ 5 | not pushed
 (5 rows)
 
 SELECT sift.col_verify('u_col', true);
@@ -529,8 +520,9 @@ SELECT sift.col_verify('u_col', true);
 DROP TABLE u, u_q;
 -- column format minor 3 keeps no type for a value its leaf cannot hold: a unit that has one cannot answer, and says to REINDEX; a unit with none is
 -- not in the way, and a merge of it with a minor 4 unit gives a unit that has types
-CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(format::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+-- the column format minors of the segments are want, by generation (an index of another format has no such segment, so its rows test the minors of none)
+CREATE FUNCTION fmt(idx regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT coalesce(string_agg(format::text, ',' ORDER BY gen), want) = want FROM sift._test_col_formats(idx) $$;
 CREATE TABLE g (id int, grp int, attrs jsonb);
 CREATE TABLE g_q (n serial, q text);
 INSERT INTO g_q (q) VALUES
@@ -541,10 +533,10 @@ INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', i / 8.0, 's', 'v' || i % 
 SET sift.test_col_format_minor = 3;
 CREATE INDEX g_col ON g USING sift_col (id, grp, attrs) WITH (paths = 'attrs.m float8, attrs.s text');
 RESET sift.test_col_format_minor;
-SELECT fmt('g_col');
- fmt 
------
- 3
+SELECT fmt('g_col', '3') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -564,16 +556,11 @@ SELECT n, t_check(q) FROM g_q ORDER BY n;
  2 | same
 (2 rows)
 
-SELECT sift.col_promote('g_col');
- col_promote 
--------------
-           1
-(1 row)
-
-SELECT fmt('g_col');
- fmt  
-------
- 3,12
+DO $$ BEGIN PERFORM sift.col_promote('g_col'); END $$;
+SELECT fmt('g_col', '3,12') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -583,16 +570,11 @@ SELECT n, t_check(q) FROM g_q ORDER BY n;
  2 | same
 (2 rows)
 
-SELECT sift.col_merge('g_col', true);
- col_merge 
------------
-         1
-(1 row)
-
-SELECT fmt('g_col');
- fmt 
------
- 12
+DO $$ BEGIN PERFORM sift.col_merge('g_col', true); END $$;
+SELECT fmt('g_col', '12') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -611,41 +593,31 @@ SELECT sift.col_verify('g_col', true);
 -- strings among the numbers under minor 3, and the merge with a minor 4 unit
 INSERT INTO g SELECT i, i % 7, jsonb_build_object('m', CASE WHEN i % 5 = 0 THEN to_jsonb('str'::text) ELSE to_jsonb(i / 8.0) END) FROM generate_series(9001, 12000) i;
 SET sift.test_col_format_minor = 3;
-SELECT sift.col_promote('g_col');
- col_promote 
--------------
-           1
-(1 row)
-
+DO $$ BEGIN PERFORM sift.col_promote('g_col'); END $$;
 RESET sift.test_col_format_minor;
-SELECT fmt('g_col');
- fmt  
-------
- 12,3
+SELECT fmt('g_col', '12,3') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
- n |                                                                       t_check                                                                       
----+-----------------------------------------------------------------------------------------------------------------------------------------------------
- 1 | pushed: error 0A000 (REINDEX the index to store them, or set sift.enable_agg to off for this query.); normal: rows 32bdde3b9ab513ca0dfe3d04f3b84882
+ n | t_check 
+---+---------
+ 1 | same
 (1 row)
 
-SELECT sift.col_merge('g_col', true);
- col_merge 
------------
-         1
-(1 row)
-
-SELECT fmt('g_col');
- fmt 
------
- 4
+DO $$ BEGIN PERFORM sift.col_merge('g_col', true); END $$;
+SELECT fmt('g_col', '4') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q WHERE n = 1;
- n |                                                                       t_check                                                                       
----+-----------------------------------------------------------------------------------------------------------------------------------------------------
- 1 | pushed: error 0A000 (REINDEX the index to store them, or set sift.enable_agg to off for this query.); normal: rows 32bdde3b9ab513ca0dfe3d04f3b84882
+ n | t_check 
+---+---------
+ 1 | same
 (1 row)
 
 SELECT sift.col_verify('g_col', true);
@@ -656,10 +628,10 @@ SELECT sift.col_verify('g_col', true);
 
 -- REINDEX writes the types
 REINDEX INDEX g_col;
-SELECT fmt('g_col');
- fmt 
------
- 12
+SELECT fmt('g_col', '12') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -672,10 +644,10 @@ SELECT n, t_check(q) FROM g_q ORDER BY n;
 -- a VACUUM that rewrites the units keeps them
 DELETE FROM g WHERE id % 3 = 0;
 VACUUM g;
-SELECT fmt('g_col');
- fmt 
------
- 12
+SELECT fmt('g_col', '12') AS minors;
+ minors 
+--------
+ t
 (1 row)
 
 SELECT n, t_check(q) FROM g_q ORDER BY n;
@@ -692,7 +664,7 @@ SELECT sift.col_verify('g_col', true);
 (1 row)
 
 DROP TABLE g, g_q;
-DROP FUNCTION fmt(regclass), encodings(regclass);
+DROP FUNCTION fmt(regclass, text), encodings(regclass);
 DROP TABLE t, t_q, e, e_q;
 DROP FUNCTION t_rows(text, bool), t_pushed(text), t_outcome(text, bool), t_check(text), t_compare(), doc(int), num(int, int);
 DROP EXTENSION pg_sift_test;

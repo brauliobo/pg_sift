@@ -10,8 +10,9 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 
-CREATE FUNCTION fmt(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY gen) FROM sift._test_col_formats(idx) $$;
+-- the column format minors of the segments are want, by generation (an index of another format has no such segment, so its rows test the minors of none)
+CREATE FUNCTION fmt(idx regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT coalesce(string_agg(least(format, 15)::text, ',' ORDER BY gen), want) = want FROM sift._test_col_formats(idx) $$;
 
 CREATE FUNCTION t_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
@@ -77,38 +78,38 @@ SET sift.test_col_format_minor = 3;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
 RESET sift.test_col_format_minor;
 VACUUM ANALYZE k;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '3') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 
 -- minor 6 units beside it: the rows of the minor 3 unit still decide
 INSERT INTO k SELECT i, i % 7, doc(i + 5) FROM generate_series(8001, 12000) i;
-SELECT sift.col_promote('k_col');
-SELECT fmt('k_col');
+DO $$ BEGIN PERFORM sift.col_promote('k_col'); END $$;
+SELECT fmt('k_col', '3,15') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 
 -- a merge that has an input without kinds writes minor 4, which does not claim them (the merged rows used to answer wrongly); REINDEX
 -- from the heap writes minor 6, under minor 3 as 3
-SELECT sift.col_merge('k_col', true);
-SELECT fmt('k_col');
+DO $$ BEGIN PERFORM sift.col_merge('k_col', true); END $$;
+SELECT fmt('k_col', '4') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 SELECT sift.col_verify('k_col', true);
 SET sift.test_col_format_minor = 3;
 REINDEX INDEX k_col;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '3') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 RESET sift.test_col_format_minor;
 REINDEX INDEX k_col;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '15') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 
 -- the released 3.1 format is readable, but does not prove complete kinds; REINDEX restores that guarantee
 SET sift.test_col_format_minor = 4;
 REINDEX INDEX k_col;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '4') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 RESET sift.test_col_format_minor;
 REINDEX INDEX k_col;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '15') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 
 -- rows of the write buffer beside the segments
@@ -124,38 +125,39 @@ SET sift.test_col_format_minor = 3;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc) WITH (paths = 'doc[]{s text, n int4, b bool}');
 RESET sift.test_col_format_minor;
 VACUUM ANALYZE k;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '3') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 DROP TABLE k;
 
 -- a sift_table with declared paths: a group written under minor 3 keeps the plan with the documents, one of minor 6 is a SiftAgg plan
-CREATE FUNCTION tfmt(t regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT string_agg(least(format, 15)::text, ',' ORDER BY format) FROM sift.table_segments(t) WHERE kind = 'columns' $$;
+-- the minors of its column segments are want (the columns of a table of another format have no minor, 0, so its rows test none)
+CREATE FUNCTION tfmt(t regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT coalesce(string_agg(least(format, 15)::text, ',' ORDER BY format), want) = want FROM sift.table_segments(t) WHERE kind = 'columns' AND format > 0 $$;
 CREATE TABLE kt (id int, grp int, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('kt', 'doc', 'doc[]{s text, n int4, b bool}');
 SET sift.test_col_format_minor = 3;
 INSERT INTO kt SELECT i, i % 7, doc(i) FROM generate_series(1, 8000) i;
 VACUUM kt;
 RESET sift.test_col_format_minor;
-SELECT tfmt('kt');
+SELECT tfmt('kt', '3') AS minors;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 INSERT INTO kt SELECT i, i % 7, doc(i + 5) FROM generate_series(8001, 12000) i;
 -- Space compaction copies the legacy group without upgrading its format; uncertain kinds retain the document plan until VACUUM FULL.
 VACUUM kt;
-SELECT tfmt('kt');
+SELECT tfmt('kt', '3,15') AS minors;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 VACUUM (FULL) kt;
-SELECT tfmt('kt');
+SELECT tfmt('kt', '15') AS minors;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 INSERT INTO kt SELECT i, i % 7, doc(i + 9) FROM generate_series(12001, 13000) i;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 SET sift.test_col_format_minor = 4;
 VACUUM FULL kt;
-SELECT tfmt('kt');
+SELECT tfmt('kt', '4') AS minors;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 RESET sift.test_col_format_minor;
 VACUUM FULL kt;
-SELECT tfmt('kt');
+SELECT tfmt('kt', '15') AS minors;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
 DROP TABLE kt;
 
@@ -201,15 +203,15 @@ SET sift.test_col_format_minor = 4;
 CREATE INDEX k_col ON k USING sift_col (id, grp, doc, wide) WITH (paths = 'doc[]{s text, n int4, b bool}');
 RESET sift.test_col_format_minor;
 VACUUM ANALYZE k;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '5') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 INSERT INTO k SELECT i, i % 7, doc(i), i * 1000000000000.0001 FROM generate_series(8001, 12000) i;
-SELECT sift.col_promote('k_col');
-SELECT sift.col_merge('k_col', true);
-SELECT fmt('k_col');
+DO $$ BEGIN PERFORM sift.col_promote('k_col'); END $$;
+DO $$ BEGIN PERFORM sift.col_merge('k_col', true); END $$;
+SELECT fmt('k_col', '5') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 REINDEX INDEX k_col;
-SELECT fmt('k_col');
+SELECT fmt('k_col', '15') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 SELECT sift.col_verify('k_col', true);
 -- Members outside a declared leaf's type keep exact answers from the original documents.

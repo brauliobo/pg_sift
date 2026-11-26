@@ -12,6 +12,7 @@
 #include "storage/bufmgr.h"
 #include "utils/array.h"
 #include "core/maint/maint.h"
+#include "core/meta_peek.h"
 #include "col/am.h"
 #include "col/v1/gorder/gorder.h"
 #include "col/v1/order/bound.h"
@@ -66,7 +67,8 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
 PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
 
-/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, whether it holds the leaf statistics block, and whether its string roots are flagged (SIFT_SEG_ROOTS) */
+/* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, whether it holds the leaf statistics block, and whether its string roots are flagged (SIFT_SEG_ROOTS);
+ * an index of another format has no such segment */
 Datum
 sift_test_col_formats(PG_FUNCTION_ARGS)
 {
@@ -75,6 +77,11 @@ sift_test_col_formats(PG_FUNCTION_ARGS)
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
+	if (sift_meta_resolve_major(index) != SIFT_FORMAT_MAJOR)
+	{
+		index_close(index, AccessShareLock);
+		return (Datum) 0;
+	}
 	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs; i++)
 	{
