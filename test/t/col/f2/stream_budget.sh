@@ -26,7 +26,7 @@ temp_file_limit = 1MB
 max_parallel_maintenance_workers = 0
 max_parallel_workers_per_gather = 0
 shared_buffers = 32MB
-max_wal_size = 2GB
+max_wal_size = 512MB
 sift.async_maintenance = off"
 node_start fb || bail "start failed"
 sql fb "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension failed"
@@ -85,6 +85,7 @@ SET maintenance_work_mem = '2MB';
 VACUUM a$n;
 SQL
 	check "col_vacuum at $n rows: the index is intact and holds the live rows" test "$(sql fb "SELECT sift.verify('a${n}_i', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
+	sql fb "DROP TABLE a$n" >/dev/null
 done
 
 for n in "${SCALES[@]}"; do
@@ -105,6 +106,7 @@ for n in "${SCALES[@]}"; do
 	settle c${n}_i
 	note col_autovacuum "$n" "$base" "$peak" -1 "$temp0" c${n}_i
 	check "col_autovacuum at $n rows: the index is intact" test "$(sql fb "SELECT sift.verify('c${n}_i', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
+	sql fb "DROP TABLE c$n" >/dev/null
 done
 
 for n in "${SCALES[@]}"; do
@@ -116,6 +118,7 @@ SET maintenance_work_mem = '8MB';
 VACUUM e$n;
 SQL
 	check "col_bulkdelete at $n rows: the index is intact" test "$(sql fb "SELECT sift.verify('e${n}_i', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
+	sql fb "DROP TABLE e$n" >/dev/null
 done
 
 for n in "${TABLE_SCALES[@]}"; do
@@ -127,6 +130,7 @@ SET maintenance_work_mem = '4MB';
 UPDATE d$n SET grp = grp + 1;
 SQL
 	check "tbl_update at $n rows: every row is there once" test "$(sql fb "SELECT count(*) = $n AND count(DISTINCT id) = $n FROM d$n")" == t
+	sql fb "DROP TABLE d$n" >/dev/null
 done
 
 for n in "${TABLE_SCALES[@]}"; do
@@ -138,6 +142,7 @@ SET maintenance_work_mem = '4MB';
 DELETE FROM g$n WHERE id % 2 = 0;
 SQL
 	check "tbl_delete at $n rows: the odd ids are left" test "$(sql fb "SELECT count(*) = $n / 2 AND bool_and(id % 2 = 1) FROM g$n")" == t
+	sql fb "DROP TABLE g$n" >/dev/null
 done
 
 load u $UNIQUE_ROWS

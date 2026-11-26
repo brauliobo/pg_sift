@@ -18,7 +18,8 @@ rotate() { echo "$1" >"$D/key_id"; echo "secret-$1" >"$D/secret"; ctl "key/$1" >
 rotate AKIDONE
 export AWS_ACCESS_KEY_ID_FILE=$D/key_id AWS_SECRET_ACCESS_KEY_FILE=$D/secret AWS_REGION=us-east-1
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-node_init s3 7 "autovacuum = off"
+node_init s3 7 "sift.test_create_format1 = off
+autovacuum = off"
 node_start s3 || bail "start failed"
 ND=$(dir s3)
 URI="s3://bucket/pre"
@@ -46,9 +47,9 @@ check "a 200 to a Range request is refused as what it is" bash -c '[[ $1 == *"an
 
 # one session: it opened the store with the first credentials, which the store then stops accepting, and the files hold the new ones
 cache_clear
-sql s3 "$(rows ev 60001 61000)" "VACUUM (FREEZE) ev" "VACUUM ev" "SELECT 1" >/dev/null 2>&1
+sql s3 "$(rows ev 60001 62000)" "VACUUM (FREEZE) ev" "VACUUM ev" "SELECT 1" >/dev/null 2>&1
 out=$(sql s3 "SELECT sum(length(pad)) FROM ev" "\\! echo AKIDTWO >$D/key_id; echo secret-AKIDTWO >$D/secret; curl -fsS http://127.0.0.1:$MOCK_PORT/__ctl/key/AKIDTWO >/dev/null" \
-	"$(rows ev 61001 62000)" "VACUUM (FREEZE) ev" "VACUUM ev" "SELECT count(*) FROM sift.tier_status" 2>&1 | tail -1)
+	"$(rows ev 62001 64000)" "VACUUM (FREEZE) ev" "VACUUM ev" "SELECT count(*) FROM sift.tier_status" 2>&1 | tail -1)
 check "the credentials rotated under a session: it reads the files again and moves the next part" test "$out" == 3
 
 ctl page/1 >/dev/null

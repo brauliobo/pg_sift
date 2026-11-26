@@ -4,7 +4,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 5
-node_init tc 5 "autovacuum = off"
+node_init tc 5 "sift.test_create_format1 = off
+autovacuum = off"
 node_start tc || bail "start failed"
 STORE=$(dir tc)/store
 sql tc "CREATE EXTENSION pg_sift" "CREATE TABLE ev (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table" \

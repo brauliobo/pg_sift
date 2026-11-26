@@ -5,8 +5,8 @@
 
 plan 3
 SRC=${SIFT_REPO:?}/src/col/f2
-check "the scope overlay opens a part by its descriptor, which may be in object storage" test "$(grep -c 'sift_part_open(' "$SRC/f2_scope_over.c")" == 0
-check "write_cb allocates nothing from PostgreSQL" test "$(sed -n '/^write_cb/,/^}/p' "$SRC/f2_tier_curl.c" | grep -cE 'palloc|repalloc|ereport|elog')" == 0
-check "libcurl is looked for under its name on macOS too" grep -q 'libcurl.4.dylib' "$SRC/f2_tier_curl.c"
+check "the scope overlay opens a part by its descriptor, which may be in object storage" test "$(grep -c 'sift_part_open(' "$SRC/scope/over.c")" == 0
+check "write_cb allocates nothing from PostgreSQL" test "$(sed -n '/^write_cb/,/^}/p' "$SRC/tier/curl.c" | grep -cE 'palloc|repalloc|ereport|elog')" == 0
+check "libcurl is looked for under its name on macOS too" grep -q 'libcurl.4.dylib' "$SRC/tier/curl.c"
 
 finish

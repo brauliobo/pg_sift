@@ -14,6 +14,7 @@ plan $((4 + 4 + 3 * ${#RICH[@]} + 3))
 p=osw
 F2="SET sift.test_create_format1 = off"
 node_init "$p" 72 "autovacuum = off
+max_parallel_maintenance_workers = 0
 sift.async_maintenance = off"
 node_start "$p" || bail "start failed"
 sql "$p" "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "$F2" \
@@ -35,6 +36,7 @@ agree() { # the plans give the same rows
 }
 
 # 1. a session that holds the index may be between an allocation and its commit: the sweep gives up, and frees when the session is gone
+sql "$p" "SELECT sift._test_f2_reclaim('h_col')" >/dev/null
 base=$(used)
 coproc HOLD { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock "$p")" -p "$(port "$p")" -U postgres -d "$(node_db "$p")"; }
 printf '%s\n' "BEGIN;" "SELECT sift._test_f2_alloc('h_col', 5);" "SELECT count(*) FROM sift._test_f2_alloc_stream('h_col', 9);" "SELECT sift._test_f2_meta_alloc('h_col');" "\\echo READY" >&"${HOLD[1]}"
