@@ -2,10 +2,11 @@
 # The visibility map of a sift_table on a hot standby with hot_standby_feedback = off. The primary does not know the old snapshot of the standby, so its VACUUM finds the rows of an
 # insert that the snapshot cannot see all visible and sets their bits. The record that sets them carries the newest transaction it makes visible, and the standby ends the queries whose
 # snapshot is not past it before it applies the bits (ResolveRecoveryConflictWithSnapshot): the index-only scan of the old snapshot never skips the table for a row it must not see.
-# An insert-only workload: no deletion vector is settled, so the only record of the VACUUM that conflicts with a reader is the one of the map.
+# An insert-only workload: no deletion vector is settled, so the only record of the VACUUM that conflicts with a reader is the one of the map. The table holds 30000 rows in the quick run
+# too: the VACUUM compacts a part of 10000 rows with the insert, and the reuse of the extents of that compaction would end the query first.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-ROWS=$(knob SIFT_VM_ROWS 30000 10000)
+ROWS=30000
 plan 11
 node_init primary 0 "shared_preload_libraries = 'pg_sift'
 wal_level = replica
