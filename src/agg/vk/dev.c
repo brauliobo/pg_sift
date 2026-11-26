@@ -13,9 +13,10 @@
 #include <strings.h>
 
 #include "agg/vk/int.h"
-#include "agg/vk/spv.h"
 
 #ifdef SIFT_VULKAN
+
+#include "agg/vk/spv.h"
 
 #define MAXDEV 16
 
@@ -157,6 +158,18 @@ bus_matches(const SiftVkDevInfo *d, const char *sel)
 	return d->pci_bus == bus && d->pci_dev == dev;
 }
 
+/* the loader of the platform: the Vulkan loader of Linux, then the one of the Vulkan SDK and MoltenVK on macOS */
+static const char *const loaders[] = {"libvulkan.so.1", "libvulkan.1.dylib", "libMoltenVK.dylib"};
+
+/* an instance that was never made started no thread of a driver: its loader goes back (the library of a live instance stays mapped, see drop_instance) */
+static void
+close_loader(SiftVk *vk)
+{
+	dlclose(vk->lib);
+	vk->lib = NULL;
+	vk->gipa = NULL;
+}
+
 static bool
 open_instance(SiftVk *vk, char *err, size_t errlen)
 {
@@ -166,17 +179,19 @@ open_instance(SiftVk *vk, char *err, size_t errlen)
 	sigset_t	old;
 	VkResult	r;
 
-	vk->lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+	for (size_t i = 0; !vk->lib && i < sizeof(loaders) / sizeof(loaders[0]); i++)
+		vk->lib = dlopen(loaders[i], RTLD_NOW | RTLD_LOCAL);
 	if (!vk->lib)
 	{
-		snprintf(err, errlen, "libvulkan.so.1 cannot be loaded: %s", dlerror());
+		snprintf(err, errlen, "the Vulkan loader (%s) cannot be loaded: %s", loaders[0], dlerror());
 		return false;
 	}
 	vk->gipa = (PFN_vkGetInstanceProcAddr) dlsym(vk->lib, "vkGetInstanceProcAddr");
 	create = vk->gipa ? (PFN_vkCreateInstance) vk->gipa(NULL, "vkCreateInstance") : NULL;
 	if (!create)
 	{
-		snprintf(err, errlen, "libvulkan.so.1 has no vkCreateInstance");
+		snprintf(err, errlen, "the Vulkan loader has no vkCreateInstance");
+		close_loader(vk);
 		return false;
 	}
 	sigs_block(&old);
@@ -190,6 +205,8 @@ open_instance(SiftVk *vk, char *err, size_t errlen)
 #undef X
 	}
 	sigs_restore(&old);
+	if (r != VK_SUCCESS)
+		close_loader(vk);
 	return r == VK_SUCCESS;
 }
 

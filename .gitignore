@@ -17,6 +17,7 @@ tmp_check_iso/
 .deps/
 .build-flavor
 .build-dir
+.sql-parts.stamp
 core
 core.[0-9]*
 !/src/core/

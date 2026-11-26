@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the pg_sift container images for the host architecture (the release workflow runs it on each architecture and publishes). From any directory:
-#   packaging/docker/build.sh [-e] [PG_TAG...]     PG_TAG: a tag of the official postgres image, default 17 18 19
+#   packaging/docker/build.sh [-e] [PG_TAG...]     PG_TAG: a tag of the official postgres image, default 17 18
 #   JOBS=2 packaging/docker/build.sh 18            compile with 2 jobs (default 4)
 # For each tag it makes pg_sift:pg<MAJOR> and pg_sift:<extension version>-pg<MAJOR>; with -e also pg_sift-extension:pg<MAJOR> (the
 # image-volume layout, docs/CONTAINERS.md). IMAGE_REPO=ghcr.io/OWNER/pg_sift renames the repository (then `docker push` is yours to run).
@@ -11,7 +11,7 @@ VER=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" "$REPO/pg_sift.control")
 NAME=${IMAGE_REPO:-pg_sift}
 ext=
 [[ ${1:-} == -e ]] && { ext=1; shift; }
-tags=("$@"); (( ${#tags[@]} )) || tags=(17 18 19)
+tags=("$@"); (( ${#tags[@]} )) || tags=(17 18)
 
 build() { # build TARGET REPOSITORY PG_TAG MAJOR: the build log is shown only when the build fails
 	local log; log=$(mktemp)

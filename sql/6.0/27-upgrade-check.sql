@@ -337,6 +337,19 @@ BEGIN
 		advice := format('6.0 recreates %s with one more column (action), which a dependent object stops: drop %s before ALTER EXTENSION pg_sift UPDATE and create it again after', r.used, r.dep);
 		RETURN NEXT;
 	END LOOP;
+	-- the update makes sift.table_paths_maintained again, for the key of the declared paths that it changes: a view over it stops the update, as one over the two functions above
+	FOR r IN SELECT DISTINCT w.ev_class::regclass::text AS dep
+			 FROM pg_depend d JOIN pg_rewrite w ON w.oid = d.objid
+			 WHERE d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass AND d.refobjid = to_regclass('sift.table_paths_maintained') AND d.deptype = 'n'
+			   AND w.ev_class <> d.refobjid
+			   AND (SELECT a.atttypid FROM pg_attribute a WHERE a.attrelid = 'sift.table_paths'::regclass AND a.attname = 'relid') = 'pg_catalog.regclass'::regtype
+			   AND NOT EXISTS (SELECT 1 FROM pg_depend e WHERE e.classid = d.classid AND e.objid = d.objid AND e.deptype = 'e')
+			 ORDER BY 1
+	LOOP
+		ord := 5; phase := 'pre_dep'; object := r.dep; kind := 'dependency'; detected := 'depends on sift.table_paths_maintained'; status := 'blocker'; action_sql := NULL; size_bytes := NULL;
+		advice := format('6.0 drops sift.table_paths_maintained and creates it again with the declared paths keyed by sift.tblref, which a dependent view stops: drop %s before ALTER EXTENSION pg_sift UPDATE and create it again after', r.dep);
+		RETURN NEXT;
+	END LOOP;
 	FOR r IN SELECT p.oid::regprocedure::text AS fn
 			 FROM pg_proc p
 			 WHERE p.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace, 'sift'::regnamespace, 'sift_internal'::regnamespace)

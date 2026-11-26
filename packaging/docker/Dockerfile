@@ -9,7 +9,7 @@ ARG PG_TAG=18
 FROM postgres:${PG_TAG} AS build
 ARG JOBS=4
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential postgresql-server-dev-${PG_MAJOR} liblz4-dev libzstd-dev libicu-dev \
+ && apt-get install -y --no-install-recommends build-essential python3 postgresql-server-dev-${PG_MAJOR} liblz4-dev libzstd-dev libicu-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
@@ -33,7 +33,7 @@ LABEL org.opencontainers.image.title="pg_sift" \
       org.opencontainers.image.source="https://github.com/brauliobo/pg_sift" \
       org.opencontainers.image.licenses="PostgreSQL"
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libcurl4 \
+ && apt-get install -y --no-install-recommends "$(apt-cache show --no-all-versions libcurl4t64 >/dev/null 2>&1 && echo libcurl4t64 || echo libcurl4)" \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/usr/ /usr/
 COPY packaging/docker/initdb.sql /docker-entrypoint-initdb.d/10-pg_sift.sql

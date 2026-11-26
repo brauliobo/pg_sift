@@ -50,7 +50,7 @@ ifneq ($(or $(VULKAN),$(SIFT_VULKAN)),)
 PG_CPPFLAGS += -DSIFT_VULKAN
 SHLIB_LINK += -ldl
 endif
-EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) src/*/*.d src/*/*/*.d src/*/*/*/*.d src/*/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
+EXTRA_CLEAN = $(if $(SIFT_OUT),$(SIFT_OUT)/$(SRC) $(SIFT_OUT)/gen .build-dir,$(SIFT_UPDATE_SQL) .sql-parts.stamp src/*/*.d src/*/*/*.d src/*/*/*/*.d src/*/*/*/*/*.d .build-flavor test/results test/regression.diffs test/regression.out)
 ifdef SANITIZE
 PG_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 SHLIB_LINK += -fsanitize=address,undefined
@@ -869,16 +869,6 @@ ifeq ($(shell test $(PG_MAJOR) -ge $(PG_MIN_MAJOR) && echo ok),)
 $(error pg_sift needs PostgreSQL $(PG_MIN_MAJOR) or newer, but '$(PG_CONFIG)' is PostgreSQL $(PG_MAJOR))
 endif
 
-# The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked; a header or library that is not found stops the build.
-# SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 build without one: chunks never use it, and one written elsewhere that does fails to open with a clear error.
-# pg_config's flags carry the include and library directories of a package manager (Homebrew keeps lz4 and zstd out of the compiler's default paths)
-colz_flags := $(shell $(PG_CONFIG) --cppflags --ldflags)
-define colz_probe
-$(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) $(colz_flags) -include $(2).h -x c - -l$(2) -o /dev/null 2>/dev/null && echo ok),$(eval PG_CPPFLAGS += -DSIFT_HAVE_$(1))$(eval SHLIB_LINK += -l$(2)),$(error pg_sift: $(2) not found (install lib$(2) headers, or build with SIFT_NO_$(1)=1))))
-endef
-$(call colz_probe,LZ4,lz4)
-$(call colz_probe,ZSTD,zstd)
-
 # SIFT_HARDEN=pkg|init|1: opt-in compiler hardening (scripts/harden.mk, docs/SAFETY.md)
 include $(dir $(SIFT_MK))scripts/harden.mk
 
@@ -902,6 +892,17 @@ pg-valgrind:
 else
 include $(PGXS)
 
+# The general-purpose layers of the column codec (src/col/compress.c): LZ4 and zstd, each linked; a header or library that is not found stops the build. They are probed with the compiler
+# PGXS names (CC is not known before it is included), and their flag goes to CPPFLAGS, which PGXS has built from PG_CPPFLAGS by now.
+# SIFT_NO_LZ4=1 / SIFT_NO_ZSTD=1 build without one: chunks never use it, and one written elsewhere that does fails to open with a clear error.
+# pg_config's flags carry the include and library directories of a package manager (Homebrew keeps lz4 and zstd out of the compiler's default paths)
+colz_flags := $(shell $(PG_CONFIG) --cppflags --ldflags)
+define colz_probe
+$(if $(SIFT_NO_$(1)),,$(if $(shell echo 'int main(void) { return 0; }' | $(CC) $(colz_flags) -include $(2).h -x c - -l$(2) -o /dev/null 2>/dev/null && echo ok),$(eval override CPPFLAGS += -DSIFT_HAVE_$(1))$(eval SHLIB_LINK += -l$(2)),$(error pg_sift: $(2) not found (install lib$(2) headers, or build with SIFT_NO_$(1)=1))))
+endef
+$(call colz_probe,LZ4,lz4)
+$(call colz_probe,ZSTD,zstd)
+
 # SIFT_LLD=auto (default): link with ld.lld on Linux when the compiler can use it and SIFT_LTO is off; SIFT_LLD=0 keeps the system linker.
 SIFT_LLD ?= auto
 SIFT_USE_LLD := $(and $(filter Linux,$(shell uname -s)),$(filter-out 0,$(SIFT_LLD)),$(if $(SIFT_LTO),,x),$(shell command -v ld.lld 2>/dev/null),$(shell echo 'int main(void) { return 0; }' | $(CC) -fuse-ld=lld -x c - -o /dev/null 2>/dev/null && echo ok))
@@ -922,8 +923,11 @@ endif
 endif
 
 .PHONY: update-sql
-$(SIFT_UPDATE_SQL): $(wildcard sql/[0-9]*/*.sql) scripts/sql-parts.sh
+# one recipe builds every generated script: a rule with several targets would run it once for each of them under make -jN (a grouped target needs GNU make 4.3)
+.sql-parts.stamp: $(wildcard sql/[0-9]*/*.sql) scripts/sql-parts.sh
 	scripts/sql-parts.sh build
+	@touch $@
+$(SIFT_UPDATE_SQL): .sql-parts.stamp
 update-sql: $(SIFT_UPDATE_SQL)
 all: update-sql
 
@@ -936,7 +940,7 @@ $(SIFT_GEN)/core/build_id.h: FORCE
 	@mkdir -p $(@D); echo '#define SIFT_BUILD_ID "$(SIFT_BUILD_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
 $(SIFT_OBJ)$(SRC)/core/handler.o: $(SIFT_GEN)/core/build_id.h
 # The identity of the sources and of the options that change them (scripts/code-id.sh): the shared tables of a server are told apart by it (col/dsmreg.c); rewritten only when it changes, so that only dsmreg.o is rebuilt then.
-SIFT_CODE_ID = $(shell $(srcdir)/scripts/code-id.sh $(or $(srcdir),.) '$(filter -DSIFT_%,$(PG_CPPFLAGS))')
+SIFT_CODE_ID = $(shell $(srcdir)/scripts/code-id.sh $(or $(srcdir),.) '$(filter -DSIFT_%,$(CPPFLAGS))')
 $(SIFT_GEN)/core/code_id.h: FORCE
 	@mkdir -p $(@D); echo '#define SIFT_CODE_ID "$(SIFT_CODE_ID)"' >$@.new; cmp -s $@.new $@ || mv $@.new $@; rm -f $@.new
 $(SIFT_OBJ)$(SRC)/col/dsmreg.o: $(SIFT_GEN)/core/code_id.h

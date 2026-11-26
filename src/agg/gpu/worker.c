@@ -663,12 +663,48 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 	return false;
 }
 
+/*
+ * Whether the host has a device that sift.gpu = auto may use, asked once by the backend for each value of sift.gpu_device. A host with none (no loader, no driver, a software device only) has none for
+ * every query: the first backend that finds a table of the worker does not ask (a worker of the server saw a device), and where there is no table, a headless host makes none (16 MiB of shared memory
+ * and a worker that fails to open its device again every FAILED_RETRY_US).
+ */
+static bool
+host_has_device(const char **why)
+{
+	static struct
+	{
+		bool		probed,
+					found;
+		char		device[NAMEDATALEN];
+		char		why[160];
+	}			host;
+	SiftVkDevInfo devs[16];
+	int			chosen = -1;
+
+	if (!host.probed || strcmp(host.device, sift_gpu_device) != 0)
+	{
+		const int	n = sift_vk_list_devices(devs, lengthof(devs), &chosen, sift_gpu_device, false, host.why, sizeof(host.why));
+
+		if (n >= 0 && chosen < 0)
+			strlcpy(host.why, "no Vulkan device that sift.gpu = auto may use", sizeof(host.why));
+		host.found = chosen >= 0;
+		host.probed = true;
+		strlcpy(host.device, sift_gpu_device, sizeof(host.device));
+	}
+	*why = host.why;
+	return host.found;
+}
+
 SiftGpuConn *
 sift_gpu_conn_open(bool allow_local, const char **why)
 {
-	SiftGpuShm *shm = attach_shm();
-	SiftGpuConn *c = palloc0(sizeof(SiftGpuConn));
+	SiftGpuShm *shm;
+	SiftGpuConn *c;
 
+	if (sift_gpu_mode == SIFT_GPU_AUTO && sift_dsm_find(SIFT_GPU_SHM_NAME, NULL) == NULL && !host_has_device(why))
+		return NULL;
+	shm = attach_shm();
+	c = palloc0(sizeof(SiftGpuConn));
 	if (shm != NULL && ensure_worker(shm, why))
 	{
 		c->shm = shm;

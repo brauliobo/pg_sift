@@ -58,3 +58,12 @@ CALL pg_temp.check_agg();
 SET sift.simd = 'scalar';
 CALL pg_temp.check_agg();
 RESET sift.simd;
+
+-- 6.0: the new objects are Format 2.0 and sound, the view of the declared paths answers, and the update left no function that 6.0 removed
+DO $$ BEGIN
+	ASSERT (SELECT major FROM sift.index_format('facts_col')) = 2, 'facts_col is not Format 2.0';
+	ASSERT (SELECT major FROM sift.index_format('tfacts')) = 2, 'tfacts is not Format 2.0';
+	ASSERT NOT EXISTS (SELECT 1 FROM sift.check()), 'sift.check reports a problem';
+	ASSERT (SELECT count(*) FROM sift.table_paths_maintained) = 0, 'sift.table_paths_maintained lists a path nobody declared';
+	ASSERT NOT EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'sift'::regnamespace AND proname IN ('_col_value_store_begin', '_col_value_store_end')), 'a function of the 5.x value store is left';
+END $$;

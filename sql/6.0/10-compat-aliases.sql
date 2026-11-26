@@ -215,8 +215,8 @@ CREATE OR REPLACE FUNCTION sift.key_cut_decision(index regclass, OUT leaf text, 
 	SELECT NULL::text, NULL::float8, NULL::float8, NULL::float8, NULL::float8, NULL::float8, 'none', 'key_cut was replaced by key_order = ''auto'', which sift.index_choices reports'
 $$;
 
--- The shared value store of a column (5.0 and 5.1) is gone: 6.0 neither writes nor reads it (a segment that still refers to one is refused with a REINDEX hint, never quarantined). The three functions and
--- the view sift.col_value_store_status of 5.1 stay, so that no query or view of 5.1 breaks; the view lists only the stores of the keys of a scope, which these answer as empty.
+-- The shared value store of a column (5.0 and 5.1) is no longer written: a Format 1 segment of 5.x that refers to one (DICT_REF) is still read as before, and REINDEX writes it as Format 2.0. The three
+-- functions and the view sift.col_value_store_status of 5.1 stay, so that no query or view of 5.1 breaks; the view lists only the stores of the keys of a scope, which these answer as empty.
 
 -- @deprecated: no shared value store is kept; no rows
 CREATE OR REPLACE FUNCTION sift.col_value_store_usage(store regclass, OUT epoch int8, OUT member regclass, OUT segments int4, OUT codes int8, OUT total_codes int8) RETURNS SETOF record

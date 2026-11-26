@@ -19,6 +19,7 @@ maintainers:
   - name: Braulio Oliveira
     email: brauliobo@gmail.com
 buildDependencies:
+  - python3
   - liblz4-dev
   - libzstd-dev
   - libicu-dev

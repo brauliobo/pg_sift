@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs inside a throwaway container (scripts/package.sh): the PostgreSQL server and its development files come from PGDG (Amazon Linux 2023: from the distribution).
 #   container.sh build   build the package of /src/pg_sift-$VER.tar.gz into /out
-#   container.sh test    install /out/$PKG, smoke-test it (fresh install and 1.0 upgrade; also the instruction scan of its library), remove it
+#   container.sh test    install /out/$PKG, smoke-test it (fresh install, 5.1 and 1.0 upgrades; also the instruction scan of its library), remove it
 # /pkg is the packaging/ directory. Env: PG (the major, build; the test reads it from the package name), VER, EPOCH (source date),
 # HOST_UID (owner of /out files), PKG (test).
 set -euo pipefail
@@ -34,7 +34,7 @@ pgdg_repo() {
 }
 
 build_deb() {
-	apt-get install -y -qq --no-install-recommends build-essential fakeroot debhelper postgresql-server-dev-$PG liblz4-dev libzstd-dev libicu-dev
+	apt-get install -y -qq --no-install-recommends build-essential python3 fakeroot debhelper postgresql-server-dev-$PG liblz4-dev libzstd-dev libicu-dev
 	cp -r /pkg/debian debian
 	sed -i "s/@PG@/$PG/g" debian/*
 	cat > debian/changelog <<LOG
@@ -51,7 +51,7 @@ LOG
 build_rpm() {
 	local crb=--enablerepo=crb devel=postgresql$PG-devel
 	[[ $ID != amzn ]] || { crb=; devel=postgresql$PG-server-devel; }
-	dnf -y -q $crb install rpm-build gcc make redhat-rpm-config $devel lz4-devel libzstd-devel libicu-devel
+	dnf -y -q $crb install rpm-build gcc make python3 redhat-rpm-config $devel lz4-devel libzstd-devel libicu-devel
 	nice rpmbuild -bb /pkg/pg_sift.spec --define "pgmajor $PG" --define "pkg_version $VER" --define "_sourcedir /src" \
 		--define "_topdir /tmp/rpmbuild" --define "_smp_mflags -j$JOBS" >/dev/null
 	cp /tmp/rpmbuild/RPMS/*/*.rpm /out
@@ -86,7 +86,7 @@ test_pkg() {
 	echo "== $PRETTY_NAME: $name $(postgres --version), pg_sift $ver"
 	pg initdb -D "$t/data" -A trust --no-sync >/dev/null
 	pg pg_ctl -D "$t/data" -l "$t/log" -w -o "-c listen_addresses= -c unix_socket_directories=$t -c port=55432" start >/dev/null
-	for from in "$ver" 1.0; do
+	for from in "$ver" 5.1 1.0; do
 		pg createdb "from_$from"
 		pg psql -X -q -v ON_ERROR_STOP=1 -v from="$from" -v to="$ver" -d "from_$from" -f /pkg/smoke.sql
 		echo "ok: create at $from, update to $ver"

@@ -10,7 +10,7 @@ license=('PostgreSQL')
 depends=('postgresql>=17' 'postgresql<20' 'lz4' 'zstd')
 optdepends=('curl: tiering to S3 and R2 object storage')
 install=pg_sift.install
-makedepends=('git' 'make' 'gcc')
+makedepends=('git' 'make' 'gcc' 'python')
 source=("pg_sift::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
