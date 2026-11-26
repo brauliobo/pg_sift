@@ -1,11 +1,13 @@
 #!/bin/bash
-# unit-scaling.sh [LOG]: builds and runs every test of test/unit under ASan and UBSan (make -C test/unit run-asan), the log in LOG (default stdout); the
-# calls a Format 2 test makes into the server are stubs that abort, so a test that reaches one fails
+# unit-scaling.sh [LOG]: builds every test and benchmark of test/unit under ASan and UBSan and runs every test, four at a time (make -C test/unit MODE=asan
+# all test), the log in LOG (default stdout); the calls a Format 2 test makes into the server are stubs that abort, so a test that reaches one fails.
+# OUT=DIR builds in DIR and keeps it (an unchanged test is not built again), else in a new directory removed at exit.
 set -euo pipefail
 export LC_ALL=C
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 LOG=${1:-/dev/stdout}
-OUT=$(mktemp -d "${TMPDIR:-/tmp}/sift-unit-XXXXXX")
-trap 'rm -rf "$OUT"' EXIT
-nice make -s -j4 -C "$REPO/test/unit" MODE=asan OUT="$OUT" all >"$LOG" 2>&1
-nice make -s -C "$REPO/test/unit" OUT="$OUT" run-asan >>"$LOG" 2>&1
+if [[ -z ${OUT:-} ]]; then
+	OUT=$(mktemp -d "${TMPDIR:-/tmp}/sift-unit-XXXXXX")
+	trap 'rm -rf "$OUT"' EXIT
+fi
+nice make -s -k -O -j4 -C "$REPO/test/unit" MODE=asan OUT="$OUT" all test >"$LOG" 2>&1
