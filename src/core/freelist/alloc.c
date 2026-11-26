@@ -173,7 +173,7 @@ init_new_pages(Relation index, BlockNumber first, uint32 n, SiftPageType type, u
 		bufs[i] = new_locked(index, first + i);
 		srcs[i] = tmpl.data;
 	}
-	log_pages(index, bufs, srcs, n);
+	sift_log_pages(index, bufs, srcs, n);
 }
 
 BlockNumber
@@ -232,7 +232,7 @@ write_chain(Relation index, const BlockNumber *blks, int k, const SiftFreeExtent
 		fl->n = Min(n - first, (int) SIFT_FREELIST_CAP);
 		memcpy(fl->ext, ext + first, fl->n * sizeof(SiftFreeExtent));
 		SiftPageSetUsed(page, FL_USED(fl->n));
-		log_pages(index, &buf, &page, 1);
+		sift_log_pages(index, &buf, &page, 1);
 		UnlockReleaseBuffer(buf);
 	}
 }

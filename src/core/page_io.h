@@ -31,4 +31,7 @@ extern const char *sift_index_ident(Relation index);
 /* Zeroes the page and gives it the standard header and the special space of the type and generation */
 extern void sift_page_init(Page page, SiftPageType type, uint64 gen);
 
+/* Copies srcs into the exclusively locked bufs and logs them as full images in one XLOG_FPI record (n <= XLR_MAX_BLOCK_ID), inside one critical section */
+extern void sift_log_pages(Relation index, Buffer *bufs, Page *srcs, int n);
+
 #endif

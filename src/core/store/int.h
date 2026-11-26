@@ -102,7 +102,6 @@ extern bool space_exclusive;
 extern BlockNumber space_limit;
 
 /* store.c */
-extern void log_pages(Relation index, Buffer *bufs, Page *srcs, int n);
 extern Buffer lock_meta(Relation index, int mode);
 extern void invalidate_mapping(Relation index);
 extern void store_update(Relation index, const SiftDirChange *chg, bool publish, SiftWriteTarget *published);

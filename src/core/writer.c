@@ -298,7 +298,7 @@ wt_log(SiftWriteTarget *wt, const BlockNumber *blknos, Page *pages, int n)
 #endif
 	for (int i = 0; i < n; i++)
 		bufs[i] = new_locked(wt->index, blknos[i]);
-	log_pages(wt->index, bufs, pages, n);
+	sift_log_pages(wt->index, bufs, pages, n);
 	for (int i = 0; i < n; i++)
 		UnlockReleaseBuffer(bufs[i]);
 }

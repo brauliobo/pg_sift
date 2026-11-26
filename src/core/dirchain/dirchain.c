@@ -423,7 +423,7 @@ flush_pending(ChainOut *o)
 {
 	if (o->npending == 0)
 		return;
-	log_pages(o->index, o->pending, o->pending_page, o->npending);
+	sift_log_pages(o->index, o->pending, o->pending_page, o->npending);
 	for (int i = 0; i < o->npending; i++)
 		UnlockReleaseBuffer(o->pending[i]);
 	o->npending = 0;
