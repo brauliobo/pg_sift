@@ -6,7 +6,8 @@
 
 plan 4
 node_init vs 4 "autovacuum = off
-sift.async_maintenance = off"
+sift.async_maintenance = off
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start vs || bail "start failed"
 sql vs "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_walinspect" "CREATE TABLE v (id int, pad text) USING sift_table" \
 	"INSERT INTO v SELECT g, md5(g::text) FROM generate_series(1, 8192) g" "INSERT INTO v SELECT g, md5(g::text) FROM generate_series(8193, 16384) g" >/dev/null || bail "setup failed"

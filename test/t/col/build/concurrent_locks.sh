@@ -16,9 +16,11 @@
 
 KINDS=${SIFT_CL_KINDS:-btree gin sift_plain sift_track sift_scope sift_scope_new_journal reindex_btree reindex_gin reindex_sift_scope}
 PT=pairs
+# Format 2: the indexes a concurrent build of the release library makes
 node_init cl 71 "autovacuum = off
 sift.async_maintenance = off
-max_parallel_maintenance_workers = 0"
+max_parallel_maintenance_workers = 0
+sift.test_create_format1 = off"
 node_start cl || bail "start failed"
 D=$(dir cl)
 FG=7101			# the advisory lock the expression of the btree and GIN indexes waits for in the build
