@@ -268,6 +268,50 @@ computed_class_ok(const SiftV6JoinShape *sh, Relids rels)
 	return true;
 }
 
+/* the one part every column of e is of; ROLE_NONE when they are of several */
+static int
+single_role(const SiftV6JoinShape *sh, Node *e)
+{
+	int			role = ROLE_NONE;
+
+	foreach_node(Var, v, pull_var_clause(e, 0))
+	{
+		const int	r = v->varlevelsup == 0 ? sift_v6_join_role(sh, v) : ROLE_NONE;
+
+		if (r == ROLE_NONE || (role != ROLE_NONE && r != role))
+			return ROLE_NONE;
+		role = r;
+	}
+	return role;
+}
+
+/* every member of the class is the probe, a key of its dimension, or of a part the probe or a key reads already (the planner applies the equality of the members of one relation in its scan):
+ * a member of several parts that is no key (coalesce(f.a, d.b)) would drop the equality */
+static bool
+class_keyed(PlannerInfo *root, Relids base, const SiftV6JoinShape *sh, const EquivalenceClass *ec, int probe_role)
+{
+	Bitmapset  *keyed = bms_make_singleton(probe_role - ROLE_NONE),
+			   *rest = NULL;
+
+	foreach_node(EquivalenceMember, em, ec->ec_members)
+	{
+		const Var  *key;
+		const Node *kexpr;
+		int			d;
+
+		if (em->em_is_child || !bms_overlap(pull_varnos(root, (Node *) em->em_expr), base))
+			continue;
+		d = dim_key_of(sh, (Node *) em->em_expr, &key, &kexpr);
+		if (d >= 0 && d != probe_role)
+			keyed = bms_add_member(keyed, d - ROLE_NONE);
+		else if ((d = single_role(sh, (Node *) em->em_expr)) == ROLE_NONE)
+			return false;
+		else
+			rest = bms_add_member(rest, d - ROLE_NONE);
+	}
+	return bms_is_subset(rest, keyed);
+}
+
 /* a class of equal columns and expressions that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
 static bool
 equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
@@ -301,7 +345,8 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		}
 		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
-		if (probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))))
+		if (probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))) ||
+			!class_keyed(root, base, sh, ec, probe_role))
 		{
 			if (!computed_class_ok(sh, rels))
 				return false;
