@@ -390,7 +390,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || RecoveryInProgress() || !snapshot_supported(vis))
 		return false;
 	a = sift_manifest_read_col_delta(rel, entry);
-	if (!sift_col_delta_anchor_sane(&a) || (a.flags & SIFT_CDLA_INDEXED_DIR) == 0)
+	if (!sift_col_delta_anchor_sane(&a))
 		return false;
 	if (mapcache_cx == NULL)
 		mapcache_init();

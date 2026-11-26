@@ -74,6 +74,25 @@ left_out(const SiftColDeltaPrune *prune, const SiftColDeltaDirEntry *e)
 	return prune->part_gen == 0 || e->part_gen == 0 || e->part_gen == prune->part_gen;
 }
 
+/* The pages of the chain, oldest first: those its directory lists, or those of a flat chain, found by their links from the newest */
+static bool
+chain_entries(const SiftColDeltaAnchor *a, const SiftColDeltaPageReader *reader, SiftColDeltaWatchRead *r, char *page)
+{
+	BlockNumber blk = a->delta_head_blkno;
+
+	if ((a->flags & SIFT_CDLA_INDEXED_DIR) != 0)
+		return sift_cddir_chain_entries(a, reader, &r->ent, &r->dir_blks, &r->ndir) == NULL;
+	r->ent = palloc(sizeof(SiftColDeltaDirEntry) * a->npages);
+	for (int i = a->npages - 1; i >= 0; i--)
+	{
+		if (!read_page(reader, blk, page))
+			return false;
+		r->ent[i] = sift_cddir_entry_of_page(blk, page);
+		blk = sift_col_delta_page_hdr(page)->prev_blk;
+	}
+	return true;
+}
+
 bool
 sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, const SiftColDeltaPrune *prune, SiftColDeltaPageVisit visit, void *arg,
 						  SiftColDeltaWatchRead *r)
@@ -81,14 +100,14 @@ sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const S
 	SiftColDeltaDiskReader d = {.rel = rel,.part_id = (uint32) entry->part_id};
 	SiftColDeltaPageReader reader = sift_col_delta_disk_reader(&d);
 	char	   *page;
-	bool		ok = true;
+	bool		ok;
 
 	*r = (SiftColDeltaWatchRead) {0};
-	if (!sift_col_delta_anchor_sane(a) || (a->flags & SIFT_CDLA_INDEXED_DIR) == 0 || a->npages < w->npages ||
-		sift_cddir_chain_entries(a, &reader, &r->ent, &r->dir_blks, &r->ndir) != NULL)
+	if (!sift_col_delta_anchor_sane(a) || a->npages < w->npages)
 		return false;
 	page = palloc(BLCKSZ);
 	r->last = palloc(BLCKSZ);
+	ok = chain_entries(a, &reader, r, page);
 	for (int i = 0; i < w->npages && ok; i++)
 		ok = r->ent[i].blkno == w->blks[i];
 	if (ok && w->npages > 0)
