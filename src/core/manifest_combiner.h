@@ -62,7 +62,7 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftManifestCommitCombin
 
 StaticAssertDecl(sizeof(SiftCombQueue) == PG_CACHE_LINE_SIZE, "the per-relation queue is one cache line");
 StaticAssertDecl(sizeof(SiftMcSlot) % PG_CACHE_LINE_SIZE == 0, "slots are cache-line multiples");
-StaticAssertDecl(offsetof(SiftManifestCommitCombiner, queues) == PG_CACHE_LINE_SIZE, "the queues follow the pool line");
+StaticAssertDecl(offsetof(SiftManifestCommitCombiner, queues) == sizeof(SiftCombPool), "the queues follow the lines of the pool");
 StaticAssertDecl(SIFT_MC_MAX_BATCH <= SIFT_MC_SLOTS, "a batch cannot exceed the pool");
 
 /* Under the relation's queue lock, once per batch: reads the PARTDIR tree once, applies deltas[0..n), takes Block 0 exclusively once, logs one record, publishes to the registry once; returns the new manifest_version */

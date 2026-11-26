@@ -1,6 +1,8 @@
 /*
  * test/unit/core/shm/combiner.c - the combiner of core/shm/combiner.c when an apply() fails or its backend exits: a parked leader whose apply() fails keeps its slot until the leader that detached
- * it gave it its state (the slot is not handed to another writer while that leader still writes it), and the followers of a leader that exits in apply() are given RETRY and finish.
+ * it gave it its state (the slot is not handed to another writer while that leader still writes it), and the followers of a leader that exits in apply() are given RETRY and finish. A leader applies
+ * every request of its group it detached, however many batches they take, and puts the requests of other groups back on the stack with one of them woken to lead them; writers of two groups
+ * that share a queue have every request applied once, in batches of one group.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -24,6 +26,7 @@ typedef struct TestSlot
 {
 	SiftCombHdr hdr;
 	uint32		who;
+	uint32		grp;
 } TestSlot;
 
 sem_t		sift_shm_sems[SIFT_SHM_MAX_PROCS];
@@ -44,6 +47,7 @@ static int32 f_idx = -1;
 static int32 manual[3];
 static int	nmanual;
 static pthread_t f_thread;
+static pg_atomic_uint32 wakes[SIFT_SHM_MAX_PROCS];
 
 void
 sift_shm_before_exit(void (*fn) (int, Datum))
@@ -54,7 +58,7 @@ sift_shm_before_exit(void (*fn) (int, Datum))
 static bool
 slot_free(int32 idx)
 {
-	return (pg_atomic_read_u64(&pool.free_mask[idx / SIFT_COMB_POOL_SLOTS]) >> (idx % SIFT_COMB_POOL_SLOTS)) & 1;
+	return (pg_atomic_read_u64(&pool.shard[idx / SIFT_COMB_POOL_SLOTS].free_mask) >> (idx % SIFT_COMB_POOL_SLOTS)) & 1;
 }
 
 static void
@@ -76,6 +80,7 @@ sift_shm_wake(int procno)
 			sleep_ms(1);
 		f_slot_given_back = slot_free(f_idx);
 	}
+	pg_atomic_fetch_add_u32(&wakes[procno], 1);
 	sem_post(&sift_shm_sems[procno]);
 }
 
@@ -189,7 +194,7 @@ reset(int which)
 {
 	for (int i = 0; i < SIFT_SHM_MAX_PROCS; i++)
 		sem_init(&sift_shm_sems[i], 0, 0);
-	sift_comb_pool_init_sharded(&pool);
+	sift_comb_pool_init(&pool);
 	sift_comb_queue_init(&queue, 0);
 	memset(slots, 0, sizeof(slots));
 	scenario = which;
@@ -198,6 +203,8 @@ reset(int which)
 	pg_atomic_init_u32(&f_done, 0);
 	nmanual = 0;
 	f_idx = -1;
+	for (int i = 0; i < SIFT_SHM_MAX_PROCS; i++)
+		pg_atomic_init_u32(&wakes[i], 0);
 }
 
 /* F finishes within a second; one that waits for a state nobody will write is let go (RETRY) so that the test ends */
@@ -245,10 +252,150 @@ test_leader_exits(void)
 	SIFT_CHECKF(join_f(), "a follower of a leader that exited in apply() finishes within a second");
 }
 
+static bool
+same_grp(const SiftCombHdr *lead, const SiftCombHdr *other)
+{
+	return ((const TestSlot *) lead)->grp == ((const TestSlot *) other)->grp;
+}
+
+enum { GRP_A = 1, GRP_B = 2, NGRP = 3, MANUAL_PROC = 10 };
+
+static int32 grp_slot[NGRP][3];
+static int	grp_applies[NGRP];
+static int	grp_items[NGRP];
+
+/* A request of group grp on the stack whose writer (procno MANUAL_PROC + its number) waits and does not lead */
+static int32
+push_grp(uint32 grp, int n)
+{
+	int32		idx = pool_claim(&pool);
+	TestSlot   *s = &slots[idx];
+
+	s->hdr.procno = MANUAL_PROC + n;
+	s->grp = grp;
+	pg_atomic_write_u32(&s->hdr.state, SIFT_COMB_WAITING);
+	(void) push(&queue, &s->hdr, (uint32) idx);
+	return idx;
+}
+
+/* Scenario 3: T0 (group A) applies its own request; meanwhile three requests of A and three of B land on the stack, with batches of two */
+static void
+apply_groups(void *ctx, SiftCombHdr *const *batch, uint32 n)
+{
+	uint32		grp = ((TestSlot *) batch[0])->grp;
+
+	for (uint32 i = 0; i < n; i++)
+		SIFT_CHECKF(((TestSlot *) batch[i])->grp == grp, "a batch holds requests of two groups");
+	grp_applies[grp]++;
+	grp_items[grp] += n;
+	if (t0_round++ == 0)
+		for (int i = 0; i < 3; i++)
+		{
+			grp_slot[GRP_A][i] = push_grp(GRP_A, 2 * i);
+			grp_slot[GRP_B][i] = push_grp(GRP_B, 2 * i + 1);
+		}
+}
+
+static const SiftCombOps ops_groups = {.same_group = same_grp,.apply = apply_groups,.max_batch = 2};
+
+static void
+test_leftover_groups(void)
+{
+	TestSlot	req = {.who = T0,.grp = GRP_A};
+	uint32		woken_b = 0,
+				stacked = 0;
+
+	reset(3);
+	memset(grp_applies, 0, sizeof(grp_applies));
+	memset(grp_items, 0, sizeof(grp_items));
+	sift_shm_procno = T0;
+	sift_comb_submit(&arena, &queue, &ops_groups, NULL, &req.hdr, sizeof(req));
+	for (int i = 0; i < 3; i++)
+		SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_A][i]].hdr.state) == SIFT_COMB_DONE, "request %d of the leader's group is applied (state %u)", i,
+					pg_atomic_read_u32(&slots[grp_slot[GRP_A][i]].hdr.state));
+	SIFT_CHECKF(grp_items[GRP_A] == 4 && grp_applies[GRP_A] == 3, "the leader applies the 4 requests of its group in 3 batches (%d in %d)", grp_items[GRP_A], grp_applies[GRP_A]);
+	SIFT_CHECKF(grp_items[GRP_B] == 0, "the leader applies no request of another group with its context");
+	for (int i = 0; i < 3; i++)
+		woken_b += pg_atomic_read_u32(&wakes[MANUAL_PROC + 2 * i + 1]);
+	SIFT_CHECKF(woken_b == 1, "one writer of the other group is woken, not %u", woken_b);
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_B][0]].hdr.state) == SIFT_COMB_LEAD, "the oldest of the other group is woken to lead it");
+	for (uint32 i = pg_atomic_read_u32(&queue.wait_head); i != SIFT_COMB_NONE; i = slots[i].hdr.next)
+		SIFT_CHECKF(slots[i].grp == GRP_B && (int32) i == grp_slot[GRP_B][2 - stacked++], "the other group is back on the stack, oldest at the bottom");
+	SIFT_CHECKF(stacked == 3, "the 3 requests of the other group are on the stack (%u)", stacked);
+}
+
+enum { STRESS_THREADS = 16, STRESS_ITERS = 400 };
+
+static pg_atomic_uint32 stress_applied[STRESS_THREADS + 1];
+static pg_atomic_uint32 stress_batches;
+
+static void
+apply_stress(void *ctx, SiftCombHdr *const *batch, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+	{
+		SIFT_CHECKF(same_grp(batch[0], batch[i]), "a batch holds requests of two groups");
+		pg_atomic_fetch_add_u32(&stress_applied[((TestSlot *) batch[i])->who], 1);
+	}
+	pg_atomic_fetch_add_u32(&stress_batches, 1);
+	for (int i = 0; i < 50; i++)
+		pg_spin_delay();
+}
+
+static const SiftCombOps ops_stress = {.same_group = same_grp,.apply = apply_stress,.max_batch = 3};
+
+static void *
+stress_main(void *arg)
+{
+	int			who = (int) (intptr_t) arg;
+
+	sift_shm_procno = who;
+	for (int i = 0; i < STRESS_ITERS; i++)
+	{
+		TestSlot	req = {.who = (uint32) who,.grp = (uint32) (who % 2)};
+
+		sift_comb_submit(&arena, &queue, &ops_stress, NULL, &req.hdr, sizeof(req));
+	}
+	return NULL;
+}
+
+/* Scenario 4: writers of two groups on one queue: each request is applied once, and none waits for ever */
+static void
+test_two_groups_stress(void)
+{
+	pthread_t	th[STRESS_THREADS];
+
+	reset(4);
+	pg_atomic_init_u32(&stress_batches, 0);
+	for (int i = 1; i <= STRESS_THREADS; i++)
+		pg_atomic_init_u32(&stress_applied[i], 0);
+	for (int i = 0; i < STRESS_THREADS; i++)
+		SIFT_CHECK(pthread_create(&th[i], NULL, stress_main, (void *) (intptr_t) (i + 1)) == 0);
+	for (int i = 0; i < STRESS_THREADS; i++)
+		SIFT_CHECK(pthread_join(th[i], NULL) == 0);
+	for (int i = 1; i <= STRESS_THREADS; i++)
+		SIFT_CHECKF(pg_atomic_read_u32(&stress_applied[i]) == STRESS_ITERS, "writer %d had %u of %d requests applied", i, pg_atomic_read_u32(&stress_applied[i]), STRESS_ITERS);
+	SIFT_CHECKF(pg_atomic_read_u32(&queue.wait_head) == SIFT_COMB_NONE && sift_shm_lock_try(&queue.lock), "the queue is empty and free at the end");
+	for (int i = 0; i < SIFT_COMB_MAX_SLOTS; i++)
+		SIFT_CHECKF(slot_free(i), "slot %d of the pool is free at the end", i);
+	printf("two groups: %u batches for %d requests\n", pg_atomic_read_u32(&stress_batches), STRESS_THREADS * STRESS_ITERS);
+}
+
+/* Each shard of the free mask of the pool is a cache line of its own */
+static void
+test_pool_lines(void)
+{
+	for (int s = 1; s < SIFT_COMB_SHARDS; s++)
+		SIFT_CHECKF((char *) &pool.shard[s].free_mask - (char *) &pool.shard[s - 1].free_mask >= PG_CACHE_LINE_SIZE, "shards %d and %d of the pool share a cache line", s - 1, s);
+}
+
 int
 main(void)
 {
 	test_failed_parked_leader();
 	test_leader_exits();
+	test_leftover_groups();
+	test_two_groups_stress();
+	test_pool_lines();
 	return sift_check_summary();
 }

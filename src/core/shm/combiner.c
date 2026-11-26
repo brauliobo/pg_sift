@@ -8,6 +8,7 @@ typedef struct CombLead
 {
 	SiftCombArena arena;
 	uint32		own;
+	int32		handoff;		/* the procno of the writer woken to lead the requests put back on the stack, -1: none */
 	uint32		n;
 	uint32		idx[SIFT_COMB_MAX_SLOTS];
 	uint32		fin[SIFT_COMB_MAX_SLOTS];
@@ -17,25 +18,12 @@ SIFT_SHM_BACKEND_LOCAL CombLead lead_state;
 SIFT_SHM_BACKEND_LOCAL bool exit_hooked;
 
 /* MEM[MEM-CORE-15]: SHM flat-combiner queue state (caller-owned SHM region) */
-static void
-pool_init(SiftCombPool *pool, uint32 nshards)
-{
-	Assert((uintptr_t) pool % PG_CACHE_LINE_SIZE == 0);
-	pool->nshards = nshards;
-	for (uint32 s = 0; s < SIFT_COMB_SHARDS; s++)
-		pg_atomic_init_u64(&pool->free_mask[s], s < nshards ? UINT64_MAX : 0);
-}
-
 void
 sift_comb_pool_init(SiftCombPool *pool)
 {
-	pool_init(pool, 1);
-}
-
-void
-sift_comb_pool_init_sharded(SiftCombPool *pool)
-{
-	pool_init(pool, SIFT_COMB_SHARDS);
+	Assert((uintptr_t) pool % PG_CACHE_LINE_SIZE == 0);
+	for (uint32 s = 0; s < SIFT_COMB_SHARDS; s++)
+		pg_atomic_init_u64(&pool->shard[s].free_mask, UINT64_MAX);
 }
 
 void
@@ -56,18 +44,19 @@ slot_at(const SiftCombArena *a, uint32 idx)
 static int32
 pool_claim(SiftCombPool *pool)
 {
-	uint32		home = (uint32) sift_shm_my_procno() % pool->nshards;
+	uint32		home = (uint32) sift_shm_my_procno() % SIFT_COMB_SHARDS;
 
-	for (uint32 i = 0; i < pool->nshards; i++)
+	for (uint32 i = 0; i < SIFT_COMB_SHARDS; i++)
 	{
-		uint32		shard = (home + i) % pool->nshards;
-		uint64		mask = pg_atomic_read_u64(&pool->free_mask[shard]);
+		uint32		shard = (home + i) % SIFT_COMB_SHARDS;
+		pg_atomic_uint64 *word = &pool->shard[shard].free_mask;
+		uint64		mask = pg_atomic_read_u64(word);
 
 		while (mask != 0)
 		{
 			int			pos = pg_rightmost_one_pos64(mask);
 
-			if (pg_atomic_compare_exchange_u64(&pool->free_mask[shard], &mask, mask & ~(UINT64CONST(1) << pos)))
+			if (pg_atomic_compare_exchange_u64(word, &mask, mask & ~(UINT64CONST(1) << pos)))
 				return shard * SIFT_COMB_POOL_SLOTS + pos;
 		}
 	}
@@ -77,7 +66,7 @@ pool_claim(SiftCombPool *pool)
 static void
 pool_release(SiftCombPool *pool, uint32 idx)
 {
-	pg_atomic_fetch_or_u64(&pool->free_mask[idx / SIFT_COMB_POOL_SLOTS], UINT64CONST(1) << (idx % SIFT_COMB_POOL_SLOTS));
+	pg_atomic_fetch_or_u64(&pool->shard[idx / SIFT_COMB_POOL_SLOTS].free_mask, UINT64CONST(1) << (idx % SIFT_COMB_POOL_SLOTS));
 }
 
 static uint32
@@ -98,6 +87,8 @@ detach(const SiftCombArena *a, SiftCombQueue *q, CombLead *ld)
 	uint32		lifo[SIFT_COMB_MAX_SLOTS];
 	uint32		n = 0;
 
+	if (pg_atomic_read_u32(&q->wait_head) == SIFT_COMB_NONE)
+		return;
 	for (uint32 i = pg_atomic_exchange_u32(&q->wait_head, SIFT_COMB_NONE); i != SIFT_COMB_NONE; i = slot_at(a, i)->next)
 		lifo[n++] = i;
 	while (n > 0)
@@ -121,6 +112,9 @@ resolve(const SiftCombArena *a, CombLead *ld, uint32 own_idx)
 			sift_shm_wake(procno);
 	}
 	ld->n = 0;
+	if (ld->handoff >= 0)
+		sift_shm_wake(ld->handoff);
+	ld->handoff = -1;
 }
 
 /* A hot queue gives the writers that are about to commit the time of a few pauses to join the batch; a window nobody joined cools the queue, so that a writer alone pays nothing for it */
@@ -135,9 +129,57 @@ gather(SiftCombQueue *q, const SiftCombOps *ops)
 		sift_comb_queue_cool(q);
 }
 
+/* The requests detached and not applied yet that are of the group of key, at most max_batch of them, oldest first */
+static uint32
+select_group(const SiftCombArena *a, CombLead *ld, const SiftCombOps *ops, SiftCombHdr *key, SiftCombHdr **batch, uint32 *sel, uint32 nb)
+{
+	for (uint32 i = 0; i < ld->n && nb < ops->max_batch; i++)
+	{
+		SiftCombHdr *s = slot_at(a, ld->idx[i]);
+
+		if (ld->fin[i] == SIFT_COMB_RETRY && ops->same_group(key, s))
+		{
+			sel[nb] = i;
+			batch[nb++] = s;
+		}
+	}
+	return nb;
+}
+
+/*
+ * The requests of other groups go back on the stack, oldest at the bottom, still WAITING, and are no longer the leader's to resolve. Where the stack was empty the oldest is told to lead
+ * them while the queue lock is held, so that no other leader detaches it before: it is woken once the lock is let go (resolve)
+ */
+static void
+requeue(const SiftCombArena *a, SiftCombQueue *q, CombLead *ld)
+{
+	uint32		kept = 0;
+	bool		bottom = true;
+
+	for (uint32 i = 0; i < ld->n; i++)
+	{
+		SiftCombHdr *s = slot_at(a, ld->idx[i]);
+
+		if (ld->fin[i] != SIFT_COMB_RETRY)
+		{
+			ld->idx[kept] = ld->idx[i];
+			ld->fin[kept++] = ld->fin[i];
+			continue;
+		}
+		if (push(q, s, ld->idx[i]) == SIFT_COMB_NONE && bottom)
+		{
+			pg_write_barrier();
+			pg_atomic_write_u32(&s->state, SIFT_COMB_LEAD);
+			ld->handoff = s->procno;
+		}
+		bottom = false;
+	}
+	ld->n = kept;
+}
+
 static void
 leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key,
-			bool key_local)
+			  bool key_local)
 {
 	CombLead   *ld = &lead_state;
 
@@ -145,31 +187,22 @@ leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, 
 	{
 		SiftCombHdr *batch[SIFT_COMB_MAX_SLOTS + 1];
 		uint32		sel[SIFT_COMB_MAX_SLOTS + 1];
-		uint32		first = ld->n;
 		uint32		nb = 0;
+		bool		own = round == 0 && key_local;
 
-		if (round == 0 && key_local)
+		if (own)
 			batch[nb++] = key;
 		if (round == 0)
 			gather(q, ops);
 		detach(a, q, ld);
-		for (uint32 i = first; i < ld->n; i++)
-		{
-			SiftCombHdr *s = slot_at(a, ld->idx[i]);
-
-			if (nb < ops->max_batch && ops->same_group(key, s))
-			{
-				sel[nb] = i;
-				batch[nb++] = s;
-			}
-		}
-		if (nb > 0)
-			ops->apply(ctx, batch, nb);
-		for (uint32 b = key_local && round == 0 ? 1 : 0; b < nb; b++)
-			ld->fin[sel[b]] = SIFT_COMB_DONE;
-		if (pg_atomic_read_u32(&q->wait_head) == SIFT_COMB_NONE)
+		nb = select_group(a, ld, ops, key, batch, sel, nb);
+		if (nb == 0)
 			break;
+		ops->apply(ctx, batch, nb);
+		for (uint32 b = own ? 1 : 0; b < nb; b++)
+			ld->fin[sel[b]] = SIFT_COMB_DONE;
 	}
+	requeue(a, q, ld);
 }
 
 static void
@@ -209,6 +242,7 @@ run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, voi
 
 	Assert(ops->max_batch >= 1 && ops->max_batch <= SIFT_COMB_MAX_SLOTS);
 	ld->n = 0;
+	ld->handoff = -1;
 	ld->arena = *a;
 	ld->own = key_idx;
 	SIFT_SHM_TRY();
@@ -261,11 +295,22 @@ leader_parked(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, 
 	wait_slot(slot);
 }
 
-static void
+/* A writer told to lead (LEAD) waits again where a leader resolved its request meanwhile, else it leads it as one that pushed on an empty stack */
+static bool
+take_lead(SiftCombHdr *slot)
+{
+	uint32		lead = SIFT_COMB_LEAD;
+
+	return pg_atomic_read_u32(&slot->state) == SIFT_COMB_LEAD && pg_atomic_compare_exchange_u32(&slot->state, &lead, SIFT_COMB_WAITING);
+}
+
+/* The request in slot idx, pushed on the stack and applied: its state is DONE, or RETRY where the leader that detached it failed */
+static uint32
 park(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *req, Size used,
 	 uint32 idx)
 {
 	SiftCombHdr *slot = slot_at(a, idx);
+	bool		lead;
 
 	memcpy(slot, req, used);
 	slot->procno = sift_shm_my_procno();
@@ -273,10 +318,16 @@ park(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx
 	slot->out = 0;
 	pg_atomic_write_u32(&slot->state, SIFT_COMB_WAITING);
 	pg_write_barrier();
-	if (push(q, slot, idx) == SIFT_COMB_NONE)
-		leader_parked(a, q, ops, ctx, slot, idx);
-	else
-		wait_slot(slot);
+	lead = push(q, slot, idx) == SIFT_COMB_NONE;
+	do
+	{
+		if (lead)
+			leader_parked(a, q, ops, ctx, slot, idx);
+		else
+			wait_slot(slot);
+		lead = true;
+	} while (take_lead(slot));
+	return pg_atomic_read_u32(&slot->state);
 }
 
 void
@@ -306,16 +357,11 @@ sift_comb_submit(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *op
 		leader_locked(a, q, ops, ctx, req);
 		return;
 	}
-	park(a, q, ops, ctx, req, used, idx);
+	while ((state = park(a, q, ops, ctx, req, used, idx)) == SIFT_COMB_RETRY)
+		;
+	Assert(state == SIFT_COMB_DONE);
 	slot = slot_at(a, idx);
-	state = pg_atomic_read_u32(&slot->state);
-	Assert(state == SIFT_COMB_DONE || state == SIFT_COMB_RETRY);
 	req->result = slot->result;
 	req->out = slot->out;
 	pool_release(a->pool, idx);
-	if (state == SIFT_COMB_RETRY)
-	{
-		sift_shm_lock(&q->lock);
-		leader_locked(a, q, ops, ctx, req);
-	}
 }

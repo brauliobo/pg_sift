@@ -3,8 +3,10 @@
  *
  * A writer that finds the queue lock busy parks its request in a slot of a shared pool and pushes the slot on the queue's
  * Treiber stack. The first writer to push (the stack was empty) is the leader: it takes the queue lock, detaches the whole
- * stack in one exchange, hands the requests that belong to its group to apply() as ONE batch, releases the lock and only then
- * wakes the followers. A writer that finds the lock free applies its own request and the followers that arrived meanwhile.
+ * stack in one exchange, hands the requests that belong to its group to apply() in batches of at most max_batch, releases the lock
+ * and only then wakes the followers. A writer that finds the lock free applies its own request and the followers that arrived meanwhile.
+ * The requests of other groups (apply() runs with the leader's context) go back on the stack, oldest at the bottom, and where they
+ * are all that is on it the oldest is woken to lead them (SIFT_COMB_LEAD): one wake-up, and they stay one batch.
  * apply() runs under the queue lock, writes hdr.result (and hdr.out) of every request of the batch and must not submit.
  */
 #ifndef SIFT_SHM_COMBINER_H
@@ -23,7 +25,8 @@
 #define SIFT_COMB_IDLE			0U
 #define SIFT_COMB_WAITING		1U
 #define SIFT_COMB_DONE			2U
-#define SIFT_COMB_RETRY			3U
+#define SIFT_COMB_RETRY			3U	/* the leader failed or exited before it applied the request: its writer parks it again */
+#define SIFT_COMB_LEAD			4U	/* the request is at the bottom of the stack again: its writer leads it */
 
 /* First member of every request slot */
 typedef struct SiftCombHdr
@@ -47,14 +50,18 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftCombQueue
 
 StaticAssertDecl(sizeof(SiftCombQueue) == PG_CACHE_LINE_SIZE, "SiftCombQueue must occupy exactly one cache line");
 
-/* The free slots of the pool, a word of SIFT_COMB_POOL_SLOTS for each shard: a backend takes from the shard of its own number first, so that the writers of a queue do not all retry on one word */
-typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftCombPool
+/* The free slots of the pool, a word of SIFT_COMB_POOL_SLOTS for each shard on a line of its own: a backend takes from the shard of its own number first, so that the writers do not all retry on one line */
+typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftCombShard
 {
-	pg_atomic_uint64 free_mask[SIFT_COMB_SHARDS];
-	uint32		nshards;
+	pg_atomic_uint64 free_mask;
+} SiftCombShard;
+
+typedef struct SiftCombPool
+{
+	SiftCombShard shard[SIFT_COMB_SHARDS];
 } SiftCombPool;
 
-StaticAssertDecl(sizeof(SiftCombPool) == PG_CACHE_LINE_SIZE, "SiftCombPool must occupy exactly one cache line");
+StaticAssertDecl(sizeof(SiftCombShard) == PG_CACHE_LINE_SIZE, "a shard of the pool occupies exactly one cache line");
 
 typedef struct SiftCombArena
 {
@@ -71,9 +78,8 @@ typedef struct SiftCombOps
 	uint32		gather_spins;	/* where the queue is hot, the leader waits for this many pauses for the writers that find the lock busy to join its batch (0: it does not) */
 } SiftCombOps;
 
-/* A pool of SIFT_COMB_POOL_SLOTS slots, and one of SIFT_COMB_MAX_SLOTS (the arena then holds that many) */
+/* A pool of SIFT_COMB_MAX_SLOTS slots (the arena holds that many) */
 extern void sift_comb_pool_init(SiftCombPool *pool);
-extern void sift_comb_pool_init_sharded(SiftCombPool *pool);
 extern void sift_comb_queue_init(SiftCombQueue *q, int tranche_id);
 
 /* Runs req (a caller-local slot of arena->stride bytes whose first `used` bytes are the request) to completion: req->result and req->out are set */

@@ -13,7 +13,7 @@
 #include "storage/block.h"
 #include "storage/relfilelocator.h"
 
-#define SIFT_L0_GC_SLOTS			SIFT_COMB_POOL_SLOTS
+#define SIFT_L0_GC_SLOTS			SIFT_COMB_MAX_SLOTS
 #define SIFT_L0_GC_MAX_BYTES		3584
 #define SIFT_L0_GC_MAX_BATCH		16
 #define SIFT_L0_GC_MAX_DELS			32
@@ -59,7 +59,7 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftL0GroupCommit
 } SiftL0GroupCommit;
 
 StaticAssertDecl(sizeof(SiftPartStripe) == PG_CACHE_LINE_SIZE, "SiftPartStripe must occupy exactly one 128 B cache line");
-StaticAssertDecl(sizeof(SiftL0GroupCommit) == PG_CACHE_LINE_SIZE + SIFT_L0_GC_SLOTS * 4096, "SiftL0GroupCommit is one pool line and 256 KB of slots");
+StaticAssertDecl(sizeof(SiftL0GroupCommit) == sizeof(SiftCombPool) + SIFT_L0_GC_SLOTS * 4096, "SiftL0GroupCommit is the lines of the pool and 1 MB of slots");
 
 typedef struct SiftL0GcReq
 {

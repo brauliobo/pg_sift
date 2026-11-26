@@ -20,7 +20,7 @@ sift_mc_init(SiftManifestCommitCombiner *mc, int tranche_id)
 {
 	Assert((uintptr_t) mc % PG_CACHE_LINE_SIZE == 0);
 	memset(mc, 0, sizeof(*mc));
-	sift_comb_pool_init_sharded(&mc->pool);
+	sift_comb_pool_init(&mc->pool);
 	for (int i = 0; i < SIFT_MC_QUEUES; i++)
 		sift_comb_queue_init(&mc->queues[i], tranche_id);
 }
