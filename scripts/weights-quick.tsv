@@ -106,7 +106,6 @@ tap-shell-col/heapfree/replication	27	29	24	20
 difftest-txn-shapes	25	23	28	24
 tap-shell-col/crash_matrix	16	21	17	28
 tap-shell-col/order_layout_replica	27	28	12	8
-tap-shell-col/scope/paid_standby	24	25	28	26
 installcheck-col/or_equalities	12	27	26	27
 installcheck-agg/calendar/filter	13	18	26	12
 installcheck-core/cache_discard	1	1	26	0
