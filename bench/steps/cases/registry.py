@@ -25,6 +25,9 @@ def lane_cpus(cases, asked):
     return need, who
 
 
+PG_TWINS = ('btree', 'expr_btree', 'gin')   # the variants of a stock PostgreSQL index on a twin schema (c_ID__NAME): they run PostgreSQL's statement, as native does
+
+
 class Case:
     def __init__(self, row, text):
         self.__dict__.update(zip(FIELDS, row))
@@ -57,7 +60,7 @@ class Case:
     def statement(self, lane):
         if lane == 'pg_duckdb':
             return self.sec.get('duck', self.sec['pg'])
-        return self.sec['pg'] if lane == 'native' else self.sec.get('sift', self.sec['pg'])
+        return self.sec['pg'] if lane == 'native' or lane in PG_TWINS else self.sec.get('sift', self.sec['pg'])
 
     def schema(self):
         return DATASETS[self.dataset][0] if self.dataset in DATASETS else 'c_' + (self.share or self.id)
