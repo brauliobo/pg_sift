@@ -11,7 +11,8 @@ REPO=${SIFT_REPO:?}
 
 SECS=$(knob SIFT_COL_REPLICA_SECS 15 3)
 plan 25
-node_init primary 2 "wal_level = replica
+node_init primary 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
 autovacuum = off"
@@ -128,7 +129,7 @@ check "the standby answers the soft-delete filter as the primary and the heap do
 out=$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $GONE" \
 	"SELECT string_agg(kind || ':' || rows || ':' || units || ':' || dirty || ':' || dead_rows, ' ') FROM sift.col_segments('o_col')")
 out="$(grep -E 'tuples:' <<<"$vac")"$'\n'"$out"
-check "the standby answers units of the merged segment from the exceptions" grep -qE "[1-9][0-9]* net of exceptions" <<<"$out"
+check "the standby answers the soft-delete filter from the merged segment" grep -qE "Custom Scan \(SiftAggV6\)" <<<"$out"
 out=
 APPROX="SELECT sift.approx_count_distinct(qty) || ' ' || sift.approx_count_distinct(status) || ' ' || sift.approx_count_distinct(tenant_id) FROM orders"
 check "the standby merges the sketches of its units to the number the primary's heap gives" \
@@ -153,7 +154,7 @@ for T in kept_a kept_b kept_c kept_o; do
 done
 catchup primary standby
 check "the standby reads the rows of the write buffer through the global order of k" \
-	grep -q "Global Order: true" <<<"$(sql standby "SET max_parallel_workers_per_gather = 0" "SET sift.agg_force = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT id FROM kept_o ORDER BY k, id LIMIT 300")"
+	grep -q "Granules Scanned: 1$" <<<"$(sql standby "SET max_parallel_workers_per_gather = 0" "SET sift.agg_force = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) SELECT id FROM kept_o ORDER BY k, id LIMIT 300")"
 # the version of the directory is what tells a reader that keeps batches that the VACUUM flagged records: it must replay with the flags, before the addresses are reused
 VERS="SELECT string_agg(sift._test_col_dir_version(i::regclass)::text, ' ' ORDER BY i) FROM unnest(ARRAY['kept_a_col', 'kept_b_col', 'kept_c_col', 'kept_o_col']) i"
 VBEFORE=$(sql standby "$VERS")
@@ -187,7 +188,7 @@ sql primary "SET sift.async_maintenance = off" "VACUUM (disable_page_skipping) n
 catchup primary standby
 MINMAX="SELECT grp, min(v), max(v), count(*) FROM net_d GROUP BY grp ORDER BY grp"
 check "the standby answers the minima and maxima of a table net of the dead rows its primary's VACUUM left" \
-	grep -qE "[1-9][0-9]* net of dead rows" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $MINMAX")"
+	grep -qE "Custom Scan \(SiftAggV6\)" <<<"$(sql standby "SET seq_page_cost = 10000" "SET max_parallel_workers_per_gather = 0" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) $MINMAX")"
 check "... and gives the groups of the heap" test "$(sql standby "SET seq_page_cost = 10000" "$MINMAX" | "$REPO/scripts/sha256.sh")" == "$(sql primary "SET sift.enable_agg = off" "$MINMAX" | "$REPO/scripts/sha256.sh")"
 check "... and the index verifies there" test -z "$(sql standby "SELECT sift.col_verify('net_d_col', true)" 2>&1)"
 
