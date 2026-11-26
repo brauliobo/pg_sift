@@ -303,7 +303,7 @@ resolve_auto(Relation heap, Relation index)
 {
 	bool		deferred;
 
-	if (strcmp(sift_col_options_row_key(index), "auto") == 0 && sift_col_track_deaf(heap) != NULL)
+	if (!IsBinaryUpgrade && strcmp(sift_col_options_row_key(index), "auto") == 0 && sift_col_track_deaf(heap) != NULL)
 		sift_col_set_option(index, "track_changes", "off");
 	if (sift_col_paths_redecide(index))
 		sift_col_auto_paths(heap, index);
