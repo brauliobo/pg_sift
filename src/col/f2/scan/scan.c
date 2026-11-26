@@ -959,6 +959,7 @@ sift_f2_ambeginscan(Relation index, int nkeys, int norderbys)
 				ordpair;
 
 	sift_quarantine_net(index, sift_meta_peek_format(index).flags);
+	SIFT_COL_OPEN_GATE();
 	s->hdr.ops = &sift_col_v2_ops;
 	s->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 scan");
 	scan->opaque = s;
