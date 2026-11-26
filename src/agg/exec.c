@@ -25,6 +25,7 @@
 #include "agg/star/run.h"
 #include "agg/qual/qual.h"
 #include "agg/scan_src.h"
+#include "agg/stats.h"
 #include "agg/topn/rows.h"
 #include "agg/topn/topk_run.h"
 #include "core/maint/pacer.h"
@@ -589,11 +590,29 @@ v6_fetch_end(V6State *st)
 	}
 }
 
+/* the counters of sift.stats() a scan adds when it ends: the ones of its EXPLAIN ANALYZE */
+static void
+v6_fold_stats(const V6State *st)
+{
+	SiftV6ParSummary ps = {0};
+
+	if (st->par != NULL)
+		sift_v6_par_node_summary(st->par, &ps);
+	if (!st->ran && !ps.ran)
+		return;
+	sift_stat_add(SIFT_STAT_SCANS, 1);
+	sift_stat_add(SIFT_STAT_UNITS, st->stats.batches + ps.grans_scanned);
+	sift_stat_add(SIFT_STAT_UNITS_PREAGG, st->stats.grans_preagg + ps.grans_preagg);
+	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows);
+	sift_stat_add(SIFT_STAT_ROWS_VETTED, st->stats.heap_vet_rows + ps.heap_vet_rows);
+}
+
 static void
 v6_end(CustomScanState *node)
 {
 	V6State    *st = (V6State *) node;
 
+	v6_fold_stats(st);
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
 	v6_fetch_end(st);
