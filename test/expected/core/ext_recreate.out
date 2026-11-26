@@ -70,9 +70,9 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT id FROM re_t WHERE g = 3');
 (1 row)
 
 SELECT arm, used FROM sift.explain_why('SELECT g, count(*) FROM re_t GROUP BY g');
-  arm  | used 
--------+------
- index | t
+  arm   | used 
+--------+------
+ single | t
 (1 row)
 
 SELECT g, count(*), sum(id) FROM re_t GROUP BY g ORDER BY g LIMIT 3;
@@ -189,9 +189,9 @@ SELECT arm, used, slug FROM sift.explain_why('SELECT id FROM re_t WHERE g = 3');
 (1 row)
 
 SELECT arm, used FROM sift.explain_why('SELECT g, count(*) FROM re_t GROUP BY g');
-  arm  | used 
--------+------
- index | t
+  arm   | used 
+--------+------
+ single | t
 (1 row)
 
 SELECT g, count(*), sum(id) FROM re_t GROUP BY g ORDER BY g LIMIT 3;
