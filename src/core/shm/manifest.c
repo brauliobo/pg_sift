@@ -831,6 +831,35 @@ sift_shm_snap_part_list(const SiftShmManifestSnap *snap, uint32 p)
 	return list_payload(lp);
 }
 
+/* The list in a block of the area of its own, published in the slot once it is whole; NULL where the area has no room */
+static dsa_pointer
+list_block(const void *data, Size bytes, Size total)
+{
+	dsa_pointer lp;
+
+#ifdef SIFT_TESTING
+	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "part_list_install") != NULL)
+		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("sift test: the list of a partition cannot be put in the area (part_list_install)")));	/* check-errors: allow */
+#endif
+	lp = dsa_allocate_extended(area, total, DSA_ALLOC_NO_OOM);
+	if (lp != InvalidDsaPointer)
+	{
+		((ListHdr *) dsa_get_address(area, lp))->bytes = total;
+		memcpy(list_payload(lp), data, bytes);
+	}
+	return lp;
+}
+
+/* The slot is SIFT_LIST_INSTALLING while a backend makes the list: one that fails, or finds no room, gives the slot and the bytes it took back, so that the next reader makes the list */
+static bool
+list_give_up(pg_atomic_uint64 *slot, Size reserved)
+{
+	if (reserved > 0)
+		sift_shm_release_shared(SIFT_SHM_MANIFEST, reserved);
+	pg_atomic_write_u64(slot, InvalidDsaPointer);
+	return false;
+}
+
 bool
 sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, const void *data, Size bytes)
 {
@@ -843,19 +872,19 @@ sift_shm_snap_part_list_install(const SiftShmManifestSnap *snapshot, uint32 p, c
 	if (pg_atomic_read_u64(slot) != InvalidDsaPointer || !pg_atomic_compare_exchange_u64(slot, &none, SIFT_LIST_INSTALLING))
 		return true;
 	if (!sift_shm_reserve_shared(SIFT_SHM_MANIFEST, total))
+		return list_give_up(slot, 0);
+	PG_TRY();
 	{
-		pg_atomic_write_u64(slot, InvalidDsaPointer);
-		return false;
+		mine = list_block(data, bytes, total);
 	}
-	mine = dsa_allocate_extended(area, total, DSA_ALLOC_NO_OOM);
+	PG_CATCH();
+	{
+		(void) list_give_up(slot, total);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	if (mine == InvalidDsaPointer)
-	{
-		sift_shm_release_shared(SIFT_SHM_MANIFEST, total);
-		pg_atomic_write_u64(slot, InvalidDsaPointer);
-		return false;
-	}
-	((ListHdr *) dsa_get_address(area, mine))->bytes = total;
-	memcpy(list_payload(mine), data, bytes);
+		return list_give_up(slot, total);
 	pg_atomic_fetch_add_u64(&table->list_copies, 1);
 	pg_write_barrier();
 	pg_atomic_write_u64(slot, mine);
