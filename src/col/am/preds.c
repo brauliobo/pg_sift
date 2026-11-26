@@ -91,7 +91,7 @@ key_value(Oid argtype, int32 typmod, Datum d, SiftColValue *v)
 bool
 xtime_pair(Oid coltype, Oid argtype)
 {
-	return (coltype == DATEOID) != (argtype == DATEOID) && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID) &&
+	return coltype != argtype && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID) &&
 		(argtype == DATEOID || argtype == TIMESTAMPOID || argtype == TIMESTAMPTZOID);
 }
 
