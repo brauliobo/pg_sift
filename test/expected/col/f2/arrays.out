@@ -11,7 +11,7 @@ CREATE FUNCTION tcode(j jsonb) RETURNS int LANGUAGE sql IMMUTABLE AS $$
 CREATE FUNCTION arr(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'array' THEN j ELSE '[]' END $$;
 CREATE FUNCTION obj(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(j) = 'object' THEN j ELSE '{}' END $$;
 CREATE FUNCTION maybe(k text, v jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN v IS NULL THEN '{}' ELSE jsonb_build_object(k, v) END $$;
--- An array where an object is declared: the leaves below it have no value at their path (tag 6), any other scalar leaves them absent
+-- An array or a scalar where an object is declared (an element of a list of objects): the leaves below it have no value at their path (tag 6)
 -- What a leaf of a declared type holds for the value v found at its path (SQL NULL: the path leads to nothing): the value, the tag of a slot with none, the value an exception keeps
 CREATE FUNCTION leaf_text(v jsonb, OUT val text, OUT tag int, OUT pay text) LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN jsonb_typeof(v) = 'string' THEN v #>> '{}' END,
@@ -56,7 +56,7 @@ CREATE VIEW expected AS
 	UNION ALL SELECT d.ctid, 'doc.notes[]', NULL, CASE WHEN jsonb_typeof(n) = 'array' THEN jsonb_array_length(n)::text END,
 			CASE WHEN n IS NOT NULL AND jsonb_typeof(n) NOT IN ('array', 'null') THEN tcode(n) END, CASE WHEN jsonb_typeof(n) IN ('string', 'number', 'boolean', 'object') THEN n::text END
 		FROM docs d, LATERAL (SELECT d.doc -> 'notes') x(n)
-	UNION ALL SELECT d.ctid, 'doc.notes[].kind', (e.k - 1)::int, t.val, CASE WHEN jsonb_typeof(e.v) = 'array' THEN 6 ELSE t.tag END, t.pay
+	UNION ALL SELECT d.ctid, 'doc.notes[].kind', (e.k - 1)::int, t.val, CASE WHEN jsonb_typeof(e.v) <> 'object' THEN 6 ELSE t.tag END, t.pay
 		FROM docs d, jsonb_array_elements(arr(d.doc -> 'notes')) WITH ORDINALITY e(v, k), leaf_text(CASE WHEN jsonb_typeof(e.v) = 'object' THEN e.v -> 'kind' END) t
 	UNION ALL SELECT d.ctid, 'doc.metrics.*', NULL, CASE WHEN jsonb_typeof(m) = 'object' THEN (SELECT count(*) FROM jsonb_object_keys(m))::text END,
 			CASE WHEN m IS NOT NULL AND jsonb_typeof(m) NOT IN ('object', 'null') THEN tcode(m) END, CASE WHEN jsonb_typeof(m) IN ('string', 'number', 'boolean', 'array') THEN m::text END
@@ -66,7 +66,7 @@ CREATE VIEW expected AS
 	UNION ALL SELECT d.ctid, 'doc.analysis.entries[]', NULL, CASE WHEN jsonb_typeof(n) = 'array' THEN jsonb_array_length(n)::text END,
 			CASE WHEN n IS NOT NULL AND jsonb_typeof(n) NOT IN ('array', 'null') THEN tcode(n) END, CASE WHEN jsonb_typeof(n) IN ('string', 'number', 'boolean', 'object') THEN n::text END
 		FROM docs d, LATERAL (SELECT d.doc #> '{analysis,entries}') x(n)
-	UNION ALL SELECT d.ctid, 'doc.analysis.entries[].' || c.leaf, (e.k - 1)::int, t.val, CASE WHEN jsonb_typeof(e.v) = 'array' THEN 6 ELSE t.tag END, t.pay
+	UNION ALL SELECT d.ctid, 'doc.analysis.entries[].' || c.leaf, (e.k - 1)::int, t.val, CASE WHEN jsonb_typeof(e.v) <> 'object' THEN 6 ELSE t.tag END, t.pay
 		FROM docs d, jsonb_array_elements(arr(d.doc #> '{analysis,entries}')) WITH ORDINALITY e(v, k), (VALUES ('cat'), ('sub'), ('pol'), ('score')) c(leaf),
 			LATERAL (SELECT * FROM leaf_astext(CASE WHEN jsonb_typeof(e.v) = 'object' THEN e.v -> c.leaf END) WHERE c.leaf <> 'score'
 					 UNION ALL SELECT * FROM leaf_f8(CASE WHEN jsonb_typeof(e.v) = 'object' THEN e.v -> c.leaf END) WHERE c.leaf = 'score') t;
