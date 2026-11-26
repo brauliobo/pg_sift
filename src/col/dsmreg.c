@@ -278,10 +278,13 @@ release_users(dsm_segment *seg, Datum users)
 	pg_atomic_fetch_sub_u32((pg_atomic_uint32 *) DatumGetPointer(users), 1);
 }
 
+static DirEnt *last_held;		/* the table this backend mapped last (sift._test_leak('shared')) */
+
 /* The segments of a backend are detached last to first, so the directory is still mapped when the count of a table goes down */
 static void
 hold(dsm_segment *seg, DirEnt *e)
 {
+	last_held = e;
 	dsm_pin_mapping(seg);
 	on_dsm_detach(seg, release_users, PointerGetDatum(&e->users));
 	pg_atomic_fetch_add_u32(&e->users, 1);
@@ -449,19 +452,13 @@ sift_dsm_entry(int i, const char **name, const char **build, uint64 *size, dsm_h
 	return true;
 }
 
-/* sift._test_leak('shared'): the first table of the directory counts one more backend that maps it, and none will give it back */
+/* sift._test_leak('shared'): the table this backend mapped last counts one more backend that maps it, and none will give it back */
 void
 sift_dsm_test_leak_user(void)
 {
-	Dir		   *d = dir_segment();
-
-	for (int i = 0; d != NULL && i < DIR_ENTRIES; i++)
-		if (d->ent[i].handle != DSM_HANDLE_INVALID)
-		{
-			pg_atomic_fetch_add_u32(&d->ent[i].users, 1);
-			return;
-		}
-	ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("no shared table to leak a user of"), errhint("Call sift._test_dsm_join first.")));
+	if (last_held == NULL)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("no shared table to leak a user of"), errhint("Call sift._test_dsm_join first.")));
+	pg_atomic_fetch_add_u32(&last_held->users, 1);
 }
 
 /* sift._test_dsm_magic(magic): the magic of the directory, set to magic (a directory another library made); the one it had */
