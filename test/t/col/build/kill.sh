@@ -2,10 +2,11 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # kill -9 in the middle of the parallel build of a key_cut sift_col index (workers, gap, merge into the gap) with a streaming standby attached, then crash recovery:
 # the build is rolled back (no index, on the primary and on the standby), the standby streams again and counts as the primary, and the build run again finishes with
-# the file at most 1.1 times its live bytes (the gap and the cut of a build; the dead build leaves nothing the next one has to work around) and an index that verifies
-# and answers as the table does. Kills: a parallel worker held at the start of its scan (kill -9 of its pid), and the leader before the n-th directory update of the build and after the last
-# (sift.test_crash_dir: the publication of the segments, then each partition the merge into the gap writes). SIFT_BK_ROWS (400000, 150000 quick), SIFT_BK_POINTS
-# (most directory updates killed in the leader, 8, 4 quick).
+# the file at most 1.1 times the bytes its data and metadata take (the gap and the cut of a build; the dead build leaves nothing the next one has to work around) and an index that verifies
+# and answers as the table does. Kills: a parallel worker held at the start of its scan (kill -9 of its pid), and the leader: on Format 1 before the n-th directory update of the build and
+# after the last (sift.test_crash_dir: the publication of the segments, then each partition the merge into the gap writes), on Format 2.0 where it waits for the commit of the manifest that
+# takes the parts of the participants (sift.test_phase_gate + 10) and once the parts are published, before the build commits (sift.test_build_gate). SIFT_BK_ROWS (400000, 150000 quick),
+# SIFT_BK_POINTS (most directory updates killed in the leader, 8, 4 quick).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_BK_ROWS 400000 150000)
@@ -28,9 +29,12 @@ catchup primary standby || bail "the standby did not catch up"
 
 OPTS=("SET max_parallel_maintenance_workers = 4" "SET min_parallel_table_scan_size = 0")
 BUILD="CREATE INDEX t_idx ON t USING sift_col (id, grp, amount) WITH (key_cut = grp)"
-size() { sql primary "SELECT pg_relation_size('t_idx')"; }
-live() { sql primary "SELECT bytes FROM sift.col_index_info('t_idx')"; }
-tight() { echo "# file $(size) live $(live)" >&2; test "$(size)" -le "$(( $(live) * 110 / 100 ))"; }
+tight() {
+	local file used
+	read -r file used <<<"$(sql primary "SELECT pg_relation_size('t_idx') || ' ' || (data_bytes + meta_bytes) FROM sift.status('t_idx')")"
+	echo "# file $file data and metadata $used" >&2
+	test "$file" -le "$(( used * 110 / 100 ))"
+}
 digest() { sql "$1" "SET enable_seqscan = off" "SELECT count(*) || ':' || sum(amount) FROM t WHERE grp = 7" | tail -1; }
 heap() { sql primary "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*) || ':' || sum(amount) FROM t WHERE grp = 7" | tail -1; }
 
@@ -48,7 +52,7 @@ recovered() { # LABEL
 		{ not_ok "$1: an index is left"; return 1; }
 	ok "$1: recovery rolled the build back on the primary and on the standby"
 	sql primary "${OPTS[@]}" "$BUILD" >/dev/null || { not_ok "$1: the build run again failed"; diag "$(tail -5 "$(dir primary)/postgres.log")"; return 1; }
-	check "$1: the build run again: the file is at most 1.1 times its live bytes" tight
+	check "$1: the build run again: the file is at most 1.1 times its data and metadata" tight
 	check "$1: ... the index verifies and counts as the table" same_as_table
 	catchup primary standby || { not_ok "$1: the standby does not catch up"; return 1; }
 	check "$1: ... the standby counts as the primary" test "$(digest standby)" == "$(digest primary)"
@@ -56,31 +60,52 @@ recovered() { # LABEL
 	sql primary "DROP INDEX t_idx" >/dev/null && catchup primary standby
 }
 
-# a parallel worker, killed while the scan runs: the workers wait to start the scan for an advisory lock this session holds (sift.test_phase_gate + the scan phase), so one is there to
-# be found and killed whatever the speed and the cores of the runner
-PM=$(head -1 "$(dir primary)/data/postmaster.pid")
+# kill -9 of the process of the build (backend type TYPE) that waits for the advisory lock LOCK (the arguments of pg_advisory_lock) a session of the test holds, the build run with the
+# settings that follow: one is there to be found and killed whatever the speed and the cores of the runner; true when one was killed and the build failed
+kill_held() { # LOCK TYPE SETTING...
+	local lock=$1 type=$2 builder victim= built
+	shift 2
+	PM=$(head -1 "$D/data/postmaster.pid")
+	rm -f "$D/held"
+	{ echo "SELECT pg_advisory_lock($lock);"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(600);"; } | sql primary >/dev/null 2>&1 &
+	until [[ -e $D/held ]]; do sleep 0.05; done
+	sql primary "${OPTS[@]}" "$@" "$BUILD" >"$D/build.out" 2>&1 &
+	builder=$!
+	for _ in $(seq 1200); do
+		victim=$(sql primary "SELECT pid FROM pg_stat_activity WHERE backend_type = '$type' AND wait_event_type = 'Lock' AND wait_event = 'advisory' LIMIT 1" 2>/dev/null)
+		[[ -z $victim ]] || break
+		kill -0 "$builder" 2>/dev/null || break
+		sleep 0.05
+	done
+	if [[ -n $victim ]]; then
+		SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
+		kill -9 "$victim"
+	fi
+	wait "$builder"; built=$?
+	test -n "$victim" -a "$built" -ne 0
+}
+
+# a parallel worker, killed while the scan runs: the workers wait to start the scan (sift.test_phase_gate + the scan phase)
 D=$(dir primary)
 GATE=7000
-rm -f "$D/held"
-{ echo "SELECT pg_advisory_lock($(( GATE + 2 )));"; echo "\\! touch '$D/held'"; echo "SELECT pg_sleep(600);"; } | sql primary >/dev/null 2>&1 &
-until [[ -e $D/held ]]; do sleep 0.05; done
-sql primary "${OPTS[@]}" "SET sift.test_phase_gate = $GATE" "$BUILD" >"$D/build.out" 2>&1 &
-BUILDER=$!
-victim=
-for _ in $(seq 1200); do
-	victim=$(sql primary "SELECT pid FROM pg_stat_activity WHERE backend_type = 'parallel worker' AND wait_event_type = 'Lock' LIMIT 1" 2>/dev/null)
-	[[ -z $victim ]] || break
-	kill -0 "$BUILDER" 2>/dev/null || break
-	sleep 0.05
-done
-if [[ -n $victim ]]; then
-	SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
-	kill -9 "$victim"
-fi
-wait "$BUILDER"; built=$?
-check "a parallel worker was found and killed, the build failed" test -n "$victim" -a "$built" -ne 0
+check "a parallel worker was found and killed, the build failed" kill_held $(( GATE + 2 )) 'parallel worker' "SET sift.test_phase_gate = $GATE"
 if restart; then ok "the primary restarts and the standby streams again"; recovered "worker killed in the scan" || true
 else not_ok "the primary restarts and the standby streams again"; fi
+
+sql primary "${OPTS[@]}" "$BUILD" >/dev/null
+FORMAT=$(sql primary "SELECT format_major FROM sift.status('t_idx')")
+sql primary "DROP INDEX t_idx" >/dev/null
+if (( FORMAT == 2 )); then
+	for point in "manifest:$(( GATE + 10 )):SET sift.test_phase_gate = $GATE" "published:20983, 8:SET sift.test_build_gate = on"; do
+		IFS=: read -r what lock setting <<<"$point"
+		label="leader killed $([[ $what == manifest ]] && echo "at the commit of the manifest that takes the parts" || echo "once the parts are published")"
+		if ! kill_held "$lock" 'client backend' "$setting"; then not_ok "$label: the build was not held there"
+		elif restart; then recovered "$label" || true
+		else not_ok "$label: restart"; fi
+	done
+	done_testing
+	finish
+fi
 
 # the leader, before the n-th directory update of the build
 # the count varies from build to build (4 to 6 on a loaded runner): the smallest of three keeps the last kill points reachable
