@@ -1,6 +1,8 @@
 -- The ordered index-only scan is for the indexes of a table that has rows: a partitioned table's index (also one made ON ONLY, which a partition attached later completes) has no access method routine,
 -- and a hash sub-partition of a range partition is such a table read as the relation of a plan. EXPLAIN of min, max and ORDER BY ... LIMIT 1 over them must plan, and give the rows of the leaves.
 CREATE EXTENSION pg_sift;
+-- Format 1: the ordered index-only scan of the first column reads the order array of a Format 1 index; Format 2.0 orders by key_order (col/f2/ordered_scan)
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 CREATE TABLE op (id int4, d date, pad text) PARTITION BY RANGE (d);
 CREATE TABLE op_a PARTITION OF op FOR VALUES FROM ('2024-01-01') TO ('2024-07-01');

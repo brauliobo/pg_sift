@@ -388,6 +388,7 @@ FROM (VALUES ('p10%'), ('p11%'), ('p12%')) g(p), LATERAL (SELECT id FROM lz WHER
 (1 row)
 
 RESET ALL;
+SET sift.test_create_format1 = on;
 -- two keys of one list whose fingerprints and places collide (16 bit fingerprint, 128 slots): the first chunk's lookup of 2077 lists the rows of 4082 too, and the
 -- second chunk's lookup of 4082 lists the rows of both again, which the executor must not get twice
 CREATE TABLE lzc (id int, k int, pad text DEFAULT repeat('x', 300));

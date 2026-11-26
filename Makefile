@@ -484,6 +484,7 @@ TESTING_REGRESS += col/merge/settled
 TESTING_REGRESS += col/option_names_bytes
 TESTING_REGRESS += col/order/budget
 TESTING_REGRESS += col/order/pair
+TESTING_REGRESS += col/order/part
 TESTING_REGRESS += col/order/scan
 TESTING_REGRESS += col/order_layout
 TESTING_REGRESS += col/overlay/cap

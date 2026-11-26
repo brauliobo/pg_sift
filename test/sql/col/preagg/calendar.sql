@@ -3,6 +3,8 @@
 -- by the decoder that refuses a damaged cube; checked against the chunks by the verify of the segments; kept by a rewrite.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the calendar cells of the cube of a Format 1 sift_table (col/v1); a Format 2.0 table keeps its pre-aggregates in its parts
+SET sift.test_create_format1 = on;
 SET max_parallel_maintenance_workers = 0;
 
 CREATE TABLE cmo (id int, ts timestamp, tz timestamptz, d date, kind int, amt numeric(10, 2), flt float8, pad text) USING sift_table;

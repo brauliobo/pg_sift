@@ -139,6 +139,7 @@ FROM (VALUES ('p1%'), ('p2%'), ('p00%'), ('p119%'), ('q%')) g(p);
 SELECT count(*) = count(DISTINCT l.id) AS rescan_rows_distinct, count(*) AS rescan_rows
 FROM (VALUES ('p10%'), ('p11%'), ('p12%')) g(p), LATERAL (SELECT id FROM lz WHERE s LIKE g.p COLLATE "C") l;
 RESET ALL;
+SET sift.test_create_format1 = on;
 
 -- two keys of one list whose fingerprints and places collide (16 bit fingerprint, 128 slots): the first chunk's lookup of 2077 lists the rows of 4082 too, and the
 -- second chunk's lookup of 4082 lists the rows of both again, which the executor must not get twice
