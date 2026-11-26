@@ -110,10 +110,13 @@ typedef struct SiftSegment
 	void	   *live;			/* private: dirty-SB bitmap */
 	void	   *l2;				/* private: format 2 liveness (header, rows of the SB read last) */
 	uint8		fmt;			/* segment format: SIFT_SEGFMT_* */
+	bool		uncached;		/* read once by a maintenance pass: what it reads is not kept by the backend (bm25/segcache.c) */
 } SiftSegment;
 
 /* Reads the header and the dictionary root; ERRCODE_INDEX_CORRUPTED on format errors */
 extern SiftSegment *sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
+/* As sift_seg_open, for a segment that a merge or a VACUUM reads once and then deletes: its blobs, directories and sums stay in mcxt */
+extern SiftSegment *sift_seg_open_once(Relation index, const SiftSegEntry *entry, MemoryContext mcxt);
 extern void sift_seg_close(SiftSegment *seg);	/* releases buffers only */
 
 typedef struct SiftDocChunk
@@ -217,6 +220,24 @@ extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, S
 /* Is what sift_segcache_get would return already there and filled: no entry made, nothing pinned */
 extern bool sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size);
 extern void sift_segcache_ready(void *handle);
+
+/* sift_segcache_get of the segment, whose bytes are in its memory context alone when it is read once */
+static inline bool
+sift_seg_cache_get(SiftSegment *seg, int kind, uint64 id, Size size, void **obj, void **handle)
+{
+	if (!seg->uncached)
+		return sift_segcache_get(&seg->sr, kind, id, size, seg->mcxt, obj, handle);
+	*handle = NULL;
+	*obj = MemoryContextAllocAligned(seg->mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
+	return false;
+}
+
+/* sift_post_open of a term of the segment, uncached when it is read once */
+static inline SiftPostingCursor *
+sift_seg_post_open(SiftSegment *seg, const SiftTermInfo *info, MemoryContext mcxt)
+{
+	return seg->uncached ? sift_post_open_uncached(&seg->sr, info, mcxt) : sift_post_open(&seg->sr, info, mcxt);
+}
 #ifdef SIFT_TESTING
 /* Entries dropped for room, and blobs that did not fit though a cursor held every entry (sift._test_read_stats) */
 typedef struct SiftSegCacheStats

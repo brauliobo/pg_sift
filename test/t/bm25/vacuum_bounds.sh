@@ -2,7 +2,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # One VACUUM of a BM25 index stays within what maintenance_work_mem, autovacuum_work_mem and temp_file_limit allow, whatever the size of the index: a VACUUM someone runs merges the index to one segment
 # (sift.vacuum_rewrite_limit holds an autovacuum pass back, not that VACUUM), writes temporary files within 2.5 times the limit (the segments it merges are streamed, not dumped to runs), holds memory that does not follow the
-# rows (the same peak at 1x, 2x and 4x, slope at most 2 B/row of the counted scopes and 16 B/row of the resident peak, which counts the pages the rewrite touches), leaves the file within twice the live segments, copies at most
+# rows (the same peak at 1x, 2x and 4x, slope at most 2 B/row of the counted scopes and 8 B/row of the resident peak, which counts the pages the rewrite touches), leaves the file within twice the live segments, copies at most
 # the limit of the file in the space step, and a merge that fails, is cancelled or whose backend is terminated leaves no temporary file; an autovacuum worker takes its budget from autovacuum_work_mem.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
@@ -79,8 +79,8 @@ check "the memory it counts is the same at 4x as at 1x (at most 1.15 times)" \
 check "... and grows at most 2 B/row" \
 	awk -v a="${M[$R1.exact]}" -v c="${M[$R4.exact]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) / r <= 2) }'
 out="rss ${M[$R1.rss]} ${M[$R2.rss]} ${M[$R4.rss]} kB"
-check "its resident peak grows at most 16 B/row" \
-	awk -v a="${M[$R1.rss]}" -v c="${M[$R4.rss]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) * 1024 / r <= 16) }'
+check "its resident peak grows at most 8 B/row" \
+	awk -v a="${M[$R1.rss]}" -v c="${M[$R4.rss]}" -v r=$((R4 - R1)) 'BEGIN { exit !((c - a) * 1024 / r <= 8) }'
 out="ms ${M[$R1.ms]} ${M[$R2.ms]} ${M[$R4.ms]}"
 check "its time grows at most 5.5 times over 4x the rows" \
 	awk -v a="${M[$R1.ms]}" -v c="${M[$R4.ms]}" 'BEGIN { exit !(c <= 5.5 * (a < 20 ? 20 : a)) }'

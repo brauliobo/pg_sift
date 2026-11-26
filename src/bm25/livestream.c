@@ -42,17 +42,13 @@ sbdocs_build(DocCache *dc, int64 at)
 	SiftSegment *seg = dc->seg;
 	SiftDocChunk ch;
 	SBDocs	   *e = MemoryContextAllocZero(dc->mcxt, sizeof(SBDocs));
+	uint16	   *rows = MemoryContextAlloc(dc->mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+	uint8	   *dead = MemoryContextAllocZero(dc->mcxt, ((Size) SIFT_SB_PAGES * MAXOFF + 7) / 8);
 	uint32		total = 0;
 	bool		anydead = false;
 
-	if (dc->rows == NULL)
-	{
-		dc->rows = MemoryContextAlloc(dc->mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-		dc->dead = MemoryContextAlloc(dc->mcxt, ((Size) SIFT_SB_PAGES * MAXOFF + 7) / 8);
-	}
 	sift_seg_docs(seg, docmap(seg)->dir[at].sb, &ch);
 	dirty_everywhere(seg, &ch);
-	memset(dc->dead, 0, (SIFT_SB_PAGES * MAXOFF + 7) / 8);
 	for (int p = 0; p < SIFT_SB_PAGES; p++)
 	{
 		uint64		present[SIFT_OFFMASK_WORDS],
@@ -66,7 +62,7 @@ sbdocs_build(DocCache *dc, int64 at)
 		for (int wd = SIFT_OFFMASK_WORDS - 1; wd >= 0 && len == 0; wd--)
 			if (present[wd])
 				len = wd * 64 + 64 - __builtin_clzll(present[wd]);
-		memcpy(dc->rows + total, dl, len * sizeof(uint16));
+		memcpy(rows + total, dl, len * sizeof(uint16));
 		if (ch.dirty)
 		{
 			sift_seg_page_live(seg, &ch, p, live);
@@ -75,7 +71,7 @@ sbdocs_build(DocCache *dc, int64 at)
 				{
 					uint32		slot = total + wd * 64 + __builtin_ctzll(m);
 
-					dc->dead[slot / 8] |= 1 << (slot % 8);
+					dead[slot / 8] |= 1 << (slot % 8);
 				}
 		}
 		e->start[p] = total;
@@ -85,14 +81,16 @@ sbdocs_build(DocCache *dc, int64 at)
 	e->at = at;
 	/* check-memory: allow the docs of one superblock (at most 256 pages of 291 rows) */
 	e->dl = MemoryContextAlloc(dc->mcxt, total * sizeof(uint16));
-	memcpy(e->dl, dc->rows, total * sizeof(uint16));
+	memcpy(e->dl, rows, total * sizeof(uint16));
 	e->size = sizeof(SBDocs) + total * sizeof(uint16);
 	if (anydead)
 	{
 		e->dead = MemoryContextAlloc(dc->mcxt, (total + 7) / 8);
-		memcpy(e->dead, dc->dead, (total + 7) / 8);
+		memcpy(e->dead, dead, (total + 7) / 8);
 		e->size += (total + 7) / 8;
 	}
+	pfree(rows);
+	pfree(dead);
 	return e;
 }
 
@@ -287,7 +285,7 @@ static bool
 stream_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 {
 	Stream	   *s = arg;
-	SiftPostingCursor *c = sift_post_open(&s->seg->sr, info, s->tcxt);
+	SiftPostingCursor *c = sift_seg_post_open(s->seg, info, s->tcxt);
 	bool		haspos = (info->flags & SIFT_TERM_POS) != 0,
 				buffered = s->dirty && info->df <= STREAM_POSTINGS;
 	SiftPosReader *pr = haspos ? sift_post_pos_reader(c, s->tcxt) : NULL;
@@ -502,7 +500,7 @@ sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo
 	while (sift_dict_iter_next(c->dit, term, len, &found))
 	{
 		c->info = found;
-		c->pc = sift_post_open(&s->seg->sr, &c->info, s->tcxt);
+		c->pc = sift_seg_post_open(s->seg, &c->info, s->tcxt);
 		c->pr = (found.flags & SIFT_TERM_POS) ? sift_post_pos_reader(c->pc, s->tcxt) : NULL;
 		if (s->dirty)
 			c->info.df = stream_count(s, c->pc);

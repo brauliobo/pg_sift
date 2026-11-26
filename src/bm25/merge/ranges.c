@@ -39,7 +39,7 @@ open_live(Relation index, const SiftSegEntry *in, int n, MemoryContext mcxt, Buf
 
 	for (int i = 0; i < n; i++)
 	{
-		SiftSegment *seg = sift_seg_open(index, &in[i], mcxt);
+		SiftSegment *seg = sift_seg_open_once(index, &in[i], mcxt);
 		uint64		d,
 					dl;
 
@@ -75,19 +75,24 @@ merge_alone(Relation index, SiftWriteTarget *wt, const SiftSegEntry *in, int n, 
 	BufferAccessStrategy bas;
 	uint64		ndocs = 0,
 				sum_dl = 0;
+	Size		budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1);
+	SiftMemTracker mt_bm25_merge;
 	int			nlive;
 
 #ifdef SIFT_TESTING
 	mem_watch(cxt);
 #endif
+	sift_mem_init_sub(&mt_bm25_merge, "bm25_merge", cxt, false, budget);
 	old = MemoryContextSwitchTo(cxt);
 	bas = GetAccessStrategy(BAS_BULKREAD);
 	MemoryContextSwitchTo(old);
 	nlive = open_live(index, in, n, cxt, bas, segs, &ndocs, &sum_dl);
 	if (nlive > 0)
-		sift_segs_write(segs, nlive, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1), wt, sift_store_new_gen(index), ref, neu);
+		sift_segs_write(segs, nlive, budget, wt, sift_store_new_gen(index), ref, neu);
 	close_live(segs, nlive);
+	sift_mem_assert_within(&mt_bm25_merge);
 	MemoryContextDelete(cxt);
+	sift_mem_trim_if_free(budget);
 	return nlive > 0;
 }
 

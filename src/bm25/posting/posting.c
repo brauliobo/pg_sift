@@ -168,8 +168,15 @@ post_attach(const SiftTermInfo *info, MemoryContext mcxt, const uint8 *blob, Sif
 	return c;
 }
 
+typedef enum PostOpen
+{
+	POST_CACHED,
+	POST_UNCACHED,
+	POST_VERIFIED
+} PostOpen;
+
 static SiftPostingCursor *
-post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bool verify)
+post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, PostOpen mode)
 {
 	uint8	   *blob = NULL;
 	void	   *handle = NULL;
@@ -181,8 +188,8 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 		bool		kept = false;
 		const void *src;
 
-		/* sift.verify reads the pages; a blob under a page costs less to copy than to look up */
-		if (verify || len < BLOB_KEEP_MIN)
+		/* sift.verify reads the pages; a blob under a page costs less to copy than to look up; a segment read once is not kept */
+		if (mode != POST_CACHED || len < BLOB_KEEP_MIN)
 			blob = MemoryContextAllocAligned(mcxt, len + SIFT_KERN_PAD, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 		else
 			kept = sift_segcache_get(sr, SIFT_SEGCACHE_BLOB, info->post_off, len + SIFT_KERN_PAD, mcxt, (void **) &blob, &handle);
@@ -198,7 +205,8 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 			memset(blob + len, 0, SIFT_KERN_PAD);
 		}
 	}
-	c = post_attach(info, mcxt, blob, sr, verify);
+	c = post_attach(info, mcxt, blob, sr, mode == POST_VERIFIED);
+	c->uncached = mode == POST_UNCACHED;
 	sift_segcache_ready(handle);
 	return c;
 }
@@ -206,7 +214,13 @@ post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt, bo
 SiftPostingCursor *
 sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
 {
-	return post_open(sr, info, mcxt, false);
+	return post_open(sr, info, mcxt, POST_CACHED);
+}
+
+SiftPostingCursor *
+sift_post_open_uncached(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
+{
+	return post_open(sr, info, mcxt, POST_UNCACHED);
 }
 
 SiftPostingCursor *
@@ -218,7 +232,7 @@ sift_post_open_blob(const SiftTermInfo *info, const uint8 *blob, MemoryContext m
 SiftPostingCursor *
 sift_post_open_verified(SiftStreamReader *sr, const SiftTermInfo *info, MemoryContext mcxt)
 {
-	return post_open(sr, info, mcxt, true);
+	return post_open(sr, info, mcxt, POST_VERIFIED);
 }
 
 SiftPostingCursor *
@@ -280,7 +294,7 @@ sift_post_bounds(SiftPostingCursor *c, int *n)
 		void	   *handle = NULL;
 		Size		bytes = Max(c->ng, 1) * sizeof(SiftGroupBounds);
 		void	   *obj = NULL;
-		bool		kept = c->sr != NULL && c->ng >= BOUNDS_CACHE_MIN_NG;
+		bool		kept = c->sr != NULL && !c->uncached && c->ng >= BOUNDS_CACHE_MIN_NG;
 
 		/* the bounds of a long term are kept for the next query of the backend: unpacking them is a pass over the term's groups */
 		if (kept && sift_segcache_get(c->sr, SIFT_SEGCACHE_BOUNDS, c->info.post_off, bytes, c->mcxt, &obj, &handle))

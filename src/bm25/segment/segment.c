@@ -58,10 +58,53 @@ sift_seg_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
 	return seg;
 }
 
+SiftSegment *
+sift_seg_open_once(Relation index, const SiftSegEntry *entry, MemoryContext mcxt)
+{
+	SiftSegment *seg = sift_seg_open(index, entry, mcxt);
+
+	seg->uncached = true;
+	return seg;
+}
+
+static void
+drop_buffer(void **buf)
+{
+	if (*buf)
+		pfree(*buf);
+	*buf = NULL;
+}
+
+/* The buffers of the SB read last, as large as the largest SB the pass met: a segment read once gives them back when it is closed */
+static void
+drop_sb_scratch(SiftSegment *seg)
+{
+	DocMap	   *dm = seg->docmap;
+	Live2	   *l2 = seg->l2;
+
+	if (dm != NULL)
+	{
+		drop_buffer((void **) &dm->rec);
+		drop_buffer((void **) &dm->xdl);
+		drop_buffer((void **) &dm->live_bits);
+		dm->reccap = dm->live_cap = dm->xcap = 0;
+		dm->cur = -1;
+		dm->indexed = dm->live_ok = dm->live_om_ok = false;
+	}
+	if (l2 != NULL)
+	{
+		drop_buffer((void **) &l2->rbuf);
+		l2->rcap = 0;
+		l2->rok = false;
+	}
+}
+
 void
 sift_seg_close(SiftSegment *seg)
 {
 	sift_sr_release(&seg->sr);
+	if (seg->uncached)
+		drop_sb_scratch(seg);
 }
 
 static const void *
@@ -550,7 +593,7 @@ attr_dir_ref(SiftSegment *seg, DocMap *dm, int64 i, int col)
 		seg_read(seg, off + ((uint64) i * dm->ncols + col) * sizeof(SiftAttrRef), sizeof(SiftAttrRef), &dm->atmp);
 		return &dm->atmp;
 	}
-	if (!sift_segcache_get(&seg->sr, SIFT_SEGCACHE_ATTRDIR, off, bytes, seg->mcxt, &dir, &handle))
+	if (!sift_seg_cache_get(seg, SIFT_SEGCACHE_ATTRDIR, off, bytes, &dir, &handle))
 	{
 		seg_read(seg, off, bytes, dir);
 		if (handle)

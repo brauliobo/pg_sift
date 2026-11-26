@@ -76,6 +76,7 @@ struct SiftPostingCursor
 	const uint8 *esc;
 	Size		bloblen;		/* the blob without its position stream */
 	SiftStreamReader *sr;		/* the position stream is read on demand */
+	bool		uncached;		/* a segment read once: its bytes are not kept by the backend */
 	uint64		posoff;			/* its offset in the segment stream */
 	uint32		poslen;
 	uint32		nck;

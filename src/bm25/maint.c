@@ -42,7 +42,7 @@ static void
 bulkdelete_immutable(Relation index, const SiftSegEntry *e, IndexBulkDeleteCallback cb, void *cb_state, IndexBulkDeleteResult *stats)
 {
 	MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift bulkdelete segment");
-	SiftSegment *seg = sift_seg_open(index, e, segcx);
+	SiftSegment *seg = sift_seg_open_once(index, e, segcx);
 
 	sift_vacuum_delay_point();
 	sift_seg_bulkdelete(seg, cb, cb_state, stats);
@@ -73,7 +73,7 @@ refresh_dead_tables(Relation index)
 		if (snap->segs[i].kind == SIFT_SEG_IMMUTABLE && (snap->segs[i].flags & SIFT_SEG_DIRTY))
 		{
 			MemoryContext segcx = sift_mem_allocset_create(CurrentMemoryContext, "sift dead refresh segment");
-			SiftSegment *seg = sift_seg_open(index, &snap->segs[i], segcx);
+			SiftSegment *seg = sift_seg_open_once(index, &snap->segs[i], segcx);
 
 			sift_vacuum_delay_point();
 			sift_seg_refresh_dead(seg);

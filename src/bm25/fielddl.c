@@ -76,7 +76,7 @@ sift_seg_live_field_sums(SiftSegment *seg, uint64 *sum_dl)
 		void	   *handle;
 
 		/* the docs are only ever vacuumed, so the number of dead ones names the set the sums are of */
-		if (!sift_segcache_get(&seg->sr, SIFT_SEGCACHE_FIELDDEAD, seg->hdr->ndocs - ndocs, nf * sizeof(uint64), seg->mcxt, (void **) &dead, &handle))
+		if (!sift_seg_cache_get(seg, SIFT_SEGCACHE_FIELDDEAD, seg->hdr->ndocs - ndocs, nf * sizeof(uint64), (void **) &dead, &handle))
 		{
 			dead_field_sums(seg, nf, dead);
 			if (handle)
@@ -119,7 +119,7 @@ legacy_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 
 	if (len < 2 || term[1] == SIFT_PREFIX_SEP)
 		return true;
-	c = sift_post_open(&lf->seg->sr, info, lf->cx);
+	c = sift_seg_post_open(lf->seg, info, lf->cx);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
 		SiftDocChunk dc;

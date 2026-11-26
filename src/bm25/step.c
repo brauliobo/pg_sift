@@ -660,7 +660,7 @@ merge_healing(Relation index, SiftWriteTarget *wt, const MergeSel *in, DocText *
 
 	for (int i = 0; i < in->n; i++)
 	{
-		SiftSegment *seg = sift_seg_open(index, &in->seg[i], cx);
+		SiftSegment *seg = sift_seg_open_once(index, &in->seg[i], cx);
 		SiftRun    *run;
 
 		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))

@@ -167,6 +167,16 @@ pos_put(SiftPostingWriter *w, const uint8 *pos, const uint32 *poslen, int n, uin
 	w->poslen += len;
 }
 
+/* The writer keeps about 10 bytes of each posting (sift_seg_postings), 24 with the records and checkpoints of positions: staging begins sooner by as much */
+#define POSTW_BYTES			10
+#define POSTW_POS_BYTES		24
+
+static inline uint32
+spool_limit(const SiftPostingWriter *w, bool haspos)
+{
+	return haspos ? Max(w->grouped_min, (uint64) w->spool_min * POSTW_BYTES / POSTW_POS_BYTES) : w->spool_min;
+}
+
 /*
  * The postings of a term in memory (staged false), or a term that is staged in files or reaches the size from which it is
  * (staged true, out of line so that the common case keeps its own small frame: the address of a local in it, a stack
@@ -206,7 +216,7 @@ postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint
 	w->n += n;
 	if (!staged)
 		return;
-	if (w->sp == NULL && w->n >= w->spool_min)
+	if (w->sp == NULL && w->n >= spool_limit(w, pos != NULL))
 		spool_begin(w);
 	if (w->open_start > 0)
 		spool_stage(w, w->open_start);
@@ -223,7 +233,7 @@ void
 sift_postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint16 *dl, int n,
 			   const uint8 *pos, const uint32 *poslen)
 {
-	if (unlikely(w->sp != NULL || (w->spool_min && (int64) w->n + n >= w->spool_min)))
+	if (unlikely(w->sp != NULL || (w->spool_min && (int64) w->n + n >= spool_limit(w, pos != NULL))))
 		postw_add_staged(w, keys, tf, dl, n, pos, poslen);
 	else
 		postw_add(w, keys, tf, dl, n, pos, poslen, false);

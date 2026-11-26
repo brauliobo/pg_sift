@@ -488,7 +488,7 @@ sift_seg_term_live(SiftSegment *seg, const SiftTermInfo *info)
 		return t.ldf > 0;
 	}
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift term live", ALLOCSET_SMALL_SIZES);
-	c = sift_post_open(&seg->sr, info, cx);
+	c = sift_seg_post_open(seg, info, cx);
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g && !live; g = sift_next(sift_post_cursor(c)))
 		live = group_has_live(seg, g);
 	sift_sr_release(&seg->sr);
@@ -728,7 +728,7 @@ dead_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		return true;
 	if (info->slot >= ds->nslots)
 		corrupt(seg, "A term has slot %d in a table of %u.", info->slot, ds->nslots);
-	c = sift_post_open(&seg->sr, info, ds->tcxt);
+	c = sift_seg_post_open(seg, info, ds->tcxt);
 	sift_sr_unlock(&seg->sr);
 	cur = sift_post_cursor(c);
 	n = sift_cur_count_in(cur, ds->flat + (ds->wlo - seg->hdr->sb_lo), ds->wlo, ds->whi - ds->wlo + 1, seg->hdr->sb_lo,

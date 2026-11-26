@@ -152,6 +152,10 @@ typedef struct SiftPostingCursor SiftPostingCursor;
 extern SiftPostingCursor *sift_post_open(SiftStreamReader *sr, const SiftTermInfo *info,
 										 MemoryContext mcxt);
 
+/* As sift_post_open, for a segment a maintenance pass reads once: the blob and the bounds of the term are in mcxt, not kept by the backend (bm25/segcache.c) */
+extern SiftPostingCursor *sift_post_open_uncached(SiftStreamReader *sr, const SiftTermInfo *info,
+												  MemoryContext mcxt);
+
 /* A cursor over a blob of sift_postw_end_term_mem (not copied: it must outlive the cursor) */
 extern SiftPostingCursor *sift_post_open_blob(const SiftTermInfo *info, const uint8 *blob, MemoryContext mcxt);
 

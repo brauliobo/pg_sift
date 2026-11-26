@@ -152,8 +152,6 @@ typedef struct DocCache
 	SBDocs	   *oldest;
 	Size		used;
 	Size		budget;
-	uint16	   *rows;			/* scratch of a build: SIFT_SB_PAGES * MAXOFF slots and their dead bits */
-	uint8	   *dead;
 } DocCache;
 
 /* livestream.c: the dl cache, for what looks the docs of the postings of a term up */

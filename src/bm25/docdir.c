@@ -26,7 +26,7 @@ sift_docdir_get(SiftSegment *seg, uint32 nsb, SiftDocSBRef **dir, uint64 **rank_
 	bool		ready;
 
 	*handle = NULL;
-	if (nsb < sift_docdir_min_sb)
+	if (seg->uncached || nsb < sift_docdir_min_sb)
 	{
 		*dir = MemoryContextAlloc(seg->mcxt, nsb * sizeof(SiftDocSBRef));
 		*rank_base = MemoryContextAlloc(seg->mcxt, (nsb + 1) * sizeof(uint64));
