@@ -4,6 +4,7 @@
 -- arrays of all of it. Past 4,096 slots, when the planner expects fewer than a quarter of them groups, the arrays go to the hash table from the start (seven keys start with 4^7 slots) or as soon as fewer than a sixteenth of the slots hold one. When most rows open a group of their own the table is the hash table from the start, sized for the groups the planner expects. The result is the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE sp_facts (id int, parent_id int, ts date, wk int, dow int, quarter int, amount float8) WITH (autovacuum_enabled = false);

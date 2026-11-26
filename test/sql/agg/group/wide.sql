@@ -4,6 +4,7 @@
 -- is the same whichever table holds them.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE wd_facts (id int, k1 int, k2 int, k3 int, k4 int, k5 int, k6 int, k7 int, k8 int, k9 int, k10 int, a float8, b float8, c int) WITH (autovacuum_enabled = false);

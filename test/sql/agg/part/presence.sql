@@ -3,6 +3,7 @@
 -- scan counts on the lists every partition keeps (and on the measures that the key table of a column adds to its dim in the partitions that keep one). The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE pk (id int NOT NULL, g int NOT NULL, h int NOT NULL, v int NOT NULL, m numeric(10,2) NOT NULL, d date NOT NULL) PARTITION BY RANGE (id);

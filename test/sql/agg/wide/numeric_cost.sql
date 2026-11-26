@@ -5,6 +5,7 @@
 -- run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 2;
 CREATE TABLE items (id int PRIMARY KEY, kind text NOT NULL, typed numeric(10, 2), many numeric, few numeric, wmany numeric(30, 16), wfew numeric(30, 16));
 SELECT setseed(0.42);

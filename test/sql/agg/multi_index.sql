@@ -1,6 +1,7 @@
 -- A table with several sift_col indexes is scanned through the first of them that gives a plan: each index holds its own columns and paths, and the one
 -- PostgreSQL lists first is no better a choice than the others for a query it cannot answer. The results, with the pushdown off and on, are the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

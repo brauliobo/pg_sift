@@ -3,6 +3,7 @@
 -- happens after the first units gave ids from the range table, with NULL keys, and for pre-aggregated units. The rows of one key that follow each other take
 -- the id of the row before; a NULL between two rows of a key, a key that comes back after others and a key that follows the NULLs keep the groups of PostgreSQL.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 CREATE TABLE sk_facts (id int PRIMARY KEY, set_id int, kind int, score float8, pad text);

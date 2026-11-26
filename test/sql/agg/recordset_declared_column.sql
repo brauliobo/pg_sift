@@ -3,6 +3,7 @@
 -- it cannot, as the error would come before the conjunct drops the row, so the query keeps its plan instead of failing with the scan's own error for a
 -- document PostgreSQL never gives to the function. Only whether the results agree is printed.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE docs (id int, doc jsonb);
 INSERT INTO docs

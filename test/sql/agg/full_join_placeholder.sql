@@ -3,6 +3,7 @@
 -- keeps its plan; the placeholder of the scanned table's own sub-select is NULL for the sub-select rows nothing matched, as for the other outer joins.
 -- Only whether the results agree is printed.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dims (id int PRIMARY KEY, name text, grp int);
 INSERT INTO dims SELECT i, CASE WHEN i % 4 = 0 THEN NULL ELSE 'n' || i END, i % 3 FROM generate_series(1, 30) i;

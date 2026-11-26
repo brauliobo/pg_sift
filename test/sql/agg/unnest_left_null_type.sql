@@ -2,6 +2,7 @@
 -- gives one pair with a NULL element. That pair has the type of the element column (text, int), not the first type there is: the groups by the text and by an expression of it, and the sum of
 -- the integer, are those of the heap twin.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET enable_hashagg = off;

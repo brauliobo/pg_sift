@@ -1,6 +1,7 @@
 -- The dictionary of a part is named by the index it belongs to and its generation: the indexes of the partitions of a table each count their parts from 1, and the groups a scan of
 -- one partition leaves are folded with those of the next. A text key and the distinct values of a text column must keep the partitions apart: the rows with the scan and without it are the same.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

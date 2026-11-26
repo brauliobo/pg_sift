@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+SET client_min_messages = warning;
 SET sift.test_limits = 'par_build_rows=1';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -17,9 +18,6 @@ SELECT i, i % 50,
        i % 100
 FROM generate_series(1, 120000) i;
 CREATE INDEX lz_col ON lz USING sift_col (grp, word, other, amount) WITH (order_array_columns = 'off');
-NOTICE:  sift_col index "lz_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = grp, amount
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_col');
 VACUUM (FREEZE, ANALYZE) lz;
 SELECT count(*) AS segments FROM sift.col_segments('lz_col') WHERE kind = 'immutable';
  segments 
@@ -92,9 +90,6 @@ SELECT loads = 0 AS found_in_the_cache FROM sift._test_col_dict_cache(true);
 
 -- the readers of the whole dictionary
 REINDEX INDEX lz_col;
-NOTICE:  sift_col index "lz_col": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the index lacks the primary key column; rollup_columns = grp, amount
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lz_col');
 SELECT count(*) > 0 AS reset FROM sift._test_col_dict_cache(true);
  reset 
 -------

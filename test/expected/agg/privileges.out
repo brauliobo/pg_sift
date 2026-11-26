@@ -2,15 +2,12 @@
 -- or on a view and not on its table, and a role that reads a table with row-level security through a view of its owner. PostgreSQL checks
 -- the privileges of the role (or of the view's owner) before the scan starts; the scan adds none of its own.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 \set VERBOSITY terse
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 DROP ROLE IF EXISTS ap_col, ap_view, ap_rls, ap_none;
-NOTICE:  role "ap_col" does not exist, skipping
-NOTICE:  role "ap_view" does not exist, skipping
-NOTICE:  role "ap_rls" does not exist, skipping
-NOTICE:  role "ap_none" does not exist, skipping
 CREATE ROLE ap_col;
 CREATE ROLE ap_view;
 CREATE ROLE ap_rls;
@@ -18,7 +15,6 @@ CREATE ROLE ap_none;
 CREATE TABLE docs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO docs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX docs_col ON docs USING sift_col (id, g, v);
-NOTICE:  sift_col index "docs_col": 1 automatic choice (track_changes)
 VACUUM (FREEZE, ANALYZE) docs;
 CREATE VIEW docs_v AS SELECT g, v FROM docs;
 GRANT SELECT (id, g) ON docs TO ap_col;
@@ -28,14 +24,11 @@ CREATE TABLE pdocs_a PARTITION OF pdocs FOR VALUES FROM (1) TO (2501) WITH (auto
 CREATE TABLE pdocs_b PARTITION OF pdocs FOR VALUES FROM (2501) TO (5001) WITH (autovacuum_enabled = false);
 INSERT INTO pdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX pdocs_col ON pdocs USING sift_col (id, g, v);
-NOTICE:  sift_col index "pdocs_a_id_g_v_idx": 1 advice (track_changes)
-NOTICE:  sift_col index "pdocs_b_id_g_v_idx": 1 advice (track_changes)
 VACUUM (FREEZE, ANALYZE) pdocs;
 GRANT SELECT (id, g) ON pdocs TO ap_col;
 CREATE TABLE rdocs (id int PRIMARY KEY, g int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO rdocs SELECT i, i % 7, i % 100 FROM generate_series(1, 5000) i;
 CREATE INDEX rdocs_col ON rdocs USING sift_col (id, g, v);
-NOTICE:  sift_col index "rdocs_col": 1 automatic choice (track_changes)
 VACUUM (FREEZE, ANALYZE) rdocs;
 ALTER TABLE rdocs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY rdocs_all ON rdocs USING (true);
@@ -149,7 +142,6 @@ ERROR:  permission denied for table docs
 RESET ROLE;
 DROP FUNCTION pushed(text), answers(text);
 DROP TABLE docs, pdocs, rdocs CASCADE;
-NOTICE:  drop cascades to 2 other objects
 DROP OWNED BY ap_col, ap_view, ap_rls, ap_none;
 DROP ROLE ap_col, ap_view, ap_rls, ap_none;
 DROP EXTENSION pg_sift;

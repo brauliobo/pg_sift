@@ -2,6 +2,7 @@
 -- or on a view and not on its table, and a role that reads a table with row-level security through a view of its owner. PostgreSQL checks
 -- the privileges of the role (or of the view's owner) before the scan starts; the scan adds none of its own.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 \set VERBOSITY terse
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;

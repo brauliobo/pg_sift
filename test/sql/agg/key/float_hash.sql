@@ -1,6 +1,7 @@
 -- A float group key whose values have short mantissas (1.5, 100.0, powers of two) groups as fast as any other and gives the groups of the normal plan: NaN with NaN, the infinities
 -- and NULL apart, 0 as one group, past the 1,024 slots the key's table starts with. Every query runs as the scan and as the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

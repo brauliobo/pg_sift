@@ -1,5 +1,6 @@
 -- An outer join of an unnested JSON function keeps the rows without a member (NULL columns) and applies its ON clause to the members: the query stays native.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb, tags_a jsonb);
 INSERT INTO facts

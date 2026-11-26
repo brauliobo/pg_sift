@@ -2,6 +2,7 @@
 -- partial sums cancel out are exact, as are the average, a parallel scan and a grouped scan. Every statement runs with sift.enable_agg = off as well: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 CREATE TABLE lines (id int PRIMARY KEY, g int NOT NULL, a numeric(18, 0) NOT NULL, b numeric(18, 0) NOT NULL, c numeric(2, 0) NOT NULL, price numeric(12, 2) NOT NULL, disc numeric(12, 2) NOT NULL, tax numeric(12, 2) NOT NULL);
 INSERT INTO lines
 SELECT i, i % 4, 999999999999999999 - (i % 7), 999999999999999999 - (i % 5), CASE WHEN i % 11 = 0 THEN -99 ELSE 99 END,

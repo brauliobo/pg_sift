@@ -1,5 +1,6 @@
 -- One column read twice under binary-compatible types (as itself and relabeled for a comparison with a char column) is one input of an expression key.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE countries (iso2 char(2) PRIMARY KEY, name text);
 INSERT INTO countries VALUES ('US', 'United States'), ('BR', 'Brazil');

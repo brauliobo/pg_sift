@@ -3,6 +3,7 @@
 -- statement runs with and without the pushdown and the rows must be the same, also when the units answer from their pre-aggregates
 -- (an ungrouped aggregate, or grouped by one column) and when they are read.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;

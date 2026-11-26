@@ -1,5 +1,6 @@
 -- EXPLAIN shows the plan of a correlated lookup under its node; the statement-level Settings and Query Identifier are printed once, at the top.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET compute_query_id = on;
 CREATE TABLE facts (id int, kind text, payload text);

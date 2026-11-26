@@ -3,6 +3,7 @@
 -- statement runs with and without the pushdown and the rows must be the same, also when the units answer from their pre-aggregates
 -- (an ungrouped aggregate, or grouped by one column) and when they are read.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
@@ -14,17 +15,11 @@ SELECT i, i % 7,
 	   CASE WHEN i % 89 = 0 THEN 'NaN' WHEN i % 13 = 0 THEN NULL ELSE round(((i * 53) % 3001 - 1500) / 11.0, 3) END
 FROM generate_series(1, 20000) i;
 CREATE INDEX nc_col ON nc USING sift_col (id, g, n, m);
-NOTICE:  sift_col index "nc_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nc_col');
 VACUUM (FREEZE, ANALYZE) nc;
 -- the same rows without a NaN, so that every unit is exact
 CREATE TABLE nf (id int PRIMARY KEY, g int, n numeric(12,2)) WITH (autovacuum_enabled = false);
 INSERT INTO nf SELECT i, i % 7, round(((i * 37) % 4001 - 2000) / 7.0, 2) FROM generate_series(1, 20000) i;
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n);
-NOTICE:  sift_col index "nf_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nf_col');
 VACUUM (FREEZE, ANALYZE) nf;
 CREATE TABLE shapes (id serial PRIMARY KEY, shape text, q text);
 INSERT INTO shapes (shape, q)

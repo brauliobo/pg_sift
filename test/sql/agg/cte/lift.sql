@@ -2,6 +2,7 @@
 -- the body leave a row or two where the data keeps most of them. A body that aggregates, limits or combines sets does not return what it reads:
 -- its rows are its own estimate, one for each group, and the lift is not made for it.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE kinds (id int PRIMARY KEY, label text);
 INSERT INTO kinds SELECT g, 'kind ' || g FROM generate_series(1, 20) g;

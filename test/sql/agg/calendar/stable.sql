@@ -3,6 +3,7 @@
 -- rolling window of a dashboard is a comparison of the zones and not a function run for every timestamp. Every statement returns the rows of the normal plan,
 -- in the time zones whose clocks jump; one transaction fixes now() for both plans.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

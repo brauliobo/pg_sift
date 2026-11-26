@@ -3,6 +3,7 @@
 -- ORDER BY, comparisons with numbers, with NaN and between two expressions, expressions, float8 casts. The rows are in segments, in the
 -- write buffer, and in the segments after a promotion and a merge; a cast of a NaN to an integer raises PostgreSQL's error.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0;

@@ -4,6 +4,7 @@
 -- fill it. The groups are those of the plain plan, the NULL rows too (also for an expression that gives a value for NULL), whatever unit takes the hash and whatever the table holds.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 

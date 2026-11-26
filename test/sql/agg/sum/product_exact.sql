@@ -4,6 +4,7 @@
 -- as well: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 CREATE TABLE p (id int PRIMARY KEY, g int NOT NULL, a numeric(16, 0), b numeric(16, 0), c numeric(16, 0), price numeric(15, 2), disc numeric(15, 2), tax numeric(15, 2));
 INSERT INTO p
 SELECT i, i % 4, 9999999999999999 - (i % 7), 9999999999999999 - (i % 5), CASE WHEN i % 11 = 0 THEN -9999999999999999 + i % 13 ELSE 9999999999999999 - i % 17 END,

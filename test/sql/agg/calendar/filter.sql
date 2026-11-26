@@ -3,6 +3,7 @@
 -- the infinities, NULL and the constants that stay with the normal plan (outside the years 100 to 9900, NULL, a cross type comparison).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;

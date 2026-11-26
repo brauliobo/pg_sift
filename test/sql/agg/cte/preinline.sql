@@ -1,6 +1,7 @@
 -- A CTE that the query reads once is inlined before the statement is planned (agg/preinline.c), as PostgreSQL does at planning: the rows are the
 -- same, and a CTE PostgreSQL keeps (MATERIALIZED, volatile, writing, recursive, read twice) stays a CTE.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int PRIMARY KEY, grp int NOT NULL, v int NOT NULL);
 INSERT INTO ev SELECT g, g % 7, g % 13 FROM generate_series(1, 2000) g;

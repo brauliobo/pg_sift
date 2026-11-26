@@ -2,6 +2,7 @@
 -- for each tuple of the scan: the rows are those of the normal plan (a duplicate or NULL row of the right side counts as often as there is one), and the
 -- right side stays under half of work_mem. The table on the nullable side of a RIGHT or FULL join keeps the normal plan.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

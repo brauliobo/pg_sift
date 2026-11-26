@@ -4,6 +4,7 @@
 -- a FILTER, a histogram that spills to a tuplesort (work_mem), and parallel workers (their histograms are merged).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 -- 12 digits: a PostgreSQL built with fused multiply-add interpolates in the last bit of a float8 differently

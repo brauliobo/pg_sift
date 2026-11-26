@@ -1,6 +1,7 @@
 -- The member `LEFT JOIN LATERAL jsonb_each(doc) r ON r.key = 'k'` picks is the one the key equals: a non-deterministic collation equates k and K, so the join
 -- matches both and the query keeps its plan. Only whether the results agree is printed.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE COLLATION ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 CREATE TABLE facts (id int, dim_a_id int, metrics jsonb);

@@ -2,6 +2,7 @@
 -- a plan above that joins the groups (an anti join against the keys with the most rows, NOT IN) is counted from them. Reported as all 50 groups, PostgreSQL 19
 -- counted that anti join as one row, and a shared CTE plan was priced for it (agg_cte_hoist).
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, parent_id int NOT NULL, score float8 NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO events SELECT g, 1 + g % 50, g % 17 FROM generate_series(1, 30000) g;

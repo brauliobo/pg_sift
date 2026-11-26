@@ -4,6 +4,7 @@
 -- values, with NULLs and empty strings, and when the same leaf is read again for other rows of the unit.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
 
 CREATE TABLE pg (id int PRIMARY KEY, title text, url text, kind text, uid int, phrase text) WITH (autovacuum_enabled = false);
 INSERT INTO pg

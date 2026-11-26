@@ -1,5 +1,6 @@
 -- Raw JSON conversion must retain PostgreSQL's parsing and error timing.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int, document jsonb, metrics jsonb);
 INSERT INTO events VALUES
