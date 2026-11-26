@@ -11,6 +11,7 @@
 #include <signal.h>
 
 #include "catalog/namespace.h"
+#include "catalog/pg_database.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/extension.h"

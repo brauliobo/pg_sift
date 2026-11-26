@@ -29,14 +29,14 @@ refill() { sql tk "TRUNCATE st" "$(rows st 1 5001 "md5(($1 + i)::text)")" "VACUU
 sql tk "CREATE TABLE st (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table" "SELECT sift.set_tier_policy('st', 'file://$STORE.re', '30 days')" >/dev/null || bail "setup failed"
 refill 0
 OLD=$(find "$STORE.re" -name '*.siftpart')
-SUM=$(md5sum <"$OLD")
+SUM=$("$SIFT_REPO/scripts/sha256.sh" "$OLD")
 refill 7
 NEW=$(find "$STORE.re" -name '*.siftpart' ! -path "$OLD")
 check "after TRUNCATE the part moves to an object of another name" test -n "$NEW" -a "$NEW" != "$OLD"
-check "and the object of the table before it is as it was" test "$(md5sum <"$OLD")" == "$SUM"
+check "and the object of the table before it is as it was" test "$("$SIFT_REPO/scripts/sha256.sh" "$OLD")" == "$SUM"
 
 chunks() { find "$(dir tk)/data" -name '*.chk' | sort; }
-inodes() { chunks | xargs -r stat -c '%i' | sort | tr '\n' ' '; }
+inodes() { local f; while IFS= read -r f; do [ -n "$f" ] && ls -i "$f" | awk '{print $1}'; done < <(chunks) | sort | tr '\n' ' '; }
 sql tk "CREATE TABLE sa (id int8, ts timestamp NOT NULL, v int, pad text) USING sift_table" "$(rows sa 1 5001 "md5(i::text)")" "VACUUM (FREEZE) sa" "$(rows sa 10000 15000 "md5((i * 3)::text)")" \
 	"VACUUM (FREEZE) sa" "SELECT sift.set_tier_policy('sa', 'file://$STORE.shared', '30 days')" "VACUUM sa" >/dev/null || bail "setup failed"
 chunks | xargs -r rm -f

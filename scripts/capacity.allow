@@ -89,7 +89,6 @@ array-append	src/col/f2/col_delta/idx.c	cols[n++] = (SiftColDeltaCol) {.attnum =
 array-append	src/col/f2/proj/spec.c	t[len++] = *ps->p++;	the loop condition stops one byte short of sizeof(t), which the terminator takes
 array-append	src/col/granule/promo_prefix.c	tmp[k++] = '0' + (char) (v % 10);	a 64-bit number has at most 20 decimal digits and tmp holds 24
 array-append	src/col/f2/point_dir.c	k.leaf[k.nleaves++] = weak[i].col;	the mask has size bits set, size runs to SIFT_POINT_MAX_COMP, and leaf holds that many
-array-append	src/col/f2/uniq/slab.c	filters[nfilters++] = f;	filter_get makes room first: a full table gives up its last filter, so nfilters never passes SLAB_FILTERS
 array-append	src/col/f2/scan/rescan_cache.c	sc->leaf[sc->nleaf++] = leaf;	leaves is a mask over the columns of the schema and the schema has at most RC_MAX_LEAVES (tested before the state is made)
 array-append	src/agg/cost/card_est.c	w = a->heap[a->nheap++] = palloc(p->nvals * sizeof(uint64)); /* check-memory: allow the values of one IN list of the query */	pred_vals runs once for each of the at most SIFT_CARD_MAX_PREDS predicates of an estimate and heap holds that many
 array-append	src/agg/group/out.c	out[o++] = '-';	out takes the sign, at most 58 digits of the 192-bit magnitude of wide_numeric (39 of a 128-bit one), the point and the NUL: 61 of its 96 (the scale is at most SIFT_COL_MAX_WIDE_SCALE, 38, so it adds no digit beyond those)

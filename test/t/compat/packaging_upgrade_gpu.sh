@@ -46,7 +46,8 @@ out=$(uc old)
 check "a view over sift.table_paths_maintained is a blocker of the update" test -n "$(awk '$1 == "blocker" && $2 == "public.paths_v"' <<<"$out")"
 check "the update stops on it" grep -q 'table_paths_maintained' <<<"$(q old "ALTER EXTENSION pg_sift UPDATE" 2>&1)"
 q old "DROP VIEW public.paths_v" "ALTER EXTENSION pg_sift UPDATE" >/dev/null
-check "without the view the update runs to 6.0" test "$(q old "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" == 6.0
+cur_ver=$(sed -n "s/^default_version *= *'\(.*\)'$/\1/p" "$REPO/pg_sift.control")
+check "without the view the update runs to $cur_ver" test "$(q old "SELECT extversion FROM pg_extension WHERE extname = 'pg_sift'")" = "$cur_ver"
 check "after the update no dependency is a blocker" test -z "$(awk '$1 == "blocker" && $3 == "dependency"' <<<"$(uc old)")"
 
 # the functions 6.0 removed and left behind in pg_proc of a database that was updated: gone; the trigger function that 6.0 still implements stays

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # What a server with many sessions and databases keeps in memory and what its maintenance launcher does with nothing to do: the hashes of a unique slab start small and go with DISCARD ALL, the shared
 # pools hold all of sift.shared_cache_kb, a server without a launcher gives back the slots of workers that are gone, a launcher with an empty queue wakes for nothing and counts nothing, and a worker
 # with nothing to do leaves for a database that has work and no worker.
@@ -36,7 +37,7 @@ check "an idle launcher under eight busy sessions does not wake or ask the pacer
 # the hashes of the keys of a unique slab: small for a small slab, in the budget, gone with DISCARD ALL
 out=$(sql sm "SET sift.backend_cache_kb = 4096" "INSERT INTO u SELECT g, g FROM generate_series(1, 100) g" "INSERT INTO u VALUES (1000)" "INSERT INTO u VALUES (1001)" \
 	"SELECT coalesce(sum(total_bytes), 0) FROM pg_backend_memory_contexts WHERE name = 'sift cache unique slab hashes'" "DISCARD ALL" \
-	"SELECT count(*) FROM pg_backend_memory_contexts WHERE name = 'sift cache unique slab hashes'" | paste -sd' ')
+	"SELECT count(*) FROM pg_backend_memory_contexts WHERE name = 'sift cache unique slab hashes'" | paste -sd' ' -)
 read -r held left <<<"$out"
 check "the hashes of a small slab take little and DISCARD ALL gives them back" test "$((held > 0 && held < 65536))|$left" == "1|0"
 

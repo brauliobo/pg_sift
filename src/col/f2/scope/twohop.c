@@ -85,7 +85,7 @@ join_via(SiftScopeSpool *groups, SiftScopeSpool *hop, SiftScopeSpool *out)
 				if (nk > 0 && keys[nk - 1] == k)
 					continue;
 				if (nk == cap)
-					keys = keys ? repalloc_huge(keys, sizeof(int64) * (cap *= 2)) : palloc(sizeof(int64) * (cap = 64));
+					keys = keys ? repalloc(keys, sizeof(int64) * (cap *= 2)) : palloc(sizeof(int64) * (cap = 64));
 				keys[nk++] = k;
 			}
 			run = hg;

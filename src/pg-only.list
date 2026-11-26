@@ -695,6 +695,7 @@ core/adapt_pipe.c
 core/adapt_pipe.h
 core/cachebudget.c
 core/cachebudget_test.c
+core/catalog.h
 core/catname.h
 core/check.c
 core/check.h
