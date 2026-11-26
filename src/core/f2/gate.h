@@ -18,6 +18,7 @@
 #define SIFT_F2_GATE_COL_DELTA	14	/* the column deltas of a partition are appended and no commit has published them */
 #define SIFT_F2_GATE_SLAB_FLUSH	15	/* a flush of a slab has read nothing of the partition and holds no lock of it */
 #define SIFT_F2_GATE_COL_DELTA_RUN	16	/* the column deltas of a partition are encoded and its lock is not taken */
+#define SIFT_F2_GATE_BULK_INSERT	17	/* a bulk insert (a COPY) staged a pack of its rows: the parts its stage wrote are not committed */
 
 #define SIFT_F2_GATE(phase)		sift_test_phase_wait(phase)
 #else

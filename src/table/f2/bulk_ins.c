@@ -14,6 +14,7 @@
 #include "utils/rel.h"
 
 #include "table/f2/tbl.h"
+#include "core/f2/gate.h"
 #include "core/memtrack.h"
 
 #define SIFT_BULK_PACK_ROWS	64
@@ -96,6 +97,7 @@ sift_tbl_f2_bulk_insert(Relation rel, SiftF2Store *store, TupleTableSlot **slots
 		sift_stage_add_batch(rel, st, n, b->keys, b->tids, xid, frozen ? 0 : cid, b->cells, (const SiftCell *const *) b->elem);
 		if (sift_batch_reset_due(&b->since_reset, n))
 			MemoryContextReset(b->batch_cx);
+		SIFT_F2_GATE(SIFT_F2_GATE_BULK_INSERT);
 		CHECK_FOR_INTERRUPTS();
 	}
 	MemoryContextReset(b->batch_cx);
