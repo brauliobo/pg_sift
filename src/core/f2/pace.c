@@ -124,6 +124,7 @@ sift_f2_wal_deficit_ms(uint64 wal_bytes, int kbps, int64 elapsed_ms)
 #include "utils/timestamp.h"
 
 #include "core/horizon.h"
+#include "core/maint/maint.h"
 #include "core/maint/pacer.h"
 #include "core/wal_conflict.h"
 #include "core/waits.h"
@@ -161,7 +162,7 @@ sift_standby_safe_horizon(Relation index, bool urgent_freeze)
 	TimestampTz now = GetCurrentTimestamp();
 
 	(void) sift_horizon_ring_record(ring, now, raw);
-	if (!XLogStandbyInfoActive() || !sift_standby_conflicts || urgent_freeze || table_near_wraparound(index))
+	if (!XLogStandbyInfoActive() || !sift_standby_conflicts || urgent_freeze || !sift_maint_standby_streams() || table_near_wraparound(index))
 		return raw;
 	return sift_horizon_ring_lagged(ring, now, raw);
 }

@@ -15,6 +15,7 @@
 #include "access/xact.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
+#include "commands/vacuum.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -37,6 +38,7 @@
 #include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/wal_conflict.h"
+#include "core/xid_cache.h"
 #include "col/f2/l0/stage.h"
 #include "col/f2/scope/scope.h"
 #include "table/dispatch.h"
@@ -170,6 +172,24 @@ sift_drop_clear_vm(Relation rel, const SiftPartDesc *parts, int np, const uint64
 	sift_part_gen_idx_free(&by_gen);
 }
 
+/* The newest id that wrote or deleted a row of the dropped parts: a standby query older than it may read them. Invalid when every one is frozen and has no deleter */
+static FullTransactionId
+newest_dropped(const SiftPartDesc *parts, int np, const uint64 *gens, int ngens)
+{
+	SiftPartGenIndex by_gen;
+	FullTransactionId newest = InvalidFullTransactionId;
+
+	sift_part_gen_idx_init(&by_gen, parts, np);
+	for (int i = 0; i < ngens; i++)
+	{
+		const SiftPartDesc *p = sift_part_gen_idx_find(&by_gen, gens[i]);
+
+		newest = sift_fxid_max(sift_fxid_max(newest, p->dv_max_xid), (p->flags & SIFT_PART_FLAG_UNFROZEN) ? p->max_xid : InvalidFullTransactionId);
+	}
+	sift_part_gen_idx_free(&by_gen);
+	return newest;
+}
+
 static void
 commit_partition(Drop *d, const SiftPartitionEntry *e)
 {
@@ -194,7 +214,7 @@ commit_partition(Drop *d, const SiftPartitionEntry *e)
 		if (plan->ndrop > 0)
 		{
 			sift_drop_clear_vm(d->rel, parts, np, plan->drop_gens, plan->ndrop);
-			(void) sift_wal_snapshot_conflict(d->rel, InvalidBlockNumber, ReadNextFullTransactionId());
+			(void) sift_wal_snapshot_conflict(d->rel, InvalidBlockNumber, newest_dropped(parts, np, plan->drop_gens, plan->ndrop));
 		}
 		sift_manifest_commit(d->rel, &(SiftManifestEdit) {.part_id = e->part_id,.key_lo = e->key_lo,.drop_gens = plan->drop_gens,.ndrop = plan->ndrop,
 		.update_parts = upd,.nupdate = plan->nmark + plan->nunmark,.release = rel_ext,.nrelease = nrel});
@@ -242,7 +262,7 @@ sift_f2_drop_parts_before(Relation rel, SiftF2Store *store, int slot, int64 cuto
 	for (int i = 0; i < all.n; i++)
 	{
 		drop_partition(&d, &all.entries[i]);
-		CHECK_FOR_INTERRUPTS();
+		sift_vacuum_delay_point();
 	}
 	if (d.res.parts_dropped == 0)
 		return d.res;

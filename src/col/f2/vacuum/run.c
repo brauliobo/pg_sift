@@ -48,9 +48,23 @@
 #include "core/xid_cache.h"
 #include "table/f2/col_delta/col_delta.h"
 
-/* Seals the parts that every inserter of committed (sift_part_try_seal): their descriptors change in the manifest, not a page of them */
+/* Whether a part of the list may be sealed: read without the partition lock, which only the partitions that have one take */
+static bool
+has_unsealed(Relation rel, const SiftPartitionEntry *e)
+{
+	int			np;
+	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
+	bool		any = false;
+
+	for (int p = 0; p < np && !any; p++)
+		any = (parts[p].flags & SIFT_PART_FLAG_UNFROZEN) && !(parts[p].flags & SIFT_PART_FLAG_ALL_VISIBLE);
+	pfree(parts);
+	return any;
+}
+
+/* Seals the parts of partition part_id (0: of every partition) that every inserter of committed (sift_part_try_seal): their descriptors change in the manifest, not a page of them */
 static void
-seal_parts(Relation rel, FullTransactionId horizon)
+seal_parts(Relation rel, FullTransactionId horizon, uint64 part_id)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
 	SiftXidHorizonCache hc;
@@ -66,6 +80,8 @@ seal_parts(Relation rel, FullTransactionId horizon)
 				   *expect;
 
 		sift_vacuum_delay_point();
+		if ((part_id != 0 && mr.entries[i].part_id != part_id) || !has_unsealed(rel, &mr.entries[i]))
+			continue;
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(mr.entries[i].part_id), ExclusiveLock);
 		if (sift_manifest_find_entry(rel, mr.entries[i].part_id, mr.entries[i].key_lo, &e))
 		{
@@ -93,11 +109,10 @@ seal_parts(Relation rel, FullTransactionId horizon)
 }
 
 /* The slabs that are due (f2_del_slab.h) become parts, the deletion vectors are consolidated; a young slab of references stays for the next row that rewrites one of its rows */
-static SiftManifestRead
+static void
 settle_due(Relation rel, const SiftPartSpec *spec, FullTransactionId horizon)
 {
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
-	bool		changed = false;
 
 	for (int i = 0; i < mr.n; i++)
 	{
@@ -105,10 +120,9 @@ settle_due(Relation rel, const SiftPartSpec *spec, FullTransactionId horizon)
 
 		sift_vacuum_delay_point();
 		if (e->l0_slab_blk != InvalidBlockNumber && sift_l0_href_flush_due(rel, e->l0_slab_blk, horizon))
-			changed |= sift_l0_slab_flush(rel, e->part_id, e->key_lo, spec);
-		changed |= sift_dv_consolidate(rel, e->part_id, e->key_lo) > 0;
+			(void) sift_l0_slab_flush(rel, e->part_id, e->key_lo, spec);
+		(void) sift_dv_consolidate(rel, e->part_id, e->key_lo);
 	}
-	return changed ? sift_manifest_read_range(rel, NULL, NULL) : mr;
 }
 
 /* The groups the plan makes for a partition: with the parts its column-delta chain has records for, when the chain is long enough to fold (SIFT_COL_DELTA_FOLD_PAGES) or the VACUUM someone runs leaves none */
@@ -339,7 +353,7 @@ sift_f2_maint_step(Relation rel, const SiftMaintClaim *claim)
 {
 	bool		index = rel->rd_rel->relkind == RELKIND_INDEX;
 	const SiftPartSpec *spec = index ? &sift_f2_rel(rel)->spec : &sift_f2_store_open(rel)->spec;
-	FullTransactionId horizon = sift_horizon(rel);
+	FullTransactionId horizon = sift_standby_safe_horizon(rel, false);
 	int64		hot_cut = index ? sift_f2_hot_cut(sift_f2_rel(rel)) : PG_INT64_MIN;
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compaction");
 	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
@@ -362,12 +376,12 @@ sift_f2_maint_step(Relation rel, const SiftMaintClaim *claim)
 			sift_f2_maint_note_parts(rel, mr.entries, mr.n, claimed_wanted, (void *) claim);
 			break;
 		case SIFT_MK_COMPACT_PART:
-			for (int i = 0; i < mr.n; i++)
+			for (int i = 0; i < mr.n && r != SIFT_MSTEP_MORE; i++)
 				if (claimed(claim, &mr.entries[i]))
 					r = later_of(r, compact_partition(rel, spec, &mr.entries[i], horizon, hot_cut, cx, UINT64_MAX, &written, true));
 			if (written > 0)
 			{
-				seal_parts(rel, horizon);
+				seal_parts(rel, horizon, claim->part_id);
 				chain_after_compaction(rel, mr.n);
 			}
 			break;
@@ -399,7 +413,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 {
 	Relation	rel = info->index;
 	SiftF2Rel  *f = sift_f2_rel(rel);
-	FullTransactionId horizon = sift_horizon(rel);
+	FullTransactionId horizon = sift_standby_safe_horizon(rel, false);
 	int64		hot_cut = sift_f2_hot_cut(f);
 	SiftManifestRead mr;
 	SiftColMetaPageData meta;
@@ -409,7 +423,8 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compaction");
 	uint64		written = 0,
 				budget = force_sync_full ? UINT64_MAX : sift_vacuum_rewrite_budget(false);
-	bool		within;
+	bool		within,
+				here;
 
 	if (stats == NULL)
 		stats = palloc0(sizeof(IndexBulkDeleteResult));
@@ -423,12 +438,19 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	sift_stage_flush(rel);
 	sift_f2_journal_trim(rel);
 	sift_f2_trace_phase(&tr, "settle");
-	mr = force_sync_full ? sift_f2_settled_manifest(rel, &f->spec) : settle_due(rel, &f->spec, horizon);
+	if (force_sync_full)
+		(void) sift_f2_settled_manifest(rel, &f->spec);
+	else
+		settle_due(rel, &f->spec, horizon);
+	sift_horizon_vacuum_read_end(rel);
 	(void) sift_fsm_reclaim(rel);
+	sift_horizon_vacuum_read_begin(rel);
+	mr = sift_manifest_read_range(rel, NULL, NULL);
 	sift_f2_trace_phase(&tr, "seal");
-	seal_parts(rel, horizon);
+	seal_parts(rel, horizon, 0);
 	sift_f2_tier_maintain(rel, sift_f2_store_open(rel), horizon);
-	if (force_sync_full || !hand_off(rel, f, &mr, horizon, hot_cut))
+	here = force_sync_full || !hand_off(rel, f, &mr, horizon, hot_cut);
+	if (here)
 	{
 		sift_f2_trace_phase(&tr, "compact");
 		for (int i = 0; i < mr.n; i++)
@@ -450,6 +472,10 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 		}
 		if (within)
 			(void) sift_compact_pack_tails(rel);
+	}
+	sift_horizon_vacuum_read_end(rel);
+	if (here)
+	{
 		sift_f2_trace_phase(&tr, "shrink");
 		shrink = sift_fsm_tail_shrink(rel);
 	}
@@ -457,7 +483,6 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 	(void) sift_col_open_meta(rel, &meta);
 	stats->num_pages = RelationGetNumberOfBlocks(rel);
 	stats->num_index_tuples = meta.total_rows - meta.total_dead;
-	sift_horizon_vacuum_read_end(rel);
 	sift_errctx_pop(&ctx);
 	sift_f2_say_vacuum(&tr, info->message_level, stats->tuples_removed, shrink.lock_skipped);
 	sift_f2_trace_end(&tr);

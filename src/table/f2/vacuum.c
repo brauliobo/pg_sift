@@ -25,6 +25,7 @@
 #include "utils/timestamp.h"
 
 #include "core/compat.h"
+#include "core/f2/pace.h"
 #include "core/f2/progress.h"
 #include "col/f2/del/delvec_delta.h"
 #include "col/f2/del/pend.h"
@@ -789,6 +790,15 @@ settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const s
 	pfree(order);
 }
 
+/* A VACUUM that is not aggressive leaves the rows a hot standby may still read for the grace of sift_standby_safe_horizon */
+static FullTransactionId
+standby_safe(Relation rel, FullTransactionId oldest_fx, bool aggressive)
+{
+	FullTransactionId safe = aggressive ? oldest_fx : sift_standby_safe_horizon(rel, false);
+
+	return FullTransactionIdPrecedes(safe, oldest_fx) ? safe : oldest_fx;
+}
+
 void
 sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrategy bstrategy)
 {
@@ -796,7 +806,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	struct VacuumCutoffs cutoffs;
 	bool		aggressive = vacuum_get_cutoffs(rel, params, &cutoffs);
 	FullTransactionId next = ReadNextFullTransactionId();
-	FullTransactionId oldest_fx = cutoff_fx(next, cutoffs.OldestXmin);
+	FullTransactionId oldest_fx = standby_safe(rel, cutoff_fx(next, cutoffs.OldestXmin), aggressive);
 	FullTransactionId freeze_fx = cutoff_fx(next, cutoffs.FreezeLimit);
 	FullTransactionId target_fx = aggressive ? oldest_fx : freeze_fx;
 	VacCtx		vc = {.cx = CurrentMemoryContext,.rel = rel,.strategy = bstrategy};
