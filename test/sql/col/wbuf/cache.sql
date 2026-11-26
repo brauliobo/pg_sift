@@ -2,6 +2,8 @@
 -- is read through the column index and through the heap and must agree: a repeated read, rows appended, rows that take the address of rows VACUUM removed (below the ones
 -- already kept), an aborted insert, a read after a promotion, a cursor that holds the batches while rows are appended, and a rebuilt index.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -136,6 +138,7 @@ INSERT INTO tw (id, g, s) SELECT i, i % 7, 'a' || md5(i::text) FROM generate_ser
 SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s, id LIMIT 30') AS strings_appended;
 SELECT tw_check('SELECT id, s FROM tw WHERE g < 5 ORDER BY s DESC, id LIMIT 30') AS strings_appended_desc;
 RESET ALL;
+SET sift.test_create_format1 = on;
 DROP TABLE tw;
 DROP FUNCTION tw_check(text);
 DROP EXTENSION pg_sift_helpers;

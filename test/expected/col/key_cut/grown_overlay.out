@@ -2,6 +2,8 @@
 -- every partition, as the runs of a build do, but it is a few percent of the index and the rewrite that takes it in rewrites all the partitions it meets:
 -- that is churn, and not the build's rewrite; sift.col_maintenance_due reports both and sift.col_maintain rewrites on request.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

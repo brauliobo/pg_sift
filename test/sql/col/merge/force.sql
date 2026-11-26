@@ -1,6 +1,8 @@
 -- sift.col_merge(index, true) seals the open write buffer first, so one call is col_promote + col_merge: the rows written since the last
 -- promotion are in the one segment it makes, not left as in-memory units next to it. The plain col_merge does not seal.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 

@@ -2,6 +2,8 @@
 -- On by default (auto: the primary key when the index holds it, else off with a NOTICE); named, or auto, it creates the tombstone log with the index and turns the point directory of the column on;
 -- 'off' keeps the index as it was before 4.0 (no log segment, no option written).
 CREATE EXTENSION pg_sift;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, u int NOT NULL UNIQUE, p int NOT NULL, d int NOT NULL) WITH (autovacuum_enabled = false);
 CREATE UNIQUE INDEX t_partial ON t (p) WHERE p > 0;

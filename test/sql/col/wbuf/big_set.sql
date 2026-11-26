@@ -2,6 +2,8 @@
 -- take more than sift.backend_cache_kb is built for its scan and dropped: every read decodes the whole buffer again. With a budget that holds them (256 MB here), an index that allows a big buffer
 -- (write_buffer_limit) has its batches kept whole. Rows of 500 bytes, 40,000 of them in the buffer: the second read finds the order made by the first.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

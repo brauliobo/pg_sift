@@ -2,6 +2,8 @@
 -- not read for them (the arena counts the rows it built from the heap: none here). The slot of a buffer is given back when the buffer is promoted. A row that finds no slot is written with its
 -- values, as a buffer without the setting does, and a buffer of both kinds of record gives the answers of the heap, before and after the promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

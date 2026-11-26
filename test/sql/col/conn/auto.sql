@@ -1,6 +1,8 @@
 -- CREATE INDEX and REINDEX connect a sift_col index to the sift_col indexes its validated foreign keys reference (docs/COL-CONNECT.md): the choice is written into the option as 'auto: ..',
 -- named in a NOTICE, and turned off by connect = 'off' or sift.test_col_auto_connect.
 CREATE EXTENSION pg_sift;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, price numeric(10, 2), notes text, tags text[]) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 10, 'l' || i, i, repeat('n', 200), ARRAY['x'] FROM generate_series(1, 500) i;

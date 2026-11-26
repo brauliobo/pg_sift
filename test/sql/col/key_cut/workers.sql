@@ -4,6 +4,8 @@
 -- the participants' merge, which its default (on) keeps in the tests of the other builds; a release build has no participant for a key_cut index.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

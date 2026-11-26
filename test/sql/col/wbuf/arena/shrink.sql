@@ -1,6 +1,8 @@
 -- The pool of the write buffer arena (col/v1/wbuf/arena.c) takes a segment of 1 MB when no page is free and gives back to the system every idle segment at its end, down to none,
 -- when the buffers that held its pages are promoted (the pages of promoted buffers are idle memory in /dev/shm otherwise). The rows keep their answers throughout.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

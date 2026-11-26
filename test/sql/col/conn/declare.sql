@@ -2,6 +2,8 @@
 -- depends on the sift_col index of the parent table that tracks the key, and that index keeps the key journal. The text is the record (pg_dump writes it).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 10, 'l' || i, 'x' FROM generate_series(1, 500) i;

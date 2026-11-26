@@ -2,6 +2,8 @@
 -- overlap every partition as the runs of a build do. They are the build's rewrite only when they are most of the index: until then the rewrite that takes them in writes all
 -- the partitions they meet for the rows they hold, and is churn, which sift.col_maintain rewrites on request however many of them there are.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

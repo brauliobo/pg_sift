@@ -2,6 +2,8 @@
 -- about that size, each cut of the key, not as one segment of all the live bytes (a lone segment of the index would need the free space of the whole index to
 -- be written, and would leave it in the file when the segments it replaced are freed). The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;

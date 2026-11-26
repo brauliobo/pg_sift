@@ -3,6 +3,8 @@
 -- (write_buffer_limit) has its batches kept whole. Rows of 500 bytes, 40,000 of them in the buffer: the second read finds the order made by the first.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

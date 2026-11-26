@@ -3,6 +3,8 @@
 -- the backend parses none. The answers are those of the compact form (sift.test_col_format_minor 13), of the blocks without the order (dict_lookup off) and of the heap, over NULLs, empty, long (inline),
 -- non-ASCII and tied strings, uuids, DML, the write buffer, promotion and a merge of segments of both forms.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE ds (id int, s text, u uuid, v varchar(40), pad text DEFAULT repeat('x', 400));

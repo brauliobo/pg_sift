@@ -2,6 +2,8 @@
 -- entry an UPDATE, DELETE or key change ended, and sift_conn_changed(stamp) returns the keys of the records at or after the stamp's horizon, or says why it cannot.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 10, 'l' || i, 'x' FROM generate_series(1, 2000) i;

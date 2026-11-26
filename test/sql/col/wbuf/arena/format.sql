@@ -1,6 +1,8 @@
 -- The directory entry of a write buffer that holds reference records (sift.test_col_wbuf_ref) is column format minor 44, so that a release that does not know the records refuses the index; a buffer
 -- of records that hold their values stays as it was (minor 6), and the entry is marked before the first reference is written, whether the row goes in at once or from the backend's batch of a transaction.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

@@ -3,6 +3,8 @@
 -- the key or of the TIDs, which they are not in ("Segment N is not in the order of the TIDs" from every VACUUM of the table).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 

@@ -2,6 +2,8 @@
 -- inserters finished before the horizon and the write buffer holds no live record from the horizon on (an aborted transaction does not count; the caller's own insert does).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 10, 'l' || i FROM generate_series(1, 1000) i;

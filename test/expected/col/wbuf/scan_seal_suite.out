@@ -1,5 +1,7 @@
 -- The write buffer of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 -- >>> col_wbuf_lookup_rescan
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
@@ -35,6 +37,7 @@ GROUP BY k.kind ORDER BY k.kind;
 
 DROP TABLE rs;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s1 CASCADE;
 RESET client_min_messages;
@@ -76,6 +79,7 @@ SELECT count(*) FROM sr WHERE k = 7;
 DROP TABLE sr;
 DROP FUNCTION buffered(regclass);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s2 CASCADE;
 RESET client_min_messages;
@@ -192,6 +196,7 @@ SELECT count(*), sum(v) FROM copy;
 DROP TABLE orig, copy;
 DROP FUNCTION swap_storage(regclass, regclass);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s3 CASCADE;
 RESET client_min_messages;

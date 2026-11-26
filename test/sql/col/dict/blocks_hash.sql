@@ -3,6 +3,8 @@
 -- whole dictionary. Equality, IN, prefix and range tests give the heap's answer on it (an equality reads the hash, any other test parses the dictionary), across
 -- segments, after a promotion, a merge, a VACUUM and a REINDEX; col_verify checks every slot; dict_lookup = off writes none.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE FUNCTION db_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE plpgsql AS $$

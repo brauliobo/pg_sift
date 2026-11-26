@@ -2,6 +2,8 @@
 -- build (the stamps of the old one are another lineage, so nothing derived before is read), and the child index depends on the parent index.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, category_id int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, i % 10 FROM generate_series(1, 1000) i;

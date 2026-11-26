@@ -4,6 +4,8 @@
 -- CREATE INDEX CONCURRENTLY, ALTER INDEX .. SET (track_changes), and a tree attached under another.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
@@ -312,6 +314,7 @@ SET max_parallel_workers_per_gather = 0;
 DELETE FROM fm WHERE v % 5 = 0;
 SELECT 'two levels delete' AS "case", * FROM fresh_read('fm');
 \c -
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 MERGE INTO fm USING (SELECT CASE WHEN i % 2 = 0 THEN i * 3 + 1 ELSE i * 3 + 2 END AS id, i % 7 AS g, i AS v FROM generate_series(0, 2699) i) s ON fm.id = s.id
@@ -335,6 +338,7 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 INSERT INTO fs SELECT i, i % 7, i FROM generate_series(5000, 5300) i ON CONFLICT (id) DO NOTHING;
 \c -
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SELECT count(*) FROM fv1;

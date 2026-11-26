@@ -4,6 +4,8 @@
 -- of the old one. \c is a new backend.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 CREATE TABLE ds (id int, k text, g text, w text, v int, ip inet) WITH (autovacuum_enabled = false);

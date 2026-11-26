@@ -4,6 +4,8 @@
 -- is read by the ordinary join, and EXPLAIN says why.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

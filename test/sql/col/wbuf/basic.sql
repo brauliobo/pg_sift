@@ -3,6 +3,8 @@
 -- (a valid metapage and directory for the store layer); the test functions give it the schema hash of an orders table with line items.
 -- Every row is checked in C against a generator, down to the bits of its floats and the bytes of its strings.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 CREATE FUNCTION expect(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	d text;

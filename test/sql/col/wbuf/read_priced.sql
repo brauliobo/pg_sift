@@ -2,6 +2,8 @@
 -- once (5,900 instructions a row) and the sum of the rows decoded, kept by the server for the generation of the buffer (core/reads.c), is weighed against the promotion
 -- (18,600 a row, once; a maintenance step counts at half). A buffer that is only written is never read and never promoted early; a buffer that is read twice by two backends is.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;

@@ -2,6 +2,8 @@
 -- rebuilt, or when the keys changed since its stamp are sift.test_col_conn_refresh_pct percent of the parent's rows; a few changed keys are left to the reads.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, label text, price int) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, 'l' || i, i * 10 FROM generate_series(1, 200) i;

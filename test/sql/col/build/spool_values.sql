@@ -2,6 +2,8 @@
 -- of 3,000, the elements of arrays, nested paths and values of the wrong type for a typed path (overflow). Every way a sift_col index is built (CREATE INDEX, REINDEX, CREATE INDEX CONCURRENTLY,
 -- REINDEX CONCURRENTLY) writes columnar chunks for them, the index has the rows of the table and answers as the plain scan does, and sift.col_verify finds every row of the heap in it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

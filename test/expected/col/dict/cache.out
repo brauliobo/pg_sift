@@ -14,6 +14,8 @@ SELECT count(*) > 0 AS has_segment FROM sift.col_segments('dc_idx'::regclass) WH
 -------------
  t
 (1 row)
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 
 -- a cache that holds five of the six dictionaries (the backend starts with none): the least recently used goes, the answers do not change. The limit is half way between what the caches of the
 -- backend hold with five of the dictionaries and with six

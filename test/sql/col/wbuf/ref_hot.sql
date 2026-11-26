@@ -1,6 +1,8 @@
 -- sift.col_wbuf_ref: the root of a HOT chain whose first version is pruned is a line pointer that redirects to the live version. A HOT update changes no column of the index,
 -- so the values the reader fetches from the live member of the chain are the values the record stood for; the answers are the heap's, before and after the promotion.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

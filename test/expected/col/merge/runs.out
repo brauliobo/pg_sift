@@ -2,6 +2,8 @@
 -- paths with overflow values and rows of an UPDATE that land among the old ones are all in the merged index as they were in the segments.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;

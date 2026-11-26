@@ -2,6 +2,8 @@
 -- the buffer was promoted (its line pointer dead, the index not vacuumed so the record is not flagged; or vacuumed, the record flagged dead) is no row of the buffer or of
 -- the segment it is promoted to, and every answer of the sift engine is the heap's, before and after the promotion.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

@@ -2,6 +2,8 @@
 -- children made for each key of the children first (agg/flat/partial.c): the rows are those of the normal plan whatever happens to either table, and a parent key that is not unique, or a
 -- shape that is not a count, keeps the statement as written.
 CREATE EXTENSION pg_sift;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

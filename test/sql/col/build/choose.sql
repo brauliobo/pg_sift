@@ -4,6 +4,8 @@
 -- sift.test_col_build_source_used says which path the last build took (0 the heap, 1 a btree, 2 the old index); the mutants plant a defect in the choice that a step must catch.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.col_build_source = auto;
 SET max_parallel_workers_per_gather = 0;

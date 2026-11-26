@@ -6,6 +6,8 @@
 -- a build that does not run the cascade (layer 4) takes the 130 and fails the bound. The rows of the index are the table's and a key is in one unit, at every size.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

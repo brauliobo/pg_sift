@@ -3,6 +3,8 @@
 -- remove them, and the log stays complete through all of it, so the reads of the child stay free of the heap, and are the rows of the heap.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 -- the tables that hold the track_changes triggers, and how many

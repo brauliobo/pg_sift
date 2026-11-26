@@ -3,6 +3,8 @@
 -- the log, as it does when the table has no key, and a column the user names must be refused with the way out, not fail on a missing function. The state of that extension is made
 -- in a transaction that ends in a rollback: the function dropped from it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);

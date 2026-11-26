@@ -3,6 +3,8 @@
 -- and a lookup of the key still reads a unit or two. Four integer columns, 400,000 rows in a random order of the key.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET maintenance_work_mem = '256MB';

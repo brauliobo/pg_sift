@@ -3,6 +3,8 @@
 -- sift.test_col_open_stats says what the last build did; sift.test_col_open = 1 forces the open units, and the mutants plant a defect that a step must catch.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

@@ -2,6 +2,8 @@
 -- row that found no slot (it is sealed and promoted as any buffer is), its slot is free when it is promoted and the next rows of the other buffer are kept in the arena. The slot of an index
 -- that is dropped is given back too. The answers are the heap's throughout.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

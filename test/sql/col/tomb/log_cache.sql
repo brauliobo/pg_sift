@@ -2,6 +2,8 @@
 -- drops indexes over and over (in one transaction, in many, with a rollback) keeps the entries of the indexes that exist, not one for every index it ever saw. The mutant keeps them.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log is Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE TABLE live (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
 INSERT INTO live SELECT i, i % 10, i FROM generate_series(1, 500) i;
@@ -81,6 +83,7 @@ SET sift.backend_cache_kb = '16kB';
 SET enable_seqscan = off;
 SELECT count(*) = :n_whole AND sum(v) = :s_whole AS same_rows_in_runs FROM big WHERE g IN (3, 4) AND id < 20000;
 \c -
+SET sift.test_create_format1 = on;
 SET sift.backend_cache_kb = '16kB';
 SELECT sift._test_col_fold_marks('big_c'::regclass) >= 0 AS folded;
 SELECT bytes < 300000 AS bounded_by_the_limit FROM sift._test_col_log_cache();

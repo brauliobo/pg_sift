@@ -5,6 +5,8 @@
 -- Three geometries: the runs a build leaves (due at once), one base partition with pieces added one by one, partitions with overlays as wide as their keys.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

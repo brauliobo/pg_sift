@@ -3,6 +3,8 @@
 -- ids; the rows are small but the three of 1,000 items span pages) and then tenant_id (leaf 1: random, NULL, overflow and extreme values, so most pages meet most ranges). A read that skips
 -- pages never loses a row of the keys. A buffer that a whole read has kept is read from the kept set, and so is one whose reads of keys this backend has made have decoded what the buffer holds.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 
 CREATE TABLE t (doc int);
 CREATE INDEX t_idx ON t USING sift_col (doc) WITH (write_buffer_limit = 4096);

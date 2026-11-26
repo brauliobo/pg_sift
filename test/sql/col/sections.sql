@@ -1,6 +1,8 @@
 -- sift.col_sections: where the bytes of a sift_col index and of a sift_table go. The rows add up to the size of the relation, every leaf has
 -- its chunks and a text leaf its dictionary.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 
 CREATE TABLE s (id int, n int, t text);

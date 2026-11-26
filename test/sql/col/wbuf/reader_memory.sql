@@ -1,6 +1,8 @@
 -- The reader of the write buffer holds the records of the open segment once, at their size: 94,000 rows of a segment whose seal lags far behind its limit
 -- (the crash test of the buffer, col_wbuf_crash) read within the col_write_buffer budget of test/mem-budgets.tsv, which the test build asserts on this call.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 CREATE TABLE t (doc int);
 CREATE INDEX t_idx ON t USING sift_col (doc) WITH (write_buffer_limit = 512);
 SELECT sift._test_col_wbuf_prepare('t_idx') IS NOT NULL AS prepared;

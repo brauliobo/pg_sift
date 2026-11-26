@@ -2,6 +2,8 @@
 -- ALTER TABLE that would pass the limit are refused alike, DROP COLUMN is not checked
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: col_leaves is the Format 1 limit; col/f2/limits covers Format 2.0.
+SET sift.test_create_format1 = on;
 \set VERBOSITY terse
 SET sift.test_limits = 'col_leaves=6';
 CREATE TABLE five (a int, b int, c int, d int, e int) USING sift_table;

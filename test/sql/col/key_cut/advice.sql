@@ -2,6 +2,8 @@
 -- and no other leaf is ordered now, so the cut widens nothing. Three states of one table: arrival order (id and day follow the heap), clustered by the key,
 -- and clustered then refilled holes (UPDATE, VACUUM, INSERT), which widens the min/max zones of the key although pg_stats still says it is nearly sorted.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 
 -- the heap order of each state: arrival is id order; clustered is tenant order; refilled is tenant order with one row in fifty somewhere else, as the holes

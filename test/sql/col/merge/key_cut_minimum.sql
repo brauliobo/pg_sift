@@ -1,6 +1,8 @@
 -- A forced merge of a key-cut index leaves segments that its writer cut where it cuts and that are apart in the key: those are the minimum, and a second forced merge in a backend
 -- that does not remember the first changes none of them (the same generations).
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

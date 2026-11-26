@@ -2,6 +2,8 @@
 -- on the key and order_array_group on the group, while those are not set: the index is the one the options written out build, an option the user wrote wins,
 -- ALTER INDEX SET and RESET change it for the segments written from now on, REINDEX keeps the effective values, and the answers are the heap's.
 CREATE EXTENSION pg_sift;
+-- Format 1: the key orders and runs of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

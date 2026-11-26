@@ -2,6 +2,8 @@
 -- the merge of segments, REINDEX CONCURRENTLY, the rewrite that VACUUM makes, the promotion of a write buffer) holds in memory what the budget allows and no more. An index with
 -- key_order (not cut by a key) and one with key_cut, each verified after every pass and answering as the heap does.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

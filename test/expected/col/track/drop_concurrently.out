@@ -3,6 +3,8 @@
 -- them, and the writes of the table go on after each. The sessions that fail while a writer holds the table, and the writers beside a drop, are in test/t/col/track/drop_concurrently.sh.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i % 10, i FROM generate_series(1, 2000) i;

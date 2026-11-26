@@ -4,6 +4,8 @@
 -- (an older minor, the option off, a table over the budget: the same answers, read from the units); recomputed by sift.col_verify; kept by promotion, merge and VACUUM.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the key orders and runs of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

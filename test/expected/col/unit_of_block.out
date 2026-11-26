@@ -3,6 +3,8 @@
 -- 3.6.1 (rows missing from bitmap and index scans); every reader of the mapping goes through this answer now.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;

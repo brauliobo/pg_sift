@@ -2,6 +2,8 @@
 -- does not exist, and an index of an earlier release has its triggers depend on it. Every statement of a migration may run in that window: an index made now is dropped with its triggers, the
 -- triggers of an earlier release's index are found (REINDEX and ALTER INDEX keep them, not make a second pair), and the update converts them without leaving two pairs.
 CREATE EXTENSION pg_sift VERSION '4.2.1';
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET allow_system_table_mods = on;

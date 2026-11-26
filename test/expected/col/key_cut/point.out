@@ -3,6 +3,8 @@
 -- the heap's for an equality and an IN list on the key-cut column and on the others, through the write buffer, DML, VACUUM, a merge and a REINDEX, and
 -- sift.col_verify accepts the segments.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE kpt (id int, cust int, k int, s text, pad text DEFAULT repeat('x', 200));

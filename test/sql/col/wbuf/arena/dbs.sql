@@ -5,6 +5,9 @@ CREATE DATABASE arena_dbs_t TEMPLATE template0;
 \c arena_dbs_t
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = on;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 CREATE FUNCTION same_as_heap(t regclass) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE native text; sift text; q text := format('SELECT md5(concat_ws(''|'', (SELECT count(*) || '','' || sum(v) FROM %1$s), (SELECT string_agg(x::text, '','' ORDER BY x::text) FROM (SELECT g, count(*), sum(v) FROM %1$s GROUP BY g) x)))', t);
 BEGIN

@@ -2,6 +2,8 @@
 -- the stamp of that snapshot (docs/COL-CONNECT.md). What a segment holds is then as of its stamp; the parent keys that changed since are in the journal of the parent index.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dim_a (id int PRIMARY KEY, label text, price int) WITH (autovacuum_enabled = false);
 INSERT INTO dim_a SELECT i, 'l' || i, i * 10 FROM generate_series(1, 100) i;

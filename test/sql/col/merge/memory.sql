@@ -1,6 +1,8 @@
 -- the segments a merge writes are cut to what maintenance_work_mem holds (the writer keeps the key and address of every row of a global order until the last
 -- unit of the segment is in): a small setting makes partitions of a few MB, a large one a single segment
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
 SET sift.test_col_merge_wal_pct = 0;

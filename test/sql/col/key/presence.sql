@@ -5,6 +5,8 @@
 -- and VACUUM; the answers are the heap's.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the key orders and runs of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

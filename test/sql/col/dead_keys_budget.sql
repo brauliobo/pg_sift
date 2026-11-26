@@ -2,6 +2,8 @@
 -- a key: 8 bytes a dead row. A segment with more dead rows than work_mem takes has none listed (the unit cannot say, and the heap confirms the entries): the rows are the
 -- table's under either work_mem, and the list is made only under the larger. (dead_rewrite_pct = 100: VACUUM leaves the dead rows in the segment, it does not rewrite it.)
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

@@ -2,6 +2,8 @@
 -- that is there (every segment a partition, none dirty, no more of them than the merge would write) is left as it is, so a second force does nothing: the
 -- same segments, no WAL. A segment with a dead row, or a smaller one beside the partitions, is merged again.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

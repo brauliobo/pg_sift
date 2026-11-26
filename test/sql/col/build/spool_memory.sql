@@ -5,6 +5,8 @@
 -- takes the share, the ranges and the bytes of a row of the first run and writes a chunk when its rows or its memory reach their part of it. A plan that ignores the share (chunks of 16,384 rows and no
 -- memory limit, sift.test_col_spool_unbounded) overruns the budget of the scope and the build stops with the error of the budget, at every size that has the ranges to fill it.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

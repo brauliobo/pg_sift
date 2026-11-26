@@ -3,6 +3,8 @@
 -- (units of a key range are a little under or over the aim) are not a segment of their own, which the next merge would have to merge again.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

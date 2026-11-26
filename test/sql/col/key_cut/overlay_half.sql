@@ -3,6 +3,8 @@
 -- half). Below that, their rewrite takes the bytes of all the partitions they meet for the rows they hold: it is churn, which sift.col_maintenance_due still reports as the
 -- overlap and sift.col_maintain rewrites on request. One overlay at a time, from none to more than half of the index.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

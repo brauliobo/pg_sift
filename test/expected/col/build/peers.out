@@ -1,6 +1,8 @@
 -- the segments a parallel build leaves cover the same superblocks, and the rewrite that merges them is not held by the WAL budget of the churn: the index right after
 -- its build is due for the automatic rewrite, which leaves one segment (the budget of the churn is tested by col_auto_merge)
 CREATE EXTENSION pg_sift;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 4;
 SET sift.test_col_merge_wal_pct = 5;

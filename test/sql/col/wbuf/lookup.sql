@@ -3,6 +3,8 @@
 -- a promotion, VACUUM, lists of every length around the ones the lookup scans by comparison and by binary search, ANY (array) with NULL elements and
 -- repeated values, an array parameter, and a second condition the heap checks.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

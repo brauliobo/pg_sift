@@ -3,6 +3,8 @@
 -- then give the address to another row), and it does not disturb the reads, the counts or the checks of the index.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log is Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, v int) WITH (autovacuum_enabled = false);

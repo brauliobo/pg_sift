@@ -3,6 +3,8 @@
 -- end is bounded by the budget of a partition, never by the key or the table, and the participants of a parallel build leave the merge to slices of the same size.
 -- A key with a value that holds a third of the table is cut the same way: the rows of that value are read back in runs of the memory of one, not as one.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

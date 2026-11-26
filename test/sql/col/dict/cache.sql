@@ -3,6 +3,8 @@
 -- segment has its own, and the answers do not depend on it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 
 CREATE TABLE dc (id int, c0 text, c1 text, c2 text, c3 text, c4 text, c5 text);
 INSERT INTO dc SELECT g, v, v, v, v, v, v FROM (SELECT g, 'label ' || (g % 500) AS v FROM generate_series(1, 20000) g) s;

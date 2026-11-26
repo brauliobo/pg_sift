@@ -3,6 +3,8 @@
 -- second index), the transaction reads it at once through the pushdown, the index scan and the catalog functions of the index, and the table is the same
 -- after COMMIT and after ROLLBACK. DDL on the index or the table in the transaction drops the rows that the index no longer holds.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET sift.enable_agg = on;

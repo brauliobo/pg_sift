@@ -2,6 +2,8 @@
 -- open units they fill, and a unit that is complete is written as it is, so what the scope holds at the end of each row is under the cap of the open units (here 40 kB, a quarter of the build's memory by default) whatever the number
 -- of rows: 30,000, 35,000 and 40,000 rows of the same table take the same. A build that does not look at the cap (mutant 4) holds more than it and grows with the rows.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

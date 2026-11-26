@@ -2,6 +2,8 @@
 -- in a temporary table too, and when something in the same transaction rebuilds, empties, drops or moves the index: it holds the rows its heap has. A
 -- rebuild reads the heap, which holds the buffered rows; a move of the file (ALTER INDEX SET TABLESPACE) copies the pages, which do not.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;

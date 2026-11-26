@@ -5,6 +5,8 @@
 -- of the index is the trigger's argument), so a recreated trigger has another name.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = false);

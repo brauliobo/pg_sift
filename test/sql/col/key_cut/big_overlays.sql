@@ -2,6 +2,8 @@
 -- a unit in each. They are not the partitions of the key, and when three of them are alive a merge makes them one set of pieces disjoint in the key, with fewer segments,
 -- where they used to wait for the rewrite of the whole index.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

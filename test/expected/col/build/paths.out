@@ -5,6 +5,8 @@
 -- page layout"). After every step each index of the table verifies against the heap and answers what the heap answers.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;

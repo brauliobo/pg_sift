@@ -2,6 +2,8 @@
 -- from the packed directory of the unit's pages (the rows of a heap page lie in many units). The rows are those of the normal plan for a word in a few rows, in a fifth of
 -- them and in all but a few (the filter keeps whole pages), after rows in a write buffer, a promotion, deletes and updates, VACUUM and a merge.
 CREATE EXTENSION pg_sift;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

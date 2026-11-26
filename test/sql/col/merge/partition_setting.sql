@@ -2,6 +2,8 @@
 -- setting (a partition is cut at a unit, so a setting under the bytes of a unit is the unit), whatever their number, and the directory of those partitions is a root and
 -- one leaf, not a page for each partition.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

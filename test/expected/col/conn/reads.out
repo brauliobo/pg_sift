@@ -2,6 +2,8 @@
 -- heap fetch of the parent), whether the scan is of the child (the parent as the lookup) or the parent's columns decide the child's rows, and a column of the child is read from the leaves of
 -- the child's index in both directions. The rows are those of the normal plan.
 CREATE EXTENSION pg_sift;
+-- Format 1: the connection stamps and journals are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;

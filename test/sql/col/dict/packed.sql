@@ -2,6 +2,8 @@
 -- sift.test_col_dict_unpacked writes the earlier order): the answers are the same in both, for an equality, an IN list, a prefix and a range, in segments of one table
 -- written before and after, after a merge, and col_verify checks the order of every segment.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

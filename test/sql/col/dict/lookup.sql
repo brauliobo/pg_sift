@@ -3,6 +3,8 @@
 -- entries or more). Every answer must be the heap's, in the rounds before, at and after each switch, on strings that tie on their first
 -- 8 bytes, NULLs, empty strings, unicode, a unit with inline strings, DML, the write buffer and a promoted segment.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the dictionary segments are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 

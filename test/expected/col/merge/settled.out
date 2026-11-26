@@ -2,6 +2,8 @@
 -- those again as they are: the call ends, where each step wrote the index again (a tier of 16 segments into 16) until the disk was full. Rows in wide heap pages are sparse
 -- in the superblocks, so the writer cuts at its memory, here 64 kB.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 CREATE TABLE facts (id int PRIMARY KEY, dim_a_id int, created_at timestamptz NOT NULL, kind int NOT NULL, amount int NOT NULL, pad text DEFAULT repeat('x', 1500),

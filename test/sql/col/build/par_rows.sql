@@ -2,6 +2,8 @@
 -- which cost the index bytes and every statement its floor, so a table that two or three participants would split in pieces of fewer rows is built by fewer, down to the
 -- leader alone and one segment. The limit is lowered here (sift.test_limits) so that 12,000 rows show it; the rows are the heap's whatever the participants.
 CREATE EXTENSION pg_sift;
+-- Format 1: the build paths and spools are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 

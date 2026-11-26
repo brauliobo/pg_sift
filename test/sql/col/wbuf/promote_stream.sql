@@ -1,6 +1,8 @@
 -- A write buffer larger than the memory its promotion may hold (maintenance_work_mem 1 MB: the records go through a sort that writes runs to temporary files) is promoted
 -- whole: every row it held is in the new segment once, and the answers of the index are the heap's.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer is a Format 1 structure; Format 2.0 ignores write_buffer_limit.
+SET sift.test_create_format1 = on;
 CREATE TABLE ps (id int, g int, t text) WITH (autovacuum_enabled = off);
 CREATE INDEX ps_idx ON ps USING sift_col (id, g, t);
 SET maintenance_work_mem = '1MB';

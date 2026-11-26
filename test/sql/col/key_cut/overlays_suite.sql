@@ -1,6 +1,8 @@
 -- The key cuts of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
+SET sift.test_create_format1 = on;
 
 -- >>> col_key_order_cut
 CREATE SCHEMA s1;
@@ -44,6 +46,7 @@ SELECT (SELECT (count(*), sum(v), max(d)) FROM ko WHERE group_id BETWEEN 10 AND 
 DROP TABLE ko, kp;
 DROP FUNCTION kunits(text);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s1 CASCADE;
 RESET client_min_messages;
@@ -162,6 +165,7 @@ DROP TABLE ke;
 DROP FUNCTION ka_chk(text), ka_scan(text);
 DROP TABLE ka, kb;
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s2 CASCADE;
 RESET client_min_messages;
@@ -226,6 +230,7 @@ SELECT kopt('kr_auto');
 DROP TABLE kr;
 DROP FUNCTION kopt(regclass), kept_share(text), same(text);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s3 CASCADE;
 RESET client_min_messages;
@@ -284,6 +289,7 @@ FROM kres(true) a JOIN kres(false) b USING (t, lo);
 DROP TABLE kq, kd;
 DROP FUNCTION kopt(regclass), kunits(text), kres(bool);
 RESET ALL;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 DROP SCHEMA s4 CASCADE;
 RESET client_min_messages;
