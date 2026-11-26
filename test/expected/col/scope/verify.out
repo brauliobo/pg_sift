@@ -32,9 +32,9 @@ DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id = (SELECT min(dim_a_id
 UPDATE tenant_scope SET tenant_id = 12 WHERE tenant_id = 5 AND dim_a_id = (SELECT min(dim_a_id) FROM tenant_scope WHERE tenant_id = 5);
 RESET sift.test_no_track;
 SELECT 'mutant, every key' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('events_col', 100) ORDER BY scope_key;
-       state       | scope_key | problem | scope_rows | join_rows |        detail         
--------------------+-----------+---------+------------+-----------+-----------------------
- mutant, every key | 3         | differs |        660 |       640 | differing: 1, first 7
+       state       | scope_key | problem | scope_rows | join_rows |               detail               
+-------------------+-----------+---------+------------+-----------+------------------------------------
+ mutant, every key | 3         | differs |        660 |       640 | sum(id): 1320360, the join 1282240
 (1 row)
 
 SELECT 'mutant, other keys' AS state, count(*) AS rows FROM sift.col_scope_verify('events_col', keys => ARRAY['1', '2', '4', '6', '7', '99']);
@@ -72,9 +72,9 @@ SET sift.test_no_track = on;
 DELETE FROM memberships WHERE group_id = 4 AND deleted_at IS NULL AND dim_a_id = (SELECT min(dim_a_id) FROM memberships WHERE group_id = 4 AND deleted_at IS NULL);
 RESET sift.test_no_track;
 SELECT 'soft, mutant' AS state, scope_key, problem, detail FROM sift.col_scope_verify('events_soft', 100) ORDER BY scope_key;
-    state     | scope_key | problem |        detail         
---------------+-----------+---------+-----------------------
- soft, mutant | 4         | differs | differing: 1, first 3
+    state     | scope_key | problem |              detail              
+--------------+-----------+---------+----------------------------------
+ soft, mutant | 4         | differs | sum(id): 679320, the join 641280
 (1 row)
 
 REINDEX INDEX events_soft;
@@ -110,10 +110,10 @@ DELETE FROM group_members WHERE group_id = 2 AND dim_a_id = 12;
 DELETE FROM grants WHERE id = 5;
 RESET sift.test_no_track;
 SELECT 'two paths, mutant' AS state, scope_key, problem, scope_rows, join_rows, detail FROM sift.col_scope_verify('facts_col', 100, ARRAY['1', '2', '3', '4']) ORDER BY scope_key;
-       state       | scope_key | problem | scope_rows | join_rows |         detail         
--------------------+-----------+---------+------------+-----------+------------------------
- two paths, mutant | 2         | differs |       1000 |       950 | differing: 1, first 12
- two paths, mutant | 3         | differs |         50 |         0 | differing: 1, first 41
+       state       | scope_key | problem | scope_rows | join_rows |               detail               
+-------------------+-----------+---------+------------+-----------+------------------------------------
+ two paths, mutant | 2         | differs |       1000 |       950 | sum(id): 1498500, the join 1422350
+ two paths, mutant | 3         | differs |         50 |         0 | sum(id): 75500, the join none
 (2 rows)
 
 REINDEX INDEX facts_col;
