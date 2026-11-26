@@ -1,0 +1,52 @@
+-- The dictionary of a part is named by the index it belongs to and its generation: the indexes of the partitions of a table each count their parts from 1, and the groups a scan of
+-- one partition leaves are folded with those of the next. A text key and the distinct values of a text column must keep the partitions apart: the rows with the scan and without it are the same.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+CREATE TABLE dg (id int, k text, u int) PARTITION BY LIST (k);
+CREATE TABLE dg_a PARTITION OF dg FOR VALUES IN ('a', 'b');
+CREATE TABLE dg_b PARTITION OF dg FOR VALUES IN ('c', NULL);
+CREATE TABLE dg_c PARTITION OF dg FOR VALUES IN ('d');
+INSERT INTO dg SELECT i, (ARRAY['a', 'b', 'c', 'd', NULL])[1 + i % 5], (i * 7) % 101 FROM generate_series(1, 3000) i;
+CREATE INDEX dg_col ON dg USING sift_col (id, k, u);
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (result_rows bigint, differences bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO result_rows FROM r_on;
+	SELECT count(*) INTO differences FROM ((TABLE r_off EXCEPT ALL TABLE r_on) UNION ALL (TABLE r_on EXCEPT ALL TABLE r_off)) d;
+	DROP TABLE r_off, r_on;
+	RETURN NEXT;
+END $$;
+SELECT * FROM same_rows('SELECT k, count(*) AS n, count(DISTINCT u) AS du FROM dg GROUP BY k');
+ result_rows | differences 
+-------------+-------------
+           5 |           0
+(1 row)
+
+SELECT * FROM same_rows('SELECT k, count(*) AS n, sum(u) AS su FROM dg GROUP BY k');
+ result_rows | differences 
+-------------+-------------
+           5 |           0
+(1 row)
+
+SELECT * FROM same_rows('SELECT u, count(DISTINCT k) AS dk FROM dg GROUP BY u');
+ result_rows | differences 
+-------------+-------------
+         101 |           0
+(1 row)
+
+SELECT * FROM same_rows('SELECT count(DISTINCT k) AS dk FROM dg');
+ result_rows | differences 
+-------------+-------------
+           1 |           0
+(1 row)
+
+DROP FUNCTION same_rows(text);
+DROP TABLE dg;
+DROP EXTENSION pg_sift;

@@ -31,7 +31,7 @@ arith_pairs(UnRun *u, int k, uint32 m)
 	{
 		double		st[SIFT_ARITH_MAX_STACK];
 		int			sp = 0;
-		bool		ok = true;
+		bool		ok = (u->obs.mask[r >> 6] >> (r & 63)) & 1;
 
 		for (int c = 0; c < ar->nin && ok; c++)
 			ok = u->out[ar->in[c]]->all_valid || ((u->out[ar->in[c]]->valid[r >> 6] >> (r & 63)) & 1);
@@ -118,6 +118,8 @@ sift_v1_unnest_run_pairs(UnRun *u, uint32 m)
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
+	if (u->has_pwhere)
+		restrict_pairs(u, m);
 	for (int k = 0; k < u->spec->nderive; k++)
 		if (u->spec->derive[k].kind == SVD_PG_EXPR)
 			pg_pairs(u, k);
@@ -125,8 +127,6 @@ sift_v1_unnest_run_pairs(UnRun *u, uint32 m)
 			arith_pairs(u, k, m);
 	if (u->row_slot >= 0)
 		row_numbers(u, m);
-	if (u->has_pwhere)
-		restrict_pairs(u, m);
 	if (bs->n_active > 0)
 		sift_v6_pipe_run(u->pipe, u->out, bs);
 }
@@ -325,6 +325,8 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 	ErrorData **late = NULL;
 	uint32		nel;
 
+	for (int c = 0; c < u->nel; c++)
+		ev[c].type = u->etype[c];
 	MemoryContextReset(u->bcx);
 	sift_v1_unnest_heap_load(u, b->tag[row]);
 	nel = sift_v1_unnest_heap_elems(u, ev);

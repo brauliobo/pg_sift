@@ -19,6 +19,7 @@
 #include "agg/bytes.h"
 #include "agg/filter/pg.h"
 #include "agg/plan/int.h"
+#include "agg/expr/pg.h"
 #include "agg/ext.h"
 #include "agg/pipe.h"
 #include "agg/source_rel.h"
@@ -95,14 +96,44 @@ table_rows_ok(const SiftV6Spec *s)
 	return true;
 }
 
+/* the scan of an unnest reads the values of the leaves of its columns, not the type each row's chunk keeps of a key (jsonb_typeof(doc -> 'key')) */
+static bool
+reads_type_tag(const SiftV6Spec *s)
+{
+	for (int i = 0; i < s->nkeys; i++)
+		if (s->key[i].jtype)
+			return true;
+	for (int v = 0; v < sift_v6_spec_nvec(s); v++)
+		if (sift_v6_vec_col(s, v) != NULL && sift_v6_vec_col(s, v)->jtype)
+			return true;
+	for (int i = 0; i < s->nfcols; i++)
+		if (s->fcol[i].jtype)
+			return true;
+	for (int k = 0; k < s->nderive; k++)
+	{
+		SiftV6PgItem it;
+
+		if (s->derive[k].src.jtype)
+			return true;
+		for (int c = 0; c < s->derive[k].ncond; c++)
+			if (s->derive[k].cond[c].jtype)
+				return true;
+		if (s->derive[k].kind != SVD_PG_EXPR)
+			continue;
+		sift_v6_pgexpr_item(s, &s->derive[k], &it);
+		for (int c = 0; c < it.nin; c++)
+			if (it.col[c].jtype)
+				return true;
+	}
+	return false;
+}
+
 bool
 sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause *clause;
 	SiftBytes	canon;
 
-	if (p->is_table)
-		return true;
 	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
@@ -128,7 +159,7 @@ sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return (!p->is_table || table_rows_ok(&p->spec)) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+	return (!p->is_table || table_rows_ok(&p->spec)) && !reads_type_tag(&p->spec) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */

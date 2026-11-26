@@ -486,7 +486,7 @@ typedef struct SiftGranVecCursor
 } SiftGranVecCursor;
 
 extern void sift_vec_cursor_open(const SiftGranuleView *v, int col, SiftVecType vtype, SiftGranVecCursor *cur);
-extern void sift_vec_cursor_decode(SiftGranVecCursor *cur, uint16 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out);
+extern void sift_vec_cursor_decode(SiftGranVecCursor *cur, uint32 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out);
 extern void sift_vec_cursor_open_key_present(const SiftGranuleView *v, int col, SiftGranVecCursor *cur);
 extern SiftMaskState sift_vec_cursor_key_present(SiftGranVecCursor *cur, uint16 row_off, uint16 nrows, uint64 *out_mask);
 extern void sift_vec_cursor_close(SiftGranVecCursor *cur);

@@ -281,19 +281,22 @@ CRASH_RE='TRAP:|PANIC:|terminated by (signal|exception)|ERROR: AddressSanitizer|
 # failed_tests KEY: the tests pg_regress marked "not ok" in the output of the batch KEY, in the order they ran (pg_regress removes regression.out when every test passed)
 failed_tests() { [[ ! -f $TMP/regress/$1/regression.out ]] || sed -n 's/^not ok  *[0-9][0-9]*  *- *\([^ ]*\).*/\1/p' "$TMP/regress/$1/regression.out"; }
 
+# crashed_test KEY: the test whose process pg_regress reports as exited abnormally in the batch KEY (the "not ok" line that stands just before the report), none when no test did
+crashed_test() { [[ ! -f $TMP/regress/$1/regression.out ]] || awk '/^not ok/ { name = $5 } /^# \(test process exited/ { print name; exit }' "$TMP/regress/$1/regression.out"; }
+
 # name_failures TEST...: the batch of TEST... failed; says which tests are to blame, running the fewest more batches that can tell:
-#  - a crashed backend: the first test that failed in the progress of pg_regress is the one that crashed it, and the tests after it fail for the recovery; nothing is run again
+#  - a crashed backend: the test whose process pg_regress reports as exited abnormally is the one that crashed it (the tests that only differ before it are not), and the tests after it fail for the recovery; nothing is run again
 #  - SIFT_REGRESS_NO_BISECT set: nothing is run again, the findings are all there is
 #  - only diffs (no leak, no leftover): the tests that differ run alone; one that fails alone is guilty. If all of them pass alone, an earlier test of the batch bleeds into them, and the cuts find it
 #  - a leak or a leftover: the batch is cut in halves, because no test is named yet
 name_failures() {
-	local key report failed first after rc=0
+	local key report failed crashed after rc=0
 	key=$(batch_key "$1") report=$TMP/regress/$key.report
-	failed=$(failed_tests "$key" | paste -sd' ' -) first=${failed%% *}
-	after=${failed#"$first"}
+	failed=$(failed_tests "$key" | paste -sd' ' -) crashed=$(crashed_test "$key")
+	after=${failed#*"${crashed:-$failed}"}
 	BISECT_NAMED=0
 	if grep -qE "^leak in .*($CRASH_RE)" "$report"; then
-		echo "pgtest: regress: a backend crashed in the batch of $# tests starting at $1; not cutting it. Crashed in: ${first:-no test failed in the progress, see the findings}; failed after it:${after:- none}" >&2
+		echo "pgtest: regress: a backend crashed in the batch of $# tests starting at $1; not cutting it. Crashed in: ${crashed:-no test exited abnormally in the progress, see the findings}; failed after it:${after:- none}" >&2
 		grep -E "^leak in .*($CRASH_RE)" "$report" | head -n 5 >&2
 		return
 	fi

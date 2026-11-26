@@ -20,6 +20,9 @@
 
 typedef struct SiftV6Preagg SiftV6Preagg;
 
+/* The generation of the dictionary of a part of host (0: no part), which tells it from the dictionaries of the parts of the other children of a partitioned table */
+extern uint64 sift_v6_dict_gen(Relation host, uint64 part_gen);
+
 /* The state for one scan of the index or table into g (first: the leaf of each attribute; vet: the heap of an index, NULL for a table); NULL when the statement is not one the cubes can answer */
 extern SiftV6Preagg *sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, SiftV6Vet *vet, SiftV6ScanStats *stats);
 /* A SiftF2GranSink: true when the granule was answered and is not to be read */

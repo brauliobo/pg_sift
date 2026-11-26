@@ -58,7 +58,7 @@ typedef struct PartBind
 	AggBind    *agg;
 	int		   *pred_dim;		/* the dimension a predicate is on, -1: none, or the cube cannot test it */
 	bool	   *pred_ok;
-	SiftGranuleDict dict[SIFT_PREAGG_MAX_DIMS];
+	SiftKeyDict dict[SIFT_PREAGG_MAX_DIMS];
 	const SiftPartDicts *dicts;
 	SiftPreaggReads reads;		/* what the aggregates read of the measures */
 	bool		has_dist;
@@ -301,6 +301,13 @@ bind_cube(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCube
 	return score;
 }
 
+/* the generation of the dictionary of a part of host: the indexes of the children of a partitioned table each count their parts from 1, and a group folds the children (0: no part) */
+uint64
+sift_v6_dict_gen(Relation host, uint64 part_gen)
+{
+	return part_gen == 0 ? 0 : ((uint64) RelationGetRelid(host) << 32) ^ part_gen;
+}
+
 static bool
 bind_part(SiftV6Preagg *pa, const SiftF2GranOffer *o)
 {
@@ -341,7 +348,7 @@ bind_part(SiftV6Preagg *pa, const SiftF2GranOffer *o)
 			if (cd->dim_kind[d] == SIFT_PDIM_DICT32 && pd == NULL)
 				pb->usable = false;
 			else if (pd != NULL)
-				pb->dict[d] = (SiftGranuleDict) {.n = pd->n,.off = pd->off,.bytes = pd->bytes,.part = true};
+				pb->dict[d] = (SiftKeyDict) {.d = {.n = pd->n,.off = pd->off,.bytes = pd->bytes,.part = true},.gen = sift_v6_dict_gen(o->rel, o->desc->part_gen)};
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -480,7 +487,7 @@ cell_passes(const PartBind *pb, const SiftPreaggCubeDesc *cd, const SiftF2GranOf
 		}
 		else if (null)
 			return false;
-		else if (cd->dim_kind[d] == SIFT_PDIM_INT64 ? !int_pred(p, grp->keys[d]) : !str_pred(p, pb->dict[d].bytes + pb->dict[d].off[grp->keys[d]], pb->dict[d].off[grp->keys[d] + 1] - pb->dict[d].off[grp->keys[d]]))
+		else if (cd->dim_kind[d] == SIFT_PDIM_INT64 ? !int_pred(p, grp->keys[d]) : !str_pred(p, pb->dict[d].d.bytes + pb->dict[d].d.off[grp->keys[d]], pb->dict[d].d.off[grp->keys[d] + 1] - pb->dict[d].d.off[grp->keys[d]]))
 			return false;
 	}
 	return true;
@@ -582,7 +589,7 @@ kb_reset(SiftV6Preagg *pa, const PartBind *pb)
 	{
 		const int	d = pb->key_dim[i];
 
-		kb->vec[i] = (SiftVec) {.data = kb->data[i],.dense = true,.type = pa->key_text[i] ? SVEC_DICT32 : SVEC_I64,.dict = pa->key_text[i] ? &pb->dict[d] : NULL};
+		kb->vec[i] = (SiftVec) {.data = kb->data[i],.dense = true,.type = pa->key_text[i] ? SVEC_DICT32 : SVEC_I64,.dict = pa->key_text[i] ? &pb->dict[d].d : NULL};
 		kb->vp[i] = &kb->vec[i];
 	}
 }
@@ -599,7 +606,7 @@ kb_put(SiftV6Preagg *pa, const PartBind *pb, const SiftPreaggGroupHdr *grp)
 		const bool	null = (grp->dim_null_mask >> d) & 1;
 
 		if (pa->key_text[i])
-			((uint32 *) kb->data[i])[r] = null ? pb->dict[d].n : (uint32) grp->keys[d];
+			((uint32 *) kb->data[i])[r] = null ? pb->dict[d].d.n : (uint32) grp->keys[d];
 		else
 			((int64 *) kb->data[i])[r] = null ? 0 : grp->keys[d];
 		if (!null)

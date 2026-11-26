@@ -387,7 +387,7 @@ decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
 		const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, p->n_elems - at);
 		const SiftVariantExcStream *exc = NULL;
 
-		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], (uint16) at, cnt, &tmp, &exc);
+		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], at, cnt, &tmp, &exc);
 		if (exc != NULL)
 			poison_granule(p);
 		memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);

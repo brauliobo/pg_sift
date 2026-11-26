@@ -39,6 +39,20 @@ unnest_slot(void *arg, const SiftV6Col *c)
 	return sift_f2_v6_slot_of(s, s->first, c, false);
 }
 
+/* the spec of the unnest of a table: its quals are decided by the scan of the store (the preds), not by the batches of the unnest, which have no index to bind them to */
+static const SiftV6Spec *
+unnest_spec(const SiftV6Spec *spec)
+{
+	SiftV6Spec *copy = palloc(sizeof(SiftV6Spec));
+	SiftV6Ext  *x = palloc(sizeof(SiftV6Ext));
+
+	*copy = *spec;
+	*x = *spec->ext;
+	x->where = NIL;
+	copy->ext = x;
+	return copy;
+}
+
 /* a table whose array column is unnested: the pairs of each row go through a pipe whose fact slots are the columns the scan reads and whose element slot follows them */
 static void
 unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
@@ -47,7 +61,7 @@ unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
 
 	for (int i = 0; i < s->ncols; i++)
 		type[i] = s->cols[i].vec.type;
-	s->unnest = sift_v6_unnest_rows_begin(s->spec, s->group, rel, snap, s->stats, s->ncols, type, unnest_slot, s);
+	s->unnest = sift_v6_unnest_rows_begin(unnest_spec(s->spec), s->group, rel, snap, s->stats, s->ncols, type, unnest_slot, s);
 	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = &s->cols[i].vec;
@@ -78,10 +92,10 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	o.leaves = sift_f2_v6_scan_leaves(s);
 	o.nleaves = s->ncols;
 	o.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols);
-	s->preagg = quals->possible && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
+	s->preagg = quals->possible && !s->spec->tid_range && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;
 	o.gran_sink = s->preagg != NULL ? sift_v6_preagg_try_granule : NULL;
 	o.gran_arg = s->preagg;
-	if (quals->possible && next_chunk == NULL && s->pipe == NULL && s->unnest == NULL && (s->group != NULL) != (s->rows != NULL))
+	if (quals->possible && !s->spec->tid_range && next_chunk == NULL && s->pipe == NULL && s->unnest == NULL && (s->group != NULL) != (s->rows != NULL))
 		s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, store->att_first, rel, snap, NULL, NULL);
 	if (s->par != NULL)
 	{

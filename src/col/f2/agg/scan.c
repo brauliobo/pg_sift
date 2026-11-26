@@ -616,7 +616,7 @@ part_dict_offer(void *arg, const SiftPartDesc *d, const SiftGranuleDict *dicts)
 	{
 		if (!s->cols[i].by_code || dicts[i].off == NULL)
 			return false;
-		src[i] = (SiftDictSrc) {.gen = d->part_gen,.n = dicts[i].n,.off = dicts[i].off,.bytes = dicts[i].bytes};
+		src[i] = (SiftDictSrc) {.gen = sift_v6_dict_gen(s->host, d->part_gen),.n = dicts[i].n,.off = dicts[i].off,.bytes = dicts[i].bytes};
 		if (!v6g_dist_dict_fits(&src[i]))
 			return false;
 	}
@@ -708,13 +708,13 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
 	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0 && !s->spec->tid_range)
 		s->stat = sift_v6_colstat_begin(s->spec, s->group, index, sift_col_rel(index)->first, CurrentMemoryContext);
-	if (s->emit == NULL && s->rows == NULL && s->pipe == NULL && s->gate == NULL && next_chunk == NULL && s->group != NULL)
+	if (s->emit == NULL && s->rows == NULL && s->pipe == NULL && s->gate == NULL && next_chunk == NULL && s->group != NULL && !s->spec->tid_range)
 		s->preagg = sift_v6_preagg_begin(s->spec, s->group, sift_col_rel(index)->first, &s->vet, s->stats);
 	if (next_chunk == NULL)
 	{
-		if (s->pipe == NULL && s->emit == NULL && s->gate == NULL && (s->group != NULL) != (s->rows != NULL))
+		if (s->pipe == NULL && s->emit == NULL && s->gate == NULL && !s->spec->tid_range && (s->group != NULL) != (s->rows != NULL))
 			s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
-		if (s->par == NULL && s->rows == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL)
+		if (s->par == NULL && s->rows == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL && !s->spec->tid_range)
 			s->pin = pin_begin(s, index, snap);
 		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	}
@@ -827,7 +827,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
-	s->preagg = emit != NULL && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
+	s->preagg = emit != NULL && !spec->tid_range && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(s->scan, sift_v6_preagg_try_granule, s->preagg);
 	return s;

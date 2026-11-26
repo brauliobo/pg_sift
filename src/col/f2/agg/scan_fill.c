@@ -258,7 +258,7 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint6
 			sift_f2_v6_fill_datum(c, views, off, n, s->batch_cx, s->bs.mask);
 		else
 		{
-			sift_f2_v6_fill_col(c, cv, off, n, part_gen, s->bs.n_active * 2 < n ? s->bs.mask : NULL);
+			sift_f2_v6_fill_col(c, cv, off, n, sift_v6_dict_gen(s->host, part_gen), s->bs.n_active * 2 < n ? s->bs.mask : NULL);
 			if (c->json)
 				sift_f2_v6_fill_exceptions(s, c, cv, off, n);
 		}

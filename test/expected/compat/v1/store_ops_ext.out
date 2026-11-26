@@ -290,7 +290,46 @@ SELECT match_diff('t1', true, 't1', 'id % 97 = 0') AS match_set_table;
                0
 (1 row)
 
+-- 9. The aggregate scan of a LATERAL unnest of a sift_table of Format 1 answers as the heap does: the quals of the table, NULL and empty arrays, a LEFT JOIN
+SET max_parallel_workers_per_gather = 0; SET seq_page_cost = 10000; SET enable_hashagg = off; SET sift.agg_force = on;
+CREATE TABLE u5 (id int, g text, arr int4[]) USING sift_table;
+INSERT INTO u5 SELECT i, 'g' || i % 3, CASE WHEN i % 4 = 0 THEN NULL WHEN i % 4 = 1 THEN ARRAY[i, i + 1] WHEN i % 4 = 2 THEN '{}' ELSE ARRAY[i] END FROM generate_series(1, 2000) i;
+CREATE TABLE u5h (LIKE u5);
+INSERT INTO u5h SELECT * FROM u5;
+CREATE FUNCTION scanned(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS off) ' || q LOOP
+		IF l LIKE '%Unnest: %' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+SELECT scanned('SELECT g, count(*), sum(e) FROM u5 LEFT JOIN LATERAL unnest(arr) e ON true WHERE id >= 100 GROUP BY g') AS table_unnest_in_the_plan;
+ table_unnest_in_the_plan 
+--------------------------
+ t
+(1 row)
+
+SELECT diff('SELECT g, count(*), sum(e) FROM u5 LEFT JOIN LATERAL unnest(arr) e ON true WHERE id >= 100 GROUP BY g', 'SELECT g, count(*), sum(e) FROM u5h LEFT JOIN LATERAL unnest(arr) e ON true WHERE id >= 100 GROUP BY g') AS table_unnest_left_where;
+ table_unnest_left_where 
+-------------------------
+                       0
+(1 row)
+
+SELECT diff('SELECT g, count(*), sum(e) FROM u5, unnest(arr) e WHERE id < 700 AND g <> ''g1'' GROUP BY g', 'SELECT g, count(*), sum(e) FROM u5h, unnest(arr) e WHERE id < 700 AND g <> ''g1'' GROUP BY g') AS table_unnest_where;
+ table_unnest_where 
+--------------------
+                  0
+(1 row)
+
+SELECT diff('SELECT g, count(*), sum(e) FROM u5 LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY g', 'SELECT g, count(*), sum(e) FROM u5h LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY g') AS table_unnest_left;
+ table_unnest_left 
+-------------------
+                 0
+(1 row)
+
+DROP FUNCTION scanned(text);
 DROP FUNCTION diff, topn, match_diff, sift._test_v1_ops, sift._test_v1_topn, sift._test_v1_unnest, sift._test_v1_match;
-DROP TABLE c1, t1, u1, u2, u3;
+DROP TABLE c1, t1, u1, u2, u3, u5, u5h;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

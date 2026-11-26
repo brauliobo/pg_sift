@@ -1,0 +1,37 @@
+-- A LEFT JOIN LATERAL unnest of a jsonb array column: a row whose array is SQL NULL, and a row the index does not hold yet (the writes after the build), is read from the heap and
+-- gives one pair with a NULL element. That pair has the type of the element column (text, int), not the first type there is: the groups by the text and by an expression of it, and the sum of
+-- the integer, are those of the heap twin.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET enable_hashagg = off;
+SET sift.agg_force = on;
+
+CREATE TABLE ul_heap (id int, g int, items jsonb);
+INSERT INTO ul_heap SELECT i, i % 3,
+	CASE WHEN i % 5 = 0 THEN NULL WHEN i % 7 = 0 THEN '[{"cat": 5, "qty": 2}]'::jsonb WHEN i % 11 = 0 THEN '[]'::jsonb ELSE '[{"cat": "Aa", "qty": 1}, {"cat": "Bb", "qty": 2}]'::jsonb END
+FROM generate_series(1, 3000) i;
+CREATE TABLE ul (LIKE ul_heap);
+INSERT INTO ul SELECT * FROM ul_heap;
+CREATE INDEX ul_col ON ul USING sift_col (id, g, items) WITH (paths = 'items[]{cat text, qty int4}');
+VACUUM (FREEZE, ANALYZE) ul;
+INSERT INTO ul SELECT id + 10000, g, CASE WHEN id % 2 = 0 THEN NULL ELSE items END FROM ul_heap WHERE id <= 400;
+INSERT INTO ul_heap SELECT id + 10000, g, CASE WHEN id % 2 = 0 THEN NULL ELSE items END FROM ul_heap WHERE id <= 400;
+
+CREATE FUNCTION same_rows(q text) RETURNS TABLE (result_rows bigint, differences bigint) LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE 'CREATE TEMP TABLE r_heap ON COMMIT DROP AS ' || replace(q, '@', 'ul_heap');
+	EXECUTE 'CREATE TEMP TABLE r_idx ON COMMIT DROP AS ' || replace(q, '@', 'ul');
+	SELECT count(*) INTO result_rows FROM r_idx;
+	SELECT count(*) INTO differences FROM ((TABLE r_heap EXCEPT ALL TABLE r_idx) UNION ALL (TABLE r_idx EXCEPT ALL TABLE r_heap)) d;
+	DROP TABLE r_heap, r_idx;
+	RETURN NEXT;
+END $$;
+
+SELECT * FROM same_rows('SELECT i.cat, lower(i.cat) AS l, count(*) AS n, sum(i.qty) AS s FROM @ o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(cat text, qty int) ON true GROUP BY 1, 2');
+SELECT * FROM same_rows('SELECT o.g, i.cat, count(*) AS n FROM @ o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(cat text, qty int) ON true GROUP BY 1, 2');
+SELECT * FROM same_rows('SELECT length(i.cat) AS len, sum(i.qty) AS s FROM @ o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(cat text, qty int) ON true GROUP BY 1');
+
+DROP FUNCTION same_rows(text);
+DROP TABLE ul, ul_heap;
+DROP EXTENSION pg_sift;

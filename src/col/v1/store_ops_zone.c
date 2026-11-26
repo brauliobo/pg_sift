@@ -9,6 +9,8 @@
 #include "executor/executor.h"
 #include "utils/memutils.h"
 
+#include "agg/engine.h"
+#include "agg/ext.h"
 #include "col/am.h"
 #include "col/source_fold.h"
 #include "col/v1/store_ops.h"
@@ -85,6 +87,11 @@ zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation r
 {
 	SIFT_INVARIANT(nskip == 0, "Format 1 has no device parts to leave out of the scan of table %u", RelationGetRelid(rel));
 	SIFT_INVARIANT(next_chunk == NULL, "Format 1 tables are not scanned by the hits of a text query (table %u)", RelationGetRelid(rel));
+	if (spec->ext != NULL && spec->ext->unnest)
+	{
+		sift_v1_unnest_run(spec, g, rel, NULL, snap, stats, star);
+		return;
+	}
 	SIFT_INVARIANT(star == NULL, "Format 1 tables are not scanned beside the dimensions of a star join (table %u)", RelationGetRelid(rel));
 	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = rel,.is_table = true,.quals = quals->clauses,.estate = quals->estate}, snap, NULL, NULL, NULL);
 }

@@ -356,7 +356,7 @@ cursor_fill_strs(SiftGranVecCursor *cur, int k0, int k1, int nrows, SiftVec *dst
 }
 
 void
-sift_vec_cursor_decode(SiftGranVecCursor *cur, uint16 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out)
+sift_vec_cursor_decode(SiftGranVecCursor *cur, uint32 row_off, uint16 nrows, SiftVec *dst, const SiftVariantExcStream **exc_out)
 {
 	const SiftChunk *c = &cur->chunk;
 	int			k0,

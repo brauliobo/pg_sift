@@ -27,7 +27,7 @@ typedef struct MapBind
 	const SiftPreaggPart *pp;
 	int			cube;
 	int		   *meas;			/* of each aggregate the measure of the cube it reads, MAP_ROWS_ONLY: the count of the members */
-	SiftGranuleDict dict;
+	SiftKeyDict dict;
 } MapBind;
 
 struct SiftV6MapPreagg
@@ -177,7 +177,7 @@ bind_part(SiftV6MapPreagg *m, const SiftF2GranOffer *o)
 			pb->cube = k;
 			pb->usable = pd != NULL;
 			if (pd != NULL)
-				pb->dict = (SiftGranuleDict) {.n = pd->n,.off = pd->off,.bytes = pd->bytes,.part = true};
+				pb->dict = (SiftKeyDict) {.d = {.n = pd->n,.off = pd->off,.bytes = pd->bytes,.part = true},.gen = sift_v6_dict_gen(o->rel, o->desc->part_gen)};
 		}
 	}
 	MemoryContextSwitchTo(old);
@@ -188,8 +188,8 @@ bind_part(SiftV6MapPreagg *m, const SiftF2GranOffer *o)
 static const char *
 key_bytes(const MapBind *pb, uint32 code, uint32 *len)
 {
-	*len = pb->dict.off[code + 1] - pb->dict.off[code];
-	return pb->dict.bytes + pb->dict.off[code];
+	*len = pb->dict.d.off[code + 1] - pb->dict.d.off[code];
+	return pb->dict.d.bytes + pb->dict.d.off[code];
 }
 
 /* Whether each cell of the granule passes the tests of the statement on the key of the member: every cell when it has none */
@@ -247,7 +247,7 @@ fold_cells(SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, const SiftPreaggGra
 	const int	naggs = m->spec->naggs;
 	uint32	   *codes = palloc(SIFT_VEC_LEN * sizeof(uint32) + SIFT_VEC_PAD);
 	V6Acc	   *acc = palloc(SIFT_VEC_LEN * naggs * sizeof(V6Acc));
-	SiftVec		key = {.data = codes,.dense = true,.type = SVEC_DICT32,.dict = &pb->dict};
+	SiftVec		key = {.data = codes,.dense = true,.type = SVEC_DICT32,.dict = &pb->dict.d};
 	uint16		n = 0;
 
 	for (uint32 c = 0; c < gran->ncells; c++)
