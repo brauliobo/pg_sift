@@ -87,4 +87,3 @@ double	agg/star/run.c	r->cstart[d] = repalloc(r->cstart[d], sizeof(uint32) * (ca
 double	col/f2/l0/href.c	r->pages = repalloc(r->pages, (r->pcap *= 2) * sizeof(BlockNumber));	bounded: the pages of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
 double	col/f2/l0/href.c	r->refs = repalloc(r->refs, (r->cap = Max(r->cap * 2, r->n + n)) * sizeof(SiftL0HeapRef));	bounded: the references of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
 double	col/f2/l0/slab.c	d->pages = repalloc(d->pages, (d->cap *= 2) * sizeof(BlockNumber));	bounded: the pages of one directory and the one it drains, a slab flush at 2 * SIFT_L0_SLAB_MAX_PAGES pages (note_flush)
-lifetime	bm25/wbuf.c	stages[nstages] = MemoryContextAlloc(TopMemoryContext, sizeof(WbufStage));	bounded: STAGE_SLOTS stages of a page each, freed at the end of the transaction

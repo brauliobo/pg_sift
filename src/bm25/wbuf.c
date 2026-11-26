@@ -473,7 +473,7 @@ free_slot(void)
 			return stages[i];
 	if (nstages < STAGE_SLOTS)
 	{
-		stages[nstages] = MemoryContextAlloc(TopMemoryContext, sizeof(WbufStage));
+		stages[nstages] = MemoryContextAlloc(TopTransactionContext, sizeof(WbufStage));
 		return stages[nstages++];
 	}
 	for (int i = 0; i < nstages; i++)
@@ -486,8 +486,6 @@ free_slot(void)
 static void
 free_stages(void)
 {
-	for (int i = 0; i < nstages; i++)
-		pfree(stages[i]);
 	nstages = 0;
 }
 
