@@ -43,7 +43,7 @@ group_many_groups	a group by of one integer column with millions of groups takes
 col_scan_default	`sift.enable_col_scan` is on by default	orders	default	Index (Only )?Scan using orders_sc_col|Bitmap Heap Scan on orders_sc	native	-	ms	faster33	no	-
 key_table_point	-	orders	default WITH (key_order = 'segment_id')	Parts: scanned=[0-9]+ pruned_key=[1-9][0-9]*	native,pg_duckdb	-	ms	faster33	yes	-
 null_count_zone	reads the null counts of the zones of the units	events	-	[1-9][0-9]* from pre-aggregates	native	scan:sift.agg_preagg = off	ms	faster33	no	-
-jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
+jsonb_contains_object	is answered from the leaves of the paths it names	orders	default	Custom Scan \(SiftAgg\)	native	gin:search_path = c_jsonb_contains_object__gin;sift.enable_agg = off	ms	faster33	yes	-
 sum_int_expr	the exact sum of the expression	orders	default	Custom Scan \(SiftAgg\)	native,pg_duckdb	-	ms	faster33	no	-
 search_filter_include	a sift index can name `INCLUDE` columns (`CREATE INDEX ON do	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
 search_join_region	the table of an `IN` test of an `INCLUDE` column	docs	-	Include Tests: [1-9]	native	-	ms,minstr	faster33	no	-
@@ -55,7 +55,7 @@ col_vacuum_13cols	the zone of a chunk without a NULL and the exact sums of an in
 ordered_window_rank	the ordered index-only scan of a `sift_col` index (the first column of the index read alone, in order) is offered	events	-	WindowAgg	native	btree:search_path = c_ordered_window_rank__btree;sift.enable_agg = off	ms	faster33	yes	-
 group_join_dim_filter_keys	looked up in the filtered table before the groups are made	events	-	Index (Only )?Scan (using|on) gk_fact_grp	native	-	ms	faster33	no	-
 float_sum_ungrouped	the sum of a float column that is not grouped	events	-	Custom Scan \(SiftAgg\)	native	-	ms	faster33	no	-
-jsonb_key_read	-	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	-	ms	faster33	no	-
+jsonb_key_read	-	events	-	Pushed Aggregates: sum\(attrs\.a\)	native	gin:search_path = c_jsonb_key_read__gin;sift.enable_agg = off	ms	faster33	yes	-
 count_distinct_big_set	-	events	-	Pushed Aggregates	native	-	ms	faster33	no	-
 semi_lut_bigint	by an `int8` key is answered from a byte table	events	-	[1-9][0-9]* semi tables	native	generic_join:sift.agg_semi_lut = off	ms	faster33	no	-
 star_snowflake_join	-	events	-	Custom Scan \(SiftAgg.*Lookup Joins: sf_product, sf_category, sf_region	native	-	ms	faster33	yes	-
@@ -67,3 +67,8 @@ bm25_hybrid_groupby	-	events	-	Custom Scan \(SiftHybridAgg	native	gin:search_pat
 text_like_prefix_agg	-	events	-	Custom Scan \(SiftAgg	native	btree:search_path = c_text_like_prefix_agg__btree;sift.enable_agg = off	ms	faster33	yes	-
 pg_array_cardinality_agg	-	events	-	Custom Scan \(SiftAgg	native	gin:search_path = c_pg_array_cardinality_agg__gin;sift.enable_agg = off	ms	faster33	yes	-
 calendar_date_trunc_agg	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_calendar_date_trunc_agg__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_scalar_groupby	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_jsonb_scalar_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_path_exists_gin	-	events	-	Custom Scan \(SiftAgg.*Unnest	native	gin:search_path = c_jsonb_path_exists_gin__gin;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_exists_same_elem	-	events	-	Custom Scan \(SiftAgg.*Unnest	native	gin:search_path = c_jsonb_exists_same_elem__gin;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_typeof_groupby	-	events	-	Custom Scan \(SiftAgg	native	expr_btree:search_path = c_jsonb_typeof_groupby__expr_btree;sift.enable_agg = off	ms	faster33	yes	-
+jsonb_sift_table_paths	-	events	-	Custom Scan \(SiftAgg.*Table: tbl_j	native	gin:search_path = c_jsonb_sift_table_paths__gin;sift.enable_agg = off	ms	faster33	yes	-
