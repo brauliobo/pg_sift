@@ -9,7 +9,8 @@
 plan 11
 node_init s105 2 "autovacuum = off
 shared_buffers = 32MB
-max_parallel_workers_per_gather = 0"
+max_parallel_workers_per_gather = 0
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start s105 || bail "start failed"
 D=$(dir s105)
 sql s105 "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"

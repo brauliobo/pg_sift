@@ -10,7 +10,8 @@ node_init sw 2 "wal_level = replica
 full_page_writes = on
 autovacuum = off
 sift.async_maintenance = off
-maintenance_work_mem = '4MB'"
+maintenance_work_mem = '4MB'
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start sw || bail "start failed"
 sql sw "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_walinspect" >/dev/null || bail "extension failed"
 

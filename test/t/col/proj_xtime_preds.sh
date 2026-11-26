@@ -6,7 +6,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 10
-node_init r 1 "autovacuum = off"
+node_init r 1 "autovacuum = off
+sift.test_create_format1 = off"
 node_start r || bail "start failed"
 q() { sql r "$@" 2>&1; }
 # the rows of a statement through the index (sift on) and through the heap (sift off), as one text each
@@ -14,7 +15,7 @@ same() { [[ $(q "SELECT p_same(\$q\$$1\$q\$)") == same ]]; }
 same_order() { [[ $(q "SELECT p_same_order(\$q\$$1\$q\$, \$q\$$1\$q\$)") == same ]]; }
 uses() { [[ $(q "SELECT p_uses(\$q\$$1\$q\$, '$2')") == t ]]; }
 
-sql r "CREATE EXTENSION pg_sift_test CASCADE" "SET sift.test_create_format1 = off" >/dev/null || bail "extension failed"
+sql r "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
 psql -X -q -v ON_ERROR_STOP=1 -h "$(node_sock r)" -p "$(port r)" -U postgres -d "$(node_db r)" -f "$SIFT_REPO/test/common/sql/col/proj/base.sql" >/dev/null || bail "helpers failed"
 q "ALTER DATABASE postgres SET TimeZone = 'UTC'" >/dev/null
 
