@@ -6,6 +6,15 @@ removed	test/expected/col_gorder_group_range_1.out	17 18 18-arm64 19
 removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19	
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
+test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
+test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
+test/expected/agg/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
+test/expected/agg/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	17	sift_lines
+test/expected/agg/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	17	sift_lines
+test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
+test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
+test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
+test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
 test/expected/agg/plan/tables_1.out	55fc321df3bd092db15a996db0656248b7376904	19	plan                       | result_rows | vs_normal_plan
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
 test/expected/agg/plan/tables_1.out	b5ccafa27970a6d1ac47af6e914cd1539605803d	19	semi_limit
@@ -30,7 +39,6 @@ test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438
 test/expected/agg/scope/param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
 test/expected/agg/scope/recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
 test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
-test/expected/agg/semi_same_table_1.out	9a7e5ed03b6bc1ea89fa5c47be860d9499e7834b	18 18-arm64	0 | t
 test/expected/agg/spill/contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	17	kind     | select_ |      insert_       |     volatile_
 test/expected/agg/subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
@@ -58,6 +66,11 @@ test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	
 test/expected/agg/subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
 test/expected/agg/subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
 test/expected/agg/subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
+test/expected/col/f2/limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
+test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
+test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
+test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
+test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
 test/expected/col/scope/text/key_1.out	6c58555face2d1d44e30fbaaa3c03d9b63dad22d	17 18 18-arm64 19	IN, no key the store has                    | scope read, once
 test/expected/col/scope/text/key_1.out	893491e2c5c91f8b40a672f9a7fdafc060055223	17 18 18-arm64 19	uuid key, a literal                         | scope read, once
 test/expected/col/scope/text/key_1.out	8c9d83a5155d72634f29e02cee2fcee1f4b770e4	17 18 18-arm64 19	EXISTS                                      | scope read, once
@@ -84,25 +97,11 @@ test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	
 test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
 test/expected/col/unique_include_2.out	4c74016e37a4e684f3b78adcff25e0d2f5c92942	19	LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
-test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
-test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
-test/expected/agg/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
-test/expected/agg/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	17	sift_lines
-test/expected/agg/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	17	sift_lines
-test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
-test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
-test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
-test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
-test/expected/col/f2/limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
-test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
-test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
-test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
-test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
 test/expected/table/f2/fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
-test/expected/table/f2/parity_1.out	29ab438535f80cdb3c37f8ebd6f3673fb2a69b65	17	chk
-test/expected/table/f2/parity_1.out	55872b3b89fc20bd60611e6fb677b34f022bd1a9	17	chk
-test/expected/table/f2/parity_1.out	62fa207ae7b3d7158de6c589eb89609f6dc058bf	17	chk
-test/expected/table/f2/parity_1.out	bf2cb3484d22dce3fda98449aa927d45a8f066d6	17	chk
+test/expected/table/f2/parity_1.out	03b666735fa26a3b749a14c9538e29a62d55f585	17	assert_eq
+test/expected/table/f2/parity_1.out	3e638e713af760fb57e5658af4017318e0527a33	17	assert_eq
+test/expected/table/f2/parity_1.out	6b44508f6bd0c0cc6f792c3bb347f24c43fb1b0b	17	assert_eq
+test/expected/table/f2/parity_1.out	7929064a4189ca7a8a2826e9f461d8c9693ea60a	17	assert_eq
 test/expected/table/virtual_parity_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
 test/expected/table/virtual_parity_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
 test/expected/table/virtual_parity_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"

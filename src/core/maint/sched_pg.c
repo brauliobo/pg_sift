@@ -286,7 +286,11 @@ static void
 worker_term(SIGNAL_ARGS)
 {
 	worker_terminated = true;
+#if PG_VERSION_NUM >= 190000
+	die(postgres_signal_arg, pg_siginfo);
+#else
 	die(postgres_signal_arg);
+#endif
 }
 
 static void

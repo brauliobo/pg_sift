@@ -79,7 +79,15 @@ sift_v6_qual_scankeys(PlanState *ps, Relation index, List *quals, ScanKey *keys,
 		const Var  *v = linitial(op->args);
 		const Const *c = lsecond(op->args);
 
-		ScanKeyEntryInitialize(&(*keys)[at++], 0, v->varattno, sift_v6_qual_private_strategy(op->opno, index->rd_opfamily[v->varattno - 1]), c->consttype, op->inputcollid, InvalidOid, c->constvalue);
+		/* Private strategies (<>, NOT LIKE) never invoke sk_func; avoid ScanKeyEntryInitialize(..., InvalidOid) which asserts SK_SEARCHNULL|SK_SEARCHNOTNULL. */
+		(*keys)[at++] = (ScanKeyData) {
+			.sk_flags = 0,
+			.sk_attno = v->varattno,
+			.sk_strategy = sift_v6_qual_private_strategy(op->opno, index->rd_opfamily[v->varattno - 1]),
+			.sk_subtype = c->consttype,
+			.sk_collation = op->inputcollid,
+			.sk_argument = c->constvalue
+		};
 	}
 	*nkeys = at;
 }
