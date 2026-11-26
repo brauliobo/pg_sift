@@ -16,6 +16,10 @@
 #include "col/f2/l0/href.h"
 #include "col/f2/l0/stage_int.h"
 #include "core/memtrack.h"
+#include "core/part_lock.h"
+
+/* The times a flush reads the partitions again after a split or a merge took one it was about to write */
+#define SIFT_STAGE_ROUTE_TRIES	8
 
 static int
 del_cmp(const void *a, const void *b)
@@ -76,26 +80,64 @@ del_runs(SiftTxnStage *st, const SiftManifestRead *mr, int *nruns)
 	return runs;
 }
 
-/* The deletes of the transaction for the partitions they belong to, after its rows; at the end the transaction's top xid ends them, the command stays */
+static void
+retries_exhausted(Relation rel)
+{
+	ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
+					errmsg("sift index \"%s\": its partitions were split or merged %d times while the transaction wrote its rows", RelationGetRelationName(rel), SIFT_STAGE_ROUTE_TRIES)));
+}
+
+/* The partition at of the manifest read, with its lock: a split or a merge holds it to change the partition, so nothing changes it until the writer gives it back. False, and no lock, when the manifest has changed that partition since the read */
+static bool
+lock_partition(Relation rel, const SiftManifestRead *mr, int at)
+{
+	const SiftPartitionEntry *e = &mr->entries[at];
+	SiftManifestRead now;
+	bool		held;
+
+	sift_part_page_lock(rel, e->part_id, ExclusiveLock);
+	now = sift_manifest_read_range(rel, e->key_lo, at + 1 < mr->n ? mr->entries[at + 1].key_lo : NULL);
+	held = now.n == 1 && now.entries[0].part_id == e->part_id && memcmp(now.entries[0].key_lo, e->key_lo, SIFT_BOUND_BYTES) == 0;
+	pfree(now.entries);
+	if (!held)
+		sift_part_page_unlock(rel, e->part_id, ExclusiveLock);
+	return held;
+}
+
+/* The deletes of the runs from run on are the ones that are left: the earlier ones were written */
+static void
+keep_deletes_from(SiftTxnStage *st, const DelRun *run)
+{
+	st->ndels -= run->from;
+	memmove(st->dels, st->dels + run->from, st->ndels * sizeof(SiftStageDel));
+}
+
+/* The deletes of the transaction for the partitions they belong to, after its rows; at the end the transaction's top xid ends them, the command stays. A partition that a split or a merge took since the manifest was read is read again with the deletes that are left */
 static void
 write_deletes(Relation rel, SiftTxnStage *st, bool at_end)
 {
-	SiftManifestRead mr;
-	DelRun	   *runs;
-	int			nruns;
-
-	if (st->ndels == 0)
-		return;
-	mr = sift_manifest_read_range(rel, NULL, NULL);
-	runs = del_runs(st, &mr, &nruns);
-	for (int i = 0; i < nruns; i++)
+	for (int tries = 0; st->ndels > 0; tries++)
 	{
-		const SiftPartitionEntry *e = &mr.entries[runs[i].entry];
-		int			nrecs;
-		SiftPendDelRec *recs = run_recs(st, &runs[i], &nrecs, at_end);
+		SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+		int			nruns;
+		DelRun	   *runs = del_runs(st, &mr, &nruns);
+		int			i = 0;
 
-		sift_del_route(rel, e->part_id, e->key_lo, recs, nrecs, &st->spec);
-		pfree(recs);
+		for (; i < nruns && lock_partition(rel, &mr, runs[i].entry); i++)
+		{
+			const SiftPartitionEntry *e = &mr.entries[runs[i].entry];
+			int			nrecs;
+			SiftPendDelRec *recs = run_recs(st, &runs[i], &nrecs, at_end);
+
+			sift_del_route(rel, e->part_id, e->key_lo, recs, nrecs, &st->spec);
+			sift_part_page_unlock(rel, e->part_id, ExclusiveLock);
+			pfree(recs);
+		}
+		if (i == nruns)
+			break;
+		if (tries + 1 == SIFT_STAGE_ROUTE_TRIES)
+			retries_exhausted(rel);
+		keep_deletes_from(st, &runs[i]);
 	}
 	st->ndels = 0;
 }
@@ -260,9 +302,12 @@ sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 	scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage bulk flush");
 	caller = MemoryContextSwitchTo(scratch);
 	now = sift_manifest_read_range(rel, NULL, NULL);
-	same = sift_manifest_same_topology(&now, &st->routing);
+	same = sift_manifest_same_topology(&now, &st->routing) && lock_partition(rel, &now, sift_stage_route(&now, victim->key_lo));
 	if (same)
+	{
 		flush_part(rel, st, victim, NULL);
+		sift_part_page_unlock(rel, victim->part_id, ExclusiveLock);
+	}
 	MemoryContextSwitchTo(caller);
 	end_scratch(scratch);
 	if (same)
@@ -424,12 +469,28 @@ ask_retier(Relation rel, SiftTxnStage *st, const SiftManifestRead *now)
 	st->bulk_warm = false;
 }
 
+/* Each buffer with the lock of its partition; false when a split or a merge took a partition since the manifest was read, with the buffers of the partitions before it written and renewed */
+static bool
+flush_locked(Relation rel, SiftTxnStage *st, const SiftManifestRead *now, DelRun *runs, int nruns)
+{
+	for (int i = 0; i < st->nparts; i++)
+	{
+		SiftStagePart *p = &st->parts[i];
+
+		if (!lock_partition(rel, now, sift_stage_route(now, p->key_lo)))
+			return false;
+		flush_and_renew(rel, st, p, run_of(runs, nruns, now, p));
+		sift_part_page_unlock(rel, p->part_id, ExclusiveLock);
+	}
+	return true;
+}
+
 static void
 write_stage(Relation rel, SiftTxnStage *st, bool at_end)
 {
-	SiftManifestRead now = sift_manifest_read_range(rel, NULL, NULL);
-	DelRun	   *runs = NULL;
-	int			nruns = 0;
+	SiftManifestRead now;
+	DelRun	   *runs;
+	int			nruns;
 
 	if (at_end)
 	{
@@ -437,12 +498,20 @@ write_stage(Relation rel, SiftTxnStage *st, bool at_end)
 		for (int i = 0; i < st->nparts; i++)
 			top_xid_rows(st->parts[i].rb);
 	}
-	if (!sift_manifest_same_topology(&now, &st->routing))
-		reroute(st, &now);
-	if (at_end)
-		runs = del_runs(st, &now, &nruns);
-	for (int i = 0; i < st->nparts; i++)
-		flush_and_renew(rel, st, &st->parts[i], run_of(runs, nruns, &now, &st->parts[i]));
+	for (int tries = 0;; tries++)
+	{
+		now = sift_manifest_read_range(rel, NULL, NULL);
+		if (!sift_manifest_same_topology(&now, &st->routing))
+			reroute(st, &now);
+		nruns = 0;
+		runs = at_end ? del_runs(st, &now, &nruns) : NULL;
+		if (flush_locked(rel, st, &now, runs, nruns))
+			break;
+		if (tries + 1 == SIFT_STAGE_ROUTE_TRIES)
+			retries_exhausted(rel);
+		if (at_end)
+			drop_done_deletes(st, runs, nruns);
+	}
 	sift_f2_maint_note_parts(rel, now.entries, now.n, staged_part, st);
 	if (st->bulk_warm)
 		ask_retier(rel, st, &now);

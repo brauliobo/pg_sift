@@ -5,10 +5,11 @@
  * statement that found it fails once. From then on the planner does not offer the index and statements run on the heap, with PostgreSQL's own plans and exact
  * answers; writes and maintenance skip it with a WARNING. A quarantined index leaves quarantine only by being rebuilt (REINDEX): while it was out its entries
  * were not kept up to date and VACUUM freed the rows they point to.
- * sift.on_corruption = error: the damage is raised and nothing else changes (the behaviour of the releases before 5.0).
+ * sift.on_corruption = error: the damage is raised and nothing else changes (the behaviour of the releases before 5.0); an index that is out of service stays out of service, whatever the
+ * setting says, until REINDEX.
  *
- * The state is the flag SIFT_META_QUARANTINED of the metapage (written by a background worker, it reaches standbys through WAL and survives restarts) and a registry in
- * shared memory, keyed by the file of the index, that is in force at once and where the flag cannot be written (a standby, a damaged metapage).
+ * The state is the flag SIFT_META_QUARANTINED of the metapage (written by the first write that skips the index, in its transaction, or else by a background worker; it reaches standbys
+ * through WAL and survives restarts) and a registry in shared memory, keyed by the file of the index, that is in force at once and where the flag cannot be written (a standby, a damaged metapage).
  */
 #ifndef SIFT_QUARANTINE_H
 #define SIFT_QUARANTINE_H
@@ -29,7 +30,7 @@ extern void sift_quarantine_define_gucs(void);
 /* The planner hook that leaves a quarantined index out of the index list of its relation (core/quarantine/plan.c); first of the planner hooks of sift to be installed */
 extern void sift_quarantine_plan_init(void);
 
-/* The index is out of service: recorded in this backend or in the registry, or flagged in its metapage. False under sift.on_corruption = error */
+/* The index is out of service: recorded in this backend or in the registry, or flagged in its metapage */
 extern bool sift_index_quarantined(Relation index);
 /* Recorded in this backend or in the registry: no page is read. The callbacks PostgreSQL makes while it plans (amcanreturn) ask this, as the planner has not left the index out yet */
 extern bool sift_index_known_out(Relation index);

@@ -9,6 +9,7 @@
 #include "core/errctx.h"
 #include "core/extlock.h"
 #include "core/f2/meta.h"
+#include "core/maint/maint.h"
 #include "core/maint/pacer.h"
 #include "core/sift.h"
 #include "core/store/store.h"
@@ -81,6 +82,7 @@ struct SiftBulkRun
 	Relation	rel;
 	BulkWriteState *state;
 	BlockNumber eof;
+	bool		written;
 };
 
 SiftBulkRun *
@@ -88,7 +90,7 @@ sift_bulk_run_begin(Relation rel)
 {
 	SiftBulkRun *run;
 
-	if (RelationUsesLocalBuffers(rel))
+	if (RelationUsesLocalBuffers(rel) || !sift_maint_file_is_new(rel))
 		return NULL;
 	run = palloc(sizeof(SiftBulkRun));
 	run->rel = rel;
@@ -119,11 +121,14 @@ sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page)
 	test_disk_full(blk + 1);
 	/* STOR[STOR-WAL-01]: smgr_bulk_write page_std=true (omits 3-7 KB empty hole from WAL) */
 	smgr_bulk_write(run->state, blk, (BulkWriteBuffer) page, true);
+	run->written = true;
 }
 
 void
 sift_bulk_run_abort(SiftBulkRun *run)
 {
+	if (run->written)
+		smgr_bulk_finish(run->state);
 	sift_extension_unlock(run->rel);
 	pfree(run);
 }

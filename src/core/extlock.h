@@ -43,9 +43,10 @@ extern Buffer sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, Buffe
 
 /*
  * A run of fresh pages written with smgr_bulk_write (WAL-logged and checksummed by it) under the extension lock, which no other writer of the file holds meanwhile: the pages past the end of the file
- * are queued in bulk memory and the file is extended once; a block that is already in the file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). A
- * relation with local buffers (a temporary one) has no run: sift_bulk_run_begin gives NULL and its pages go through the buffers. The lock is released by sift_bulk_run_end or by the abort of the
- * transaction.
+ * are queued in bulk memory and the file is extended once; a block that is already in the file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). The
+ * pages reach the file ahead of the flush of their WAL, which only a file that no recovery or standby can have yet allows (the file this transaction made: CREATE INDEX, REINDEX): a relation
+ * of an earlier commit, and one with local buffers (a temporary one), has no run, sift_bulk_run_begin gives NULL and its pages go through the buffers and generic WAL. The lock is released by
+ * sift_bulk_run_end or by the abort of the transaction.
  */
 typedef struct SiftBulkRun SiftBulkRun;
 
@@ -59,7 +60,7 @@ extern Page sift_bulk_run_page(SiftBulkRun *run);
 extern void sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page);
 extern void sift_bulk_run_end(SiftBulkRun *run);
 
-/* The run of a write that failed: the pages queued in bulk memory are dropped and the lock is given back before anything else takes a lock of the relation (the error has not reached the abort that would release it) */
+/* The run of a write that failed: the pages already written reach the checkpointer's fsync like those of a run that ended, the rest of the pages queued in bulk memory goes the same way, and the lock is given back before anything else takes a lock of the relation (the error has not reached the abort that would release it) */
 extern void sift_bulk_run_abort(SiftBulkRun *run);
 
 #endif							/* SIFT_EXTLOCK_H */

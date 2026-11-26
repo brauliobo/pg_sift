@@ -161,7 +161,7 @@ part_has_paths(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint64 p
 	/* MEM[MEM-TBL-19]: transient decode ctx of one part's schema (ALLOCSET_SMALL_SIZES) */
 	tmp = AllocSetContextCreate(CurrentMemoryContext, "sift table path parts check", ALLOCSET_SMALL_SIZES);
 	old = MemoryContextSwitchTo(tmp);
-	map = sift_tbl_f2_build_col_map(store, rel, sift_part_open(rel, d->header_blk, d->part_gen, (uint32) part_id), tmp);
+	map = sift_tbl_f2_build_col_map(store, rel, sift_part_open_desc(rel, d, (uint32) part_id), tmp);
 	for (int c = 0; map != NULL && c < store->ncols; c++)
 		ready = ready && !(map->phys_col[c] < 0 && sift_f2_leaf_is_path(store, c));
 	MemoryContextSwitchTo(old);

@@ -310,11 +310,11 @@ Inspect `sift.health()`, `sift.activity()`, and `pg_stat_activity` first, then t
 If a `sift` or `sift_col` index encounters corrupt bytes (`XX001`/`XX002`) under the default `sift.on_corruption = 'quarantine'`:
 
 1. The triggering statement fails once with a `REINDEX` hint and logs the cause.
-2. The index is recorded in `sift.quarantine` (in shared memory immediately and persisted to its metapage by a background worker).
+2. The index is recorded in `sift.quarantine` (in shared memory immediately and persisted to its metapage: by the first write that skips it, in the transaction of that write, or else by a background worker).
 3. Subsequent queries automatically fall back to PostgreSQL heap plans; DML and `VACUUM` skip the quarantined index with a rate-limited `WARNING`.
 4. Rebuild without downtime via `REINDEX INDEX CONCURRENTLY <index>;` (or `CREATE INDEX CONCURRENTLY` + `DROP INDEX`).
 
-Set `sift.on_corruption = 'error'` if you prefer queries to fail fast rather than fall back to slower heap scans. `sift_table` relations hold primary data and cannot fall back to a heap — restore from a standby or backup if damaged.
+Set `sift.on_corruption = 'error'` if you prefer queries to fail fast rather than fall back to slower heap scans; an index that is already out of service stays out of service, whatever the setting says, until `REINDEX`. `sift_table` relations hold primary data and cannot fall back to a heap — restore from a standby or backup if damaged.
 
 ## 7. Crash Safety, Locks, and Replication
 

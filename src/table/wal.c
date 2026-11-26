@@ -1,11 +1,13 @@
 /*
  * table/wal.c - logical replication of a sift_table (docs/COL-TAM.md section 5).
  *
- * Page changes go through generic WAL and need no setup. Logical decoding does not decode generic WAL, so a published table
- * (wal_level = logical) also writes one record of the custom resource manager per row change: {rlocator, new row, replica
- * identity key of the old row}. Redo ignores it; rm_decode turns it into a reorder-buffer change. A custom resource manager can
- * only be registered while shared_preload_libraries is processed, so that is the one thing pg_sift must be preloaded for (primary
- * and every server replaying this WAL). Without it a DML on a published table fails with 0A000 instead of leaving a gap.
+ * Page changes go through generic WAL and need no setup. Logical decoding does not decode generic WAL, so a published table, or any
+ * table of a database that has a logical slot of a plugin that decodes every table (wal_level = logical), also writes one record of the
+ * custom resource manager per row change: {rlocator, new row, replica identity key of the old row}. Redo ignores it; rm_decode turns it
+ * into a reorder-buffer change.
+ * A custom resource manager can only be registered while shared_preload_libraries is processed, so that is the one thing pg_sift must
+ * be preloaded for (primary and every server replaying this WAL). Without it a DML on a published table fails with 0A000 instead of
+ * leaving a gap; a table that only a slot decodes writes no record, as no record can be written.
  * Before 5.0 the records carried the experimental id; it stays registered as a replay and decode alias (SIFT_TBL_LEGACY_RMGR_ID) so
  * that a standby or a crash recovery reads the WAL of 4.x, and nothing is written under it.
  */
@@ -23,7 +25,10 @@
 #include "replication/decode.h"
 #include "replication/logical.h"
 #include "replication/reorderbuffer.h"
+#include "replication/slot.h"
 #include "replication/snapbuild.h"
+#include "storage/lwlock.h"
+#include "storage/spin.h"
 #include "utils/rel.h"
 
 #include "table/dispatch.h"
@@ -63,10 +68,33 @@ sift_tbl_published(Relation rel)
 	return pd.pubactions.pubinsert || pd.pubactions.pubupdate || pd.pubactions.pubdelete;
 }
 
+/* A logical slot of this database whose plugin decodes every table, publication or not (test_decoding, wal2json): pgoutput sends what its publications name, which sift_tbl_published answers */
+static bool
+slot_decodes(Relation rel)
+{
+	bool		found = false;
+
+	if (!XLogLogicalInfoActive() || !RelationIsPermanent(rel))
+		return false;
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	for (int i = 0; i < max_replication_slots && !found; i++)
+	{
+		ReplicationSlot *s = &ReplicationSlotCtl->replication_slots[i];
+
+		SpinLockAcquire(&s->mutex);
+		found = s->in_use && SlotIsLogical(s) && s->data.database == MyDatabaseId && strcmp(NameStr(s->data.plugin), "pgoutput") != 0;
+		SpinLockRelease(&s->mutex);
+	}
+	LWLockRelease(ReplicationSlotControlLock);
+	return found;
+}
+
 bool
 sift_tbl_check_publication(Relation rel)
 {
-	if (!sift_tbl_published(rel))
+	bool		published = sift_tbl_published(rel);
+
+	if (!published && !(rmgr_registered && slot_decodes(rel)))
 		return false;
 	if (!rmgr_registered)
 		ereport(ERROR,

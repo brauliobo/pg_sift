@@ -192,7 +192,7 @@ sift_f2_census(Relation rel, bool deep)
 
 		for (int p = 0; p < np && deep; p++)
 		{
-			SiftPart   *part = sift_part_open(rel, pd[p].header_blk, pd[p].part_gen, (uint32) mr.entries[i].part_id);
+			SiftPart   *part = sift_part_open_desc(rel, &pd[p], (uint32) mr.entries[i].part_id);
 
 			c.granules += part->hdr.ngranules;
 			if (c.parts + p < CENSUS_SAMPLE_PARTS && part->hdr.ngranules > 0)

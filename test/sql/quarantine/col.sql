@@ -1,5 +1,5 @@
 -- A sift_col index that finds its own damage leaves service: the statement that finds it fails once, the next ones are planned on the heap and give the rows the index gave,
--- and REINDEX puts the index back. sift.on_corruption = error keeps failing.
+-- and REINDEX puts the index back. sift.on_corruption = error does not bring the index back.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -53,7 +53,7 @@ SELECT sift_helpers.statement_outcome($$ EXECUTE by_v $$, ': ') AS replanned;
 EXECUTE by_v;
 SELECT sift_helpers.statement_outcome($$ SELECT * FROM t WHERE id = 5 $$, ': ') AS point_lookup;
 
--- the error mode of a session that wants the failure: it ignores the quarantine and reads the index
+-- the error mode of a session does not bring the quarantined index back: only REINDEX does
 SET sift.on_corruption = error;
 SELECT plan_of('SELECT count(*) FROM t WHERE v = 3') AS plan_in_error_mode;
 SET sift.on_corruption = quarantine;

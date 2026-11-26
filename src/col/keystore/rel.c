@@ -47,6 +47,7 @@
 #include "col/am.h"
 #include "col/scope/scope.h"
 #include "col/keystore/keystore.h"
+#include "core/maint/maint.h"
 #include "core/meta_peek.h"
 #include "core/restrict.h"
 #include "core/store/store.h"
@@ -216,7 +217,7 @@ init_store(Oid store)
 		sift_tbl_push_new_format(SIFT_FORMAT_MAJOR);
 		PG_TRY();
 		{
-			wt = sift_wt_begin(rel, SIFT_WRITE_BULK);
+			wt = sift_wt_begin(rel, sift_maint_file_is_new(rel) ? SIFT_WRITE_BULK : SIFT_WRITE_LAYOUT);
 			sift_store_init_meta_ex(wt, 0, 0, 0, SIFT_KEYSTORE_META_FLAG);
 			sift_wt_finish(wt);
 		}
