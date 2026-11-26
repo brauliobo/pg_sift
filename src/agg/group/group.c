@@ -710,6 +710,7 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	if (sift_v6_spec_has_gen(spec))
 		g->gen = v6_gen_new(spec, cx, g->budget);
 	v6g_spill_own(g);
+	v6g_mem_begin(g);
 	presize(g);
 	MemoryContextSwitchTo(old);
 	return g;
@@ -728,6 +729,7 @@ sift_v6_group_finish(SiftV6Group *g)
 	for (int s = 0; s < g->nsets && g->spec->topk == 0; s++)
 		v6g_compact_flush(g, &g->set[s]);
 	v6g_spill_if_over(g);
+	v6g_mem_check(g, true);
 	if (g->gen != NULL)
 		v6_gen_finish(g->gen, g);
 	finish_in_cx(g);

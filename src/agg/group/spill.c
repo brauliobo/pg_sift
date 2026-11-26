@@ -432,6 +432,26 @@ gen_spills(const SiftV6Group *g)
 }
 
 void
+v6g_mem_begin(SiftV6Group *g)
+{
+	const bool	spills = all_keyed(g) && (g->gen == NULL || v6_gen_can_spill(g->gen));
+
+	sift_mem_init_sub(&g->mt, spills ? "agg_group" : "agg_group_nospill", g->cx, false, g->budget);
+}
+
+/* A participant of a parallel run holds what it may before it hands its groups over (sift_v6_group_scan_sink): no budget of its own to check */
+void
+v6g_mem_check(SiftV6Group *g, bool exact)
+{
+	if (g->budget == UINT64_MAX)
+		return;
+	if (exact)
+		sift_mem_assert_within(&g->mt);
+	else
+		sift_mem_assert_sampled(&g->mt);
+}
+
+void
 v6g_spill_own(SiftV6Group *g)
 {
 	const SiftV6Spec *spec = g->spec;
@@ -504,6 +524,7 @@ in_local_tables(const SiftV6Group *g)
 void
 v6g_spill_if_over(SiftV6Group *g)
 {
+	v6g_mem_check(g, false);
 	if (g->frozen || group_bytes(g) <= g->budget - g->dist_budget || (g->spilled && in_local_tables(g)))
 		return;
 	if (g->gen != NULL && !gen_spills(g))

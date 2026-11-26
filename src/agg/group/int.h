@@ -22,6 +22,7 @@
 #include "agg/filter/pivot.h"
 #include "agg/group/fast.h"
 #include "agg/group/lock.h"
+#include "core/memtrack.h"
 
 /* The strings of one COUNT(DISTINCT) aggregate of a set of no keys that the rows named by the codes of their part's dictionary (group_dist.c) */
 typedef struct V6DictSlot
@@ -114,6 +115,7 @@ struct SiftV6Group
 	int		   *dslot;			/* the slot of each aggregate in a distinct set (-1 for the others) */
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
 	uint64		budget;
+	SiftMemTracker mt;			/* the memory of cx, held to the budget the groups spill against (v6g_mem_begin) */
 	int			pct_kb;			/* the sort of each percentile_cont of a set of no keys: work_mem shared by them (v6_pct.h) */
 	TupleDesc	desc;
 	bool		spilled;
@@ -286,6 +288,9 @@ extern void v6g_spill_sets(SiftV6Group *g);
 
 /* v6_group_spill.c: a state whose groups point to codes or to the text arena spills records of their values; the groups of a spill are read back a partition at a time */
 extern void v6g_spill_own(SiftV6Group *g);
+/* The tracker of the memory of the groups: agg_group when they can leave for the spill, agg_group_nospill when they are held to the end */
+extern void v6g_mem_begin(SiftV6Group *g);
+extern void v6g_mem_check(SiftV6Group *g, bool exact);
 /* Rows of the batch to the groups of one set (-1: of every set), as sift_v6_group_update takes them */
 extern void v6g_update_set(SiftV6Group *g, int set, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 /* The group tables are given back and each set that spilled starts reading its partitions */
