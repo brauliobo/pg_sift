@@ -9,6 +9,8 @@
 
 #include "agg/engine.h"
 
+/* A batch of at most cap columns holds every column the statement reads (SiftZoneOps.batch_cols of a format whose scan folds batches) */
+extern bool sift_v6_spec_batch_fits(const SiftV6Spec *spec, int cap);
 /* The statement reads plain columns of one relation, so the batches of open() answer it */
 extern bool sift_v6_open_scan_ok(const SiftV6Spec *spec);
 

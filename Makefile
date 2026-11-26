@@ -214,6 +214,7 @@ TESTING_REGRESS += agg/vis_counts
 TESTING_REGRESS += agg/vk/churn
 TESTING_REGRESS += agg/vk/dict
 TESTING_REGRESS += agg/vk/topn
+TESTING_REGRESS += agg/wide/batch_cols
 TESTING_REGRESS += agg/window/topn_consolidated
 TESTING_REGRESS += agg/zone_calendar
 TESTING_REGRESS += bm25/analyze/version

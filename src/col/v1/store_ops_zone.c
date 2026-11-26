@@ -165,6 +165,7 @@ dict_has_dict32(Oid relid, bool is_table, int att)
 }
 
 const SiftZoneOps sift_v1_zone_ops = {
+	.batch_cols = SIFT_V6_MAX_COLS,
 	.compile_quals = zone_compile_quals,
 	.bind_quals = zone_bind_quals,
 	.quals_keys = zone_quals_keys,

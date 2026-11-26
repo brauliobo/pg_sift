@@ -6,8 +6,12 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the relation */
 #include "postgres.h"
 
+#include "optimizer/optimizer.h"
+
 #include "core/popcount.h"
 
+#include "agg/expr/pg.h"
+#include "agg/ext.h"
 #include "agg/qual/bqual.h"
 #include "agg/open_scan.h"
 #include "agg/pipe.h"
@@ -36,6 +40,95 @@ agg_ok(const SiftV6Agg *a)
 	return (!sift_v6_kind_reads_column(a->kind) || class_ok(&a->arg)) && (a->arg2.attno == 0 || class_ok(&a->arg2)) && a->nxcols == 0;
 }
 
+/* The columns a batch holds for a statement, each attribute once for every class it is read as (as a fold of a batch source asks for them); the count stops past cap */
+typedef struct BatchCols
+{
+	int			cap;
+	int			n;
+	struct
+	{
+		int			attno;
+		int			jmember;
+		SiftV6Class cls;
+	}			id[SIFT_V6_MAX_COLS + 1];
+} BatchCols;
+
+static void
+batch_col(BatchCols *bc, const SiftV6Spec *s, SiftV6Col c)
+{
+	int			attno;
+	SiftV6Class cls;
+
+	if (c.src == SV6SRC_DIM || bc->n > bc->cap)
+		return;
+	if (c.derive > 0)
+	{
+		if (sift_v6_pgexpr_sourceless(s, &s->derive[c.derive - 1]))
+			return;
+		c = s->derive[c.derive - 1].src;
+	}
+	attno = c.jleaf > 0 ? (c.jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + c.jleaf - 1 : c.attno;
+	cls = sift_v6_col_class(&c);
+	for (int i = 0; i < bc->n; i++)
+		if (bc->id[i].attno == attno && bc->id[i].jmember == c.jmember && bc->id[i].cls == cls)
+			return;
+	bc->id[bc->n].attno = attno;
+	bc->id[bc->n].jmember = c.jmember;
+	bc->id[bc->n++].cls = cls;
+}
+
+static void
+derive_cols(BatchCols *bc, const SiftV6Spec *s, const SiftV6Derive *d)
+{
+	SiftV6PgItem it;
+
+	if (d->kind != SVD_PG_EXPR)
+	{
+		batch_col(bc, s, d->src);
+		for (int i = 0; i < d->ncond; i++)
+			batch_col(bc, s, d->cond[i]);
+		return;
+	}
+	sift_v6_pgexpr_item(s, d, &it);
+	for (int i = 0; i < it.nin; i++)
+		batch_col(bc, s, it.col[i]);
+}
+
+/* The attributes the quals read: a qual the source decides holds a column of the input of its own */
+static int
+qual_cols(const SiftV6Spec *s)
+{
+	List	   *vars = pull_var_clause((Node *) list_concat_copy(s->indexqual, s->vqual), PVC_RECURSE_PLACEHOLDERS);
+	Bitmapset  *atts = NULL;
+
+	foreach_node(Var, v, vars)
+		atts = bms_add_member(atts, v->varattno - FirstLowInvalidHeapAttributeNumber);
+	return bms_num_members(atts);
+}
+
+bool
+sift_v6_spec_batch_fits(const SiftV6Spec *s, int cap)
+{
+	BatchCols	bc = {.cap = Min(cap, SIFT_V6_MAX_COLS)};
+	const SiftV6Ext *x = s->ext;
+
+	for (int i = 0; i < s->nkeys; i++)
+		batch_col(&bc, s, s->key[i]);
+	for (int v = 0; v < sift_v6_spec_nvec(s); v++)
+		if (sift_v6_vec_col(s, v) != NULL)
+			batch_col(&bc, s, *sift_v6_vec_col(s, v));
+	for (int d = 0; x != NULL && d < x->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k) && x->dim[d].fsrc[k] == SV6SRC_ATTR)
+				batch_col(&bc, s, sift_v6_xdim_key_col(&x->dim[d], k));
+	for (int i = 0; x != NULL && i < x->nrcol; i++)
+		if (x->rcol[i].src == SV6SRC_ATTR)
+			batch_col(&bc, s, x->rcol[i]);
+	for (int k = 0; k < s->nderive; k++)
+		derive_cols(&bc, s, &s->derive[k]);
+	return bc.n + qual_cols(s) <= bc.cap;
+}
+
 bool
 sift_v6_open_scan_ok(const SiftV6Spec *s)
 {
@@ -48,7 +141,7 @@ sift_v6_open_scan_ok(const SiftV6Spec *s)
 	for (int j = 0; j < s->naggs; j++)
 		if (!agg_ok(&s->agg[j]))
 			return false;
-	return true;
+	return sift_v6_spec_batch_fits(s, SIFT_V6_MAX_COLS);
 }
 
 static SiftV6InCol

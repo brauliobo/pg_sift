@@ -301,7 +301,7 @@ c3_span_length_max	-	single:f:cost
 c3_span_length_expr	-	single:f:cost
 c3_span_length_avg_max	-	single:f:cost
 c3_wide_three_keys	SiftAgg	single:t
-c3_wide_ungrouped_many	SiftAgg	single:t
+c3_wide_ungrouped_many	-	index:f:cost
 c3_wide_stddev	SiftAgg	single:t
 c3_wide_live_only	SiftAgg	single:t
 c3_wide_deleted_share	SiftAgg	single:t
