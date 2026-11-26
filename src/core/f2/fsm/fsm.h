@@ -222,8 +222,8 @@ extern SiftFsmStats sift_fsm_check(Relation rel);
 /*
  * The free run at the end of the file given back: the matured extents are reclaimed (under the lock of the cut, the quarantined ones too: no reader of an older manifest can be there), and when at least SIFT_TAIL_SHRINK_FREE_PCT of the blocks are free (and at least
  * SIFT_TAIL_SHRINK_MIN_BLOCKS of them) the run that ends at the high-water mark is left out of the lists and the mark lowered to its start in one record, then the file is cut (P7). While a standby streams
- * the quarantined extents of the cut are only those released before the standby-safe horizon (core/f2/pace.h): a standby replays the lock of the cut and the truncation as it does those of a
- * VACUUM of a heap, cancelling the queries that hold the relation there.
+ * nothing is cut under sift.standby_conflicts (lock_skipped): a standby replays the lock of the cut and cancels the queries that hold the relation there. With it off the file is cut as a
+ * VACUUM of a heap cuts it, and the quarantined extents of the cut are only those released before the standby-safe horizon (core/f2/pace.h). The orphan sweep and the reclaim run either way.
  * The cut tries AccessExclusiveLock on the index without ever queueing for it, every SIFT_TAIL_SHRINK_WAIT_MS ms: SIFT_TAIL_SHRINK_FOREGROUND_TRIES times in a VACUUM of a session,
  * SIFT_TAIL_SHRINK_BACKGROUND_TRIES times in autovacuum and in the workers of sift. Still busy, nothing is cut and lock_skipped says so (a later pass tries again).
  */

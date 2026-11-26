@@ -879,7 +879,7 @@ sift_fsm_tail_shrink(Relation rel)
 	FsmCtx		c;
 
 	/* The locks of the sweep and of the cut are WAL-logged for a standby, which takes a transaction id */
-	if (sift_xid_unassignable() || sift_maint_standby_streams())
+	if (sift_xid_unassignable())
 		return res;
 	sift_fsm_meta_pool_drain(rel);
 	if (sift_fsm_sweep_due(rel))
@@ -892,7 +892,7 @@ sift_fsm_tail_shrink(Relation rel)
 		free_blocks += st.class_blocks[k];
 	if ((free_blocks < SIFT_TAIL_SHRINK_MIN_BLOCKS || free_blocks * 100 < (uint64) hw * SIFT_TAIL_SHRINK_FREE_PCT) && RelationGetNumberOfBlocks(rel) <= hw)
 		return res;
-	if (!try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
+	if ((sift_standby_conflicts && sift_maint_standby_streams()) || !try_lock_truncate(rel, !AmAutoVacuumWorkerProcess() && MyBgworkerEntry == NULL))
 	{
 		res.lock_skipped = true;
 		note_shrink(rel, false);
