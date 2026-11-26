@@ -35,13 +35,18 @@ sift_bytes_free(SiftBytes *b)
 	memset(b, 0, sizeof(*b));
 }
 
-/* The room for more bytes: the pointer to write them at */
+/* The room for more bytes: the pointer to write them at; a buffer of more than MaxAllocSize is a statement error */
 static inline uint8 *
 sift_bytes_room(SiftBytes *b, uint32 more)
 {
-	if (b->len + more > b->cap)
+	const uint64 need = (uint64) b->len + more;
+
+	if (need > b->cap)
 	{
-		b->cap = Max(Max(b->cap * 2, b->len + more), 64);
+		if (need > MaxAllocSize)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a key of %llu bytes is over 1 GB", (unsigned long long) need),
+							errhint("Group by or count a shorter value.")));
+		b->cap = (uint32) Min(Max(Max((uint64) b->cap * 2, need), 64), MaxAllocSize);
 		if (b->buf == NULL)
 			b->buf = MemoryContextAlloc(b->cx, b->cap);
 		else

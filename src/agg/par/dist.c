@@ -12,6 +12,7 @@
 #include "agg/par/dist.h"
 
 #define DIST_BATCH			512
+#define DIST_PREFIX_MAX		((uint32) 1 << 20)	/* the bytes of the groups of the records a batch holds: a batch of wide groups is handed over before it is full */
 #define DIST_MORSEL_BYTES	((uint64) SIFT_MORSEL_MAX * 8192 * sizeof(uint64) * 2)	/* what the values of one morsel add to a flat set of a participant: a flat set has room for its share and for them, whatever the batches in which the hand over runs */
 
 static inline bool
@@ -381,7 +382,7 @@ sift_v6_par_dist_add(SiftV6ParDist *d, const uint8 *rec)
 
 	if (plen >= PLEN_BIG)
 		memcpy(&plen, rec + sizeof(*h), sizeof(plen));
-	if (in->n == DIST_BATCH)
+	if (in->n == DIST_BATCH || (in->n > 0 && (uint64) in->prefix.len + plen > DIST_PREFIX_MAX))
 		flush_slot(d, slot);
 	in->off[in->n] = in->prefix.len;
 	in->plen[in->n] = plen;
