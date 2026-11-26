@@ -9,7 +9,9 @@
 REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
-node_init mx 39 "autovacuum = off
+# Format 1: the merge of segments and the string dictionary of its partition writer (a Format 2 compaction holds about 1 B/row: no slope to tell the gate's cases apart)
+node_init mx 39 "sift.test_create_format1 = on
+autovacuum = off
 max_parallel_workers_per_gather = 0
 shared_buffers = 64MB
 max_wal_size = 1GB

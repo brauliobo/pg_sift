@@ -6,7 +6,9 @@
 
 ROWS=$(knob SIFT_CL_ROWS 200000 100000)
 plan 7
-node_init cut 4 "autovacuum = off"
+# Format 1: the merge leaves the free end of the file that the cut gives back; Format 2 compacts parts
+node_init cut 4 "sift.test_create_format1 = on
+autovacuum = off"
 node_start cut || bail "start failed"
 sql cut "CREATE EXTENSION pg_sift" \
 	"CREATE TABLE t (id int, grp int, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off)" \

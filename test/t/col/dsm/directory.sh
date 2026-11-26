@@ -8,7 +8,9 @@
 
 plan 10
 # a dynamic shared memory segment for each table: the control segment has 64 + 5 slots for each backend the server can have
-node_init dd 80 "max_connections = 300
+# Format 1: the write buffer whose references go without their arena when the directory is full
+node_init dd 80 "sift.test_create_format1 = on
+max_connections = 300
 autovacuum = off"
 node_start dd || bail "start failed"
 sql dd "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"

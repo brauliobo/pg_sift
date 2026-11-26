@@ -9,7 +9,9 @@
 ITERS=$(knob SIFT_COLWBUF_ITERS 20 2)
 CLIENTS=8
 plan $((ITERS + 1))
-node_init cm 1 "checkpoint_timeout = 30s
+# Format 1: the write buffer lanes, their pages and pieces, sealing and promotion; Format 2 stages rows in its level 0
+node_init cm 1 "sift.test_create_format1 = on
+checkpoint_timeout = 30s
 max_wal_size = 256MB"
 node_start cm || bail "start failed"
 D=$(dir cm)

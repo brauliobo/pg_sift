@@ -9,7 +9,9 @@
 
 ROWS=$(knob SIFT_OF_ROWS 200000 100000)
 plan 8
-node_init primary 8 "wal_level = replica
+# Format 1: the write buffer that is sealed and promoted and the segments moved below the end of the file
+node_init primary 8 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 512MB
 autovacuum = off

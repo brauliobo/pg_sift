@@ -7,7 +7,9 @@
 
 ROWS=$(knob SIFT_ARENA_ROWS 6000 2000)
 plan 19
-node_init primary 5 "wal_level = replica
+# Format 1: the arena of the values of the write buffer and its rebuild from the heap; Format 2 has no write buffer
+node_init primary 5 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 wal_keep_size = 256MB
 autovacuum = off
