@@ -78,11 +78,11 @@ SELECT n, label, node_of(sql) AS node, answer_on(sql) = answer_off(sql) AS same_
   9 | group by region, distinct users, top 10 | SiftAggV6   | t
  10 | group by a text with a filter, top 10   | SiftAggV6   | t
  11 | group by two keys, top 10               | SiftAggV6   | t
- 12 | group by an expression of a timestamp   | normal plan | t
+ 12 | group by an expression of a timestamp   | SiftAggV6   | t
  13 | a point lookup of a user                | normal plan | t
  14 | LIKE on a text, count                   | SiftAggV6   | t
  15 | rows ordered by time, limit             | normal plan | t
- 16 | date-bucketed star join                 | normal plan | t
+ 16 | date-bucketed star join                 | SiftAggV6   | t
  17 | BM25 search with a facet                | SiftAggV6   | t
 (17 rows)
 
