@@ -523,6 +523,7 @@ slot_lookup(Table *t, const RelFileLocator *loc, SiftShmIndexMeta *meta)
 	for (int i = 0; i < SIFT_SHM_MANIFEST_PROBES; i++)
 	{
 		SiftShmIndexSlot *s = sift_shm_slot_at(t, loc, i);
+		SiftShmIndexMeta tmp;
 		uint64		seq;
 
 		for (;;)
@@ -534,15 +535,16 @@ slot_lookup(Table *t, const RelFileLocator *loc, SiftShmIndexMeta *meta)
 				continue;
 			}
 			pg_read_barrier();
-			memcpy(meta, &s->meta, sizeof(SiftShmIndexMeta));
+			memcpy(&tmp, &s->meta, sizeof(SiftShmIndexMeta));
 			pg_read_barrier();
 			if (pg_atomic_read_u64(&s->seq) == seq)
 				break;
 		}
-		if (meta->state_flags == SIFT_SHM_SLOT_EMPTY)
+		if (tmp.state_flags == SIFT_SHM_SLOT_EMPTY)
 			return NULL;
-		if (RelFileLocatorEquals(meta->locator, *loc) && (meta->state_flags & SIFT_SHM_SLOT_VALID))
+		if (RelFileLocatorEquals(tmp.locator, *loc) && (tmp.state_flags & SIFT_SHM_SLOT_VALID))
 		{
+			*meta = tmp;
 			if (pg_atomic_read_u64(&s->last_used_tick) != pg_atomic_read_u64(&t->clock))
 				pg_atomic_write_u64(&s->last_used_tick, pg_atomic_read_u64(&t->clock));
 			return s;

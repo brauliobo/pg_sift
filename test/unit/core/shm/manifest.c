@@ -239,6 +239,24 @@ test_invalidate_db(void)
 	SIFT_CHECKF(pg_atomic_read_u32(&table->snaps_live) == live + 1, "the snapshots of the dropped database are freed (%u live)", pg_atomic_read_u32(&table->snaps_live) - live);
 }
 
+static void
+test_peek_miss_preserves_out(void)
+{
+	SiftShmIndexMeta m = meta_of(13, 40000, 5);
+	SiftShmIndexMeta out;
+
+	m.scope_dir_blk = InvalidBlockNumber;
+	m.nscopes = 0;
+	out = m;
+	SIFT_CHECK(sift_shm_manifest_publish(&m, NULL));
+	sift_shm_manifest_hold(&m.locator, 6);
+	SIFT_CHECKF(!sift_shm_manifest_peek(&m.locator, &out), "a held slot is not returned by peek");
+	SIFT_CHECKF(out.scope_dir_blk == InvalidBlockNumber && out.manifest_version == 5, "a peek miss leaves the caller's meta untouched");
+	sift_shm_manifest_invalidate(&m.locator, false);
+	SIFT_CHECKF(!sift_shm_manifest_peek(&m.locator, &out), "an invalidated slot is not returned by peek");
+	SIFT_CHECKF(out.scope_dir_blk == InvalidBlockNumber && out.manifest_version == 5, "an empty-slot peek miss leaves the caller's meta untouched");
+}
+
 int
 main(void)
 {
@@ -247,5 +265,6 @@ main(void)
 	test_slot_refuses_same_version();
 	test_retire_is_fifo();
 	test_invalidate_db();
+	test_peek_miss_preserves_out();
 	return sift_check_summary();
 }

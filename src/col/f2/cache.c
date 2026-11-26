@@ -449,7 +449,12 @@ manifest_meta(Relation rel)
 		meta = sift_col_meta_shm(rel, &m);
 	}
 	if (sift_shm_manifest_publish(&meta, NULL))
-		sift_shm_manifest_peek(&rel->rd_locator, &meta);
+	{
+		SiftShmIndexMeta peeked;
+
+		if (sift_shm_manifest_peek(&rel->rd_locator, &peeked))
+			meta = peeked;
+	}
 	return meta;
 }
 
