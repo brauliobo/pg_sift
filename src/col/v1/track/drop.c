@@ -221,6 +221,16 @@ sift_col_track_orphan_fired(void)
 	ask_orphans(InvalidTransactionId);
 }
 
+/* Does the trigger still serve no index (it is looked at again under the lock of its table) */
+static bool
+still_orphan(Oid trigger, Oid funcoid)
+{
+	foreach_ptr(TrackTrigger, t, our_triggers(funcoid))
+		if (t->oid == trigger)
+			return !OidIsValid(sift_col_track_trigger_index(trigger));
+	return false;
+}
+
 static void
 remove_orphans(Oid funcoid)
 {
@@ -228,10 +238,10 @@ remove_orphans(Oid funcoid)
 
 	foreach_ptr(TrackTrigger, t, orphan_triggers(funcoid))
 	{
-		if (ConditionalLockRelationOid(t->relid, AccessExclusiveLock))
-			sift_col_track_delete_trigger(t->oid);
-		else
+		if (!ConditionalLockRelationOid(t->relid, AccessExclusiveLock))
 			later = true;
+		else if (still_orphan(t->oid, funcoid))
+			sift_col_track_delete_trigger(t->oid);
 	}
 	CommandCounterIncrement();
 	if (later)
@@ -279,16 +289,6 @@ sift_col_track_init(void)
 {
 	RegisterXactCallback(gone_xact, NULL);
 	loaded_stmt = IsTransactionState() ? GetCurrentStatementStartTimestamp() : 0;
-}
-
-/* Does the trigger still serve no index (it is looked at again under the lock of its table) */
-static bool
-still_orphan(Oid trigger, Oid funcoid)
-{
-	foreach_ptr(TrackTrigger, t, our_triggers(funcoid))
-		if (t->oid == trigger)
-			return !OidIsValid(sift_col_track_trigger_index(trigger));
-	return false;
 }
 
 /* One trigger, in a transaction of its own; false when the table stayed busy for the lock timeout */
