@@ -648,16 +648,16 @@ rrd_owner | DROP TABLE rrd.exp_pairs CASCADE
 rrd_owner | DROP TABLE rrd.exp CASCADE
 $$);
 NOTICE:  drop cascades to view rrd.exp_v
- n  |    role    |                                                           stmt                                                            |              result               
-----+------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------
+ n  |    role    |                                                           stmt                                                            |                 result                  
+----+------------+---------------------------------------------------------------------------------------------------------------------------+-----------------------------------------
   1 | rrd_owner  | CREATE TABLE rrd.exp (member int, ends date)                                                                              | ok
   2 | rrd_owner  | INSERT INTO rrd.exp SELECT i, current_date - 1 FROM generate_series(1, 5) i                                               | ok (5)
   3 | rrd_owner  | CREATE TABLE rrd.exp_pairs (member int, tenant int, UNIQUE (member, tenant))                                              | ok
   4 | rrd_owner  | CREATE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp                                                          | ok
   5 | rrd_owner  | SELECT * FROM sift.scope_follow_pairs('rrd.exp_pairs', 'rrd.exp_v', 'rrd.exp', 'member', 'member', 'ends')                | ok: (5,0)
   6 | rrd_owner  | CREATE OR REPLACE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp WHERE 1 / (member - member) > 0 OR member > 0 | ok
-  7 | rrd_other  | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ERROR: must be owner of table exp
-  8 | rrd_reader | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ERROR: must be owner of table exp
+  7 | rrd_other  | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ERROR: must be owner of table exp_pairs
+  8 | rrd_reader | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ERROR: must be owner of table exp_pairs
   9 | rrd_owner  | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ERROR: division by zero
  10 | rrd_owner  | CREATE OR REPLACE VIEW rrd.exp_v AS SELECT member, 1 AS tenant FROM rrd.exp                                               | ok
  11 | rrd_owner  | SELECT * FROM sift.scope_expire_pairs('rrd.exp_pairs', '1 year')                                                          | ok: (0,0)

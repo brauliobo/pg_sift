@@ -596,6 +596,14 @@ schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 
 PG_FUNCTION_INFO_V1(sift_table_paths_check);
 
+/* The role that called the function owns the table: asked before the lock of the table, so that a role that does not never waits for it, and again after it */
+static void
+require_owner(Oid relid)
+{
+	if (!object_ownercheck(RelationRelationId, relid, GetOuterUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), sift_rel_name(relid));
+}
+
 /*
  * sift.table_paths_check(tbl, col, spec): the declaration of paths for a jsonb column is one the table can hold (the grammar of the sift_col `paths` option, which
  * names only that column; at most the leaves of the engine with the table's own), and the table's layout is rebuilt. The caller stores it in sift.table_paths.
@@ -604,6 +612,7 @@ Datum
 sift_table_paths_check(PG_FUNCTION_ARGS)
 {
 	Relation	rel;
+	Oid			relid;
 	const char *col;
 	char	   *spec;
 	AttrNumber	attno;
@@ -611,13 +620,14 @@ sift_table_paths_check(PG_FUNCTION_ARGS)
 
 	SIFT_ARG_REQUIRED(0, "sift.table_paths_check", "tbl");
 	SIFT_ARG_REQUIRED(1, "sift.table_paths_check", "col");
-	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessExclusiveLock);
+	relid = sift_rel_must_exist(PG_GETARG_OID(0));
+	require_owner(relid);
+	rel = table_open(relid, AccessExclusiveLock);
+	require_owner(RelationGetRelid(rel));
 	col = NameStr(*PG_GETARG_NAME(1));
 	spec = PG_ARGISNULL(2) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(2));
 	attno = get_attnum(RelationGetRelid(rel), col);
 	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table paths check", ALLOCSET_SMALL_SIZES);
-	if (!object_ownercheck(RelationRelationId, RelationGetRelid(rel), GetOuterUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	sift_tbl_require(rel);
 	if (attno <= 0 || TupleDescAttr(RelationGetDescr(rel), attno - 1)->atttypid != JSONBOID)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("\"%s\" is not a jsonb column of \"%s\"", col, RelationGetRelationName(rel))));

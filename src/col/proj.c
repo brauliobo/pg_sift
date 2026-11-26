@@ -11,6 +11,7 @@
 #include "access/relation.h"
 #include "access/sysattr.h"
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -21,9 +22,11 @@
 #include "parser/parse_node.h"
 #include "parser/parse_relation.h"
 #include "parser/parser.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "core/catname.h"
+#include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_col_projection_filter_served);
 
@@ -70,17 +73,46 @@ index_holds_columns(Relation index, List *conjuncts)
 	return true;
 }
 
+/* The index is one of the table, and the caller may look at the table: a table or an index of another table is no answer for a filter */
+static void
+require_index_of(Relation heap, Relation index)
+{
+	if (index->rd_rel->relkind != RELKIND_INDEX || index->rd_index->indrelid != RelationGetRelid(heap))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not an index of \"%s\"", RelationGetRelationName(index), RelationGetRelationName(heap))));
+	if (!sift_may_inspect_as(GetOuterUserId(), RelationGetRelid(heap)))
+		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLE, RelationGetRelationName(heap));
+}
+
+/* The filter is the text of a role: the functions it names run with the rights of the owner of the table, as those of an index predicate do, never with those of the caller */
+static bool
+served(Relation heap, Relation index, const char *text)
+{
+	Oid			uid;
+	int			sec;
+	List	   *pred;
+	List	   *filter;
+	bool		served;
+
+	GetUserIdAndSecContext(&uid, &sec);
+	SetUserIdAndSecContext(heap->rd_rel->relowner, sec | SECURITY_RESTRICTED_OPERATION);
+	pred = RelationGetIndexPredicate(index);
+	filter = filter_conjuncts(heap, text);
+	served = pred == NIL ? index_holds_columns(index, filter) :
+		predicate_implied_by(pred, filter, false) && (predicate_implied_by(filter, pred, false) || index_holds_columns(index, filter));
+	SetUserIdAndSecContext(uid, sec);
+	return served;
+}
+
 Datum
 sift_col_projection_filter_served(PG_FUNCTION_ARGS)
 {
 	Relation	heap = relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	Relation	index = relation_open(sift_rel_must_exist(PG_GETARG_OID(2)), AccessShareLock);
-	List	   *pred = RelationGetIndexPredicate(index);
-	List	   *filter = filter_conjuncts(heap, text_to_cstring(PG_GETARG_TEXT_PP(1)));
-	bool		served = pred == NIL ? index_holds_columns(index, filter) :
-		predicate_implied_by(pred, filter, false) && (predicate_implied_by(filter, pred, false) || index_holds_columns(index, filter));
+	bool		result;
 
+	require_index_of(heap, index);
+	result = served(heap, index, text_to_cstring(PG_GETARG_TEXT_PP(1)));
 	relation_close(index, AccessShareLock);
 	relation_close(heap, AccessShareLock);
-	PG_RETURN_BOOL(served);
+	PG_RETURN_BOOL(result);
 }

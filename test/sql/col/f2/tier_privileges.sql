@@ -19,7 +19,7 @@ SET ROLE p98_tier_owner;
 SELECT p98_try('SELECT sift.set_tier_policy(''ev'', ''file://' || :'escdir' || ''')') AS owner_file_policy;
 SELECT p98_try($$SELECT sift.set_tier_policy('ev', 's3://bucket/prefix', interval '1 day', 'http://127.0.0.1:1')$$) AS owner_endpoint_policy;
 SELECT p98_try($$SELECT sift.clear_tier_policy('ev')$$) AS owner_clear_policy;
-SELECT p98_try($$SELECT sift.set_ttl('ev', 'ts', interval '30 days')$$) AS owner_ttl;
+SELECT sift.set_ttl('ev', 'ts', interval '30 days') AS owner_ttl;
 RESET ROLE;
 SELECT (pg_stat_file(:'escdir', true)).size IS NULL AS directory_not_made;
 SELECT count(*) AS policies FROM sift.tier_policies;

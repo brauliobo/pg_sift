@@ -10,6 +10,7 @@
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "catalog/index.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "col/am.h"
@@ -67,7 +68,8 @@ f2_index_with_column(Oid indexoid, const char *col, KllTarget *t)
 		return false;
 	idx = index_open(indexoid, AccessShareLock);
 	t->leaf = index_column(idx, col);
-	ok = sift_col_format_major(idx) == SIFT_FORMAT2_MAJOR && t->leaf >= 0;
+	ok = idx->rd_index->indisvalid && idx->rd_index->indisready && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+		sift_col_format_major(idx) == SIFT_FORMAT2_MAJOR && t->leaf >= 0;
 	if (ok)
 		t->index = indexoid;
 	index_close(idx, AccessShareLock);

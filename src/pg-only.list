@@ -762,6 +762,7 @@ core/f2/vis.h
 core/f2/vm_xlog.c
 core/f2/vm_xlog.h
 core/filter_test.c
+core/follow.c
 core/freelist/freelist.c
 core/freelist/alloc.c
 core/freelist/int.h

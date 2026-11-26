@@ -34,10 +34,10 @@ SELECT p98_try($$SELECT sift.clear_tier_policy('ev')$$) AS owner_clear_policy;
  42501
 (1 row)
 
-SELECT p98_try($$SELECT sift.set_ttl('ev', 'ts', interval '30 days')$$) AS owner_ttl;
+SELECT sift.set_ttl('ev', 'ts', interval '30 days') AS owner_ttl;
  owner_ttl 
 -----------
- allowed
+ t
 (1 row)
 
 RESET ROLE;

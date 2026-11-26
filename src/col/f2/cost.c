@@ -345,7 +345,7 @@ rowcompare_clause(PlannerInfo *root, const RelOptInfo *rel, const IndexOptInfo *
 	RowCompareExpr *index_rc;
 	int			i = 0;
 
-	if (!IsA(rc, RowCompareExpr) || ROWCMP(rc) == ROWCMP_EQ || list_length(rc->largs) > Min(ix->nkeycolumns, SIFT_BOUND_COMPS))
+	if (rinfo->security_level != 0 || !IsA(rc, RowCompareExpr) || ROWCMP(rc) == ROWCMP_EQ || list_length(rc->largs) > Min(ix->nkeycolumns, SIFT_BOUND_COMPS))
 		return NULL;
 	forthree(l, rc->largs, r, rc->rargs, o, rc->opnos)
 	{

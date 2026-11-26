@@ -26,14 +26,14 @@ COMMENT ON FUNCTION sift_internal.projection_defs_skip() IS 'Internal: BEFORE RO
 CREATE OR REPLACE TRIGGER projection_defs_skip BEFORE INSERT OR UPDATE ON sift.projection_defs
 	FOR EACH ROW EXECUTE FUNCTION sift_internal.projection_defs_skip();
 
--- The names of the relations of the rows follow a rename, and the row of a sift_col index that a restore loaded before the index is bound to it when it is built. SHARE: a COPY of the rows
--- that is still running (pg_restore -j loads them beside the post-data items) finishes first, and one that starts later finds the index and reads its name as its OID.
+-- The names of the relations of the rows follow a rename, and the row of a sift_col index that a restore loaded before the index is bound to it when it is built. SHARE ROW EXCLUSIVE: a COPY of the rows
+-- that is still running (pg_restore -j loads them beside the post-data items) finishes first, and one that starts later finds the index and reads its name as its OID. SHARE ROW EXCLUSIVE conflicts with itself: two of these do not both hold SHARE and wait for each other to raise it to ROW EXCLUSIVE.
 CREATE OR REPLACE FUNCTION sift_internal.projection_defs_bind() RETURNS event_trigger
 	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $fn$
 BEGIN
 	IF EXISTS (SELECT 1 FROM pg_event_trigger_ddl_commands() d JOIN pg_class c ON c.oid = d.objid JOIN pg_am a ON a.oid = c.relam
 			   WHERE d.command_tag = 'CREATE INDEX' AND a.amname = 'sift_col') THEN
-		LOCK TABLE sift.projection_defs IN SHARE MODE;
+		LOCK TABLE sift.projection_defs IN SHARE ROW EXCLUSIVE MODE;
 		UPDATE sift.projection_defs v SET rel = c.oid::regclass::sift.tblref
 		FROM pg_event_trigger_ddl_commands() d JOIN pg_class c ON c.oid = d.objid JOIN pg_namespace n ON n.oid = c.relnamespace
 		WHERE d.command_tag = 'CREATE INDEX' AND v.rel::oid = 0 AND v.rel_name = quote_ident(n.nspname) || '.' || quote_ident(c.relname);

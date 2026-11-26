@@ -34,6 +34,7 @@
 #include "core/catname.h"
 #include "core/compat.h"
 #include "core/f2/fsm/fsm.h"
+#include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/wal_conflict.h"
 #include "col/f2/l0/stage.h"
@@ -260,8 +261,11 @@ sift_f2_drop_parts_before(Relation rel, SiftF2Store *store, int slot, int64 cuto
 static Relation
 open_table(Oid relid)
 {
-	Relation	rel = relation_open(sift_rel_must_exist(relid), AccessExclusiveLock);
+	Relation	rel;
 
+	sift_require_acl(relid, SIFT_RETENTION_ACL);
+	rel = relation_open(sift_rel_must_exist(relid), AccessExclusiveLock);
+	sift_require_acl(relid, SIFT_RETENTION_ACL);
 	sift_rel_reject_partitioned(rel);
 	if (rel->rd_rel->relkind == RELKIND_INDEX)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is an index: dropping its parts would leave it without rows its table keeps", RelationGetRelationName(rel)),
@@ -271,8 +275,6 @@ open_table(Oid relid)
 	if (sift_meta_resolve_major(rel) != SIFT_FORMAT2_MAJOR)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is a Format 1 sift_table: dropping its parts needs Format 2.0", RelationGetRelationName(rel)),
 						errhint("Run sift.upgrade_table(\"%s\").", RelationGetRelationName(rel))));
-	if (pg_class_aclcheck(RelationGetRelid(rel), GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	if (sift_tbl_check_publication(rel))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is in a logical publication: its subscribers would keep the rows of the dropped parts", RelationGetRelationName(rel)),
 						errhint("Remove the table from logical publications or use DELETE to replicate row deletions.")));

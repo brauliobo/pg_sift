@@ -26,6 +26,7 @@
 
 #include "core/catname.h"
 #include "core/meta_peek.h"
+#include "core/inspect.h"
 #include "core/ops.h"
 #include "table/f2/tbl.h"
 
@@ -34,11 +35,12 @@ PG_FUNCTION_INFO_V1(sift_upgrade_table);
 static Relation
 open_for_upgrade(Oid relid)
 {
-	Relation	rel = table_open(sift_rel_must_exist(relid), AccessExclusiveLock);
+	Relation	rel;
 
+	sift_require_acl(relid, ACL_MAINTAIN);
+	rel = table_open(sift_rel_must_exist(relid), AccessExclusiveLock);
+	sift_require_acl(relid, ACL_MAINTAIN);
 	sift_tbl_require(rel);
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	return rel;
 }
 

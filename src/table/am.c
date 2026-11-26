@@ -17,6 +17,7 @@
 
 #include "core/catname.h"
 #include "core/check.h"
+#include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/ops.h"
 #include "core/sql/sql.h"
@@ -92,9 +93,7 @@ sift_table_paths_trg(PG_FUNCTION_ARGS)
 	TriggerData *td = (TriggerData *) fcinfo->context;
 	TupleDesc	desc;
 
-	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_BEFORE(td->tg_event) || !TRIGGER_FIRED_FOR_ROW(td->tg_event))
-		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED), errmsg("sift.table_paths_trg is a BEFORE ROW trigger function"),
-						errhint("It is attached to sift.table_paths; it cannot be called from SQL.")));
+	sift_check_catalog_trigger(fcinfo, "sift.table_paths_trg", "sift.table_paths");
 	desc = td->tg_relation->rd_att;
 	paths_row_changed(td->tg_trigtuple, desc);
 	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event))

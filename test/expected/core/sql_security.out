@@ -155,18 +155,19 @@ RESET sift.count_refusals;
 SELECT f.oid::regprocedure AS public_internal_set_returning_function FROM p98_fns f
 WHERE f.lanname = 'c' AND f.proretset AND (f.proname LIKE '\_%' OR f.nspname = 'sift_internal') AND has_function_privilege(0, f.oid, 'EXECUTE')
 ORDER BY f.oid::regprocedure::text;
-  public_internal_set_returning_function   
--------------------------------------------
+   public_internal_set_returning_function    
+---------------------------------------------
  sift._check(regclass,boolean,integer)
  sift._progress()
  sift._quarantine()
  sift._table_options(regclass)
  sift_internal.maint_queue()
+ sift_internal.shared_memory_pools_visible()
  sift_internal.tier_status()
  sift_internal.v1_col_segments(regclass)
  sift_internal.v1_col_stamps(regclass)
  sift_internal.v1_table_segments(regclass)
-(9 rows)
+(10 rows)
 
 SELECT has_function_privilege(0, 'sift._col_value_store_drop_unused()', 'EXECUTE') AS sweep_open_to_public;
  sweep_open_to_public 

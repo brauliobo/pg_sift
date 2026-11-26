@@ -121,6 +121,11 @@ sift_maint_pacer(PG_FUNCTION_ARGS)
 
 	SIFT_INVARIANT(kind == TYPEFUNC_COMPOSITE, "sift_internal.maint_pacer must return a row");
 	sift_api_check_desc(desc, pacer_types, MP_NCOLS);
+	if (!sift_may_read_stats())
+	{
+		memset(nulls, true, sizeof(nulls));
+		return sift_result_row(fcinfo, v, nulls);
+	}
 	(void) queue_copy(rows, &status);
 	sift_pacer_snapshot(&pace);
 	others = Max(0, sift_maint_server_host.bgworkers_in_use() - (int) status.workers_active);

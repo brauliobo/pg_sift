@@ -53,7 +53,7 @@ ERROR:  scope_expire_pairs: no source of "public.scope_pairs" has an expires col
 CONTEXT:  PL/pgSQL function sift.scope_expire_pairs(regclass,interval) line 19 at RAISE
 SELECT sift.scope_unfollow_pairs('scope_pairs');
 ERROR:  scope_unfollow_pairs: "public.scope_pairs" follows no such table
-CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 13 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 12 at RAISE
 SELECT count(*) AS follows FROM sift.scope_follows;
  follows 
 ---------
@@ -420,7 +420,7 @@ SELECT source, source_column FROM sift.scope_follows ORDER BY 1;
 
 SELECT sift.scope_unfollow_pairs('scope_pairs', 'group_members');
 ERROR:  scope_unfollow_pairs: "public.scope_pairs" follows no such table
-CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 13 at RAISE
+CONTEXT:  PL/pgSQL function sift.scope_unfollow_pairs(regclass,regclass) line 12 at RAISE
 SELECT sift.scope_unfollow_pairs('scope_pairs');
  scope_unfollow_pairs 
 ----------------------

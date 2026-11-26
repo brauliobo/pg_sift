@@ -32,6 +32,7 @@
 
 #include "col/am.h"
 #include "col/v1/seg/seg.h"
+#include "core/inspect.h"
 #include "core/restrict.h"
 #include "table/v1/table.h"
 #include "core/catname.h"
@@ -133,9 +134,7 @@ sift_table_option_values_trg(PG_FUNCTION_ARGS)
 	bool		isnull;
 	Oid			rel;
 
-	if (!CALLED_AS_TRIGGER(fcinfo) || !TRIGGER_FIRED_BEFORE(td->tg_event) || !TRIGGER_FIRED_FOR_ROW(td->tg_event))
-		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED), errmsg("sift.table_option_values_trg is a BEFORE ROW trigger function"),
-						errhint("It is attached to sift.table_option_values; it cannot be called from SQL.")));
+	sift_check_catalog_trigger(fcinfo, "sift.table_option_values_trg", "sift.table_option_values");
 	ret = td->tg_trigtuple;
 	if (TRIGGER_FIRED_BY_UPDATE(td->tg_event))
 	{
@@ -394,6 +393,19 @@ opt_require_owner(Relation rel)
 		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 }
 
+/* The table of a setter, opened for a change: the owner is asked before the lock, so that a role that does not own the table never waits for it, and again after it */
+static Relation
+opt_open_owned(Oid relid, LOCKMODE mode)
+{
+	Relation	rel;
+
+	if (!object_ownercheck(RelationRelationId, sift_rel_must_exist(relid), GetUserId()))
+		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relid)), sift_rel_name(relid));
+	rel = opt_open(relid, mode);
+	opt_require_owner(rel);
+	return rel;
+}
+
 static void
 opt_require_privilege(Relation rel)
 {
@@ -475,8 +487,7 @@ sift_table_set_option(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(2))
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("the value of an option must not be NULL"),
 						errhint("sift.table_reset_option takes the option off the table.")));
-	rel = opt_open(relid, ShareUpdateExclusiveLock);
-	opt_require_owner(rel);
+	rel = opt_open_owned(relid, ShareUpdateExclusiveLock);
 	ops = sift_tbl_ops(rel);
 	if (ops->option_check_set != NULL)
 	{
@@ -519,8 +530,7 @@ sift_table_reset_option(PG_FUNCTION_ARGS)
 
 	if (PG_ARGISNULL(0))
 		ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("the table must not be NULL")));
-	rel = opt_open(relid, ShareUpdateExclusiveLock);
-	opt_require_owner(rel);
+	rel = opt_open_owned(relid, ShareUpdateExclusiveLock);
 	if (!PG_ARGISNULL(1))
 	{
 		name = text_to_cstring(PG_GETARG_TEXT_PP(1));

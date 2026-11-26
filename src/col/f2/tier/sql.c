@@ -1,7 +1,7 @@
 /*
  * col/f2/tier/sql.c - sift.set_tier_policy, sift.clear_tier_policy, sift.set_ttl and sift.tier_status.
  *
- * The functions run as the caller and need MAINTAIN on the table (tier_status: SELECT); setting and clearing a tier policy needs a superuser too, as the location is a resource of the server. The policy tables are written as their owner, so a caller needs no grant on them. The location of a policy
+ * The functions run as the caller and need MAINTAIN on the table (tier_status: SELECT; sift.set_ttl, which drops parts: DELETE or TRUNCATE); setting and clearing a tier policy needs a superuser too, as the location is a resource of the server. The policy tables are written as their owner, so a caller needs no grant on them. The location of a policy
  * holds no user, password or query, and the credentials of an S3 or R2 store are read from the environment of the server when a connection is made: nothing of them is stored or shown.
  */
 #include "postgres.h"
@@ -9,6 +9,8 @@
 #include "access/relation.h"
 #include "catalog/pg_class.h"
 #include "funcapi.h"
+#include "access/xact.h"
+#include "access/xlog.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
@@ -21,6 +23,7 @@
 #include "col/f2/tier/host.h"
 #include "col/pg.h"
 #include "core/catname.h"
+#include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/sift.h"
 #include "core/xlog.h"
@@ -53,18 +56,19 @@ acl_relid(Relation rel)
 
 /* A Format 2.0 sift_table or sift_col index: both keep their parts, tier directory and metapage the same way, so the policies and the maintenance step are the same for both */
 static Relation
-open_f2_rel(Oid relid)
+open_f2_rel(Oid relid, AclMode any_of)
 {
-	Relation	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	Relation	rel;
 
+	sift_require_acl(relid, any_of);
+	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	sift_require_acl(relid, any_of);
 	sift_rel_reject_partitioned(rel);
 	if (!is_col_index(rel) && !sift_tbl_is_table(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_table or a sift_col index", RelationGetRelationName(rel))));
 	if (sift_meta_resolve_major(rel) != SIFT_FORMAT2_MAJOR)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is a Format 1 relation: object storage tiering and TTL need Format 2.0", RelationGetRelationName(rel)),
 						is_col_index(rel) ? 0 : errhint("Run sift.upgrade_table(\"%s\").", RelationGetRelationName(rel))));
-	if (pg_class_aclcheck(acl_relid(rel), GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
 	return rel;
 }
 
@@ -163,7 +167,7 @@ sift_set_tier_policy(PG_FUNCTION_ARGS)
 	require_arg(fcinfo, 0, "rel");
 	require_arg(fcinfo, 1, "uri");
 	require_arg(fcinfo, 2, "move_after");
-	rel = open_f2_rel(PG_GETARG_OID(0));
+	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	require_server_resource_owner("set a tier policy");
 	uri = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	move_after = PG_GETARG_INTERVAL_P(2);
@@ -196,10 +200,11 @@ sift_set_tier_policy(PG_FUNCTION_ARGS)
 Datum
 sift_clear_tier_policy(PG_FUNCTION_ARGS)
 {
-	Relation	rel = open_f2_rel(PG_GETARG_OID(0));
+	Relation	rel;
 	SiftTierPolicy old;
 	bool		had;
 
+	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	require_server_resource_owner("clear a tier policy");
 	had = sift_tier_policy_of(rel, &old);
 	if (had)
@@ -266,7 +271,11 @@ sift_set_ttl(PG_FUNCTION_ARGS)
 
 	require_arg(fcinfo, 0, "rel");
 	require_arg(fcinfo, 1, "col");
-	rel = open_f2_rel(PG_GETARG_OID(0));
+	(void) sift_rel_must_exist(PG_GETARG_OID(0));
+	PreventInTransactionBlock(true, "sift.set_ttl()");
+	if (RecoveryInProgress())
+		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("cannot set a TTL during recovery")));
+	rel = open_f2_rel(PG_GETARG_OID(0), SIFT_RETENTION_ACL);
 	if (is_col_index(rel))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("\"%s\" is a sift_col index: a TTL would drop index entries of rows its table keeps", RelationGetRelationName(rel)),
 						errhint("Set the TTL on the sift_table, or delete the old rows of the table and let the index follow.")));

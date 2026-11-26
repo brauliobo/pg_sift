@@ -12,6 +12,7 @@
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/index.h"
@@ -166,19 +167,6 @@ def_delete(Oid relid, const char *name)
 	return found;
 }
 
-static Oid
-heap_of(Relation rel)
-{
-	return rel->rd_rel->relkind == RELKIND_INDEX ? IndexGetRelation(RelationGetRelid(rel), false) : RelationGetRelid(rel);
-}
-
-static void
-check_acl(Relation rel, AclMode mode)
-{
-	if (pg_class_aclcheck(heap_of(rel), GetUserId(), mode) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
-}
-
 static bool
 is_f2_target(Relation rel)
 {
@@ -274,15 +262,50 @@ pending_add(Oid relid, const char *name)
 	MemoryContextSwitchTo(old);
 }
 
-static Relation
-open_target(Oid relid, LOCKMODE lock)
+static void
+require_f2_target(Relation rel)
 {
-	Relation	rel = relation_open(sift_rel_must_exist(relid), lock);
-
 	sift_rel_reject_partitioned(rel);
 	if (!is_f2_target(rel))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or a sift_table of format major 2", RelationGetRelationName(rel)),
 						errhint("Projections belong to a relation of format major 2.")));
+}
+
+/* The relation of a change of its projections: the caller needs a maintain right, asked before the lock and again after it, and no standby takes the lock */
+static Relation
+open_for_change(Oid relid)
+{
+	Relation	rel;
+
+	if (RecoveryInProgress())
+		ereport(ERROR, (errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION), errmsg("cannot change projections during recovery")));
+	sift_require_acl(relid, ACL_MAINTAIN);
+	rel = relation_open(sift_rel_must_exist(relid), ShareUpdateExclusiveLock);
+	sift_require_acl(relid, ACL_MAINTAIN);
+	require_f2_target(rel);
+	return rel;
+}
+
+/* The relation of a projection listing, locked when the caller may read its table and it is a relation that has projections: a stale or foreign OID is not listed */
+static Relation
+open_listed(Oid relid)
+{
+	char		kind = get_rel_relkind(relid);
+	Oid			table;
+	bool		missing = false;
+	Relation	rel;
+
+	if (kind == '\0')
+		return NULL;
+	table = kind == RELKIND_INDEX ? IndexGetRelation(relid, true) : relid;
+	if (!OidIsValid(table) || pg_class_aclcheck_ext(table, GetUserId(), ACL_SELECT, &missing) != ACLCHECK_OK || missing)
+		return NULL;
+	rel = try_relation_open(relid, AccessShareLock);
+	if (rel != NULL && (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE || !is_f2_target(rel)))
+	{
+		relation_close(rel, AccessShareLock);
+		return NULL;
+	}
 	return rel;
 }
 
@@ -352,7 +375,7 @@ sift_proj_defs_check_drop_column(Relation rel, const char *column)
 Datum
 sift_create_projection(PG_FUNCTION_ARGS)
 {
-	Relation	rel = open_target(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
+	Relation	rel = open_for_change(PG_GETARG_OID(0));
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	char	   *spec_text = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	SiftF2Store *store = sift_f2_store_open(rel);
@@ -364,7 +387,6 @@ sift_create_projection(PG_FUNCTION_ARGS)
 	int			nrefs;
 	SiftManifestProjRef *refs;
 
-	check_acl(rel, ACL_MAINTAIN);
 	if (name[0] == '\0' || strlen(name) >= SIFT_PROJ_NAME_LEN)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_NAME), errmsg("the name of a projection is 1 to %d bytes", SIFT_PROJ_NAME_LEN - 1)));
 	if (!sift_proj_spec_parse(spec_text, &cols, &spec, err, sizeof(err)))
@@ -386,7 +408,7 @@ sift_create_projection(PG_FUNCTION_ARGS)
 Datum
 sift_drop_projection(PG_FUNCTION_ARGS)
 {
-	Relation	rel = open_target(PG_GETARG_OID(0), ShareUpdateExclusiveLock);
+	Relation	rel = open_for_change(PG_GETARG_OID(0));
 	char	   *name = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	SiftColMetaPageData meta;
 	SiftManifestProjRef *refs;
@@ -394,7 +416,6 @@ sift_drop_projection(PG_FUNCTION_ARGS)
 	bool		listed,
 				dropped;
 
-	check_acl(rel, ACL_MAINTAIN);
 	meta = sift_col_meta_read(rel);
 	refs = sift_manifest_read_projs(rel, &meta, &nrefs);
 	listed = sift_proj_find(refs, nrefs, name) != NULL;
@@ -481,9 +502,10 @@ sift_projection_list(PG_FUNCTION_ARGS)
 		if (list_member_oid(seen, relid) || !SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
 			continue;
 		seen = lappend_oid(seen, relid);
-		rel = open_target(relid, AccessShareLock);
-		if (pg_class_aclcheck(heap_of(rel), GetUserId(), ACL_SELECT) == ACLCHECK_OK)
-			list_relation(rsi, rel);
+		rel = open_listed(relid);
+		if (rel == NULL)
+			continue;
+		list_relation(rsi, rel);
 		relation_close(rel, AccessShareLock);
 	}
 	return (Datum) 0;

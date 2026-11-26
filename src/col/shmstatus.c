@@ -12,6 +12,7 @@
 #include "storage/spin.h"
 #include "utils/builtins.h"
 
+#include "core/inspect.h"
 #include "core/shm/manifest.h"
 #include "core/shm/budget.h"
 #include "col/dictshm/dictshm.h"
@@ -20,6 +21,7 @@
 
 PG_FUNCTION_INFO_V1(sift_shared_memory);
 PG_FUNCTION_INFO_V1(sift_shared_memory_pools);
+PG_FUNCTION_INFO_V1(sift_shared_memory_pools_visible);
 
 #define NOTES_NAME		"sift_shm_notes_1"
 #define NOTES_MAX		24
@@ -187,6 +189,7 @@ sift_shared_memory(PG_FUNCTION_ARGS)
 	char		table[SIFT_DSM_NAME_LEN];
 	uint64		size;
 
+	sift_require_stats_reader("sift.shared_memory()");
 	InitMaterializedSRF(fcinfo, 0);
 	ncopy = notes_copy(copy);
 	for (int pool = 0; pool < SIFT_SHM_NPOOL; pool++)
@@ -279,8 +282,8 @@ percent_numeric(uint64 used, uint64 limit)
 }
 
 /* sift.shared_memory_pools(): the pools of the ledger in the order of SiftShmPoolId (core/shm/budget.h) */
-Datum
-sift_shared_memory_pools(PG_FUNCTION_ARGS)
+static Datum
+pools_rows(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	ShmNote		copy[NOTES_MAX];
@@ -312,4 +315,23 @@ sift_shared_memory_pools(PG_FUNCTION_ARGS)
 		tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, nulls);
 	}
 	return (Datum) 0;
+}
+
+Datum
+sift_shared_memory_pools(PG_FUNCTION_ARGS)
+{
+	sift_require_stats_reader("sift.shared_memory_pools()");
+	return pools_rows(fcinfo);
+}
+
+/* sift_internal.shared_memory_pools_visible(): the rows of sift.shared_memory_pools() for a role that may read them, none for another: what sift.health and sift.activity say of the pools */
+Datum
+sift_shared_memory_pools_visible(PG_FUNCTION_ARGS)
+{
+	if (!sift_may_read_stats())
+	{
+		InitMaterializedSRF(fcinfo, 0);
+		return (Datum) 0;
+	}
+	return pools_rows(fcinfo);
 }
