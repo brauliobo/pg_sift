@@ -586,6 +586,7 @@ sift_pend_del_settle(Relation rel, uint64 part_id, BlockNumber settled, const Si
 	return settled;
 }
 
+/* A page above the settled ones has a delete a fold takes: the settled pages below, which only a fold drops (sift_pend_del_read_unsettled), are not walked by every statement that appends */
 static bool
 chain_foldable(Relation rel, uint32 part_id, BlockNumber head)
 {
@@ -593,9 +594,10 @@ chain_foldable(Relation rel, uint32 part_id, BlockNumber head)
 	{
 		Buffer		buf = lock_pd(rel, blk, part_id, BUFFER_LOCK_SHARE);
 		const SiftPendDelPageData *pd = PD(BufferGetPage(buf));
-		bool		due = (pd->flags & SIFT_PEND_DEL_PLAIN) != 0 || GlobalVisCheckRemovableFullXid(NULL, pd->min_xid);
+		bool		settled = (pd->flags & SIFT_PEND_DEL_SETTLED) != 0,
+					due = !settled && ((pd->flags & SIFT_PEND_DEL_PLAIN) != 0 || GlobalVisCheckRemovableFullXid(NULL, pd->min_xid));
 
-		blk = pd->next_blk;
+		blk = settled ? InvalidBlockNumber : pd->next_blk;
 		UnlockReleaseBuffer(buf);
 		if (due)
 			return true;
