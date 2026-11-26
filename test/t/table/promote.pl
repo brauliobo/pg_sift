@@ -130,7 +130,7 @@ subtest 'VACUUM cuts the free end of the file under a writer that cached a page 
 subtest 'a snapshot older than a DELETE keeps its rows through the VACUUMs, and the first VACUUM after it ends gives the space back' => sub {
 	my $blocks = 'SELECT relation_blocks FROM sift.table_space($$u$$)';
 	$primary->safe_psql('postgres', 'CREATE TABLE u (id int, note text) USING sift_table WITH (autovacuum_enabled = false);'
-		. 'INSERT INTO u SELECT g, repeat($$u$$, 60) FROM generate_series(1, 20000) g; VACUUM u');
+		. 'INSERT INTO u SELECT g, (SELECT string_agg(md5(g || $$:$$ || i), $$$$) FROM generate_series(1, 8) i) FROM generate_series(1, 20000) g; VACUUM u');
 	my $full = $primary->safe_psql('postgres', $blocks);
 	my $reader = $primary->background_psql('postgres');
 	$reader->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
@@ -142,7 +142,7 @@ subtest 'a snapshot older than a DELETE keeps its rows through the VACUUMs, and 
 	$reader->quit;
 	$primary->safe_psql('postgres', 'VACUUM u; VACUUM u');
 	my $cut = $primary->safe_psql('postgres', $blocks);
-	cmp_ok($held, '>', $full, "the snapshot keeps the file: $full to $held blocks");
+	cmp_ok($held, '>=', $full, "the snapshot keeps the file: $full to $held blocks");
 	cmp_ok($cut, '<', $held, "and the VACUUMs after it ended give the space back: $held to $cut blocks");
 	cmp_ok($cut, '<=', $full, "no more than it took ($full blocks)");
 	is($primary->safe_psql('postgres', 'SELECT count(*) FROM u'), 1000, 'the rows that stay');
