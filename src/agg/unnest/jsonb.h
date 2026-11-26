@@ -52,6 +52,20 @@ extern Expr *sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause);
 /* The column of the statement a virtual attribute of the element is: the vector the pairs of the unnest bring of it */
 extern SiftV6Col sift_v6_elem_vatt_col(int attno, Oid typid);
 
+/* The leaf holds the values of a vector of type typid (text, an integer, a boolean or a float) as they are stored */
+extern bool sift_v6_leaf_holds(Oid typid, int32 typmod, const SiftColDef *d);
+/* The group leaf of the list of attribute att (the document itself, or its key `key`): its lengths, whose children are its elements or the keys of its objects (-1: none) */
+extern int	sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key);
+
+/*
+ * agg/unnest/array_elem.c, SV6E_ELEMS_TEXT: jsonb_array_elements_text(doc) or (doc -> 'key') over a list of strings the index keeps shredded (`doc.key[] text`: a group leaf of its lengths and a
+ * text leaf of its elements). rte: the function of a lateral relation. seed: the group and the element leaf of attribute att, the one column `value`. fn_oid: the PostgreSQL function the rows the
+ * leaves cannot hold (a document that is no list of strings) are read with.
+ */
+extern bool sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
+extern bool sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names);
+extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
+
 /* The leaves of the map `col.* type` of attribute att: its lengths, the keys of its members and their values; false when att holds no such map, or the index keeps the members in no leaf a column can read */
 extern bool sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value);
 

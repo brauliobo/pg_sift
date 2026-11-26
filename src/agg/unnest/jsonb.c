@@ -27,9 +27,8 @@
 #include "agg/vexpr/str.h"
 #include "col/am.h"
 
-/* the type of an element column the scan holds as a vector, and the leaf type that holds it */
-static bool
-col_holds(Oid typid, int32 typmod, const SiftColDef *d)
+bool
+sift_v6_leaf_holds(Oid typid, int32 typmod, const SiftColDef *d)
 {
 	if (typmod != -1 || d->kind != SIFT_COLK_SCALAR || d->lane != 0 || (d->flags & SIFT_COLD_LOSSY) ||
 		((d->flags & SIFT_COLD_ASTEXT) && typid != TEXTOID && typid != VARCHAROID))
@@ -63,7 +62,7 @@ leaf_type(const SiftColDef *d)
 	Oid			typ[] = {TEXTOID, INT2OID, INT4OID, INT8OID, BOOLOID};
 
 	for (int i = 0; i < lengthof(typ); i++)
-		if (col_holds(typ[i], -1, d))
+		if (sift_v6_leaf_holds(typ[i], -1, d))
 			return typ[i];
 	return InvalidOid;
 }
@@ -133,6 +132,8 @@ sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6El
 		return rtf->funccolcount == 1 && fe->funcresulttype == out->elem &&
 			(out->elem == TEXTOID || out->elem == VARCHAROID || out->elem == INT2OID || out->elem == INT4OID || out->elem == INT8OID);
 	}
+	if (fe->funcid == F_JSONB_ARRAY_ELEMENTS_TEXT)
+		return sift_v6_elems_rte(rtf, v, out);
 	if (fe->funcid == F_JSONB_EACH || fe->funcid == F_JSONB_EACH_TEXT)
 	{
 		out->fn = fe->funcid == F_JSONB_EACH ? SV6E_EACH : SV6E_EACH_TEXT;
@@ -220,8 +221,8 @@ sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6Ele
 }
 
 /* the lengths leaf of the attribute's array (the document itself, or its key `key`) and its element leaves are the ones of a list of objects (no key leaf, which a map has) */
-static int
-group_of(const SiftColRel *r, int att, const char *key)
+int
+sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key)
 {
 	const size_t len = key != NULL ? strlen(key) : 0;
 	int			group = -1;
@@ -258,7 +259,7 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 	const SiftColRel *r = p->colrel;
 	int			c = 0;
 
-	if (!r->json[att] || (e->group_leaf = group_of(r, att, key)) < 0)
+	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0)
 		return false;
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 		if (r->schema->cols[i].parent == e->group_leaf && r->schema->cols[i].path != NULL && strstr(r->schema->cols[i].path, "#key") != NULL)
@@ -269,7 +270,7 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 		const Oid	t = list_nth_oid(rte->types, c);
 		const bool	kind = rte->kinds != NIL && list_nth_int(rte->kinds, c) != 0;
 
-		if (leaf < 0 || (!kind && !col_holds(t, -1, &r->schema->cols[leaf])))
+		if (leaf < 0 || (!kind && !sift_v6_leaf_holds(t, -1, &r->schema->cols[leaf])))
 			return false;
 		e->col_leaf[c] = leaf;
 		e->col_type[c] = t;
@@ -287,7 +288,7 @@ leaf_oid(const SiftColDef *d)
 	static const Oid held[] = {TEXTOID, INT2OID, INT4OID, INT8OID, FLOAT8OID};
 
 	for (int t = 0; t < lengthof(held); t++)
-		if (col_holds(held[t], -1, d))
+		if (sift_v6_leaf_holds(held[t], -1, d))
 			return held[t];
 	return InvalidOid;
 }
@@ -321,7 +322,7 @@ sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *valu
 		else
 			return false;
 	}
-	return *key >= 0 && *value >= 0 && col_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
+	return *key >= 0 && *value >= 0 && sift_v6_leaf_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
 }
 
 /* the map `col.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
@@ -405,7 +406,7 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 	int			group,
 				leaf;
 
-	if (i < 0 || !r->json[i + 1] || (group = group_of(r, i + 1, key)) < 0 || (leaf = member_leaf(r, i + 1, group, name)) < 0)
+	if (i < 0 || !r->json[i + 1] || (group = sift_v6_unnest_group_of(r, i + 1, key)) < 0 || (leaf = member_leaf(r, i + 1, group, name)) < 0)
 		return InvalidOid;
 	return leaf_type(&r->schema->cols[leaf]);
 }
@@ -447,7 +448,8 @@ sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, b
 	x->unnest = true;
 	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
 	if (!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
-		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) : seed_each(p, &x->elem, i + 1)))
+		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) :
+		  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, &x->elem, key, i + 1, &names) : seed_each(p, &x->elem, i + 1)))
 		return false;
 	x->elem_names = names;
 	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));
@@ -766,7 +768,7 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x)
 		fmgr_info(typinput, &f->vin);
 		fmgr_info(f->vread == SV6V_CAST ? jsonb_cast_fn(f->type[1]) : F_JSONB_EXTRACT_PATH_TEXT, &f->vfn);
 	}
-	fmgr_info(f->fn == SV6E_EACH ? F_JSONB_EACH : f->fn == SV6E_EACH_TEXT ? F_JSONB_EACH_TEXT : F_JSONB_TO_RECORDSET, &f->flinfo);
+	fmgr_info(sift_v6_elem_fn_oid(f->fn), &f->flinfo);
 	f->econtext = CreateStandaloneExprContext();
 	f->slot = MakeSingleTupleTableSlot(f->desc, &TTSOpsMinimalTuple);
 	f->rsinfo = (ReturnSetInfo) {.type = T_ReturnSetInfo,.econtext = f->econtext,.expectedDesc = f->desc,.allowedModes = (int) SFRM_Materialize,.returnMode = SFRM_ValuePerCall};
