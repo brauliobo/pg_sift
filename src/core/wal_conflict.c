@@ -15,19 +15,13 @@ bool		sift_standby_conflicts = true;
 bool
 sift_wal_snapshot_conflict(Relation index, BlockNumber blk, FullTransactionId horizon)
 {
-	static RelFileLocator covered_rel;
-	static FullTransactionId covered = {0};
 	xl_btree_reuse_page xlrec;
 
 	if (!sift_standby_conflicts || !FullTransactionIdIsValid(horizon) || !XLogStandbyInfoActive() || !RelationNeedsWAL(index))
-		return false;
-	if (RelFileLocatorEquals(covered_rel, index->rd_locator) && !FullTransactionIdPrecedes(covered, horizon))
 		return false;
 	xlrec = (xl_btree_reuse_page) {.locator = index->rd_locator,.block = blk,.snapshotConflictHorizon = horizon};
 	XLogBeginInsert();
 	XLogRegisterData((char *) &xlrec, SizeOfBtreeReusePage);
 	XLogInsert(RM_BTREE_ID, XLOG_BTREE_REUSE_PAGE);
-	covered_rel = index->rd_locator;
-	covered = horizon;
 	return true;
 }

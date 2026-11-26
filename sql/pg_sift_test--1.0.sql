@@ -243,6 +243,10 @@ CREATE FUNCTION sift._test_pacer_reset() RETURNS void
 CREATE FUNCTION sift._test_leak(kind text, rel regclass DEFAULT 'pg_class') RETURNS void
 	AS 'MODULE_PATHNAME', 'sift_test_leak' LANGUAGE C STRICT;
 
+-- the snapshot conflict of rel at horizon (src/core/wal_conflict_test.c): true when a record was logged
+CREATE FUNCTION sift._test_wal_conflict(rel regclass, horizon xid8) RETURNS bool
+	AS 'MODULE_PATHNAME', 'sift_test_wal_conflict' LANGUAGE C STRICT;
+
 -- the room of the table of cache kinds (core/cachebudget.h), and n kinds that hold nothing registered with the budget (src/core/cachebudget_test.c)
 CREATE FUNCTION sift._test_cache_kinds_max() RETURNS int4
 	AS 'MODULE_PATHNAME', 'sift_test_cache_kinds_max' LANGUAGE C STRICT;
