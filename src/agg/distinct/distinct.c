@@ -46,6 +46,7 @@ struct SiftDistinct
 	uint32		ncount;
 	SiftSpillSet *spill;
 	uint32		resident;
+	bool		by_group;		/* the partitions are those of the groups: a grouped set whose table held several groups when it first spilled */
 	uint8	   *scratch;
 	uint32		scratch_cap;
 	bool		finished;
@@ -265,11 +266,45 @@ dist_scratch(SiftDistinct *d, uint32 need)
 	}
 }
 
-/* The partition of a key by its hash: the keys of a group spread over all the partitions, so that no partition is a whole group that the next level has to split again */
+/* The bytes of a grouped key that name its group: the length of the prefix and the prefix */
 static uint32
-dist_part(const SiftDistinct *d, uint64 h)
+dist_group_bytes(const uint8 *key)
 {
+	uint32		plen;
+
+	memcpy(&plen, key, sizeof(plen));
+	return (uint32) sizeof(plen) + plen;
+}
+
+/*
+ * The partition of a key: a grouped set that holds several groups when it first spills keeps the keys of a group together, so that the count of a group reaches emit once and not once a partition
+ * (each piece is an upsert of the table of the groups, which spills in turn); one that holds a single group splits it by the whole key
+ */
+static uint32
+dist_part(const SiftDistinct *d, uint64 h, const uint8 *key)
+{
+	if (d->by_group)
+		h = hash_bytes_extended(key, (int) dist_group_bytes(key), d->level);
 	return sift_spill_part_of(h, sift_spill_nparts_of(d->spill));
+}
+
+static bool
+dist_has_groups(const SiftDistinct *d)
+{
+	const uint8 *first = NULL;
+
+	for (uint32 i = 0; i < d->cap; i++)
+	{
+		const uint8 *k = d->tab[i].key;
+
+		if (k == NULL)
+			continue;
+		if (first == NULL)
+			first = k;
+		else if (dist_group_bytes(k) != dist_group_bytes(first) || memcmp(k, first, dist_group_bytes(k)) != 0)
+			return true;
+	}
+	return false;
 }
 
 /* The partitions the keys of a set that outgrew its budget go to: their buffers (8 KB each) take at most half the budget, and the more of them, the likelier a partition fits the budget when it is read back */
@@ -312,6 +347,7 @@ dist_evict(SiftDistinct *d)
 	if (d->spill == NULL)
 	{
 		d->spill = sift_spill_create(d->cx, dist_nparts(d));
+		d->by_group = d->emit != NULL && dist_has_groups(d);
 		d->resident = 0;
 	}
 	else
@@ -320,7 +356,7 @@ dist_evict(SiftDistinct *d)
 	d->st.max_level = Max(d->st.max_level, d->level + 1);
 
 	for (uint32 i = 0; i < oldcap; i++)
-		if (old[i].key != NULL && dist_part(d, old[i].hash) == keep)
+		if (old[i].key != NULL && dist_part(d, old[i].hash, old[i].key) == keep)
 			kept++;
 	d->tab = NULL;
 	d->cap = 0;
@@ -341,7 +377,7 @@ dist_evict(SiftDistinct *d)
 
 		if (e->key == NULL)
 			continue;
-		if (dist_part(d, e->hash) == keep)
+		if (dist_part(d, e->hash, e->key) == keep)
 		{
 			DistEntry	ne = *e;
 
@@ -351,7 +387,7 @@ dist_evict(SiftDistinct *d)
 		}
 		else
 		{
-			dist_put_spill(d, dist_part(d, e->hash), e->slot, e->key, e->len);
+			dist_put_spill(d, dist_part(d, e->hash, e->key), e->slot, e->key, e->len);
 			if (d->emit == NULL)
 				d->count[e->slot]--;
 		}
@@ -386,7 +422,7 @@ dist_reserve(SiftDistinct *d, uint64 hash, uint32 slot, const void *key, uint32 
 			uint32		part;
 
 			dist_evict(d);
-			part = dist_part(d, hash);
+			part = dist_part(d, hash, key);
 			if (part != d->resident)
 			{
 				dist_put_spill(d, part, slot, key, len);
@@ -422,7 +458,7 @@ dist_add_with(SiftDistinct *d, uint64 h, uint32 slot, const void *key, uint32 le
 	d->st.adds++;
 	if (d->spill != NULL)
 	{
-		uint32		part = dist_part(d, h);
+		uint32		part = dist_part(d, h, key);
 
 		if (part != d->resident)
 		{
