@@ -7,7 +7,8 @@
 /*
  * The buffer of a unit record is the largest of a lookup after the cursors (a unit of 100,000 rows is 400 kB), and a block that size grows the heap and goes back to the kernel
  * with its top when the statement ends (75 page faults for a lookup of 0.35 million instructions): the backend keeps the buffers of the segments it has closed, and the next
- * statement opens its segments with them. Taken by the first unit a segment reads, given back when the segment's context ends.
+ * statement opens its segments with them. Taken by the first unit a segment reads, given back when the segment's context ends. A buffer is in the budget from its
+ * allocation, so giving it back makes no room: the give-back runs inside the deletion of a context that may be the one a cache is evicting, and evicts nothing.
  */
 #define UNIT_KEEP		4
 
@@ -57,7 +58,6 @@ unit_give_back(SegPriv *pv)
 	{
 		unit_spare[nunit_spare++] = (typeof(unit_spare[0])) {pv->unitbuf, pv->unitcap};
 		unit_spare_tick = sift_cache_tick();
-		sift_cache_commit();
 	}
 	else
 		pfree(pv->unitbuf);
