@@ -498,6 +498,7 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 		bool		busy;
 		const SiftPartitionEntry *e;
 
+		CHECK_FOR_INTERRUPTS();
 		if (hot_ok && sift_l0_hot_refs(rel, part_id, key_lo, refs, n, &applied) == SIFT_L0_GC_APPLIED)
 			return true;
 		busy = sift_l0_lock_busy(rel, part_id);

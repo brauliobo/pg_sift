@@ -650,6 +650,7 @@ sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 		bool		busy;
 		const SiftPartitionEntry *e;
 
+		CHECK_FOR_INTERRUPTS();
 		if (hot_ok && sift_l0_hot_batches(rel, part_id, key_lo, &rec, 1, &applied) == SIFT_L0_GC_APPLIED)
 			return true;
 		busy = sift_l0_lock_busy(rel, part_id);
