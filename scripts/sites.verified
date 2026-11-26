@@ -107,8 +107,8 @@ src/col/f2/proj/sql.c	defs_rows	unreachable	defs_relid() is tested with OidIsVal
 src/col/f2/proj/sql.c	def_insert	unreachable	sift.projection_defs is a member of the extension, created by the same script as sift.create_projection that calls this: PostgreSQL refuses to drop a member of an extension
 src/col/f2/proj/sql.c	def_delete	unreachable	sift.projection_defs is a member of the extension, created by the same script as sift.drop_projection that calls this: PostgreSQL refuses to drop a member of an extension
 src/col/f2/scope/cache.c	load	guarded	GetSysCacheHashValue1 only hashes the OID of the index the caller holds open and locked, for the invalidation callback; it needs no tuple
-src/col/f2/scope/build.c	sift_f2_scope_refresh	guarded	the fact table is the heap of the index the caller holds open and locked: DROP TABLE waits for that lock
-src/col/f2/scope/build.c	sift_f2_scope_refresh_for	guarded	only compaction of a scoped index calls it, with the index open and locked, not an OID of SQL: the fact table is the heap of that index and DROP TABLE waits for the lock
+src/col/f2/scope/build.c	refresh_stale	guarded	the fact table is the heap of the index the caller holds open and locked: DROP TABLE waits for that lock
+src/col/f2/scope/build.c	refresh_for	guarded	only compaction of a scoped index calls it, with the index open and locked, not an OID of SQL: the fact table is the heap of that index and DROP TABLE waits for the lock
 src/col/f2/tier/policy.c	catalog_user_enter	guarded	the table is sift.tier_policies, a member of the extension, and the tuple of its OID is tested with SIFT_INVARIANT(HeapTupleIsValid) on the next line
 src/col/f2/tier/sql.c	check_ttl_column	fixed	the attribute number is tested against InvalidAttrNumber before it is used; the relation argument goes through sift_rel_must_exist in open_f2_rel (surface_null_args)
 src/col/f2/l0/href_fetch.c	cursor_open	guarded	the table is the heap of the index the caller holds open: DROP TABLE and DROP INDEX wait for the lock of the index, and the index cannot be dropped before its table is locked
