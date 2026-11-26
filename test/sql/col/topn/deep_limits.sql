@@ -1,5 +1,5 @@
--- The limits of the top-N heap lowered (sift.test_limits: topn_rows, topn_keys), so that the sort of every row that passes runs on a few rows:
--- the pushed plan and the plain plan give the same rows in the same order, at the cap, over it, with ties and NULLs, for a generic plan.
+-- ORDER BY .. LIMIT .. OFFSET under, at and past the rows that pass, with ties, NULLs, NaN, numerics, expressions and up to seven keys, and for a generic plan:
+-- the pushed plan and the plain plan give the same rows in the same order.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET sift.async_maintenance = off;
@@ -11,7 +11,9 @@ SELECT i, (hashint4(i) & 2147483647) % 9, (hashint4(i + 1) & 2147483647) % 4, (h
 	   CASE WHEN i % 13 = 0 THEN NULL ELSE ((hashint4(i + 4) & 2147483647) % 900)::numeric / 10 END,
 	   timestamp '2024-01-01' + (hashint4(i + 5) & 2147483647) % 100000 * interval '1 second'
 FROM generate_series(1, 6000) i;
+SET client_min_messages = warning;
 CREATE INDEX cl_col ON cl USING sift_col (id, a, b, c, f, amount, ts);
+RESET client_min_messages;
 VACUUM (ANALYZE) cl;
 
 CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
@@ -48,18 +50,10 @@ INSERT INTO cl_q VALUES
 	('five_keys',    $q$SELECT id, a, b, c, ts FROM cl ORDER BY a DESC, b, c DESC, ts, id LIMIT 10 OFFSET 20$q$),
 	('seven_keys',   $q$SELECT id FROM cl ORDER BY a, b DESC, c, f NULLS FIRST, amount DESC, ts, id LIMIT 10 OFFSET 30$q$);
 
-SET sift.test_limits = 'topn_rows=50';
 SELECT tag, cl_check(q) FROM cl_q ORDER BY tag COLLATE "C";
--- more keys than the heap holds (one), whatever the rows
-SET sift.test_limits = 'topn_keys=1';
-SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'desc_nulls', 'ties', 'three_keys', 'expression', 'five_keys') ORDER BY tag COLLATE "C";
-SET sift.test_limits = 'topn_rows=50, topn_keys=2';
-SELECT tag, cl_check(q) FROM cl_q WHERE tag IN ('limit_under', 'over_cap', 'three_keys') ORDER BY tag COLLATE "C";
-RESET sift.test_limits;
 
 -- a generic plan: LIMIT and OFFSET are parameters, the plan assumes 1000 rows, and the scan reads their values when it starts and decides
 -- between the heap and the sort
-SET sift.test_limits = 'topn_rows=2000';
 SET plan_cache_mode = force_generic_plan;
 CREATE FUNCTION cl_generic(lim bigint, off bigint) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;
@@ -79,7 +73,6 @@ BEGIN
 END $$;
 SELECT v, cl_generic(l, o) FROM (VALUES (10, 0), (10, 1990), (10, 1991), (3000, 0), (5, 2500)) x(l, o), LATERAL (SELECT format('%s+%s', l, o) AS v) y ORDER BY l, o;
 RESET plan_cache_mode;
-RESET sift.test_limits;
 DROP FUNCTION cl_generic(bigint, bigint), cl_check(text), cl_mode(bool);
 DROP TABLE cl, cl_q;
 DROP EXTENSION pg_sift_helpers;

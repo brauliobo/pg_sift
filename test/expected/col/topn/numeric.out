@@ -28,10 +28,9 @@ SELECT nm_rows(1, 6000);
  
 (1 row)
 
+SET client_min_messages = warning;
 CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
-NOTICE:  sift_col index "nm_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nm_col');
+RESET client_min_messages;
 VACUUM (ANALYZE) nm;
 CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -79,8 +78,8 @@ CREATE FUNCTION nm_stage(stage text, workers int DEFAULT 0) RETURNS TABLE (stage
 SELECT * FROM nm_stage('build');
 NOTICE:  table "nm_a" does not exist, skipping
 NOTICE:  table "nm_b" does not exist, skipping
- stage |      tag      |     result     
--------+---------------+----------------
+ stage |      tag      |    result    
+-------+---------------+--------------
  build | a_asc         | same+topn 25
  build | a_desc        | same+topn 25
  build | a_expression  | same+topn 25
@@ -92,7 +91,7 @@ NOTICE:  table "nm_b" does not exist, skipping
  build | a_other_cols  | same+topn 25
  build | a_same_leaf   | same+topn 25
  build | a_ties        | same+topn 40
- build | all_rows      | same+topn 6000
+ build | all_rows      | same 6000
  build | b_asc         | same+topn 25
  build | b_desc        | same+topn 25
  build | b_offset      | same+topn 20
@@ -142,8 +141,8 @@ SELECT sift.col_promote('nm_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM nm_stage('segments');
-  stage   |      tag      |     result      
-----------+---------------+-----------------
+  stage   |      tag      |    result    
+----------+---------------+--------------
  segments | a_asc         | same+topn 25
  segments | a_desc        | same+topn 25
  segments | a_expression  | same+topn 25
@@ -155,7 +154,7 @@ SELECT * FROM nm_stage('segments');
  segments | a_other_cols  | same+topn 25
  segments | a_same_leaf   | same+topn 25
  segments | a_ties        | same+topn 40
- segments | all_rows      | same+topn 12000
+ segments | all_rows      | same 12000
  segments | b_asc         | same+topn 25
  segments | b_desc        | same+topn 25
  segments | b_offset      | same+topn 20
@@ -188,8 +187,8 @@ SELECT nm_rows(12001, 12400);
 UPDATE nm SET a = (id % 1000)::numeric * 3000000000000000000000, c = 'NaN' WHERE id % 97 = 0;
 DELETE FROM nm WHERE id % 89 = 0;
 SELECT * FROM nm_stage('buffer');
- stage  |      tag      |     result      
---------+---------------+-----------------
+ stage  |      tag      |    result    
+--------+---------------+--------------
  buffer | a_asc         | same+topn 25
  buffer | a_desc        | same+topn 25
  buffer | a_expression  | same+topn 25
@@ -201,7 +200,7 @@ SELECT * FROM nm_stage('buffer');
  buffer | a_other_cols  | same+topn 25
  buffer | a_same_leaf   | same+topn 25
  buffer | a_ties        | same+topn 40
- buffer | all_rows      | same+topn 12261
+ buffer | all_rows      | same 12261
  buffer | b_asc         | same+topn 25
  buffer | b_desc        | same+topn 25
  buffer | b_offset      | same+topn 20
@@ -251,8 +250,8 @@ SELECT sift.col_merge('nm_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM nm_stage('merged');
- stage  |      tag      |     result      
---------+---------------+-----------------
+ stage  |      tag      |    result    
+--------+---------------+--------------
  merged | a_asc         | same+topn 25
  merged | a_desc        | same+topn 25
  merged | a_expression  | same+topn 25
@@ -264,7 +263,7 @@ SELECT * FROM nm_stage('merged');
  merged | a_other_cols  | same+topn 25
  merged | a_same_leaf   | same+topn 25
  merged | a_ties        | same+topn 40
- merged | all_rows      | same+topn 12261
+ merged | all_rows      | same 12261
  merged | b_asc         | same+topn 25
  merged | b_desc        | same+topn 25
  merged | b_offset      | same+topn 20
@@ -281,8 +280,8 @@ SELECT * FROM nm_stage('merged');
 
 VACUUM nm;
 SELECT * FROM nm_stage('vacuumed');
-  stage   |      tag      |     result      
-----------+---------------+-----------------
+  stage   |      tag      |    result    
+----------+---------------+--------------
  vacuumed | a_asc         | same+topn 25
  vacuumed | a_desc        | same+topn 25
  vacuumed | a_expression  | same+topn 25
@@ -294,7 +293,7 @@ SELECT * FROM nm_stage('vacuumed');
  vacuumed | a_other_cols  | same+topn 25
  vacuumed | a_same_leaf   | same+topn 25
  vacuumed | a_ties        | same+topn 40
- vacuumed | all_rows      | same+topn 12261
+ vacuumed | all_rows      | same 12261
  vacuumed | b_asc         | same+topn 25
  vacuumed | b_desc        | same+topn 25
  vacuumed | b_offset      | same+topn 20
@@ -309,24 +308,22 @@ SELECT * FROM nm_stage('vacuumed');
  vacuumed | two_keys      | same+topn 30
 (24 rows)
 
+SET client_min_messages = warning;
 SELECT sift.col_verify('nm_col', true);
  col_verify 
 ------------
  
 (1 row)
 
+RESET client_min_messages;
 -- a partitioned table: the partitions have their own segments and dictionaries
 CREATE TABLE np (id int, g int NOT NULL, a numeric(30,4), b numeric(38,0), c numeric, d numeric(25,2), pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
 CREATE TABLE np_a PARTITION OF np FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE np_b PARTITION OF np FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO np (id, g, a, b, c, d) SELECT id, g, a, b, c, d FROM nm WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX np_col ON np USING sift_col (id, g, a, b, c, d);
-NOTICE:  sift_col index "np_a_id_g_a_b_c_d_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('np_a_id_g_a_b_c_d_idx');
-NOTICE:  sift_col index "np_b_id_g_a_b_c_d_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('np_b_id_g_a_b_c_d_idx');
+RESET client_min_messages;
 VACUUM (ANALYZE) np;
 SELECT tag, nm_check(replace(q, 'FROM nm ', 'FROM np ')) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'b_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
    tag    |   nm_check   
@@ -356,10 +353,9 @@ SELECT nm_check($q$SELECT id, a FROM nt ORDER BY a, id LIMIT 25$q$) AS table_a_a
 CREATE TABLE nv (id int PRIMARY KEY, a numeric(30,4));
 INSERT INTO nv SELECT i, (hashint4(i) % 5000)::numeric * 100000000000000 FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX nv_col ON nv USING sift_col (id, a);
-NOTICE:  sift_col index "nv_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('nv_col');
+RESET client_min_messages;
 RESET sift.test_limits;
 ANALYZE nv;
 SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lanes_overflow;

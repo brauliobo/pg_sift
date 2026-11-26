@@ -25,7 +25,9 @@ SELECT i, i % 7,
 	CASE WHEN i % 29 = 0 THEN NULL ELSE ('00000000-0000-0000-0000-' || lpad(to_hex((i * 7919) % 100000), 12, '0'))::uuid END
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v, u);
+RESET client_min_messages;
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 

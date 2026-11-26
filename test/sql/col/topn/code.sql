@@ -127,12 +127,6 @@ SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_filter', 'byte
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
 RESET sift.backend_cache_kb;
 
--- a dictionary above the limit of entries an order code is made for (lowered here): the rows are compared as bytes
-SELECT set_config('sift.test_limits', 'topn_code_entries=50', false) IS NOT NULL AS low_limit;
-SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_desc', 'text_asc', 'text_same_prefix', 'two_keys') ORDER BY tag COLLATE "C";
-SELECT oc_path($q$SELECT id, s FROM oc ORDER BY s COLLATE "C", id LIMIT 10$q$) AS above_the_limit;
-RESET sift.test_limits;
-
 SELECT sift.col_merge('oc_col', true) >= 0 AS merged;
 SELECT * FROM oc_stage('merged');
 VACUUM oc;

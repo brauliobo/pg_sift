@@ -18,10 +18,9 @@ SELECT i,
 	CASE WHEN i % 43 = 0 THEN NULL WHEN i % 97 = 0 THEN 'NaN'::numeric ELSE (i * 7919 % 1000003)::numeric * 10000000000000000000 + (i % 100) / 100.0 END,
 	CASE WHEN i % 47 = 0 THEN NULL ELSE (i % 40) * interval '1 day' + (i % 7) * interval '1 hour' + (i % 3) * interval '1 month' END
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX kt_col ON kt USING sift_col (id, t, c, cu, n, cd, d, tz, nw, iv);
-NOTICE:  sift_col index "kt_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = c, cu; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('kt_col');
+RESET client_min_messages;
 VACUUM (ANALYZE) kt;
 CREATE FUNCTION kt_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the number of rows
@@ -119,7 +118,7 @@ EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY id % 7 + (random() * 0)::int, id 
  Limit
    ->  Sort
          Sort Key: (((id % 7) + ((random() * '0'::double precision))::integer)), id
-         ->  Index Only Scan using kt_pkey on kt
+         ->  Index Only Scan using kt_col on kt
 (4 rows)
 
 CREATE FUNCTION kt_plan(q text) RETURNS TABLE ("QUERY PLAN" text) LANGUAGE plpgsql AS $$
@@ -135,7 +134,7 @@ FROM kt_plan('SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 ELSE 0
      ->  Result
    ->  Sort
          Sort Key: (CASE WHEN (kt.id > (InitPlan 1).col1) THEN 1 ELSE 0 END), kt.id
-         ->  Index Only Scan using kt_pkey on kt
+         ->  Index Only Scan using kt_col on kt
 (6 rows)
 
 DROP TABLE kt;

@@ -28,10 +28,9 @@ SELECT ev_rows(1, 6000);
  
 (1 row)
 
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, g, s, w, b);
-NOTICE:  sift_col index "ev_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ev_col');
+RESET client_min_messages;
 VACUUM (ANALYZE) ev;
 CREATE FUNCTION ev_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
@@ -71,9 +70,9 @@ CREATE FUNCTION ev_stage(stage text, workers int DEFAULT 0) RETURNS TABLE (stage
 SELECT * FROM ev_stage('build');
 NOTICE:  table "ev_a" does not exist, skipping
 NOTICE:  table "ev_b" does not exist, skipping
- stage |      tag      |     result     
--------+---------------+----------------
- build | all_rows      | same+topn 6000
+ stage |      tag      |    result    
+-------+---------------+--------------
+ build | all_rows      | same 6000
  build | b_asc         | same+topn 40
  build | b_desc        | same+topn 40
  build | b_offset      | same+topn 20
@@ -127,9 +126,9 @@ SELECT sift.col_promote('ev_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM ev_stage('segments');
-  stage   |      tag      |     result      
-----------+---------------+-----------------
- segments | all_rows      | same+topn 12000
+  stage   |      tag      |    result    
+----------+---------------+--------------
+ segments | all_rows      | same 12000
  segments | b_asc         | same+topn 40
  segments | b_desc        | same+topn 40
  segments | b_offset      | same+topn 20
@@ -169,9 +168,9 @@ UPDATE ev SET s = 'trace' WHERE id % 211 = 0;
 UPDATE ev SET s = 'notice', w = 'notice' WHERE id % 223 = 0;
 DELETE FROM ev WHERE id % 89 = 0;
 SELECT * FROM ev_stage('buffer');
- stage  |      tag      |     result      
---------+---------------+-----------------
- buffer | all_rows      | same+topn 12459
+ stage  |      tag      |    result    
+--------+---------------+--------------
+ buffer | all_rows      | same 12459
  buffer | b_asc         | same+topn 40
  buffer | b_desc        | same+topn 40
  buffer | b_offset      | same+topn 20
@@ -244,9 +243,9 @@ SELECT sift.col_merge('ev_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM ev_stage('merged');
- stage  |      tag      |     result      
---------+---------------+-----------------
- merged | all_rows      | same+topn 12459
+ stage  |      tag      |    result    
+--------+---------------+--------------
+ merged | all_rows      | same 12459
  merged | b_asc         | same+topn 40
  merged | b_desc        | same+topn 40
  merged | b_offset      | same+topn 20
@@ -267,9 +266,9 @@ SELECT * FROM ev_stage('merged');
 
 VACUUM ev;
 SELECT * FROM ev_stage('vacuumed');
-  stage   |      tag      |     result      
-----------+---------------+-----------------
- vacuumed | all_rows      | same+topn 12459
+  stage   |      tag      |    result    
+----------+---------------+--------------
+ vacuumed | all_rows      | same 12459
  vacuumed | b_asc         | same+topn 40
  vacuumed | b_desc        | same+topn 40
  vacuumed | b_offset      | same+topn 20
@@ -288,24 +287,22 @@ SELECT * FROM ev_stage('vacuumed');
  vacuumed | w_then_s      | same+topn 30
 (17 rows)
 
+SET client_min_messages = warning;
 SELECT sift.col_verify('ev_col', true);
  col_verify 
 ------------
  
 (1 row)
 
+RESET client_min_messages;
 -- a partitioned table
 CREATE TABLE ep (id int, g int NOT NULL, s sev, w sev, b big, pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
 CREATE TABLE ep_a PARTITION OF ep FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE ep_b PARTITION OF ep FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ep (id, g, s, w, b) SELECT id, g, s, w, b FROM ev WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX ep_col ON ep USING sift_col (id, g, s, w, b);
-NOTICE:  sift_col index "ep_a_id_g_s_w_b_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ep_a_id_g_s_w_b_idx');
-NOTICE:  sift_col index "ep_b_id_g_s_w_b_idx": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ep_b_id_g_s_w_b_idx');
+RESET client_min_messages;
 VACUUM (ANALYZE) ep;
 SELECT tag, ev_check(replace(q, 'FROM ev ', 'FROM ep ')) FROM ev_q WHERE tag IN ('s_asc', 's_desc', 's_filter', 's_then_w', 'b_asc') ORDER BY tag COLLATE "C";
    tag    |   ev_check   

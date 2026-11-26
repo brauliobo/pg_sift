@@ -87,16 +87,16 @@ INSERT INTO tc_q VALUES
 SELECT tag, tc_check(q) FROM tc_q ORDER BY tag COLLATE "C";
 NOTICE:  table "tc_a" does not exist, skipping
 NOTICE:  table "tc_b" does not exist, skipping
-        tag        |        tc_check        
--------------------+------------------------
- all_rows          | same+topn+sorted 30000
+        tag        |   tc_check   
+-------------------+--------------
+ all_rows          | same 30000
  bigint_asc        | same+topn 25
  bigint_desc       | same+topn 25
  bigint_min        | same+topn 25
  date              | same+topn 25
  date_desc         | same+topn 25
  date_infinity     | same+topn 25
- deep_page         | same+topn+sorted 20
+ deep_page         | same+topn 20
  int_above         | same+topn 40
  int_asc           | same+topn 25
  int_below         | same+topn 40
@@ -115,7 +115,7 @@ NOTICE:  table "tc_b" does not exist, skipping
  lower_nulls_first | same+topn 25
  lower_offset      | same+topn 20
  lower_then_int    | same+topn 30
- past_the_heap     | same+topn+sorted 30000
+ past_the_heap     | same 30000
  six_keys          | same+topn 30
  smallint          | same+topn 25
  three_keys        | same+topn 30
@@ -148,9 +148,9 @@ SELECT tag, tc_check(q, 2) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'bigin
 SET work_mem = '64kB';
 SELECT tc_check($q$SELECT id, s FROM tc ORDER BY lower(s), id LIMIT 20 OFFSET 20000$q$) AS spilled_lower,
 	   tc_check($q$SELECT id, a, s FROM tc ORDER BY coalesce(a, 500) DESC, upper(s), id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
-    spilled_lower    |  spilled_two_keys   
----------------------+---------------------
- same+topn+sorted 20 | same+topn+sorted 30
+ spilled_lower | spilled_two_keys 
+---------------+------------------
+ same+topn 20  | same+topn 30
 (1 row)
 
 RESET work_mem;
@@ -162,11 +162,11 @@ UPDATE tc SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tc SET a = -5, d = NULL WHERE id % 89 = 0;
 DELETE FROM tc WHERE id % 83 = 0;
 SELECT tag, tc_check(q) FROM tc_q WHERE tag IN ('int_asc', 'int_desc', 'int_below', 'bigint_asc', 'date', 'timestamp', 'lower', 'upper_desc', 'lower_locale', 'varchar', 'three_keys', 'deep_page') ORDER BY tag COLLATE "C";
-     tag      |      tc_check       
---------------+---------------------
+     tag      |   tc_check   
+--------------+--------------
  bigint_asc   | same+topn 25
  date         | same+topn 25
- deep_page    | same+topn+sorted 20
+ deep_page    | same+topn 20
  int_asc      | same+topn 25
  int_below    | same+topn 40
  int_desc     | same+topn 25

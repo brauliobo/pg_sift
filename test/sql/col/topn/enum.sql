@@ -25,7 +25,9 @@ CREATE FUNCTION ev_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 		CASE WHEN i % 13 = 0 THEN NULL ELSE (enum_range(NULL::big))[1 + (hashint4(i * 3) & 2147483647) % 301] END
 	FROM generate_series(lo, hi) i $$;
 SELECT ev_rows(1, 6000);
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, g, s, w, b);
+RESET client_min_messages;
 VACUUM (ANALYZE) ev;
 
 CREATE FUNCTION ev_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
@@ -108,14 +110,18 @@ SELECT sift.col_merge('ev_col', true) >= 0 AS merged;
 SELECT * FROM ev_stage('merged');
 VACUUM ev;
 SELECT * FROM ev_stage('vacuumed');
+SET client_min_messages = warning;
 SELECT sift.col_verify('ev_col', true);
+RESET client_min_messages;
 
 -- a partitioned table
 CREATE TABLE ep (id int, g int NOT NULL, s sev, w sev, b big, pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
 CREATE TABLE ep_a PARTITION OF ep FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE ep_b PARTITION OF ep FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ep (id, g, s, w, b) SELECT id, g, s, w, b FROM ev WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX ep_col ON ep USING sift_col (id, g, s, w, b);
+RESET client_min_messages;
 VACUUM (ANALYZE) ep;
 SELECT tag, ev_check(replace(q, 'FROM ev ', 'FROM ep ')) FROM ev_q WHERE tag IN ('s_asc', 's_desc', 's_filter', 's_then_w', 'b_asc') ORDER BY tag COLLATE "C";
 

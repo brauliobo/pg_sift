@@ -24,7 +24,9 @@ CREATE FUNCTION iv_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 		(ARRAY['1 day', '24 hours', '-1 mon', '2 days 3 hours', '0'])[1 + i % 5]::interval
 	FROM generate_series(lo, hi) i $$;
 SELECT iv_rows(1, 6000);
+SET client_min_messages = warning;
 CREATE INDEX iv_col ON iv USING sift_col (id, g, a, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) iv;
 
 CREATE FUNCTION iv_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
@@ -98,14 +100,18 @@ SELECT sift.col_merge('iv_col', true) >= 0 AS merged;
 SELECT * FROM iv_stage('merged');
 VACUUM iv;
 SELECT * FROM iv_stage('vacuumed');
+SET client_min_messages = warning;
 SELECT sift.col_verify('iv_col', true);
+RESET client_min_messages;
 
 -- a partitioned table
 CREATE TABLE ip (id int, g int NOT NULL, a interval, w interval, pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
 CREATE TABLE ip_a PARTITION OF ip FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE ip_b PARTITION OF ip FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO ip (id, g, a, w) SELECT id, g, a, w FROM iv WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX ip_col ON ip USING sift_col (id, g, a, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) ip;
 SELECT tag, iv_check(replace(q, 'FROM iv ', 'FROM ip ')) FROM iv_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'a_text', 'two_keys') ORDER BY tag COLLATE "C";
 

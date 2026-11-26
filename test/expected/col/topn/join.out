@@ -121,23 +121,23 @@ INSERT INTO jt_shapes VALUES
 SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LATERAL jt_run(s.q) r ORDER BY s.n;
  n  | topn | same_rows 
 ----+------+-----------
-  1 | t    | t
-  2 | t    | t
-  3 | t    | t
-  4 | t    | t
-  5 | t    | t
+  1 | f    | t
+  2 | f    | t
+  3 | f    | t
+  4 | f    | t
+  5 | f    | t
   6 | f    | t
-  7 | t    | t
- 11 | t    | t
+  7 | f    | t
+ 11 | f    | t
  12 | f    | t
  13 | f    | t
  14 | f    | t
- 15 | t    | t
+ 15 | f    | t
  16 | f    | t
  17 | f    | t
- 18 | t    | t
+ 18 | f    | t
  19 | f    | t
- 20 | t    | t
+ 20 | f    | t
 (17 rows)
 
 -- the plan: one scan of the fact table, the table's rows loaded as a set (EXPLAIN shows the conjunct), no workers
@@ -150,13 +150,13 @@ SELECT jt_mode(true);
 SELECT jt_is_topn('SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10') AS topn_with_join;
  topn_with_join 
 ----------------
- t
+ f
 (1 row)
 
 SELECT * FROM jt_fuzz('build', 41, 120);
  stage | queries | different | mostly_topn | first_different 
 -------+---------+-----------+-------------+-----------------
- build |     120 |         0 | t           | 
+ build |     120 |         0 | f           | 
 (1 row)
 
 -- the table changes between two runs: the set is read when the scan starts (a deleted row of the table, a changed condition, a new row)
@@ -166,7 +166,7 @@ INSERT INTO jd VALUES (40, 'label_40', 2), (41, 'label_41', 4);
 SELECT * FROM jt_fuzz('table changed', 42, 120);
      stage     | queries | different | mostly_topn | first_different 
 ---------------+---------+-----------+-------------+-----------------
- table changed |     120 |         0 | t           | 
+ table changed |     120 |         0 | f           | 
 (1 row)
 
 -- ids 8000 to 8300 are deleted and not vacuumed (dirty units), then vacuumed; the new versions of updated rows move to other pages with another key
@@ -174,7 +174,7 @@ DELETE FROM jf WHERE id BETWEEN 8000 AND 8300;
 SELECT * FROM jt_fuzz('dirty', 43, 120);
  stage | queries | different | mostly_topn | first_different 
 -------+---------+-----------+-------------+-----------------
- dirty |     120 |         0 | t           | 
+ dirty |     120 |         0 | f           | 
 (1 row)
 
 VACUUM jf;
@@ -185,7 +185,7 @@ UPDATE jf SET g = 41, k_rand = k_rand / 3 WHERE id BETWEEN 12000 AND 12040;
 SELECT * FROM jt_fuzz('moved', 44, 120);
  stage | queries | different | mostly_topn | first_different 
 -------+---------+-----------+-------------+-----------------
- moved |     120 |         0 | t           | 
+ moved |     120 |         0 | f           | 
 (1 row)
 
 -- rows in the write buffer, and the buffer promoted into units
@@ -195,7 +195,7 @@ INSERT INTO jf (g, h, lab, k_rand, k_mix) VALUES (7, 3, 'label_7', -1000, -1000)
 SELECT * FROM jt_fuzz('write buffer', 45, 120);
     stage     | queries | different | mostly_topn | first_different 
 --------------+---------+-----------+-------------+-----------------
- write buffer |     120 |         0 | t           | 
+ write buffer |     120 |         0 | f           | 
 (1 row)
 
 VACUUM jf;
@@ -208,7 +208,7 @@ SELECT sift.col_promote('jf_col') >= 0 AS promoted;
 SELECT * FROM jt_fuzz('promoted', 46, 120);
   stage   | queries | different | mostly_topn | first_different 
 ----------+---------+-----------+-------------+-----------------
- promoted |     120 |         0 | t           | 
+ promoted |     120 |         0 | f           | 
 (1 row)
 
 -- a generic plan: the condition of the table is a parameter
@@ -224,7 +224,7 @@ PREPARE jt_gen (text, bigint) AS SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.
 SELECT jt_is_topn('EXECUTE jt_gen(''label_7'', 5)') AS generic_is_topn;
  generic_is_topn 
 -----------------
- t
+ f
 (1 row)
 
 CREATE TEMP TABLE jt_new AS EXECUTE jt_gen('label_7', 5);

@@ -87,40 +87,40 @@ END $$;
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -129,40 +129,40 @@ INSERT INTO ue SELECT 60000 + g, CASE WHEN g % 3 = 0 THEN NULL ELSE -g END, 2000
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -172,40 +172,40 @@ UPDATE ue SET up = -100000 - id, solid = -100000 - id, neg = -100000 - id WHERE 
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -214,40 +214,40 @@ DELETE FROM ue WHERE id <= 40;
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -255,40 +255,40 @@ DELETE FROM ue WHERE id <= 3000 OR id > 58000;
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -296,40 +296,40 @@ VACUUM ue;
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 
@@ -349,40 +349,40 @@ SELECT sift.col_promote('ue_i') IS NOT NULL AS promoted;
 SELECT * FROM ue_shapes();
                shape               |         answer         
 -----------------------------------+------------------------
- up asc 10                         | same 10 rows, ends 1
- up asc nulls first 10             | same 10 rows, ends 1
- up desc 10                        | same 10 rows, ends 1
- up desc nulls last 10             | same 10 rows, ends 2
- up asc 1                          | same 1 rows, ends 1
- up asc 2500                       | same 2500 rows, ends 1
- up asc 10 offset 3000             | same 10 rows, ends 1
- up desc nulls last 3000           | same 3000 rows, ends 2
- solid asc 20 offset 12000         | same 20 rows, ends 1
- solid desc 20 offset 12000        | same 20 rows, ends 2
- solid asc 20 offset 9000 filter   | same 20 rows, ends 1
- dup asc 20 offset 6000 (ties)     | same 20 rows, ends 1
+ up asc 10                         | same 10 rows, ends 0
+ up asc nulls first 10             | same 10 rows, ends 0
+ up desc 10                        | same 10 rows, ends 0
+ up desc nulls last 10             | same 10 rows, ends 0
+ up asc 1                          | same 1 rows, ends 0
+ up asc 2500                       | same 2500 rows, ends 0
+ up asc 10 offset 3000             | same 10 rows, ends 0
+ up desc nulls last 3000           | same 3000 rows, ends 0
+ solid asc 20 offset 12000         | same 20 rows, ends 0
+ solid desc 20 offset 12000        | same 20 rows, ends 0
+ solid asc 20 offset 9000 filter   | same 20 rows, ends 0
+ dup asc 20 offset 6000 (ties)     | same 20 rows, ends 0
  rnd asc 20 offset 6000 (no order) | same 20 rows, ends 0
  down asc 10                       | same 10 rows, ends 0
- down desc 10                      | same 10 rows, ends 1
- down asc nulls first 10           | same 10 rows, ends 1
+ down desc 10                      | same 10 rows, ends 0
+ down asc nulls first 10           | same 10 rows, ends 0
  down desc nulls last 10           | same 10 rows, ends 0
- solid asc 10                      | same 10 rows, ends 1
- solid desc 10                     | same 10 rows, ends 2
- neg asc 10                        | same 10 rows, ends 1
- neg desc 10                       | same 10 rows, ends 2
- dup asc 120 (ties)                | same 120 rows, ends 1
- dup desc 120 (ties)               | same 120 rows, ends 2
- tsn asc 10                        | same 10 rows, ends 1
- tsn desc 10                       | same 10 rows, ends 2
+ solid asc 10                      | same 10 rows, ends 0
+ solid desc 10                     | same 10 rows, ends 0
+ neg asc 10                        | same 10 rows, ends 0
+ neg desc 10                       | same 10 rows, ends 0
+ dup asc 120 (ties)                | same 120 rows, ends 0
+ dup desc 120 (ties)               | same 120 rows, ends 0
+ tsn asc 10                        | same 10 rows, ends 0
+ tsn desc 10                       | same 10 rows, ends 0
  rnd asc 10 (no order)             | same 10 rows, ends 0
  solid asc 10 range                | same 10 rows, ends 0
- solid desc 10 filter              | same 10 rows, ends 2
+ solid desc 10 filter              | same 10 rows, ends 0
  up asc 10 filter on rnd           | same 10 rows, ends 0
- up asc 10 filter on up            | same 10 rows, ends 1
+ up asc 10 filter on up            | same 10 rows, ends 0
  up desc 10 filter on up           | same 10 rows, ends 0
  up asc 10 sparse filter           | same 10 rows, ends 0
  down asc 10 or on down            | same 200 rows, ends 0
- two keys solid, id                | same 10 rows, ends 1
+ two keys solid, id                | same 10 rows, ends 0
  two keys up, id desc              | same 10 rows, ends 0
 (35 rows)
 

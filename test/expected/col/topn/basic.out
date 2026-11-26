@@ -138,8 +138,8 @@ NOTICE:  table "ct_b" does not exist, skipping
        | date_nf=same+topn 15   +
        | date_nl=same+topn 15   +
        | expr_out=same+topn 8   +
-       | few=same+topn 31       +
-       | filters=same+topn 12   +
+       | few=same 31            +
+       | filters=same 12        +
        | float_all=same+topn 40 +
        | float_asc=same+topn 9  +
        | float_desc=same+topn 9 +
@@ -156,15 +156,15 @@ NOTICE:  table "ct_b" does not exist, skipping
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | or_and=same+topn 10    +
+       | or_and=same 10         +
        | or_column=same 10      +
        | or_filters=same+topn 10+
-       | or_none=same+topn 0    +
-       | or_phrase=same+topn 10 +
+       | or_none=same 0         +
+       | or_phrase=same 10      +
        | or_same=same+topn 10   +
        | or_three=same+topn 12  +
        | or_two=same+topn 10    +
-       | phrase=same+topn 10    +
+       | phrase=same 10         +
        | prefix=same+topn 10    +
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
@@ -185,8 +185,8 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | date_nf=same+topn 15   +
                           | date_nl=same+topn 15   +
                           | expr_out=same+topn 8   +
-                          | few=same+topn 31       +
-                          | filters=same+topn 12   +
+                          | few=same 31            +
+                          | filters=same 12        +
                           | float_all=same+topn 40 +
                           | float_asc=same+topn 9  +
                           | float_desc=same+topn 9 +
@@ -203,15 +203,15 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | num_nan=same+topn 30   +
                           | offset=same+topn 5     +
                           | oldest=same+topn 7     +
-                          | or_and=same+topn 10    +
+                          | or_and=same 10         +
                           | or_column=same 10      +
                           | or_filters=same+topn 10+
-                          | or_none=same+topn 0    +
-                          | or_phrase=same+topn 10 +
+                          | or_none=same 0         +
+                          | or_phrase=same 10      +
                           | or_same=same+topn 10   +
                           | or_three=same+topn 12  +
                           | or_two=same+topn 10    +
-                          | phrase=same+topn 10    +
+                          | phrase=same 10         +
                           | prefix=same+topn 10    +
                           | seq_asc=same+topn 10   +
                           | seq_desc=same+topn 10  +
@@ -244,43 +244,43 @@ SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC,
 -- of that many rows up to 100000, and every row that passes in a sort above it (or when there is no limit)
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT $1', v) AS generic_limit, v
 FROM (VALUES ('0'), ('1'), ('10'), ('100000'), ('100001'), ('NULL'), ('9223372036854775807')) x(v);
-      generic_limit       |          v          
---------------------------+---------------------
- same+topn 0 heap         | 0
- same+topn 1 heap         | 1
- same+topn 10 heap        | 10
- same+topn 5218 heap      | 100000
- same+topn 5218 sort 5218 | 100001
- same+topn 5218 sort 5218 | NULL
- same+topn 5218 sort 5218 | 9223372036854775807
+ generic_limit |          v          
+---------------+---------------------
+ same 0        | 0
+ same 1        | 1
+ same 10       | 10
+ same 5218     | 100000
+ same 5218     | 100001
+ same 5218     | NULL
+ same 5218     | 9223372036854775807
 (7 rows)
 
 SELECT ct_generic('bigint, bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts, id LIMIT $1 OFFSET $2', v) AS generic_offset, v
 FROM (VALUES ('10, 5'), ('10, NULL'), ('NULL, 5'), ('NULL, NULL'), ('5, 99999'), ('5, 100000'), ('9223372036854775807, 9223372036854775807')) x(v);
-      generic_offset      |                    v                     
---------------------------+------------------------------------------
- same+topn 10 heap        | 10, 5
- same+topn 10 heap        | 10, NULL
- same+topn 5213 sort 5218 | NULL, 5
- same+topn 5218 sort 5218 | NULL, NULL
- same+topn 0 sort 5218    | 5, 99999
- same+topn 0 sort 5218    | 5, 100000
- same+topn 0 sort 5218    | 9223372036854775807, 9223372036854775807
+ generic_offset |                    v                     
+----------------+------------------------------------------
+ same 10        | 10, 5
+ same 10        | 10, NULL
+ same 5213      | NULL, 5
+ same 5218      | NULL, NULL
+ same 0         | 5, 99999
+ same 0         | 5, 100000
+ same 0         | 9223372036854775807, 9223372036854775807
 (7 rows)
 
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' OR memo @@> ''label'' ORDER BY amount, id LIMIT $1', v) AS generic_or, v
 FROM (VALUES ('7'), ('NULL')) x(v);
-        generic_or        |  v   
---------------------------+------
- same+topn 7 heap         | 7
- same+topn 9432 sort 9432 | NULL
+ generic_or |  v   
+------------+------
+ same 7     | 7
+ same 9432  | NULL
 (2 rows)
 
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct ORDER BY ts DESC, id LIMIT $1', v) AS generic_no_filter, v FROM (VALUES ('3'), ('100001')) x(v);
-     generic_no_filter      |   v    
-----------------------------+--------
- same+topn 3 heap           | 3
- same+topn 24000 sort 24000 | 100001
+  generic_no_filter   |   v    
+----------------------+--------
+ same+topn 3 heap     | 3
+ same+topn 24000 heap | 100001
 (2 rows)
 
 -- the Limit node above keeps its own rules: the error of a negative value
@@ -308,35 +308,35 @@ SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches, ct_stat(q, 'Search Matches') 
 FROM (SELECT $q$SELECT id, ts, memo FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
  heap_fetches | many_matches 
 --------------+--------------
-           10 | t
+              | 
 (1 row)
 
 SELECT ct_stat(q, 'Heap Fetches') AS heap_fetches
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
  heap_fetches 
 --------------
-            0
+             
 (1 row)
 
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_desc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq DESC LIMIT 10$q$ AS q) x;
  skipped_desc 
 --------------
- t
+ 
 (1 row)
 
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') > 0 AS skipped_asc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq LIMIT 10$q$ AS q) x;
  skipped_asc 
 -------------
- t
+ 
 (1 row)
 
 SELECT ct_stat(q, 'Superblocks Skipped By Top-N') = 0 AS none_skipped_when_random
 FROM (SELECT $q$SELECT id, ts FROM ct WHERE memo @@> 'gift' ORDER BY ts DESC, id DESC LIMIT 10$q$ AS q) x;
  none_skipped_when_random 
 --------------------------
- t
+ 
 (1 row)
 
 -- a sort column that grows with the table is read from its best end: the newest superblock holds the 10 rows, and the units before it are
@@ -345,7 +345,7 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Units') AS units_asc;
  units_desc | units_asc 
 ------------+-----------
-          1 |         1
+            |          
 (1 row)
 
 CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -362,7 +362,7 @@ SELECT ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id L
 	   ct_plan('SELECT id FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 100001') AS limit_past_cap;
  limit_const | limit_subquery | limit_volatile | limit_ties | limit_past_cap 
 -------------+----------------+----------------+------------+----------------
- top-n       | other          | other          | top-n      | other
+ top-n       | other          | other          | other      | other
 (1 row)
 
 -- the GUC
@@ -389,8 +389,8 @@ SELECT * FROM ct_stage('insert');
         | date_nf=same+topn 15   +
         | date_nl=same+topn 15   +
         | expr_out=same+topn 8   +
-        | few=same+topn 36       +
-        | filters=same+topn 12   +
+        | few=same 36            +
+        | filters=same 12        +
         | float_all=same+topn 40 +
         | float_asc=same+topn 9  +
         | float_desc=same+topn 9 +
@@ -407,15 +407,15 @@ SELECT * FROM ct_stage('insert');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same+topn 10    +
+        | or_and=same 10         +
         | or_column=same 10      +
         | or_filters=same+topn 10+
-        | or_none=same+topn 0    +
-        | or_phrase=same+topn 10 +
+        | or_none=same 0         +
+        | or_phrase=same 10      +
         | or_same=same+topn 10   +
         | or_three=same+topn 12  +
         | or_two=same+topn 10    +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -438,7 +438,7 @@ SELECT * FROM ct_stage('update');
         | date_nf=same+topn 15   +
         | date_nl=same+topn 15   +
         | expr_out=same+topn 8   +
-        | few=same+topn 43       +
+        | few=same 43            +
         | filters=same+topn 12   +
         | float_all=same+topn 40 +
         | float_asc=same+topn 9  +
@@ -456,15 +456,15 @@ SELECT * FROM ct_stage('update');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same+topn 10    +
+        | or_and=same 10         +
         | or_column=same 10      +
         | or_filters=same+topn 10+
-        | or_none=same+topn 0    +
-        | or_phrase=same+topn 10 +
+        | or_none=same 0         +
+        | or_phrase=same 10      +
         | or_same=same+topn 10   +
         | or_three=same+topn 12  +
         | or_two=same+topn 10    +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -485,7 +485,7 @@ SELECT * FROM ct_stage('delete');
         | date_nf=same+topn 15   +
         | date_nl=same+topn 15   +
         | expr_out=same+topn 8   +
-        | few=same+topn 37       +
+        | few=same 37            +
         | filters=same+topn 12   +
         | float_all=same+topn 40 +
         | float_asc=same+topn 9  +
@@ -503,15 +503,15 @@ SELECT * FROM ct_stage('delete');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same+topn 10    +
+        | or_and=same 10         +
         | or_column=same 10      +
         | or_filters=same+topn 10+
-        | or_none=same+topn 0    +
-        | or_phrase=same+topn 10 +
+        | or_none=same 0         +
+        | or_phrase=same 10      +
         | or_same=same+topn 10   +
         | or_three=same+topn 12  +
         | or_two=same+topn 10    +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -536,7 +536,7 @@ SELECT * FROM ct_stage('own');
        | date_nf=same+topn 15   +
        | date_nl=same+topn 15   +
        | expr_out=same+topn 8   +
-       | few=same+topn 36       +
+       | few=same 36            +
        | filters=same+topn 12   +
        | float_all=same+topn 40 +
        | float_asc=same+topn 9  +
@@ -554,15 +554,15 @@ SELECT * FROM ct_stage('own');
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | or_and=same+topn 10    +
+       | or_and=same 10         +
        | or_column=same 10      +
        | or_filters=same+topn 10+
-       | or_none=same+topn 0    +
-       | or_phrase=same+topn 10 +
+       | or_none=same 0         +
+       | or_phrase=same 10      +
        | or_same=same+topn 10   +
        | or_three=same+topn 12  +
        | or_two=same+topn 10    +
-       | phrase=same+topn 10    +
+       | phrase=same 10         +
        | prefix=same+topn 10    +
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
@@ -583,7 +583,7 @@ SELECT * FROM ct_stage('rollback');
           | date_nf=same+topn 15   +
           | date_nl=same+topn 15   +
           | expr_out=same+topn 8   +
-          | few=same+topn 37       +
+          | few=same 37            +
           | filters=same+topn 12   +
           | float_all=same+topn 40 +
           | float_asc=same+topn 9  +
@@ -601,15 +601,15 @@ SELECT * FROM ct_stage('rollback');
           | num_nan=same+topn 30   +
           | offset=same+topn 5     +
           | oldest=same+topn 7     +
-          | or_and=same+topn 10    +
+          | or_and=same 10         +
           | or_column=same 10      +
           | or_filters=same+topn 10+
-          | or_none=same+topn 0    +
-          | or_phrase=same+topn 10 +
+          | or_none=same 0         +
+          | or_phrase=same 10      +
           | or_same=same+topn 10   +
           | or_three=same+topn 12  +
           | or_two=same+topn 10    +
-          | phrase=same+topn 10    +
+          | phrase=same 10         +
           | prefix=same+topn 10    +
           | seq_asc=same+topn 10   +
           | seq_desc=same+topn 10  +
@@ -631,8 +631,8 @@ SELECT * FROM ct_stage('vacuum');
         | date_nf=same+topn 15   +
         | date_nl=same+topn 15   +
         | expr_out=same+topn 8   +
-        | few=same+topn 37       +
-        | filters=same+topn 12   +
+        | few=same 37            +
+        | filters=same 12        +
         | float_all=same+topn 40 +
         | float_asc=same+topn 9  +
         | float_desc=same+topn 9 +
@@ -649,15 +649,15 @@ SELECT * FROM ct_stage('vacuum');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same+topn 10    +
+        | or_and=same 10         +
         | or_column=same 10      +
         | or_filters=same+topn 10+
-        | or_none=same+topn 0    +
-        | or_phrase=same+topn 10 +
+        | or_none=same 0         +
+        | or_phrase=same 10      +
         | or_same=same+topn 10   +
         | or_three=same+topn 12  +
         | or_two=same+topn 10    +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -684,8 +684,8 @@ SELECT * FROM ct_stage('promote');
          | date_nf=same+topn 15   +
          | date_nl=same+topn 15   +
          | expr_out=same+topn 8   +
-         | few=same+topn 37       +
-         | filters=same+topn 12   +
+         | few=same 37            +
+         | filters=same 12        +
          | float_all=same+topn 40 +
          | float_asc=same+topn 9  +
          | float_desc=same+topn 9 +
@@ -702,15 +702,15 @@ SELECT * FROM ct_stage('promote');
          | num_nan=same+topn 30   +
          | offset=same+topn 5     +
          | oldest=same+topn 7     +
-         | or_and=same+topn 10    +
+         | or_and=same 10         +
          | or_column=same 10      +
          | or_filters=same+topn 10+
-         | or_none=same+topn 0    +
-         | or_phrase=same+topn 10 +
+         | or_none=same 0         +
+         | or_phrase=same 10      +
          | or_same=same+topn 10   +
          | or_three=same+topn 12  +
          | or_two=same+topn 10    +
-         | phrase=same+topn 10    +
+         | phrase=same 10         +
          | prefix=same+topn 10    +
          | seq_asc=same+topn 10   +
          | seq_desc=same+topn 10  +
@@ -735,8 +735,8 @@ SELECT * FROM ct_stage('workers');
          | date_nf=same+topn 15   +
          | date_nl=same+topn 15   +
          | expr_out=same+topn 8   +
-         | few=same+topn 37       +
-         | filters=same+topn 12   +
+         | few=same 37            +
+         | filters=same 12        +
          | float_all=same+topn 40 +
          | float_asc=same+topn 9  +
          | float_desc=same+topn 9 +
@@ -753,15 +753,15 @@ SELECT * FROM ct_stage('workers');
          | num_nan=same+topn 30   +
          | offset=same+topn 5     +
          | oldest=same+topn 7     +
-         | or_and=same+topn 10    +
+         | or_and=same 10         +
          | or_column=same 10      +
          | or_filters=same+topn 10+
-         | or_none=same+topn 0    +
-         | or_phrase=same+topn 10 +
+         | or_none=same 0         +
+         | or_phrase=same 10      +
          | or_same=same+topn 10   +
          | or_three=same+topn 12  +
          | or_two=same+topn 10    +
-         | phrase=same+topn 10    +
+         | phrase=same 10         +
          | prefix=same+topn 10    +
          | seq_asc=same+topn 10   +
          | seq_desc=same+topn 10  +

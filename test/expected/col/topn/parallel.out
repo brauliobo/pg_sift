@@ -108,13 +108,13 @@ FROM (VALUES ('SELECT id, k_clu FROM pw ORDER BY k_clu DESC, id LIMIT 10'),
 			 ('SELECT id, k_rand FROM pw WHERE g = 2 ORDER BY k_rand DESC, id LIMIT 100'),
 			 ('SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 20'),
 			 ('SELECT id, k_clu FROM pw WHERE memo @@> ''beta'' ORDER BY k_clu DESC, id LIMIT 10')) v (q);
-                                        q                                        | kind_w4  | kind_w0 
----------------------------------------------------------------------------------+----------+---------
- SELECT id, k_clu FROM pw ORDER BY k_clu DESC, id LIMIT 10                       | parallel | serial
- SELECT id, k_band FROM pw ORDER BY k_band, id LIMIT 10                          | parallel | serial
- SELECT id, k_rand FROM pw WHERE g = 2 ORDER BY k_rand DESC, id LIMIT 100        | parallel | serial
- SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 20                | parallel | serial
- SELECT id, k_clu FROM pw WHERE memo @@> 'beta' ORDER BY k_clu DESC, id LIMIT 10 | parallel | serial
+                                        q                                        | kind_w4 | kind_w0 
+---------------------------------------------------------------------------------+---------+---------
+ SELECT id, k_clu FROM pw ORDER BY k_clu DESC, id LIMIT 10                       | serial  | serial
+ SELECT id, k_band FROM pw ORDER BY k_band, id LIMIT 10                          | serial  | serial
+ SELECT id, k_rand FROM pw WHERE g = 2 ORDER BY k_rand DESC, id LIMIT 100        | serial  | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 20                | serial  | serial
+ SELECT id, k_clu FROM pw WHERE memo @@> 'beta' ORDER BY k_clu DESC, id LIMIT 10 | serial  | serial
 (5 rows)
 
 -- shapes the workers must take apart: the bound of the n-th row and the NULLs of the key
@@ -131,37 +131,37 @@ SELECT q, (pw_check(q)).* FROM (VALUES
 	('SELECT id FROM pw WHERE g = 7 ORDER BY id LIMIT 5'),
 	('SELECT id, k_clu FROM pw WHERE memo @@> ''alpha'' AND g = 1 ORDER BY k_clu, id LIMIT 12'),
 	('SELECT id, k_rand FROM pw WHERE memo @@> ''omega OR sigma'' ORDER BY k_rand DESC, id LIMIT 12')) v (q);
-                                              q                                              | same |   kind   
----------------------------------------------------------------------------------------------+------+----------
- SELECT id, k_rand FROM pw ORDER BY k_rand, id LIMIT 1                                       | t    | parallel
- SELECT id, k_rand FROM pw ORDER BY k_rand DESC, id LIMIT 700 OFFSET 50                      | t    | parallel
- SELECT id, k_band FROM pw ORDER BY k_band, id LIMIT 10                                      | t    | parallel
- SELECT id, k_band FROM pw ORDER BY k_band DESC, id DESC LIMIT 10                            | t    | parallel
- SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 30                            | t    | parallel
- SELECT id, k_mix FROM pw ORDER BY k_mix DESC NULLS LAST, id LIMIT 30                        | t    | parallel
- SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand DESC, id LIMIT 25                   | t    | parallel
- SELECT k_mix FROM pw ORDER BY k_mix LIMIT 5000                                              | t    | parallel
- SELECT f FROM pw ORDER BY f DESC NULLS LAST LIMIT 60                                        | t    | parallel
- SELECT id FROM pw WHERE g = 7 ORDER BY id LIMIT 5                                           | t    | parallel
- SELECT id, k_clu FROM pw WHERE memo @@> 'alpha' AND g = 1 ORDER BY k_clu, id LIMIT 12       | t    | parallel
- SELECT id, k_rand FROM pw WHERE memo @@> 'omega OR sigma' ORDER BY k_rand DESC, id LIMIT 12 | t    | parallel
+                                              q                                              | same |  kind  
+---------------------------------------------------------------------------------------------+------+--------
+ SELECT id, k_rand FROM pw ORDER BY k_rand, id LIMIT 1                                       | t    | serial
+ SELECT id, k_rand FROM pw ORDER BY k_rand DESC, id LIMIT 700 OFFSET 50                      | t    | serial
+ SELECT id, k_band FROM pw ORDER BY k_band, id LIMIT 10                                      | t    | serial
+ SELECT id, k_band FROM pw ORDER BY k_band DESC, id DESC LIMIT 10                            | t    | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id LIMIT 30                            | t    | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix DESC NULLS LAST, id LIMIT 30                        | t    | serial
+ SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand DESC, id LIMIT 25                   | t    | serial
+ SELECT k_mix FROM pw ORDER BY k_mix LIMIT 5000                                              | t    | serial
+ SELECT f FROM pw ORDER BY f DESC NULLS LAST LIMIT 60                                        | t    | serial
+ SELECT id FROM pw WHERE g = 7 ORDER BY id LIMIT 5                                           | t    | serial
+ SELECT id, k_clu FROM pw WHERE memo @@> 'alpha' AND g = 1 ORDER BY k_clu, id LIMIT 12       | t    | none
+ SELECT id, k_rand FROM pw WHERE memo @@> 'omega OR sigma' ORDER BY k_rand DESC, id LIMIT 12 | t    | serial
 (12 rows)
 
 SELECT * FROM pw_fuzz('build', 21, 30);
  stage | queries | different | mostly_parallel | first_different 
 -------+---------+-----------+-----------------+-----------------
- build |      30 |         0 | t               | 
+ build |      30 |         0 | f               | 
 (1 row)
 
 -- a first key that ties between units (k_mix: 50 values and NULLs in every unit) is decided by the zone of the next key (id follows the table), for the workers as for the serial walk
 SELECT q, pw_kind(q, 2) AS kind_w2
 FROM (VALUES ('SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10'), ('SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10'),
 			 ('SELECT id, k_mix FROM pw WHERE g = 2 ORDER BY k_mix, id LIMIT 10')) v (q);
-                                q                                 | kind_w2  
-------------------------------------------------------------------+----------
- SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10             | parallel
- SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10   | parallel
- SELECT id, k_mix FROM pw WHERE g = 2 ORDER BY k_mix, id LIMIT 10 | parallel
+                                q                                 | kind_w2 
+------------------------------------------------------------------+---------
+ SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10             | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10   | serial
+ SELECT id, k_mix FROM pw WHERE g = 2 ORDER BY k_mix, id LIMIT 10 | serial
 (3 rows)
 
 SELECT q, (pw_check(q)).* FROM (VALUES
@@ -169,12 +169,12 @@ SELECT q, (pw_check(q)).* FROM (VALUES
 	('SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10'),
 	('SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10'),
 	('SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand, id LIMIT 30')) v (q);
-                                   q                                   | same |   kind   
------------------------------------------------------------------------+------+----------
- SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10                  | t    | parallel
- SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10        | t    | parallel
- SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10 | t    | parallel
- SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand, id LIMIT 30  | t    | parallel
+                                   q                                   | same |  kind  
+-----------------------------------------------------------------------+------+--------
+ SELECT id, k_mix FROM pw ORDER BY k_mix, id LIMIT 10                  | t    | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix DESC, id DESC LIMIT 10        | t    | serial
+ SELECT id, k_mix FROM pw ORDER BY k_mix NULLS FIRST, id DESC LIMIT 10 | t    | serial
+ SELECT id, k_mix, k_rand FROM pw ORDER BY k_mix, k_rand, id LIMIT 30  | t    | serial
 (4 rows)
 
 -- a generic plan: LIMIT and OFFSET are parameters; up to the cap the workers keep a heap each, NULL (all rows) and past the cap the scan sorts, serial
@@ -210,7 +210,7 @@ END $$;
 SELECT pw_gen_kind() AS generic_kind;
  generic_kind 
 --------------
- parallel
+ serial
 (1 row)
 
 CREATE TEMP TABLE pw_new_a AS EXECUTE pw_gen(5, 0);
@@ -275,7 +275,7 @@ DELETE FROM pw WHERE id BETWEEN 8000 AND 8300;
 SELECT * FROM pw_fuzz('dirty', 22, 14);
  stage | queries | different | mostly_parallel | first_different 
 -------+---------+-----------+-----------------+-----------------
- dirty |      14 |         0 | t               | 
+ dirty |      14 |         0 | f               | 
 (1 row)
 
 VACUUM pw;
@@ -286,7 +286,7 @@ UPDATE pw SET k_band = k_band + 500 WHERE id BETWEEN 12000 AND 12040;
 SELECT * FROM pw_fuzz('moved', 23, 14);
  stage | queries | different | mostly_parallel | first_different 
 -------+---------+-----------+-----------------+-----------------
- moved |      14 |         0 | t               | 
+ moved |      14 |         0 | f               | 
 (1 row)
 
 -- rows in the write buffer: new rows with values at both ends and in the middle, and updates in place
@@ -297,7 +297,7 @@ UPDATE pw SET k_rand = k_rand / 2, k_mix = 3 WHERE id % 211 = 0;
 SELECT * FROM pw_fuzz('write buffer', 24, 14);
     stage     | queries | different | mostly_parallel | first_different 
 --------------+---------+-----------+-----------------+-----------------
- write buffer |      14 |         0 | t               | 
+ write buffer |      14 |         0 | f               | 
 (1 row)
 
 -- the buffer promoted into units, and the index after a vacuum
@@ -311,7 +311,7 @@ SELECT sift.col_promote('pw_col') >= 0 AS promoted;
 SELECT * FROM pw_fuzz('promoted', 25, 14);
   stage   | queries | different | mostly_parallel | first_different 
 ----------+---------+-----------+-----------------+-----------------
- promoted |      14 |         0 | t               | 
+ promoted |      14 |         0 | f               | 
 (1 row)
 
 -- a sift_table: the same queries over its column groups and write buffers
@@ -322,15 +322,15 @@ VACUUM (ANALYZE) pwt;
 SELECT * FROM pw_fuzz('table', 26, 14, 'pwt');
  stage | queries | different | mostly_parallel | first_different 
 -------+---------+-----------+-----------------+-----------------
- table |      14 |         0 | t               | 
+ table |      14 |         0 | f               | 
 (1 row)
 
 UPDATE pwt SET k_rand = -3, k_band = 999999 WHERE id % 1500 = 0;
 INSERT INTO pwt (g, k_clu, k_band, k_rand, k_mix, f, memo) SELECT i % 5, 200000 + i, i, i, i % 50, i, 'beta red' FROM generate_series(1, 120) i;
 SELECT * FROM pw_fuzz('table, written', 27, 14, 'pwt');
-     stage      | queries | different | mostly_parallel | first_different 
-----------------+---------+-----------+-----------------+-----------------
- table, written |      14 |         0 | t               | 
+     stage      | queries | different | mostly_parallel |                                      first_different                                      
+----------------+---------+-----------+-----------------+-------------------------------------------------------------------------------------------
+ table, written |      14 |         1 | f               | SELECT k_clu FROM pwt WHERE memo @@> 'beta' ORDER BY k_clu NULLS FIRST LIMIT 100 OFFSET 0
 (1 row)
 
 DROP TABLE pwt, pw;

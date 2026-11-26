@@ -24,7 +24,9 @@ SELECT i, i % 7,
 	CASE WHEN i % 19 = 0 THEN NULL ELSE 'V' || (i % 53) END
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
+RESET client_min_messages;
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 

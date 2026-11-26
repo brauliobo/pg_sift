@@ -9,7 +9,9 @@ SET sift.agg_force = on;
 
 CREATE TABLE uo (id int, ts timestamptz, grp int, pad text DEFAULT repeat('x', 40)) WITH (autovacuum_enabled = false);
 INSERT INTO uo SELECT i, timestamptz '2024-01-01' + i * interval '1 minute', CASE WHEN i % 7 = 0 THEN NULL ELSE i % 50 END FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX uo_col ON uo USING sift_col (id, ts, grp);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) uo;
 
 -- 'same' / 'DIFFERENT' (the rows and their order), the Heap Fetches of the pushed plan, and the number of rows

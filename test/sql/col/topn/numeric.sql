@@ -24,7 +24,9 @@ CREATE FUNCTION nm_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 		(i % 5)::numeric * 12345678901234567890.12
 	FROM generate_series(lo, hi) i $$;
 SELECT nm_rows(1, 6000);
+SET client_min_messages = warning;
 CREATE INDEX nm_col ON nm USING sift_col (id, g, a, b, c, d);
+RESET client_min_messages;
 VACUUM (ANALYZE) nm;
 
 CREATE FUNCTION nm_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
@@ -106,14 +108,18 @@ SELECT sift.col_merge('nm_col', true) >= 0 AS merged;
 SELECT * FROM nm_stage('merged');
 VACUUM nm;
 SELECT * FROM nm_stage('vacuumed');
+SET client_min_messages = warning;
 SELECT sift.col_verify('nm_col', true);
+RESET client_min_messages;
 
 -- a partitioned table: the partitions have their own segments and dictionaries
 CREATE TABLE np (id int, g int NOT NULL, a numeric(30,4), b numeric(38,0), c numeric, d numeric(25,2), pad text DEFAULT repeat('x', 1500)) PARTITION BY RANGE (g);
 CREATE TABLE np_a PARTITION OF np FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE np_b PARTITION OF np FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO np (id, g, a, b, c, d) SELECT id, g, a, b, c, d FROM nm WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX np_col ON np USING sift_col (id, g, a, b, c, d);
+RESET client_min_messages;
 VACUUM (ANALYZE) np;
 SELECT tag, nm_check(replace(q, 'FROM nm ', 'FROM np ')) FROM nm_q WHERE tag IN ('a_asc', 'a_desc', 'a_filter', 'b_desc', 'c_asc', 'two_keys') ORDER BY tag COLLATE "C";
 
@@ -130,7 +136,9 @@ SELECT nm_check($q$SELECT id, a FROM nt ORDER BY a, id LIMIT 25$q$) AS table_a_a
 CREATE TABLE nv (id int PRIMARY KEY, a numeric(30,4));
 INSERT INTO nv SELECT i, (hashint4(i) % 5000)::numeric * 100000000000000 FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX nv_col ON nv USING sift_col (id, a);
+RESET client_min_messages;
 RESET sift.test_limits;
 ANALYZE nv;
 SELECT nm_check($q$SELECT id, a FROM nv ORDER BY a DESC, id LIMIT 10$q$) AS lanes_overflow;

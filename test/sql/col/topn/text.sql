@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+-- Format 2.0: a top-N with a parameter of the outer row, and over a key past the string budget, is the scan on Format 2.0 only; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tx (id int PRIMARY KEY, g int, s text, v varchar(12), u uuid, b bytea, ip inet, w text);
@@ -18,7 +20,9 @@ SELECT i, i % 7,
 	CASE WHEN i % 9 = 0 THEN NULL ELSE ('10.' || (i % 5) || '.' || (i % 31) || '.1/' || (8 + i % 20))::inet END,
 	repeat(chr(97 + i % 5), 300 + i % 200) || i
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX tx_col ON tx USING sift_col (id, g, s, v, u, b, ip, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) tx;
 
 CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
@@ -94,7 +98,9 @@ SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'uuid_a
 CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false);
 CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
 INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
+SET client_min_messages = warning;
 CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
+RESET client_min_messages;
 ANALYZE tr;
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
@@ -114,7 +120,9 @@ RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
+RESET client_min_messages;
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS overflow_key;

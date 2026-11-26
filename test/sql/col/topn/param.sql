@@ -2,6 +2,8 @@
 -- over for each value of the key, and every query gives the rows of the plain plan (sift.enable_agg off): ties, NULL keys and NULL values, LIMIT 0, 1 and
 -- more than the key has, both directions, NULLS FIRST and LAST, keys that no row holds, repeated and descending keys, no outer row at all.
 CREATE EXTENSION pg_sift;
+-- Format 2.0: a top-N with a parameter of the outer row, and over a key past the string budget, is the scan on Format 2.0 only; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 
 CREATE TABLE tp (id serial PRIMARY KEY, dev int, dev8 bigint, ts timestamp, v int, g int, nm text, w numeric(30,4));
@@ -14,7 +16,9 @@ SELECT CASE WHEN i % 211 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) % 60 END,
 FROM generate_series(1, 15000) i;
 CREATE TABLE tp_dim (k int PRIMARY KEY, label text);
 INSERT INTO tp_dim SELECT i, 'g' || i FROM generate_series(0, 3) i;
+SET client_min_messages = warning;
 CREATE INDEX tp_col ON tp USING sift_col (id, dev, dev8, ts, v, g, nm, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) tp, tp_dim;
 
 CREATE FUNCTION tp_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$

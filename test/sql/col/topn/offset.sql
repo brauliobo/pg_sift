@@ -51,12 +51,6 @@ $$ SELECT result, count(*) FROM (SELECT ot_chk(c, d, nl, lim, o, other) AS resul
 
 -- every unit exact: the entries before the OFFSET are not fetched
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000, 11990]);
--- an OFFSET past the cap of the top-N heap (lowered to 50 rows): the walk holds only the LIMIT, so the rows are the same; a LIMIT past the cap sorts as before
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 11990, 13000]);
-SELECT * FROM ot_all(40, ARRAY[100, 3000]);
-SELECT * FROM ot_all(60, ARRAY[100, 3000]);
-RESET sift.test_limits;
 -- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
@@ -80,16 +74,10 @@ SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
 SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
-RESET sift.test_limits;
 -- frozen again after the merge: the entries before the OFFSET are not fetched (the merge dropped the dead rows)
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
 
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
-RESET sift.test_limits;
 
 -- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;

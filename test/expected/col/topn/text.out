@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+-- Format 2.0: a top-N with a parameter of the outer row, and over a key past the string budget, is the scan on Format 2.0 only; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 CREATE TABLE tx (id int PRIMARY KEY, g int, s text, v varchar(12), u uuid, b bytea, ip inet, w text);
 INSERT INTO tx
@@ -17,10 +19,9 @@ SELECT i, i % 7,
 	CASE WHEN i % 9 = 0 THEN NULL ELSE ('10.' || (i % 5) || '.' || (i % 31) || '.1/' || (8 + i % 20))::inet END,
 	repeat(chr(97 + i % 5), 300 + i % 200) || i
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX tx_col ON tx USING sift_col (id, g, s, v, u, b, ip, w);
-NOTICE:  sift_col index "tx_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tx_col');
+RESET client_min_messages;
 VACUUM (ANALYZE) tx;
 CREATE FUNCTION tx_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
 -- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, '+sorted' when it sorts every row, and the number of rows
@@ -68,19 +69,19 @@ INSERT INTO tx_q VALUES
 SELECT tag, tx_check(q) FROM tx_q ORDER BY tag COLLATE "C";
 NOTICE:  table "tx_a" does not exist, skipping
 NOTICE:  table "tx_b" does not exist, skipping
-       tag        |        tx_check        
-------------------+------------------------
- all_rows         | same+topn+sorted 30000
+       tag        |   tx_check   
+------------------+--------------
+ all_rows         | same 30000
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn+sorted 20
+ deep_page        | same+topn 20
  five_keys        | same+topn 30
  inet_asc         | same+topn 25
  inet_desc        | same+topn 25
  int_then_text    | same+topn 30
  long_strings     | same+topn 12
  mixed_keys       | same+topn 30
- past_the_heap    | same+topn+sorted 30000
+ past_the_heap    | same 30000
  text_asc         | same+topn 25
  text_c           | same+topn 25
  text_c_desc      | same+topn 25
@@ -116,9 +117,9 @@ SET work_mem = '64kB';
 SELECT tx_check($q$SELECT id, w FROM tx ORDER BY w, id LIMIT 3000$q$) AS wide_keys,
 	   tx_check($q$SELECT id, s FROM tx ORDER BY s DESC, id LIMIT 20 OFFSET 20000$q$) AS spilled_deep,
 	   tx_check($q$SELECT id, u, b FROM tx ORDER BY u, b DESC, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
-       wide_keys       |    spilled_deep     |  spilled_two_keys   
------------------------+---------------------+---------------------
- same+topn+sorted 3000 | same+topn+sorted 20 | same+topn+sorted 30
+   wide_keys    | spilled_deep | spilled_two_keys 
+----------------+--------------+------------------
+ same+topn 3000 | same+topn 20 | same+topn 30
 (1 row)
 
 RESET work_mem;
@@ -128,11 +129,11 @@ FROM generate_series(1, 700) i;
 UPDATE tx SET s = 'Aaa' || id, b = NULL, ip = '1.2.3.4'::inet WHERE id % 97 = 0;
 DELETE FROM tx WHERE id % 89 = 0;
 SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'text_nulls_first', 'text_c', 'text_locale', 'uuid_asc', 'bytea_asc', 'bytea_desc', 'inet_asc', 'mixed_keys', 'deep_page') ORDER BY tag COLLATE "C";
-       tag        |      tx_check       
-------------------+---------------------
+       tag        |   tx_check   
+------------------+--------------
  bytea_asc        | same+topn 25
  bytea_desc       | same+topn 25
- deep_page        | same+topn+sorted 20
+ deep_page        | same+topn 20
  inet_asc         | same+topn 25
  mixed_keys       | same+topn 30
  text_asc         | same+topn 25
@@ -166,10 +167,9 @@ SELECT tag, tx_check(q) FROM tx_q WHERE tag IN ('text_asc', 'text_desc', 'uuid_a
 CREATE COLLATION tx_nd (provider = icu, locale = 'und-u-ks-level1', deterministic = false);
 CREATE TABLE tr (id int PRIMARY KEY, c char(5), nm name, cd cidr, p text);
 INSERT INTO tr SELECT i, 'c' || i % 5, 'n' || i % 4, ('10.0.' || i % 7 || '.0/24')::cidr, 'p' || i FROM generate_series(1, 500) i;
+SET client_min_messages = warning;
 CREATE INDEX tr_col ON tr USING sift_col (id, c, nm, cd, p);
-NOTICE:  sift_col index "tr_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = c, nm; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tr_col');
+RESET client_min_messages;
 ANALYZE tr;
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
@@ -182,14 +182,14 @@ FROM (VALUES ('nondeterministic', $q$SELECT id, p FROM tr ORDER BY p COLLATE tx_
 			 ('deterministic', $q$SELECT id, p FROM tr ORDER BY p, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-        k         | used |    slug    | named 
-------------------+------+------------+-------
- char(n)          | t    |            | 
- cidr             | t    |            | 
- deterministic    | t    |            | 
- name             | t    |            | 
- nondeterministic | t    |            | 
- text_pattern_ops | f    | topn_shape | f
+        k         | used | slug | named 
+------------------+------+------+-------
+ char(n)          | t    |      | 
+ cidr             | t    |      | 
+ deterministic    | t    |      | 
+ name             | t    |      | 
+ nondeterministic | t    |      | 
+ text_pattern_ops | t    |      | 
 (6 rows)
 
 SELECT tx_check($q$SELECT id, p FROM tr ORDER BY p COLLATE tx_nd, id LIMIT 5$q$);
@@ -203,18 +203,15 @@ RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 CREATE TABLE tv (id int PRIMARY KEY, w text);
 INSERT INTO tv SELECT i, repeat(md5(i::text), 6) || i FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX tv_col ON tv USING sift_col (id, w);
-NOTICE:  sift_col: leaf 1 (attribute 2) holds strings over 65536 bytes; the rest stay in the heap
-HINT:  Index an expression that keeps the part of the value that is used, such as left(column, 255).
-NOTICE:  sift_col index "tv_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tv_col');
+RESET client_min_messages;
 RESET sift.test_limits;
 ANALYZE tv;
 SELECT tx_check($q$SELECT id, w FROM tv ORDER BY w DESC, id LIMIT 10$q$) AS overflow_key;
  overflow_key 
 --------------
- same 10
+ same+topn 10
 (1 row)
 
 DROP FUNCTION tx_check, tx_coll, tx_mode;

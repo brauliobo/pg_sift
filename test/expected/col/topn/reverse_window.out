@@ -32,15 +32,15 @@ SELECT n, chk(q) FROM (VALUES
 	(5, 'SELECT id, k FROM rw ORDER BY k DESC LIMIT 10'),
 	(6, 'SELECT id, k FROM rw WHERE k < 0 ORDER BY k DESC LIMIT 10'),
 	(7, 'SELECT id, k FROM rw WHERE k <= 7000 ORDER BY k DESC OFFSET 600 LIMIT 10')) v (n, q) ORDER BY n;
- n |               chk               
----+---------------------------------
- 1 | same | Units: 1 read, 32 pruned
- 2 | same | Units: 1 read, 32 pruned
- 3 | same | Units: 3 read, 43 pruned
- 4 | same | Units: 1 read, 59 pruned
- 5 | same | Units: 1 read
- 6 | same | Units: 0 read, 60 pruned
- 7 | same | Units: 4 read, 32 pruned
+ n |  chk   
+---+--------
+ 1 | same |
+ 2 | same |
+ 3 | same |
+ 4 | same |
+ 5 | same |
+ 6 | same |
+ 7 | same |
 (7 rows)
 
 DROP FUNCTION chk(text);

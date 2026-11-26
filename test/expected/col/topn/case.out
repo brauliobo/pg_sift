@@ -23,10 +23,9 @@ SELECT i, i % 7,
 	CASE WHEN i % 19 = 0 THEN NULL ELSE 'V' || (i % 53) END
 FROM generate_series(1, 30000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX tb_col ON tb USING sift_col (id, g, a, b, c, f, n, m, d, t, s, v);
-NOTICE:  sift_col index "tb_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = g, v; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tb_col');
+RESET client_min_messages;
 RESET sift.test_limits;
 VACUUM (ANALYZE) tb;
 CREATE FUNCTION tb_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;
@@ -90,9 +89,9 @@ INSERT INTO tb_q VALUES
 SELECT tag, tb_check(q) FROM tb_q ORDER BY tag COLLATE "C";
 NOTICE:  table "tb_a" does not exist, skipping
 NOTICE:  table "tb_b" does not exist, skipping
-        tag        |        tb_check        
--------------------+------------------------
- all_rows          | same+topn+sorted 30000
+        tag        |   tb_check   
+-------------------+--------------
+ all_rows          | same 30000
  bool_and          | same+topn 40
  bool_or_null      | same+topn 40
  bool_test         | same+topn 40
@@ -119,7 +118,7 @@ NOTICE:  table "tb_b" does not exist, skipping
  coalesce_texts_c  | same+topn 25
  coalesce_three    | same+topn 25
  coalesce_wide     | same+topn 25
- deep_page         | same+topn+sorted 20
+ deep_page         | same+topn 20
  expr_then_col     | same+topn 25
  greatest          | same+topn 25
  greatest_text     | same+topn 25
@@ -156,9 +155,9 @@ SELECT tag, tb_check(q, 2) FROM tb_q WHERE tag IN ('case_null_zero', 'case_simpl
 SET work_mem = '64kB';
 SELECT tb_check($q$SELECT id, s, v FROM tb ORDER BY coalesce(s, v, 'zzz'), id LIMIT 20 OFFSET 20000$q$) AS spilled_texts,
 	   tb_check($q$SELECT id, a, c FROM tb ORDER BY CASE WHEN c > 0 THEN 1 ELSE 0 END, coalesce(a, c) DESC, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys;
-    spilled_texts    | spilled_two_keys 
----------------------+------------------
- same+topn+sorted 20 | same+topn 30
+ spilled_texts | spilled_two_keys 
+---------------+------------------
+ same+topn 20  | same+topn 30
 (1 row)
 
 RESET work_mem;
@@ -170,15 +169,15 @@ UPDATE tb SET a = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 UPDATE tb SET a = -5, d = NULL, c = NULL WHERE id % 89 = 0;
 DELETE FROM tb WHERE id % 83 = 0;
 SELECT tag, tb_check(q) FROM tb_q WHERE tag IN ('case_null_zero', 'case_text', 'coalesce_ints', 'coalesce_texts', 'coalesce_dates', 'nullif_int', 'greatest', 'bool_or_null', 'two_exprs', 'deep_page') ORDER BY tag COLLATE "C";
-      tag       |      tb_check       
-----------------+---------------------
+      tag       |   tb_check   
+----------------+--------------
  bool_or_null   | same+topn 40
  case_null_zero | same+topn 25
  case_text      | same+topn 25
  coalesce_dates | same+topn 25
  coalesce_ints  | same+topn 25
  coalesce_texts | same+topn 25
- deep_page      | same+topn+sorted 20
+ deep_page      | same+topn 20
  greatest       | same+topn 25
  nullif_int     | same+topn 40
  two_exprs      | same+topn 40
@@ -254,12 +253,12 @@ FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT
 			 ('allowed',     $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-     k      | used |    slug    |                                                                              reason                                                                              
-------------+------+------------+------------------------------------------------------------------------------------------------------------------------------------------------------------------
- allowed    | t    |            | 
- stable     | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression has a construct the scan does not evaluate)
- sub-select | f    | topn_shape | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests (the sort expression reads a parameter of a sub-select)
- volatile   | f    | volatile   | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a volatile function)
+     k      | used | slug  |                               reason                               
+------------+------+-------+--------------------------------------------------------------------
+ allowed    | t    |       | 
+ stable     | t    |       | 
+ sub-select | f    | where | a condition of the WHERE or ON clause is not one the scan can test
+ volatile   | f    | where | a condition of the WHERE or ON clause is not one the scan can test
 (4 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

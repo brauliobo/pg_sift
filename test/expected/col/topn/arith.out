@@ -105,9 +105,9 @@ INSERT INTO ta_q VALUES
 SELECT tag, ta_check(q) FROM ta_q ORDER BY tag COLLATE "C";
 NOTICE:  table "ta_a" does not exist, skipping
 NOTICE:  table "ta_b" does not exist, skipping
-        tag        |        ta_check        
--------------------+------------------------
- all_rows          | same+topn+sorted 22800
+        tag        |   ta_check   
+-------------------+--------------
+ all_rows          | same 22800
  bigint_div        | same+topn 25
  bigint_times      | same+topn 25
  cast_float_int    | same+topn 25
@@ -123,7 +123,7 @@ NOTICE:  table "ta_b" does not exist, skipping
  compare           | same+topn 40
  date_minus_date   | same+topn 25
  date_plus         | same+topn 25
- deep_page         | same+topn+sorted 20
+ deep_page         | same+topn 20
  expr_then_col     | same+topn 30
  float4_times      | same+topn 25
  float_div         | same+topn 25
@@ -146,7 +146,7 @@ NOTICE:  table "ta_b" does not exist, skipping
  numeric_scale     | same+topn 25
  numeric_sum       | same+topn 25
  numeric_times     | same+topn 25
- past_the_heap     | same+topn+sorted 22800
+ past_the_heap     | same 22800
  six_keys          | same+topn 30
  smallint_minus    | same+topn 25
  smallint_widen    | same+topn 25
@@ -184,9 +184,9 @@ SET work_mem = '64kB';
 SELECT ta_check($q$SELECT id, n FROM ta ORDER BY n * 2, id LIMIT 20 OFFSET 20000$q$) AS spilled_numeric,
 	   ta_check($q$SELECT id, a, s FROM ta WHERE a < 2147483647 ORDER BY a + 1 DESC, s, id LIMIT 30 OFFSET 15000$q$) AS spilled_two_keys,
 	   ta_check($q$SELECT id, a FROM ta ORDER BY a::text, id LIMIT 20 OFFSET 20000$q$) AS spilled_text;
-   spilled_numeric   |  spilled_two_keys   |    spilled_text     
----------------------+---------------------+---------------------
- same+topn+sorted 20 | same+topn+sorted 30 | same+topn+sorted 20
+ spilled_numeric | spilled_two_keys | spilled_text 
+-----------------+------------------+--------------
+ same+topn 20    | same+topn 30     | same+topn 20
 (1 row)
 
 RESET work_mem;
@@ -197,11 +197,11 @@ UPDATE ta SET a = NULL, k = 0 WHERE id % 97 = 0;
 UPDATE ta SET a = -5, d = NULL WHERE id % 89 = 0;
 DELETE FROM ta WHERE id % 83 = 0;
 SELECT tag, ta_check(q) FROM ta_q WHERE tag IN ('int_plus', 'int_minus_col', 'int_ties', 'two_columns', 'numeric_times', 'cast_to_text', 'date_plus', 'expr_then_col', 'deep_page') ORDER BY tag COLLATE "C";
-      tag      |      ta_check       
----------------+---------------------
+      tag      |   ta_check   
+---------------+--------------
  cast_to_text  | same+topn 25
  date_plus     | same+topn 25
- deep_page     | same+topn+sorted 20
+ deep_page     | same+topn 20
  expr_then_col | same+topn 30
  int_minus_col | same+topn 25
  int_plus      | same+topn 25
@@ -299,12 +299,12 @@ FROM (VALUES ('random',      $q$SELECT id, a FROM ta ORDER BY a + (random() * 0)
 			 ('allowed',     $q$SELECT id, a FROM ta WHERE a < 2147483647 ORDER BY a + 1, id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";
-      k      | used |   slug   |                                                                           reason                                                                            
--------------+------+----------+-------------------------------------------------------------------------------------------------------------------------------------------------------------
- allowed     | t    |          | 
- now         | t    |          | 
- random      | f    | volatile | the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (the sort expression calls a volatile function)
- stable_text | t    |          | 
+      k      | used | slug  |                               reason                               
+-------------+------+-------+--------------------------------------------------------------------
+ allowed     | t    |       | 
+ now         | t    |       | 
+ random      | f    | where | a condition of the WHERE or ON clause is not one the scan can test
+ stable_text | t    |       | 
 (4 rows)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;

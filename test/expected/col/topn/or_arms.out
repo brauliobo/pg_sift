@@ -51,35 +51,35 @@ NOTICE:  table "oa_b" does not exist, skipping
       r       |                                                w                                                 
 --------------+--------------------------------------------------------------------------------------------------
  same+topn 10 | memo @@> 'cable' OR memo @@> 'wire'
- same+topn 10 | memo @@> 'gift' AND (memo @@> 'cable' OR memo @@> 'box')
- same+topn 10 | (memo @@> 'cable' OR memo @@> 'box') AND memo @@> 'gift'
- same+topn 10 | (memo @@> 'cable' OR memo @@> 'wire') AND (memo @@> 'gift' OR memo @@> 'blue')
- same+topn 10 | (memo @@> 'cable' OR memo @@> 'wire') AND (memo @@> 'gift' OR memo @@> 'blue') AND memo @@> 'w7'
+ same 10      | memo @@> 'gift' AND (memo @@> 'cable' OR memo @@> 'box')
+ same 10      | (memo @@> 'cable' OR memo @@> 'box') AND memo @@> 'gift'
+ same 10      | (memo @@> 'cable' OR memo @@> 'wire') AND (memo @@> 'gift' OR memo @@> 'blue')
+ same 10      | (memo @@> 'cable' OR memo @@> 'wire') AND (memo @@> 'gift' OR memo @@> 'blue') AND memo @@> 'w7'
  same+topn 10 | (memo @@> 'cable' OR memo @@> 'wire' OR memo @@> 'box') AND status = 'paid' AND store < 20
- same+topn 10 | memo @@> 'gift' AND (memo @@> 'cable' OR memo @@> 'box') AND store <> 3
- same+topn 0  | memo @@> 'express' AND (memo @@> 'cable' OR memo @@> 'wire')
- same+topn 10 | memo @@> '"wire cable"' OR memo @@> '"gift box"'
- same+topn 10 | memo @@> 'gift' AND (memo @@> '"wire cable"' OR memo @@> 'red')
- same+topn 10 | memo @@> 'cable' AND (memo @@> 'cable' OR memo @@> 'wire')
+ same 10      | memo @@> 'gift' AND (memo @@> 'cable' OR memo @@> 'box') AND store <> 3
+ same 0       | memo @@> 'express' AND (memo @@> 'cable' OR memo @@> 'wire')
+ same 10      | memo @@> '"wire cable"' OR memo @@> '"gift box"'
+ same 10      | memo @@> 'gift' AND (memo @@> '"wire cable"' OR memo @@> 'red')
+ same 10      | memo @@> 'cable' AND (memo @@> 'cable' OR memo @@> 'wire')
 (11 rows)
 
 -- an offset, an ascending order, parallel workers, a filter that leaves nothing
 SELECT oa_check('SELECT id, ts FROM oa WHERE memo @@> ''gift'' AND (memo @@> ''cable'' OR memo @@> ''box'') ORDER BY ts, id LIMIT 12 OFFSET 40');
-   oa_check   
---------------
- same+topn 12
+ oa_check 
+----------
+ same 12
 (1 row)
 
 SELECT oa_check('SELECT id, store FROM oa WHERE (memo @@> ''cable'' OR memo @@> ''wire'') AND (memo @@> ''gift'' OR memo @@> ''blue'') ORDER BY store DESC, id LIMIT 300', 2);
-   oa_check    
----------------
- same+topn 300
+ oa_check 
+----------
+ same 300
 (1 row)
 
 SELECT oa_check('SELECT id FROM oa WHERE memo @@> ''gift'' AND (memo @@> ''cable'' OR memo @@> ''box'') AND store > 1000 ORDER BY ts, id LIMIT 5');
-  oa_check   
--------------
- same+topn 0
+ oa_check 
+----------
+ same 0
 (1 row)
 
 -- an OR with a predicate on a column is not an arm of the match set: the BM25 index scan answers it, not the top-N

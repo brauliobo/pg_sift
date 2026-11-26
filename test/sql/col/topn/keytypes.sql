@@ -19,7 +19,9 @@ SELECT i,
 	CASE WHEN i % 43 = 0 THEN NULL WHEN i % 97 = 0 THEN 'NaN'::numeric ELSE (i * 7919 % 1000003)::numeric * 10000000000000000000 + (i % 100) / 100.0 END,
 	CASE WHEN i % 47 = 0 THEN NULL ELSE (i % 40) * interval '1 day' + (i % 7) * interval '1 hour' + (i % 3) * interval '1 month' END
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX kt_col ON kt USING sift_col (id, t, c, cu, n, cd, d, tz, nw, iv);
+RESET client_min_messages;
 VACUUM (ANALYZE) kt;
 
 CREATE FUNCTION kt_mode(pushed bool, workers int) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode_workers(pushed, workers) $$;

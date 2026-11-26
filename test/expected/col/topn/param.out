@@ -2,6 +2,8 @@
 -- over for each value of the key, and every query gives the rows of the plain plan (sift.enable_agg off): ties, NULL keys and NULL values, LIMIT 0, 1 and
 -- more than the key has, both directions, NULLS FIRST and LAST, keys that no row holds, repeated and descending keys, no outer row at all.
 CREATE EXTENSION pg_sift;
+-- Format 2.0: a top-N with a parameter of the outer row, and over a key past the string budget, is the scan on Format 2.0 only; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 CREATE TABLE tp (id serial PRIMARY KEY, dev int, dev8 bigint, ts timestamp, v int, g int, nm text, w numeric(30,4));
 INSERT INTO tp (dev, dev8, ts, v, g, nm, w)
@@ -13,10 +15,9 @@ SELECT CASE WHEN i % 211 = 0 THEN NULL ELSE (hashint4(i) & 2147483647) % 60 END,
 FROM generate_series(1, 15000) i;
 CREATE TABLE tp_dim (k int PRIMARY KEY, label text);
 INSERT INTO tp_dim SELECT i, 'g' || i FROM generate_series(0, 3) i;
+SET client_min_messages = warning;
 CREATE INDEX tp_col ON tp USING sift_col (id, dev, dev8, ts, v, g, nm, w);
-NOTICE:  sift_col index "tp_col": 2 automatic choices (rollup_columns, track_changes)
-DETAIL:  rollup_columns = dev8, nm; track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('tp_col');
+RESET client_min_messages;
 VACUUM (ANALYZE) tp, tp_dim;
 CREATE FUNCTION tp_mode(pushed bool) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -109,9 +110,9 @@ EXPLAIN (COSTS OFF) SELECT d.k, x.id FROM generate_series(1, 5) d(k) CROSS JOIN 
  Nested Loop
    ->  Function Scan on generate_series d
    ->  Limit
-         ->  Custom Scan (SiftAgg)
+         ->  Custom Scan (SiftAggV6)
                Index: tp_col
-               Filters: dev = $0
+               Filters: (dev = $0)
                Top-N: ts DESC, id (limit 3)
 (7 rows)
 
@@ -125,21 +126,21 @@ NOTICE:  table "tp_b" does not exist, skipping
  filtered    |       6 |      0 |    6
  grouped     |       6 |      0 |    6
  hash_inside |       6 |      0 |    6
- inner_join  |       6 |      0 |    0
+ inner_join  |       6 |      0 |    6
  left        |       6 |      0 |    6
  limit_0     |       6 |      0 |    0
  limit_1     |       6 |      0 |    6
  limit_900   |       6 |      0 |    6
  limit_all   |       6 |      0 |    0
  offset      |       6 |      0 |    6
- param_out   |       6 |      0 |    0
+ param_out   |       6 |      0 |    6
  param_sort  |       6 |      0 |    0
  range_param |       6 |      0 |    6
  scalar      |       6 |      0 |    6
  scalar_asc  |       6 |      0 |    6
  sort_inside |       6 |      0 |    6
  sorted      |       6 |      0 |    6
- text_key    |       6 |      0 |    0
+ text_key    |       6 |      0 |    6
  ties_desc   |       6 |      0 |    6
  ties_first  |       6 |      0 |    6
  ts_asc      |       6 |      0 |    6
@@ -147,8 +148,8 @@ NOTICE:  table "tp_b" does not exist, skipping
  twice       |       6 |      0 |    6
  two_keys    |       6 |      0 |    6
  two_levels  |       6 |      0 |    6
- wide_key    |       6 |      0 |    6
- window      |       6 |      0 |    0
+ wide_key    |       6 |      0 |    0
+ window      |       6 |      0 |    6
 (29 rows)
 
 -- rows that moved, went and came, the write buffer and the vacuumed index
@@ -164,21 +165,21 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  filtered    |       3 |      0 |    3
  grouped     |       3 |      0 |    3
  hash_inside |       3 |      0 |    3
- inner_join  |       3 |      0 |    0
+ inner_join  |       3 |      0 |    3
  left        |       3 |      0 |    3
  limit_0     |       3 |      0 |    0
  limit_1     |       3 |      0 |    3
  limit_900   |       3 |      0 |    3
  limit_all   |       3 |      0 |    0
  offset      |       3 |      0 |    3
- param_out   |       3 |      0 |    0
+ param_out   |       3 |      0 |    3
  param_sort  |       3 |      0 |    0
  range_param |       3 |      0 |    3
  scalar      |       3 |      0 |    3
  scalar_asc  |       3 |      0 |    3
  sort_inside |       3 |      0 |    3
  sorted      |       3 |      0 |    3
- text_key    |       3 |      0 |    0
+ text_key    |       3 |      0 |    3
  ties_desc   |       3 |      0 |    3
  ties_first  |       3 |      0 |    3
  ts_asc      |       3 |      0 |    3
@@ -186,8 +187,8 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  twice       |       3 |      0 |    3
  two_keys    |       3 |      0 |    3
  two_levels  |       3 |      0 |    3
- wide_key    |       3 |      0 |    3
- window      |       3 |      0 |    0
+ wide_key    |       3 |      0 |    0
+ window      |       3 |      0 |    3
 (29 rows)
 
 VACUUM tp;
@@ -199,21 +200,21 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  filtered    |       3 |      0 |    3
  grouped     |       3 |      0 |    3
  hash_inside |       3 |      0 |    3
- inner_join  |       3 |      0 |    0
+ inner_join  |       3 |      0 |    3
  left        |       3 |      0 |    3
  limit_0     |       3 |      0 |    0
  limit_1     |       3 |      0 |    3
  limit_900   |       3 |      0 |    3
  limit_all   |       3 |      0 |    0
  offset      |       3 |      0 |    3
- param_out   |       3 |      0 |    0
+ param_out   |       3 |      0 |    3
  param_sort  |       3 |      0 |    0
  range_param |       3 |      0 |    3
  scalar      |       3 |      0 |    3
  scalar_asc  |       3 |      0 |    3
  sort_inside |       3 |      0 |    3
  sorted      |       3 |      0 |    3
- text_key    |       3 |      0 |    0
+ text_key    |       3 |      0 |    3
  ties_desc   |       3 |      0 |    3
  ties_first  |       3 |      0 |    3
  ts_asc      |       3 |      0 |    3
@@ -221,8 +222,8 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  twice       |       3 |      0 |    3
  two_keys    |       3 |      0 |    3
  two_levels  |       3 |      0 |    3
- wide_key    |       3 |      0 |    3
- window      |       3 |      0 |    0
+ wide_key    |       3 |      0 |    0
+ window      |       3 |      0 |    3
 (29 rows)
 
 -- workers allowed: the scan with a parameter of the enclosing query runs in the leader, the rest of the plan may use them
@@ -235,21 +236,21 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated']);
  filtered    |       2 |      0 |    2
  grouped     |       2 |      0 |    2
  hash_inside |       2 |      0 |    2
- inner_join  |       2 |      0 |    0
+ inner_join  |       2 |      0 |    2
  left        |       2 |      0 |    2
  limit_0     |       2 |      0 |    0
  limit_1     |       2 |      0 |    2
  limit_900   |       2 |      0 |    2
  limit_all   |       2 |      0 |    0
  offset      |       2 |      0 |    2
- param_out   |       2 |      0 |    0
+ param_out   |       2 |      0 |    2
  param_sort  |       2 |      0 |    0
  range_param |       2 |      0 |    2
  scalar      |       2 |      0 |    2
  scalar_asc  |       2 |      0 |    2
  sort_inside |       2 |      0 |    2
  sorted      |       2 |      0 |    2
- text_key    |       2 |      0 |    0
+ text_key    |       2 |      0 |    2
  ties_desc   |       2 |      0 |    2
  ties_first  |       2 |      0 |    2
  ts_asc      |       2 |      0 |    2
@@ -257,8 +258,8 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated']);
  twice       |       2 |      0 |    2
  two_keys    |       2 |      0 |    2
  two_levels  |       2 |      0 |    2
- wide_key    |       2 |      0 |    2
- window      |       2 |      0 |    0
+ wide_key    |       2 |      0 |    0
+ window      |       2 |      0 |    2
 (29 rows)
 
 RESET tp.workers;
@@ -302,15 +303,15 @@ SELECT tp_mode(true);
 PREPARE tp_p (int[], int) AS
 	SELECT d.k, x.id FROM unnest($1) d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT $2) x;
 EXPLAIN (COSTS OFF) EXECUTE tp_p(ARRAY[5, 3], 4);
-                      QUERY PLAN                       
--------------------------------------------------------
+                      QUERY PLAN                      
+------------------------------------------------------
  Nested Loop
    ->  Function Scan on unnest d
    ->  Limit
-         ->  Custom Scan (SiftAgg)
-               Index: tp_col
-               Filters: dev = $0
-               Top-N: ts DESC, id (limit by parameter)
+         ->  Sort
+               Sort Key: tp.ts DESC, tp.id
+               ->  Index Only Scan using tp_col on tp
+                     Index Cond: (dev = d.k)
 (7 rows)
 
 CREATE TEMP TABLE tp_gen_a AS SELECT tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) a, tp_gen(ARRAY[1, 2], 1) b, tp_gen(ARRAY[7], 100) c, tp_gen(ARRAY[7, 8, 9]::int[], 2) d;

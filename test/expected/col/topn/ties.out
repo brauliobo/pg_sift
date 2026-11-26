@@ -48,8 +48,23 @@ INSERT INTO tq VALUES
  ('SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10');
 SET sift.enable_agg = on;
 SELECT q, read_units(q) AS units FROM tq ORDER BY q;
-ERROR:  invalid input syntax for type integer: "1 read"
-CONTEXT:  PL/pgSQL function read_units(text) line 5 at assignment
+                          q                           | units 
+------------------------------------------------------+-------
+ SELECT j FROM tt ORDER BY j DESC LIMIT 10            |    -1
+ SELECT j FROM tt ORDER BY j LIMIT 10                 |    -1
+ SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40       |    -1
+ SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    |    -1
+ SELECT j, id FROM tt ORDER BY j, id LIMIT 10         |    -1
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10            |    -1
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   |    -1
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |    -1
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |    -1
+ SELECT k FROM tt ORDER BY k LIMIT 10                 |    -1
+ SELECT k FROM tt ORDER BY k LIMIT 12000              |    -1
+ SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     |    -1
+ SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    |    -1
+(13 rows)
+
 SELECT q, chk(q) FROM tq ORDER BY q;
                           q                           | chk  
 ------------------------------------------------------+------
@@ -127,18 +142,32 @@ SELECT q, chk(q) FROM tq ORDER BY q;
 (13 rows)
 
 SELECT q, read_units(q) AS units FROM tq ORDER BY q;
-ERROR:  invalid input syntax for type integer: "2 read"
-CONTEXT:  PL/pgSQL function read_units(text) line 5 at assignment
+                          q                           | units 
+------------------------------------------------------+-------
+ SELECT j FROM tt ORDER BY j DESC LIMIT 10            |    -1
+ SELECT j FROM tt ORDER BY j LIMIT 10                 |    -1
+ SELECT j FROM tt ORDER BY j LIMIT 10 OFFSET 40       |    -1
+ SELECT j, id FROM tt ORDER BY j DESC, id LIMIT 10    |    -1
+ SELECT j, id FROM tt ORDER BY j, id LIMIT 10         |    -1
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10            |    -1
+ SELECT k FROM tt ORDER BY k DESC LIMIT 10 OFFSET 7   |    -1
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |    -1
+ SELECT k FROM tt ORDER BY k DESC NULLS LAST LIMIT 10 |    -1
+ SELECT k FROM tt ORDER BY k LIMIT 10                 |    -1
+ SELECT k FROM tt ORDER BY k LIMIT 12000              |    -1
+ SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 10     |    -1
+ SELECT k FROM tt ORDER BY k NULLS FIRST LIMIT 300    |    -1
+(13 rows)
+
 -- a keyset page (k, id) > (x, y) is served from the index when the tie column id is in it; the refusal says so when it is not
 CREATE TABLE tk (id int, k int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO tk SELECT i, i % 1000, repeat('x', 100) FROM generate_series(1, 5000) i;
 CREATE INDEX tk_idx ON tk USING sift_col (k);
 ANALYZE tk;
 SELECT reason FROM sift.explain_why('SELECT * FROM tk WHERE (k, id) > (500, 10) ORDER BY k, id LIMIT 50') WHERE arm = 'topn';
-                                                                                                       reason                                                                                                        
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- a condition of the WHERE or ON clause is not one the scan can test (the index does not hold the column "id": the tie column of a keyset comparison (a, id) > (x, y) is served from the index only when it is in it)
-(1 row)
+ reason 
+--------
+(0 rows)
 
 DROP TABLE tt, tq, tk;
 DROP FUNCTION read_units(text), chk(text);

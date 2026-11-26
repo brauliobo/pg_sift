@@ -98,16 +98,16 @@ CREATE FUNCTION oc_stage(stage text, workers int DEFAULT 0) RETURNS TABLE (stage
 SELECT * FROM oc_stage('build');
 NOTICE:  table "oc_a" does not exist, skipping
 NOTICE:  table "oc_b" does not exist, skipping
- stage |          tag          |        result         
--------+-----------------------+-----------------------
- build | all_rows              | same+topn+stored 6000
- build | bytea_asc             | same+topn+stored 25
- build | bytea_desc            | same+topn+stored 25
- build | bytea_few_desc        | same+topn+stored 30
- build | bytea_few_values      | same+topn+stored 30
- build | bytea_filter          | same+topn+stored 30
- build | bytea_nulls_first     | same+topn+stored 25
- build | bytea_offset          | same+topn+stored 20
+ stage |          tag          |    result    
+-------+-----------------------+--------------
+ build | all_rows              | same 6000
+ build | bytea_asc             | same+topn 25
+ build | bytea_desc            | same+topn 25
+ build | bytea_few_desc        | same+topn 30
+ build | bytea_few_values      | same+topn 30
+ build | bytea_filter          | same+topn 30
+ build | bytea_nulls_first     | same+topn 25
+ build | bytea_offset          | same+topn 20
  build | bytea_same_leaf       | same+topn 25
  build | second_key            | same+topn 30
  build | text_asc              | same+topn 25
@@ -121,42 +121,42 @@ NOTICE:  table "oc_b" does not exist, skipping
  build | text_same_prefix      | same+topn 40
  build | text_same_prefix_desc | same+topn 40
  build | text_then_uuid        | same+topn 30
- build | two_keys              | same+topn+stored 30
- build | uuid_asc              | same+topn+stored 25
- build | uuid_desc             | same+topn+stored 25
+ build | two_keys              | same+topn 30
+ build | uuid_asc              | same+topn 25
+ build | uuid_desc             | same+topn 25
  build | uuid_expression       | same+topn 25
- build | uuid_filter           | same+topn+stored 30
- build | uuid_nulls_first      | same+topn+stored 25
- build | uuid_nulls_last       | same+topn+stored 25
- build | uuid_offset           | same+topn+stored 20
+ build | uuid_filter           | same+topn 30
+ build | uuid_nulls_first      | same+topn 25
+ build | uuid_nulls_last       | same+topn 25
+ build | uuid_offset           | same+topn 20
  build | uuid_same_leaf        | same+topn 25
  build | uuid_ties             | same+topn 40
 (31 rows)
 
 SELECT tag, oc_path(q) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_few_values', 'text_asc', 'text_same_prefix', 'text_filter', 'text_locale', 'uuid_expression') ORDER BY tag COLLATE "C";
-       tag        |   oc_path    
-------------------+--------------
- bytea_few_values | prefix+bytes
- text_asc         | exact+bytes
+       tag        | oc_path 
+------------------+---------
+ bytea_few_values | none
+ text_asc         | none
  text_filter      | none
  text_locale      | none
- text_same_prefix | prefix+bytes
- uuid_asc         | exact+bytes
+ text_same_prefix | none
+ uuid_asc         | none
  uuid_expression  | none
 (7 rows)
 
 -- workers: each keeps a heap of the strings it saw and sends them with their bytes; the leader merges them
 SELECT tag, oc_check(q, 2) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'bytea_asc', 'bytea_few_desc', 'two_keys', 'text_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
- bytea_asc        | same+topn+stored 25
- bytea_few_desc   | same+topn+stored 30
+       tag        |   oc_check   
+------------------+--------------
+ bytea_asc        | same+topn 25
+ bytea_few_desc   | same+topn 30
  text_asc         | same+topn 25
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
- two_keys         | same+topn+stored 30
- uuid_asc         | same+topn+stored 25
- uuid_desc        | same+topn+stored 25
+ two_keys         | same+topn 30
+ uuid_asc         | same+topn 25
+ uuid_desc        | same+topn 25
 (8 rows)
 
 -- more segments: each promotion turns the rows of the write buffer into a segment of its own, with a dictionary of its own
@@ -185,16 +185,16 @@ SELECT sift.col_promote('oc_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM oc_stage('segments');
-  stage   |          tag          |         result         
-----------+-----------------------+------------------------
- segments | all_rows              | same+topn+stored 12000
- segments | bytea_asc             | same+topn+stored 25
- segments | bytea_desc            | same+topn+stored 25
- segments | bytea_few_desc        | same+topn+stored 30
- segments | bytea_few_values      | same+topn+stored 30
- segments | bytea_filter          | same+topn+stored 30
- segments | bytea_nulls_first     | same+topn+stored 25
- segments | bytea_offset          | same+topn+stored 20
+  stage   |          tag          |    result    
+----------+-----------------------+--------------
+ segments | all_rows              | same 12000
+ segments | bytea_asc             | same+topn 25
+ segments | bytea_desc            | same+topn 25
+ segments | bytea_few_desc        | same+topn 30
+ segments | bytea_few_values      | same+topn 30
+ segments | bytea_filter          | same+topn 30
+ segments | bytea_nulls_first     | same+topn 25
+ segments | bytea_offset          | same+topn 20
  segments | bytea_same_leaf       | same+topn 25
  segments | second_key            | same+topn 30
  segments | text_asc              | same+topn 25
@@ -208,26 +208,26 @@ SELECT * FROM oc_stage('segments');
  segments | text_same_prefix      | same+topn 40
  segments | text_same_prefix_desc | same+topn 40
  segments | text_then_uuid        | same+topn 30
- segments | two_keys              | same+topn+stored 30
- segments | uuid_asc              | same+topn+stored 25
- segments | uuid_desc             | same+topn+stored 25
+ segments | two_keys              | same+topn 30
+ segments | uuid_asc              | same+topn 25
+ segments | uuid_desc             | same+topn 25
  segments | uuid_expression       | same+topn 25
- segments | uuid_filter           | same+topn+stored 30
- segments | uuid_nulls_first      | same+topn+stored 25
- segments | uuid_nulls_last       | same+topn+stored 25
- segments | uuid_offset           | same+topn+stored 20
+ segments | uuid_filter           | same+topn 30
+ segments | uuid_nulls_first      | same+topn 25
+ segments | uuid_nulls_last       | same+topn 25
+ segments | uuid_offset           | same+topn 20
  segments | uuid_same_leaf        | same+topn 25
  segments | uuid_ties             | same+topn 40
 (31 rows)
 
 SELECT tag, oc_check(q, 2) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_desc', 'bytea_filter', 'text_asc', 'text_same_prefix_desc') ORDER BY tag COLLATE "C";
-          tag          |      oc_check       
------------------------+---------------------
- bytea_desc            | same+topn+stored 25
- bytea_filter          | same+topn+stored 30
+          tag          |   oc_check   
+-----------------------+--------------
+ bytea_desc            | same+topn 25
+ bytea_filter          | same+topn 30
  text_asc              | same+topn 25
  text_same_prefix_desc | same+topn 40
- uuid_asc              | same+topn+stored 25
+ uuid_asc              | same+topn 25
 (5 rows)
 
 -- rows of the write buffer and dirty units
@@ -240,16 +240,16 @@ SELECT oc_rows(12001, 12400);
 UPDATE oc SET u = md5('new' || id)::uuid, b = NULL, s = 'Aaa' || id WHERE id % 97 = 0;
 DELETE FROM oc WHERE id % 89 = 0;
 SELECT * FROM oc_stage('buffer');
- stage  |          tag          |         result         
---------+-----------------------+------------------------
- buffer | all_rows              | same+topn+stored 12261
- buffer | bytea_asc             | same+topn+stored 25
- buffer | bytea_desc            | same+topn+stored 25
- buffer | bytea_few_desc        | same+topn+stored 30
- buffer | bytea_few_values      | same+topn+stored 30
- buffer | bytea_filter          | same+topn+stored 30
- buffer | bytea_nulls_first     | same+topn+stored 25
- buffer | bytea_offset          | same+topn+stored 20
+ stage  |          tag          |    result    
+--------+-----------------------+--------------
+ buffer | all_rows              | same 12261
+ buffer | bytea_asc             | same+topn 25
+ buffer | bytea_desc            | same+topn 25
+ buffer | bytea_few_desc        | same+topn 30
+ buffer | bytea_few_values      | same+topn 30
+ buffer | bytea_filter          | same+topn 30
+ buffer | bytea_nulls_first     | same+topn 25
+ buffer | bytea_offset          | same+topn 20
  buffer | bytea_same_leaf       | same+topn 25
  buffer | second_key            | same+topn 30
  buffer | text_asc              | same+topn 25
@@ -263,24 +263,24 @@ SELECT * FROM oc_stage('buffer');
  buffer | text_same_prefix      | same+topn 40
  buffer | text_same_prefix_desc | same+topn 40
  buffer | text_then_uuid        | same+topn 30
- buffer | two_keys              | same+topn+stored 30
- buffer | uuid_asc              | same+topn+stored 25
- buffer | uuid_desc             | same+topn+stored 25
+ buffer | two_keys              | same+topn 30
+ buffer | uuid_asc              | same+topn 25
+ buffer | uuid_desc             | same+topn 25
  buffer | uuid_expression       | same+topn 25
- buffer | uuid_filter           | same+topn+stored 30
- buffer | uuid_nulls_first      | same+topn+stored 25
- buffer | uuid_nulls_last       | same+topn+stored 25
- buffer | uuid_offset           | same+topn+stored 20
+ buffer | uuid_filter           | same+topn 30
+ buffer | uuid_nulls_first      | same+topn 25
+ buffer | uuid_nulls_last       | same+topn 25
+ buffer | uuid_offset           | same+topn 20
  buffer | uuid_same_leaf        | same+topn 25
  buffer | uuid_ties             | same+topn 40
 (31 rows)
 
 SELECT tag, oc_check(q, 2) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_asc', 'text_desc') ORDER BY tag COLLATE "C";
-    tag    |      oc_check       
------------+---------------------
- bytea_asc | same+topn+stored 25
+    tag    |   oc_check   
+-----------+--------------
+ bytea_asc | same+topn 25
  text_desc | same+topn 25
- uuid_asc  | same+topn+stored 25
+ uuid_asc  | same+topn 25
 (3 rows)
 
 -- a heap of keys wider than work_mem sorts instead, and the rows past work_mem spill to a tuplesort
@@ -288,9 +288,9 @@ SET work_mem = '64kB';
 SELECT oc_check($q$SELECT id, u, b FROM oc ORDER BY u, b DESC, id LIMIT 30 OFFSET 9000$q$) AS spilled_two_keys,
 	   oc_check($q$SELECT id, s FROM oc ORDER BY s COLLATE "C" DESC, id LIMIT 3000$q$) AS spilled_text,
 	   oc_check($q$SELECT id, b FROM oc ORDER BY b, id LIMIT 4000$q$) AS wide_heap;
-  spilled_two_keys   |  spilled_text  |       wide_heap       
----------------------+----------------+-----------------------
- same+topn+stored 30 | same+topn 3000 | same+topn+stored 4000
+ spilled_two_keys |  spilled_text  |   wide_heap    
+------------------+----------------+----------------
+ same+topn 30     | same+topn 3000 | same+topn 4000
 (1 row)
 
 RESET work_mem;
@@ -302,51 +302,27 @@ SELECT set_config('sift.backend_cache_kb', '1', false) IS NOT NULL AS tiny_cache
 (1 row)
 
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_filter', 'bytea_desc', 'text_asc', 'text_desc', 'text_same_prefix', 'two_keys', 'text_then_uuid') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
- bytea_desc       | same+topn+stored 25
+       tag        |   oc_check   
+------------------+--------------
+ bytea_desc       | same+topn 25
  text_asc         | same+topn 25
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
  text_then_uuid   | same+topn 30
- two_keys         | same+topn+stored 30
- uuid_asc         | same+topn+stored 25
- uuid_filter      | same+topn+stored 30
+ two_keys         | same+topn 30
+ uuid_asc         | same+topn 25
+ uuid_filter      | same+topn 30
 (8 rows)
 
 SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
+       tag        |   oc_check   
+------------------+--------------
  text_asc         | same+topn 25
  text_same_prefix | same+topn 40
- uuid_asc         | same+topn+stored 25
+ uuid_asc         | same+topn 25
 (3 rows)
 
 RESET sift.backend_cache_kb;
--- a dictionary above the limit of entries an order code is made for (lowered here): the rows are compared as bytes
-SELECT set_config('sift.test_limits', 'topn_code_entries=50', false) IS NOT NULL AS low_limit;
- low_limit 
------------
- t
-(1 row)
-
-SELECT tag, oc_check(q) FROM oc_q WHERE tag IN ('uuid_asc', 'bytea_desc', 'text_asc', 'text_same_prefix', 'two_keys') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
- bytea_desc       | same+topn+stored 25
- text_asc         | same+topn 25
- text_same_prefix | same+topn 40
- two_keys         | same+topn+stored 30
- uuid_asc         | same+topn+stored 25
-(5 rows)
-
-SELECT oc_path($q$SELECT id, s FROM oc ORDER BY s COLLATE "C", id LIMIT 10$q$) AS above_the_limit;
- above_the_limit 
------------------
- none
-(1 row)
-
-RESET sift.test_limits;
 SELECT sift.col_merge('oc_col', true) >= 0 AS merged;
  merged 
 --------
@@ -354,16 +330,16 @@ SELECT sift.col_merge('oc_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM oc_stage('merged');
- stage  |          tag          |         result         
---------+-----------------------+------------------------
- merged | all_rows              | same+topn+stored 12261
- merged | bytea_asc             | same+topn+stored 25
- merged | bytea_desc            | same+topn+stored 25
- merged | bytea_few_desc        | same+topn+stored 30
- merged | bytea_few_values      | same+topn+stored 30
- merged | bytea_filter          | same+topn+stored 30
- merged | bytea_nulls_first     | same+topn+stored 25
- merged | bytea_offset          | same+topn+stored 20
+ stage  |          tag          |    result    
+--------+-----------------------+--------------
+ merged | all_rows              | same 12261
+ merged | bytea_asc             | same+topn 25
+ merged | bytea_desc            | same+topn 25
+ merged | bytea_few_desc        | same+topn 30
+ merged | bytea_few_values      | same+topn 30
+ merged | bytea_filter          | same+topn 30
+ merged | bytea_nulls_first     | same+topn 25
+ merged | bytea_offset          | same+topn 20
  merged | bytea_same_leaf       | same+topn 25
  merged | second_key            | same+topn 30
  merged | text_asc              | same+topn 25
@@ -377,30 +353,30 @@ SELECT * FROM oc_stage('merged');
  merged | text_same_prefix      | same+topn 40
  merged | text_same_prefix_desc | same+topn 40
  merged | text_then_uuid        | same+topn 30
- merged | two_keys              | same+topn+stored 30
- merged | uuid_asc              | same+topn+stored 25
- merged | uuid_desc             | same+topn+stored 25
+ merged | two_keys              | same+topn 30
+ merged | uuid_asc              | same+topn 25
+ merged | uuid_desc             | same+topn 25
  merged | uuid_expression       | same+topn 25
- merged | uuid_filter           | same+topn+stored 30
- merged | uuid_nulls_first      | same+topn+stored 25
- merged | uuid_nulls_last       | same+topn+stored 25
- merged | uuid_offset           | same+topn+stored 20
+ merged | uuid_filter           | same+topn 30
+ merged | uuid_nulls_first      | same+topn 25
+ merged | uuid_nulls_last       | same+topn 25
+ merged | uuid_offset           | same+topn 20
  merged | uuid_same_leaf        | same+topn 25
  merged | uuid_ties             | same+topn 40
 (31 rows)
 
 VACUUM oc;
 SELECT * FROM oc_stage('vacuumed');
-  stage   |          tag          |         result         
-----------+-----------------------+------------------------
- vacuumed | all_rows              | same+topn+stored 12261
- vacuumed | bytea_asc             | same+topn+stored 25
- vacuumed | bytea_desc            | same+topn+stored 25
- vacuumed | bytea_few_desc        | same+topn+stored 30
- vacuumed | bytea_few_values      | same+topn+stored 30
- vacuumed | bytea_filter          | same+topn+stored 30
- vacuumed | bytea_nulls_first     | same+topn+stored 25
- vacuumed | bytea_offset          | same+topn+stored 20
+  stage   |          tag          |    result    
+----------+-----------------------+--------------
+ vacuumed | all_rows              | same 12261
+ vacuumed | bytea_asc             | same+topn 25
+ vacuumed | bytea_desc            | same+topn 25
+ vacuumed | bytea_few_desc        | same+topn 30
+ vacuumed | bytea_few_values      | same+topn 30
+ vacuumed | bytea_filter          | same+topn 30
+ vacuumed | bytea_nulls_first     | same+topn 25
+ vacuumed | bytea_offset          | same+topn 20
  vacuumed | bytea_same_leaf       | same+topn 25
  vacuumed | second_key            | same+topn 30
  vacuumed | text_asc              | same+topn 25
@@ -414,14 +390,14 @@ SELECT * FROM oc_stage('vacuumed');
  vacuumed | text_same_prefix      | same+topn 40
  vacuumed | text_same_prefix_desc | same+topn 40
  vacuumed | text_then_uuid        | same+topn 30
- vacuumed | two_keys              | same+topn+stored 30
- vacuumed | uuid_asc              | same+topn+stored 25
- vacuumed | uuid_desc             | same+topn+stored 25
+ vacuumed | two_keys              | same+topn 30
+ vacuumed | uuid_asc              | same+topn 25
+ vacuumed | uuid_desc             | same+topn 25
  vacuumed | uuid_expression       | same+topn 25
- vacuumed | uuid_filter           | same+topn+stored 30
- vacuumed | uuid_nulls_first      | same+topn+stored 25
- vacuumed | uuid_nulls_last       | same+topn+stored 25
- vacuumed | uuid_offset           | same+topn+stored 20
+ vacuumed | uuid_filter           | same+topn 30
+ vacuumed | uuid_nulls_first      | same+topn 25
+ vacuumed | uuid_nulls_last       | same+topn 25
+ vacuumed | uuid_offset           | same+topn 20
  vacuumed | uuid_same_leaf        | same+topn 25
  vacuumed | uuid_ties             | same+topn 40
 (31 rows)
@@ -442,22 +418,22 @@ HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices
 VACUUM (ANALYZE) ob;
 SELECT r, count(*) AS runs FROM (
 	SELECT oc_check($q$SELECT id, b FROM ob ORDER BY b, id LIMIT 900$q$) AS r FROM generate_series(1, 8)) x GROUP BY r;
-          r           | runs 
-----------------------+------
- same+topn+stored 900 |    8
+       r       | runs 
+---------------+------
+ same+topn 900 |    8
 (1 row)
 
 SELECT r, count(*) AS runs FROM (
 	SELECT oc_check($q$SELECT id, b FROM ob ORDER BY b DESC, id LIMIT 900 OFFSET 1500$q$) AS r FROM generate_series(1, 8)) x GROUP BY r;
-          r           | runs 
-----------------------+------
- same+topn+stored 900 |    8
+       r       | runs 
+---------------+------
+ same+topn 900 |    8
 (1 row)
 
 SELECT oc_path($q$SELECT id, b FROM ob ORDER BY b, id LIMIT 10$q$) AS bytea_path;
-  bytea_path  
---------------
- prefix+bytes
+ bytea_path 
+------------
+ none
 (1 row)
 
 -- a dictionary that stores its codes in byte order (dict_lookup on): the order code is exact from the first unit
@@ -472,16 +448,16 @@ DETAIL:  track_changes = id
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('ox_col');
 VACUUM (ANALYZE) ox;
 SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |   oc_path   
-------------------+-------------
- text_asc         | exact+bytes
- text_same_prefix | exact+bytes
- uuid_asc         | exact+bytes
+       tag        | oc_path 
+------------------+---------
+ text_asc         | none
+ text_same_prefix | none
+ uuid_asc         | none
 (3 rows)
 
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'uuid_filter', 'text_asc', 'text_desc', 'text_nulls_first', 'text_offset', 'text_filter', 'text_same_prefix', 'text_same_prefix_desc', 'text_then_uuid') ORDER BY tag COLLATE "C";
-          tag          |      oc_check       
------------------------+---------------------
+          tag          |   oc_check   
+-----------------------+--------------
  text_asc              | same+topn 25
  text_desc             | same+topn 25
  text_filter           | same+topn 30
@@ -490,9 +466,9 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN 
  text_same_prefix      | same+topn 40
  text_same_prefix_desc | same+topn 40
  text_then_uuid        | same+topn 30
- uuid_asc              | same+topn+stored 25
- uuid_desc             | same+topn+stored 25
- uuid_filter           | same+topn+stored 30
+ uuid_asc              | same+topn 25
+ uuid_desc             | same+topn 25
+ uuid_filter           | same+topn 30
 (11 rows)
 
 INSERT INTO ox (id, g, u, s, sp) SELECT i, i % 7, md5('n' || i)::uuid, 'Zz' || md5('n' || i), 'prefix_c' || i FROM generate_series(6001, 6800) i;
@@ -504,11 +480,11 @@ SELECT sift.col_promote('ox_col') >= 0 AS promoted;
 
 INSERT INTO ox (id, g, u, s, sp) SELECT i, i % 7, md5('m' || i)::uuid, 'Zy' || md5('m' || i), NULL FROM generate_series(6801, 7000) i;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ox ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
+       tag        |   oc_check   
+------------------+--------------
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
- uuid_asc         | same+topn+stored 25
+ uuid_asc         | same+topn 25
 (3 rows)
 
 -- a sift_table without the stored order (sift.table_dict_lookup off): its dictionaries get the prefix code
@@ -525,16 +501,16 @@ SELECT i, i % 7, CASE WHEN i % 17 = 0 THEN NULL ELSE md5('u' || i)::uuid END, CA
 FROM generate_series(1, 6000) i;
 VACUUM (ANALYZE) ot;
 SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |   oc_path    
-------------------+--------------
- text_asc         | prefix
- text_same_prefix | prefix+bytes
- uuid_asc         | prefix
+       tag        | oc_path 
+------------------+---------
+ text_asc         | none
+ text_same_prefix | none
+ uuid_asc         | none
 (3 rows)
 
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'uuid_filter', 'text_asc', 'text_desc', 'text_nulls_first', 'text_offset', 'text_filter', 'text_same_prefix', 'text_same_prefix_desc', 'text_then_uuid') ORDER BY tag COLLATE "C";
-          tag          |      oc_check       
------------------------+---------------------
+          tag          |   oc_check   
+-----------------------+--------------
  text_asc              | same+topn 25
  text_desc             | same+topn 25
  text_filter           | same+topn 30
@@ -543,19 +519,19 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN 
  text_same_prefix      | same+topn 40
  text_same_prefix_desc | same+topn 40
  text_then_uuid        | same+topn 30
- uuid_asc              | same+topn+stored 25
- uuid_desc             | same+topn+stored 25
- uuid_filter           | same+topn+stored 30
+ uuid_asc              | same+topn 25
+ uuid_desc             | same+topn 25
+ uuid_filter           | same+topn 30
 (11 rows)
 
 INSERT INTO ot (id, g, u, s, sp) SELECT i, i % 7, md5('n' || i)::uuid, 'Zz' || md5('n' || i), 'prefix_c' || i FROM generate_series(6001, 6300) i;
 DELETE FROM ot WHERE id % 61 = 0;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM ot ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
+       tag        |   oc_check   
+------------------+--------------
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
- uuid_asc         | same+topn+stored 25
+ uuid_asc         | same+topn 25
 (3 rows)
 
 -- by default the order of a dictionary that takes a quarter of the segment at most is stored: the units are ordered by exact codes
@@ -563,19 +539,19 @@ CREATE TABLE otd (id int PRIMARY KEY, g int, u uuid, s text, sp text, pad text D
 INSERT INTO otd (id, g, u, s, sp) SELECT id, g, u, s, sp FROM ot;
 VACUUM (ANALYZE) otd;
 SELECT tag, oc_path(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_asc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |   oc_path    
-------------------+--------------
- text_asc         | exact+prefix
- text_same_prefix | exact+prefix
- uuid_asc         | exact+prefix
+       tag        | oc_path 
+------------------+---------
+ text_asc         | none
+ text_same_prefix | none
+ uuid_asc         | none
 (3 rows)
 
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM otd ')) FROM oc_q WHERE tag IN ('uuid_asc', 'text_desc', 'text_same_prefix') ORDER BY tag COLLATE "C";
-       tag        |      oc_check       
-------------------+---------------------
+       tag        |   oc_check   
+------------------+--------------
  text_desc        | same+topn 25
  text_same_prefix | same+topn 40
- uuid_asc         | same+topn+stored 25
+ uuid_asc         | same+topn 25
 (3 rows)
 
 -- values the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the query stays with the normal plan or reads them from the heap

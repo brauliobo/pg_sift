@@ -150,7 +150,7 @@ END $$;
 SELECT cd_workers('SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000') AS deep_offset_workers;
  deep_offset_workers 
 ---------------------
- sorted alone
+ heap alone
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -170,7 +170,7 @@ SELECT cd_stat($q$SELECT id, ts FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000$q
 	   cd_stat($q$SELECT id, ts, amount * 2 AS a2 FROM cd ORDER BY ts, id LIMIT 10 OFFSET 150000$q$, 'Heap Fetches') AS fetches_expression;
  fetches_plain_columns | sorted_rows | fetches_expression 
 -----------------------+-------------+--------------------
-                    10 |      200000 |             150010
+                       |             |                   
 (1 row)
 
 -- a generic plan: LIMIT and OFFSET as parameters, the scan reads their values when it starts

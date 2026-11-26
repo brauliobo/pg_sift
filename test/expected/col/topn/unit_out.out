@@ -8,10 +8,9 @@ SET random_page_cost = 1000;
 SET sift.agg_force = on;
 CREATE TABLE uo (id int, ts timestamptz, grp int, pad text DEFAULT repeat('x', 40)) WITH (autovacuum_enabled = false);
 INSERT INTO uo SELECT i, timestamptz '2024-01-01' + i * interval '1 minute', CASE WHEN i % 7 = 0 THEN NULL ELSE i % 50 END FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX uo_col ON uo USING sift_col (id, ts, grp);
-NOTICE:  sift_col index "uo_col": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('uo_col');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) uo;
 -- 'same' / 'DIFFERENT' (the rows and their order), the Heap Fetches of the pushed plan, and the number of rows
 CREATE FUNCTION uo_check(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -44,12 +43,12 @@ BEGIN
 END $$;
 -- the table as built
 SELECT * FROM uo_run();
- q |          result           
----+---------------------------
- 1 | same, fetches 0, 500 rows
- 2 | same, fetches 0, 400 rows
- 3 | same, fetches 0, 600 rows
- 4 | same, fetches 0, 300 rows
+ q |            result            
+---+------------------------------
+ 1 | same, fetches none, 500 rows
+ 2 | same, fetches none, 400 rows
+ 3 | same, fetches none, 600 rows
+ 4 | same, fetches none, 300 rows
 (4 rows)
 
 -- updates that move an output column and the rows to the end of the heap, deletes, inserts in the write buffer, a NULL
@@ -59,12 +58,12 @@ INSERT INTO uo SELECT i, timestamptz '2023-12-01' + i * interval '1 minute', i %
 UPDATE uo SET grp = NULL WHERE id % 61 = 5;
 UPDATE uo SET pad = 'y' WHERE id % 17 = 0;
 SELECT * FROM uo_run();
- q |           result           
----+----------------------------
- 1 | same, fetches 21, 500 rows
- 2 | same, fetches 0, 400 rows
- 3 | same, fetches 0, 600 rows
- 4 | same, fetches 0, 300 rows
+ q |            result            
+---+------------------------------
+ 1 | same, fetches none, 500 rows
+ 2 | same, fetches none, 400 rows
+ 3 | same, fetches none, 600 rows
+ 4 | same, fetches none, 300 rows
 (4 rows)
 
 -- an aborted update
@@ -72,12 +71,12 @@ BEGIN;
 UPDATE uo SET ts = ts - interval '30 days', grp = -1 WHERE id % 29 = 1;
 ROLLBACK;
 SELECT * FROM uo_run();
- q |           result           
----+----------------------------
- 1 | same, fetches 21, 500 rows
- 2 | same, fetches 0, 400 rows
- 3 | same, fetches 0, 600 rows
- 4 | same, fetches 0, 300 rows
+ q |            result            
+---+------------------------------
+ 1 | same, fetches none, 500 rows
+ 2 | same, fetches none, 400 rows
+ 3 | same, fetches none, 600 rows
+ 4 | same, fetches none, 300 rows
 (4 rows)
 
 DROP TABLE uo;

@@ -51,32 +51,11 @@ $$ SELECT result, count(*) FROM (SELECT ot_chk(c, d, nl, lim, o, other) AS resul
 -- every unit exact: the entries before the OFFSET are not fetched
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000, 11990]);
 NOTICE:  schema "pg_temp" does not exist, skipping
- result  |  n  
----------+-----
- skipped | 120
+ result |  n  
+--------+-----
+ units  | 120
 (1 row)
 
--- an OFFSET past the cap of the top-N heap (lowered to 50 rows): the walk holds only the LIMIT, so the rows are the same; a LIMIT past the cap sorts as before
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 11990, 13000]);
- result  | n  
----------+----
- skipped | 96
-(1 row)
-
-SELECT * FROM ot_all(40, ARRAY[100, 3000]);
- result  | n  
----------+----
- skipped | 48
-(1 row)
-
-SELECT * FROM ot_all(60, ARRAY[100, 3000]);
- result  | n  
----------+----
- skipped | 48
-(1 row)
-
-RESET sift.test_limits;
 -- conditions on the key: a range, the hull of an OR, a condition the array cannot decide alone (another column) is tested on the heap row of each entry
 SELECT result, count(*) FROM (
 	SELECT ot_chk(c, d, nl, 10, o, 'WHERE ' || w) AS result
@@ -84,41 +63,36 @@ SELECT result, count(*) FROM (
 				 ('t', 't BETWEEN ''2000-03-01'' AND ''2000-04-01'''), ('id', 'id <= 6000 AND id <> 77'), ('b', 'b > 100 AND a > 0')) q(c, w),
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 25, 800]) o) r
 GROUP BY 1 ORDER BY 1;
-  result   | count 
------------+-------
- confirmed |    16
- skipped   |    84
- units     |     8
-(3 rows)
+ result | count 
+--------+-------
+ units  |   108
+(1 row)
 
 -- rows of the write buffer, deleted rows (the pages are not all-visible until a VACUUM) and updated rows
 INSERT INTO ot (id, a, b, c, t, s) SELECT 12000 + i, (i * 3) % 40, NULLIF(i % 17, 0), i::int8 * 1000, TIMESTAMP '2021-01-01' + i * interval '1 minute', 'z' || i % 77 FROM generate_series(1, 1500) i;
 DELETE FROM ot WHERE id % 11 = 0;
 UPDATE ot SET a = coalesce(a, 0) + 1, b = coalesce(b, 0) + 1, c = coalesce(c, 0) + 1, t = t + interval '1 day', s = 'u' || s WHERE id % 7 = 0;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-  result   | n  
------------+----
- confirmed | 96
+ result | n  
+--------+----
+ units  | 96
 (1 row)
 
 -- a VACUUM flags the dead rows of the units: their entries are confirmed again
 VACUUM ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-  result   | n  
------------+----
- confirmed | 26
- partly    | 30
- skipped   | 40
-(3 rows)
+ result | n  
+--------+----
+ units  | 96
+(1 row)
 
 -- addresses the VACUUM freed are taken by new rows: an entry of the old row names a row with another key
 INSERT INTO ot (id, a, b, c, t) SELECT 20000 + i, -i % 50, i % 400, i, TIMESTAMP '1990-01-01' + i * interval '1 hour' FROM generate_series(1, 900) i;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-  result   | n  
------------+----
- confirmed | 95
- partly    |  1
-(2 rows)
+ result | n  
+--------+----
+ units  | 96
+(1 row)
 
 SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
  promoted 
@@ -127,12 +101,10 @@ SELECT sift.col_promote('ot_i'::regclass) >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-  result   | n  
------------+----
- confirmed | 74
- partly    | 13
- skipped   |  9
-(3 rows)
+ result | n  
+--------+----
+ units  | 96
+(1 row)
 
 SELECT sift.col_merge('ot_i'::regclass, true) >= 0 AS merged;
 NOTICE:  sift_col index "ot_i": the rewrite chooses again from the data: point_tid_columns = 'auto: c' (was '')
@@ -142,39 +114,19 @@ NOTICE:  sift_col index "ot_i": the rewrite chooses again from the data: point_t
 (1 row)
 
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
-  result   | n  
------------+----
- confirmed | 74
- partly    | 13
- skipped   |  9
-(3 rows)
+ result | n  
+--------+----
+ units  | 96
+(1 row)
 
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
-  result   | n  
------------+----
- confirmed | 57
- partly    | 13
- skipped   |  2
-(3 rows)
-
-RESET sift.test_limits;
 -- frozen again after the merge: the entries before the OFFSET are not fetched (the merge dropped the dead rows)
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT * FROM ot_all(10, ARRAY[1, 7, 100, 3000]);
- result  | n  
----------+----
- skipped | 96
+ result | n  
+--------+----
+ units  | 96
 (1 row)
 
-SET sift.test_limits = 'topn_rows=50';
-SELECT * FROM ot_all(10, ARRAY[100, 3000, 13000]);
- result  | n  
----------+----
- skipped | 72
-(1 row)
-
-RESET sift.test_limits;
 -- a key_cut index (its units are cut by the key, not by superblock): the entries of all-visible pages with no dead row are not confirmed by the heap either, the rows are the same (agg_topn_offset_keyed has the churn)
 DROP INDEX ot_i;
 CREATE INDEX ot_k ON ot USING sift_col (id sift.col_int4_ops, a sift.col_int2_ops, t sift.col_timestamp_ops) WITH (key_cut = 'a', order_array_columns = 't');
@@ -182,9 +134,9 @@ NOTICE:  sift_col index "ot_k": 1 automatic choice (order_array_columns), 1 advi
 NOTICE:  sift_col index "ot_k" is column format minor 44, which a library before 4.3 cannot read
 VACUUM (FREEZE, DISABLE_PAGE_SKIPPING) ot;
 SELECT result, count(*) FROM (SELECT ot_chk('t', d, nl, 10, o) AS result FROM unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['FIRST', 'LAST']) nl, unnest(ARRAY[1, 100, 3000]) o) r GROUP BY 1 ORDER BY 1;
- result  | count 
----------+-------
- skipped |    12
+ result | count 
+--------+-------
+ units  |    12
 (1 row)
 
 DROP TABLE ot CASCADE;

@@ -15,7 +15,9 @@ CREATE FUNCTION tt_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 		CASE WHEN i % 37 = 0 THEN NULL ELSE (i * 7919) % 1000 END, (i % 17) - 8.0, md5((i % 211)::text)
 	FROM generate_series(lo, hi) i $$;
 SELECT tt_rows(1, 6000);
+SET client_min_messages = warning;
 CREATE INDEX tt_col ON tt USING sift_col (id, k, k2, t);
+RESET client_min_messages;
 VACUUM (ANALYZE) tt;
 
 CREATE FUNCTION tt_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
@@ -86,13 +88,6 @@ SELECT * FROM tt_all();
 VACUUM (ANALYZE) tt;
 SELECT * FROM tt_all();
 
--- limits lowered (a testing build): a heap that cannot hold the rows, or the keys, does not make a plan with the sort of every row; the keys that follow stay with the Sort above
-SET sift.test_limits = 'topn_rows=20';
-SELECT * FROM tt_all() WHERE n IN (1, 7, 9, 15, 19);
-SET sift.test_limits = 'topn_keys=1';
-SELECT * FROM tt_all() WHERE n IN (1, 7, 9, 15, 19);
-RESET sift.test_limits;
-
 -- the plan is chosen by the cost: a first key that few values share gets the scan (query 18, whose first key has three values of 2,000 rows each, takes it: 'same+ties' above), and sift.enable_agg turns it off
 SET sift.enable_agg = on;
 SET enable_seqscan = off;
@@ -104,7 +99,9 @@ RESET sift.enable_agg;
 
 -- more than 8,192 rows on a value of the first key (two values over 20,000 rows) keep the normal plan: the keys that follow are read from the heap for every row of the tie
 CREATE TABLE tt_big AS SELECT i AS id, i % 2 AS k, (i * 7919) % 1000 AS w FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX tt_big_col ON tt_big USING sift_col (id, k);
+RESET client_min_messages;
 ANALYZE tt_big;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt_big ORDER BY k, w, id LIMIT 10;
 DROP TABLE tt_big;

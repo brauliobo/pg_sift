@@ -4,6 +4,8 @@
 -- buffer, after updates and deletes, a merge and VACUUM, with a dictionary cache that keeps almost nothing, with workers and a spilling sort.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 2.0: a top-N with a parameter of the outer row, and over a key past the string budget, is the scan on Format 2.0 only; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET sift.async_maintenance = off;
 
 -- pad makes a unit hold about 1300 rows, so that a segment has several units and the bar of one is a string of another
@@ -18,7 +20,9 @@ CREATE FUNCTION oc_rows(lo int, hi int) RETURNS void LANGUAGE sql AS $$
 		decode(md5((i % 5)::text), 'hex')
 	FROM generate_series(lo, hi) i $$;
 SELECT oc_rows(1, 6000);
+SET client_min_messages = warning;
 CREATE INDEX oc_col ON oc USING sift_col (id, g, u, b, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) oc;
 
 CREATE FUNCTION oc_mode(pushed bool, workers int) RETURNS void LANGUAGE plpgsql AS $$
@@ -109,12 +113,16 @@ SELECT sift.col_merge('oc_col', true) >= 0 AS merged;
 SELECT * FROM oc_stage('merged');
 VACUUM oc;
 SELECT * FROM oc_stage('vacuumed');
+SET client_min_messages = warning;
 SELECT sift.col_verify('oc_col', true);
+RESET client_min_messages;
 
 -- bytea of every length from 0 to 40: the entries are compared as byteacmp does (the contents, then the length), not as the stored images, which start with their length
 CREATE TABLE ob (id int PRIMARY KEY, b bytea, pad text DEFAULT repeat('x', 1500));
 INSERT INTO ob (id, b) SELECT i, decode(substr(md5(i::text) || md5((i * 7)::text), 1, 2 * (i % 41)), 'hex') FROM generate_series(1, 4000) i;
+SET client_min_messages = warning;
 CREATE INDEX ob_col ON ob USING sift_col (id, b);
+RESET client_min_messages;
 VACUUM (ANALYZE) ob;
 SELECT r, count(*) AS runs FROM (
 	SELECT oc_check($q$SELECT id, b FROM ob ORDER BY b, id LIMIT 900$q$) AS r FROM generate_series(1, 8)) x GROUP BY r;
@@ -126,7 +134,9 @@ CREATE TABLE op (id int, g int NOT NULL, u uuid, b bytea, w bytea, pad text DEFA
 CREATE TABLE op_a PARTITION OF op FOR VALUES FROM (0) TO (3) WITH (autovacuum_enabled = false);
 CREATE TABLE op_b PARTITION OF op FOR VALUES FROM (3) TO (7) WITH (autovacuum_enabled = false);
 INSERT INTO op (id, g, u, b, w) SELECT id, g, u, b, w FROM oc WHERE id <= 5000;
+SET client_min_messages = warning;
 CREATE INDEX op_col ON op USING sift_col (id, g, u, b, w);
+RESET client_min_messages;
 VACUUM (ANALYZE) op;
 SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM op ')) FROM oc_q WHERE tag IN ('uuid_asc', 'uuid_desc', 'uuid_filter', 'uuid_same_leaf', 'bytea_asc', 'bytea_desc', 'bytea_filter', 'two_keys') ORDER BY tag COLLATE "C";
 
@@ -134,7 +144,9 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM op ')) FROM oc_q WHERE tag IN 
 CREATE TABLE ov (id int PRIMARY KEY, b bytea);
 INSERT INTO ov SELECT i, decode(repeat(md5(i::text), 6) || md5((i % 40)::text), 'hex') FROM generate_series(1, 3000) i;
 SET sift.test_limits = 'unit_bytes=65536';
+SET client_min_messages = warning;
 CREATE INDEX ov_col ON ov USING sift_col (id, b);
+RESET client_min_messages;
 RESET sift.test_limits;
 ANALYZE ov;
 SELECT oc_check($q$SELECT id, b FROM ov ORDER BY b DESC, id LIMIT 10$q$) AS overflow_key;
