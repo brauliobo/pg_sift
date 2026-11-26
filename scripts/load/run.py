@@ -4,17 +4,19 @@
 Every case runs in the schema load_case of one cluster: worker sessions (persistent psql processes, application_name load_w*) released together by a barrier, a sampler of their
 waits (collect.py), and then the checks no load may break: the rows the workers committed are the rows the tables hold (lost_rows, dup_rows), the index paths answer what the heap
 answers in one snapshot (oracle_mismatch), sift.check finds nothing, nothing is quarantined, no temporary file and no crash or leak line is left. The contention ceilings are shares
-of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106) names the defect it waits for:
-it must fail a ceiling until the fix (OPEN=LC-NN, a TODO) and the run fails once it meets them all, until `open` is dropped.
+of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106, S107-NN of Spec 107) names the
+defect it waits for: it must fail a ceiling until the fix (OPEN=ID, a TODO) and the run fails once it meets them all, until `open` is dropped. --suite picks the catalog: core
+(cases.py, one cluster), workloads and repl (suites/: a cluster sized for many sessions and prepared transactions, a primary with a hot standby and wal_level logical), or all.
 
-  scripts/load/run.py [--only RE] [--class C]   one LOAD line a case: LOAD id [f2] measurements ... PASS | FAIL | OPEN=LC-NN | SKIP
+  scripts/load/run.py [--suite S] [--only RE] [--class C]   one LOAD line a case: LOAD id [f2] measurements ... PASS | FAIL | OPEN=ID | SKIP
   scripts/load/run.py --determinism             the cases forward, again and in reverse: every verdict agrees
   scripts/load/run.py --calibrate               forward and reverse, and the ceilings the ratios propose (the worst run, 50% above)
   scripts/load/run.py --list                    the cases it would run (for the format of the cluster, --format 1|2 for another)
   scripts/load/run.py --selftest                the logic without a server
 
 Reads PGHOST, PGPORT and PGUSER like psql; --log is the server log (the crash and leak lines of each case), --no-rss skips the anonymous memory of the backends (no /proc),
-LOAD_CRASH and LOAD_RESTART are the shell commands that kill -9 the server and start it again (the last case, and a case that crashed it). --format 1|2 runs the cases on that format (the testing library: sift.test_create_format1).
+LOAD_CRASH and LOAD_RESTART are the shell commands that kill -9 the server and start it again (the last case, and a case that crashed it); LOAD_STANDBY_HOST and LOAD_STANDBY_PORT
+name the hot standby of the repl suite, LOAD_PROMOTE and LOAD_RESTANDBY promote it and clone a new one. --format 1|2 runs the cases on that format (the testing library: sift.test_create_format1).
 """
 from __future__ import annotations
 
@@ -32,11 +34,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import cases as catalog  # noqa: E402
 import collect  # noqa: E402
+import suites  # noqa: E402
 from cases import Ceilings, LoadCase  # noqa: E402
 
 ERR = re.compile(r'^(ERROR|FATAL|PANIC): +([0-9A-Z]{5}): (.*)')
 LOST = ('57P01', '08006')
-OPEN_ID = re.compile(r'LC-(0[1-9]|[1-4]\d)(,LC-(0[1-9]|[1-4]\d))*')
+OPEN_ID = re.compile(r'(LC-(0[1-9]|[1-4]\d)|S107-(0[1-9]|[1-3]\d))(,(LC-(0[1-9]|[1-4]\d)|S107-(0[1-9]|[1-3]\d)))*')
 FLOORS = ('scale_ratio',)
 SKIP_FORMAT, SKIP_TESTING = 'format 2.0 only', 'needs testing library'
 GONE = "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'load_w%'"
@@ -45,13 +48,13 @@ GONE = "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'load_
 class Psql:
     """one psql process: statements in, a marker line out; run() raises the first error, q() returns it with the SQLSTATE"""
 
-    def __init__(self, init: str = '', app: str = 'load_ctl', db: str = 'postgres'):
-        self.n, self.init, self.app, self.dbname, self.p = 0, init, app, db, None
+    def __init__(self, init: str = '', app: str = 'load_ctl', db: str = 'postgres', conn: dict | None = None):
+        self.n, self.init, self.app, self.dbname, self.conn, self.p = 0, init, app, db, conn or {}, None
         self.open()
 
     def open(self):
         env = dict(os.environ, PGOPTIONS=os.environ.get('LOAD_PGOPTIONS', '') + ' -c client_min_messages=error', LC_ALL='C',
-                   PGAPPNAME=self.app, PGDATABASE=self.dbname)
+                   PGAPPNAME=self.app, PGDATABASE=self.dbname, **self.conn)
         self.p = subprocess.Popen(['psql', '-X', '-At', '-q', '-v', 'ON_ERROR_STOP=0', '-v', 'VERBOSITY=verbose'], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
         self._pid, self.dead = None, False
@@ -118,9 +121,9 @@ class Psql:
 class Worker(Psql):
     """a session under load: do() times a statement, counts its errors (the SQLSTATEs in allow are expected) and keeps the unexpected ones"""
 
-    def __init__(self, init: str, app: str, db: str = 'postgres', seed: int = 0):
+    def __init__(self, init: str, app: str, db: str = 'postgres', seed: int = 0, conn: dict | None = None):
         self.seed, self.lat, self.ok, self.expected, self.bad, self.ledger, self.last = seed, [], 0, 0, [], 0, None
-        super().__init__(init, app, db)
+        super().__init__(init, app, db, conn)
 
     def do(self, sql: str, allow: tuple = ()):
         out, err, ms = self.q(sql)
@@ -156,8 +159,8 @@ class Ctx:
         self.no_rss = a.no_rss or self.assert_build or not os.path.exists(f'/proc/{db.pid}/smaps_rollup')
         self.cache_kb = int(db.val("SELECT setting FROM pg_settings WHERE name = 'sift.backend_cache_kb'"))
 
-    def sessions(self, n: int, init: str = '', db: str = 'postgres', path: str = 'load_case, public') -> list:
-        ws = [Worker(f'SET search_path = {path}; {init}', f'load_w{i}', db, seed=i + 1) for i in range(n)]
+    def sessions(self, n: int, init: str = '', db: str = 'postgres', path: str = 'load_case, public', conn: dict | None = None) -> list:
+        ws = [Worker(f'SET search_path = {path}; {init}', f'load_w{i}', db, seed=i + 1, conn=conn) for i in range(n)]
         self.open_sessions += ws
         return ws
 
@@ -286,7 +289,7 @@ def effective(case: LoadCase, ctx: Ctx | None) -> Ceilings:
 
 def violations(lim: Ceilings, m: dict) -> list:
     out = []
-    for f in fields(Ceilings):
+    for f in fields(lim):
         c, v = getattr(lim, f.name), m.get(f.name)
         if c is None or v is None:
             continue
@@ -339,11 +342,11 @@ def sweep(ctx: Ctx, selected: list, log: collect.LogScan, reverse: bool = False)
     return out
 
 
-def catalog_problems(cases) -> list:
+def catalog_problems(cases, classes: tuple = catalog.CLASSES) -> list:
     out, seen = [], set()
     for c in cases:
-        rules = [(c.id not in seen, 'duplicate id'), (c.cls in catalog.CLASSES, f'class {c.cls}'), (c.id.startswith(c.cls + '_'), 'id does not start with its class'),
-                 (not c.open or OPEN_ID.fullmatch(c.open), f'open={c.open!r} is not LC-NN'), (set(c.formats) <= {1, 2} and c.formats, 'formats'),
+        rules = [(c.id not in seen, 'duplicate id'), (c.cls in classes, f'class {c.cls}'), (c.id.startswith(c.cls + '_'), 'id does not start with its class'),
+                 (not c.open or OPEN_ID.fullmatch(c.open), f'open={c.open!r} is not LC-NN or S107-NN'), (set(c.formats) <= {1, 2} and c.formats, 'formats'),
                  (all(getattr(c.limits, k) == 0 for k in catalog.HARD), 'a correctness ceiling above 0'), (c.open or not c.intermittent, 'intermittent needs open')]
         out += [f'{c.id}: {msg}' for ok, msg in rules if not ok]
         seen.add(c.id)
@@ -363,6 +366,11 @@ def selftest():
     bad = [replace(c0, id='nope_x'), replace(c0, id='conc_y', open='LC-1'), replace(c0, id='conc_z', limits=Ceilings(lost_rows=1)), replace(c0, id='conc_w', formats=())]
     expect(len(catalog_problems(bad)) == 4, catalog_problems(bad))
     expect(catalog_problems([c0, c0]) == ['conc_x: duplicate id'], 'duplicate ids')
+    for name, (cases, classes) in suites.SUITES.items():
+        expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
+    every = suites.cases('all')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 27, 'the suites share no id: 17 core, 8 workloads, 2 repl')
+    suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
     expect(judge(c0, dict(m, lost_rows=1), [])[0] == 'FAIL' and judge(c0, dict(m, lock_wait_pct=11), [])[0] == 'FAIL', 'a ceiling is a hard limit')
@@ -374,6 +382,7 @@ def selftest():
     expect(judge(c0, None, [SKIP_FORMAT])[0] == 'SKIP' and judge(c0, None, ['boom'])[0] == 'FAIL', 'a skipped case is not a failed one')
     expect(judge(debt, None, ['08006 the server closed the session'])[0] == 'OPEN=LC-04', 'an open case that crashes is still the debt')
     expect(OPEN_ID.fullmatch('LC-19,LC-21,LC-42') and not OPEN_ID.fullmatch('LC-50') and not OPEN_ID.fullmatch('LC-00'), 'LC-01..LC-49')
+    expect(OPEN_ID.fullmatch('S107-01,LC-43,S107-39') and not OPEN_ID.fullmatch('S107-40') and not OPEN_ID.fullmatch('S107-1'), 'S107-01..S107-39')
     floor = Ceilings(scale_ratio=2.5)
     expect(violations(floor, {'scale_ratio': 2.0}) == ['scale_ratio 2<2.5'] and not violations(floor, {'scale_ratio': 2.6}), 'scale is a floor')
     expect(not violations(Ceilings(), {'rss_mb_delta': None, 'ctx_kb_delta': None}), 'n/a is not judged')
@@ -388,7 +397,7 @@ def selftest():
     expect(ERR.match('ERROR:  57014: canceling statement due to statement timeout').groups()[1] == '57014', 'sqlstate parse')
     expect(catalog.zipf(1, 100, 1.2) == catalog.zipf(1, 100, 1.2) and 1 <= catalog.zipf(7, 100, 1.2) <= 100, 'deterministic zipf')
     collect.selftest(expect)
-    print(f'selftest ok: {len(catalog.CASES)} cases')
+    print(f'selftest ok: {len(catalog.CASES)} core cases, ' + ', '.join(f'{len(c)} {n}' for n, (c, _) in suites.SUITES.items()))
 
 
 def report(a, ctx: Ctx, selected: list, runs: list) -> int:
@@ -414,6 +423,7 @@ def report(a, ctx: Ctx, selected: list, runs: list) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('--suite', choices=('core', *suites.SUITES, 'all'), default='core')
     ap.add_argument('--only', default='')
     ap.add_argument('--class', dest='cls', default='')
     ap.add_argument('--format', type=int, default=0)
@@ -424,7 +434,7 @@ def main() -> int:
     a = ap.parse_args()
     if a.selftest:
         return selftest() or 0
-    selected = [c for c in catalog.CASES if re.search(a.only, c.id) and c.cls.startswith(a.cls)]
+    selected = [c for c in suites.cases(a.suite) if re.search(a.only, c.id) and c.cls.startswith(a.cls)]
     if a.list and a.format:
         return print(*(c.id for c in selected if a.format in c.formats), sep='\n') or 0
     if a.format:
