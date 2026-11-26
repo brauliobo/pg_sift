@@ -148,6 +148,8 @@ typedef struct SiftV6ParWorkerStats
 	uint64		radix_parts_spilled;
 	uint64		spill_bytes;
 	uint64		peak_mem_bytes;
+	uint64		topk_dropped;	/* the groups the heap of an ORDER BY .. LIMIT of the participant left out */
+	uint64		pad[PG_CACHE_LINE_SIZE / sizeof(uint64) - 1];
 } SiftV6ParWorkerStats;
 
 /* the counters of the participants are an array in the shared block, each a whole number of cache lines; a run is palloc'd, so the type has no alignment of its own */

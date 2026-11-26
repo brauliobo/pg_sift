@@ -60,7 +60,8 @@ sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out)
 {
 	*out = (SiftV6ParSummary) {.strategy = sift_v6_par_strategy_name(pn->spec->par_strategy),.ran = pn->have_total,.escalated = pn->escalated,
 		.morsels_stolen = pn->total.morsels_stolen,.radix_parts = pn->radix_parts,.partial_recs = pn->ring_recs,.partial_bytes = pn->ring_bytes,
-		.grans_scanned = pn->total.grans_scanned,.grans_preagg = pn->total.grans_preagg,.grans_preagg_delta = pn->total.grans_preagg_delta,.heap_vet_rows = pn->total.heap_vet_rows};
+		.grans_scanned = pn->total.grans_scanned,.grans_preagg = pn->total.grans_preagg,.grans_preagg_delta = pn->total.grans_preagg_delta,.heap_vet_rows = pn->total.heap_vet_rows,
+		.topk_dropped = pn->total.topk_dropped};
 }
 
 static uint32

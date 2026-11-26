@@ -716,6 +716,17 @@ v6_rescan(CustomScanState *node)
 	sift_v6_fuse_detach(&st->arm);
 }
 
+/* the groups the heaps of the top-N left out: the node's, or those of every participant of a parallel run */
+static uint64
+topk_dropped(const V6State *st)
+{
+	SiftV6ParSummary ps = {0};
+
+	if (st->par != NULL)
+		sift_v6_par_node_summary(st->par, &ps);
+	return ps.ran ? ps.topk_dropped : st->topk != NULL ? sift_v6_topk_run_dropped(st->topk) : 0;
+}
+
 static void
 explain_par(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
 {
@@ -754,8 +765,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_v6_explain_group_keys(st->spec, es);
 		if (st->spec->topk > 0)
 			sift_v6_explain_topn_groups(st->spec, es);
-		if (st->topk != NULL && es->analyze)
-			ExplainPropertyUInteger("Groups Dropped By Top-N", NULL, sift_v6_topk_run_dropped(st->topk), es);
+		if (es->analyze && (st->topk != NULL || (st->par != NULL && st->spec->topk > 0)))
+			ExplainPropertyUInteger("Groups Dropped By Top-N", NULL, topk_dropped(st), es);
 	}
 	if (OidIsValid(st->spec->text_indexoid) && es->analyze)
 	{

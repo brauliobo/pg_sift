@@ -8,6 +8,7 @@
 #include "executor/nodeAgg.h"
 
 #include "agg/par/par.h"
+#include "agg/topn/topk_run.h"
 #include "agg/test_gucs.h"
 
 uint32
@@ -251,6 +252,7 @@ sift_v6_par_run_end(SiftV6ParRun *r)
 		SiftV6ParWorkerStats *st = sift_v6_par_stats(r->hdr, r->pid);
 
 		*st = r->stats;
+		st->topk_dropped = r->topk != NULL ? sift_v6_topk_run_dropped(r->topk) : 0;
 	}
 	pfree(r);
 }
