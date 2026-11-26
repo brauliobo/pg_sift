@@ -721,6 +721,7 @@ TESTING_REGRESS += table/bigtx
 TESTING_REGRESS += table/bitmap_lazy
 TESTING_REGRESS += table/bulk/eligible
 TESTING_REGRESS += table/dead
+TESTING_REGRESS += table/empty_format1
 TESTING_REGRESS += table/f2/autottl_rekey
 TESTING_REGRESS += table/f2/col_delta
 TESTING_REGRESS += table/f2/col_delta_dir

@@ -101,6 +101,20 @@ static struct MajorMemo
 } major_memo[MAJOR_MEMO_N];
 static SiftRing major_memo_ring;
 
+/*
+ * The format of a relation with no block: the file of a table that Format 2 makes holds its metapage from the start (a temporary one gets it at its first open), so an empty table file that
+ * is not temporary was made by Format 1, which writes its first block with its first row. Any other relation is what a first write gives it.
+ */
+static uint16
+empty_major(Relation rel)
+{
+	char		kind = rel->rd_rel->relkind;
+
+	if (kind != RELKIND_INDEX && RELKIND_HAS_STORAGE(kind) && rel->rd_rel->relpersistence != RELPERSISTENCE_TEMP)
+		return SIFT_FORMAT_MAJOR;
+	return sift_new_relation_format_major();
+}
+
 uint16
 sift_meta_resolve_major(Relation rel)
 {
@@ -113,7 +127,7 @@ sift_meta_resolve_major(Relation rel)
 	switch (peek.status)
 	{
 		case SIFT_FMT_EMPTY:
-			return sift_new_relation_format_major();
+			return empty_major(rel);
 		case SIFT_FMT_V1:
 		case SIFT_FMT_V2:
 			major_memo[SIFT_RING_SLOT(major_memo_ring, MAJOR_MEMO_N)] = (struct MajorMemo) {RelationGetRelid(rel), rel->rd_locator.relNumber, peek.format_major};

@@ -140,7 +140,7 @@ sift_index_format(PG_FUNCTION_ARGS)
 	SiftApiRel	r = sift_api_open(PG_GETARG_OID(0), AccessShareLock);
 	bool		bm25 = r.am == SIFT_API_BM25;
 	bool		empty = r.peek.status == SIFT_FMT_EMPTY;
-	Datum		v[4] = {Int32GetDatum(empty ? sift_new_relation_format_major() : r.peek.format_major), Int32GetDatum(empty ? 0 : r.peek.format_minor)};
+	Datum		v[4] = {Int32GetDatum(empty ? sift_meta_resolve_major(r.rel) : r.peek.format_major), Int32GetDatum(empty ? 0 : r.peek.format_minor)};
 	bool		nulls[4] = {false, false, !bm25, bm25};
 
 	if (bm25)
