@@ -7,7 +7,9 @@
 
 ROWS=$(knob SIFT_TD_ROWS 20000 6000)
 ROUNDS=$(knob SIFT_TD_ROUNDS 6 4)
+# Format 1: the tombstone log in memory and in temp-file runs; Format 2 keeps its deletes in deletion vectors and has no such log
 node_init primary 2 "autovacuum = off
+sift.test_create_format1 = on
 log_temp_files = 0"
 node_start primary || bail "primary start failed"
 D=$(dir primary)

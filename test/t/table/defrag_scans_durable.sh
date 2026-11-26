@@ -5,7 +5,9 @@
 plan 6
 
 ROWS=$(knob SIFT_TDS_ROWS 30000 20000)
+# Format 1: the pass weighed against the scans its metapage counts (core/reads.c, table/v1/vacuum/maint.c); Format 2 has no such pass
 node_init td 83 "autovacuum = off
+sift.test_create_format1 = on
 sift.async_maintenance = on
 sift.maintenance_naptime = 200ms
 sift.log_min_duration = 0

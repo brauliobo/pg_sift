@@ -9,7 +9,9 @@ N=$(knob SIFT_TH_ROWS 100000 20000)
 GATE=7000
 PH_TOMB=7
 APPENDS=300
+# Format 1: the tombstone log and the rewrite that holds its lock; Format 2 keeps its deletes in deletion vectors and has no such log
 node_init primary 2 "autovacuum = off
+sift.test_create_format1 = on
 max_wal_size = 4GB"
 node_start primary || bail "primary start failed"
 D=$(dir primary)

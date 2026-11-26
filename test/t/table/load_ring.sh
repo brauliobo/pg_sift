@@ -12,7 +12,9 @@
 
 ROWS=$(knob SIFT_LR_ROWS 300000 20000)
 # backtrace_functions: a request of an impossible size (the rerun after a power loss failed once on arm64 with one) logs the stack that made it, in the log of the node the report prints
+# Format 1: the ring of the load workers (table/v1/load/ring.c); a Format 2 COPY writes parts of its own
 node_init primary 2 "wal_level = replica
+sift.test_create_format1 = on
 max_wal_senders = 4
 wal_keep_size = 32MB
 autovacuum = off

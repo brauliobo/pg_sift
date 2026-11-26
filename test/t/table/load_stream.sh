@@ -9,7 +9,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_LS_ROWS 60000 20000)
+# Format 1: the segment writer of a COPY (table/v1/load/load.c); a Format 2 COPY writes parts of its own
 node_init primary 2 "wal_level = replica
+sift.test_create_format1 = on
 max_wal_senders = 4
 wal_keep_size = 32MB
 autovacuum = off
