@@ -113,7 +113,8 @@ if [[ $MODE == affected ]]; then
 		elif [[ $f == test/fuzz/txn* ]]; then FAST+='|^difftest-txn(-shapes)?$'
 		elif [[ $f == test/fuzz/bm25* ]]; then FAST+='|^difftest-bm25$'
 		elif [[ $f == test/fuzz/shapes_matrix* || $f == test/fuzz/surface_sweep* ]]; then FAST+='|^shapes-(matrix|surface)$'
-		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+="|${GROUP[plan_gate]}"; fi
+		elif [[ $f == test/plan/* || $f == scripts/plangate.sh ]]; then FAST+="|${GROUP[plan_gate]}"
+		elif [[ $f == src/agg/* || $f == src/col/* ]]; then FAST+='|^plan-gate(-4t|-tuned|-table(-tuned)?)?$'; fi
 	done
 	# a pull request builds its fast tier only when a job it can run is picked: scripts/areas.tsv may pick one of the rest, and no job selected is an error of the run
 	fastpg=false
