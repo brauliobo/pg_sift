@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_sd_pairs (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
@@ -59,15 +60,18 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sd; }
 step s1q	{ SELECT agree, stored FROM iso_sd_q(7003); }
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2l	{ SELECT pg_advisory_lock(7003); }
 step s2u	{ SELECT pg_advisory_unlock(7003); }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3p	{ SELECT sift.col_promote('iso_sd_idx') >= 0 AS promoted; }
 
 permutation s1b s2l s1q s3p s2u s1c

@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_kc (id int PRIMARY KEY, tenant_id int, dim_a_id int, v int, ts timestamp, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_kc SELECT i, i / 150, 1 + i % 12, hashint4(i) & 1048575, TIMESTAMP '2026-01-01' + (hashint4(i + 7) & 16777215) * INTERVAL '1 second', repeat('x', 100)
@@ -27,13 +28,13 @@ setup { VACUUM ANALYZE iso_kc; }
 teardown { DROP TABLE iso_kc; }
 
 session a
-setup { SET sift.async_maintenance = off; }
+setup { SET sift.test_create_format1 = on; SET sift.async_maintenance = off; }
 step a_begin	{ BEGIN; }
 step a_rewrite	{ SELECT sift.col_merge('iso_kc_idx', true) > 0 AS merged; }
 step a_commit	{ COMMIT; }
 
 session b
-setup { SET sift.async_maintenance = off; }
+setup { SET sift.test_create_format1 = on; SET sift.async_maintenance = off; }
 step b_insert	{ INSERT INTO iso_kc SELECT i, i % 800, 1 + i % 12, i, TIMESTAMP '2027-01-01' + i * INTERVAL '1 second', 'y' FROM generate_series(300001, 300500) i; }
 step b_merge	{ SELECT sift.col_merge('iso_kc_idx', true) > 0 AS merged; }
 step b_option	{ SELECT reloptions::text ~ 'point_tid_columns=auto: id' AS point_tid_chosen FROM pg_class WHERE relname = 'iso_kc_idx'; }

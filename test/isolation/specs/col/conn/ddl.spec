@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE FUNCTION iso_found_run(q text, OUT same boolean, OUT proofs int, OUT keys int, OUT why text)
@@ -44,6 +45,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1set	{ SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0; }
 step s1rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; }
 step s1join	{ SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e JOIN iso_d_dim d ON d.id = e.dim_id'); }
@@ -51,6 +53,7 @@ step s1anti	{ SELECT * FROM iso_found_run('SELECT count(*) FROM iso_d_ev e WHERE
 step s1commit	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2set	{ SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0; }
 step s2fill	{ SELECT sift.col_maintain('iso_d_ev_c') IS NOT NULL AS maintained; }
 step s2write	{ INSERT INTO iso_d_dim VALUES (900, 'new'); DELETE FROM iso_d_dim WHERE id = 7; UPDATE iso_d_dim SET label = 'changed' WHERE id <= 5; DELETE FROM iso_d_ev WHERE id % 13 = 0; }

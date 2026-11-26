@@ -6,6 +6,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_wb (id int PRIMARY KEY, k int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_wb SELECT g, g % 5, 'x' FROM generate_series(1, 200) g;
@@ -49,6 +50,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN; }
 step s1i	{ INSERT INTO iso_wb SELECT 1000 + g, g % 5, 'x' FROM generate_series(1, 60) g; }
 step s1sp	{ SAVEPOINT a; }
@@ -61,6 +63,7 @@ step s1c	{ COMMIT; }
 step s1a	{ ROLLBACK; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2v	{ VACUUM iso_wb; }
 step s2q	{ SELECT n, total, agree FROM iso_wb_q(); }
 step s2x	{ SELECT sift.col_verify('iso_wb_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wb_idx')) AS index_rows, (SELECT count(*) FROM iso_wb) AS heap_rows; }

@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_bp (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
@@ -17,16 +18,19 @@ teardown
 }
 
 session h
+setup		{ SET sift.test_create_format1 = on; }
 step hb		{ BEGIN; SELECT sift._test_tbl_hold_maint('iso_bp'); }
 step hc		{ COMMIT; }
 
 session w
+setup		{ SET sift.test_create_format1 = on; }
 step wb		{ BEGIN; SET sift.table_max_segments = 16; }
 step wbp	{ DO $$ BEGIN PERFORM sift.table_set_option('iso_bp', 'backpressure', '75'); END $$; }
 step wi		{ INSERT INTO iso_bp SELECT g, repeat('x', 1000) FROM generate_series(1, 40000) g; }
 step wc		{ COMMIT; }
 
 session o
+setup		{ SET sift.test_create_format1 = on; }
 step oseg	{ SELECT count(*) AS entries FROM sift.table_segments('iso_bp'); }
 step orows	{ SELECT count(*) AS visible FROM iso_bp; }
 

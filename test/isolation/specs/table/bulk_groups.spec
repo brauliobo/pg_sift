@@ -7,6 +7,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_bulk (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
@@ -27,10 +28,12 @@ teardown
 }
 
 session h
+setup		{ SET sift.test_create_format1 = on; }
 step hb		{ BEGIN; SELECT sift._test_tbl_hold_maint('iso_bulk'); }
 step hc		{ COMMIT; }
 
 session w
+setup		{ SET sift.test_create_format1 = on; }
 step wb		{ BEGIN; SET sift.table_max_segments = 16; }
 step wcopy	{ COPY iso_bulk FROM PROGRAM 'seq 100001 103000 | sed ''s/.*/&\trow &/'''; }
 step wown	{ SELECT count(*), sum(id) FROM iso_bulk; }
@@ -39,6 +42,7 @@ step wc		{ COMMIT; }
 step wa		{ ROLLBACK; }
 
 session r
+setup		{ SET sift.test_create_format1 = on; }
 step rscan	{ SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk; }
 step ridx	{ SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_bulk WHERE id > 0; }
 step rbm	{ SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_bulk WHERE id > 100; }
@@ -48,6 +52,7 @@ step rend	{ COMMIT; }
 step rv		{ VACUUM iso_bulk; }
 
 session o
+setup		{ SET sift.test_create_format1 = on; }
 step oseg	{ SELECT count(*) AS entries, count(*) FILTER (WHERE unfrozen) AS carry_their_writer FROM sift.table_segments('iso_bulk') WHERE kind = 'columns'; }
 
 # the COPY waits at its end for the maintenance lock, its rows in the backend and their index entries in the btree: nobody sees them

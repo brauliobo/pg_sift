@@ -6,6 +6,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_wv (id int PRIMARY KEY, k int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_wv SELECT g, g % 5, 'x' FROM generate_series(1, 200) g;
@@ -63,6 +64,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wv; }
 step s1wa	{ SELECT n, total, agree FROM iso_wv_q('agg', 0); }
 step s1wi	{ SELECT n, total, agree FROM iso_wv_q('scan', 0); }
@@ -73,6 +75,7 @@ step s1z	{ SELECT n, total, agree FROM iso_wv_q('agg', 0); }
 step s1y	{ SELECT n, total, agree FROM iso_wv_q('scan', 0); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2d	{ DELETE FROM iso_wv WHERE id > 1030; }
 step s2l	{ SELECT pg_advisory_lock(7001); }
 step s2v	{ VACUUM iso_wv; }

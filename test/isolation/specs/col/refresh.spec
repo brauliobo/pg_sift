@@ -4,6 +4,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_rf (id int, kind int, val bigint, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_rf SELECT g, g % 6, (g * 977) % 100000 - 50000, repeat('p', 100) FROM generate_series(1, 12000) g;
@@ -46,6 +47,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; }
 step s1q	{ SELECT pre < units AS some_scanned, agree FROM iso_rf_q(); }
 step s1a	{ SELECT agree FROM iso_rf_q(); }
@@ -54,12 +56,14 @@ step s1d	{ SELECT pre < units AS some_scanned, pre > 0 AS some_from_groups, agre
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2b	{ BEGIN; }
 step s2i	{ INSERT INTO iso_rf SELECT g, g % 6, g, repeat('p', 100) FROM generate_series(24001, 24500) g; }
 step s2u	{ UPDATE iso_rf SET val = val + 1 WHERE id <= 1000; }
 step s2c	{ COMMIT; }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3p	{ SELECT remaining AS stale FROM sift.col_refresh('iso_rf_idx', 0); }
 step s3r	{ SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx'); }
 step s3o	{ SELECT refreshed, remaining FROM sift.col_refresh('iso_rf_idx', 1); }

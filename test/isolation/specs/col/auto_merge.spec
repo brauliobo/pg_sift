@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_am (id int, kind text, amount numeric(10,2), pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_am SELECT g, 'cat_' || (g % 4), g % 97, repeat('x', 150) FROM generate_series(1, 20000) g;
@@ -57,12 +58,14 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT n, total, agree FROM iso_am_q(); }
 step s1q	{ SELECT n, total, agree FROM iso_am_q(); }
 step s1c	{ COMMIT; }
 step s1n	{ SELECT n, total, agree FROM iso_am_q(); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2b	{ BEGIN; }
 step s2i	{ INSERT INTO iso_am SELECT 100000 + g, 'cat_' || (g % 4), 5, repeat('x', 150) FROM generate_series(1, 300) g; }
 step s2j	{ INSERT INTO iso_am SELECT 200000 + g, 'cat_' || (g % 4), 7, repeat('x', 150) FROM generate_series(1, 100) g; }
@@ -70,6 +73,7 @@ step s2c	{ COMMIT; }
 step s2a	{ ROLLBACK; }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3d	{ SELECT sift.col_maintenance_due('iso_am_idx') AS due; }
 step s3m	{ SELECT sift.col_maintain('iso_am_idx') AS rewritten; }
 step s3v	{ SELECT count(*) FILTER (WHERE kind = 'immutable') AS segments, count(*) FILTER (WHERE kind <> 'immutable' AND rows > 0) AS buffers, bool_or(dirty) AS dirty, (SELECT sift.col_verify('iso_am_idx')::text = '') AS verified FROM sift.col_segments('iso_am_idx'); }

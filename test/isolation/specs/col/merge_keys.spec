@@ -4,6 +4,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_mk (id int, set_id int, v int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_mk SELECT i, i / 500, i % 100, repeat('p', 200) FROM generate_series(0, 29999) i;
@@ -51,17 +52,20 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN; }
 step s1i	{ INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM generate_series(30001, 30400) g; }
 step s1j	{ INSERT INTO iso_mk SELECT g, g % 600, g % 100, repeat('p', 200) FROM generate_series(30401, 30800) g; }
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2r	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows_seen FROM iso_mk; }
 step s2q	{ SELECT agree FROM iso_mk_q(); }
 step s2c	{ COMMIT; }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3o	{ SELECT coalesce(reloptions::text, '') AS before FROM pg_class WHERE relname = 'iso_mk_idx'; }
 step s3m	{ SELECT sift.col_merge('iso_mk_idx', true) > 0 AS merged; }
 step s3p	{ SELECT reloptions::text AS after FROM pg_class WHERE relname = 'iso_mk_idx'; }

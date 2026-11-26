@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_pa (id int, g int, v numeric(10,2), ts timestamp, d date) USING sift_table;
 	INSERT INTO iso_pa SELECT i, i % 7, i % 100, timestamp '2020-01-01' + i * interval '2 hours', date '2020-01-01' + i / 12 FROM generate_series(1, 120000) i;
@@ -53,11 +54,13 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa; }
 step s1q	{ SELECT * FROM iso_pa_check(); }
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2b	{ BEGIN; }
 step s2del	{ DELETE FROM iso_pa WHERE id % 50 = 0; }
 step s2ins	{ INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-01' + i * interval '1 hour', date '2024-06-01' + i / 24 FROM generate_series(1, 3000) i; }
@@ -66,6 +69,7 @@ step s2c	{ COMMIT; }
 step s2a	{ ROLLBACK; }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3v	{ VACUUM iso_pa; }
 
 # the snapshot predates a committed delete, insert or update, and VACUUM runs in between

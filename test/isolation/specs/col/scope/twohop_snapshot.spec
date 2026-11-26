@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = off);
@@ -57,11 +58,13 @@ teardown
 }
 
 session reader
+setup		{ SET sift.test_create_format1 = on; }
 step rbegin	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS snapshot_taken FROM iso_facts WHERE id = 1; }
 step rread	{ SELECT * FROM iso_read(); }
 step rend	{ COMMIT; }
 
 session writer
+setup		{ SET sift.test_create_format1 = on; }
 step wedit	{ UPDATE iso_memberships SET group_id = 3 WHERE dim_a_id = 5 AND group_id = 1; INSERT INTO iso_grants VALUES (4, 3, NULL, 4, NULL); }
 step wundo	{ UPDATE iso_memberships SET group_id = 1 WHERE dim_a_id = 5 AND group_id = 3; DELETE FROM iso_grants WHERE id = 4; }
 

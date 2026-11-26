@@ -4,6 +4,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_cv (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false);
 	INSERT INTO iso_cv SELECT i, i % 5, i FROM generate_series(1, 200) i;
@@ -29,13 +30,16 @@ teardown
 }
 
 session drop
+setup		{ SET sift.test_create_format1 = on; }
 step ddrop	{ BEGIN; DROP INDEX iso_cv_a; }
 step dend	{ COMMIT; }
 
 session convert
+setup		{ SET sift.test_create_format1 = on; }
 step cconvert	{ SELECT sift.col_track_convert() AS converted; }
 
 session check
+setup		{ SET sift.test_create_format1 = on; }
 step cstate	{ SELECT * FROM iso_cv_state(); }
 
 permutation ddrop cconvert dend cstate

@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_sp_pairs (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
@@ -73,6 +74,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sp; }
 step s1o	{ SELECT agree, parallel, stored FROM iso_sp_q(7021, 0, false); }
 step s1i	{ SELECT agree, parallel, stored FROM iso_sp_q(0, 7022, false); }
@@ -80,6 +82,7 @@ step s1w	{ SELECT agree, parallel, stored FROM iso_sp_q(0, 0, true); }
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2lo	{ SELECT pg_advisory_lock(7021); }
 step s2uo	{ SELECT pg_advisory_unlock(7021); }
 step s2li	{ SELECT pg_advisory_lock(7022); }
@@ -88,6 +91,7 @@ step s2lw	{ SELECT pg_advisory_lock(20983, 10); }
 step s2uw	{ SELECT pg_advisory_unlock(20983, 10); }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3e	{ INSERT INTO iso_sp SELECT 30300 + g, 1 + (g * 17) % 400, 2, 'z' FROM generate_series(1, 200) g;
 		  INSERT INTO iso_sp_pairs SELECT m, 3 FROM generate_series(2, 400, 9) m ON CONFLICT DO NOTHING;
 		  DELETE FROM iso_sp_pairs WHERE group_id = 3 AND dim_a_id % 5 = 0; }

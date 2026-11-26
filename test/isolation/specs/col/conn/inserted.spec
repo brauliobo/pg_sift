@@ -4,6 +4,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_conn_dim (id int PRIMARY KEY, category_id int NOT NULL) WITH (autovacuum_enabled = off);
@@ -19,11 +20,13 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1stamp	{ INSERT INTO iso_conn_stamp SELECT lineage, horizon FROM sift._test_conn_take('iso_conn_dim_c'); }
 step s1ask	{ SELECT sift._test_conn_inserted_since('iso_conn_dim_c', lin, hor) AS inserted_since FROM iso_conn_stamp; }
 step s1restamp	{ DELETE FROM iso_conn_stamp; INSERT INTO iso_conn_stamp SELECT lineage, horizon FROM sift._test_conn_take('iso_conn_dim_c'); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2b	{ BEGIN; }
 step s2i	{ INSERT INTO iso_conn_dim VALUES (1001, 1); }
 step s2flush	{ SAVEPOINT x; }

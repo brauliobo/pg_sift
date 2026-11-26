@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_qv (id int PRIMARY KEY, v int, pad text) WITH (autovacuum_enabled = off);
@@ -39,13 +40,13 @@ teardown
 }
 
 session s1
-setup	{ SET sift.on_corruption = quarantine; SET sift.test_bulkdelete_gate = 7102; }
+setup	{ SET sift.test_create_format1 = on; SET sift.on_corruption = quarantine; SET sift.test_bulkdelete_gate = 7102; }
 step s1vacuum	{ VACUUM iso_qv; }
 step s1rows	{ SELECT result FROM iso_qv_try(); }
 step s1plan	{ SELECT iso_qv_plan() AS plan; }
 
 session s2
-setup	{ SET sift.on_corruption = quarantine; }
+setup	{ SET sift.test_create_format1 = on; SET sift.on_corruption = quarantine; }
 step s2lock	{ SELECT pg_advisory_lock(7102); }
 step s2poke	{ SELECT sift._test_poke('iso_qv_idx', 2, 8176, 9, 2); }
 step s2meet	{ SELECT result FROM iso_qv_try(); }

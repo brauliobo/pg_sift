@@ -6,6 +6,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_big (id int, v text) USING sift_table WITH (autovacuum_enabled = false);
@@ -20,6 +21,7 @@ teardown
 }
 
 session w
+setup		{ SET sift.test_create_format1 = on; }
 step wb		{ BEGIN; SET sift.table_max_segments = 16; }
 step wi		{ INSERT INTO iso_big SELECT g, repeat('x', 1000) FROM generate_series(1001, 41000) g; }
 step wloop	{ DO $$ BEGIN FOR g IN 1001..41000 LOOP INSERT INTO iso_big VALUES (g, repeat('x', 1000)); END LOOP; END $$; }
@@ -30,6 +32,7 @@ step wa		{ ROLLBACK; }
 step wv		{ VACUUM iso_big; }
 
 session r
+setup		{ SET sift.test_create_format1 = on; }
 step rscan	{ SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off; SELECT count(*), sum(id) FROM iso_big; }
 step ridx	{ SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off; SELECT count(*) FROM iso_big WHERE id > 0; }
 step rbm	{ SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = on; SELECT count(*) FROM iso_big WHERE id > 20000; }

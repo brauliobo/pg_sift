@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_fold (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int NOT NULL) WITH (autovacuum_enabled = off);
@@ -40,12 +41,14 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT n, total, agree FROM iso_fold_q(); }
 step s1q	{ SELECT n, total, agree FROM iso_fold_q(); }
 step s1c	{ COMMIT; }
 step s1n	{ SELECT n, total, agree FROM iso_fold_q(); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2d	{ DELETE FROM iso_fold WHERE id % 100 = 7; }
 step s2b	{ BEGIN; }
 step s2dd	{ DELETE FROM iso_fold WHERE id % 100 = 9; }
@@ -55,6 +58,7 @@ step s2c	{ COMMIT; }
 step s2a	{ ROLLBACK; }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3f	{ SELECT sift._test_col_fold_marks('iso_fold_c') AS folded; }
 
 # a snapshot older than the delete: nothing is folded while it lasts, and it reads the rows; then they are folded

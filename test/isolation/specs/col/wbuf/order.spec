@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
 	CREATE TABLE iso_wo (id int PRIMARY KEY, k int, pad text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_wo SELECT g, (g * 7) % 41, 'x' FROM generate_series(1, 200) g;
@@ -61,6 +62,7 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_wo; }
 step s1w	{ SELECT n, agree, ordered FROM iso_wo_q(0); }
 step s1q	{ SELECT n, agree, ordered FROM iso_wo_q(7002); }
@@ -69,6 +71,7 @@ step s1c	{ COMMIT; }
 step s1z	{ SELECT n, agree, ordered FROM iso_wo_q(0); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2d	{ DELETE FROM iso_wo WHERE id > 1030; }
 step s2l	{ SELECT pg_advisory_lock(7002); }
 step s2v	{ VACUUM iso_wo; }

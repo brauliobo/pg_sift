@@ -4,6 +4,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE TABLE iso_pt (id int, k int, v int, pad text) USING sift_table WITH (autovacuum_enabled = false);
 	ALTER TABLE iso_pt ALTER COLUMN pad SET STORAGE PLAIN;
@@ -45,15 +46,18 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pt; }
 step s1q	{ SELECT agree, parallel FROM iso_ps_q(7004); }
 step s1c	{ COMMIT; }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2l	{ SELECT pg_advisory_lock(7004); }
 step s2u	{ SELECT pg_advisory_unlock(7004); }
 
 session s3
+setup		{ SET sift.test_create_format1 = on; }
 step s3u	{ UPDATE iso_pt SET v = v + 1000, k = k + 1 WHERE id % 5 = 0; }
 step s3d	{ DELETE FROM iso_pt WHERE id % 7 = 0; }
 step s3m	{ SELECT busy FROM sift.table_maintain('iso_pt'); }

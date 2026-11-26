@@ -5,6 +5,7 @@
 
 setup
 {
+	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE FUNCTION iso_jc_same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
@@ -33,11 +34,13 @@ teardown
 }
 
 session s1
+setup		{ SET sift.test_create_format1 = on; }
 step s1set	{ SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0; }
 step s1pre	{ UPDATE iso_jc_dim SET id = id + 1000 WHERE id = 300; DELETE FROM iso_jc_dim WHERE id = 299; }
 step s1write	{ UPDATE iso_jc_dim SET id = id + 2000 WHERE id <= 5; DELETE FROM iso_jc_dim WHERE id IN (50, 51); INSERT INTO iso_jc_dim VALUES (400, 'new'); }
 
 session s2
+setup		{ SET sift.test_create_format1 = on; }
 step s2set	{ SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0; }
 step s2connect	{ CREATE INDEX iso_jc_ev_c ON iso_jc_ev USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> iso_jc_dim(id)'); }
 step s2fill	{ SELECT sift.col_maintain('iso_jc_ev_c') IS NOT NULL AS maintained; }
