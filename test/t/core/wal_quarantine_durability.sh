@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Durability of what sift writes and of what it takes out of service, in four cases: (1) a part written into a file that a commit made already goes through the shared buffers and generic WAL (no
-# full-page record of smgr_bulk_write ahead of its WAL), while a file this transaction creates keeps the bulk run; (2) a quarantined index stays out of service whatever sift.on_corruption says,
+# Durability of what sift writes and of what it takes out of service, in four cases: (1) a part written into a file that a commit made already goes through the shared buffers (no
+# page of smgr_bulk_write on disk ahead of its WAL), while a file this transaction creates keeps the bulk run; (2) a quarantined index stays out of service whatever sift.on_corruption says,
 # across a restart, with the flag in its metapage written before the write that skips the index, and a hot standby's session forgets the flag it read when the flag is written; (3) VACUUM
 # VERBOSE and sift.col_maintain open a part in object storage by its descriptor; (4) a logical slot with no publication decodes the changes of a sift_table.
 # Format 2 only: tiering and the flag that a write puts in the metapage before it skips the index are Format 2's.
@@ -16,7 +16,7 @@ sift.test_create_format1 = off
 sift.on_corruption = quarantine"
 node_start p || bail "start failed"
 D=$(dir p)
-sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE EXTENSION pg_walinspect" \
+sql p "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE EXTENSION pg_walinspect" "CREATE EXTENSION pg_buffercache" \
 	"CREATE TABLE w (id int, v int)" "INSERT INTO w SELECT i, i % 7 FROM generate_series(1, 100000) i" \
 	"CREATE TABLE m (id int, v int)" "INSERT INTO m SELECT i, i % 7 FROM generate_series(1, 20000) i" "CREATE INDEX m_idx ON m USING sift_col (id, v)" \
 	"CREATE TABLE q (id int, v int)" "INSERT INTO q SELECT i, i % 7 FROM generate_series(1, 20000) i" "CREATE INDEX q_idx ON q USING sift_col (id, v)" \
@@ -25,8 +25,14 @@ node_clone p s 4 "sift.on_corruption = quarantine"
 node_start s || bail "standby start failed"
 catchup p s || bail "standby catchup failed"
 
-# WAL records of the full-page kind that name two blocks or more of the file of REL between two positions: what smgr_bulk_write sends ahead of the WAL flush of its pages (log_newpage_buffer logs one)
-full_pages() { sql p "SELECT count(*) FROM pg_get_wal_records_info('$1', '$2') WHERE resource_manager = 'XLOG' AND record_type = 'FPI' AND block_ref LIKE '%/$(sql p "SELECT pg_relation_filenode('$3')") %' AND block_ref LIKE '%blkref #1:%'"; }
+# Blocks of REL that a full-page record between two positions names and that are not in shared buffers: what smgr_bulk_write sends to the file around them, ahead of the WAL
+# flush of its pages (a batch written through the buffers stays in them, dirty, until the WAL that names it is flushed)
+full_pages() {
+	local f=$(sql p "SELECT pg_relation_filenode('$3')")
+	sql p "SELECT count(*) FROM (SELECT DISTINCT relblocknumber b FROM pg_get_wal_block_info('$1', '$2') WHERE resource_manager = 'XLOG' AND record_type = 'FPI'
+		AND relfilenode = $f AND relforknumber = 0) w WHERE NOT EXISTS (SELECT FROM pg_buffercache c WHERE c.relfilenode = $f AND c.relforknumber = 0
+		AND c.reldatabase = (SELECT oid FROM pg_database WHERE datname = current_database()) AND c.relblocknumber = w.b)"
+}
 lsn() { sql p "SELECT pg_current_wal_flush_lsn()"; }
 # no_bulk_pages REL STATEMENT...: the statements wrote WAL, and none of it is a bulk full-page record of REL
 no_bulk_pages() { local from=$(lsn) to; sql p "${@:2}" >/dev/null || return 1; to=$(lsn); [[ $to != "$from" && $(full_pages "$from" "$to" "$1") == 0 ]]; }
