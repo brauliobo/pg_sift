@@ -1,9 +1,9 @@
 /*
  * col/f2/ttl.h - the retention of a sift_table (sift.set_ttl): which parts are wholly older than the retention and can leave the manifest in one commit.
  *
- * The rule is the one of ClickHouse's ttl_only_drop_parts: a part goes when the newest row it has is older than the cutoff, and only then. A part that still has a row inside the retention is kept
- * whole, its older rows visible, until it wholly expires: compaction splits the cold side from the hot side of the watermark (col/f2/compact/compact.c), so old rows gather in parts of their own that expire
- * together. No row is read, deleted or logged: the drop is the removal of descriptors from a part list in a commit of the manifest and the release of the blocks of the parts it names. The column
+ * The drop is the one of ClickHouse's ttl_only_drop_parts: a part goes when the newest row it has is older than the cutoff. A settled part that holds rows on both sides of the cutoff is first
+ * compacted into one part of each side (sift_partition_cut_online), so that its older rows leave too; one that is not settled yet stays whole, its older rows visible, until a later step.
+ * The drop reads, deletes and logs no row: it is the removal of descriptors from a part list in a commit of the manifest and the release of the blocks of the parts it names. The column
  * of the TTL is NOT NULL (sift.set_ttl checks it): the time bounds of a part are those of its non-null values, so a row without a time would be dropped with its part.
  */
 #ifndef SIFT_F2_TTL_H
@@ -39,6 +39,9 @@ typedef struct SiftTtlPlan
 	int			npartial;
 	int			nkeep;
 } SiftTtlPlan;
+
+/* The parts that hold rows on both sides of the cutoff and are settled, which a compaction cuts at it: their generations in gens (room for n); how many */
+extern int	sift_ttl_cut_gens(const SiftPartDesc *parts, int n, int slot, int64 cutoff, FullTransactionId horizon, uint64 *gens);
 
 extern SiftTtlPlan *sift_ttl_plan(const SiftPartDesc *parts, int n, int slot, int64 cutoff, FullTransactionId horizon);
 extern void sift_ttl_plan_free(SiftTtlPlan *plan);

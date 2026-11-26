@@ -22,13 +22,13 @@ part_follows(const SiftPartDesc *a, const SiftPartDesc *b)
 	return (a->flags & b->flags & SIFT_PART_FLAG_UNKEYED) != 0 || memcmp(a->key_hi, b->key_lo, SIFT_BOUND_BYTES) < 0;
 }
 
-/* The side of the cut every row of the part is on: SIFT_PART_FLAG_TIME_HOT or _COLD; 0 when it straddles the cut, has no bounds or its bounds do not hold (a chain patches the time column). Without a time column or a cut every part is on the side 0 */
+/* The side of the cut every row of the part is on: SIFT_PART_FLAG_TIME_HOT (newer) or _COLD; 0 when it straddles the cut, has no bounds or its bounds do not hold (a chain patches the time column) */
 static uint32
-part_side(const SiftPartDesc *p, int64 hot_cut, bool bounds_hold)
+part_side(const SiftPartDesc *p, const SiftCompactCut *cut, bool bounds_hold)
 {
-	if (!bounds_hold || !(p->flags & SIFT_PART_FLAG_HAS_TIME0))
+	if (!bounds_hold || !(p->flags & (cut->slot == 0 ? SIFT_PART_FLAG_HAS_TIME0 : SIFT_PART_FLAG_HAS_TIME1)))
 		return 0;
-	return p->time_min[0] >= hot_cut ? SIFT_PART_FLAG_TIME_HOT : p->time_max[0] < hot_cut ? SIFT_PART_FLAG_TIME_COLD : 0;
+	return p->time_min[cut->slot] >= cut->at ? SIFT_PART_FLAG_TIME_HOT : p->time_max[cut->slot] < cut->at ? SIFT_PART_FLAG_TIME_COLD : 0;
 }
 
 /* The vectors of the parts joined, their granule numbers shifted, written for the new part; the deleters older than the horizon are made plain (res->stripped) */
@@ -55,11 +55,12 @@ carry_deletes(Relation rel, uint64 part_id, SiftPart *const *src, const SiftPart
 }
 
 bool
-sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, FullTransactionId horizon, SiftExtent **rel_ext, int *nrel,
+sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon, SiftExtent **rel_ext, int *nrel,
 		   SiftCompactResult *res, SiftPartDesc *out)
 {
-	bool		split = spec->time_cols[0] > 0 && hot_cut != PG_INT64_MIN;
-	uint32		side = split ? part_side(at[0], hot_cut, bounds_hold) : 0;
+	bool		split = spec->time_cols[cut->slot] > 0 && cut->at != PG_INT64_MIN;
+	uint32		side = split ? part_side(at[0], cut, bounds_hold) : 0;
+	uint32		tier0 = at[0]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD);
 
 	SiftPart  **src = palloc(n * sizeof(SiftPart *));
 	SiftPartDesc *sorted = palloc(n * sizeof(SiftPartDesc));
@@ -77,11 +78,11 @@ sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, i
 	{
 		uint32		tier = at[i]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD);
 
-		if ((i > 0 && !part_follows(at[i - 1], at[i])) ||
-			(split && (part_side(at[i], hot_cut, bounds_hold) != side || (tier != 0 && tier != side))) || (!split && tier != (at[0]->flags & (SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD))))
+		if ((i > 0 && !part_follows(at[i - 1], at[i])) || (split && part_side(at[i], cut, bounds_hold) != side) ||
+			(split && cut->tier ? tier != 0 && tier != side : tier != tier0))
 			return false;
 		sorted[i] = *at[i];
-		sorted[i].flags = (sorted[i].flags & ~(SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD)) | side;
+		sorted[i].flags = (sorted[i].flags & ~(SIFT_PART_FLAG_TIME_HOT | SIFT_PART_FLAG_TIME_COLD)) | (cut->tier ? side : 0);
 		src[i] = sift_part_open(rel, at[i]->header_blk, at[i]->part_gen, (uint32) part_id);
 		src[i]->io_mode = SIFT_IOS_MAINT_SEQ;
 		level = Max(level, at[i]->level);

@@ -88,7 +88,7 @@ COMMENT ON FUNCTION sift.clear_tier_policy(regclass) IS 'Removes the object stor
 -- A sift_col index is refused: it would forget rows its table keeps, and the same query would answer differently through the index and through the table.
 CREATE OR REPLACE FUNCTION sift.set_ttl(rel regclass, col text, retention interval) RETURNS bool
 	AS 'MODULE_PATHNAME', 'sift_set_ttl' LANGUAGE C VOLATILE SECURITY INVOKER SET search_path = pg_catalog, sift, pg_temp;
-COMMENT ON FUNCTION sift.set_ttl(regclass, text, interval) IS 'Drops, in maintenance, the parts of a Format 2.0 sift_table whose newest value of col (a NOT NULL time column of the manifest) is older than retention: one commit per partition, no row read or deleted; a part with a row inside the retention stays whole. B-tree entries stay until REINDEX. A NULL retention clears the TTL. Needs MAINTAIN. Refused for a sift_col index.';
+COMMENT ON FUNCTION sift.set_ttl(regclass, text, interval) IS 'Drops, in maintenance, the parts of a Format 2.0 sift_table whose newest value of col (a NOT NULL time column of the manifest) is older than retention: one commit per partition, no row read or deleted; a settled part that spans the cutoff is first cut in two at it. B-tree entries stay until REINDEX. A NULL retention clears the TTL. Needs MAINTAIN. Refused for a sift_col index.';
 
 -- The parts in object storage of the relations the caller can read, one row each. The function is the view's source and runs as the caller, so that the privilege check is the caller's.
 CREATE OR REPLACE FUNCTION sift_internal.tier_status()

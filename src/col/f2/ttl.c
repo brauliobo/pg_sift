@@ -23,6 +23,17 @@ sift_ttl_droppable(const SiftPartDesc *d, FullTransactionId horizon)
 		(!FullTransactionIdIsValid(d->max_xid) || FullTransactionIdPrecedes(d->max_xid, horizon));
 }
 
+int
+sift_ttl_cut_gens(const SiftPartDesc *parts, int n, int slot, int64 cutoff, FullTransactionId horizon, uint64 *gens)
+{
+	int			k = 0;
+
+	for (int i = 0; i < n; i++)
+		if (sift_ttl_classify(&parts[i], slot, cutoff) == SIFT_TTL_PARTIAL && sift_ttl_droppable(&parts[i], horizon))
+			gens[k++] = parts[i].part_gen;
+	return k;
+}
+
 SiftTtlPlan *
 sift_ttl_plan(const SiftPartDesc *parts, int n, int slot, int64 cutoff, FullTransactionId horizon)
 {

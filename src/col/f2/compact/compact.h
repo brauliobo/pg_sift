@@ -44,6 +44,20 @@ extern PGDLLIMPORT int sift_test_compact_delete;
  */
 #define SIFT_HOT_WINDOW_DAYS		30
 
+/*
+ * Where a compaction cuts its rows in two: those whose time column of the manifest slot is older than at go to parts of their own, the others to the parts of the other side; at PG_INT64_MIN:
+ * no cut. tier: the sides are the hot and the cold tier of the hot cut (SIFT_PART_FLAG_TIME_HOT / _COLD); a cut that is not a tier (the cutoff of a TTL) flags no output.
+ */
+typedef struct SiftCompactCut
+{
+	int			slot;
+	int64		at;
+	bool		tier;
+} SiftCompactCut;
+
+/* The hot cut of the first time column */
+#define SIFT_COMPACT_HOT_CUT(hot_cut)	((SiftCompactCut) {.slot = 0,.at = (hot_cut),.tier = true})
+
 typedef struct SiftCompactResult
 {
 	uint64		new_gen;		/* 0: no row was left, no part written */
@@ -108,7 +122,7 @@ extern void sift_compact_release_outputs_dv(Relation rel, const SiftPartDesc *ou
  * The parts at[0 .. n) as one part of the level above, their granules copied as they are, the blocks of the parts added to *rel_ext: possible when no row is dead, the parts follow one
  * another, share a schema and their dictionaries and have all rows frozen (so that the horizon has nothing to drop or freeze). false: nothing is written and the rows have to be read.
  */
-extern bool sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, FullTransactionId horizon,
+extern bool sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, int n, const SiftPartSpec *spec, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon,
 									SiftExtent **rel_ext, int *nrel, SiftCompactResult *res, SiftPartDesc *out);
 
 /* The parts of a partition whose dead rows are at least sift.dead_rewrite_pct of their rows: their generations, in the order of the list */
@@ -177,6 +191,10 @@ extern bool sift_partition_compact_online(Relation rel, uint64 part_id, const ui
  */
 extern bool sift_partition_join_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
 									   SiftCompactResult *res);
+
+/* sift_partition_compact_online with the rows cut at cut: a part that holds rows on both sides of it is rewritten as one part of each side */
+extern bool sift_partition_cut_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, SiftCompactCut cut, FullTransactionId horizon,
+									  SiftCompactResult *res);
 
 /*
  * Neighbouring partitions that hold less than SIFT_PARTITION_MERGE_BYTES together and have no slab and no pending deletes become one partition (the manifest keeps the lower one), the

@@ -33,7 +33,7 @@ typedef struct CompactParShared
 	SiftParCommon common;
 	uint32		part_id;
 	bool		bounds_hold;
-	int64		hot_cut;
+	SiftCompactCut cut;
 	uint64		horizon;
 	int			nin;
 	uint32		nparticipants;
@@ -131,7 +131,7 @@ run_share(Relation rel, CompactParShared *sh, void *slots, uint32 s)
 
 	for (int j = 0; j < k; j++)
 		sub[j] = inputs_of(sh)[idx[j]];
-	if (k > 0 && !sift_compact_write_slice(rel, sh->part_id, spec_of(rel), sub, k, lo, hi, sh->hot_cut, sh->bounds_hold, FullTransactionIdFromU64(sh->horizon), (int) sh->nparticipants, &slot->res, slot->out, (int) sh->slot_cap, &nout))
+	if (k > 0 && !sift_compact_write_slice(rel, sh->part_id, spec_of(rel), sub, k, lo, hi, &sh->cut, sh->bounds_hold, FullTransactionIdFromU64(sh->horizon), (int) sh->nparticipants, &slot->res, slot->out, (int) sh->slot_cap, &nout))
 		pg_atomic_write_u32(&sh->unsettled, 1);
 	slot->nout = nout;
 	pfree(idx);
@@ -202,7 +202,7 @@ participants_of(Relation rel, uint64 granules)
 }
 
 SiftCompactParResult
-sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, const uint32 *granules, int nin, int64 hot_cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftPartDesc **out, int *nout)
+sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, const uint32 *granules, int nin, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftPartDesc **out, int *nout)
 {
 	uint64		total = 0;
 	uint32		n,
@@ -225,7 +225,7 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 		return SIFT_COMPACT_PAR_OFF;
 	sh = ldr->shared;
 	*sh = (CompactParShared) {.common = {index ? InvalidOid : RelationGetRelid(rel), index ? RelationGetRelid(rel) : InvalidOid, false},.part_id = (uint32) part_id,.bounds_hold = bounds_hold,
-		.hot_cut = hot_cut,.horizon = U64FromFullTransactionId(horizon),.nin = nin,.nparticipants = n,.nshares = nshares,.slot_cap = cap};
+		.cut = *cut,.horizon = U64FromFullTransactionId(horizon),.nin = nin,.nparticipants = n,.nshares = nshares,.slot_cap = cap};
 	pg_atomic_init_u32(&sh->next, 0);
 	pg_atomic_init_u32(&sh->unsettled, 0);
 	memcpy(inputs_of(sh), in, nin * sizeof(SiftPartDesc));

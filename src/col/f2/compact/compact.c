@@ -86,13 +86,13 @@ sift_compact_open_input(Relation rel, const SiftPartDesc *d, uint32 part_id, Mem
 	return part;
 }
 
-/* Which of the two buffers takes a row: 1, the cold one, when its first time column is older than the cut */
+/* Which of the two buffers takes a row: 1, the cold one, when its time column of the cut is older than the cut */
 static int
-row_side(const SiftPartSpec *spec, const SiftRowBuf *rb, int r, int64 hot_cut)
+row_side(const SiftPartSpec *spec, const SiftRowBuf *rb, int r, const SiftCompactCut *cut)
 {
-	int			c = spec->time_cols[0] - 1;
+	int			c = spec->time_cols[cut->slot] - 1;
 
-	return c >= 0 && hot_cut != PG_INT64_MIN && !rb->isnull[c][r] && rb->i[c][r] < hot_cut;
+	return c >= 0 && cut->at != PG_INT64_MIN && !rb->isnull[c][r] && rb->i[c][r] < cut->at;
 }
 
 /* The dead rows of a deletion vector as a bit for each row of the granules that have any (none for the others): what a compaction asks of a vector, in a twelfth of its bytes */
@@ -160,7 +160,7 @@ typedef struct Sink
 	SiftMemTracker *mem;
 	Size		flush_bytes;
 	bool		split;
-	int64		hot_cut;
+	const SiftCompactCut *cut;
 	bool		bounds_hold;
 	FullTransactionId horizon;
 	bool		folding;		/* the compaction folds column-delta records: its outputs stay as written, joining them left the chain unfolded */
@@ -202,7 +202,7 @@ join_open(Sink *s, int side, const SiftPartDesc *d)
 	scratch = sift_mem_allocset_create(s->cx, "sift compact join");
 	old = MemoryContextSwitchTo(scratch);
 	given = palloc(sizeof(SiftExtent));
-	done = sift_compact_join_parts(s->rel, s->part_id, at, 2, s->spec, s->hot_cut, s->bounds_hold, s->horizon, &given, &ngiven, &part, &joined);
+	done = sift_compact_join_parts(s->rel, s->part_id, at, 2, s->spec, s->cut, s->bounds_hold, s->horizon, &given, &ngiven, &part, &joined);
 	if (done)
 		sift_fsm_release(s->rel, given, ngiven, InvalidFullTransactionId);
 	MemoryContextSwitchTo(old);
@@ -222,7 +222,7 @@ sink_flush(Sink *s, int side, bool whole)
 {
 	MemoryContext scratch = sift_mem_allocset_create(s->cx, "sift compact output");
 	MemoryContext old = MemoryContextSwitchTo(scratch);
-	uint32		flags = (!s->split ? 0 : side ? SIFT_PART_FLAG_TIME_COLD : SIFT_PART_FLAG_TIME_HOT) | (whole && s->level + 1 >= SIFT_MAX_PART_LEVEL ? SIFT_PART_FLAG_BUILT : 0);
+	uint32		flags = (!s->split || !s->cut->tier ? 0 : side ? SIFT_PART_FLAG_TIME_COLD : SIFT_PART_FLAG_TIME_HOT) | (whole && s->level + 1 >= SIFT_MAX_PART_LEVEL ? SIFT_PART_FLAG_BUILT : 0);
 	SiftPartDesc d = write_side(s->rel, s->part_id, s->level, s->rb[side], s->spec, s->dm, flags, s->adopt, s->res);
 	Size		freed = s->rb[side]->mem_bytes;
 
@@ -298,7 +298,7 @@ row_goes(SiftRowBuf *one, int r, void *arg)
 
 /* The rows of a granule go to the sink: an empty buffer of the one side takes the granule's buffer as it is, the others copy its rows */
 static void
-sink_take(Sink *sink, SiftRowBuf *one, int64 hot_cut)
+sink_take(Sink *sink, SiftRowBuf *one)
 {
 	if (!sink->split && sink->rb[0]->n == 0)
 	{
@@ -307,12 +307,12 @@ sink_take(Sink *sink, SiftRowBuf *one, int64 hot_cut)
 		return;
 	}
 	for (int r = 0; r < one->n; r++)
-		sift_rowbuf_copy_row(sink->rb[row_side(sink->spec, one, r, hot_cut)], one, r, one->xmin[r], one->cmin[r], 0);
+		sift_rowbuf_copy_row(sink->rb[row_side(sink->spec, one, r, sink->cut)], one, r, one->xmin[r], one->cmin[r], 0);
 	sift_rowbuf_free(one);
 }
 
 static bool
-add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 g_lo, uint32 g_hi, Sink *sink, int64 hot_cut, const SiftPartSpec *spec, const SiftCodeMap *code_map,
+add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 g_lo, uint32 g_hi, Sink *sink, const SiftPartSpec *spec, const SiftCodeMap *code_map,
 			  const SiftColRemap *remap, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel)
 {
 	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
@@ -358,7 +358,7 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		if (fold != NULL)
 			sift_compact_fold->apply(fold, d->part_gen, g, one, rel_ext, nrel);
 		(void) sift_rowbuf_drop_if(one, row_goes, &gr);
-		sink_take(sink, one, hot_cut);
+		sink_take(sink, one);
 		(void) sift_mem_used(sink->mem);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(granule_cx);
@@ -497,7 +497,7 @@ folds_any(void *fold, const SiftPartDesc **at, int n)
 
 /* The rows read and the outputs written by the participants of a VACUUM (PARALLEL n), each a share of the granules of the inputs (compact/par.c); the blocks of the inputs are given back as those of a serial compaction are */
 static SiftCompactParResult
-par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, int64 hot_cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel,
+par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel,
 			SiftPartDesc **out, int *nout)
 {
 	SiftPartDesc *descs = palloc(Max(ngens, 1) * sizeof(SiftPartDesc));
@@ -509,7 +509,7 @@ par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, int64 
 		descs[i] = in[i].d;
 		granules[i] = in[i].ngranules;
 	}
-	par = sift_compact_par_write(rel, part_id, descs, granules, ngens, hot_cut, bounds_hold, horizon, res, out, nout);
+	par = sift_compact_par_write(rel, part_id, descs, granules, ngens, cut, bounds_hold, horizon, res, out, nout);
 	if (par == SIFT_COMPACT_PAR_UNSETTLED)
 	{
 		sift_compact_release_outputs(rel, part_id, *out, *nout);
@@ -533,7 +533,7 @@ par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, int64 
  * settled, and no output is left. join_only: the parts are joined or nothing is written (*nout 0).
  */
 static bool
-write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, int64 hot_cut, bool bounds_hold, bool join_only, bool slice, SiftXidHorizonCache *hc, void *fold,
+write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, const SiftCompactCut *cut, bool bounds_hold, bool join_only, bool slice, SiftXidHorizonCache *hc, void *fold,
 			  SiftCompactResult *res, SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
 {
 	const SiftPartDesc **at = palloc(Max(ngens, 1) * sizeof(SiftPartDesc *));
@@ -541,7 +541,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	SiftPartSpec mspec;
 	Sink		sink;
 	SiftPartDesc joined;
-	bool		split = spec->time_cols[0] > 0 && hot_cut != PG_INT64_MIN;
+	bool		split = spec->time_cols[cut->slot] > 0 && cut->at != PG_INT64_MIN;
 	uint16		level = 0;
 	uint64		total_rows = 0;
 	const SiftPartDicts *adopt = NULL;
@@ -561,7 +561,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		mapped |= remap[i] != NULL;
 	}
 	res->nparts_in = ngens;
-	if (!slice && !mapped && !folds_any(fold, at, ngens) && sift_compact_join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
+	if (!slice && !mapped && !folds_any(fold, at, ngens) && sift_compact_join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
 	{
 		*out = memcpy(palloc(sizeof(SiftPartDesc)), &joined, sizeof(SiftPartDesc));
 		*nout = 1;
@@ -572,7 +572,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		*nout = 0;
 		return true;
 	}
-	if (!slice && !mapped && !folds_any(fold, at, ngens) && (par = par_written(rel, part_id, in, ngens, hot_cut, bounds_hold, hc->horizon, res, rel_ext, nrel, out, nout)) != SIFT_COMPACT_PAR_OFF)
+	if (!slice && !mapped && !folds_any(fold, at, ngens) && (par = par_written(rel, part_id, in, ngens, cut, bounds_hold, hc->horizon, res, rel_ext, nrel, out, nout)) != SIFT_COMPACT_PAR_OFF)
 		return par == SIFT_COMPACT_PAR_DONE;
 	dm = sift_dict_merge_plan(rel, (uint32) part_id, at, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap, mem->budget / SIFT_COMPACT_DICT_SHARE);
 	mspec = sift_dict_merge_spec(dm, spec);
@@ -586,7 +586,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 			dominant = i;
 	if (dominant >= 0)
 		adopt = sift_part_dicts(rel, dominant_part = sift_compact_open_input(rel, at[dominant], (uint32) part_id, &adopt_cx));
-	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,.hot_cut = hot_cut,.bounds_hold = bounds_hold,.horizon = hc->horizon,.folding = folds_any(fold, at, ngens),.open = {-1, -1},
+	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,.cut = cut,.bounds_hold = bounds_hold,.horizon = hc->horizon,.folding = folds_any(fold, at, ngens),.open = {-1, -1},
 		.res = res,.cx = CurrentMemoryContext};
 	sink.rb[0] = sift_rowbuf_new(&mspec);
 	sink.rb[1] = split ? sift_rowbuf_new(&mspec) : NULL;
@@ -595,7 +595,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		MemoryContext icx = NULL;
 		SiftPart   *part = i == dominant ? dominant_part : sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
 
-		read = add_part_rows(rel, part, at[i], (uint32) part_id, in[i].g_lo, in[i].g_hi, &sink, hot_cut, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
+		read = add_part_rows(rel, part, at[i], (uint32) part_id, in[i].g_lo, in[i].g_hi, &sink, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
 		if (icx != NULL)
 			MemoryContextDelete(icx);
 	}
@@ -616,7 +616,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 
 /* What one participant of a compaction of several writes: the rows of the granules [lo[i], hi[i]) of the part in[i] as parts of its own, which the leader of the compaction commits with the rest; false: a deletion in them is not settled */
 bool
-sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec, const SiftPartDesc *in, int nin, const uint32 *lo, const uint32 *hi, int64 hot_cut, bool bounds_hold,
+sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec, const SiftPartDesc *in, int nin, const uint32 *lo, const uint32 *hi, const SiftCompactCut *cut, bool bounds_hold,
 						 FullTransactionId horizon, int nparticipants, SiftCompactResult *res, SiftPartDesc *out, int out_cap, int *nout)
 {
 	SiftMemTracker mem;
@@ -642,7 +642,7 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 		ci[i].g_lo = lo[i];
 		ci[i].g_hi = hi[i];
 	}
-	read = write_outputs(rel, part_id, ci, nin, spec, hot_cut, bounds_hold, false, true, &hc, NULL, res, &rel_ext, &nrel, &mem, &written, nout);
+	read = write_outputs(rel, part_id, ci, nin, spec, cut, bounds_hold, false, true, &hc, NULL, res, &rel_ext, &nrel, &mem, &written, nout);
 	if (read && *nout > out_cap)
 	{
 		sift_compact_release_outputs(rel, part_id, written, *nout);
@@ -842,7 +842,7 @@ release_packed_pages(Relation rel, uint64 part_id, const CompactIn *in, int ngen
  * nothing changed, for an input that is gone, a deleter that is not settled or a compaction of the partition that is under way.
  */
 static bool
-compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
+compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, const SiftCompactCut *cut, FullTransactionId horizon,
 			   bool join_only, SiftCompactResult *res, SiftMemTracker *mem)
 {
 	SiftManifestRead mr;
@@ -870,11 +870,11 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
-	bounds_hold = (mr.entries[0].flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (sift_manifest_read_col_delta(rel, &mr.entries[0]).flags & SIFT_CDLA_DIRTY_TIME0) == 0;
+	bounds_hold = (mr.entries[0].flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || (sift_manifest_read_col_delta(rel, &mr.entries[0]).flags & (cut->slot == 0 ? SIFT_CDLA_DIRTY_TIME0 : SIFT_CDLA_DIRTY_TIME1)) == 0;
 	parts = sift_manifest_read_parts(rel, &mr.entries[0], &nparts);
 	in = read_inputs(rel, part_id, parts, nparts, gens, ngens);
 	fold = sift_compact_fold != NULL ? sift_compact_fold->open(rel, &mr.entries[0], parts, nparts, gens, ngens, horizon) : NULL;
-	if (!write_outputs(rel, part_id, in, ngens, spec, hot_cut, bounds_hold, join_only, false, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
+	if (!write_outputs(rel, part_id, in, ngens, spec, cut, bounds_hold, join_only, false, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
 	{
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;
@@ -954,7 +954,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
  * read and wrote is given back, to the system too, when it is done.
  */
 static bool
-compact_budgeted(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon, bool join_only,
+compact_budgeted(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, SiftCompactCut cut, FullTransactionId horizon, bool join_only,
 				 SiftCompactResult *res)
 {
 	SiftMemTracker mem;
@@ -963,7 +963,7 @@ compact_budgeted(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64
 
 	sift_mem_init(&mem, "f2_compact", CurrentMemoryContext, true, SIFT_BUDGET_MAINT_MEM, 2, 1);
 	old = MemoryContextSwitchTo(mem.root_cx);
-	done = compact_online(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, join_only, res, &mem);
+	done = compact_online(rel, part_id, key_lo, gens, ngens, spec, &cut, horizon, join_only, res, &mem);
 	MemoryContextSwitchTo(old);
 	sift_mem_end(&mem);
 	return done;
@@ -973,12 +973,19 @@ bool
 sift_partition_compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
 							  SiftCompactResult *res)
 {
-	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, false, res);
+	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, SIFT_COMPACT_HOT_CUT(hot_cut), horizon, false, res);
 }
 
 bool
 sift_partition_join_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, int64 hot_cut, FullTransactionId horizon,
 						   SiftCompactResult *res)
 {
-	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, hot_cut, horizon, true, res);
+	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, SIFT_COMPACT_HOT_CUT(hot_cut), horizon, true, res);
+}
+
+bool
+sift_partition_cut_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *gens, int ngens, const SiftPartSpec *spec, SiftCompactCut cut, FullTransactionId horizon,
+						  SiftCompactResult *res)
+{
+	return compact_budgeted(rel, part_id, key_lo, gens, ngens, spec, cut, horizon, false, res);
 }

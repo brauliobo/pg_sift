@@ -1,6 +1,6 @@
 /*
  * col/f2/tier/maint.c - the step of maintenance that keeps the object storage tier and the TTL of a sift_table (sift.set_tier_policy, sift.set_ttl): the parts older than the retention leave the
- * manifest, the objects of the parts that left are deleted once every standby and replication slot has replayed that, the eligible parts move to object storage, and the objects no commit names are swept.
+ * manifest (a settled part that spans the cutoff is cut at it first), the objects of the parts that left are deleted once every standby and replication slot has replayed that, the eligible parts move to object storage, and the objects no commit names are swept.
  *
  * Every change of the parts of a partition holds the compaction lock of the partition (a compaction of it is skipped, never raced) and, from the read of the parts to the end of its commit, the
  * partition lock, so that a delete or a flush cannot land between the read and the write of the descriptors. A store that cannot be reached is a WARNING and the step ends: the tier is an
@@ -18,6 +18,7 @@
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 
+#include "col/f2/compact/compact.h"
 #include "col/f2/drop/parts.h"
 #include "col/f2/part/idx.h"
 #include "col/f2/tier/host.h"
@@ -128,12 +129,38 @@ ttl_commit(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *e)
 	sift_ttl_plan_free(plan);
 }
 
+/* The settled parts that straddle the cutoff, read under the partition lock and cut at it by one compaction (which takes the locks itself), so that the commit that follows drops their older side */
+static void
+ttl_cut(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *listed)
+{
+	SiftManifestRead mr;
+	SiftPartitionEntry *e;
+	SiftPartDesc *parts;
+	SiftCompactResult res;
+	uint64	   *gens = NULL;
+	int			np,
+				ncut = 0;
+
+	sift_tier_lock_part(s->rel, listed->part_id);
+	e = entry_locked(s->rel, listed, &mr);
+	if (e != NULL && !time_dirty(s->rel, e, slot))
+	{
+		parts = sift_manifest_read_parts(s->rel, e, &np);
+		gens = palloc(Max(np, 1) * sizeof(uint64));
+		ncut = sift_ttl_cut_gens(parts, np, slot, cutoff, s->horizon, gens);
+	}
+	sift_tier_unlock_part(s->rel, listed->part_id);
+	if (ncut > 0)
+		(void) sift_partition_cut_online(s->rel, e->part_id, e->key_lo, gens, ncut, &s->store->spec, (SiftCompactCut) {.slot = slot,.at = cutoff}, s->horizon, &res);
+}
+
 static void
 ttl_partition(const Step *s, int slot, int64 cutoff, const SiftPartitionEntry *listed)
 {
 	SiftManifestRead mr;
 	SiftPartitionEntry *e;
 
+	ttl_cut(s, slot, cutoff, listed);
 	if (!sift_tier_lock_compaction(s->rel, listed->part_id))
 		return;
 	sift_tier_lock_part(s->rel, listed->part_id);
