@@ -44,7 +44,7 @@ setup
 		l text;
 	BEGIN
 		FOR l IN EXPLAIN (COSTS OFF) SELECT l.k, avg(l.n), count(*) FROM iso_rc t, jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8) GROUP BY l.k LOOP
-			IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+			IF l ~ 'Custom Scan \(SiftAggV6\)' THEN RETURN true; END IF;
 		END LOOP;
 		RETURN false;
 	END $$;

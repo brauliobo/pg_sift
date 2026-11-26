@@ -41,7 +41,7 @@ setup
 		FOR l IN EXPLAIN (COSTS OFF) SELECT m.name, n.name AS other, count(*) FROM iso_corr f
 			LEFT JOIN LATERAL (SELECT name FROM iso_corr_map m WHERE m.kind = f.kind ORDER BY name LIMIT 1) m ON true
 			JOIN (SELECT id, name FROM iso_corr_names UNION ALL SELECT id, name FROM iso_corr_names) n ON n.id = f.dim_a_id GROUP BY m.name, n.name LOOP
-			IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+			IF l ~ 'Custom Scan \(SiftAggV6\)' THEN RETURN true; END IF;
 		END LOOP;
 		RETURN false;
 	END $$;

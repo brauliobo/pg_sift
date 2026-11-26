@@ -37,7 +37,7 @@ setup
 		l text;
 	BEGIN
 		FOR l IN EXPLAIN (COSTS OFF) SELECT d.label, f.kind, count(*) FROM iso_jf f JOIN iso_jf_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind LOOP
-			IF l ~ 'Custom Scan \(SiftAgg\)' THEN RETURN true; END IF;
+			IF l ~ 'Custom Scan \(SiftAggV6\)' THEN RETURN true; END IF;
 		END LOOP;
 		RETURN false;
 	END $$;

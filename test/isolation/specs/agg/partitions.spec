@@ -39,13 +39,11 @@ setup
 		l text;
 		nodes int := 0;
 		listed int := 0;
-		removed int := 0;
 		differences bigint;
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || stmt LOOP
-			IF l LIKE '%Custom Scan (SiftAgg)%' THEN nodes := nodes + 1; END IF;
-			IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
-			IF l ~ '(\d+) partitions removed' THEN removed := substring(l from '(\d+) partitions removed')::int; END IF;
+			IF l LIKE '%Custom Scan (SiftAggV6)%' THEN nodes := nodes + 1; END IF;
+			IF l ~ 'Partitions: \d+' THEN listed := substring(l from 'Partitions: (\d+)')::int; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_pp_on AS ' || stmt;
 		PERFORM set_config('sift.enable_agg', 'off', true);
@@ -53,7 +51,7 @@ setup
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		differences := (SELECT count(*) FROM ((TABLE iso_pp_on EXCEPT TABLE iso_pp_off) UNION ALL (TABLE iso_pp_off EXCEPT TABLE iso_pp_on)) d);
 		DROP TABLE iso_pp_on, iso_pp_off;
-		RETURN format('%s SiftAgg nodes, %s partitions read, %s differences from the normal plan', nodes, listed - removed, differences);
+		RETURN format('%s SiftAgg nodes, %s partitions read, %s differences from the normal plan', nodes, listed, differences);
 	END $$;
 }
 
