@@ -26,10 +26,10 @@ extern int	vcal_date_to_ts(int64 *d, const int32 *a, uint16 n, ZoneOff *zone, co
 
 /*
  * d = EXTRACT(field FROM a): a is a date when is_date, else a timestamp, read in the zone when it is a timestamptz (NULL: a timestamp); the result is the numeric of scale 0 (6 for the epoch of a timestamp) in int64.
- * special: the rows of a that are an infinity, which are NULL for every field but year and epoch; the first row of chk that is an infinity under year or
- * epoch is the result (those have no value in 64 bits), -1 when none.
+ * special: the rows of a that are an infinity, which are NULL for every field but year and epoch; those two give the infinity as PostgreSQL does, which no numeric of 64 bits
+ * holds, as the least or greatest int64 of the register (an order the comparisons of the program keep).
  */
-extern int	vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field, ZoneOff *zone, const uint64 *chk, uint64 *special, int32 *scratch);
+extern void vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field, ZoneOff *zone, const uint64 *chk, uint64 *special, int32 *scratch);
 
 /* the scale of EXTRACT(field FROM a) */
 extern int	vcal_extract_scale(SiftVxField field, bool is_date);

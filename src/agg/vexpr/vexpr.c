@@ -94,9 +94,6 @@ raise_fail(const Fail *f)
 		case E_DATERANGE:
 			ereport(ERROR, (errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE), errmsg("date out of range for timestamp")));
 			break;
-		default:
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("EXTRACT of an infinite value is not run by the vectorized expressions"),
-							errhint("The scan keeps a chunk whose zone holds an infinity for the executor.")));
 	}
 }
 
@@ -764,9 +761,7 @@ op_calendar(Run *r, const SiftVecOp *op)
 			note(&r->fail, row, E_TSRANGE);
 		return;
 	}
-	row = vcal_extract(d->data, src, is_date, r->n, (SiftVxField) op->aux, op->zone, chk, special, r->c->civ);
-	if (row >= 0)
-		note(&r->fail, row, E_SPECIAL);
+	vcal_extract(d->data, src, is_date, r->n, (SiftVxField) op->aux, op->zone, chk, special, r->c->civ);
 	for (int w = 0; w < r->nw; w++)
 		d->valid[w] &= ~special[w];
 }

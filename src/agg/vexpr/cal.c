@@ -293,7 +293,13 @@ vcal_extract_scale(SiftVxField field, bool is_date)
 	return field == SVF_EPOCH && !is_date ? 6 : 0;
 }
 
-int
+static inline bool
+is_infinity_extract(SiftVxField field)
+{
+	return field == SVF_YEAR || field == SVF_EPOCH;
+}
+
+void
 vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field, ZoneOff *zone, const uint64 *chk, uint64 *special, int32 *scratch)
 {
 	int32	   *days = scratch,
@@ -303,7 +309,6 @@ vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field,
 			   *jan1 = scratch + 4 * SIFT_VEC_LEN;
 	const int64 *ts = a;
 	const int32 *dt = a;
-	uint64		bad[SIFT_VEC_WORDS];
 	int64		offs[SIFT_VEC_LEN];
 	const int64 *off = no_offset;
 
@@ -317,8 +322,7 @@ vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field,
 
 			sp |= (uint64) (is_date ? (dt[i] == INT32_MIN || dt[i] == INT32_MAX) : is_special_ts(ts[i])) << j;
 		}
-		special[w] = sp;
-		bad[w] = (field == SVF_YEAR || field == SVF_EPOCH) ? sp & chk[w] : 0;
+		special[w] = is_infinity_extract(field) ? 0 : sp;
 	}
 	if (is_date)
 		memcpy(days, dt, (size_t) n * sizeof(int32));
@@ -359,6 +363,7 @@ vcal_extract(int64 *d, const void *a, bool is_date, uint16 n, SiftVxField field,
 			case SVF_MINUTE: d[i] = (int64) ((((ts[i] + off[i]) - (int64) days[i] * USECS_PER_DAY_I) % 3600000000) / 60000000); break;
 			default: d[i] = is_date ? (int64) dt[i] * 86400 + PG_EPOCH_UNIX_S : ts[i] + PG_EPOCH_UNIX_US;
 		}
+		if (is_infinity_extract(field) && (is_date ? (dt[i] == INT32_MIN || dt[i] == INT32_MAX) : is_special_ts(ts[i])))
+			d[i] = (is_date ? dt[i] == INT32_MAX : ts[i] == INT64_MAX) ? INT64_MAX : INT64_MIN;
 	}
-	return first_row(bad, n);
 }

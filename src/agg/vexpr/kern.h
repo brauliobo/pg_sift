@@ -18,8 +18,7 @@ typedef enum ErrKind
 	E_FUNF,
 	E_FDIV0,
 	E_TSRANGE,
-	E_DATERANGE,
-	E_SPECIAL
+	E_DATERANGE
 } ErrKind;
 
 /* the first row of the batch that has an error, and its kind; an operation that finds one in a lower row than the noted takes its place */

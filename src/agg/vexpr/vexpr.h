@@ -21,8 +21,8 @@
  * quarter or year and EXTRACT of year, quarter, month, day, dow, isodow, doy, hour, minute or epoch go through the days of the proleptic Gregorian calendar (twelve
  * integer operations a date, no branch and no table). A timestamptz has the zone of the node (core/zoneoff.h, the pieces of constant offset of the session zone):
  * every row reads its own piece, and date_trunc to a day or more puts the instant of the truncated local time in the piece of that time, as PostgreSQL does (a month
- * that starts in standard time ends a row of summer time in the offset of the month's first midnight). +-infinity is kept by date_trunc, gives NULL to EXTRACT but year and epoch, and those two raise 0A000 for it: a scan sends a
- * chunk whose zone holds an infinity to the executor. EXTRACT is a numeric as in PostgreSQL: scale 0, and for the epoch of a timestamp scale 6.
+ * that starts in standard time ends a row of summer time in the offset of the month's first midnight). +-infinity is kept by date_trunc, gives NULL to EXTRACT but year and epoch, and those two give the infinity of PostgreSQL's numeric, as the
+ * least or greatest int64 of the register. EXTRACT is a numeric as in PostgreSQL: scale 0, and for the epoch of a timestamp scale 6.
  *
  * Registers are views: a column is read in place (the register aliases the vector of the input, nothing is copied), an operation writes a buffer of the
  * register file. A register whose validity is NULL (all_valid) has every live row valid.
