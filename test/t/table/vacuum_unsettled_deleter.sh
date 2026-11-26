@@ -21,6 +21,7 @@ vacuum() { sql uw "SET maintenance_work_mem = '1MB'" "VACUUM u" >/dev/null; }
 
 sql uw "DELETE FROM u WHERE id <= 1000" >/dev/null || bail "first delete failed"
 coproc SNAP { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock uw)" -p "$(port uw)" -U postgres -d "$(node_db uw)"; }
+snap_pid=$SNAP_PID
 printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ;" "SELECT count(*) AS c FROM u \\gset" "\\echo READY" >&"${SNAP[1]}"
 read -r -u "${SNAP[0]}" ready
 sql uw "DELETE FROM u WHERE id > 6000 AND id <= 7000" >/dev/null || bail "second delete failed"
@@ -35,7 +36,7 @@ check "the second VACUUM does not grow the table" test "$size2" -le "$size1"
 check "the rows are as they were" test "$(digest)" == "$want"
 
 echo '\q' >&"${SNAP[1]}"
-wait "$SNAP_PID"
+wait "$snap_pid"
 check "the VACUUM after the snapshot ends" vacuum
 check "the rows are as they were after it" test "$(digest)" == "$want"
 check "no dead rows are left" test "$(sql uw "SELECT sum(dead_rows) FROM sift.parts('u')")" == 0

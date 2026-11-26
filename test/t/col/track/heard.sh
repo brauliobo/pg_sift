@@ -56,6 +56,7 @@ check "deleted under the replica role: the heap is not asked" heap_free
 
 # another session: a delete that has not ended, then rolled back, then committed
 coproc OTHER { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock th)" -p "$(port th)" -U postgres -d "$(node_db th)"; }
+other_pid=$OTHER_PID
 printf '%s\n' "BEGIN;" "DELETE FROM t WHERE id % 10 = 2;" "\\echo READY" >&"${OTHER[1]}"
 read -r -u "${OTHER[0]}" ready
 check "a delete another session has not ended: the rows are those of the heap" exact
@@ -69,7 +70,7 @@ read -r -u "${OTHER[0]}" ready
 check "the delete committed: the rows are those of the heap" exact
 check "the delete committed: the heap is not asked" heap_free
 printf '%s\n' "\\q" >&"${OTHER[1]}"
-wait "$OTHER_PID" 2>/dev/null
+wait "$other_pid" 2>/dev/null
 
 sql th "UPDATE t SET v = v + 1 WHERE id % 10 = 3" "DELETE FROM t WHERE id % 20 = 3" >/dev/null || bail "update failed"
 check "a column delta and a delete of the same rows: the rows are those of the heap" exact
@@ -97,6 +98,7 @@ check "SERIALIZABLE: the heap is asked, which takes its predicate locks" heap_as
 
 # a snapshot that began before the rebuild ended: rows inserted since are not its rows, though the new index holds them as written
 coproc OLD { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock th)" -p "$(port th)" -U postgres -d "$(node_db th)"; }
+old_pid=$OLD_PID
 printf '%s\n' "LOAD 'pg_sift';" "BEGIN ISOLATION LEVEL REPEATABLE READ;" "SELECT 1;" "\\echo READY" >&"${OLD[1]}"
 read -r -u "${OLD[0]}" snapshot_taken
 read -r -u "${OLD[0]}" ready
@@ -106,7 +108,7 @@ read -r -u "${OLD[0]}" with_index
 read -r -u "${OLD[0]}" with_heap
 read -r -u "${OLD[0]}" ready
 printf '%s\n' "ROLLBACK;" "\\q" >&"${OLD[1]}"
-wait "$OLD_PID" 2>/dev/null
+wait "$old_pid" 2>/dev/null
 old_snapshot_exact() { out="$with_index"$'\n'"$with_heap"; [[ -n $with_index && $with_index == "$with_heap" ]]; }
 check "a snapshot that began before the REINDEX: the rows are those of the heap" old_snapshot_exact
 

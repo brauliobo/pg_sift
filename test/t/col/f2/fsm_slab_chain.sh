@@ -30,13 +30,14 @@ churn() { # metadata pages allocated and released at once, by a transaction a sn
 
 hold() { # a REPEATABLE READ snapshot that pins the horizon until the session ends
 	coproc HOLD { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock "$p")" -p "$(port "$p")" -U postgres -d "$(node_db "$p")"; }
+	HOLDER=$HOLD_PID
 	printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ;" "SELECT count(*) FROM h;" >&"${HOLD[1]}"
 	read -r -u "${HOLD[0]}" _
 }
 crash_restart() {
 	crash "$p"
 	eval "exec ${HOLD[1]}>&-"
-	wait "$HOLD_PID" "$@" 2>/dev/null
+	wait "$HOLDER" "$@" 2>/dev/null
 	node_start "$p" || bail "the restart failed"
 }
 rows_agree() { test "$(sql "$p" "SELECT count(*), sum(a) FROM h")" == "$(sql "$p" "SET sift.enable_agg = off" "SELECT count(*), sum(a) FROM h")"; }

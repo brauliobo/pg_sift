@@ -195,6 +195,7 @@ cycle_rows tbl_f2_wide_upd
 settled_rows tbl_f2_wide_upd wid "$clean" "$tb0"
 load_wide snp 8192
 coproc SNAP { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock ch)" -p "$(port ch)" -U postgres -d "$(node_db ch)"; }
+snap_pid=$SNAP_PID
 printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ;" "SELECT count(*) AS c FROM snp \\gset" "\\echo READY" >&"${SNAP[1]}"
 read -r -u "${SNAP[0]}" ready
 sql ch "CHECKPOINT" >/dev/null
@@ -206,7 +207,7 @@ out=$({
 	done
 } | sql ch) || bail "the updates under a snapshot failed"
 echo '\q' >&"${SNAP[1]}"
-wait "$SNAP_PID"
+wait "$snap_pid"
 s() { awk -v k="$1" '$1 == "S" && $2 == k { print $3 }' <<<"$out"; }
 w300=$(s 300) w600=$(s 600) w700=$(s 700) w800=$(s 800)
 ratio_row tbl_f2_wide_upd:snap_pend_del_wal "$((w300 / 300))" "$(((w600 - w300) / 300))" "$(((w800 - w700) / 100))" 1.25

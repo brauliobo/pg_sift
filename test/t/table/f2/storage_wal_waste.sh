@@ -45,12 +45,13 @@ sql sw "CREATE TABLE snp (id int PRIMARY KEY, grp int NOT NULL, v1 bigint NOT NU
 	"INSERT INTO snp SELECT g, g % 64, g, g * 3, g % 1000, repeat('x', 40) FROM generate_series(1, 16384) g" "VACUUM snp" "SELECT sift.maintain('snp')" \
 	"CREATE INDEX snp_grp ON snp (grp)" "VACUUM snp" "SELECT sift.maintain('snp')" >/dev/null || bail "load snp failed"
 coproc SNAP { psql -X -At -q -v ON_ERROR_STOP=1 -h "$(node_sock sw)" -p "$(port sw)" -U postgres -d "$(node_db sw)"; }
+snap_pid=$SNAP_PID
 printf '%s\n' "BEGIN ISOLATION LEVEL REPEATABLE READ;" "SELECT count(*) AS c FROM snp \\gset" "\\echo READY" >&"${SNAP[1]}"
 read -r -u "${SNAP[0]}" ready
 sql sw "CHECKPOINT" >/dev/null
 read -r upd_bytes upd_records < <(wal_bytes "UPDATE snp SET grp = grp + 1;")
 echo '\q' >&"${SNAP[1]}"
-wait "$SNAP_PID"
+wait "$snap_pid"
 diag "STORAGE_WAL_WASTE 16,384 updates under a snapshot: $upd_bytes bytes in $upd_records records"
 check "an UPDATE under a snapshot writes at most 55 bytes a row" test "${upd_bytes:-999999999}" -le $((55 * 16384))
 check "the pending deletes of it are logged four pages to a record" test "${upd_records:-999999}" -lt 70
