@@ -26,6 +26,7 @@
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -243,7 +244,7 @@ month_group(ScopePlan *p, Node *g)
 	arg = lsecond(fe->args);
 	if (!IsA(unit, Const) || unit->constisnull || strcmp(TextDatumGetCString(unit->constvalue), "month") != 0)
 		return false;
-	if (IsA(arg, FuncExpr) && list_length(((FuncExpr *) arg)->args) == 1 && exprType(linitial(((FuncExpr *) arg)->args)) == DATEOID)
+	if (IsA(arg, FuncExpr) && (((FuncExpr *) arg)->funcid == F_TIMESTAMP_DATE || ((FuncExpr *) arg)->funcid == F_TIMESTAMPTZ_DATE))
 		arg = linitial(((FuncExpr *) arg)->args);
 	if (!IsA(arg, Var) || sift_v6_scope_index_col(p, (Var *) arg) != p->layout.time_col || !time_type_ok(((Var *) arg)->vartype))
 		return false;
