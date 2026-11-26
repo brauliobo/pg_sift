@@ -258,14 +258,17 @@ SELECT plan('SELECT t, count(*) FROM ns GROUP BY t') AS text_key;
 -------------------------
  Custom Scan (SiftAggV6)
  Table: ns
-(2 rows)
+ Group Keys: t
+(3 rows)
 
 SELECT plan('SELECT v, count(*) FROM ns WHERE t = ''text 3'' GROUP BY v') AS text_filter;
-       text_filter       
--------------------------
+          text_filter          
+-------------------------------
  Custom Scan (SiftAggV6)
  Table: ns
-(2 rows)
+ Filters: (t = 'text 3'::text)
+ Group Keys: v
+(4 rows)
 
 -- an UPDATE of a few columns of a wide table keeps the address of the row and patches the columns (SIFT_PT_COL_DELTA)
 CREATE FUNCTION delta_pages(rel regclass) RETURNS int LANGUAGE sql AS $$
