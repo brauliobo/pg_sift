@@ -31,6 +31,8 @@ base=$(rows a)
 node_stop a
 
 use_root a "$newroot"
+# Format 1: the rewrite of a table of $ref, its units per key (sift.table_layouts) and the order of its addresses are those of Format 1
+node_conf a "sift.test_create_format1 = on"
 node_start a || bail "cannot start this tree on $ref data"
 check "a table of $ref reads unchanged with this library" test "$(rows a)" == "$base"
 sql a "ALTER EXTENSION pg_sift UPDATE" >/dev/null 2>"$TAPDIR/upd.err"
@@ -100,7 +102,7 @@ if [[ ! -f $(pg_config --pkglibdir)/pg_sift$DLSUFFIX ]]; then
 	finish
 fi
 node_stop a
-node_init up 8
+node_init up 8 "sift.test_create_format1 = on"
 BIN=$(pg_config --bindir)
 (cd "$(dir up)" && LD_PRELOAD=${SIFT_PRELOAD:-} pg_upgrade -b "$BIN" -B "$BIN" -d "$(dir a)/data" -D "$(dir up)/data" \
 	-U postgres -p "$(port a)" -P "$(port up)" -s "$(dir up)/sock" >"$(dir up)/pg_upgrade.log" 2>&1)

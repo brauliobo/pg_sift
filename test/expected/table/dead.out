@@ -1,6 +1,8 @@
 -- Dead rows of the column groups: VACUUM counts live and dead rows as it does for a heap (reltuples, pg_stat_user_tables), rewrites
 -- a column segment alone once more than the dead_rewrite_pct option percent of it is dead.
 CREATE EXTENSION pg_sift;
+-- Format 1: the dead rows of column segments and their dead_rewrite_pct default of 30 are those of Format 1
+SET sift.test_create_format1 = on;
 -- (vacuum_truncate off: moving a segment down for the cut would also drop its dead rows)
 CREATE TABLE d (id int, v text) USING sift_table WITH (autovacuum_enabled = false, vacuum_truncate = false);
 CREATE VIEW dseg AS SELECT rows, dead_rows FROM sift.table_segments('d') WHERE kind = 'columns';

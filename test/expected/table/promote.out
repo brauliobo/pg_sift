@@ -1,6 +1,8 @@
 -- Promotion: the rows of a sift_table move from the row format write buffer to column segments with the same TIDs. Everything that works
 -- before must work after, against a heap twin: scans, indexes, updates and deletes of promoted rows, VACUUM, ANALYZE, rewrites, ALTER TABLE.
 CREATE EXTENSION pg_sift;
+-- Format 1: the promotion of write buffer rows to column segments is Format 1
+SET sift.test_create_format1 = on;
 CREATE TABLE s (id int PRIMARY KEY, i2 int2, i8 int8, n numeric(12,3), nu numeric, r4 float4, r8 float8, d date, ts timestamptz, b bool,
 	t text, vc varchar(20), c char(5), y bytea, u uuid, j jsonb, a int[], iv interval, o "char", w text) USING sift_table WITH (vacuum_truncate = false);
 CREATE TABLE h (LIKE s INCLUDING ALL) USING heap;

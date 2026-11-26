@@ -17,7 +17,9 @@ pgt() { local n=$1 tool=$2; shift 2; "$tool" -h "$(dir "$n")/sock" -p "$(port "$
 # the rows the dump writes for the table of the options
 dumped_rows() { pgt a pg_dump -d postgres "$@" | awk '/^COPY sift.table_option_values /{on=1; next} /^\\\.$/{on=0} on' | wc -l; }
 
-node_init a 2 "wal_level = replica
+# Format 1: the options it moves (write_buffer_limit, hot_update, wide_rows, dict_lookup) act on Format 1 tables only; Format 2 keeps them and ignores them
+node_init a 2 "sift.test_create_format1 = on
+wal_level = replica
 max_wal_senders = 4
 autovacuum = off"
 node_start a || bail "node a did not start"
@@ -105,7 +107,7 @@ if [[ ! -f $(pg_config --pkglibdir)/pg_sift$DLSUFFIX ]]; then
 	finish
 fi
 node_stop a
-node_init up 8
+node_init up 8 "sift.test_create_format1 = on"
 BIN=$(pg_config --bindir)
 (cd "$(dir up)" && LD_PRELOAD=${SIFT_PRELOAD:-} pg_upgrade -b "$BIN" -B "$BIN" -d "$(dir a)/data" -D "$(dir up)/data" \
 	-U postgres -p "$(port a)" -P "$(port up)" -s "$(dir up)/sock" >"$(dir up)/pg_upgrade.log" 2>&1)

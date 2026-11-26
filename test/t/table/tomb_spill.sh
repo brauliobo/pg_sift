@@ -7,7 +7,9 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_TS_ROWS 20000 6000)
+# Format 1: the tombstone log and its temp-file runs; Format 2 stages its deletes in work_mem and writes them as it goes
 node_init primary 2 "autovacuum = off
+sift.test_create_format1 = on
 log_temp_files = 0"
 node_start primary || bail "primary start failed"
 D=$(dir primary)

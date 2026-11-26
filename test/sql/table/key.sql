@@ -7,6 +7,8 @@
 -- updates and deletes, rolled back, VACUUM, maintenance); the table has 160,000 rows because the checks of the budget read more than 100,000 of them.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the key tables of segments, their minor and sift._test_tbl_verify are Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

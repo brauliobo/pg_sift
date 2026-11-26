@@ -2,6 +2,8 @@
 -- and the columns that note a failed background step are 0 and NULL (the background of a table keeps no note). worker_state refuses anything else.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
+-- Format 1: the sealed write buffers and the write buffer rows a worker is due for are Format 1
+SET sift.test_create_format1 = on;
 
 CREATE TABLE tw (id int, g int, v float8) USING sift_table;
 CREATE TABLE tp (id int, g int);
