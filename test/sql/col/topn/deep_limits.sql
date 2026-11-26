@@ -18,7 +18,7 @@ VACUUM (ANALYZE) cl;
 
 CREATE FUNCTION cl_mode(pushed bool) RETURNS void LANGUAGE sql AS $$ SELECT sift_helpers.agg_mode(pushed) $$;
 
--- 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan, ' sorted' when it keeps no heap, and the number of rows
+-- 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan, and the number of rows
 CREATE FUNCTION cl_check(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text;
 BEGIN
@@ -29,8 +29,7 @@ BEGIN
 	PERFORM cl_mode(false);
 	EXECUTE 'CREATE TEMP TABLE cl_b AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x';
 	SELECT count(*) INTO n FROM ((SELECT pos, r FROM cl_a EXCEPT ALL SELECT pos, r FROM cl_b) UNION ALL (SELECT pos, r FROM cl_b EXCEPT ALL SELECT pos, r FROM cl_a)) d;
-	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END ||
-		   CASE WHEN plan ~ ' sorted rows' THEN ' sorted' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
 END $$;
 
 CREATE TABLE cl_q (tag text PRIMARY KEY, q text NOT NULL);
@@ -69,7 +68,7 @@ BEGIN
 	PREPARE cl_g (bigint, bigint) AS SELECT id, ts FROM cl ORDER BY ts DESC, id LIMIT $1 OFFSET $2;
 	EXECUTE format('CREATE TEMP TABLE cl_b AS EXECUTE cl_g(%s, %s)', lim, off);
 	SELECT count(*) INTO n FROM ((SELECT * FROM cl_a EXCEPT ALL SELECT * FROM cl_b) UNION ALL (SELECT * FROM cl_b EXCEPT ALL SELECT * FROM cl_a)) d;
-	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ ' sorted rows' THEN ' sorted' ELSE ' heap' END || ' ' || (SELECT count(*) FROM cl_b);
+	RETURN CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM cl_b);
 END $$;
 SELECT v, cl_generic(l, o) FROM (VALUES (10, 0), (10, 1990), (10, 1991), (3000, 0), (5, 2500)) x(l, o), LATERAL (SELECT format('%s+%s', l, o) AS v) y ORDER BY l, o;
 RESET plan_cache_mode;

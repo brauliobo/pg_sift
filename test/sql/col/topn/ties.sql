@@ -15,12 +15,12 @@ INSERT INTO tt SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE i END, i % 7, repeat
 CREATE INDEX tt_idx ON tt USING sift_col (id, k, j) WITH (write_buffer_limit = 512);
 VACUUM (FREEZE, ANALYZE) tt;
 
--- the units the top-N scan read (of the 60 superblocks), and 'same' when the keys of the rows are the normal plan's
+-- the granules the top-N scan read, and 'same' when the keys of the rows are the normal plan's
 CREATE FUNCTION read_units(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; r int := -1;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' AND l NOT LIKE '%Pruned%' THEN r := trim(substr(trim(l), 8))::int; END IF;
+		r := coalesce(substring(l from 'Granules(?: Scanned: |: scanned=)(\d+)')::int, r);
 	END LOOP;
 	RETURN r;
 END $$;

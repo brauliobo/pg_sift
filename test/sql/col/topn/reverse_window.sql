@@ -2,6 +2,8 @@
 -- The superblocks of a window are read from its best end, so a window holding the rows of the page reads one unit, not every unit of the window in table order.
 -- A page holds one row, so a superblock is 256 rows and 60 of them make the table.
 CREATE EXTENSION pg_sift;
+-- Format 2.0: the zones of its granules prune the top-N runs here; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
@@ -13,12 +15,12 @@ INSERT INTO rw SELECT i, i, i % 7, repeat('x', 600) FROM generate_series(1, 1536
 CREATE INDEX rw_idx ON rw USING sift_col (id, k, j);
 VACUUM (FREEZE, ANALYZE) rw;
 
--- 'same' when the rows and their order are those of the normal plan; the units read by the sorted runs and the units the zones pruned
+-- 'same' when the rows and their order are those of the normal plan; the granules the scan read and those the zones pruned
 CREATE FUNCTION chk(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := ''; a text; b text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%units read by sorted run%' OR l LIKE '%Units: %' THEN r := r || ' ' || trim(l); END IF;
+		IF l ~ '^\s*Granules' THEN r := r || ' ' || trim(l); END IF;
 	END LOOP;
 	EXECUTE format('SELECT string_agg(x::text, E'','') FROM (%s) x', q) INTO a;
 	SET LOCAL sift.enable_agg = off;

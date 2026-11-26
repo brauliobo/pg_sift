@@ -30,8 +30,9 @@ BEGIN
 	q := format('SELECT id, %1$s AS k FROM ot %5$s ORDER BY %1$s %2$s NULLS %3$s LIMIT %4$s OFFSET %6$s', col, dir, nl, lim, other, off);
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.enable_col_scan = on; SET LOCAL enable_indexscan = off; SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off;
+	PERFORM sift._test_gorder_answered(true);
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		used := used OR pl LIKE '%Global Order%';
+		used := used OR sift._test_gorder_answered(true) > 0;
 		IF pl LIKE '%heap fetches%' THEN fetches := substring(pl from '([0-9]+) heap fetches')::int; END IF;
 	END LOOP;
 	DROP TABLE IF EXISTS pg_temp.ot_ra;

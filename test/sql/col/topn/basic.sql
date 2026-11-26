@@ -101,7 +101,7 @@ INSERT INTO ct_q VALUES
 
 -- A generic plan of q (a PREPARE of the types) executed with args, against the plain plan of the same statement: the plan of each mode is
 -- made again (a cached generic plan does not follow the settings). 'same' / 'DIFFERENT', '+topn' when the pushed plan is the top-N scan,
--- the rows that went to the sort ('sort N') or 'heap', and the number of rows
+-- and the number of rows
 CREATE FUNCTION ct_generic(types text, q text, args text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text; res text;
 BEGIN
@@ -124,8 +124,7 @@ BEGIN
 	DROP TABLE ct_a0, ct_b0;
 	SELECT count(*) INTO n FROM ((SELECT pos, r FROM ct_a EXCEPT ALL SELECT pos, r FROM ct_b) UNION ALL (SELECT pos, r FROM ct_b EXCEPT ALL SELECT pos, r FROM ct_a)) d;
 	res := CASE WHEN n = 0 THEN 'same' ELSE 'DIFFERENT' END;
-	RETURN res || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM ct_b) ||
-		CASE WHEN plan ~ 'Top-N: ' THEN CASE WHEN plan ~ ' sorted rows' THEN ' sort ' || (regexp_match(plan, '(\d+) sorted rows'))[1] ELSE ' heap' END ELSE '' END;
+	RETURN res || CASE WHEN plan ~ 'Top-N: ' THEN '+topn' ELSE '' END || ' ' || (SELECT count(*) FROM ct_b);
 END $$;
 
 CREATE FUNCTION ct_stage(name text) RETURNS TABLE (stage text, results text) LANGUAGE sql AS $$

@@ -16,9 +16,8 @@ CREATE FUNCTION skipped(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal plan';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%superblocks skipped%' THEN r := 'skipped ' || substring(l from '(\d+) superblocks skipped'); END IF;
-		IF l LIKE '%Units: %' THEN r := r || ' units ' || substring(l from 'Units: (\d+)'); END IF;
-		IF l LIKE '%Rows: %' THEN r := r || ' rows ' || substring(l from 'Rows: (\d+) scanned'); END IF;
+		IF l ~ 'Granules(?: Scanned: |: scanned=)(\d+)' THEN r := 'granules ' || substring(l from 'Granules(?: Scanned: |: scanned=)(\d+)'); END IF;
+		IF l ~ 'Top-N Rows: ' THEN r := r || ' rows ' || substring(l from 'Top-N Rows: (\d+)'); END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -51,7 +50,7 @@ SELECT * FROM run_all('built');
  built      | 1 | same | normal plan | kept order skips the same
  built      | 2 | same | normal plan | kept order skips the same
  built      | 3 | same | normal plan | kept order skips the same
- built      | 4 | same | normal plan | kept order skips the same
+ built      | 4 | same | granules 8 | kept order skips the same
  built      | 5 | same | normal plan | kept order skips the same
  built      | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -65,7 +64,7 @@ SELECT * FROM run_all('write buffer');
  write buffer | 1 | same | normal plan | kept order skips the same
  write buffer | 2 | same | normal plan | kept order skips the same
  write buffer | 3 | same | normal plan | kept order skips the same
- write buffer | 4 | same | normal plan | kept order skips the same
+ write buffer | 4 | same | granules 8 | kept order skips the same
  write buffer | 5 | same | normal plan | kept order skips the same
  write buffer | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -82,7 +81,7 @@ SELECT * FROM run_all('promoted');
  promoted   | 1 | same | normal plan | kept order skips the same
  promoted   | 2 | same | normal plan | kept order skips the same
  promoted   | 3 | same | normal plan | kept order skips the same
- promoted   | 4 | same | normal plan | kept order skips the same
+ promoted   | 4 | same | granules 8 | kept order skips the same
  promoted   | 5 | same | normal plan | kept order skips the same
  promoted   | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -95,7 +94,7 @@ SELECT * FROM run_all('deleted and updated');
  deleted and updated | 1 | same | normal plan | kept order skips the same
  deleted and updated | 2 | same | normal plan | kept order skips the same
  deleted and updated | 3 | same | normal plan | kept order skips the same
- deleted and updated | 4 | same | normal plan | kept order skips the same
+ deleted and updated | 4 | same | granules 7 | kept order skips the same
  deleted and updated | 5 | same | normal plan | kept order skips the same
  deleted and updated | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -113,7 +112,7 @@ SELECT * FROM run_all('vacuumed');
  vacuumed   | 1 | same | normal plan | kept order skips the same
  vacuumed   | 2 | same | normal plan | kept order skips the same
  vacuumed   | 3 | same | normal plan | kept order skips the same
- vacuumed   | 4 | same | normal plan | kept order skips the same
+ vacuumed   | 4 | same | granules 7 | kept order skips the same
  vacuumed   | 5 | same | normal plan | kept order skips the same
  vacuumed   | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -130,7 +129,7 @@ SELECT * FROM run_all('merged');
  merged     | 1 | same | normal plan | kept order skips the same
  merged     | 2 | same | normal plan | kept order skips the same
  merged     | 3 | same | normal plan | kept order skips the same
- merged     | 4 | same | normal plan | kept order skips the same
+ merged     | 4 | same | granules 7 | kept order skips the same
  merged     | 5 | same | normal plan | kept order skips the same
  merged     | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -142,7 +141,7 @@ SELECT * FROM run_all('reindexed');
  reindexed  | 1 | same | normal plan | kept order skips the same
  reindexed  | 2 | same | normal plan | kept order skips the same
  reindexed  | 3 | same | normal plan | kept order skips the same
- reindexed  | 4 | same | normal plan | kept order skips the same
+ reindexed  | 4 | same | granules 7 | kept order skips the same
  reindexed  | 5 | same | normal plan | kept order skips the same
  reindexed  | 6 | same | normal plan | kept order skips the same
 (6 rows)

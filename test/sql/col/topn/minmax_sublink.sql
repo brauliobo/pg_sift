@@ -26,16 +26,12 @@ CREATE TABLE evp AS SELECT * FROM ev;
 ANALYZE ev, evp, ents;
 VACUUM ev;
 
--- is the sub-select a top-1 probe of the order array, and how many heap rows does it fetch
-CREATE FUNCTION plan_of(q text, OUT global_order boolean, OUT fetches int) LANGUAGE plpgsql AS $$
-DECLARE l text;
+-- is the sub-select a top-1 probe of the order array
+CREATE FUNCTION plan_of(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
-	global_order := false; fetches := -1;
 	PERFORM sift._test_gorder_answered(true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		global_order := global_order OR sift._test_gorder_answered(true) > 0;
-		IF l ~ 'Top-N Run:' THEN fetches := substring(l FROM '([0-9]+) heap fetches')::int; END IF;
-	END LOOP;
+	EXECUTE q;
+	RETURN sift._test_gorder_answered(true) > 0;
 END $$;
 -- the rows, in order, as the oracle has them
 CREATE FUNCTION same(q text) RETURNS boolean LANGUAGE plpgsql AS $$
@@ -74,25 +70,25 @@ INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
 -- the probes: with the scan taken whatever the price, a sub-select of one aggregate and one table is a top-1 of the order array (not a pass over the entity, nor a join) where the array
 -- is of its column and the group is its equality; the others keep the aggregate. Three statements are not asked: the prices of their plans are all zero and the choice between them is noise.
 SET sift.agg_force = on;
-SELECT n, (plan_of(replace(q, '@', 'ev'))).global_order AS global_order, same(q) AS answers FROM tq WHERE n NOT IN (3, 11, 12) ORDER BY n;
+SELECT n, plan_of(replace(q, '@', 'ev')) AS global_order, same(q) AS answers FROM tq WHERE n NOT IN (3, 11, 12) ORDER BY n;
 SELECT n, same(q) AS answers FROM tq WHERE n IN (3, 11, 12) ORDER BY n;
 RESET sift.agg_force;
 SELECT n, same(q) AS answers FROM tq ORDER BY n;
 
--- the walk refused: the group is not the order array's (it is of ts alone), the condition on ent passes few rows and the units answer, with no heap row fetched by the walk
+-- the walk refused: the group is not the order array's (it is of ts alone), the condition on ent passes few rows and the units answer
 CREATE TABLE ev2 AS SELECT id, ent, ts FROM ev;
 CREATE INDEX ev2_i ON ev2 USING sift_col (id, ent, ts) WITH (order_array_columns = 'ts');
 ANALYZE ev2;
 SET sift.agg_force = on;
-SELECT (plan_of('SELECT e.id, (SELECT max(ts) FROM ev2 WHERE ent = e.id) FROM ents e WHERE e.dim = 3')).fetches AS refused_fetches;
-SELECT (plan_of('SELECT e.id, (SELECT ts FROM ev2 WHERE ent = e.id AND ts IS NOT NULL ORDER BY ts DESC LIMIT 1) FROM ents e WHERE e.dim = 3')).fetches AS written_fetches;
+SELECT plan_of('SELECT e.id, (SELECT max(ts) FROM ev2 WHERE ent = e.id) FROM ents e WHERE e.dim = 3') AS refused_walk;
+SELECT plan_of('SELECT e.id, (SELECT ts FROM ev2 WHERE ent = e.id AND ts IS NOT NULL ORDER BY ts DESC LIMIT 1) FROM ents e WHERE e.dim = 3') AS written_walk;
 RESET sift.agg_force;
 DROP TABLE ev2;
 
--- a condition of another column on the heap row: at one row in 30 the order array is still walked, at one in 500 (a handful of rows in all) the plan keeps the units (no global order); the Top-N Run line reports no heap fetch of the walk in either
+-- a condition of another column on the heap row: at one row in 30 the order array is still walked, at one in 500 (a handful of rows in all) the plan keeps the units (no global order)
 SET sift.agg_force = on;
-SELECT p.global_order, p.fetches > 0 AS fetched FROM plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND m = 7) FROM ents e WHERE e.dim = 3') p;
-SELECT p.global_order, p.fetches > 0 AS fetched FROM plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND code = ''c017'') FROM ents e WHERE e.dim = 3') p;
+SELECT plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND m = 7) FROM ents e WHERE e.dim = 3') AS global_order;
+SELECT plan_of('SELECT e.id, (SELECT max(ts) FROM ev WHERE ent = e.id AND code = ''c017'') FROM ents e WHERE e.dim = 3') AS global_order;
 RESET sift.agg_force;
 
 -- writes: the write buffer, an update of the key and of the column, a delete, a rolled back insert; both tables get the same
@@ -153,7 +149,7 @@ BEGIN
 		END;
 		statements := statements + 1;
 		IF NOT same(q) THEN differ := differ + 1; END IF;
-		IF (plan_of(replace(q, '@', 'ev'))).global_order THEN used_global_order := used_global_order + 1; END IF;
+		IF plan_of(replace(q, '@', 'ev')) THEN used_global_order := used_global_order + 1; END IF;
 	END LOOP;
 	RETURN NEXT;
 END $$;
