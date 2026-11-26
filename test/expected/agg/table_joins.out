@@ -3,7 +3,6 @@
 -- requires: build col
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 CREATE EXTENSION pg_sift_helpers;
-DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 SET enable_seqscan = off;
 SET enable_indexscan = off;

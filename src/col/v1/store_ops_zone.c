@@ -104,8 +104,7 @@ zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation r
 		sift_v1_unnest_run(spec, g, rel, NULL, snap, stats, star);
 		return;
 	}
-	SIFT_INVARIANT(star == NULL, "Format 1 tables are not scanned beside the dimensions of a star join (table %u)", RelationGetRelid(rel));
-	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = rel,.is_table = true,.quals = quals->clauses,.estate = quals->estate}, snap, NULL, NULL, NULL);
+	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.star = star,.host = rel,.is_table = true,.quals = quals->clauses,.estate = quals->estate}, snap, NULL, NULL, NULL);
 }
 
 /* the JSON type tests of an index scan: jsonb_typeof(doc -> 'k') in the tag set of the key, and `doc ? 'k'` as every type but a missing path */
@@ -166,6 +165,7 @@ dict_has_dict32(Oid relid, bool is_table, int att)
 
 const SiftZoneOps sift_v1_zone_ops = {
 	.batch_cols = SIFT_V6_MAX_COLS,
+	.table_star = true,
 	.compile_quals = zone_compile_quals,
 	.bind_quals = zone_bind_quals,
 	.quals_keys = zone_quals_keys,
