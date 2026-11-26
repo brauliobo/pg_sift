@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Differential fuzz of the BM25 `sift` index in the shapes that run a scan again and again (docs/AGG.md, "Transactions").
 
-  test/fuzz/bm25.py [--seeds 1-20] [--queries 40] [--rows 600] [--out DIR] [--stop-after N] [--keep]
+  test/fuzz/bm25.py [--seeds 1-20] [--queries 40] [--rows 600] [--out DIR] [--stop-after N] [--keep] [--jobs 2]
   test/fuzz/bm25.py --selftest
 
 Needs the scripts/pgtest.sh cluster (SIFT_TMP, SIFT_PORT). A seed gives a table pd(id, grp, body) of random sentences over a small vocabulary with a BM25 index (English or German
 stemmer) and a list of statements: one query (word, phrase, NOT, OR, AND, prefix, a set of words) and the same query inside a correlated subquery, a LATERAL join, an EXISTS and an
 IN subplan, `@@> ANY (ARRAY[..])`, a SCROLL cursor with FETCH BACKWARD, MOVE, ABSOLUTE, LAST and FIRST, a WITH HOLD cursor, and a prepared statement run seven times (the plan switches
-after five). Each statement runs in a NEW backend (the first statement of a backend finds what a warm one hides: the crash of 775018b54 was in a cold session) under the plan that reads
-the heap (the operator on every row, no index scan), under the index scan and under the index scan with parallel workers; the rows must be equal. The first statement whose answers
+after five). --jobs seeds run at a time (default 2), each on a database of its own. Each statement runs in a NEW backend (the first statement of a backend finds what a warm one hides: the crash of 775018b54 was in a cold session) under the plan that reads
+the heap (the operator on every row, no index scan), under the index scan and under the index scan with parallel workers, the three at once; the rows must be equal. The first statement whose answers
 differ (or that raises under one plan only, or crashes a backend) ends the seed; the list of queries in it is cut down and the statement is written to DIR/bm25_fuzz_N.sql.
 """
 import argparse
@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 TMP = os.environ.get('SIFT_TMP', '/tmp/sift-arch')
 ENV = dict(os.environ, LC_ALL='C', PGHOST=f'{TMP}/sock', PGPORT=os.environ.get('SIFT_PORT', '56100'), PGUSER='postgres',
@@ -116,7 +117,8 @@ def script(kind, qs):
 
 def verdict(db, kind, qs):
     """The statement under each plan in a new connection -> None or a description of the difference"""
-    res = {p: psql(db, ';\n'.join(sets + script(kind, qs)) + ';\n') for p, sets in PLANS.items()}
+    with ThreadPoolExecutor(len(PLANS)) as ex:
+        res = dict(zip(PLANS, ex.map(lambda sets: psql(db, ';\n'.join(sets + script(kind, qs)) + ';\n'), PLANS.values())))
     for p, (rc, out) in res.items():
         if rc == 124:
             return f'{p}: timeout'
@@ -149,6 +151,7 @@ def main():
     ap.add_argument('--db', default='bf')
     ap.add_argument('--stop-after', type=int, default=0)
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--jobs', type=int, default=2, help='seeds run at a time')
     ap.add_argument('--selftest', action='store_true')
     a = ap.parse_args()
     seeds = []
@@ -165,38 +168,46 @@ def main():
         print('bm25_fuzz selftest: 30 cases')
         return 0
     failed = 0
-    for seed in seeds:
-        c, db, t0, bad = Case(seed, a.rows), f'{a.db}_{seed}', time.time(), None
-        psql('postgres', f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')
-        psql('postgres', f'CREATE DATABASE {db}')
-        rc, out = psql(db, c.setup())
-        if rc != 0 or any(l.startswith('ERROR') for l in out):
-            print(f'seed {seed}: setup failed: {out[:3]}')
-            continue
-        for n in range(a.queries):
-            kind, qs = c.statement()
-            d = verdict(db, kind, qs)
-            if d:
-                qs = shrink(db, kind, qs)
-                d = verdict(db, kind, qs) or d
-                os.makedirs(a.out, exist_ok=True)
-                path = f'{a.out}/bm25_fuzz_{seed}.sql'
-                with open(path, 'w') as f:
-                    f.write(f'-- bm25_fuzz seed {seed}, statement {n} ({kind}): {d}\n-- every statement below runs after \\c - (a new backend) with these settings: '
-                            + ' | '.join(f"{p}: {'; '.join(v)}" for p, v in PLANS.items()) + '\n' + c.setup() + '\\c -\n' + ';\n'.join(PLANS[d.split()[0].rstrip(':')] + script(kind, qs)) + ';\n')
-                bad = (n, kind, d, path)
+    with ThreadPoolExecutor(max(1, min(a.jobs, len(seeds)))) as ex:
+        for fut in [ex.submit(run_seed, a, seed) for seed in seeds]:
+            bad, out = fut.result()
+            print('\n'.join(out), flush=True)
+            failed += bool(bad)
+            if bad and a.stop_after and failed >= a.stop_after:
+                ex.shutdown(cancel_futures=True)
                 break
-        print(f"seed {seed}: {'FAIL' if bad else 'ok'} {a.queries} statements, {time.time() - t0:.0f} s [{c.stemmer}]", flush=True)
-        if bad:
-            failed += 1
-            print(f'  statement {bad[0]} ({bad[1]}): {bad[2][:400]}\n  reproducer: {bad[3]}', flush=True)
-        if not a.keep:
-            psql('postgres', f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')
-        if bad and a.stop_after and failed >= a.stop_after:
-            break
     print(f'bm25_fuzz: {failed} failing seeds')
     return 1 if failed else 0
 
+
+
+def run_seed(a, seed):
+    """the statements of a seed on a database of its own: (None or (statement, kind, difference, reproducer), the lines to print)"""
+    c, db, t0, bad = Case(seed, a.rows), f'{a.db}_{seed}', time.time(), None
+    psql('postgres', f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')
+    psql('postgres', f'CREATE DATABASE {db}')
+    rc, out = psql(db, c.setup())
+    if rc != 0 or any(l.startswith('ERROR') for l in out):
+        return None, [f'seed {seed}: setup failed: {out[:3]}']
+    for n in range(a.queries):
+        kind, qs = c.statement()
+        d = verdict(db, kind, qs)
+        if d:
+            qs = shrink(db, kind, qs)
+            d = verdict(db, kind, qs) or d
+            os.makedirs(a.out, exist_ok=True)
+            path = f'{a.out}/bm25_fuzz_{seed}.sql'
+            with open(path, 'w') as f:
+                f.write(f'-- bm25_fuzz seed {seed}, statement {n} ({kind}): {d}\n-- every statement below runs after \\c - (a new backend) with these settings: '
+                        + ' | '.join(f"{p}: {'; '.join(v)}" for p, v in PLANS.items()) + '\n' + c.setup() + '\\c -\n' + ';\n'.join(PLANS[d.split()[0].rstrip(':')] + script(kind, qs)) + ';\n')
+            bad = (n, kind, d, path)
+            break
+    lines = [f"seed {seed}: {'FAIL' if bad else 'ok'} {a.queries} statements, {time.time() - t0:.0f} s [{c.stemmer}]"]
+    if bad:
+        lines.append(f'  statement {bad[0]} ({bad[1]}): {bad[2][:400]}\n  reproducer: {bad[3]}')
+    if not a.keep:
+        psql('postgres', f'DROP DATABASE IF EXISTS {db} WITH (FORCE)')
+    return bad, lines
 
 if __name__ == '__main__':
     sys.exit(main())

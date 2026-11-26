@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential fuzz of transactions on a sift_col index or a sift_table (docs/AGG.md, "Transactions").
 
-  test/fuzz/txn/cli.py [--format f2|f1|release] [--table] [--seeds 1-20] [--actions 60] [--tracks auto,key,off,ctid] [--out DIR] [--stop-after N] [--budget SEC] [--no-shrink]
+  test/fuzz/txn/cli.py [--format f2|f1|release] [--table] [--seeds 1-20] [--actions 60] [--tracks auto,key,off,ctid] [--out DIR] [--stop-after N] [--budget SEC] [--no-shrink] [--jobs 2]
   test/fuzz/txn/cli.py --shapes [--only cursor|prep|persist] [--parts 0|3] [--concurrently] [--variants scan,default,index,workers]   cursors, prepared statements, partitions, upserts with SPI (docs/AGG.md)
   test/fuzz/txn/cli.py --repro DIR/txn_fuzz_N.json | --selftest
 

@@ -81,9 +81,8 @@ UNION ALL SELECT 'only in variant', * FROM (TABLE r_got EXCEPT ALL TABLE r_ref) 
 """
 
 
-def handle(seed, rows, parts_n, qid, fam, parts, vs, nl, hist, res, out_dir, tag):
-    """Shrinks a divergence and writes the reproducer."""
-    base_db = f'fz_{tag}_base'
+def handle(seed, rows, parts_n, qid, fam, parts, vs, nl, hist, res, out_dir, tag, base_db):
+    """Shrinks a divergence from base_db (the data of the seed before any DML) and writes the reproducer."""
     work = f'fz_{tag}_work'
     bad = diverged(res)
     # the variants that differ, the state replayed once

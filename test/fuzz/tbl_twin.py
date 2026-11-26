@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Differential fuzz of a sift_table against a plain heap twin (test/t/table/twin_fuzz.sh runs it).
 
-  test/fuzz/tbl_twin.py [--format f2|f1|release] [--seeds 1-24] [--seconds 80] [--hold P] [--ddl | --no-ddl]    needs PGHOST / PGPORT of a cluster with pg_sift (and pg_sift_test
+  test/fuzz/tbl_twin.py [--format f2|f1|release] [--seeds 1-24] [--seconds 80] [--hold P] [--ddl | --no-ddl] [--jobs N]    needs PGHOST / PGPORT of a cluster with pg_sift (and pg_sift_test
   for f2 and f1), and SIFT_FUZZ_OUT, a directory for the logs
 
 A seed drives two writers (own key ranges) that apply the same INSERT / UPDATE / DELETE / upsert / aborted-transaction statements to the table T (sift_table) and
@@ -11,13 +11,14 @@ so that the VACUUMs queue behind it while the writers fill and close write buffe
 VACUUM that waited for the lock used a list of segments it had read before. Format 2.0 and the release library have no such hook: the VACUUMs, sift.maintain and the writers run
 against each other. After each round the full row set of T and H must be the same through the default plan,
 the index and a sequential scan (EXCEPT ALL both ways, no key twice, the primary key probed through the index), the reader's snapshot must give the same answer
-on T and H and the same on every re-read, sift.check must report nothing on T, and no statement may fail. Seeds are serial (one cluster); the interleaving of the sessions is the
-server's, so a seed that fails on an old build is a probability, not a switch.
+on T and H and the same on every re-read, sift.check must report nothing on T, and no statement may fail. --jobs seeds run at a time (default 1), each on tables of its own (tw_sift_SEED, tw_heap_SEED) in one
+cluster; the interleaving of the sessions is the server's, so a seed that fails on an old build is a probability, not a switch.
 --ddl (the default except on f1) adds, while no session writes or reads, the DDL of a table that lives long: ALTER TABLE ADD COLUMN (a constant, a stored generated column),
 ALTER COLUMN TYPE and DROP COLUMN of the added columns, DROP and ADD PRIMARY KEY, VACUUM FULL and REINDEX, always on the twin as well; the added columns take part in the comparison. The
 writers also run repeated non-key updates of one key range, the churn that makes a b-tree leaf delete the versions of its rows by itself (bottom-up deletion).
 """
-import argparse, json, os, random, re, selectors, subprocess, sys, time
+import argparse, json, multiprocessing, os, random, re, selectors, subprocess, sys, time
+from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fmt  # noqa: E402
@@ -26,7 +27,7 @@ SOCK = os.environ['PGHOST']
 PORT = os.environ['PGPORT']
 DB = os.environ.get('PGDATABASE', 'postgres')
 OUT = os.environ['SIFT_FUZZ_OUT']   # the logs of the seeds
-T, H = 'tw_sift', 'tw_heap'
+T, H = None, None                   # the twins of the seed, set by seed_job
 LIB = None                          # the library of the cluster, probed by main
 ENV = None                          # the environment of every psql
 ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: error)', re.M)
@@ -580,6 +581,7 @@ def main():
     ap.add_argument('--seeds', default='1-3')
     ap.add_argument('--seconds', type=float, default=80)
     ap.add_argument('--hold', type=float)
+    ap.add_argument('--jobs', type=int, default=1, help='seeds run at a time, each in a process of its own')
     ap.add_argument('--ddl', action=argparse.BooleanOptionalAction, default=None, help='DDL between the rounds (default: on for f2 and release)')
     fmt.add_argument(ap)
     a = ap.parse_args()
@@ -590,11 +592,19 @@ def main():
     DDL = LIB.format_major == 2 if a.ddl is None else a.ddl
     seeds = [n for part in a.seeds.split(',') for n in range(int(part.partition('-')[0]), int(part.rpartition('-')[2]) + 1)]
     bad = 0
-    for seed in seeds:
-        rc, ctx = run_seed('twin', seed, a.seconds, a.hold)
-        print(f'seed={seed} format={a.format} ddl={DDL} {("OK", "FAIL", "HARNESS")[rc]} {time.time() - ctx.t0:.0f}s log={ctx.path}', flush=True)
-        bad += rc != 0
+    with ProcessPoolExecutor(max(1, min(a.jobs, len(seeds))), mp_context=multiprocessing.get_context('fork')) as ex:
+        for seed, (rc, secs, path) in zip(seeds, ex.map(seed_job, seeds, [a.seconds] * len(seeds), [a.hold] * len(seeds))):
+            print(f'seed={seed} format={a.format} ddl={DDL} {("OK", "FAIL", "HARNESS")[rc]} {secs:.0f}s log={path}', flush=True)
+            bad += rc != 0
     sys.exit(1 if bad else 0)
+
+
+def seed_job(seed, budget, hold):
+    """a seed in a process of its own, on its twins: (rc, seconds, log)"""
+    global T, H
+    T, H = f'tw_sift_{seed}', f'tw_heap_{seed}'
+    rc, ctx = run_seed('twin', seed, budget, hold)
+    return rc, time.time() - ctx.t0, ctx.path
 
 
 if __name__ == '__main__':

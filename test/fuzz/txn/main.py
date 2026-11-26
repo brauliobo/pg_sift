@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import fmt
 from .gen import Config, config, script, setup_sql
@@ -35,6 +36,7 @@ def main(doc):
     ap.add_argument('--no-oc', action='store_true', help='no INSERT .. ON CONFLICT (a finding of 4.2: aborted speculative inserts are counted by the scan)')
     ap.add_argument('--no-truncate', action='store_true', help='VACUUM never truncates the heap (a finding of the first runs: an index scan reads a block the truncation cut off)')
     ap.add_argument('--no-shrink', action='store_true')
+    ap.add_argument('--jobs', type=int, default=2, help='seeds run at a time, each on its own databases')
     ap.add_argument('--variants', default='', help='the plans compared with the plain heap plan, a subset of scan,default,index,workers (default: all; what shows which plan finds a bug)')
     ap.add_argument('--shapes', action='store_true', help='the shapes of shapes.py: cursors, prepared statements, partitioned tables, upserts and COPY with SPI (another set of scripts for a seed)')
     ap.add_argument('--only', default='', choices=('',) + KINDS, help='with --shapes: the checks of one shape in place of the plain ones (what finds a bug that the plain checks find too, by this shape)')
@@ -92,34 +94,45 @@ def main(doc):
         return 1 if fail else 0
     release_prepared()
     failed, start = 0, time.time()
-    for seed in seeds_of(a.seeds):
+
+    def one(seed):
+        """the run of a seed on its databases: (failure or None, the lines to print)"""
+        out = []
         if a.budget and time.time() - start > a.budget:
-            break
+            return None, out
         c, acts = make(seed)
         db = f'{a.db}_{seed}'
         t0 = time.time()
         try:
             build_base(c, db)
         except SystemExit as e:
-            print(f'seed {seed}: the configuration is not supported here ({str(e)[:160]})')
-            continue
+            return None, [f'seed {seed}: the configuration is not supported here ({str(e)[:160]})']
         if a.show:
-            for x in acts:
-                print('   ', x['s'], x['t'], x.get('sql', '')[:200].replace('\n', ' '))
+            out += ['    ' + ' '.join((x['s'], x['t'], x.get('sql', '')[:200].replace('\n', ' '))) for x in acts]
         fail, nchecks, nerr = run(c, acts, db)
-        print(f"seed {seed}: {'FAIL' if fail else 'ok'} {len(acts)} actions, {nchecks} checks, {nerr} statement errors, {time.time() - t0:.0f} s [{c.keytype} {c.rows} track={c.track} wbuf={c.wbuf} vacuum={c.vacuum} trigger={c.trigger}]", flush=True)
-        if fail and fail[1].startswith('ENVIRONMENT'):
-            sys.exit(f'txn_fuzz: seed {seed}: {fail[1]}')
-        if fail:
-            failed += 1
-            print(f'  action {fail[0]}: {fail[1][:600]}', flush=True)
+        out.append(f"seed {seed}: {'FAIL' if fail else 'ok'} {len(acts)} actions, {nchecks} checks, {nerr} statement errors, {time.time() - t0:.0f} s [{c.keytype} {c.rows} track={c.track} wbuf={c.wbuf} vacuum={c.vacuum} trigger={c.trigger}]")
+        if fail and not fail[1].startswith('ENVIRONMENT'):
+            out.append(f'  action {fail[0]}: {fail[1][:600]}')
             if not a.no_shrink:
                 c2, acts2 = shrink(c, acts, fail[0], f'{a.db}_s{seed}')
-                print(f"  shrunk to {len(acts2)} actions: {write(a.out, c2, acts2, fail[1])}.sql", flush=True)
+                out.append(f"  shrunk to {len(acts2)} actions: {write(a.out, c2, acts2, fail[1])}.sql")
         if not a.keep:
             drop_db(db, f'{a.db}_s{seed}_tpl', f'{a.db}_s{seed}_w')
-        if fail and a.stop_after and failed >= a.stop_after:
-            break
+        return fail, out
+
+    seeds = seeds_of(a.seeds)
+    with ThreadPoolExecutor(max(1, min(a.jobs, len(seeds)))) as ex:
+        for seed, fut in [(s, ex.submit(one, s)) for s in seeds]:
+            fail, out = fut.result()
+            if out:
+                print('\n'.join(out), flush=True)
+            if fail and fail[1].startswith('ENVIRONMENT'):
+                ex.shutdown(cancel_futures=True)
+                sys.exit(f'txn_fuzz: seed {seed}: {fail[1]}')
+            failed += bool(fail)
+            if fail and a.stop_after and failed >= a.stop_after:
+                ex.shutdown(cancel_futures=True)
+                break
     for e, n in ERRORS.most_common(8):
         print(f'  {n:5} statement errors: {e}')
     print(f'txn_fuzz: {failed} failing seeds')

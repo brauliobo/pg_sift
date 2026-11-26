@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Planner shape matrix: no statement shape may crash the backend, raise an internal error or return other rows than the plain plan.
 
-  test/fuzz/shapes_matrix.py [--format f2|f1|release] [--tier quick|full] [--chunk K/N] [--only RE] [--budget SEC] [--list] [--show N] [--facts a,b] [--no-schema]
+  test/fuzz/shapes_matrix.py [--format f2|f1|release] [--tier quick|full] [--chunk K/N] [--only RE] [--budget SEC] [--list] [--show N] [--facts a,b] [--no-schema] [--jobs 4]
 
 The statements are enumerated (no randomness) over test/fuzz/shapes_matrix/schema.sql: a fact table of every index availability on the join column (none, btree,
 partial, expression, covering, sift_col with scope, connect and projection options, BM25, inheritance parent, partitioned, sift_table, sift_table with BM25), joined to a source (table,
@@ -22,7 +22,9 @@ import re
 import select
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -538,6 +540,7 @@ def main():
     ap.add_argument('--facts', default=','.join(FACTS))
     ap.add_argument('--no-schema', action='store_true')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--jobs', type=int, default=4, help='sessions that run the statements at a time')
     a = ap.parse_args()
     global LIB
     LIB = fmt.Lib(a.format, env=ENV)
@@ -566,68 +569,82 @@ def main():
             if a.list or it.n == a.show:
                 print(f'#{it.n} {it.F} {it.jt}/{it.src}/{it.form} cfg={",".join(it.cfgs)} ordered={it.ordered}\n  {it.sql}')
         return 0
+    sess.close()
     t0 = time.time()
     stats = dict(statements=0, runs=0, invalid=0, sift_plans=0, crashes=0, skipped_budget=0)
     fails, warnings = [], {}
     sift_by_fact = {}
     log_start = log_mark()
+    lock = threading.Lock()
 
     def fail(kind, it, cfg, detail):
-        fails.append((kind, it, cfg, detail))
-        print(f'FAIL {kind} #{it.n} fact={it.F} join={it.jt}/{it.src}/{it.form} cfg={cfg} sets={" ".join(cfgs[cfg])}\n  sql: {it.sql}\n  {detail}', flush=True)
+        with lock:
+            fails.append((kind, it, cfg, detail))
+            print(f'FAIL {kind} #{it.n} fact={it.F} join={it.jt}/{it.src}/{it.form} cfg={cfg} sets={" ".join(cfgs[cfg])}\n  sql: {it.sql}\n  {detail}', flush=True)
 
-    def send(text, it, cfg):
-        nonlocal sess
-        try:
-            return sess.run(text)
-        except Crash as e:
-            stats['crashes'] += 1
-            sess.close()
-            fail('CRASH', it, cfg, f'the session ended: {e}')
-            if not wait_ready(db):
-                sys.exit('the server did not come back after the crash')
-            sess = Session(db)
-            return None
+    def count(key, n=1):
+        with lock:
+            stats[key] += n
 
-    for it in items:
-        if a.budget and time.time() - t0 > a.budget:
-            stats['skipped_budget'] += 1
-            continue
-        stats['statements'] += 1
-        base = send(baseline_text(it), it, 'baseline')
-        if base is None:
-            continue
-        brows = rows_of(split_run(base)[1])
-        berr = errors_of(base)
-        for cfg in it.cfgs:
-            if cfg == 'generic' and False:
+    def worker(part):
+        """the statements of part on a session of its own (the database is read only)"""
+        sess = Session(db)
+
+        def send(text, it, cfg):
+            nonlocal sess
+            try:
+                return sess.run(text)
+            except Crash as e:
+                count('crashes')
+                sess.close()
+                fail('CRASH', it, cfg, f'the session ended: {e}')
+                if not wait_ready(db):
+                    sys.exit('the server did not come back after the crash')
+                sess = Session(db)
+                return None
+
+        for it in part:
+            if a.budget and time.time() - t0 > a.budget:
+                count('skipped_budget')
                 continue
-            out = send(run_text(it, cfgs[cfg], True), it, cfg)
-            stats['runs'] += 1
-            if out is None:
+            count('statements')
+            base = send(baseline_text(it), it, 'baseline')
+            if base is None:
                 continue
-            xplan, res = split_run(out)
-            errs = errors_of(out)
-            for l in out:
-                if l.startswith('WARNING:'):
-                    warnings[l] = warnings.get(l, 0) + 1
-            if any('Sift' in l for l in xplan):
-                stats['sift_plans'] += 1
-                sift_by_fact[it.F] = sift_by_fact.get(it.F, 0) + 1
-            if errs and berr and errs[0][0] == berr[0][0]:
-                stats['invalid'] += 1
-                continue
-            bad = [e for e in errs if e[0] == 'XX000' or BAD.search(e[1])]
-            if bad:
-                fail('INTERNAL', it, cfg, f'{bad[0][0]}: {bad[0][1]}')
-            elif errs and not berr:
-                fail('ERROR', it, cfg, f'{errs[0][0]}: {errs[0][1]}')
-            elif berr and not errs:
-                fail('ROWS', it, cfg, f'the plain plan raised {berr[0][0]}: {berr[0][1]} and sift returned {len(rows_of(res))} rows')
-            elif digest(rows_of(res), it.ordered) != digest(brows, it.ordered):
-                fail('ROWS', it, cfg, first_diff(rows_of(res), brows, it.ordered))
+            brows = rows_of(split_run(base)[1])
+            berr = errors_of(base)
+            for cfg in it.cfgs:
+                out = send(run_text(it, cfgs[cfg], True), it, cfg)
+                count('runs')
+                if out is None:
+                    continue
+                xplan, res = split_run(out)
+                errs = errors_of(out)
+                with lock:
+                    for l in out:
+                        if l.startswith('WARNING:'):
+                            warnings[l] = warnings.get(l, 0) + 1
+                    if any('Sift' in l for l in xplan):
+                        stats['sift_plans'] += 1
+                        sift_by_fact[it.F] = sift_by_fact.get(it.F, 0) + 1
+                if errs and berr and errs[0][0] == berr[0][0]:
+                    count('invalid')
+                    continue
+                bad = [e for e in errs if e[0] == 'XX000' or BAD.search(e[1])]
+                if bad:
+                    fail('INTERNAL', it, cfg, f'{bad[0][0]}: {bad[0][1]}')
+                elif errs and not berr:
+                    fail('ERROR', it, cfg, f'{errs[0][0]}: {errs[0][1]}')
+                elif berr and not errs:
+                    fail('ROWS', it, cfg, f'the plain plan raised {berr[0][0]}: {berr[0][1]} and sift returned {len(rows_of(res))} rows')
+                elif digest(rows_of(res), it.ordered) != digest(brows, it.ordered):
+                    fail('ROWS', it, cfg, first_diff(rows_of(res), brows, it.ordered))
+        sess.close()
+
+    jobs = max(1, min(a.jobs, len(items)))
+    with ThreadPoolExecutor(jobs) as ex:
+        list(ex.map(worker, [items[j::jobs] for j in range(jobs)]))
     elapsed = time.time() - t0
-    sess.close()
     ok = wait_ready(db, 10)
     crashed_log = log_scan(log_start)
     print(f'shapes: format={a.format} tier={a.tier} chunk={a.chunk} statements={stats["statements"]} runs={stats["runs"]} sift_plans={stats["sift_plans"]} '

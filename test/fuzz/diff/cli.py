@@ -10,6 +10,7 @@ the pre-aggregates, the arms alone, parallel workers, ...); the results are comp
 
   test/fuzz/diff/cli.py [--format f2|f1|release] --seeds 1-3 --queries 40 --rows 3000        the quick tier (scripts/ci.sh, job difftest-fuzz)
   test/fuzz/diff/cli.py --seeds 100-199 --queries 300 --out DIR     a long search: a reproducer per divergence in DIR (shrunk)
+  test/fuzz/diff/cli.py --seeds 1-8 --jobs 4                        four seeds at a time (default 2), each on a database of its own
   test/fuzz/diff/cli.py --replay FILE                               runs a reproducer written by --out again
   test/fuzz/diff/cli.py --table --seeds 1-3 --queries 40            the same on sift_tables (scripts/ci.sh, job difftest-fuzz-tbl)
   test/fuzz/diff/cli.py --selftest                                  no server: every family generates and renders in both modes (the lint job)

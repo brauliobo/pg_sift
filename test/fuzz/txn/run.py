@@ -2,6 +2,7 @@
 
 import collections
 import re
+import threading
 
 from .session import Hang, Session, create_db, errors, psql
 from .gen import setup_sql
@@ -29,6 +30,7 @@ def configure(lib, table):
 
 
 ERRORS = collections.Counter()      # the statement errors of the runs, by message: a generator that raises many of one kind wastes the script
+ERRORS_LOCK = threading.Lock()      # the seeds run on threads (--jobs)
 ENV = re.compile(r'Disk quota|No space left|could not resize shared memory|out of memory|too many open files')   # the machine, not sift
 INTERNAL = re.compile(r'unrecognized|cache lookup failed|could not find|could not open relation|variable not found|no relation entry|unexpected (null|type|node|status)|XX000')   # a statement the server refuses by an elog of its own code, whatever the plan
 CRASH = re.compile(r'server closed the connection|connection to server was lost|terminating connection|crash of another server|server process .* was terminated')
@@ -202,12 +204,14 @@ def run(c, acts, db, stop_at_first=True):
                 if a['t'] == 'sql':
                     out = s.run(a['sql'])
                     nerr += len(errors(out))
-                    ERRORS.update(re.sub(r'\d+', 'N', e)[:110] for e in errors(out))
+                    with ERRORS_LOCK:
+                        ERRORS.update(re.sub(r'\d+', 'N', e)[:110] for e in errors(out))
                     internal = [e for e in errors(out) if INTERNAL.search(e)]
                     if internal:
                         fail = (i, 'INTERNAL ERROR: ' + ' | '.join(internal)[:300] + ' | ' + a['sql'][:200].replace('\n', ' '))
                 else:
-                    if errors(s.run('SELECT 1')):
+                    # every query of a plain check on t that another session holds locked would wait out lock_timeout: one probe stands for them
+                    if errors(s.run('SELECT 1')) or a.get('kind', 'plain') == 'plain' and errors(s.run('SELECT FROM t LIMIT 0')):
                         continue
                     nchecks += 1
                     if a.get('kind') == 'curdecl' and not in_transaction(s):

@@ -8,13 +8,14 @@
 CREATE FUNCTION fz.apply(spec text) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE kv text; g text;
 BEGIN
-	FOREACH g IN ARRAY ARRAY['plan_cache_mode', 'sift.enable_agg', 'sift.agg_preagg', 'sift.test_agg_two_level', 'sift.agg_lookup_pushdown',
+	FOR g IN SELECT u FROM unnest(ARRAY['plan_cache_mode', 'sift.enable_agg', 'sift.agg_preagg', 'sift.test_agg_two_level', 'sift.agg_lookup_pushdown',
 							 'sift.agg_share_lookups', 'sift.test_agg_dense', 'sift.simd', 'sift.agg_rows', 'sift.agg_semi_lut',
 							 'sift.agg_join_filter', 'max_parallel_workers_per_gather', 'parallel_setup_cost', 'parallel_tuple_cost',
 							 'min_parallel_table_scan_size', 'min_parallel_index_scan_size', 'parallel_leader_participation', 'seq_page_cost',
 							 'random_page_cost', 'enable_nestloop', 'enable_hashjoin', 'enable_mergejoin', 'enable_seqscan', 'enable_sort', 'sift.enable_col_scan',
-							 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'sift.agg_scope'] LOOP
-		IF g !~ '^sift\.' OR EXISTS (SELECT 1 FROM pg_settings WHERE name = g) THEN EXECUTE 'RESET ' || g; END IF;
+							 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan', 'sift.agg_scope']) u
+			 WHERE u !~ '^sift\.' OR u IN (SELECT name FROM pg_settings) LOOP
+		EXECUTE 'RESET ' || g;
 	END LOOP;
 	DISCARD PLANS;		-- a prepared statement is planned again under the settings that follow
 	FOREACH kv IN ARRAY string_to_array(spec, ';') LOOP
