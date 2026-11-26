@@ -742,7 +742,7 @@ relocate_stale(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const in
 		memcpy(&h, it->rec, sizeof(h));
 		if (sift_u64set_has(&gens, h.part_gen))
 			continue;
-		if (!sift_f2_locate_published(rel, store, sift_col_delta_hdr_tid(&h), &loc))
+		if (!sift_f2_locate_row_now(rel, store, sift_col_delta_hdr_tid(&h), &loc))
 		{
 			sift_col_delta_stage_release(cd, ord[k]);
 			continue;

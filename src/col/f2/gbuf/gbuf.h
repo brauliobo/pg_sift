@@ -171,6 +171,13 @@ extern bool sift_f2_locate_settled(Relation rel, SiftF2Store *store, uint64 tid,
 /* The same in the parts the manifest lists, without writing the stage or the slabs: a row they hold is not found */
 extern bool sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
 
+/* A row of an index that has the address and is not dead, for the caller to take or leave: of the rows of one address the heap gave to rows in turn, the first that accept takes */
+typedef bool (*SiftF2RowAccept) (const SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, int row, void *arg);
+extern bool sift_f2_locate_published_if(Relation rel, SiftF2Store *store, uint64 tid, SiftF2RowAccept accept, void *arg, SiftF2Loc *loc);
+
+/* The row of the address in a part of an index that the column delta chain has not moved on to another address; a table has no such rows, and finds the first (col/f2/col_delta/srv.c) */
+extern bool sift_f2_locate_row_now(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
+
 /*
  * Calls cb for every granule that may hold an address of [tid_lo, tid_hi], with the partition of its part; cb returns true to stop. The parts are found by the envelope of the
  * addresses in their descriptors (SiftPartDesc.tid_min, tid_max): the ones that cannot hold an address are not opened, and a lookup of one address on parts that do not overlap

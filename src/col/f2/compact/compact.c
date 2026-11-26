@@ -673,9 +673,9 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 	return read;
 }
 
-/* The rows an input holds dead now that were not dead in the vector the compaction read it with: their addresses and deleters */
+/* The rows an input holds dead now that were not dead in the vector the compaction read it with: the addresses they have in the outputs and their deleters */
 static void
-dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, SiftPendDelRec **recs, int *n, int *cap)
+dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, void *fold, SiftPendDelRec **recs, int *n, int *cap)
 {
 	MemoryContext icx = NULL;
 	SiftPart   *part = NULL;
@@ -696,7 +696,11 @@ dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, S
 				dir = sift_part_granule_dir(rel, part);
 			}
 			if (tids == NULL)
+			{
 				tids = sift_part_read_tids(rel, part, dir, dg->granule_id);
+				if (fold != NULL)
+					sift_compact_fold->row_tids(fold, in->d.part_gen, dg->granule_id, tids, dir[dg->granule_id].nrows);
+			}
 			if (*n == *cap)
 			{
 				*cap = Max(16, *cap * 2);
@@ -711,11 +715,10 @@ dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, S
 		MemoryContextDelete(icx);
 }
 
-/* The deletes that reached the inputs while the outputs were written, put into the deletion vectors of the outputs, which the commit makes the vectors of the parts that replace the inputs */
+/* Where the deletes that reached the inputs land in the outputs: marked in their deletion vectors when write, only found otherwise */
 static void
-adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout)
+place_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout, bool *done, bool write)
 {
-	bool	   *done = palloc0(n * sizeof(bool));
 	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift compact adopt");
 
 	for (int k = 0; k < nout; k++)
@@ -732,7 +735,7 @@ adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, S
 			grows[g] = dir[g].nrows;
 		base = out[k].dv_blk != InvalidBlockNumber ? sift_dv_read(rel, &out[k], (uint32) part_id, grows) : NULL;
 		nm = sift_del_locate(rel, part, dir, recs, n, done, marks, base, NULL);
-		if (nm > 0)
+		if (write && nm > 0)
 		{
 			release_outputs_dv(rel, &out[k]);
 			(void) sift_dv_write(rel, sift_dv_merge(base, marks, nm, out[k].part_gen, sift_manifest_new_gen(rel, 1), part->hdr.ngranules, grows), (uint32) part_id, &out[k]);
@@ -741,7 +744,49 @@ adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, S
 		MemoryContextReset(scratch);
 	}
 	MemoryContextDelete(scratch);
+}
+
+/*
+ * Whether a delete that reached the inputs while the outputs were written names an address that more rows of the outputs have than there are deletes for it: the heap gave the address to
+ * another row, and which of them the delete is for is not known. Every delete is asked for twice: the second of a pair finds a row when the address has one more.
+ */
+static bool
+adoption_ambiguous(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout)
+{
+	SiftPendDelRec *twice = palloc(2 * n * sizeof(SiftPendDelRec));
+	bool	   *done = palloc0(2 * n * sizeof(bool));
+	bool		ambiguous = false;
+
+	memcpy(twice, recs, n * sizeof(SiftPendDelRec));
+	memcpy(twice + n, recs, n * sizeof(SiftPendDelRec));
+	place_deletes(rel, part_id, twice, 2 * n, out, nout, done, false);
+	for (int i = n; i < 2 * n; i++)
+		ambiguous |= done[i];
 	pfree(done);
+	pfree(twice);
+	return ambiguous;
+}
+
+/* The deletes that reached the inputs while the outputs were written, put into the deletion vectors of the outputs, which the commit makes the vectors of the parts that replace the inputs */
+static void
+adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout)
+{
+	bool	   *done = palloc0(n * sizeof(bool));
+
+	place_deletes(rel, part_id, recs, n, out, nout, done, true);
+	pfree(done);
+}
+
+/* The compaction gives up under its locks: the outputs go back, nothing was committed */
+static bool
+abandon(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, bool packed)
+{
+	release_outputs(rel, part_id, out, nout);
+	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	if (packed)
+		UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
+	UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
+	return false;
 }
 
 /* A packed page is shared by the slots of parts of other partitions: whether a page is still referenced is decided, and its release committed, under the relation-wide lock of the splits */
@@ -882,7 +927,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			SiftDv	   *now = sift_dv_read(rel, now_d, (uint32) part_id, in[i].grows);
 
 			MemoryContextSwitchTo(keep);
-			dv_delta(rel, (uint32) part_id, &in[i], now, &delta, &ndelta, &capdelta);
+			dv_delta(rel, (uint32) part_id, &in[i], now, fold, &delta, &ndelta, &capdelta);
 			MemoryContextDelete(vector_cx);
 			in[i].d = *now_d;
 		}
@@ -890,15 +935,8 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			in[i].d = *now_d;
 	}
 	sift_part_gen_idx_free(&by_gen);
-	if (parts == NULL)
-	{
-		release_outputs(rel, part_id, out, nout);
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		if (packed)
-			UnlockPage(rel, SIFT_F2_SPLIT_LOCK_BLKNO, ExclusiveLock);
-		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
-	}
+	if (parts == NULL || (ndelta > 0 && adoption_ambiguous(rel, part_id, delta, ndelta, out, nout)))
+		return abandon(rel, part_id, out, nout, packed);
 	if (ndelta > 0)
 		adopt_deletes(rel, part_id, delta, ndelta, out, nout);
 	rel_ext = repalloc(rel_ext, (nrel + 2 * ngens + 1) * sizeof(SiftExtent));
@@ -906,8 +944,8 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 		if (in[i].d.dv_blk != InvalidBlockNumber)
 			rel_ext[nrel++] = (SiftExtent) {in[i].d.dv_blk, in[i].d.dv_nblocks};
 	nrel += release_packed_pages(rel, part_id, in, ngens, rel_ext + nrel);
-	if (fold != NULL)
-		sift_compact_fold->commit(fold, &mr.entries[0], parts, nparts, out, nout, &e, &rel_ext, &nrel, &res->stripped);
+	if (fold != NULL && !sift_compact_fold->commit(fold, &mr.entries[0], parts, nparts, out, nout, &e, &rel_ext, &nrel, &res->stripped))
+		return abandon(rel, part_id, out, nout, packed);
 	e.nadd = nout;
 	e.add_parts = out;
 	e.release = rel_ext;

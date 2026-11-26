@@ -352,19 +352,45 @@ chain_entry(Relation index, SiftTxnStage *st, const SiftPartitionEntry *e)
 	return ent;
 }
 
-/* Where the row at tid is in a part, and that it still has the address there: a row that moved on has left it, and the heap may have given the address to another row */
+typedef struct RowNow
+{
+	Relation	index;
+	SiftTxnStage *st;
+	uint64		tid;
+} RowNow;
+
+/* A row that moved on has left the address, and the heap may have given it to another row: of the rows of the address in the parts, the one that still has it */
+static bool
+not_moved_on(const SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, int row, void *arg)
+{
+	RowNow	   *n = arg;
+	SiftCdRemapMap *rm = n->st != NULL ? chain_entry(n->index, n->st, entry)->rm : sift_cdi_remap_load(n->index, entry);
+	bool		now = !sift_cd_remap_supersedes(rm, gb->pin->part_gen, gb->granule_id, row, n->tid);
+
+	if (n->st == NULL)
+		sift_cd_remap_free(rm);
+	return now;
+}
+
+bool
+sift_f2_locate_row_now(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+{
+	RowNow		n = {rel, NULL, tid};
+
+	if (rel->rd_rel->relkind != RELKIND_INDEX)
+		return sift_f2_locate_published(rel, store, tid, loc);
+	return sift_f2_locate_published_if(rel, store, tid, not_moved_on, &n, loc);
+}
+
 static bool
 locate_row(Relation index, SiftF2Store *store, SiftTxnStage *st, uint64 tid, SiftF2Loc *loc, CdCacheEntry **ent)
 {
-	bool		moved;
+	RowNow		n = {index, st, tid};
 
-	if (!sift_f2_locate_published(index, store, tid, loc))
+	if (!sift_f2_locate_published_if(index, store, tid, not_moved_on, &n, loc))
 		return false;
 	*ent = chain_entry(index, st, &loc->entry);
-	moved = sift_cd_remap_supersedes((*ent)->rm, loc->gb->pin->part_gen, loc->gb->granule_id, loc->row, tid);
-	if (moved)
-		sift_f2_gbuf_unref(loc->gb);
-	return !moved;
+	return true;
 }
 
 static void

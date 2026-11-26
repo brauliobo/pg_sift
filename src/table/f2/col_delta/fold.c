@@ -442,6 +442,24 @@ fold_apply(void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, Sif
 	}
 }
 
+static void
+fold_row_tids(void *fold, uint64 part_gen, uint32 granule_id, uint64 *tids, uint32 n)
+{
+	Fold	   *f = fold;
+	const SiftColDeltaGranMap *gm;
+
+	if (!fold_folds_part(f, part_gen))
+		return;
+	gm = sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id);
+	for (uint32 k = 0; gm != NULL && k < gm->npatches; k++)
+	{
+		const SiftColDeltaPatch *pt = &gm->patches[k];
+
+		if (pt->attnum == SIFT_CD_ATT_TID_REMAP && pt->row_ordinal < n)
+			tids[pt->row_ordinal] = (uint64) pt->val.i;
+	}
+}
+
 /* ---- where the rows went ---- */
 
 typedef struct Placed
@@ -546,7 +564,17 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 	return pl;
 }
 
-static void
+/* Whether two rows of the placement have one address: a record that names it is for one of them, and nothing says which */
+static bool
+placed_twice(const Placement *pl)
+{
+	for (int i = 1; i < pl->n; i++)
+		if (pl->v[i].tid == pl->v[i - 1].tid)
+			return true;
+	return false;
+}
+
+static bool
 fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit, SiftExtent **release,
 			int *nrelease, FullTransactionId *stripped)
 {
@@ -567,16 +595,23 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	has_chain = trail_open(&t, f->rel, entry);
 	SIFT_INVARIANT(has_chain || !f->had_chain, "the chain of a partition went while its compaction held the lock");
 	if (!has_chain)
-		return;
+		return true;
 	src.npages = t.npages;
 	sift_xid_horizon_init(&f->hc, f->hc.horizon);
 	if (!sift_col_delta_compact_changes(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords))
 	{
 		trail_free(&t);
-		return;
+		return true;
 	}
 	sift_col_delta_compact_stream(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
 	pl = place_rows(f->rel, entry->part_id, out, nout, plan.want, plan.nwant);
+	if (placed_twice(&pl))
+	{
+		pfree(pl.v);
+		sift_col_delta_compact_plan_free(&plan);
+		trail_free(&t);
+		return false;
+	}
 	remap = (SiftColDeltaRemap) {.ctx = &pl,.locate = placed_at};
 	sift_col_delta_write_carry(f->rel, entry, &plan, &src, next, &remap, &anchor);
 	pfree(pl.v);
@@ -591,10 +626,11 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 	*stripped = sift_fxid_max(*stripped, plan.stripped);
 	sift_col_delta_compact_plan_free(&plan);
 	trail_free(&t);
+	return true;
 }
 
 static const SiftCompactFold col_delta_fold = {
-	.open = fold_open,.folded_leaves = fold_folded_leaves,.folds_part = fold_folds_part,.apply = fold_apply,.commit = fold_commit,
+	.open = fold_open,.folded_leaves = fold_folded_leaves,.folds_part = fold_folds_part,.apply = fold_apply,.row_tids = fold_row_tids,.commit = fold_commit,
 };
 
 void

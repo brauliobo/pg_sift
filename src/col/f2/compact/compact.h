@@ -147,8 +147,14 @@ typedef struct SiftCompactFold
 	bool		(*folds_part) (void *fold, uint64 part_gen);
 	/* The rows of a granule of the part, as stored, with the folds written over them; the extents of the wide values they replace are added to *release */
 	void		(*apply) (void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, SiftExtent **release, int *nrelease);
-	/* Under the partition lock, with the outputs written: what stays of the host's records goes with them into edit; *stripped is raised to the greatest writer folded, the pages of what it replaced join *release */
-	void		(*commit) (void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit,
+	/* The addresses the n rows of a granule of the part have in the outputs: the address changes that apply folds, laid over the stored ones in tids */
+	void		(*row_tids) (void *fold, uint64 part_gen, uint32 granule_id, uint64 *tids, uint32 n);
+	/*
+	 * Under the partition lock, with the outputs written: what stays of the host's records goes with them into edit; *stripped is raised to the greatest writer folded, the pages of what it replaced
+	 * join *release. false, with edit unchanged: two rows of the outputs have an address a record that stays names, so the record cannot tell which of them it is for; the horizon of a later
+	 * compaction is past the writers of the records of the row the heap gave the address away from, and folds them.
+	 */
+	bool		(*commit) (void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit,
 						   SiftExtent **release, int *nrelease, FullTransactionId *stripped);
 } SiftCompactFold;
 

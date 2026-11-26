@@ -118,6 +118,7 @@ typedef struct DeadList
 	const SiftVmDirtySet *vm;	/* the heap blocks that are not all-visible: the rows in the others have no dead tuple to offer */
 	const SiftCdRemapMap *rm;	/* the rows that moved to another address in the column delta chain: the address offered is the one they have now */
 	SiftHeapProbe *probe;		/* the validation of a concurrent build: the rows the heap has no live version for are dead too, whatever the callback says */
+	bool		folded;			/* the pending deletes of the partition were resolved by a flush of dead rows */
 } DeadList;
 
 /* The rows are gone from the index in the manifest before VACUUM marks their heap pages all-visible (core/vis_f2.h): never a pending delete */
@@ -127,6 +128,7 @@ flush_dead(DeadList *dead)
 	if (dead->n == 0)
 		return;
 	(void) sift_del_bulk(dead->rel, dead->entry->part_id, dead->entry->key_lo, dead->recs, dead->n, dead->probe == NULL, dead->spec);
+	dead->folded = dead->probe == NULL;
 	dead->stats->tuples_removed += dead->n;
 	dead->stats->num_index_tuples -= dead->n;
 	dead->n = 0;
@@ -325,6 +327,8 @@ sift_f2_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexB
 			MemoryContextReset(part_cx);
 		}
 		flush_dead(&dead);
+		if (!dead.folded && dead.probe == NULL)
+			(void) sift_del_bulk(rel, e->part_id, e->key_lo, NULL, 0, true, &f->spec);
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(partition_cx);
 		sift_f2_trace_step(1, 0);

@@ -695,6 +695,8 @@ typedef struct LocateArg
 	SiftF2Loc  *loc;
 	bool		found;
 	bool		live_only;
+	SiftF2RowAccept accept;
+	void	   *accept_arg;
 } LocateArg;
 
 /* An index has no versions of its own: after a VACUUM the heap gives an address to a later row, so a part may hold a row of the address that is dead already and a live one after it */
@@ -711,10 +713,10 @@ row_removed(const SiftF2GranuleBuf *gb, int row)
 
 /* The first row of the address that is not dead: the rows of the address are the adjacent ones of a granule whose addresses ascend, else those the table of the granule names in order */
 static int
-live_row_of(SiftF2GranuleBuf *gb, uint64 tid)
+live_row_of(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, const LocateArg *a)
 {
-	for (int row = sift_f2_gbuf_row_of(gb, tid); row >= 0; row = sift_f2_gbuf_row_next(gb, tid, row))
-		if (!row_removed(gb, row))
+	for (int row = sift_f2_gbuf_row_of(gb, a->tid); row >= 0; row = sift_f2_gbuf_row_next(gb, a->tid, row))
+		if (!row_removed(gb, row) && (a->accept == NULL || a->accept(gb, entry, row, a->accept_arg)))
 			return row;
 	return -1;
 }
@@ -723,7 +725,7 @@ static bool
 locate_cb(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 {
 	LocateArg  *a = arg;
-	int			row = a->live_only ? live_row_of(gb, a->tid) : sift_f2_gbuf_row_of(gb, a->tid);
+	int			row = a->live_only ? live_row_of(gb, entry, a) : sift_f2_gbuf_row_of(gb, a->tid);
 
 	if (row < 0)
 		return false;
@@ -744,10 +746,10 @@ sift_f2_locate_settled(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *
 }
 
 bool
-sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+sift_f2_locate_published_if(Relation rel, SiftF2Store *store, uint64 tid, SiftF2RowAccept accept, void *arg, SiftF2Loc *loc)
 {
 	MemoryContext pinned = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 visit");
-	LocateArg	a = {.tid = tid,.loc = loc,.live_only = rel->rd_rel->relkind == RELKIND_INDEX};
+	LocateArg	a = {.tid = tid,.loc = loc,.live_only = rel->rd_rel->relkind == RELKIND_INDEX,.accept = accept,.accept_arg = arg};
 	const SiftPlanSnapshot *v = sift_plan_cache_get(rel, pinned);
 	VisitPart	vp = {rel, store, v, tid, tid, true, sift_f2_gbuf_load, locate_cb, &a};
 
@@ -755,6 +757,12 @@ sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc
 	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, visit_part, &vp);
 	MemoryContextDelete(pinned);
 	return a.found;
+}
+
+bool
+sift_f2_locate_published(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+{
+	return sift_f2_locate_published_if(rel, store, tid, NULL, NULL, loc);
 }
 
 bool
