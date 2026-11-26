@@ -96,36 +96,67 @@ table_rows_ok(const SiftV6Spec *s)
 	return true;
 }
 
-/* the scan of an unnest reads the values of the leaves of its columns, not the type each row's chunk keeps of a key (jsonb_typeof(doc -> 'key')) */
+typedef bool (*ColTest) (const SiftV6Col *c);
+
+/* a column the statement reads from the table, its fact or the elements, passes test: the keys, the arguments, the FILTER columns, the inputs of what the scan computes and of the residual of a join */
 static bool
-reads_type_tag(const SiftV6Spec *s)
+any_col(const SiftV6Spec *s, ColTest test)
 {
 	for (int i = 0; i < s->nkeys; i++)
-		if (s->key[i].jtype)
+		if (test(&s->key[i]))
 			return true;
 	for (int v = 0; v < sift_v6_spec_nvec(s); v++)
-		if (sift_v6_vec_col(s, v) != NULL && sift_v6_vec_col(s, v)->jtype)
+		if (sift_v6_vec_col(s, v) != NULL && test(sift_v6_vec_col(s, v)))
 			return true;
 	for (int i = 0; i < s->nfcols; i++)
-		if (s->fcol[i].jtype)
+		if (test(&s->fcol[i]))
+			return true;
+	for (int i = 0; s->ext != NULL && i < s->ext->nrcol; i++)
+		if (test(&s->ext->rcol[i]))
 			return true;
 	for (int k = 0; k < s->nderive; k++)
 	{
 		SiftV6PgItem it;
 
-		if (s->derive[k].src.jtype)
+		if (test(&s->derive[k].src))
 			return true;
 		for (int c = 0; c < s->derive[k].ncond; c++)
-			if (s->derive[k].cond[c].jtype)
+			if (test(&s->derive[k].cond[c]))
 				return true;
 		if (s->derive[k].kind != SVD_PG_EXPR)
 			continue;
 		sift_v6_pgexpr_item(s, &s->derive[k], &it);
 		for (int c = 0; c < it.nin; c++)
-			if (it.col[c].jtype)
+			if (test(&it.col[c]))
 				return true;
 	}
 	return false;
+}
+
+/* the scan of an unnest reads the values of the leaves of its columns, not the type each row's chunk keeps of a key (jsonb_typeof(doc -> 'key')) */
+static bool
+is_type_tag(const SiftV6Col *c)
+{
+	return c->jtype;
+}
+
+/* a column of the table that no typed leaf holds: a whole document, a numeric read as datums, a type no vector holds (the flag of a test of the elements is no column of the table) */
+static bool
+is_untyped(const SiftV6Col *col)
+{
+	const SiftV6Col c = sift_v6_vatt_is_json(col->attno) ? sift_v6_vatt_col(col->attno, col->attno, col->typid, col->scale) : *col;
+	const SiftV6Class cls = sift_v6_col_class(&c);
+
+	if (col->src != SV6SRC_ATTR || (col->attno >= SIFT_V6_XFLAG_VATT && col->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS))
+		return false;
+	return c.jtype || (c.attno >= SIFT_V6_JLEAF_VATT && c.jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE;
+}
+
+/* the store scans the elements of an array (SiftJsonbOps) and reads the columns of the table the statement names beside them */
+static bool
+store_reads_cols(const V6Plan *p)
+{
+	return p->ops->jsonb != NULL && (p->ops->jsonb->exact_values || !any_col(&p->spec, is_untyped));
 }
 
 bool
@@ -152,14 +183,14 @@ sift_v6_unnest_where(V6Plan *p)
 bool
 sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL;
+	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && store_reads_cols(p);
 }
 
 /* what the unnest scan needs of the compiled statement besides its columns: the quals of the element and of the table run on the batches */
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return (!p->is_table || table_rows_ok(&p->spec)) && !reads_type_tag(&p->spec) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+	return (!p->is_table || table_rows_ok(&p->spec)) && !any_col(&p->spec, is_type_tag) && store_reads_cols(p) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
