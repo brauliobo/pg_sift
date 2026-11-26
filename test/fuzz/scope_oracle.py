@@ -22,7 +22,8 @@ Windows of concurrent writers (pgbench) run with REPEATABLE READ and SERIALIZABL
 of the first read of that snapshot; a CREATE INDEX CONCURRENTLY runs inside one of them. At the end of a seed sift.col_scope_verify must find no differing key on the primary and the standby, and the dump of the primary is
 restored and read. The first wrong answer stops the run (exit 1) with the query, the arms and the first differing rows in OUT/FAIL-*.txt. Statistics (reads compared, reads that used the scope units) end the run.
 """
-import argparse, os, random, re, subprocess, sys, time
+import argparse, os, random, re, subprocess, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fmt  # noqa: E402
@@ -32,6 +33,7 @@ ERR = re.compile(r'^(ERROR|FATAL|PANIC|server closed|connection to server|psql: 
 TZ = "SET TimeZone = 'UTC'; SET client_min_messages = warning; SET max_parallel_workers_per_gather = 0; SET jit = off; SET lock_timeout = '60s';"
 WHY = {}
 VERIFY_EVERY = int(os.environ.get('SIFT_ORACLE_VERIFY_EVERY', '4'))   # sift.col_scope_verify after every this many steps (1: every step)
+STATS_LOCK = threading.Lock()   # the toggle check runs on two servers side by side
 STATS = {'compared': 0, 'scope_reads': 0, 'engaged': 0, 'windows': 0, 'own': 0, 'snapshots': 0, 'verify': 0, 'unverified': 0}
 
 
@@ -78,7 +80,7 @@ class Pg:
                 break
             out.append(line)
         out = ''.join(out)
-        self.log.write(out)
+        self.log.write(f'-- {self.name} ->\n{out}')
         self.log.flush()
         errs = [m.group(0) + out[m.end():].split('\n', 1)[0] for m in ERR.finditer(out)]
         if errs and not (allow and all(re.search(allow, e) for e in errs)):
@@ -390,7 +392,8 @@ class Gate:
 
     def compare(self, seed, step, label, qs, got, want, pg, arm, wpg, warm, intx=False):
         for name, q in qs:
-            STATS['compared'] += 1
+            with STATS_LOCK:
+                STATS['compared'] += 1
             if got[name] != want[name]:
                 a, b = rows_of(pg, arm, q, intx), rows_of(wpg, warm, q, intx)
                 only_a = [x for x in a if x not in set(b)][:8]
@@ -401,24 +404,26 @@ class Gate:
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------------------------- run
 
+def wait_until(cond, secs, what):
+    """polls cond every 10, 20, then 50 ms until it holds; Fail(what) after secs"""
+    end, delay = time.monotonic() + secs, 0.01
+    while not cond():
+        if time.monotonic() > end:
+            raise Fail(what)
+        time.sleep(delay)
+        delay = min(0.05, delay * 2)
+
+
 def wait_standby(p, s, lsn=None):
     lsn = lsn or p.val("SELECT pg_current_wal_lsn()")
-    for _ in range(1200):
-        if s.val(f"SELECT pg_last_wal_replay_lsn() >= '{lsn}'") == 't':
-            return
-        time.sleep(0.1)
-    raise Fail('the standby did not replay')
+    wait_until(lambda: s.val(f"SELECT pg_last_wal_replay_lsn() >= '{lsn}'") == 't', 120, 'the standby did not replay')
 
 
 MARK = [0]
 
 
 def drop_slot(p, name):
-    for _ in range(100):
-        if 'is active' not in p.run(f"SELECT pg_drop_replication_slot('{name}');", allow='is active'):
-            return
-        time.sleep(0.2)
-    raise Fail(f'slot {name} stays active')
+    wait_until(lambda: 'is active' not in p.run(f"SELECT pg_drop_replication_slot('{name}');", allow='is active'), 20, f'slot {name} stays active')
 
 
 def wait_stock(p, *subs):
@@ -426,12 +431,7 @@ def wait_stock(p, *subs):
     MARK[0] += 1
     p.run(f"INSERT INTO marks VALUES ({MARK[0]});")
     for sk in subs:
-        for _ in range(1200):
-            if sk.val(f"SELECT count(*) FROM marks WHERE n = {MARK[0]}") == '1':
-                break
-            time.sleep(0.1)
-        else:
-            raise Fail(f'the subscription of {sk.name} did not catch up')
+        wait_until(lambda: sk.val(f"SELECT count(*) FROM marks WHERE n = {MARK[0]}") == '1', 120, f'the subscription of {sk.name} did not catch up')
 
 
 def verify_sql(idx):
@@ -522,9 +522,10 @@ def run_seed(a, seed):
         for arm in ('scope', 'planned', 'plain'):
             la = answers(LP, arm, qs)
             gate.compare(seed, step, f'{label} logical subscriber with its own scope index, {arm} vs the stock node', qs, la, stock, LP, arm, SK, 'stock')
-        if step == 0 or step % a.toggle_every == 0:
-            toggle(step, qs, stock, A)
-            toggle(step, qs, stock, LP, 'logical subscriber')
+        if step == 0 or step % a.toggle_every == 0:   # the primary and the logical subscriber are two servers: their sessions run it side by side
+            with ThreadPoolExecutor(2) as ex:
+                for f in [ex.submit(toggle, step, qs, stock, A), ex.submit(toggle, step, qs, stock, LP, 'logical subscriber')]:
+                    f.result()
         wait_standby(A, SP, lsn)
         for arm in ('scope', 'planned', 'plain'):
             sa = answers(SP, arm, qs)
