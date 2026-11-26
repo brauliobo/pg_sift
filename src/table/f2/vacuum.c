@@ -623,15 +623,25 @@ recompute_oldest(Relation rel, FullTransactionId oldest_fx)
 	return lowest;
 }
 
+/* The oldest transaction a page still holds, or invalid when none is older than the horizon: the horizon moves with every VACUUM and is not worth a record of the metapage */
 static void
-store_oldest_active(Relation rel, FullTransactionId oldest)
+store_oldest_active(Relation rel, FullTransactionId oldest, FullTransactionId horizon)
 {
 	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
-	SiftXlog	x = sift_xlog_start(rel);
-	Page		p0 = sift_xlog_register(&x, buf, 0);
-	SiftColMetaPageData *m = SIFT_COL_META(p0);
+	FullTransactionId held = FullTransactionIdPrecedes(oldest, horizon) ? oldest : InvalidFullTransactionId;
+	SiftXlog	x;
+	Page		p0;
+	SiftColMetaPageData *m;
 
-	m->oldest_active_xid = oldest;
+	if (FullTransactionIdEquals(SIFT_COL_META(BufferGetPage(buf))->oldest_active_xid, held))
+	{
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+	x = sift_xlog_start(rel);
+	p0 = sift_xlog_register(&x, buf, 0);
+	m = SIFT_COL_META(p0);
+	m->oldest_active_xid = held;
 	sift_meta_seal(p0, m->common.struct_size);
 	sift_xlog_done(&x);
 }
@@ -668,13 +678,13 @@ cutoff_fx(FullTransactionId next, TransactionId xid)
 
 /* What the pages hold now, as far as it is known, becomes relfrozenxid at once (the statistics of the table are those of the end of the VACUUM): a VACUUM that does not end has moved it as far as it went */
 static void
-advance_frozenxid(Relation rel, FullTransactionId oldest, const struct VacuumCutoffs *cutoffs)
+advance_frozenxid(Relation rel, FullTransactionId oldest, FullTransactionId horizon, const struct VacuumCutoffs *cutoffs)
 {
 	bool		fz,
 				mz;
 	Form_pg_class form = rel->rd_rel;
 
-	store_oldest_active(rel, oldest);
+	store_oldest_active(rel, oldest, horizon);
 #if PG_VERSION_NUM >= 180000
 	vac_update_relstats(rel, form->relpages, form->reltuples, form->relallvisible, form->relallfrozen, form->relhasindex, XidFromFullTransactionId(oldest), cutoffs->OldestMxact, &fz, &mz, false);
 #else
@@ -745,7 +755,7 @@ settle_all(Relation rel, SiftF2Store *store, const SiftManifestRead *mr, const s
 		if (FullTransactionIdPrecedes(published, FullTransactionIdPrecedes(settled, rest) ? settled : rest))
 		{
 			published = FullTransactionIdPrecedes(settled, rest) ? settled : rest;
-			advance_frozenxid(rel, published, cutoffs);
+			advance_frozenxid(rel, published, oldest_fx, cutoffs);
 		}
 	}
 	if (rewrite_left == 0)
@@ -813,7 +823,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 		(void) sift_f2_scope_refresh(rel);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_FINAL_CLEANUP);
 	new_oldest = recompute_oldest(rel, oldest_fx);
-	store_oldest_active(rel, new_oldest);
+	store_oldest_active(rel, new_oldest, oldest_fx);
 	sift_tbl_vm_vacuum(rel, oldest_fx, freeze_fx);
 	update_relstats(rel, new_oldest, &cutoffs);
 	sift_horizon_vacuum_read_end(rel);

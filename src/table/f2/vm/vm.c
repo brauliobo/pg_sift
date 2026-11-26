@@ -416,25 +416,38 @@ set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, Coun
 
 /* ---- the counts ---- */
 
-/* Sets the bit that says a map may exist (before the first bit is set), or stores the counts of the map fork; the registry gets the metapage as it is */
+static bool
+counts_stored(const SiftColMetaPageData *m, bool counts, BlockNumber all_visible, BlockNumber all_frozen, uint64 total)
+{
+	return (m->common.ro_compat_flags & SIFT_ROCOMPAT_TABLE_VM) != 0 &&
+		(!counts || (m->vm_all_visible_vblocks == all_visible && m->vm_all_frozen_vblocks == all_frozen && m->vm_total_vblocks == total));
+}
+
+/* Sets the bit that says a map may exist (before the first bit is set), or stores the counts of the map fork; the registry gets the metapage as it is. A metapage that already says so is not logged again */
 static void
 store_counts(Relation rel, bool counts, BlockNumber all_visible, BlockNumber all_frozen, uint64 total)
 {
 	Buffer		buf = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
-	SiftXlog	x = sift_xlog_start(rel);
-	Page		p0 = sift_xlog_register(&x, buf, 0);
-	SiftColMetaPageData *m = SIFT_COL_META(p0);
 	SiftShmIndexMeta peek;
 
-	m->common.ro_compat_flags |= SIFT_ROCOMPAT_TABLE_VM;
-	if (counts)
+	if (counts_stored(SIFT_COL_META(BufferGetPage(buf)), counts, all_visible, all_frozen, total))
+		UnlockReleaseBuffer(buf);
+	else
 	{
-		m->vm_all_visible_vblocks = all_visible;
-		m->vm_all_frozen_vblocks = all_frozen;
-		m->vm_total_vblocks = total;
+		SiftXlog	x = sift_xlog_start(rel);
+		Page		p0 = sift_xlog_register(&x, buf, 0);
+		SiftColMetaPageData *m = SIFT_COL_META(p0);
+
+		m->common.ro_compat_flags |= SIFT_ROCOMPAT_TABLE_VM;
+		if (counts)
+		{
+			m->vm_all_visible_vblocks = all_visible;
+			m->vm_all_frozen_vblocks = all_frozen;
+			m->vm_total_vblocks = total;
+		}
+		sift_meta_seal(p0, m->common.struct_size);
+		sift_xlog_done(&x);
 	}
-	sift_meta_seal(p0, m->common.struct_size);
-	sift_xlog_done(&x);
 	if (sift_shm_manifest_peek(&rel->rd_locator, &peek))
 	{
 		SiftColMetaPageData now = sift_col_meta_read(rel);
