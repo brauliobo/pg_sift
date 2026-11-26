@@ -210,6 +210,15 @@ sift_shred_jsonb(SiftShred *sh, Jsonb *jb)
 	sift_shred_finish(sh);
 }
 
+/* The storage pg_type gives an element type sift_shred_array_elem_ok, without a syscache lookup for every array */
+static void
+elem_storage(Oid elem, int16 *len, bool *byval, char *align)
+{
+	*len = elem == INT2OID ? sizeof(int16) : elem == INT4OID ? sizeof(int32) : elem == INT8OID ? sizeof(int64) : -1;
+	*byval = elem == INT2OID || elem == INT4OID || (elem == INT8OID && FLOAT8PASSBYVAL);
+	*align = elem == INT2OID ? TYPALIGN_SHORT : elem == INT8OID ? TYPALIGN_DOUBLE : TYPALIGN_INT;
+}
+
 /* A native array as the value of a list: its elements flattened in storage order (a multidimensional array is one list, as unnest reads it) */
 void
 sift_shred_array(SiftShred *sh, ArrayType *arr)
@@ -222,7 +231,7 @@ sift_shred_array(SiftShred *sh, ArrayType *arr)
 	bool	   *nulls;
 	int			n;
 
-	get_typlenbyvalalign(elem, &len, &byval, &align);
+	elem_storage(elem, &len, &byval, &align);
 	deconstruct_array(arr, elem, len, byval, align, &vals, &nulls, &n);
 	if (!sift_shred_enter(sh, true))
 		return;
