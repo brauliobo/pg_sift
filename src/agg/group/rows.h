@@ -21,7 +21,7 @@ extern bool v6g_rows_cheaper(const SiftV6Group *g);
 extern void v6g_freeze(SiftV6Group *g);
 /* the rows sel[0 .. n-1] of the batch whose slot (g->slots) is NULL go to the partitions; the others, with their slots, to the front: their number */
 extern uint16 v6g_rows_split(SiftV6Group *g, V6Set *set, SiftVec *const *keyvec, SiftVec *const *argvec, uint16 n);
-/* the table is emptied and takes the rows of the next partition, its groups final (false: no partition is left) */
+/* the table is emptied and takes the rows of the next partition, its groups final (false: no partition is left); a partition that spills takes the rows of all the partitions left, which are other groups */
 extern bool v6g_rows_replay(SiftV6Group *g);
 extern void v6g_rows_free(SiftV6Group *g);
 /* the rows sent to the partitions and their bytes, added to *puts and *bytes */

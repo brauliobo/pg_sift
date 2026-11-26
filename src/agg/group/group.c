@@ -712,6 +712,7 @@ sift_v6_group_scan_sink(SiftV6Group *g, SiftV6DistPut put, void *arg)
 void
 sift_v6_group_recycle(SiftV6Group *g)
 {
+	SIFT_INVARIANT(!g->spilled, "a state whose tables went to the spill was recycled");
 	plain_pcts(g, false);
 	for (int s = 0; s < g->nsets; s++)
 	{

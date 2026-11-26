@@ -1,8 +1,6 @@
 -- An aggregate whose groups the planner underestimates by more than hash memory allows (statistics that predate a bulk load) returns the rows the
--- normal plan returns. Where the scan can spill, the groups of its table go to partitions on disk (grouping sets, with the sets folded into the coarser ones
--- before each table is written; a generic aggregate with a combine function); where it cannot (an ordered scan on a text key, an ordered-set aggregate, an
--- aggregate that sorts its input) the statement is run again as PostgreSQL plans it.
--- The bound on a table that cannot spill is lowered so that a few thousand groups pass it.
+-- normal plan returns: the groups of its table, or the rows of the groups it has no room for, go to partitions on disk (grouping sets, a generic aggregate
+-- with a combine function, an ordered scan on a text key, an ordered-set aggregate, an aggregate that sorts its input).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -27,7 +25,7 @@ BEGIN
 	DROP TABLE IF EXISTS want;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		scan := scan OR l ~ 'SiftAgg';
-		sp := sp OR l ~ '[1-9][0-9]* group table spills';
+		sp := sp OR l ~ 'I/O & Mem: .* spills=[1-9]';
 	END LOOP;
 	EXECUTE 'CREATE TEMP TABLE got AS ' || q;
 	SET sift.enable_agg = off;
@@ -47,20 +45,16 @@ SELECT * FROM stale_case('SELECT g, count(*) AS n FROM stale WHERE id < 0 GROUP 
 SELECT * FROM stale_case('SELECT g, bit_or(v) AS b FROM stale GROUP BY g');
 SELECT * FROM stale_case('SELECT g, bit_and(v) AS b, bool_or(v > 50) AS o FROM stale GROUP BY g');
 
--- the statements that cannot spill run again as PostgreSQL plans them
-SET client_min_messages = notice;
+-- a text key in order, an ordered-set aggregate and an aggregate that sorts its input
 SELECT * FROM stale_case('SELECT g::text AS g, count(*) AS n FROM stale GROUP BY g::text ORDER BY 1');
 SELECT * FROM stale_case('SELECT g, percentile_cont(0.5) WITHIN GROUP (ORDER BY v) AS p FROM stale GROUP BY g');
 SELECT * FROM stale_case('SELECT g, string_agg(v::text, '','' ORDER BY v) AS s FROM stale GROUP BY g');
-SET client_min_messages = warning;
 
--- the rows reach the client once: the first run sent none (extended protocol, a parameter, a limit)
-SET client_min_messages = notice;
+-- the rows reach the client once (extended protocol, a parameter, a limit)
 SELECT g::text AS g, count(*) AS n FROM stale WHERE v >= $1 GROUP BY g::text ORDER BY 1 LIMIT 3 \bind 0 \g
 SELECT g::text AS g, count(*) AS n FROM stale GROUP BY g::text ORDER BY 1 LIMIT 3;
-SET client_min_messages = warning;
 
--- a prepared statement: the generic plan is the one that meets the table, and the plan cache starts over after the run
+-- a prepared statement: the generic plan is the one that meets the table, run twice
 SET plan_cache_mode = force_generic_plan;
 PREPARE q AS SELECT g::text AS g, count(*) AS n FROM stale GROUP BY g::text ORDER BY 1;
 PREPARE s AS SELECT g, count(*) AS n, sum(v) AS s FROM stale GROUP BY GROUPING SETS ((g), ());
@@ -79,14 +73,12 @@ DEALLOCATE q;
 DEALLOCATE s;
 RESET plan_cache_mode;
 
--- a cursor runs again as well: nothing was sent when its first fetch found the table too big, and the statement is planned again from its query
-SET client_min_messages = notice;
+-- a cursor whose first fetch meets the table
 BEGIN;
 DECLARE c CURSOR FOR SELECT g::text AS g, count(*) AS n FROM stale GROUP BY g::text ORDER BY 1;
 FETCH 3 FROM c;
 MOVE FORWARD ALL IN c;
 COMMIT;
-SET client_min_messages = warning;
 
 DROP FUNCTION stale_case(text);
 DROP TABLE stale;

@@ -10,6 +10,7 @@
 
 #include "agg/ht/ht.h"
 #include "agg/group/int.h"
+#include "agg/group/compact.h"
 #include "agg/gen/gen.h"
 #include "agg/gpu/cfg.h"
 #include "agg/gpu/scan.h"
@@ -326,6 +327,7 @@ v6g_rows_cheaper(const SiftV6Group *g)
 	return slots && v6g_can_freeze(g);
 }
 
+/* The groups of the compact tables move to the group tables first: the lock is the groups a table holds, and a frozen state has no compact table to fill or spill */
 void
 v6g_freeze(SiftV6Group *g)
 {
@@ -333,6 +335,7 @@ v6g_freeze(SiftV6Group *g)
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk > 0)
 		{
+			v6g_compact_flush(g, &g->set[s]);
 			g->set[s].frozen = true;
 			g->set[s].ht.lock_at = Max(g->set[s].ht.count, 1);
 		}
@@ -648,6 +651,12 @@ v6g_rows_replay(SiftV6Group *g)
 	rs->level = next.level;
 	file_replay(g, rs, next.file);
 	BufFileClose(next.file);
+	while (g->spilled && rs->npending > 0)
+	{
+		next = rs->pending[--rs->npending];
+		file_replay(g, rs, next.file);
+		BufFileClose(next.file);
+	}
 	sift_v6_group_finish(g);
 	MemoryContextSwitchTo(old);
 	return true;
