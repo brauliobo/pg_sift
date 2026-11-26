@@ -644,7 +644,12 @@ flush_largest(void)
 	foreach_ptr(SiftTxnStage, st, stages)
 		if (big == NULL || st->mem_bytes + st->host_mem > big->mem_bytes + big->host_mem)
 			big = st;
-	rel = relation_open(big->relid, RowExclusiveLock);
+	rel = try_relation_open(big->relid, RowExclusiveLock);
+	if (rel == NULL)
+	{
+		sift_stage_discard(big->relid);
+		return;
+	}
 	if (RelFileLocatorEquals(big->locator, rel->rd_locator))
 		flush_stage_rows(rel, big, false);
 	else
