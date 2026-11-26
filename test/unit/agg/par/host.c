@@ -8,6 +8,10 @@
 #include "miscadmin.h"
 #include "storage/ipc.h"
 
+#include <sys/mman.h>
+
+#include "col/dsmreg.h"
+
 #include "host.h"
 
 bool		IsUnderPostmaster = true;
@@ -21,6 +25,18 @@ volatile sig_atomic_t InterruptPending = false;
 volatile sig_atomic_t QueryCancelPending = false;
 sigjmp_buf *PG_exception_stack = NULL;
 ErrorContextCallback *error_context_stack = NULL;
+
+/* A table of the shared memory of the server: mapped shared, so that a process the test forks is another backend of the same server */
+void *
+sift_dsm_try(const char *name, Size size, SiftDsmInit init)
+{
+	void	   *raw = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+	if (raw == MAP_FAILED)
+		return NULL;
+	SIFT_DSM_INIT_CALL(init, raw);
+	return raw;
+}
 
 typedef struct ExitCb
 {

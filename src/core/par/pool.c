@@ -4,6 +4,9 @@
  * The pool is one static block: its threads are made with every signal blocked but the ones the hardware raises in the thread that faults (the mask is inherited, the backend thread gets its own
  * back at once), so a signal of the server is never taken by one of them; they wait on a condition variable for a job and on another for the end of it, never on a timer. on_proc_exit joins them,
  * so a backend leaves no thread behind, and a process forked from the backend (a program, a procedural language) starts with an idle pool of its own.
+ *
+ * The helpers that run a job are leased from a counter of the server (a table of the dynamic shared memory registry), at most max_parallel_workers for all the backends together, and given
+ * back when the job is waited for: a backend that finds them taken, or that cannot make a thread (the limit of the processes of the system), runs its job on the helpers it has, or alone.
  */
 #include "postgres.h"
 
@@ -13,13 +16,16 @@
 #include "access/parallel.h"
 #include "miscadmin.h"
 #include "optimizer/cost.h"
+#include "port/atomics.h"
 #include "storage/ipc.h"
 
+#include "col/dsmreg.h"
 #include "core/par/pool.h"
 #include "core/sift.h"
 
 #define POOL_STACK_BYTES	(1024 * 1024)
 #define POOL_FINI_MAX		4
+#define LEASE_NAME			"sift_par_helpers"
 
 static const int fault_signals[] = {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT, SIGSYS, SIGTRAP};
 
@@ -30,6 +36,7 @@ typedef struct SiftParPool
 	pthread_cond_t cv_done;
 	pthread_t	thread[SIFT_PAR_MAX_THREADS - 1];
 	int			nspawned;
+	int			leased;			/* the helpers of the job in flight, taken from the counter of the server */
 	bool		exit_registered;
 	bool		shutdown;
 	uint64		epoch;
@@ -46,6 +53,51 @@ typedef struct SiftParPool
 static SiftParPool pool = {.mu = PTHREAD_MUTEX_INITIALIZER,.cv_work = PTHREAD_COND_INITIALIZER,.cv_done = PTHREAD_COND_INITIALIZER};
 
 static int	worker_id[SIFT_PAR_MAX_THREADS - 1];
+
+/* The helpers that run a job in a backend of the server, all backends together */
+typedef struct SiftParLease
+{
+	pg_atomic_uint32 busy;
+} SiftParLease;
+
+static SiftParLease *lease;
+static bool lease_tried;
+
+static void
+lease_init(SIFT_DSM_INIT_ARGS)
+{
+	pg_atomic_init_u32(&((SiftParLease *) ptr)->busy, 0);
+}
+
+/* Up to want helpers of what max_parallel_workers leaves to the server; none when the counter cannot be had */
+static int
+lease_take(int want)
+{
+	uint32		busy;
+
+	if (!lease_tried)
+	{
+		lease = sift_dsm_try(LEASE_NAME, sizeof(SiftParLease), lease_init);
+		lease_tried = true;
+	}
+	if (lease == NULL)
+		return 0;
+	busy = pg_atomic_read_u32(&lease->busy);
+	for (;;)
+	{
+		const int	got = Min(want, Max(max_parallel_workers - (int) busy, 0));
+
+		if (got == 0 || pg_atomic_compare_exchange_u32(&lease->busy, &busy, busy + got))
+			return got;
+	}
+}
+
+static void
+lease_give(int n)
+{
+	if (n > 0)
+		pg_atomic_fetch_sub_u32(&lease->busy, n);
+}
 
 bool
 sift_par_pool_usable(void)
@@ -154,13 +206,14 @@ pool_fork_child(void)
 	pool.cv_work = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
 	pool.cv_done = (pthread_cond_t) PTHREAD_COND_INITIALIZER;
 	pool.nspawned = 0;
+	pool.leased = 0;
 	pool.active_n = 0;
 	pool.finished_n = 0;
 	pool.busy = false;
 }
 
-/* Makes the helpers up to helpers; 0, or the error of the system */
-static int
+/* Makes the helpers up to helpers, or as many as the system lets the process have */
+static void
 pool_create(int helpers)
 {
 	pthread_attr_t attr;
@@ -169,7 +222,7 @@ pool_create(int helpers)
 	int			rc = pthread_attr_init(&attr);
 
 	if (rc != 0)
-		return rc;
+		return;
 	if ((rc = pthread_attr_setstacksize(&attr, POOL_STACK_BYTES)) == 0)
 	{
 		sigfillset(&mask);
@@ -186,14 +239,11 @@ pool_create(int helpers)
 		pthread_sigmask(SIG_SETMASK, &old, NULL);
 	}
 	pthread_attr_destroy(&attr);
-	return rc;
 }
 
 static void
 pool_spawn(int helpers)
 {
-	int			rc;
-
 	if (!pool.exit_registered)
 	{
 		before_shmem_exit(pool_drain, 0);
@@ -201,21 +251,25 @@ pool_spawn(int helpers)
 		pthread_atfork(pool_fork_prepare, pool_fork_parent, pool_fork_child);
 		pool.exit_registered = true;
 	}
-	if ((rc = pool_create(helpers)) != 0)
-		ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_RESOURCES), errmsg("could not start the compute threads of the backend"), errdetail("%s", strerror(rc))));
+	pool_create(helpers);
 }
 
 void
 sift_par_pool_start(int nthreads, SiftParJobFn fn, SiftParStopFn stop, void *ctx)
 {
+	int			helpers;
+
 	Assert(sift_par_pool_usable() && !pool.busy && nthreads >= 2 && nthreads <= SIFT_PAR_MAX_THREADS);
-	if (pool.nspawned < nthreads - 1)
-		pool_spawn(nthreads - 1);
+	helpers = lease_take(nthreads - 1);
+	if (pool.nspawned < helpers)
+		pool_spawn(helpers);
+	lease_give(helpers - Min(helpers, pool.nspawned));
+	pool.leased = Min(helpers, pool.nspawned);
 	pthread_mutex_lock(&pool.mu);
 	pool.fn = fn;
 	pool.stop = stop;
 	pool.ctx = ctx;
-	pool.active_n = nthreads;
+	pool.active_n = pool.leased + 1;
 	pool.finished_n = 0;
 	pool.epoch++;
 	pool.busy = true;
@@ -231,6 +285,8 @@ sift_par_pool_wait(void)
 		pthread_cond_wait(&pool.cv_done, &pool.mu);
 	pool.busy = false;
 	pthread_mutex_unlock(&pool.mu);
+	lease_give(pool.leased);
+	pool.leased = 0;
 }
 
 bool

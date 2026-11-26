@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -13,6 +14,7 @@
 
 _Thread_local bool sift_test_in_worker;
 bool		sift_test_trap_soft;
+int			sift_test_threads_left = -1;
 static _Atomic uint64 traps;
 
 uint64
@@ -69,9 +71,14 @@ extern int	__real_pthread_create(pthread_t *th, const pthread_attr_t *attr, void
 int
 __wrap_pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*fn) (void *), void *arg)
 {
-	Start	   *s = malloc(sizeof(Start));
+	Start	   *s;
 	int			rc;
 
+	if (sift_test_threads_left == 0)
+		return EAGAIN;
+	if (sift_test_threads_left > 0)
+		sift_test_threads_left--;
+	s = malloc(sizeof(Start));
 	*s = (Start) {fn, arg};
 	rc = __real_pthread_create(th, attr, flagged_start, s);
 	if (rc != 0)

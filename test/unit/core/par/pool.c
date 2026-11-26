@@ -463,6 +463,83 @@ test_pool_fork(void)
 }
 #endif
 
+/* a process at its limit of threads runs the job on the helpers it has: the pool degrades, the statement goes on */
+static void
+start_short(void *arg)
+{
+	sift_par_pool_start(4, job_count, job_stop, arg);
+	sift_par_pool_wait();
+}
+
+static void
+test_pool_eagain(void)
+{
+	static PoolJob j;
+
+	memset(&j, 0, sizeof(j));
+	sift_test_threads_left = 1;
+	SIFT_CHECK(pgshim_try(start_short, &j));
+	sift_test_threads_left = -1;
+	SIFT_CHECK(atomic_load(&j.ran[1]) == 1 && atomic_load(&j.ran[2]) == 0 && atomic_load(&j.ran[3]) == 0 && !sift_par_pool_busy());
+	memset(&j, 0, sizeof(j));
+	start_short(&j);
+	SIFT_CHECK(atomic_load(&j.ran[1]) == 1 && atomic_load(&j.ran[2]) == 1 && atomic_load(&j.ran[3]) == 1);
+}
+
+/* the helpers of all the backends of a server are at most max_parallel_workers: a backend that finds them taken runs its job with the ones left, or alone */
+#ifndef __SANITIZE_THREAD__
+static int
+ran_helpers(const PoolJob *j)
+{
+	int			n = 0;
+
+	for (int w = 1; w < SIFT_PAR_MAX_THREADS; w++)
+		n += atomic_load(&j->ran[w]);
+	return n;
+}
+
+static bool
+other_backend_runs(int nthreads, int helpers)
+{
+	static PoolJob j;
+	int			status;
+	pid_t		pid = fork();
+
+	SIFT_CHECK(pid >= 0);
+	if (pid == 0)
+	{
+		alarm(20);
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(nthreads, job_count, job_stop, &j);
+		sift_par_pool_wait();
+		par_host_before_shmem_exit();
+		par_host_proc_exit();
+		_exit(ran_helpers(&j) == helpers ? 0 : 1);
+	}
+	return waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+static void
+test_pool_cluster_cap(void)
+{
+	static PoolJob j;
+
+	max_parallel_workers = 3;
+	for (int held = 3; held >= 1; held--)
+	{
+		memset(&j, 0, sizeof(j));
+		sift_par_pool_start(held + 1, job_spin, job_stop, &j);
+		while (atomic_load(&j.started) < held)
+			;
+		SIFT_CHECK(other_backend_runs(4, 3 - held));
+		job_stop(&j);
+		sift_par_pool_wait();
+	}
+	SIFT_CHECK(other_backend_runs(4, 3));
+	max_parallel_workers = 64;
+}
+#endif
+
 static void
 test_pool_jobs(void)
 {
@@ -790,6 +867,8 @@ main(void)
 	test_topk(300, 1000);
 	test_topk(5000, 1);
 	test_pool_threads();
+	if (unit_wants("pool_eagain"))
+		test_pool_eagain();
 	if (unit_wants("pool_settings"))
 		test_pool_settings();
 	test_pool_jobs();
@@ -801,6 +880,8 @@ main(void)
 #ifndef __SANITIZE_THREAD__
 	if (unit_wants("pool_fork"))
 		test_pool_fork();
+	if (unit_wants("pool_cluster_cap"))
+		test_pool_cluster_cap();
 #endif
 	test_run_sums();
 	test_run_failures();

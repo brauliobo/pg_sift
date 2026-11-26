@@ -32,7 +32,10 @@ extern int	sift_par_pool_threads(void);
 
 extern void sift_par_pool_on_thread_exit(SiftParThreadFini fn);
 
-/* Wakes nthreads - 1 helpers (made now, once) to run fn(worker, ctx); a job is started only when the one before it was waited for */
+/*
+ * Wakes up to nthreads - 1 helpers (made now, once) to run fn(worker, ctx): as many as max_parallel_workers leaves to the server and the system lets the process make, maybe none (the job is then
+ * the backend's alone); a job is started only when the one before it was waited for
+ */
 extern void sift_par_pool_start(int nthreads, SiftParJobFn fn, SiftParStopFn stop, void *ctx);
 /* Returns when every helper of the job has returned from fn: none touches the job's memory after that */
 extern void sift_par_pool_wait(void);

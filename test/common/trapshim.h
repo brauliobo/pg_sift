@@ -15,6 +15,9 @@ extern _Thread_local bool sift_test_in_worker;
 /* true: a trapped call is counted and goes through, for the test of the trap itself. Set before the workers start */
 extern bool sift_test_trap_soft;
 
+/* -1: every pthread_create runs; n >= 0: n more succeed, then each fails with EAGAIN (a process at its limit of threads) */
+extern int	sift_test_threads_left;
+
 /* The trapped calls so far */
 extern uint64 sift_test_trap_count(void);
 
