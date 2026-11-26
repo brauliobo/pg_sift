@@ -78,6 +78,14 @@ extern Buffer sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, in
 							 SiftLaneFill fill, void *arg, bool *crossed);
 
 /*
+ * The same, the header page aside: the link is logged with cur and the new page only, and the header counts the page in a record of its own when its lock is free at once
+ * (searches and the appenders of the other lanes hold it); else the next link of the lane, or the seal, counts it. The header's tails and counts may lag the chains, never lead them.
+ */
+typedef void (*SiftLaneLinkFill) (Page cur, Page np, void *arg);
+extern Buffer sift_lane_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Size hdrsize, uint32 limit,
+							 SiftLaneLinkFill fill, void *arg, bool *crossed);
+
+/*
  * An append to locked pages, logged as the generic WAL record (RM_GENERIC_ID) the change of the pages would be, without the copy of a
  * page, the comparison of its bytes and the copy back that GenericXLogFinish makes for every record: begin saves the first headlen bytes
  * of a page (at most SIFT_EDIT_HEAD: the page header and what the caller keeps in front of the records) and opens a critical section;

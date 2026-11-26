@@ -1,7 +1,7 @@
 /*
  * core/lane.c - the lane chains of a write buffer; see core/lane.h. The code of bm25/wbuf.c that does not depend on
  * what the records are: the active segment is created and sealed under SIFT_ACTIVE_LOCK_BLKNO, appends take the tail of a lane, then the
- * newly allocated page, then the header page; sealing takes lane tails one at a time and never the header.
+ * newly allocated page, then the header page (sift_lane_link only if it is free at once); sealing takes lane tails one at a time, then the header alone.
  */
 #include "postgres.h"
 
@@ -179,6 +179,56 @@ create_active(Relation index, uint32 hash, Size hdrsize, uint16 format, uint16 f
 	return room;
 }
 
+/* The links followed from blk up to stop (InvalidBlockNumber: the end of the chain), whose page is not read; *last: the block reached */
+static uint32
+links_to(Relation index, uint64 gen, BlockNumber blk, BlockNumber stop, BlockNumber *last)
+{
+	uint32		n = 0;
+
+	for (*last = blk; blk != stop; n++)
+	{
+		Buffer		buf = sift_lane_read_locked(index, blk, BUFFER_LOCK_SHARE);
+
+		sift_store_check_page(index, buf, SIFT_PT_WBUFDATA, gen);
+		blk = SiftLaneHead(BufferGetPage(buf))->next;
+		UnlockReleaseBuffer(buf);
+		if (!BlockNumberIsValid(blk))
+			break;
+		*last = blk;
+	}
+	return n;
+}
+
+/* The header of a sealed segment counts the pages sift_lane_link linked without it: no appender changes the chains or the header any more */
+static void
+count_tails(Relation index, const SiftSegEntry *entry)
+{
+	SiftWbufHeaderData hdr;
+	BlockNumber last[SIFT_LANES];
+	uint32		more[SIFT_LANES],
+				lag = 0;
+	Buffer		hb;
+	SiftXlog	state;
+	SiftWbufHeaderData *hd;
+
+	sift_lane_read_header(index, entry, &hdr);
+	for (int l = 0; l < SIFT_LANES; l++)
+		lag += more[l] = BlockNumberIsValid(hdr.lanes[l].tail) ? links_to(index, entry->gen, hdr.lanes[l].tail, InvalidBlockNumber, &last[l]) : 0;
+	if (lag == 0)
+		return;
+	hb = sift_lane_read_locked(index, entry->header_blk, BUFFER_LOCK_EXCLUSIVE);
+	state = sift_xlog_start(index);
+	hd = SiftLaneHdr(sift_xlog_register(&state, hb, 0));
+	for (int l = 0; l < SIFT_LANES; l++)
+		if (more[l] > 0 && hd->lanes[l].tail == hdr.lanes[l].tail)
+		{
+			hd->lanes[l].tail = last[l];
+			hd->lanes[l].npages += more[l];
+		}
+	sift_xlog_finish(&state);
+	UnlockReleaseBuffer(hb);
+}
+
 /* Seals the chain of every lane from `start` on (a lane's head for whole, else its tail as the header has it) up to its true tail, which
  * is flagged under its exclusive lock: an appender needs that lock on an unsealed tail to grow the lane, so none can after this */
 static void
@@ -209,6 +259,7 @@ flag_chains(Relation index, const SiftSegEntry *entry, bool whole)
 			UnlockReleaseBuffer(buf);
 		}
 	}
+	count_tails(index, entry);
 }
 
 void
@@ -302,6 +353,7 @@ sift_lane_refresh(Relation index, uint32 hash, const char *what, Size hdrsize, u
 
 	for (;;)
 	{
+		CHECK_FOR_INTERRUPTS();
 		snap = sift_dir_read(index);
 		if (sift_dir_layout_differs(snap, hash))
 			sift_lane_layout_error(index, what);
@@ -347,6 +399,7 @@ chain_end(Relation index, uint64 gen, Buffer buf)
 	{
 		BlockNumber next = InvalidBlockNumber;
 
+		CHECK_FOR_INTERRUPTS();
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		if (open_tail(BufferGetPage(buf), gen))
 			next = SiftLaneHead(BufferGetPage(buf))->next;
@@ -547,6 +600,50 @@ sift_lane_grow(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer
 		fill(cp, np, hp, arg);
 	sift_xlog_finish(&state);
 	UnlockReleaseBuffer(hb);
+	UnlockReleaseBuffer(cur);
+	return nb;
+}
+
+/* The header counts the pages of the lane up to the new tail nb, when its lock is free at once; cur, the page before nb, is held */
+static bool
+count_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Buffer nb, uint32 limit)
+{
+	Buffer		hb = ReadBuffer(index, hdr_blk);
+	SiftXlog	state;
+	SiftWbufHeaderData *hd;
+	BlockNumber last;
+	bool		crossed;
+
+	if (!ConditionalLockBuffer(hb))
+	{
+		ReleaseBuffer(hb);
+		return false;
+	}
+	state = sift_xlog_start(index);
+	hd = SiftLaneHdr(sift_xlog_register(&state, hb, 0));
+	hd->lanes[lane].npages += links_to(index, gen, hd->lanes[lane].tail, BufferGetBlockNumber(cur), &last) + 1;
+	hd->lanes[lane].tail = BufferGetBlockNumber(nb);
+	crossed = sift_lane_npages(hd) >= limit;
+	sift_xlog_finish(&state);
+	UnlockReleaseBuffer(hb);
+	return crossed;
+}
+
+Buffer
+sift_lane_link(Relation index, uint64 gen, BlockNumber hdr_blk, int lane, Buffer cur, Size hdrsize, uint32 limit,
+			   SiftLaneLinkFill fill, void *arg, bool *crossed)
+{
+	Buffer		nb = sift_alloc_page(index, SIFT_PT_WBUFDATA, gen);
+	SiftXlog	state = sift_xlog_start(index);
+	Page		cp = sift_xlog_register(&state, cur, 0);
+	Page		np = sift_xlog_register(&state, nb, 0);
+
+	SiftLaneHead(cp)->next = BufferGetBlockNumber(nb);
+	sift_lane_init_page(np, hdrsize);
+	if (fill)
+		fill(cp, np, arg);
+	sift_xlog_finish(&state);
+	*crossed = count_link(index, gen, hdr_blk, lane, cur, nb, limit);
 	UnlockReleaseBuffer(cur);
 	return nb;
 }

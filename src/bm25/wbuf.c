@@ -3,8 +3,8 @@
  * segment, a page of docs in one generic WAL record. A full active segment is sealed in one directory
  * record and promoted to an immutable one by maintenance.
  *
- * Lock order: lane tail page, newly allocated page, header page. Sealing
- * takes lane tails one at a time and never the header. A doc that does not
+ * Lock order: lane tail page, newly allocated page, header page (only when it
+ * is free at once: core/lane.h). Sealing takes lane tails one at a time. A doc that does not
  * fit the tail is split into pieces written while the tail is held (lock
  * coupling to the new page), so one doc is always adjacent in one lane.
  */
@@ -169,10 +169,10 @@ typedef struct PieceArg
 	bool		spans;			/* the doc goes on in the next page */
 	uint16		format;
 	bool		place;			/* the piece goes on the page being left */
-	uint64		wide[SIFT_WBUF_WIDE_WORDS];	/* its wide bloom, built before the header page is locked */
+	uint64		wide[SIFT_WBUF_WIDE_WORDS];	/* its wide bloom, built before the link is logged */
 } PieceArg;
 
-/* The page is full: the terms of its records, and those of the piece that goes in it, go to the wide bloom (the append of a record changes the head of the page, whose log record grows with the bytes it changes); built before the header page is locked */
+/* The page is full: the terms of its records, and those of the piece that goes in it, go to the wide bloom (the append of a record changes the head of the page, whose log record grows with the bytes it changes); built before the link is logged */
 static void
 wide_bloom(Page page, const SiftTermFreq *t, int n, uint64 *wide)
 {
@@ -191,7 +191,7 @@ wide_bloom(Page page, const SiftTermFreq *t, int n, uint64 *wide)
 }
 
 static void
-fill_piece(Page cp, Page np, Page hp, void *arg)
+fill_piece(Page cp, Page np, void *arg)
 {
 	PieceArg   *a = arg;
 
@@ -248,7 +248,7 @@ write_doc(Relation index, WbufHint *h, int lane, Buffer cur, ItemPointer tid, co
 		pa = (PieceArg) {tid, dl, fdl, nfields, !first, t + i, n, tb, i + n < nterms, h->format, place};
 		if (h->format >= SIFT_WBUF_FORMAT_WIDE)
 			wide_bloom(BufferGetPage(cur), place ? t + i : NULL, place ? n : 0, pa.wide);
-		cur = sift_lane_grow(index, h->gen, h->hdr, lane, cur, hdr_size(h->format), limit_pages(index),
+		cur = sift_lane_link(index, h->gen, h->hdr, lane, cur, hdr_size(h->format), limit_pages(index),
 							 fill_piece, &pa, &crossed);
 		if (place)
 		{
@@ -270,6 +270,7 @@ lock_open_tail(Relation index, WbufHint *h, int *lane)
 
 	for (;;)
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (h->gen == 0)
 		{
 			sift_analyzer_config_from_index(index, &cfg);
@@ -302,7 +303,7 @@ sift_wbuf_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int
  * would not for a doc that is in the index.
  */
 #define STAGE_BYTES		(SIFT_PAGE_PAYLOAD - sizeof(SiftWbufWideHeaderData))	/* fit an empty page of either format */
-#define STAGE_SLOTS		8
+#define STAGE_SLOTS		64		/* stages of as many indexes, a page each: 512 KB, allocated as needed and freed at the end of the transaction */
 #define STAGE_PAGE(s)	((Page) (s)->page.data)
 #define STAGE_HDR		sizeof(SiftWbufPageHeaderData)
 
@@ -330,7 +331,9 @@ typedef struct StageFill
 	uint64		wide[SIFT_WBUF_WIDE_WORDS];
 } StageFill;
 
-static WbufStage stages[STAGE_SLOTS];
+static WbufStage *stages[STAGE_SLOTS];
+static int	nstages;
+static int	speculating;		/* executors running an INSERT ... ON CONFLICT: only theirs may insert a speculative tuple */
 static ExecutorRun_hook_type prev_run;
 static ProcessUtility_hook_type prev_utility;
 
@@ -387,7 +390,7 @@ append_recs(Page page, const StageCopy *c)
 }
 
 static void
-fill_stage(Page cp, Page np, Page hp, void *arg)
+fill_stage(Page cp, Page np, void *arg)
 {
 	StageFill  *f = arg;
 
@@ -434,7 +437,7 @@ flush_stage(Relation index, WbufStage *s)
 		f = (StageFill) {{c.recs + c.bytes, total - c.bytes, sh->ndocs - c.ndocs, sh->sum_dl - c.sum_dl, sh->bloom}, hint.format};
 		if (hint.format >= SIFT_WBUF_FORMAT_WIDE)
 			wide_bloom(BufferGetPage(buf), NULL, 0, f.wide);
-		buf = sift_lane_grow(index, hint.gen, hint.hdr, lane, buf, hdr_size(hint.format), limit_pages(index), fill_stage, &f, &crossed);
+		buf = sift_lane_link(index, hint.gen, hint.hdr, lane, buf, hdr_size(hint.format), limit_pages(index), fill_stage, &f, &crossed);
 	}
 	hint.tail[lane] = BufferGetBlockNumber(buf);
 	UnlockReleaseBuffer(buf);
@@ -459,14 +462,33 @@ flush_slot(WbufStage *s)
 	s->relid = InvalidOid;
 }
 
+/* A free slot: a new one while there are fewer than STAGE_SLOTS, else the fullest stage is written, so that every write takes as many docs as it can */
 static WbufStage *
 free_slot(void)
 {
-	for (int i = 0; i < STAGE_SLOTS; i++)
-		if (!OidIsValid(stages[i].relid))
-			return &stages[i];
-	flush_slot(&stages[0]);
-	return &stages[0];
+	WbufStage  *victim = NULL;
+
+	for (int i = 0; i < nstages; i++)
+		if (!OidIsValid(stages[i]->relid))
+			return stages[i];
+	if (nstages < STAGE_SLOTS)
+	{
+		stages[nstages] = MemoryContextAlloc(TopMemoryContext, sizeof(WbufStage));
+		return stages[nstages++];
+	}
+	for (int i = 0; i < nstages; i++)
+		if (victim == NULL || stage_bytes(stages[i]) > stage_bytes(victim))
+			victim = stages[i];
+	flush_slot(victim);
+	return victim;
+}
+
+static void
+free_stages(void)
+{
+	for (int i = 0; i < nstages; i++)
+		pfree(stages[i]);
+	nstages = 0;
 }
 
 static WbufStage *
@@ -474,9 +496,9 @@ stage_for(Relation index)
 {
 	WbufStage  *s = NULL;
 
-	for (int i = 0; i < STAGE_SLOTS && s == NULL; i++)
-		if (stages[i].relid == RelationGetRelid(index))
-			s = &stages[i];
+	for (int i = 0; i < nstages && s == NULL; i++)
+		if (stages[i]->relid == RelationGetRelid(index))
+			s = stages[i];
 	if (s == NULL)
 	{
 		s = free_slot();
@@ -516,16 +538,34 @@ stage_append(Relation index, ItemPointer tid, const SiftTermFreq *terms, int nte
 static void
 flush_all(void)
 {
-	for (int i = 0; i < STAGE_SLOTS; i++)
-		if (OidIsValid(stages[i].relid))
-			flush_slot(&stages[i]);
+	for (int i = 0; i < nstages; i++)
+		if (OidIsValid(stages[i]->relid))
+			flush_slot(stages[i]);
 }
 
 static bool
 staged_any(void)
 {
-	for (int i = 0; i < STAGE_SLOTS; i++)
-		if (OidIsValid(stages[i].relid))
+	for (int i = 0; i < nstages; i++)
+		if (OidIsValid(stages[i]->relid))
+			return true;
+	return false;
+}
+
+static bool
+on_conflict(const Plan *plan)
+{
+	return plan != NULL && IsA(plan, ModifyTable) && ((const ModifyTable *) plan)->onConflictAction != ONCONFLICT_NONE;
+}
+
+/* The statement inserts with ON CONFLICT, at its top or in a WITH */
+static bool
+speculates(const PlannedStmt *ps)
+{
+	if (on_conflict(ps->planTree))
+		return true;
+	foreach_ptr(Plan, sub, ps->subplans)
+		if (on_conflict(sub))
 			return true;
 	return false;
 }
@@ -541,11 +581,22 @@ staged_any(void)
 static void
 stage_run(RUN_PARAMS)
 {
+	bool		spec = speculates(qd->plannedstmt);
+
 	flush_all();
-	if (prev_run != NULL)
-		prev_run(RUN_ARGS);
-	else
-		standard_ExecutorRun(RUN_ARGS);
+	speculating += spec;
+	PG_TRY();
+	{
+		if (prev_run != NULL)
+			prev_run(RUN_ARGS);
+		else
+			standard_ExecutorRun(RUN_ARGS);
+	}
+	PG_FINALLY();
+	{
+		speculating -= spec;
+	}
+	PG_END_TRY();
 	flush_all();
 }
 
@@ -571,20 +622,19 @@ stage_xact(XactEvent event, void *arg)
 		PopActiveSnapshot();
 	}
 	else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
-		for (int i = 0; i < STAGE_SLOTS; i++)
-			stages[i].relid = InvalidOid;
+		free_stages();
 }
 
 static void
 stage_subxact(SubXactEvent event, SubTransactionId mine, SubTransactionId parent, void *arg)
 {
-	for (int i = 0; i < STAGE_SLOTS; i++)
-		if (OidIsValid(stages[i].relid) && stages[i].subid == mine)
+	for (int i = 0; i < nstages; i++)
+		if (OidIsValid(stages[i]->relid) && stages[i]->subid == mine)
 		{
 			if (event == SUBXACT_EVENT_ABORT_SUB)
-				stages[i].relid = InvalidOid;
+				stages[i]->relid = InvalidOid;
 			else if (event == SUBXACT_EVENT_COMMIT_SUB)
-				stages[i].subid = parent;
+				stages[i]->subid = parent;
 		}
 }
 
@@ -601,7 +651,7 @@ sift_wbuf_stage_init(void)
 
 /*
  * A doc of a speculative insertion (ON CONFLICT) that loses is dead at once and VACUUM may reuse its address before the statement ends, so its doc is written and not staged;
- * of a table that is not a heap there is no telling.
+ * of a table that is not a heap there is no telling. A non-unique index is told UNIQUE_CHECK_NO under ON CONFLICT too, so the heap tuple is read only while such a statement runs.
  */
 static bool
 stageable(Relation heap, ItemPointer tid)
@@ -612,6 +662,8 @@ stageable(Relation heap, ItemPointer tid)
 
 	if (heap->rd_rel->relam != HEAP_TABLE_AM_OID)
 		return false;
+	if (speculating == 0)
+		return true;
 	buf = ReadBuffer(heap, ItemPointerGetBlockNumber(tid));
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);

@@ -137,11 +137,56 @@ probe_row(Prober *p, const ItemPointerData *cand, const Datum *values, const boo
 	return PROBE_WAIT;
 }
 
-/* The entries of the postings of the key's term, the rows that may have the key: written in the write buffers or in a segment */
-static List *
-candidates(Relation index, uint64 key, MemoryContext cx)
+/*
+ * The segments a probe of a key looks at: all of them, the immutable ones (seen NULL), or under the key lock the others: the write buffers, where a row of the key
+ * that is being written is, and the immutable segments that were not in seen, which a promotion or a merge wrote since (they may hold a row of a buffer seen gone)
+ */
+typedef struct SegFilter
+{
+	bool		all;
+	const SiftDirSnapshot *seen;
+	const SiftDirSnapshot *read;	/* out: the segments the probe read */
+} SegFilter;
+
+static bool
+seen_gen(const SiftDirSnapshot *seen, uint64 gen)
+{
+	for (int i = 0; i < seen->nsegs; i++)
+		if (seen->segs[i].gen == gen)
+			return true;
+	return false;
+}
+
+static bool
+seg_kept(const SegFilter *f, const SiftSegEntry *e)
+{
+	if (f->all)
+		return true;
+	if (f->seen == NULL)
+		return e->kind == SIFT_SEG_IMMUTABLE;
+	return e->kind != SIFT_SEG_IMMUTABLE || !seen_gen(f->seen, e->gen);
+}
+
+/* The state keeps its own copy of the directory, whose segments are opened when first read: the ones the filter drops are left out of it before */
+static SiftIndexState *
+state_of(Relation index, SegFilter *f, MemoryContext cx)
 {
 	SiftIndexState *st = sift_state_open_terms(index, cx);
+	int			n = 0;
+
+	for (int i = 0; i < st->dir->nsegs; i++)
+		if (seg_kept(f, &st->dir->segs[i]))
+			st->dir->segs[n++] = st->dir->segs[i];
+	st->dir->nsegs = n;
+	f->read = st->dir;
+	return st;
+}
+
+/* The entries of the postings of the key's term in the segments of f, the rows that may have the key */
+static List *
+candidates(Relation index, uint64 key, SegFilter *f, MemoryContext cx)
+{
+	SiftIndexState *st = state_of(index, f, cx);
 	SiftQNode  *leaf = sift_query_new_node(SQ_TERM, 1);
 	SiftQuery	q = {.root = leaf,.nleaves = 1,.analyzed = true};
 	SiftQuery  *queries[1] = {&q};
@@ -168,6 +213,7 @@ candidates(Relation index, uint64 key, MemoryContext cx)
 	sift_state_close(st);
 	return found;
 }
+
 
 /* The key as BuildIndexValueDescription writes it, which cannot write a column of a class of any type; for the columns the user may read */
 static char *
@@ -218,11 +264,11 @@ duplicate(Relation heap, Relation index, const Datum *values, const bool *isnull
 			 errtableconstraint(heap, RelationGetRelationName(index))));
 }
 
-/* A live duplicate of the row (the first found), or the transaction to wait for, and the row it inserted, when the only ones are not committed */
+/* A live duplicate of the row in the segments of f (the first found), or the transaction to wait for, and the row it inserted, when the only ones are not committed */
 static bool
-find_duplicate(Prober *p, uint64 key, const Datum *values, const bool *isnull, ItemPointer self, TransactionId *xwait, ItemPointer at, uint32 *token)
+find_duplicate(Prober *p, uint64 key, SegFilter *f, const Datum *values, const bool *isnull, ItemPointer self, TransactionId *xwait, ItemPointer at, uint32 *token)
 {
-	foreach_ptr(ItemPointerData, cand, candidates(p->index, key, CurrentMemoryContext))
+	foreach_ptr(ItemPointerData, cand, candidates(p->index, key, f, CurrentMemoryContext))
 	{
 		const TransactionId before = *xwait;
 		ProbeResult r;
@@ -241,6 +287,10 @@ find_duplicate(Prober *p, uint64 key, const Datum *values, const bool *isnull, I
 	return false;
 }
 
+/*
+ * The immutable segments are probed before the key lock is taken: a row enters them only from a write buffer, where the probe under the lock finds it, or by a promotion or a
+ * merge that writes a segment the first probe did not see, which the probe under the lock reads too. The key lock is held over the write buffers only.
+ */
 bool
 sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const bool *isnull,
 					   ItemPointer tid, IndexUniqueCheck check, uint64 key)
@@ -255,12 +305,19 @@ sift_bm25_unique_check(Relation index, Relation heap, const Datum *values, const
 		TransactionId xwait = InvalidTransactionId;
 		ItemPointerData at;
 		uint32		token = 0;
+		SegFilter	immutable = {0};
 
-		LockTuple(index, &lock, ExclusiveLock);
-		duplicated = find_duplicate(&p, key, values, isnull, tid, &xwait, &at, &token);
+		CHECK_FOR_INTERRUPTS();
+		duplicated = find_duplicate(&p, key, &immutable, values, isnull, tid, &xwait, &at, &token);
 		if (!TransactionIdIsValid(xwait))
-			break;
-		UnlockTuple(index, &lock, ExclusiveLock);
+		{
+			LockTuple(index, &lock, ExclusiveLock);
+			if (!duplicated)
+				duplicated = find_duplicate(&p, key, &(SegFilter) {.seen = immutable.read}, values, isnull, tid, &xwait, &at, &token);
+			if (!TransactionIdIsValid(xwait))
+				break;
+			UnlockTuple(index, &lock, ExclusiveLock);
+		}
 		if (token != 0)
 			SpeculativeInsertionWait(xwait, token);
 		else
@@ -294,7 +351,7 @@ sift_bm25_unique_twins(Relation index, Relation heap, const ScanKeyData *keys, i
 	if (!sift_bm25_unique_key(index, values, isnull, &key))
 		return NIL;
 	prober_open(&p, heap, index);
-	foreach_ptr(ItemPointerData, cand, candidates(index, key, CurrentMemoryContext))
+	foreach_ptr(ItemPointerData, cand, candidates(index, key, &(SegFilter) {.all = true}, CurrentMemoryContext))
 	{
 		TransactionId xwait;
 		uint32		token;

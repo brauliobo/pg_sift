@@ -21,6 +21,7 @@ typedef struct DeadEnt
 } DeadEnt;
 
 static HTAB *tab;
+static MemoryContext tab_cx;	/* holds tab: hash_destroy leaves a HASH_CONTEXT behind */
 static bool registered;
 static uint64 used;				/* sift_cache_tick() of the last doc kept */
 
@@ -36,8 +37,9 @@ deadkeys_evict_one(void)
 	bool		had = tab != NULL;
 
 	if (had)
-		hash_destroy(tab);
+		MemoryContextDelete(tab_cx);
 	tab = NULL;
+	tab_cx = NULL;
 	return had;
 }
 
@@ -74,7 +76,7 @@ sift_deadkeys_note(const SiftSegment *seg, SiftKey key)
 		{
 			HASHCTL		ctl = {.keysize = sizeof(DeadKey),.entrysize = sizeof(DeadEnt)};
 
-			ctl.hcxt = sift_cache_create_context("sift cache dead docs");
+			ctl.hcxt = tab_cx = sift_cache_create_context("sift cache dead docs");
 			tab = hash_create("sift dead docs", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 			if (!registered)
 				sift_cache_register(&deadkeys_kind);
