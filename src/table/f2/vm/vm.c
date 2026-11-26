@@ -242,6 +242,18 @@ plan_partition(Relation rel, SiftF2Store *store, const SiftPartitionEntry *e, Fu
 	}
 }
 
+static void
+plan_relation(Relation rel, SiftF2Store *store, FullTransactionId oldest, FullTransactionId freeze, VmPlan *plan)
+{
+	SiftManifestRead mr = sift_manifest_read_range(rel, NULL, NULL);
+
+	for (int i = 0; i < mr.n && !plan->incomplete; i++)
+	{
+		sift_vacuum_delay_point();
+		plan_partition(rel, store, &mr.entries[i], oldest, freeze, plan);
+	}
+}
+
 /* ---- the words of a page of the map ---- */
 
 static void
@@ -574,7 +586,6 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	VmPlan		plan = {0};
 	MemoryContext outer = CurrentMemoryContext,
 				cx;
-	SiftManifestRead mr;
 	const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
 	CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};
 	uint32		max_partial = (uint32) Min(Max(budget / 4 / (sizeof(BlockNumber) + SIFT_TBL_OFFMASK_WORDS * sizeof(uint64)), 1), (Size) PG_UINT32_MAX),
@@ -595,12 +606,7 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	MemoryContextSwitchTo(cx);
 	plan.budget = budget - budget / 4;
 	win.counts = palloc(sizeof(uint16) * win.nvblocks);
-	mr = sift_manifest_read_range(rel, NULL, NULL);
-	for (int i = 0; i < mr.n && !plan.incomplete; i++)
-	{
-		sift_vacuum_delay_point();
-		plan_partition(rel, store, &mr.entries[i], oldest, oldest, &plan);
-	}
+	plan_relation(rel, store, oldest, oldest, &plan);
 	for (uint64 base = 0; !plan.incomplete && base < plan.limit && npartial < max_partial; base += SIFT_VM_BLOCKS_PER_PAGE)
 	{
 		uint64		clean[SIFT_VM_WORDS_PER_PAGE] = {0},
@@ -683,7 +689,6 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 	SiftF2Store *store = sift_f2_store_open(rel);
 	MemoryContext cx,
 				old;
-	SiftManifestRead mr;
 	VmPlan		plan = {0};
 	BlockNumber all_visible,
 				all_frozen;
@@ -704,12 +709,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 		old = MemoryContextSwitchTo(cx);
 		plan.budget = budget - budget / 4;
 		win.counts = palloc(sizeof(uint16) * win.nvblocks);
-		mr = sift_manifest_read_range(rel, NULL, NULL);
-		for (int i = 0; i < mr.n && !plan.incomplete; i++)
-		{
-			sift_vacuum_delay_point();
-			plan_partition(rel, store, &mr.entries[i], oldest, freeze, &plan);
-		}
+		plan_relation(rel, store, oldest, freeze, &plan);
 		if (plan.incomplete)
 			ereport(WARNING, (errmsg("the visibility map of \"%s\" is left as it was: the parts take more memory than this VACUUM has", RelationGetRelationName(rel)),
 							  errhint("Raise maintenance_work_mem.")));
