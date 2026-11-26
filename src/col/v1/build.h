@@ -20,10 +20,6 @@
 #define SIFT_COL_PHASE_SCAN		2
 #define SIFT_COL_PHASE_WRITE	3
 #ifdef SIFT_TESTING
-/* gates of sift.test_phase_gate that are no progress phase: before the locks of the end of the build are taken, and in the fill of the scope segments of a concurrent build */
-#define SIFT_COL_GATE_TAIL		4
-#define SIFT_COL_GATE_FILL		5
-#define SIFT_COL_GATE_JOURNAL	6
 /* a delete that found the units of its rows, before it appends their deletion records (col/v1/track/dv.c) */
 #define SIFT_COL_GATE_DELETE	8
 #endif

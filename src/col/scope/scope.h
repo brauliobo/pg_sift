@@ -18,6 +18,14 @@
 #include "col/col.h"
 #include "col/v1/conn/conn.h"
 
+#ifdef SIFT_TESTING
+/* gates of sift.test_phase_gate of a build of either format that are no progress phase: before the locks of the end of the build are taken (the journal a concurrent build makes), before
+ * the stamp of the scopes of a concurrent build, and in the validation of the journal it made */
+#define SIFT_COL_GATE_TAIL		4
+#define SIFT_COL_GATE_FILL		5
+#define SIFT_COL_GATE_JOURNAL	6
+#endif
+
 /* A relation of a declaration and the two columns it names: (member, scope key) for the pairs, (via, scope key) for the joined path, (via, member) for the via relation */
 typedef struct SiftScopeRel
 {

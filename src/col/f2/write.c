@@ -32,6 +32,7 @@
 #include "core/errctx.h"
 #include "core/horizon.h"
 #include "core/visibility/visibility.h"
+#include "core/f2/gate.h"
 #include "core/f2/progress.h"
 #include "core/memtrack.h"
 #include "core/f2/fsm/fsm.h"
@@ -271,6 +272,7 @@ scope_validated(Relation rel)
 	Relation	heap = table_open(rel->rd_index->indrelid, AccessShareLock);
 
 	sift_scope_journals_validate();
+	SIFT_F2_GATE(SIFT_COL_GATE_FILL);
 	sift_f2_progress_scopes(heap, rel);
 	sift_f2_scope_build(heap, rel);
 	sift_f2_progress_scopes_done(heap, rel);

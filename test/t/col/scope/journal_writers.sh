@@ -4,7 +4,8 @@
 # A writer of the pairs that began after the journal of a concurrent scoped build was made records its own changes, and the validation pass records none of the pairs it adds. The wait of the build
 # for older snapshots does not wait for an idle READ COMMITTED transaction or a prepared one, so such a writer can commit after the stamp of the build, with an xid above the xmin of the stamp:
 # the read patches its pairs in from the records it made. This holds the build at its gates (sift.test_phase_gate + 4 before the journal window, + 6 before the validation snapshot, + 5 before
-# the stamp), leaves a writer open (committed, rolled back or prepared and committed) across each of them, and checks that every tenant reads as the join does, from the units of the index.
+# the stamp), leaves a writer open (committed, rolled back or prepared and committed) across each of them, and checks that every tenant reads as the join does, from the summary of the scope.
+# The index is of Format 2.0 on both runs: a Format 1 index has no scope read of its own.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 32
@@ -37,7 +38,7 @@ at_gate() { wait_for "[[ \$(sql jw \"SELECT count(*) FROM pg_locks l JOIN pg_sta
 past_gate() { wait_for "[[ \$(build_event) != Lock:advisory ]]" 60 || bail "the build stays at a gate"; }
 gates_up() { sess H; say H "SELECT pg_advisory_lock($((GATE + TAIL))), pg_advisory_lock($((GATE + JOURNAL))), pg_advisory_lock($((GATE + FILL)));"; hear H; }
 gate_open() { say H "SELECT pg_advisory_unlock($((GATE + $1)));"; hear H; }
-build_start() { (sql jw "SET sift.test_phase_gate = $GATE" "$CIC" >"$D/build.out" 2>&1; echo $? >"$D/build.rc") & BUILDER=$!; }
+build_start() { (sql jw "SET sift.test_create_format1 = off" "SET sift.test_phase_gate = $GATE" "$CIC" >"$D/build.out" 2>&1; echo $? >"$D/build.rc") & BUILDER=$!; }
 build_ends() { wait_for "! kill -0 $BUILDER 2>/dev/null" 120 || bail "the build does not end: $(build_event)"; wait "$BUILDER"; [[ $(cat "$D/build.rc") == 0 ]]; }
 
 # the changes of writer K: 3 pairs inserted, 2 deleted, 1 moved to another tenant, a HOT update of the notes, facts
@@ -51,22 +52,17 @@ work() {
 committed_work() { sql jw "$(work "$1")" >/dev/null || bail "the writer $1 failed"; }
 open_work() { sess "$1"; say "$1" "BEGIN;"; say "$1" "$(work "$2")"; hear "$1"; ! grep -q ERROR "$D/$1.out" || bail "the writer $2 failed: $(cat "$D/$1.out")"; }
 
-READ() { echo "SELECT count(*), sum(v) FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, $1)"; }
-PLAIN() { echo "SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1)"; }
-verdict() {
-	local p
-	p=$(sql jw "SET sift.agg_force = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $(READ 12)")
-	grep -o 'Scope Fallback: .*' <<<"$p" || { grep -q 'Scope Units' <<<"$p" && echo units || echo "no scope read"; }
-}
+READ() { echo "SELECT count(*), sum(v) FROM events e JOIN tenant_scope p ON p.dim_a_id = e.dim_a_id WHERE p.tenant_id = $1"; }
+verdict() { sql jw "SET sift.enable_agg = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) $(READ 12)" | sed -n 's/^ *Scope Read: //p' | grep . || echo "no scope read"; }
 every_tenant() {
 	local t
 	for t in $(seq 1 15); do
-		[[ $(sql jw "SET sift.agg_force = on" "$(READ "$t")") == "$(sql jw "SET sift.enable_agg = off" "$(PLAIN "$t")")" ]] || { diag "tenant $t differs"; return 1; }
+		[[ $(sql jw "SET sift.enable_agg = on" "$(READ "$t")") == "$(sql jw "SET sift.enable_agg = off" "$(READ "$t")")" ]] || { diag "tenant $t differs"; return 1; }
 	done
 }
 verified() { test "$(sql jw "SELECT count(*) FROM pg_index WHERE NOT indisvalid")" == 0 -a -z "$(sql jw "SELECT sift.col_verify('events_col', true)" 2>&1)"; }
 verify() {
-	check "$1: the read is from the units ($(verdict))" test "$(verdict)" == units
+	check "$1: the read is from the summary ($(verdict))" test "$(verdict)" == summary
 	check "$1: every tenant reads as the join does" every_tenant
 	check "$1: no invalid index is left and the index verifies" verified
 }

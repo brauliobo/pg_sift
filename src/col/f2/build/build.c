@@ -23,6 +23,7 @@
 #include "col/f2/uniq/unique.h"
 #include "col/f2/l0/stage.h"
 #include "col/scope/scope.h"
+#include "core/f2/gate.h"
 #include "core/f2/progress.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -361,6 +362,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 		sift_f2_scope_build(heap, index);
 		sift_f2_progress_scopes_done(heap, index);
 	}
+	SIFT_F2_GATE(SIFT_COL_GATE_TAIL);
 	if (info->ii_Concurrent && sift_f2_scoped(index))
 		sift_scope_resolve(heap, index, true, SIFT_JOURNAL_EMPTY);
 	SIFT_TEST_GATE(sift_test_build_gate, 8);
