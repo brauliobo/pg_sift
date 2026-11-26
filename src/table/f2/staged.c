@@ -22,7 +22,7 @@ sift_tbl_f2_locate_or_wait(Relation rel, SiftF2Store *store, uint64 tid, Snapsho
 	uint32		token = 0;
 
 	*waiting = false;
-	if (sift_f2_locate_cached(rel, store, tid, loc))
+	if (sift_f2_locate_cached_read(rel, store, tid, loc))
 		return true;
 	if (snapshot->snapshot_type != SNAPSHOT_DIRTY)
 		return false;
@@ -35,7 +35,7 @@ sift_tbl_f2_locate_or_wait(Relation rel, SiftF2Store *store, uint64 tid, Snapsho
 			*waiting = true;
 			return false;
 		case SIFT_SPEC_ENDED:
-			return sift_f2_locate_cached(rel, store, tid, loc);
+			return sift_f2_locate_cached_read(rel, store, tid, loc);
 		case SIFT_SPEC_NONE:
 			break;
 	}

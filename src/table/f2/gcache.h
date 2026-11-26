@@ -39,4 +39,7 @@ extern bool sift_f2_locate_packed(Relation rel, SiftF2Store *store, uint64 tid, 
 /* The row at an address through the cache: its granule (a reference), its row and its partition; the micro-slabs are flushed only when the address is in no part */
 extern bool sift_f2_locate_cached(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
 
+/* The same for a read of the row (a fetch, a check of a snapshot): a row of a micro-slab is read where it is, and no part is written */
+extern bool sift_f2_locate_cached_read(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc);
+
 #endif							/* SIFT_TBL_F2_GCACHE_H */

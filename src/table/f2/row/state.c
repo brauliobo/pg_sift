@@ -104,7 +104,7 @@ row_state(Relation rel, uint64 tid, bool (*locate) (Relation, SiftF2Store *, uin
 SiftRowState
 sift_row_state_read(Relation rel, uint64 tid)
 {
-	return row_state(rel, tid, sift_f2_locate_cached);
+	return row_state(rel, tid, sift_f2_locate_cached_read);
 }
 
 SiftRowState
@@ -120,7 +120,7 @@ delta_on_disk(Relation rel, uint64 tid)
 	SiftF2Loc	loc;
 	SiftColDeltaLast last = {0};
 
-	if (!sift_f2_locate_cached(rel, sift_f2_store_open(rel), tid, &loc))
+	if (!sift_f2_locate_cached_read(rel, sift_f2_store_open(rel), tid, &loc))
 		return last;
 	if ((loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		last = sift_col_delta_latest_of(rel, &loc, tid);
@@ -205,7 +205,7 @@ sift_row_delta_result(Relation rel, uint64 tid, CommandId cid, Snapshot snap, TM
 	SiftF2Loc	loc;
 	SiftColDeltaVerdict v = {.result = TM_Ok};
 
-	if (!sift_f2_locate_cached(rel, sift_f2_store_open(rel), tid, &loc))
+	if (!sift_f2_locate_cached_read(rel, sift_f2_store_open(rel), tid, &loc))
 		return TM_Ok;
 	if ((loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		v = sift_col_delta_modify_verdict(rel, &loc, tid, cid, snap);
@@ -224,7 +224,7 @@ sift_row_delta_ack(Relation rel, uint64 tid, CommandId cid)
 {
 	SiftF2Loc	loc;
 
-	if (!sift_f2_locate_cached(rel, sift_f2_store_open(rel), tid, &loc))
+	if (!sift_f2_locate_cached_read(rel, sift_f2_store_open(rel), tid, &loc))
 		return;
 	if ((loc.entry.flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		sift_col_delta_ack_latest(rel, &loc, tid, cid);

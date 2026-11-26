@@ -551,3 +551,9 @@ sift_f2_locate_cached(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *l
 {
 	return sift_f2_locate_via(rel, store, tid, sift_f2_gcache_get, loc);
 }
+
+bool
+sift_f2_locate_cached_read(Relation rel, SiftF2Store *store, uint64 tid, SiftF2Loc *loc)
+{
+	return sift_f2_locate_read(rel, store, tid, sift_f2_gcache_get, loc);
+}

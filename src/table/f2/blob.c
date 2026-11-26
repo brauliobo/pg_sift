@@ -246,16 +246,15 @@ sift_tbl_blob_release_ref(Relation rel, const char *ref_bytes, uint32 ref_len, S
 	pfree(ref);
 }
 
+/* The columns are those the granule was written with: a column dropped since keeps its values' pages until the rows go, and one added since has no chunk */
 void
-sift_tbl_blob_reclaim(Relation rel, const SiftF2Store *store, const SiftGranuleView *v, const uint64 *dropped_mask, SiftExtVec *release)
+sift_tbl_blob_reclaim(Relation rel, const SiftF2Store *store pg_attribute_unused(), const SiftGranuleView *v, const uint64 *dropped_mask, SiftExtVec *release)
 {
 	uint16		nrows = v->hdr->nrows;
 	uint8	   *tag = palloc(nrows);
 
-	for (int c = 0; c < store->ncols; c++)
+	for (int c = 0; c < v->hdr->nchunks - 1; c++)
 	{
-		if (store->kinds[c] != SIFT_CELL_STR || sift_f2_leaf_is_path(store, c))
-			continue;
 		sift_granule_tags(v, c, tag);
 		for (uint16 r = 0; r < nrows; r++)
 		{

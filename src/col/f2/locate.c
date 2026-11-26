@@ -828,3 +828,23 @@ sift_f2_locate_via(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLo
 		(void) visit_granules(rel, store, tid, tid, load, locate_cb, &a, true);
 	return a.found;
 }
+
+/* The same for a read of the row (a fetch, a check of a snapshot): a row of a micro-slab is read where it is, as a scan reads it, so that a read writes no part */
+bool
+sift_f2_locate_read(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLoader load, SiftF2Loc *loc)
+{
+	LocateArg	a = {.tid = tid,.loc = loc,.live_only = rel->rd_rel->relkind == RELKIND_INDEX};
+	MemoryContext pins;
+	const SiftPlanSnapshot *v;
+	VisitPart	vp;
+
+	if (!visit_granules(rel, store, tid, tid, load, locate_cb, &a, false) || a.found)
+		return a.found;
+	pins = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 visit");
+	tid_visit_begin(pins);
+	v = view_with_slabs(rel, store, pins);
+	vp = (VisitPart) {rel, store, v, tid, tid, true, load, locate_cb, &a};
+	tid_index_visit(tid_index_of(rel, v, pins), tid, tid, visit_part, &vp);
+	MemoryContextDelete(pins);
+	return a.found;
+}

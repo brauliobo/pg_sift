@@ -28,6 +28,7 @@
 #include "core/f2/progress.h"
 #include "col/f2/del/delvec_delta.h"
 #include "col/f2/del/pend.h"
+#include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/slab.h"
 #include "core/cmp.h"
 #include "core/horizon.h"
@@ -578,6 +579,29 @@ chain_oldest(Relation rel, uint64 part_id, BlockNumber head, SiftPageType type, 
 	return lowest;
 }
 
+/* A page of a hot partition's directory: its shard slabs and pending deletes, and those of the directory it drains, each with the oldest id it holds */
+static void
+dir_page_oldest(void *ctx, BlockNumber blk pg_attribute_unused(), const char *pg)
+{
+	FullTransactionId *lowest = ctx;
+	uint8		type = SiftPageGetOpaque((Page) pg)->type;
+
+	if (type == SIFT_PT_L0_SLAB && !sift_l0_page_is_dir(pg))
+		*lowest = older_normal(*lowest, SIFT_L0_SL(pg)->min_xid);
+	else if (type == SIFT_PT_PEND_DEL)
+		*lowest = older_normal(*lowest, SIFT_L0_PD(pg)->min_xid);
+}
+
+/* The oldest id of the micro-slab: a chain, or the directory of a hot partition whose shard chains it heads */
+static FullTransactionId
+slab_oldest(Relation rel, uint64 part_id, BlockNumber head, FullTransactionId lowest)
+{
+	if (head == InvalidBlockNumber || !sift_l0_slab_is_dir(rel, part_id, head))
+		return chain_oldest(rel, part_id, head, SIFT_PT_L0_SLAB, lowest);
+	sift_l0_dir_pages(rel, part_id, head, dir_page_oldest, &lowest);
+	return lowest;
+}
+
 /* The oldest deleter of a deletion vector that is not settled */
 static FullTransactionId
 dv_oldest(Relation rel, const SiftPartDesc *d, FullTransactionId lowest)
@@ -596,7 +620,7 @@ partition_oldest(Relation rel, const SiftPartitionEntry *e, FullTransactionId lo
 	int			np;
 	SiftPartDesc *parts = sift_manifest_read_parts(rel, e, &np);
 
-	lowest = chain_oldest(rel, e->part_id, e->l0_slab_blk, SIFT_PT_L0_SLAB, lowest);
+	lowest = slab_oldest(rel, e->part_id, e->l0_slab_blk, lowest);
 	lowest = chain_oldest(rel, e->part_id, e->pend_del_blk, SIFT_PT_PEND_DEL, lowest);
 	if ((e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0)
 		lowest = older_normal(lowest, sift_col_delta_min_xid(rel, e));

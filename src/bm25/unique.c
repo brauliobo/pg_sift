@@ -102,7 +102,10 @@ same_key(const Prober *p, const Datum *a, const bool *anull, const Datum *b, con
 	return true;
 }
 
-/* Does the row at cand have the key, in the version a dirty snapshot sees? A version of an open transaction is waited for */
+/*
+ * Does the row at cand have the key, in the version a dirty snapshot sees? A version of an open transaction is waited for: the insert of one before its key is read, as a sift_table hands
+ * over a row a running insert staged with no values (table/f2/staged.c).
+ */
 static ProbeResult
 probe_row(Prober *p, const ItemPointerData *cand, const Datum *values, const bool *isnull, TransactionId *xwait, uint32 *token)
 {
@@ -117,15 +120,18 @@ probe_row(Prober *p, const ItemPointerData *cand, const Datum *values, const boo
 	InitDirtySnapshot(dirty);
 	if (!table_index_fetch_tuple(p->fetch, &tid, &dirty, p->slot, &again, &all_dead))
 		return PROBE_FREE;
-	ResetExprContext(econtext);
-	econtext->ecxt_scantuple = p->slot;
-	if (p->predicate && !ExecQual(p->predicate, econtext))
-		return PROBE_FREE;
-	FormIndexDatum(p->info, p->slot, p->estate, rvalues, rnull);
-	if (!same_key(p, values, isnull, rvalues, rnull))
-		return PROBE_FREE;
-	if (!TransactionIdIsValid(dirty.xmin) && !TransactionIdIsValid(dirty.xmax))
-		return PROBE_DUPLICATE;
+	if (!TransactionIdIsValid(dirty.xmin))
+	{
+		ResetExprContext(econtext);
+		econtext->ecxt_scantuple = p->slot;
+		if (p->predicate && !ExecQual(p->predicate, econtext))
+			return PROBE_FREE;
+		FormIndexDatum(p->info, p->slot, p->estate, rvalues, rnull);
+		if (!same_key(p, values, isnull, rvalues, rnull))
+			return PROBE_FREE;
+		if (!TransactionIdIsValid(dirty.xmax))
+			return PROBE_DUPLICATE;
+	}
 	*xwait = TransactionIdIsValid(dirty.xmin) ? dirty.xmin : dirty.xmax;
 	*token = dirty.speculativeToken;
 	return PROBE_WAIT;

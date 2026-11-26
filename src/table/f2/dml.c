@@ -231,11 +231,18 @@ sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, Comma
 	pgstat_count_heap_insert(rel, nslots);
 }
 
+/* The stage goes with the bulk load: what it held is written first, the deletes of the transaction too, which a stage made again would not know */
+static void
+write_and_drop_stage(Relation rel)
+{
+	sift_stage_flush_with_deletes(rel);
+	sift_stage_discard(RelationGetRelid(rel));
+}
+
 void
 sift_tbl_f2_finish_bulk_insert(Relation rel, SiftTamOptions options pg_attribute_unused())
 {
-	sift_stage_flush(rel);
-	sift_stage_discard(RelationGetRelid(rel));
+	write_and_drop_stage(rel);
 }
 
 void
@@ -472,8 +479,7 @@ update_row(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid, 
 		new_packed = stage_row(rel, store, slot, cid, false);
 		sift_stage_delete_update(sift_stage_get(rel, &store->spec), old_key, old_packed, new_packed);
 		sift_tbl_f2_record_update(rel, old_packed, new_packed, cid);
-		if (*lockmode == LockTupleExclusive)
-			publish_staged(rel, store, new_packed, 0);
+		publish_staged(rel, store, new_packed, 0);
 		if (sift_tbl_rowlock_is_escalated(rel) && sift_stage_peek(rel)->bulk_rows == 0)
 			sift_tbl_f2_stage_bulk(rel, store);
 		*update_indexes = TU_All;
@@ -520,6 +526,5 @@ sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, ItemPointer tid)
 void
 sift_tbl_f2_bulk_end(SiftTblF2Bulk *b)
 {
-	sift_stage_flush(b->rel);
-	sift_stage_discard(RelationGetRelid(b->rel));
+	write_and_drop_stage(b->rel);
 }

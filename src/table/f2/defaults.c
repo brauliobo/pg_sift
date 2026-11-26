@@ -12,6 +12,7 @@
 #include "utils/rel.h"
 
 #include "col/f2/part/format.h"
+#include "col/f2/store/schema.h"
 #include "table/f2/tbl.h"
 #include "core/damage.h"
 
@@ -109,8 +110,26 @@ sift_tbl_f2_part_defaults(Relation rel, const SiftPart *part)
 	return d;
 }
 
-void
-sift_tbl_f2_defaults_verify(Relation rel, const SiftF2Store *store, const SiftPart *part)
+/* A part written before its numeric(p,s) column was widened in place keeps the default as the scaled integer of the old scale: it is the numeric the catalog has now */
+static void
+widen_defaults(Relation rel, const SiftF2Store *store, const SiftF2ColMap *m, SiftSchemaDefaults *pd)
+{
+	for (int i = 0; i < pd->n; i++)
+	{
+		SiftDefaultVal *e = &pd->e[i];
+		int			leaf = store->att_first[e->attnum];
+		SiftCell	cell = {0};
+
+		if (e->isnull || e->kind != SIFT_DEFAULT_INT || leaf < 0 || m->phys_col[leaf] < 0 || store->kinds[leaf] != SIFT_CELL_STR)
+			continue;
+		sift_f2_cell_of_datum(store, TupleDescAttr(RelationGetDescr(rel), e->attnum - 1), sift_f2_num64_datum(e->i, m->old_scale[leaf]), CurrentMemoryContext, false, &cell);
+		*e = (SiftDefaultVal) {.attnum = e->attnum,.kind = SIFT_DEFAULT_STR,.s = memcpy(palloc(Max(cell.slen, 1)), cell.s, cell.slen),.slen = cell.slen};
+	}
+}
+
+/* ERROR when the part was written under another fast default of an attribute than the catalog has now */
+static void
+defaults_verify(Relation rel, const SiftF2Store *store, const SiftF2ColMap *m, const SiftPart *part)
 {
 	SiftSchemaDefaults *pd = sift_tbl_f2_part_defaults(rel, part);
 	SiftSchemaDefaults none = {0};
@@ -119,6 +138,7 @@ sift_tbl_f2_defaults_verify(Relation rel, const SiftF2Store *store, const SiftPa
 
 	if (pd == NULL)
 		return;
+	widen_defaults(rel, store, m, pd);
 	if (sift_defaults_check(pd, cat != NULL ? cat : &none, &bad) != SIFT_DEFAULTS_OK)
 		SIFT_DAMAGE_OTHER_DATA(errmsg("column %d of sift_table \"%s\" has another fast default or another dropped state than a part was written under", bad, RelationGetRelationName(rel)),
 							   errhint("Do not change pg_attribute.attmissingval of a sift_table by hand; a rewrite of the table (VACUUM FULL) makes every part agree again."));
@@ -134,7 +154,7 @@ sift_tbl_f2_build_col_remap(const SiftF2Store *store, Relation rel, const SiftPa
 
 	if (m == NULL)
 		return NULL;
-	sift_tbl_f2_defaults_verify(rel, store, part);
+	defaults_verify(rel, store, m, part);
 	for (int c = 0; c < m->cur_ncols; c++)
 		if (m->phys_col[c] >= 0 && m->phys_kind[c] == SIFT_CELL_INT && store->kinds[c] == SIFT_CELL_STR)
 		{

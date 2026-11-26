@@ -176,9 +176,6 @@ extern void sift_tbl_f2_defaults_attach(Relation rel, SiftF2Store *store);
 /* SEC_SCHEMA_DEFAULTS of a part decoded (ERROR, data corrupted, when it is damaged); NULL when the part has none */
 extern SiftSchemaDefaults *sift_tbl_f2_part_defaults(Relation rel, const SiftPart *part);
 
-/* ERROR when the part was written under another fast default of an attribute than the catalog has now */
-extern void sift_tbl_f2_defaults_verify(Relation rel, const SiftF2Store *store, const SiftPart *part);
-
 /* The chunk to synthesize for leaf `leaf` of a part that does not have it: the constant of its fast default, or all null; no byte of the part is read */
 extern void sift_tbl_f2_col_synth(const SiftF2Store *store, int leaf, SiftSynth *out);
 

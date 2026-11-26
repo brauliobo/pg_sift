@@ -186,6 +186,9 @@ extern void sift_f2_visit_granules_via(Relation rel, SiftF2Store *store, uint64 
 /* The row at an address, each granule made by load (a reference in loc->gb); false when no part or slab holds it */
 extern bool sift_f2_locate_via(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLoader load, SiftF2Loc *loc);
 
+/* The same for a read of the row: the micro-slabs are read where they are, never written out as parts */
+extern bool sift_f2_locate_read(Relation rel, SiftF2Store *store, uint64 tid, SiftF2GranuleLoader load, SiftF2Loc *loc);
+
 /* Where the row at an address lies in the parts as published, as a key whose high bits tell its part and whose low bits its granule (UINT64_MAX: in no part, a row of a slab): sorting addresses by it puts those of one granule together */
 extern uint64 sift_f2_locate_order(Relation rel, SiftF2Store *store, uint64 tid);
 

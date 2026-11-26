@@ -116,7 +116,7 @@ sift_drop_wide_extents(Relation rel, SiftF2Store *store, uint32 part_id, const S
 	SiftPartGenIndex by_gen;
 
 	sift_part_gen_idx_init(&by_gen, parts, np);
-	for (int i = 0; i < ngens && sift_tbl_extra(store)->has_wide; i++)
+	for (int i = 0; i < ngens && store->host->reclaim_dead_blobs != NULL; i++)
 	{
 		SiftF2PartPin *pin = sift_f2_pin_open(rel, store, sift_part_gen_idx_find(&by_gen, gens[i]), part_id);
 

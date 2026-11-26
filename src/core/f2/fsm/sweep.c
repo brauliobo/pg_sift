@@ -173,6 +173,7 @@ hold_chain(Sweep *s, int kind, BlockNumber head, const ChainSpec *c)
 			return give_up(s, "a chain is a shard directory");
 		hold(s, kind, blk, 1);
 		memcpy(&blk, SiftPageGetData(p) + c->link_off, sizeof(blk));
+		CHECK_FOR_INTERRUPTS();
 		pfree(p);
 	}
 	return true;
@@ -263,7 +264,7 @@ wide_store(const Sweep *s)
 {
 	SiftF2Store *store = sift_f2_store_open(s->rel);
 
-	return s->rel->rd_rel->relkind != RELKIND_INDEX && sift_tbl_extra(store)->has_wide ? store : NULL;
+	return store->host->reclaim_dead_blobs != NULL ? store : NULL;
 }
 
 /* The extents collected in the part's context, held in the sweep's */

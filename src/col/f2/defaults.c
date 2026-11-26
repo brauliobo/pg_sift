@@ -52,7 +52,7 @@ value_ok(const SiftDefaultVal *v)
 {
 	if (v->isnull)
 		return v->kind >= SIFT_DEFAULT_INT && v->kind <= SIFT_DEFAULT_STR && v->slen == 0;
-	return v->kind == SIFT_DEFAULT_STR ? v->slen >= 1 && v->slen <= SIFT_DEFAULTS_MAX_VALUE && v->s != NULL : v->kind == SIFT_DEFAULT_INT || v->kind == SIFT_DEFAULT_F8;
+	return v->kind == SIFT_DEFAULT_STR ? v->slen <= SIFT_DEFAULTS_MAX_VALUE && (v->s != NULL || v->slen == 0) : v->kind == SIFT_DEFAULT_INT || v->kind == SIFT_DEFAULT_F8;
 }
 
 SiftDefaultsStatus
@@ -80,9 +80,10 @@ sift_defaults_add(SiftSchemaDefaults *d, const SiftDefaultVal *v)
 	e->s = NULL;
 	if (v->kind == SIFT_DEFAULT_STR && !v->isnull)
 	{
-		uint8	   *copy = palloc(v->slen);
+		uint8	   *copy = palloc(Max(v->slen, 1));
 
-		memcpy(copy, v->s, v->slen);
+		if (v->slen > 0)
+			memcpy(copy, v->s, v->slen);
 		e->s = copy;
 	}
 	return SIFT_DEFAULTS_OK;
@@ -143,7 +144,7 @@ sift_defaults_encode(SiftSchemaDefaults *d, uint8 **out, uint64 *len)
 			memcpy(vals + values, &v->i, 8);
 		else if (v->kind == SIFT_DEFAULT_F8 && !v->isnull)
 			memcpy(vals + values, &v->f, 8);
-		else if (!v->isnull)
+		else if (!v->isnull && v->slen > 0)
 			memcpy(vals + values, v->s, v->slen);
 		values += align8(ent[i].len);
 	}
@@ -195,7 +196,7 @@ decode_entry(const SiftDefaultsEnt *en, const uint8 *vals, const SiftDefaultsHdr
 		return SIFT_DEFAULTS_ORDER_BAD;
 	if (en->kind < SIFT_DEFAULT_INT || en->kind > SIFT_DEFAULT_STR)
 		return SIFT_DEFAULTS_KIND_BAD;
-	if (isnull ? en->len != 0 : en->kind == SIFT_DEFAULT_STR ? en->len < 1 || en->len > SIFT_DEFAULTS_MAX_VALUE : en->len != 8)
+	if (isnull ? en->len != 0 : en->kind == SIFT_DEFAULT_STR ? en->len > SIFT_DEFAULTS_MAX_VALUE : en->len != 8)
 		return SIFT_DEFAULTS_VALUE_BAD;
 	if ((uint64) en->off + align8(en->len) > h->values_len)
 		return SIFT_DEFAULTS_COUNT_BAD;
@@ -313,7 +314,7 @@ sift_defaults_val_equal(const SiftDefaultVal *a, const SiftDefaultVal *b)
 		return a->i == b->i;
 	if (a->kind == SIFT_DEFAULT_F8)
 		return memcmp(&a->f, &b->f, sizeof(double)) == 0;
-	return a->slen == b->slen && memcmp(a->s, b->s, a->slen) == 0;
+	return a->slen == b->slen && (a->slen == 0 || memcmp(a->s, b->s, a->slen) == 0);
 }
 
 SiftDefaultsStatus

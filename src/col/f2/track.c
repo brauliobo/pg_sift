@@ -212,7 +212,7 @@ direct_key(Relation index, Relation heap, HeapTuple old, const ItemPointerData *
 	bool		isnull[INDEX_MAX_KEYS];
 
 	for (int k = 0; k < f->nkey; k++)
-		values[ctx.index_att[k] - 1] = fastgetattr(old, ctx.heap_att[k], RelationGetDescr(heap), &isnull[ctx.index_att[k] - 1]);
+		values[ctx.index_att[k] - 1] = heap_getattr(old, ctx.heap_att[k], RelationGetDescr(heap), &isnull[ctx.index_att[k] - 1]);
 	sift_f2_key_of(sift_col_rel(index), f, ctx.cells, tid, values, isnull, key);
 }
 

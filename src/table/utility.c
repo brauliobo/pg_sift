@@ -7,6 +7,7 @@
 
 #include "access/relation.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_inherits.h"
 #include "commands/defrem.h"
 #include "commands/tablecmds.h"
 #include "nodes/parsenodes.h"
@@ -21,32 +22,98 @@
 
 static ProcessUtility_hook_type prev_utility;
 
-/* The table the statement is on, locked as the statement will lock it, InvalidOid when it names no sift_table: a table of another access method is not locked before the server checks the right to the statement */
-static Oid
-statement_table(Node *parse, LOCKMODE *lock)
+/* The table the statement names, NULL when it is not a statement on a table the format has to see */
+static RangeVar *
+statement_relation(Node *parse, LOCKMODE *lock)
 {
-	RangeVar   *rv = NULL;
-	Oid			relid;
-	Relation	rel;
-	bool		ours;
-
 	*lock = AccessExclusiveLock;
 	if (IsA(parse, AlterTableStmt) && castNode(AlterTableStmt, parse)->objtype == OBJECT_TABLE)
 	{
-		rv = castNode(AlterTableStmt, parse)->relation;
 		*lock = AlterTableGetLockLevel(castNode(AlterTableStmt, parse)->cmds);
+		return castNode(AlterTableStmt, parse)->relation;
 	}
-	else if (IsA(parse, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parse)->objectType == OBJECT_TABLE)
-		rv = castNode(AlterObjectSchemaStmt, parse)->relation;
-	else if (IsA(parse, RenameStmt) && castNode(RenameStmt, parse)->renameType == OBJECT_COLUMN && castNode(RenameStmt, parse)->relationType == OBJECT_TABLE)
-		rv = castNode(RenameStmt, parse)->relation;
-	if (rv == NULL || !OidIsValid(relid = RangeVarGetRelid(rv, NoLock, true)) || !sift_relid_is_sift_table(relid) ||
-		!OidIsValid(relid = RangeVarGetRelid(rv, *lock, true)))
-		return InvalidOid;
-	rel = relation_open(relid, NoLock);
-	ours = sift_tbl_is_table(rel);
-	relation_close(rel, NoLock);
-	return ours ? relid : InvalidOid;
+	if (IsA(parse, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parse)->objectType == OBJECT_TABLE)
+		return castNode(AlterObjectSchemaStmt, parse)->relation;
+	if (IsA(parse, RenameStmt) && castNode(RenameStmt, parse)->renameType == OBJECT_COLUMN && castNode(RenameStmt, parse)->relationType == OBJECT_TABLE)
+		return castNode(RenameStmt, parse)->relation;
+	return NULL;
+}
+
+/* A subcommand the server runs on the tables that inherit from the one named too (tablecmds.c recurses with it), of those the format has to see */
+static bool
+cmd_recurses(const AlterTableCmd *cmd)
+{
+	return cmd->subtype == AT_AddColumn || cmd->subtype == AT_DropColumn || cmd->subtype == AT_AlterColumnType || cmd->subtype == AT_DropNotNull;
+}
+
+/* The statement as the server runs it on an inheritor (a partition, a child of INHERITS): its subcommands that recurse; NULL when none does */
+static Node *
+inherited_statement(Node *parse)
+{
+	AlterTableStmt *stmt;
+
+	if (IsA(parse, RenameStmt))
+		return parse;
+	if (!IsA(parse, AlterTableStmt))
+		return NULL;
+	stmt = makeNode(AlterTableStmt);
+	*stmt = *castNode(AlterTableStmt, parse);
+	stmt->cmds = NIL;
+	foreach_node(AlterTableCmd, cmd, castNode(AlterTableStmt, parse)->cmds)
+		if (cmd_recurses(cmd))
+			stmt->cmds = lappend(stmt->cmds, cmd);
+	return stmt->cmds != NIL ? (Node *) stmt : NULL;
+}
+
+static bool
+any_sift_table(List *relids)
+{
+	foreach_oid(relid, relids)
+		if (sift_relid_is_sift_table(relid))
+			return true;
+	return false;
+}
+
+/* Of the locked tables, those of a format the hook serves */
+static List *
+ours_of(List *relids)
+{
+	List	   *ours = NIL;
+
+	foreach_oid(relid, relids)
+	{
+		Relation	rel;
+
+		if (!sift_relid_is_sift_table(relid))
+			continue;
+		rel = relation_open(relid, NoLock);
+		if (sift_tbl_is_table(rel))
+			ours = lappend_oid(ours, relid);
+		relation_close(rel, NoLock);
+	}
+	return ours;
+}
+
+/*
+ * The sift_tables the statement changes, locked as the statement will lock them: the one it names and, unless it says ONLY, those that inherit from it. A table of another access method is not
+ * locked before the server checks the right to the statement, but for one whose inheritors are sift_tables: the statement locks the inheritors after it, and they are locked in that order.
+ */
+static List *
+statement_tables(Node *parse, LOCKMODE *lock, Oid *named)
+{
+	RangeVar   *rv = statement_relation(parse, lock);
+	Oid			relid = *named = rv != NULL ? RangeVarGetRelid(rv, NoLock, true) : InvalidOid;
+
+	if (!OidIsValid(relid))
+		return NIL;
+	if (rv->inh && inherited_statement(parse) != NULL && has_subclass(relid) && any_sift_table(find_all_inheritors(relid, NoLock, NULL)))
+	{
+		relid = *named = RangeVarGetRelidExtended(rv, *lock, RVR_MISSING_OK, RangeVarCallbackOwnsRelation, NULL);
+		return OidIsValid(relid) ? ours_of(find_all_inheritors(relid, *lock, NULL)) : NIL;
+	}
+	if (!sift_relid_is_sift_table(relid) || !OidIsValid(relid = *named = RangeVarGetRelid(rv, *lock, true)))
+		return NIL;
+	return ours_of(list_make1_oid(relid));
 }
 
 /* A sift_table that is a partition of a published table is published, which the catalog says only once the statement has made it a partition */
@@ -92,23 +159,47 @@ vacuum_parallel(Node *parse)
 	return 0;
 }
 
+/* Calls the callback of the format on each table, the statement as it runs on that table */
+static void
+each_table(List *relids, Oid named, Node *parse, void (*call) (Relation rel, const SiftTableFormatOps *ops, Node *stmt))
+{
+	Node	   *inherited = relids != NIL ? inherited_statement(parse) : NULL;
+
+	foreach_oid(relid, relids)
+	{
+		Relation	rel = relation_open(relid, NoLock);
+
+		call(rel, sift_tbl_ops(rel), relid == named ? parse : inherited);
+		relation_close(rel, NoLock);
+	}
+}
+
+static void
+call_before(Relation rel, const SiftTableFormatOps *ops, Node *stmt)
+{
+	if (ops->ddl_before != NULL && IsA(stmt, AlterTableStmt))
+		ops->ddl_before(rel, castNode(AlterTableStmt, stmt));
+}
+
+static void
+call_after(Relation rel, const SiftTableFormatOps *ops, Node *stmt)
+{
+	if (ops->ddl_after != NULL)
+		ops->ddl_after(rel, stmt);
+	if (ops->ddl_rename_column != NULL && IsA(stmt, RenameStmt))
+		ops->ddl_rename_column(rel, castNode(RenameStmt, stmt)->subname, castNode(RenameStmt, stmt)->newname);
+}
+
 static void
 tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *env, DestReceiver *dest, QueryCompletion *qc)
 {
 	Node	   *parse = pstmt->utilityStmt;
 	LOCKMODE	lock;
-	Oid			relid = statement_table(parse, &lock);
-	const SiftTableFormatOps *ops = NULL;
-	Relation	rel;
+	Oid			named;
+	List	   *relids = statement_tables(parse, &lock, &named);
+	int			workers = sift_vacuum_parallel_workers;
 
-	if (OidIsValid(relid))
-	{
-		rel = relation_open(relid, NoLock);
-		ops = sift_tbl_ops(rel);
-		if (ops->ddl_before != NULL && IsA(parse, AlterTableStmt))
-			ops->ddl_before(rel, castNode(AlterTableStmt, parse));
-		relation_close(rel, NoLock);
-	}
+	each_table(relids, named, parse, call_before);
 	PG_TRY();
 	{
 		sift_vacuum_parallel_workers = vacuum_parallel(parse);
@@ -119,20 +210,13 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	}
 	PG_FINALLY();
 	{
-		sift_vacuum_parallel_workers = 0;
+		sift_vacuum_parallel_workers = workers;
 	}
 	PG_END_TRY();
 	check_new_partitions(parse);
 	if (IsA(parse, DiscardStmt) && castNode(DiscardStmt, parse)->target == DISCARD_ALL)
 		sift_cache_discard_all();
-	if (ops == NULL)
-		return;
-	rel = relation_open(relid, NoLock);
-	if (ops->ddl_after != NULL)
-		ops->ddl_after(rel, parse);
-	if (ops->ddl_rename_column != NULL && IsA(parse, RenameStmt))
-		ops->ddl_rename_column(rel, castNode(RenameStmt, parse)->subname, castNode(RenameStmt, parse)->newname);
-	relation_close(rel, NoLock);
+	each_table(ours_of(relids), named, parse, call_after);
 }
 
 void
