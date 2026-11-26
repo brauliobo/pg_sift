@@ -501,7 +501,7 @@ void
 sift_srcfold_finish(SiftSrcFold *f)
 {
 	if (f->pipe != NULL)
-		sift_v6_pipe_finish(f->pipe);
+		sift_v6_star_scan_end(f->a.star, f->pipe);
 }
 
 void

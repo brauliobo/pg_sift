@@ -645,6 +645,7 @@ TESTING_REGRESS += col/track/updates_supersede
 TESTING_REGRESS += col/unique_stage
 TESTING_REGRESS += col/unit_floor
 TESTING_REGRESS += col/unit_of_block
+TESTING_REGRESS += col/v1/star_part_preserved
 TESTING_REGRESS += col/vacuum/parallel_keys
 TESTING_REGRESS += col/vet_lazy_offsets
 TESTING_REGRESS += col/vis_count

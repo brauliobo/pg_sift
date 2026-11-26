@@ -40,7 +40,7 @@ typedef SiftV6Source *(*SiftSrcOpen) (void *arg, const SiftV6Input *in, const Si
 extern SiftSrcFold *sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx);
 /* Opens the source, folds every batch of it and closes it; the fold can run again (a morsel of a parallel scan) */
 extern void sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg);
-/* The last run is over: the rows of a RIGHT or FULL join's dimensions that no row of any run matched are given, once */
+/* The last run of this source is over: after the last source of the star join, the rows of a RIGHT or FULL join's dimensions that no row matched are given, once */
 extern void sift_srcfold_finish(SiftSrcFold *f);
 extern void sift_srcfold_free(SiftSrcFold *f);
 /* A text-hit chunk of the scan: the statistics count it and its TIDs */
