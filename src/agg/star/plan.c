@@ -224,23 +224,57 @@ joins_ok(PlannerInfo *root, StarDim *dims, int nd)
 	return true;
 }
 
-/* a relation whose plan (any plan of it that takes no parameter) the node reads whole: a table, a VALUES list, a CTE, a sub-select, a function that is not volatile (generate_series, unnest), or the result of a join of such relations (a join tree under a semi or anti join) */
+/*
+ * the rows of the base relation b change from one read to the next (a volatile function), or may (a sub-select that keeps some of its rows with LIMIT or OFFSET: *limited); a sub-select is the query
+ * its subroot planned (none: it was proven empty)
+ */
+static bool
+reads_volatile(PlannerInfo *root, const RelOptInfo *b, bool *limited)
+{
+	const Query *q;
+
+	switch (b->rtekind)
+	{
+		case RTE_FUNCTION:
+			return contain_volatile_functions((Node *) planner_rt_fetch(b->relid, root)->functions);
+		case RTE_VALUES:
+			return contain_volatile_functions((Node *) planner_rt_fetch(b->relid, root)->values_lists);
+		case RTE_SUBQUERY:
+			if (b->subroot == NULL)
+				return false;
+			q = b->subroot->parse;
+			*limited |= q->limitCount != NULL || q->limitOffset != NULL;
+			return contain_volatile_functions((Node *) q);
+		default:
+			return false;
+	}
+}
+
+/*
+ * a relation whose plan (any plan of it that takes no parameter) the node reads whole: a table, a VALUES list, a CTE, a sub-select or a function, or the result of a join of such relations (a join
+ * tree under a semi or anti join). The node reads it again for each part of its keys when it does not fit the budget, so its rows must be the same at every read: nothing of it is volatile, and
+ * a sub-select with LIMIT or OFFSET fits twice over, so that it is read once
+ */
 bool
 sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
 {
+	bool		limited = false;
+	int			r = -1;
+
 	if (rel->lateral_relids != NULL || rel->cheapest_total_path == NULL || rel->cheapest_total_path->param_info != NULL)
 		return false;
 	if (rel->reloptkind == RELOPT_BASEREL)
 	{
-		const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
-
-		if (rte->rtekind == RTE_FUNCTION ? contain_volatile_functions((Node *) rte->functions) :
-			(rte->rtekind != RTE_RELATION && rte->rtekind != RTE_VALUES && rte->rtekind != RTE_CTE && rte->rtekind != RTE_SUBQUERY))
+		if ((rel->rtekind != RTE_RELATION && rel->rtekind != RTE_VALUES && rel->rtekind != RTE_CTE && rel->rtekind != RTE_SUBQUERY && rel->rtekind != RTE_FUNCTION) ||
+			reads_volatile(root, rel, &limited))
 			return false;
 	}
 	else if (rel->reloptkind != RELOPT_JOINREL)
 		return false;
-	return rel->rows * (rel->reltarget->width + 48.0) <= (double) budget;
+	while (rel->reloptkind == RELOPT_JOINREL && (r = bms_next_member(rel->relids, r)) >= 0)
+		if (root->simple_rel_array[r] != NULL && reads_volatile(root, root->simple_rel_array[r], &limited))
+			return false;
+	return rel->rows * (rel->reltarget->width + 48.0) * (limited ? 2 : 1) <= (double) budget;
 }
 
 bool
