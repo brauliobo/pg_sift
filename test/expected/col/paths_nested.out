@@ -185,10 +185,10 @@ SELECT same(q) FROM unnest(ARRAY[
 ]) q;
                                                                                                         same                                                                                                         
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  nc1:node/same/same nc2:normal/same/same nt1:node/same/same nt2:normal/same/same  SELECT a.x, count(*), sum(a.n) FROM %T t, jsonb_to_recordset(t.j->'a') a(x text, n int) GROUP BY 1
-  nc1:node/same/same nc2:normal/same/same nt1:node/same/same nt2:normal/same/same  SELECT a.x, count(*) FROM %T t, jsonb_to_recordset(t.j->'a') a(x text, n int) WHERE a.n >= 1 AND t.id % 2 = 0 GROUP BY 1
-  nc1:node/same/same nc2:normal/same/same nt1:node/same/same nt2:normal/same/same  SELECT count(*) FROM %T t WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(t.j->'a') a(x text, n int) WHERE a.x = 'k1' AND a.n = 1)
-  nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT t.j->>'top', count(*) FROM %T t GROUP BY 1
+  nc1:node/same/same nc2:node/same/same nt1:normal/same/same nt2:normal/same/same  SELECT a.x, count(*), sum(a.n) FROM %T t, jsonb_to_recordset(t.j->'a') a(x text, n int) GROUP BY 1
+  nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT a.x, count(*) FROM %T t, jsonb_to_recordset(t.j->'a') a(x text, n int) WHERE a.n >= 1 AND t.id % 2 = 0 GROUP BY 1
+  nc1:node/same/same nc2:node/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*) FROM %T t WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(t.j->'a') a(x text, n int) WHERE a.x = 'k1' AND a.n = 1)
+  nc1:node/same/same nc2:normal/same/same nt1:node/same/same nt2:normal/same/same  SELECT t.j->>'top', count(*) FROM %T t GROUP BY 1
   nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*), sum(id) FROM %T t WHERE j->>'top' = '9'
 (5 rows)
 
