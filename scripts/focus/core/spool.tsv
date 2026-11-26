@@ -1,0 +1,1 @@
+core/spool	src/col/am/am.c:col_translatestrategy src/core/memtrack.c:sift_mem_budget_bytes src/core/spool.c:grow src/core/spool.c:sift_spool_begin src/core/spool.c:sift_spool_close src/core/spool.c:sift_spool_len src/core/spool.c:sift_spool_read src/core/spool.c:sift_spool_rewind src/core/spool.c:sift_spool_write src/core/spool.c:spill src/core/store/ops_test.c:sift_test_spool

@@ -1,1 +1,0 @@
-agg/stub/generic	src/col/v1/kern/avx2.c:expand_parents_avx2 src/core/errctx.c:errctx_callback src/core/errctx.c:sift_errctx_name

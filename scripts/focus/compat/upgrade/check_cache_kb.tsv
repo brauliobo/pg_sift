@@ -1,0 +1,1 @@
+compat/upgrade/check_cache_kb	src/bm25/funcs.c:sift_version src/col/am/am.c:col_translatestrategy src/col/am/options.c:show_open_stats
