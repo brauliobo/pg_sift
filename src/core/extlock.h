@@ -46,9 +46,9 @@ extern Buffer sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, Buffe
  * A run of fresh pages written with smgr_bulk_write (WAL-logged and checksummed by it): the pages past the end of the file are queued in bulk memory and written without a lock, every
  * page of them built, summed and copied before it is queued, never under one. The extension lock is held for the one extension of the file to the end of the extents of the run
  * (sift_bulk_run_begin), which the blocks of no other writer of the file are in: the blocks of the run are in the file, zeroed, when the first page is queued. A block that is already in the
- * file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). The pages reach the file ahead of the flush of their WAL: the blocks of a run are in no
- * extent the manifest names until the commit that adopts them, which follows their WAL, so recovery that loses the WAL of a page loses every reference to it. A relation with local buffers
- * (a temporary one) has no run, sift_bulk_run_begin gives NULL and its pages go through the buffers and generic WAL.
+ * file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). The pages reach the file ahead of the flush of their WAL, which only a file that no recovery
+ * or standby can have yet allows (the file this transaction made: CREATE INDEX, REINDEX): a relation of an earlier commit, and one with local buffers (a temporary one), has no run,
+ * sift_bulk_run_begin gives NULL and its pages go through the buffers and generic WAL.
  */
 typedef struct SiftBulkRun SiftBulkRun;
 

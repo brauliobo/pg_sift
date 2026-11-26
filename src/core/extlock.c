@@ -107,7 +107,7 @@ sift_bulk_run_begin(Relation rel, const SiftExtent *ext, int next)
 	SiftBulkRun *run;
 	BlockNumber end = 0;
 
-	if (RelationUsesLocalBuffers(rel))
+	if (RelationUsesLocalBuffers(rel) || !sift_maint_file_is_new(rel))
 		return NULL;
 	for (int e = 0; e < next; e++)
 		end = Max(end, ext[e].start + ext[e].nblocks);
