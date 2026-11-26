@@ -2,8 +2,9 @@
  * col/f2/tier/cache.c - the bounded local cache of the ranges of objects (col/f2/tier/tier.h): a directory of chunk files, each the bytes of one fixed-size piece of an object and a trailer with
  * their CRC32C, named by the content hash of the object and the piece number, so a chunk is valid for every part and every relation that has those bytes. The index is in memory, least recently used
  * last; it is rebuilt from the directory (by modification time) when the cache opens. A chunk that is missing or fails its checksum is fetched again: the cache holds nothing that the object
- * does not. The directory is shared by the backends: a chunk another backend wrote is found by its file and served, and after each fetch the index is made again from the directory, so that the
- * eviction keeps the bytes of the directory, not the ones of this backend, to the budget (an eviction of a chunk another backend uses is a refetch).
+ * does not. The directory is shared by the backends: a chunk another backend wrote is found by its file and served, and the index is made again from the directory once this backend has
+ * fetched a quarter of the budget since it last did or holds more than the budget, so that the eviction keeps the bytes of the directory, not the ones of this backend, to the budget within a
+ * quarter of it per backend (an eviction of a chunk another backend uses is a refetch), and a miss costs no read of the whole directory.
  */
 #include "core/host.h"
 
@@ -15,6 +16,7 @@
 
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
+#include "storage/fd.h"
 
 #include "col/f2/tier/int.h"
 
@@ -52,6 +54,7 @@ struct SiftTierCache
 	uint32		nbuckets;
 	SiftTierCacheStats st;
 	uint64		store_errors;
+	uint64		unsynced_bytes; /* fetched since the index was last made from the directory */
 };
 
 static uint32
@@ -227,13 +230,13 @@ found_cmp(const void *a, const void *b)
 static void
 adopt_directory(SiftTierCache *c)
 {
-	DIR		   *d = opendir(c->dir);
+	DIR		   *d = AllocateDir(c->dir);
 	struct dirent *de;
 	Found	   *f = NULL;
 	int			nf = 0,
 				cap = 0;
 
-	while (d != NULL && (de = readdir(d)) != NULL)
+	while ((de = ReadDir(d, c->dir)) != NULL)
 	{
 		char		path[600];
 		struct stat st;
@@ -261,8 +264,7 @@ adopt_directory(SiftTierCache *c)
 			f[nf++] = (Found) {hi, lo, idx, st.st_size - sizeof(ChunkTrailer), (int64) mtime.tv_sec * 1000000000 + mtime.tv_nsec};
 		}
 	}
-	if (d != NULL)
-		closedir(d);
+	FreeDir(d);
 	if (nf > 0)
 		qsort(f, nf, sizeof(Found), found_cmp);
 	for (int i = 0; i < nf; i++)
@@ -293,6 +295,15 @@ sync_directory(SiftTierCache *c)
 {
 	forget_index(c);
 	adopt_directory(c);
+	c->unsynced_bytes = 0;
+}
+
+static void
+fetched(SiftTierCache *c, uint64 bytes)
+{
+	c->unsynced_bytes += bytes;
+	if (c->unsynced_bytes >= c->budget / 4 || c->st.resident_bytes > c->budget)
+		sync_directory(c);
 }
 
 SiftTierCache *
@@ -520,7 +531,7 @@ sift_tier_cache_read(SiftTierCache *c, SiftTierBackend *be, const char *key, con
 			copy_slice(c, off, len, j, out, piece);
 			store_chunk(c, hi, lo, j, piece, chunk_bytes_of(c, ref, j));
 		}
-		sync_directory(c);
+		fetched(c, run_bytes);
 		i = end + 1;
 	}
 	pfree(scratch);
