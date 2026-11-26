@@ -49,7 +49,7 @@ first_col(const PathTarget *t, const SortGroupClause *sgc, AttrNumber *att, Oid 
 	return true;
 }
 
-/* the DISTINCT ON columns and the ORDER BY after them as positions of the input's target; false when a column is not in it or has no hash function */
+/* the DISTINCT ON columns and the ORDER BY after them as positions of the input's target; false when a column is not in it or has no hash function or sort operator */
 static bool
 first_keys(const Query *q, const PathTarget *t, SiftV6FirstKeys *k)
 {
@@ -62,8 +62,10 @@ first_keys(const Query *q, const PathTarget *t, SiftV6FirstKeys *k)
 		return false;
 	foreach_node(SortGroupClause, sgc, q->distinctClause)
 	{
-		if (!first_col(t, sgc, &k->key_att[k->nkey], &k->key_coll[k->nkey]) || !get_op_hash_functions(sgc->eqop, &lhs, &rhs))
+		if (!first_col(t, sgc, &k->key_att[k->nkey], &k->key_coll[k->nkey]) || !get_op_hash_functions(sgc->eqop, &lhs, &rhs) || !OidIsValid(sgc->sortop))
 			return false;
+		k->key_sortop[k->nkey] = sgc->sortop;
+		k->key_nulls_first[k->nkey] = sgc->nulls_first;
 		k->key_eqop[k->nkey++] = sgc->eqop;
 	}
 	foreach_node(SortGroupClause, sgc, rest)
@@ -89,7 +91,7 @@ keys_pack(const SiftV6FirstKeys *k)
 	List	   *l = list_make2_int(k->nkey, k->nord);
 
 	for (int i = 0; i < k->nkey; i++)
-		l = list_concat(l, list_make3_int(k->key_att[i], (int) k->key_eqop[i], (int) k->key_coll[i]));
+		l = list_concat(l, list_make5_int(k->key_att[i], (int) k->key_eqop[i], (int) k->key_coll[i], (int) k->key_sortop[i], k->key_nulls_first[i]));
 	for (int i = 0; i < k->nord; i++)
 		l = list_concat(l, list_make4_int(k->ord_att[i], (int) k->ord_sortop[i], (int) k->ord_coll[i], k->ord_nulls_first[i]));
 	l = lappend_int(l, k->nsort);
@@ -105,11 +107,13 @@ keys_unpack(const List *l, SiftV6FirstKeys *k)
 
 	k->nkey = list_nth_int(l, 0);
 	k->nord = list_nth_int(l, 1);
-	for (int i = 0; i < k->nkey; i++, at += 3)
+	for (int i = 0; i < k->nkey; i++, at += 5)
 	{
 		k->key_att[i] = (AttrNumber) list_nth_int(l, at);
 		k->key_eqop[i] = (Oid) list_nth_int(l, at + 1);
 		k->key_coll[i] = (Oid) list_nth_int(l, at + 2);
+		k->key_sortop[i] = (Oid) list_nth_int(l, at + 3);
+		k->key_nulls_first[i] = list_nth_int(l, at + 4);
 	}
 	for (int i = 0; i < k->nord; i++, at += 4)
 	{

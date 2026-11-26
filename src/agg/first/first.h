@@ -4,7 +4,7 @@
  * A hash of the DISTINCT ON key (PostgreSQL's equality, NULLs equal) holds the best row of each group as a whole tuple, so the select list of any type (arrays, expressions, the columns of a join) leaves
  * with it. A row replaces the held one only when it sorts strictly before it by the ORDER BY (PostgreSQL's sort operators, collations and NULLS placement), so of rows that tie the first one offered stays.
  * Over work_mem times hash_mem_multiplier the groups that are not held yet, with every row that follows them, go to partitions on temporary files; each partition is solved the same way, one at a time and
- * with another hash, so the memory is that limit whatever the number of groups.
+ * with another hash, so the memory is that limit whatever the number of groups. A partition still over it at the last level is sorted by the key, the order and the order of the rows instead.
  */
 #ifndef SIFT_AGG_V6_FIRST_H
 #define SIFT_AGG_V6_FIRST_H
@@ -23,6 +23,8 @@ typedef struct SiftV6FirstKeys
 	AttrNumber	key_att[SIFT_V6_FIRST_MAX_COLS];
 	Oid			key_eqop[SIFT_V6_FIRST_MAX_COLS];
 	Oid			key_coll[SIFT_V6_FIRST_MAX_COLS];
+	Oid			key_sortop[SIFT_V6_FIRST_MAX_COLS];
+	bool		key_nulls_first[SIFT_V6_FIRST_MAX_COLS];
 	int			nord;
 	AttrNumber	ord_att[SIFT_V6_FIRST_MAX_COLS];
 	Oid			ord_sortop[SIFT_V6_FIRST_MAX_COLS];

@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "common/hashfn.h"
 #include "executor/executor.h"
 #include "fmgr.h"
@@ -11,9 +13,11 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/sortsupport.h"
+#include "utils/tuplesort.h"
 #include "utils/tuplestore.h"
 
 #include "agg/first/first.h"
+#include "core/compat.h"
 #include "core/errctx.h"
 #include "core/memtrack.h"
 
@@ -39,6 +43,9 @@ typedef struct FirstPass
 	int			level;
 	bool		full;
 	Tuplestorestate *part[FIRST_PARTS];
+	Tuplesortstate *sort;		/* the rows of a pass of the last level, by key, order and arrival (seq) */
+	int64		seq;
+	MinimalTuple last;			/* the row of the last group the sort gave */
 } FirstPass;
 
 typedef struct FirstSpill
@@ -60,6 +67,10 @@ struct SiftV6First
 	List	   *pending;
 	TupleTableSlot *held;
 	TupleTableSlot *spilled;
+	TupleDesc	sdesc;			/* the rows with their seq, for the sort of the last level */
+	TupleTableSlot *sput;
+	TupleTableSlot *sget;
+	MemoryContext row_cx;		/* what the hash, equality and sort functions of a row allocate */
 	bool		started;
 	SiftV6FirstStats st;
 };
@@ -90,8 +101,48 @@ sift_v6_first_new(MemoryContext cx, TupleDesc tupdesc, const SiftV6FirstKeys *ke
 	}
 	f->held = MakeSingleTupleTableSlot(tupdesc, &TTSOpsMinimalTuple);
 	f->spilled = MakeSingleTupleTableSlot(tupdesc, &TTSOpsMinimalTuple);
+	f->sdesc = CreateTemplateTupleDesc(tupdesc->natts + 1);
+	for (int i = 1; i <= tupdesc->natts; i++)
+		TupleDescCopyEntry(f->sdesc, i, tupdesc, i);
+	TupleDescInitEntry(f->sdesc, tupdesc->natts + 1, "seq", INT8OID, -1, 0);
+	sift_tupdesc_finalize(f->sdesc);
+	f->sput = MakeSingleTupleTableSlot(f->sdesc, &TTSOpsVirtual);
+	f->sget = MakeSingleTupleTableSlot(f->sdesc, &TTSOpsMinimalTuple);
+	f->row_cx = sift_mem_allocset_create(cx, "sift agg v6 first row");
 	MemoryContextSwitchTo(old);
 	return f;
+}
+
+/* the sort of a pass of the last level: the key, the order, then the seq of the row, so that of rows that tie the first one offered comes first */
+static Tuplesortstate *
+sort_new(const SiftV6First *f)
+{
+	const SiftV6FirstKeys *k = &f->k;
+	const int	n = k->nkey + k->nord + 1;
+	AttrNumber	att[SIFT_V6_FIRST_MAX_COLS * 2 + 1];
+	Oid			op[SIFT_V6_FIRST_MAX_COLS * 2 + 1],
+				coll[SIFT_V6_FIRST_MAX_COLS * 2 + 1];
+	bool		nf[SIFT_V6_FIRST_MAX_COLS * 2 + 1];
+
+	for (int i = 0; i < k->nkey; i++)
+	{
+		att[i] = k->key_att[i];
+		op[i] = k->key_sortop[i];
+		coll[i] = k->key_coll[i];
+		nf[i] = k->key_nulls_first[i];
+	}
+	for (int i = 0; i < k->nord; i++)
+	{
+		att[k->nkey + i] = k->ord_att[i];
+		op[k->nkey + i] = k->ord_sortop[i];
+		coll[k->nkey + i] = k->ord_coll[i];
+		nf[k->nkey + i] = k->ord_nulls_first[i];
+	}
+	att[n - 1] = (AttrNumber) f->sdesc->natts;
+	op[n - 1] = Int8LessOperator;
+	coll[n - 1] = InvalidOid;
+	nf[n - 1] = false;
+	return tuplesort_begin_heap(f->sdesc, n, att, op, coll, nf, (int) Max(f->budget / 1024, 64), NULL, TUPLESORT_NONE);
 }
 
 static FirstPass *
@@ -101,6 +152,13 @@ pass_new(SiftV6First *f, int level)
 
 	p->cx = sift_mem_allocset_create(f->cx, "sift agg v6 first pass");
 	p->level = level;
+	if (level == FIRST_MAX_LEVEL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(p->cx);
+
+		p->sort = sort_new(f);
+		MemoryContextSwitchTo(old);
+	}
 	f->st.passes++;
 	return p;
 }
@@ -183,7 +241,7 @@ tab_grow(FirstPass *p)
 static bool
 over_budget(const SiftV6First *f, const FirstPass *p, uint32 add)
 {
-	return p->level < FIRST_MAX_LEVEL && p->n > 0 &&
+	return p->n > 0 &&
 		(MemoryContextMemAllocated(p->cx, false) + add + (uint64) Max(p->cap, FIRST_MIN_CAP) * sizeof(FirstEntry) > f->budget || p->cap >= MaxAllocSize / sizeof(FirstEntry) / 4);
 }
 
@@ -200,8 +258,24 @@ spill_row(SiftV6First *f, FirstPass *p, TupleTableSlot *slot, uint32 hash)
 	f->st.spilled_rows++;
 }
 
+/* the row with its seq into the sort of a pass of the last level */
 static void
-pass_offer(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
+sort_offer(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
+{
+	const int	natts = slot->tts_tupleDescriptor->natts;
+
+	slot_getallattrs(slot);
+	ExecClearTuple(f->sput);
+	memcpy(f->sput->tts_values, slot->tts_values, natts * sizeof(Datum));
+	memcpy(f->sput->tts_isnull, slot->tts_isnull, natts * sizeof(bool));
+	f->sput->tts_values[natts] = Int64GetDatum(p->seq++);
+	f->sput->tts_isnull[natts] = false;
+	ExecStoreVirtualTuple(f->sput);
+	tuplesort_puttupleslot(p->sort, f->sput);
+}
+
+static void
+hash_offer(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
 {
 	const uint32 hash = row_hash(f, slot, p->level);
 	MemoryContext old;
@@ -243,6 +317,19 @@ pass_offer(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
 	p->n++;
 }
 
+static void
+pass_offer(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
+{
+	MemoryContext old = MemoryContextSwitchTo(f->row_cx);
+
+	if (p->sort != NULL)
+		sort_offer(f, p, slot);
+	else
+		hash_offer(f, p, slot);
+	MemoryContextSwitchTo(old);
+	MemoryContextReset(f->row_cx);
+}
+
 void
 sift_v6_first_offer(SiftV6First *f, TupleTableSlot *slot)
 {
@@ -274,8 +361,46 @@ pass_park_partitions(SiftV6First *f, FirstPass *p)
 static void
 pass_free(FirstPass *p)
 {
+	if (p->sort != NULL)
+		tuplesort_end(p->sort);
 	MemoryContextDelete(p->cx);
 	pfree(p);
+}
+
+/* the next group of the sort of a pass of the last level into slot: its first row, the rows of the same key after it skipped */
+static bool
+sort_next(SiftV6First *f, FirstPass *p, TupleTableSlot *slot)
+{
+	bool		got;
+	MemoryContext old;
+
+	if (p->emit_at++ == 0)
+		tuplesort_performsort(p->sort);
+	for (;;)
+	{
+		if (!tuplesort_gettupleslot(p->sort, true, false, f->sget, NULL))
+			return false;
+		CHECK_FOR_INTERRUPTS();
+		old = MemoryContextSwitchTo(f->row_cx);
+		got = p->last == NULL || (ExecStoreMinimalTuple(p->last, f->held, false), !same_group(f, f->sget, f->held));
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(f->row_cx);
+		if (got)
+			break;
+	}
+	slot_getallattrs(f->sget);
+	ExecClearTuple(f->held);
+	ExecClearTuple(slot);
+	memcpy(slot->tts_values, f->sget->tts_values, slot->tts_tupleDescriptor->natts * sizeof(Datum));
+	memcpy(slot->tts_isnull, f->sget->tts_isnull, slot->tts_tupleDescriptor->natts * sizeof(bool));
+	ExecStoreVirtualTuple(slot);
+	old = MemoryContextSwitchTo(p->cx);
+	if (p->last != NULL)
+		pfree(p->last);
+	p->last = ExecCopySlotMinimalTuple(slot);
+	MemoryContextSwitchTo(old);
+	ExecStoreMinimalTuple(p->last, slot, false);
+	return true;
 }
 
 /* the rows of a partition into a pass of the next level */
@@ -309,7 +434,12 @@ sift_v6_first_next(SiftV6First *f, TupleTableSlot *slot)
 	{
 		FirstPass  *p = f->cur;
 
-		for (; p->emit_at < p->cap; p->emit_at++)
+		if (p->sort != NULL && sort_next(f, p, slot))
+		{
+			f->st.groups++;
+			return true;
+		}
+		for (; p->sort == NULL && p->emit_at < p->cap; p->emit_at++)
 			if (p->tab[p->emit_at].tup != NULL)
 			{
 				ExecStoreMinimalTuple(p->tab[p->emit_at++].tup, slot, false);
@@ -350,5 +480,9 @@ sift_v6_first_free(SiftV6First *f)
 	list_free_deep(f->pending);
 	ExecDropSingleTupleTableSlot(f->held);
 	ExecDropSingleTupleTableSlot(f->spilled);
+	ExecDropSingleTupleTableSlot(f->sput);
+	ExecDropSingleTupleTableSlot(f->sget);
+	FreeTupleDesc(f->sdesc);
+	MemoryContextDelete(f->row_cx);
 	pfree(f);
 }

@@ -98,6 +98,50 @@ INSERT INTO stmts VALUES
 (20, false, 'SELECT o.id, o.status, i.category, sum(i.qty) AS qty FROM o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, qty int) WHERE o.tenant < 8 GROUP BY o.id, i.category ORDER BY o.id, i.category');
 
 SELECT s.id, r.engine, r.spilled, r.result_rows, r.vs_heap FROM stmts s, LATERAL same(s.q, s.forced) r ORDER BY s.id;
+
+-- the memory of the node while its partitions are read back: what the hash, equality and sort functions of a row allocate (a numeric key copied out of its short header) is freed with the row,
+-- and the partition of a key whose hash is one value for every row (cint) is sorted at the last level instead of held: the node holds about its 64kB either way
+CREATE TYPE cint;
+CREATE FUNCTION cint_in(cstring) RETURNS cint LANGUAGE internal IMMUTABLE STRICT AS 'int4in';
+CREATE FUNCTION cint_out(cint) RETURNS cstring LANGUAGE internal IMMUTABLE STRICT AS 'int4out';
+CREATE TYPE cint (INPUT = cint_in, OUTPUT = cint_out, LIKE = int4);
+CREATE FUNCTION cint_eq(cint, cint) RETURNS bool LANGUAGE internal IMMUTABLE STRICT AS 'int4eq';
+CREATE FUNCTION cint_lt(cint, cint) RETURNS bool LANGUAGE internal IMMUTABLE STRICT AS 'int4lt';
+CREATE FUNCTION cint_le(cint, cint) RETURNS bool LANGUAGE internal IMMUTABLE STRICT AS 'int4le';
+CREATE FUNCTION cint_gt(cint, cint) RETURNS bool LANGUAGE internal IMMUTABLE STRICT AS 'int4gt';
+CREATE FUNCTION cint_ge(cint, cint) RETURNS bool LANGUAGE internal IMMUTABLE STRICT AS 'int4ge';
+CREATE FUNCTION cint_cmp(cint, cint) RETURNS int LANGUAGE internal IMMUTABLE STRICT AS 'btint4cmp';
+CREATE FUNCTION cint_hash(cint) RETURNS int LANGUAGE sql IMMUTABLE STRICT AS 'SELECT 7';
+CREATE OPERATOR = (LEFTARG = cint, RIGHTARG = cint, FUNCTION = cint_eq, HASHES, MERGES);
+CREATE OPERATOR < (LEFTARG = cint, RIGHTARG = cint, FUNCTION = cint_lt);
+CREATE OPERATOR <= (LEFTARG = cint, RIGHTARG = cint, FUNCTION = cint_le);
+CREATE OPERATOR > (LEFTARG = cint, RIGHTARG = cint, FUNCTION = cint_gt);
+CREATE OPERATOR >= (LEFTARG = cint, RIGHTARG = cint, FUNCTION = cint_ge);
+CREATE OPERATOR CLASS cint_ops DEFAULT FOR TYPE cint USING btree AS OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >, FUNCTION 1 cint_cmp(cint, cint);
+CREATE OPERATOR CLASS cint_hash_ops DEFAULT FOR TYPE cint USING hash AS OPERATOR 1 =, FUNCTION 1 cint_hash(cint);
+CREATE TABLE fm (id int PRIMARY KEY, n numeric, c cint, v int) WITH (autovacuum_enabled = false);
+INSERT INTO fm SELECT i, (i % 15000)::numeric + 0.5, (i % 5000)::text::cint, i % 97 FROM generate_series(1, 45000) i;
+CREATE INDEX fm_col ON fm USING sift_col (id, v);
+VACUUM (FREEZE, ANALYZE) fm;
+CREATE FUNCTION first_bytes() RETURNS bigint LANGUAGE sql VOLATILE AS $$ SELECT sum(total_bytes)::bigint FROM pg_backend_memory_contexts WHERE name LIKE 'sift agg v6 first%' $$;
+SELECT r.engine, r.spilled, r.result_rows, r.vs_heap FROM unnest(ARRAY['SELECT DISTINCT ON (n) n, id, v FROM fm ORDER BY n, v DESC, id',
+	'SELECT DISTINCT ON (c) c::text AS c, id, v FROM fm WHERE id <= 10000 ORDER BY c, v DESC, id', 'SELECT DISTINCT ON (c) c::text AS c FROM fm WHERE id <= 10000']) q, LATERAL same(q, true) r;
+BEGIN;
+SET LOCAL enable_sort = off;
+SET LOCAL enable_incremental_sort = off;
+SET LOCAL work_mem = '64kB';
+SET LOCAL hash_mem_multiplier = 1;
+SET LOCAL seq_page_cost = 10000;
+SET LOCAL random_page_cost = 10000;
+SELECT max(first_bytes()) < 256 * 1024 AS numeric_key_bounded, count(*) FROM (SELECT DISTINCT ON (n) n, id, v FROM fm ORDER BY n, v DESC, id) s;
+SELECT max(first_bytes()) < 256 * 1024 AS one_hash_bounded, count(*) FROM (SELECT DISTINCT ON (c) c, v FROM fm WHERE id <= 10000) s;
+COMMIT;
+DROP FUNCTION first_bytes();
+DROP TABLE fm;
+DROP TYPE cint CASCADE;
+DROP OPERATOR FAMILY cint_ops USING btree;
+DROP OPERATOR FAMILY cint_hash_ops USING hash;
+
 DROP FUNCTION same(text, boolean);
 DROP TABLE stmts, o, t;
 DROP EXTENSION pg_sift;
