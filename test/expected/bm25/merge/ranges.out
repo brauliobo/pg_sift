@@ -197,7 +197,7 @@ SELECT * FROM same();
  t          |       2 |     12 |             1
 (1 row)
 
--- segments with vacuumed docs, merged by the VACUUM of the backend alone and then with workers
+-- segments with vacuumed docs, merged by a VACUUM: with workers allowed it still merges in one process (it takes no transaction id), to the same bytes
 SELECT prep('merge_fanin = 8');
  prep 
 ------
@@ -224,7 +224,7 @@ SELECT idx_digest('mr_a') = :'serial_digest' AS same_bytes, current_setting('sif
 	current_setting('sift.test_range_pieces')::int AS ranges;
  same_bytes | workers | ranges 
 ------------+---------+--------
- t          |       2 |     24
+ t          |       0 |      0
 (1 row)
 
 -- a segment of an older format

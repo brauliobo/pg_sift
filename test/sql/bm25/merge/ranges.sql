@@ -81,7 +81,7 @@ SELECT * FROM same();
 SELECT prep('merge_fanin = 4, positions = off');
 SELECT merged(2);
 SELECT * FROM same();
--- segments with vacuumed docs, merged by the VACUUM of the backend alone and then with workers
+-- segments with vacuumed docs, merged by a VACUUM: with workers allowed it still merges in one process (it takes no transaction id), to the same bytes
 SELECT prep('merge_fanin = 8');
 DELETE FROM mr WHERE id % 7 = 0;
 SET max_parallel_maintenance_workers = 0;
