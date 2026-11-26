@@ -424,14 +424,47 @@ lshm_enter(Lshm *s, int slot, const LshmEnt *e)
 	s->used_bytes += e->len;
 }
 
-/* enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps */
+/* the records of the index and kind older than the stamp leave the directory: whether one of a newer stamp stays */
+static bool
+lshm_clear_older(Lshm *s, RelFileNumber rel, bool scope, LshmKind kind, uint64 stamp)
+{
+	bool		newer = false;
+
+	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == kind)
+		{
+			if (s->dir[i].stamp > stamp)
+				newer = true;
+			else
+				lshm_free(s, i);
+		}
+	return newer;
+}
+
+/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
+static int
+lshm_place(Lshm *s, RelFileNumber rel)
+{
+	int			slot = lshm_bucket(rel);
+
+	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
+		if (!s->dir[i].used || (s->dir[slot].used && pg_atomic_read_u64(&s->dir[i].tick) < pg_atomic_read_u64(&s->dir[slot].tick)))
+			slot = i;
+	return slot;
+}
+
+/*
+ * enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps.
+ * A writer that entered the directory while this one copied its record took the place this one chose or holds a record of the index as well: the directory is looked at again before the entry
+ * goes in, and a record of a newer stamp stays in place of this one
+ */
 static void
 lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmHdr h)
 {
 	Lshm	   *s = lshm_get();
 	Size		off;
-	int			slot = lshm_bucket(rel),
-				evicted = 0;
+	int			slot,
+				evicted;
 
 	if (s == NULL || len > s->size)
 		return;
@@ -444,23 +477,21 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	s->head = off + len;
 	pg_atomic_write_u64(&s->tick, pg_atomic_read_u64(&s->tick) + 1);
 	/* the record of the same index and kind (an older stamp) is replaced: it is in the bucket of the index; those the new one covers are evicted */
-	for (int i = lshm_bucket(rel); i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (s->dir[i].used && s->dir[i].rel == rel && s->dir[i].db == MyDatabaseId && s->dir[i].scope == scope && s->dir[i].kind == h.kind)
-			lshm_free(s, i);
+	(void) lshm_clear_older(s, rel, scope, h.kind, PG_UINT64_MAX);
 	evicted = lshm_evict_range(s, off, len);
-	/* a free place in the bucket of the index, the oldest of the bucket if all are taken */
-	for (int i = slot; i < lshm_bucket(rel) + LSHM_WAYS; i++)
-		if (!s->dir[i].used || (s->dir[slot].used && pg_atomic_read_u64(&s->dir[i].tick) < pg_atomic_read_u64(&s->dir[slot].tick)))
-			slot = i;
-	evicted += s->dir[slot].used;
+	evicted += s->dir[lshm_place(s, rel)].used;
 	LWLockRelease(&s->write_lock.lock);
 	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
 	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
-	if (s->dir[slot].used)
-		lshm_free(s, slot);
 	(void) lshm_evict_range(s, off, len);
-	lshm_enter(s, slot, &(LshmEnt) {.rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len});
+	if (!lshm_clear_older(s, rel, scope, h.kind, stamp))
+	{
+		slot = lshm_place(s, rel);
+		if (s->dir[slot].used)
+			lshm_free(s, slot);
+		lshm_enter(s, slot, &(LshmEnt) {.rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len});
+	}
 	LWLockRelease(&s->write_lock.lock);
 }
 
