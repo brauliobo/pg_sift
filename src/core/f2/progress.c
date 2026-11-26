@@ -264,13 +264,19 @@ void
 sift_f2_say_maintain(const SiftF2Trace *t)
 {
 	SiftF2IndexFacts v = index_facts(t, 0, false);
+	bool		client = sift_ux_should_emit_timing(v.elapsed_us),
+				server = sift_f2_ux_log_due(v.elapsed_us, sift_log_min_duration);
 	SiftUxOp	op;
 	char		line[SIFT_UX_LINE];
 
-	if (!sift_ux_should_emit_timing(v.elapsed_us))
+	if (!client && !server)
 		return;
 	sift_f2_ux_maintain_op(&op, &v);
-	ereport(NOTICE, (errmsg("%s", sift_ux_maintain_line(line, sizeof(line), &op))));
+	(void) sift_ux_maintain_line(line, sizeof(line), &op);
+	if (server)
+		ereport(LOG_SERVER_ONLY, (errmsg("%s", line)));
+	if (client)
+		ereport(NOTICE, (errmsg("%s", line)));
 }
 
 /* ---- VACUUM of a table ---- */

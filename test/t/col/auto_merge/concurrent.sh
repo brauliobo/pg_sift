@@ -37,7 +37,7 @@ reader() {
 	done
 }
 lines() { [[ -f $1 ]] && wc -l <"$1" | tr -d ' ' || echo 0; }
-rewrites() { grep -ac "rewrote (.*) the segments of index" "$D/postgres.log"; }
+rewrites() { grep -a "rewrote (.*) the segments of index\|sift\.maintain(" "$D/postgres.log" | grep -vac "already compact"; }
 
 rm -f "$D/stop" "$D/writer.n"
 for f in writer vacuum maintain reader; do : >"$D/$f.err"; done
