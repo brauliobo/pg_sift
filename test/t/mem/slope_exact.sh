@@ -27,7 +27,7 @@ copies() { PGHOST=$(dir mx)/sock PGPORT=$(port mx) PGUSER=postgres PGDATABASE=po
 import importlib.util as u
 s = u.spec_from_file_location('ms', '$REPO/scripts/mem-slope.py'); m = u.module_from_spec(s); s.loader.exec_module(m)
 m.build_tables(30000)
-for i in range(3): m.copy_table(30000)"; }
+for i in range(3): m.copy_table(30000, True)"; }
 copies 2>"$(dir mx)/copies.err" || bail "the copies of the gate failed"
 segments() { sql mx "SELECT count(*) FROM sift.col_segments('$1') WHERE kind = 'immutable'"; }
 sql mx "CREATE TABLE control AS SELECT * FROM f30000" "CREATE INDEX control_col ON control USING sift_col (k_hi, k_mid, k_lo, cat, txt, amount, fl, ts)" >/dev/null || bail "control failed"

@@ -109,7 +109,7 @@ def run_case(ms, args, name, setup, op, n, tag):
 
     def prepare():
         if "{m}" in setup + op or "{s}" in setup + op:
-            ms.copy_table(n)
+            ms.copy_table(n, "{m}" in setup + op)
         ms.script(setup.format(**fmt))
     native(work, prepare)
     srv = massif_server(work, args.out, f"{name}.{n}")
