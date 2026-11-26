@@ -8,7 +8,8 @@
 . "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 8
-node_init sjd 53 "$TWOHOP_CONF"
+node_init sjd 53 "$TWOHOP_CONF
+sift.test_create_format1 = on"
 node_start sjd || bail "start failed"
 D=$(dir sjd)
 S=("-h" "$(node_sock sjd)" "-p" "$(port sjd)" "-U" "postgres")

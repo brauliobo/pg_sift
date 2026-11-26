@@ -10,7 +10,8 @@
 . "${SIFT_REPO:?}/test/t/lib/twohop.bash"
 
 plan 26
-node_init scd 51 "$TWOHOP_CONF"
+node_init scd 51 "$TWOHOP_CONF
+sift.test_create_format1 = on"
 node_start scd || bail "start failed"
 D=$(dir scd)
 S=("-h" "$(node_sock scd)" "-p" "$(port scd)" "-U" "postgres")

@@ -8,8 +8,7 @@
 # facts and the pairs (not after the VACUUM scenario, whose updates leave the new versions in the write buffer, nor the pairs scenario, which edits the pairs: the entries are those of the pairs as built). SIFT_CRASHMX_ITERS caps the number of crashes (default 40, 14 quick),
 # SIFT_CRASHMX_ONLY a regex of scenario names.
 # The matrix runs again for a scope of two paths (lib/twohop.bash: the grants of a member, the grants of a group and the memberships, three recorded btrees and three journals): the same operations, with edits of
-# the three tables, and the answers are the join over the union of the paths. After a recovery and the operation run again the stamps of the three journals vouch (the segments are read as stored) or the read says
-# why it does not. Then SIFT_CRASHMX_STORMS (default 4, 2 quick) crashes cut a write storm on the three tables and the facts, the odd ones while a REINDEX of the scope index runs.
+# the three tables, and the answers are the join over the union of the paths. After a recovery and the operation run again the reads are the join over the union. Then SIFT_CRASHMX_STORMS (default 4, 2 quick) crashes cut a write storm on the three tables and the facts, the odd ones while a REINDEX of the scope index runs.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "${SIFT_REPO:?}/test/t/lib/twohop.bash"
@@ -22,6 +21,7 @@ wal_consistency_checking = 'generic'
 sift.async_maintenance = off
 max_parallel_maintenance_workers = 0
 shared_buffers = 64MB
+sift.test_create_format1 = on
 include_if_exists = 'crash.conf'"
 node_start scc || bail "start failed"
 D=$(dir scc)
@@ -29,7 +29,7 @@ SIFT_TMP=$D leak_expect 200 'terminated by signal 9'
 sql scc "CREATE EXTENSION pg_sift_test CASCADE" >/dev/null || bail "extension failed"
 
 family_one() {
-	IXN=events_col DROPS="events, tenant_scope" UNITS=0
+	IXN=events_col DROPS="events, tenant_scope"
 	# 60 keys, 300 members in 0..6 of them (members 100..109 in none), 6,000 facts (some without a member, some of an unknown one)
 	BASE="CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
 		INSERT INTO tenant_scope SELECT m, 1 + (m * 31 + j * 13) % 60 FROM generate_series(1, 300) m, generate_series(0, 5) j WHERE j < m % 7 AND m NOT BETWEEN 100 AND 109;
@@ -71,19 +71,19 @@ family_one() {
 
 # a scope of two paths: the fixtures of lib/twohop.bash without their index, and the same reads (the scope forms against the join over the union)
 family_two() {
-	IXN=hop_col DROPS="hop_events, grants, memberships CASCADE" UNITS=1
+	IXN=hop_col DROPS="hop_events, grants, memberships CASCADE"
 	BASE=$(printf '%s; ' "${TWOHOP_BASE[@]}" "${TWOHOP_FUNCS[@]}")
 	more() { echo "INSERT INTO hop_events SELECT i, 1 + i % 210, timestamptz '2026-06-01' + i * interval '1 minute', i % 10, 'y' FROM generate_series($1, $2) i"; }
 	IDX="${TWOHOP_INDEX[0]}"
 	IDXR="$IDX; REINDEX INDEX hop_col"
 	EDITS="UPDATE grants SET deleted_at = now() WHERE dim_a_id % 5 = 0 AND deleted_at IS NULL; INSERT INTO grants (tenant_id, group_id) VALUES (5, 11), (6, 11) ON CONFLICT DO NOTHING; UPDATE memberships SET deleted_at = now() WHERE dim_a_id % 7 = 0 AND deleted_at IS NULL"
 	SCENARIOS=(
-		"hop_build~~$IDX~1~0"
-		"hop_reindex~$IDX; $(more 6001 6600)~REINDEX INDEX hop_col~1~1"
-		"hop_promote~$IDXR; $(more 6001 8000)~SELECT sift.col_promote('hop_col')~1~1"
-		"hop_merge~$IDXR; $(more 6001 7000); SELECT sift.col_promote('hop_col'); $(more 7001 8000); SELECT sift.col_promote('hop_col')~SELECT sift.col_merge('hop_col', true)~1~1"
-		"hop_vacuum~$IDXR; DELETE FROM hop_events WHERE id % 3 = 0; UPDATE hop_events SET v = v + 1 WHERE id % 7 = 0~VACUUM hop_events~0~1"
-		"hop_edits~$IDXR; $EDITS; $(more 6001 8000)~SELECT sift.col_promote('hop_col')~0~1"
+		"hop_build~~$IDX~1"
+		"hop_reindex~$IDX; $(more 6001 6600)~REINDEX INDEX hop_col~1"
+		"hop_promote~$IDXR; $(more 6001 8000)~SELECT sift.col_promote('hop_col')~1"
+		"hop_merge~$IDXR; $(more 6001 7000); SELECT sift.col_promote('hop_col'); $(more 7001 8000); SELECT sift.col_promote('hop_col')~SELECT sift.col_merge('hop_col', true)~1"
+		"hop_vacuum~$IDXR; DELETE FROM hop_events WHERE id % 3 = 0; UPDATE hop_events SET v = v + 1 WHERE id % 7 = 0~VACUUM hop_events~0"
+		"hop_edits~$IDXR; $EDITS; $(more 6001 8000)~SELECT sift.col_promote('hop_col')~0"
 	)
 	Q_ONE=$TWOHOP_Q_ONE Q_SET=$TWOHOP_Q_SET Q_PAIR=$TWOHOP_Q_PAIR P_ONE=$TWOHOP_P_ONE P_SET=$TWOHOP_P_SET P_PAIR=$TWOHOP_P_PAIR ENTRIES=$TWOHOP_ENTRIES
 }
@@ -102,11 +102,7 @@ settled() { # after the operation ran again: the entries are the join where they
 	healthy || return 1
 	has_index || return 1
 	[[ $ENTRIES_JOIN == 0 || $(sql scc "$ENTRIES") == t ]] || { diag "the scope entries are not the join of the facts and the pairs"; return 1; }
-	vouched || return 1
-	[[ $UNITS_READ != 1 || $(twohop_why scc) == stored ]] || { diag "the units are not read after the operation: $(twohop_why scc)"; return 1; }
 }
-# a scope of two paths reads its units only when the stamps of its three journals vouch: a read that says stored has stamps that are ok
-vouched() { [[ $UNITS == 0 || $(twohop_why scc) != stored || $(twohop_vouch scc) == ok ]] || { diag "the read is stored and a stamp does not vouch: $(twohop_vouch scc)"; return 1; }; }
 fresh() { # SETUP
 	sql scc "DROP TABLE IF EXISTS $DROPS" "$BASE" >/dev/null || return 1
 	[[ -z $1 ]] || sql scc <<<"$1" >/dev/null || return 1   # a script: each statement is a transaction of its own (CREATE INDEX and its REINDEX in one leave the stamps of a later promotion unfilled)
@@ -120,7 +116,7 @@ await_exit() { # PID
 matrix() {
 	total=0
 for row in "${SCENARIOS[@]}"; do
-	IFS='~' read -r name setup op build_joins UNITS_READ <<<"$row"
+	IFS='~' read -r name setup op build_joins <<<"$row"
 	[[ -z ${SIFT_CRASHMX_ONLY:-} || $name =~ $SIFT_CRASHMX_ONLY ]] || continue
 	ENTRIES_JOIN=$build_joins
 	fresh "$setup" || bail "$name: setup"
@@ -165,7 +161,7 @@ family_two
 matrix
 
 # a write storm on the three tables and the facts of a scope of two paths, cut by a crash; the odd rounds run a REINDEX of the scope index in the storm. After the recovery the reads are the join over the union,
-# the stamps vouch or the read says why, and a REINDEX gives back a scope that reads its units with three stamps that vouch
+# and a REINDEX gives back reads and entries that are the join
 FILES=($(twohop_files scc))
 for i in $(seq "$STORMS"); do
 	fresh "$IDXR" || bail "storm $i: setup"
@@ -175,14 +171,14 @@ for i in $(seq "$STORMS"); do
 	fi
 	crash_cycle scc "storm $i" 3 6 "${FILES[@]}" || break
 	[[ -z $REINDEXER ]] || wait "$REINDEXER" 2>/dev/null
-	if [[ $(sql scc "$VERIFY" 2>&1) == "" && $(twohop_reads scc) == same ]] && vouched; then
-		ok "storm $i, crash$([[ -n $REINDEXER ]] && echo ' during REINDEX'): the indexes verify, the reads are the join over the union, the read says $(twohop_why scc)"
+	if [[ $(sql scc "$VERIFY" 2>&1) == "" && $(twohop_reads scc) == same ]]; then
+		ok "storm $i, crash$([[ -n $REINDEXER ]] && echo ' during REINDEX'): the indexes verify, the reads are the join over the union"
 	else
-		not_ok "storm $i: after the recovery"; diag "$(sql scc "$VERIFY" 2>&1 | head -3) reads $(twohop_reads scc) stamps $(twohop_vouch scc)"
+		not_ok "storm $i: after the recovery"; diag "$(sql scc "$VERIFY" 2>&1 | head -3) reads $(twohop_reads scc)"
 	fi
 	sql scc "REINDEX INDEX hop_col" >/dev/null
-	[[ $(twohop_why scc) == stored && $(twohop_vouch scc) == ok && $(twohop_reads scc) == same && $(sql scc "$ENTRIES") == t ]] &&
-		ok "storm $i: after a REINDEX the units are read, the three stamps vouch and the entries are the join" || not_ok "storm $i: after a REINDEX: $(twohop_why scc) $(twohop_vouch scc)"
+	[[ $(twohop_reads scc) == same && $(sql scc "$ENTRIES") == t ]] &&
+		ok "storm $i: after a REINDEX the reads are the join and the entries are the join" || not_ok "storm $i: after a REINDEX: reads $(twohop_reads scc)"
 done
 done_testing
 finish

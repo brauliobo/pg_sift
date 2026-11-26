@@ -5,7 +5,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 13
-node_init sl 56 "autovacuum = off"
+node_init sl 56 "autovacuum = off
+sift.test_create_format1 = on"
 node_start sl || bail "start failed"
 D=$(dir sl)
 S=("-h" "$(node_sock sl)" "-p" "$(port sl)" "-U" "postgres")

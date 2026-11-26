@@ -83,11 +83,12 @@ twohop_reads() {
 		== $($Q "$n" "SET sift.enable_agg = off" "$TWOHOP_P_ONE" "$TWOHOP_P_SET" "$TWOHOP_P_TOP" "$TWOHOP_P_PAIR" 2>&1) ]] && echo same || echo DIFFERENT
 }
 
-# twohop_why NODE [QUERY]: stored when the read of the scope units answered, else the reason of the fallback
+# twohop_why NODE [QUERY]: stored when the read of the scope units answered (Format 1), else the reason of the fallback; a Format 2.0 scope says what it read ("Scope Read"), and "no scope node" when the plan has none
 twohop_why() {
-	local Q=${TWOHOP_SQL:-sql} q=${2:-$TWOHOP_Q_ONE}
-	$Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
-		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${q//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p' | head -n 1
+	local Q=${TWOHOP_SQL:-sql} q=${2:-$TWOHOP_Q_ONE} why
+	why=$($Q "$1" "SET sift.agg_force = on" "SET max_parallel_workers_per_gather = 0" "SET jit = off" \
+		"EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ${q//hop_col/${TWOHOP_IX:-hop_col}}" | sed -n 's/^ *Scope Fallback: //p;s/^ *Scope Units: .*/stored/p;s/^ *Scope Read: //p' | head -n 1)
+	echo "${why:-no scope node}"
 }
 
 # twohop_stat NODE LABEL: a number of the plan of the read of one tenant ("Scope Changed Keys": the members the journals say changed since the stamps; "Scope Patched Keys": those with a pair now), 0

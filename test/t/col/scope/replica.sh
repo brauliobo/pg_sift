@@ -14,7 +14,8 @@ plan 19
 node_init scp 49 "wal_level = replica
 max_wal_senders = 4
 wal_keep_size = $(knob SIFT_WAL_KEEP 1GB 256MB)
-autovacuum = off"
+autovacuum = off
+sift.test_create_format1 = on"
 node_start scp || bail "primary start failed"
 sql scp "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false)" \
