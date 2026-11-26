@@ -38,7 +38,8 @@ dbq "$(node_db r)" "CREATE EXTENSION pg_sift" "CREATE TABLE events (id int PRIMA
 WANT_STATUS=$(dbq "$(node_db r)" "$STATUS")
 WANT_ANSWERS=$(dbq "$(node_db r)" "$ANSWERS")
 check "the source: the wide index serves two projections, a third has an index of its own, every status is ok" \
-	test "$WANT_STATUS" == "by_bucket:public.events_wide:ok:,by_kind:public.events_wide:ok:,open_kinds:public.events_open:ok:,wide:public.events_wide:ok:" -a "$(plan_index "$(node_db r)")" == events_wide
+	test "$WANT_STATUS" == "$(dbq "$(node_db r)" "SELECT format('by_bucket:%1\$s:ok:,by_kind:%1\$s:ok:,open_kinds:%2\$s:ok:,wide:%1\$s:ok:', 'events_wide'::regclass, 'events_open'::regclass)")" \
+	-a "$(plan_index "$(node_db r)")" == events_wide
 pg_dump "${S[@]}" -Fc -f "$D/src.custom" "$(node_db r)"
 pg_dump "${S[@]}" -Fp -f "$D/src.sql" "$(node_db r)"
 check "the dump holds the definitions as data and the names in the index statements" \

@@ -14,7 +14,9 @@ max_replication_slots = 5
 autovacuum = off
 synchronous_commit = on
 max_worker_processes = 16"
-node_init p 44 "$CONF"
+# Format 1: the heap-free read of the log against the read that checks every page, which sift.test_no_heapfree makes of a Format 1 scan (col/v1/scan/unit.c)
+node_init p 44 "sift.test_create_format1 = on
+$CONF"
 node_start p || bail "start failed"
 D=$(dir p)
 
@@ -34,7 +36,13 @@ MODE_free="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SE
 MODE_checked="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SET sift.test_no_heapfree = on"
 MODE_oracle="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = off; SET sift.test_no_heapfree = off"
 ans() { local m=MODE_$2; sql "$1" "${!m}" "$A"; }
-pages() { local m=MODE_$2; sql "$1" "${!m}" "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) $Q" | grep '"Heap Pages"' | tr -dc 0-9; }
+# the heap pages a read fetched: what its second execution, planned already, adds to the blocks of the table that the transaction fetched, less the pages
+# of the visibility map, which a read looks at once
+pages() {
+	local m=MODE_$2 n="SELECT 'P:' || pg_stat_get_xact_blocks_fetched('events'::regclass)"
+	sql "$1" "BEGIN; ${!m}" "PREPARE q AS $Q" "EXECUTE q" "$n" "EXECUTE q" "$n" "SELECT 'P:' || pg_relation_size('events', 'vm') / 8192" "COMMIT" |
+		sed -n 's/^P://p' | paste -sd' ' | awk '{print $2 - $1 - $3}'
+}
 planned() { sql "$1" "${MODE_free}" "EXPLAIN (COSTS OFF) $Q" | grep -q SiftAgg; }
 agree() { local f=$(ans "$1" free) c=$(ans "$1" checked) o=$(ans "$1" oracle); [[ $f == "$c" && $f == "$o" ]] || { diag "$1: free $f checked $c oracle $o"; return 1; }; }
 saves() { [[ $(pages "$1" free) -lt $(pages "$1" checked) ]]; }

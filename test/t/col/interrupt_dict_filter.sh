@@ -16,7 +16,7 @@ sql idf "CREATE TABLE lv (id int, g int, name text)" \
 	"CREATE INDEX lv_i ON lv USING sift_col (id, g, name)" "VACUUM (FREEZE, ANALYZE) lv" >/dev/null || bail "setup failed"
 
 Q="SELECT g, count(*) FROM lv WHERE levenshtein(name, repeat('abcdefghij', 25)) < 100 GROUP BY g"
-check "the filter is a pushed one" test "$(sql idf "EXPLAIN (COSTS OFF) $Q" | grep -c 'Filters: name')" == 1
+check "the filter is a pushed one" test "$(sql idf "EXPLAIN (COSTS OFF) $Q" | grep -c 'Filters: (levenshtein(name')" == 1
 
 start=$(date +%s%N)
 out=$(sql idf "SET statement_timeout = 100" "$Q" 2>&1)  # timeout-ok: the statement timeout is the interrupt the evaluation must honour

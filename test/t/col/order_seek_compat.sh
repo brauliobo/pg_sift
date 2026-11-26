@@ -34,7 +34,8 @@ for q in "${Q[@]}"; do
 	[[ $a == "$b" ]] && same=$((same + 1))
 done
 check "the ordered reads over both layouts are the heap's" test "$same" == "${#Q[@]}"
-check "the ordered read walks the arrays" test "$(sql sk "SET sift.enable_agg = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${Q[0]}" | grep -c 'Global Order: true')" == 1
+# the order arrays answer a top-N as the one unit of a tournament (col/v1_engine/store_ops_order.c), which EXPLAIN shows with the rows it kept; a read without them folds the batches
+check "the ordered read walks the arrays" test "$(sql sk "SET sift.enable_agg = on" "EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ${Q[0]}" | grep -c 'Top-N Rows: 20$')" == 1
 check "the index verifies" test "$(sql sk "SELECT sift.col_verify('au_ix', true)" 2>&1 | grep -cE 'ERROR|corrupt')" == 0
 node_stop sk
 

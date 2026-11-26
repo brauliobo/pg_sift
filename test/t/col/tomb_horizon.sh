@@ -6,7 +6,9 @@
 
 plan 14
 BURN=$(knob SIFT_HF_BURN 2200000 2200000)
-node_init p 31 "autovacuum = off
+# Format 1: the tombstones and the transaction of the log of track_changes, which only Format 1 keeps (col/v1/tomblog.c, sift._test_col_log_entries)
+node_init p 31 "sift.test_create_format1 = on
+autovacuum = off
 max_wal_size = 512MB"
 node_start p || bail "start failed"
 
@@ -15,7 +17,13 @@ mode_free="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SE
 mode_checked="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = on; SET sift.test_no_heapfree = on"
 mode_oracle="SET max_parallel_workers_per_gather = 0; SET sift.enable_agg = off; SET sift.test_no_heapfree = off"
 ans() { local m=mode_$2 q=${Q//TBL/$3}; sql "$1" "${!m}" "SELECT md5(coalesce(string_agg(tenant_id || ':' || n || ':' || s, ',' ORDER BY tenant_id), 'none')) FROM ($q) q"; }
-pages() { local m=mode_$2 q=${Q//TBL/$3}; sql "$1" "${!m}" "EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) $q" | grep '"Heap Pages"' | tr -dc 0-9; }
+# the heap pages a read fetched: what its second execution, planned already, adds to the blocks of the table that the transaction fetched, less the pages
+# of the visibility map, which a read looks at once
+pages() {
+	local m=mode_$2 q=${Q//TBL/$3} n="SELECT 'P:' || pg_stat_get_xact_blocks_fetched('$3'::regclass)"
+	sql "$1" "BEGIN; ${!m}" "PREPARE q AS $q" "EXECUTE q" "$n" "EXECUTE q" "$n" "SELECT 'P:' || pg_relation_size('$3', 'vm') / 8192" "COMMIT" |
+		sed -n 's/^P://p' | paste -sd' ' | awk '{print $2 - $1 - $3}'
+}
 NODE=p
 agree() { local f=$(ans $NODE free "$1") c=$(ans $NODE checked "$1") o=$(ans $NODE oracle "$1"); [[ $f == "$c" && $f == "$o" ]] || { diag "$1: free $f checked $c oracle $o"; return 1; }; }
 tracking() { sql p "SELECT heap_free FROM sift.col_tracking('$1')"; }
