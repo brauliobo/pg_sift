@@ -81,12 +81,11 @@ SELECT sum((s + 1) * 100000) FROM sx;
 ERROR:  integer out of range
 CONTEXT:  sift index "public.sx_col"
 EXPLAIN (COSTS OFF) SELECT sum((s + 1) * 3), avg(s * 3 + 1) FROM si;
-                            QUERY PLAN                             
--------------------------------------------------------------------
- Custom Scan (SiftAgg)
+       QUERY PLAN        
+-------------------------
+ Custom Scan (SiftAggV6)
    Index: si_col
-   Pushed Aggregates: sum(((si.s + 1) * 3)), avg(((si.s * 3) + 1))
-(3 rows)
+(2 rows)
 
 RESET sift.agg_force;
 DROP FUNCTION answer(text, bool);

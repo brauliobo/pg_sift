@@ -723,13 +723,12 @@ SELECT rows_out, max_pending < 1000 AS ring_stays_small FROM sift._test_window_s
     36000 | t
 (1 row)
 
--- a LEAD looks ahead into the ring, which a peer group of that size does not fit
+-- a LEAD looks ahead past a peer group larger than work_mem: the ring spills, the block raises nothing
 DO $$
 BEGIN
 	PERFORM count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['lead:arg:1', 'count:*']) AS e WHERE name = 'wb';
 EXCEPTION WHEN program_limit_exceeded THEN RAISE NOTICE 'the frame does not fit work_mem';
 END $$;
-NOTICE:  the frame does not fit work_mem
 RESET work_mem;
 SELECT count(*) AS rows_out FROM wd, sift._test_window(p, o, a, f, ARRAY['lead:arg:1', 'count:*']) AS e WHERE name = 'wb';
  rows_out 

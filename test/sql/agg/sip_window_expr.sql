@@ -383,7 +383,7 @@ FROM bcase ORDER BY label;
 SELECT count(*) AS rows_out, count(*) FILTER (WHERE tag <> prev + 1) AS out_of_order
 FROM (SELECT e.tag, lag(e.tag) OVER () AS prev FROM wd, sift._test_window(p, o, a, f, ARRAY['count:*', 'sum:arg']) AS e WHERE name = 'wb') AS q;
 SELECT rows_out, max_pending < 1000 AS ring_stays_small FROM sift._test_window_stats();
--- a LEAD looks ahead into the ring, which a peer group of that size does not fit
+-- a LEAD looks ahead past a peer group larger than work_mem: the ring spills, the block raises nothing
 DO $$
 BEGIN
 	PERFORM count(*) FROM wd, sift._test_window(p, o, a, f, ARRAY['lead:arg:1', 'count:*']) AS e WHERE name = 'wb';
