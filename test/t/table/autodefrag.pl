@@ -1,4 +1,4 @@
-# sift_table maintenance without VACUUM: the backend that closes a write buffer, reads or deletes asks a worker for a pass when the reads of the
+# Format 1 sift_table maintenance without VACUUM: the backend that closes a write buffer, reads or deletes asks a worker for a pass when the reads of the
 # table since the last one have cost as much as it, or the free blocks cross the threshold, and not before them, not with the setting off, and the pass keeps every row; the same pass is crash safe at the
 # boundaries of the space step.
 use strict;
@@ -12,7 +12,7 @@ use Test::More;
 use Time::HiRes ();
 
 my $node = sift_node('autodefrag');
-$node->append_conf('postgresql.conf', "autovacuum = off\nsift.async_maintenance = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nmax_parallel_maintenance_workers = 0");
+$node->append_conf('postgresql.conf', "autovacuum = off\nsift.test_create_format1 = on\nsift.async_maintenance = on\nsift.maintenance_naptime = 200ms\nsift.log_min_duration = 0\nmax_parallel_maintenance_workers = 0");
 $node->start;
 install_sift_test($node, 'space crash injection needs the testing build');
 

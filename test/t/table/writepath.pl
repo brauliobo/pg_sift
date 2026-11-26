@@ -1,4 +1,4 @@
-# sift_table written by loops of single-row INSERTs and by several writers at once (the directory limit is lowered, a testing setting):
+# A Format 1 sift_table written by loops of single-row INSERTs and by several writers at once (the directory limit is lowered, a testing setting):
 # the write buffers are promoted with the version of every row, whoever wrote it. A standby replays the groups and sees the rows at the
 # commit only, a repeatable read snapshot of the standby survives a freeze on the primary, a crash in the middle of a loop leaves nothing
 # (VACUUM sweeps the groups), a commit survives a crash, pg_dump / restore reload the table in one COPY, writers that commit and roll back
@@ -20,7 +20,7 @@ my $txns = knob('SIFT_TXNS', 6, 6);
 my $copy_rows = knob('SIFT_COPY_ROWS', 10000, 10000);
 my $clients = 8;
 my $limit = knob('SIFT_MAX_SEGMENTS', 8, 8);
-my $conf = "sift.table_max_segments = $limit";
+my $conf = "sift.test_create_format1 = on\nsift.table_max_segments = $limit";
 # VACUUM does not cut the file while a standby streams (43e42dc9c): the test of the returned space needs the testing setting, as 006, 008, 013 and 015
 my $primary_conf = "$conf\nwal_consistency_checking = 'generic'\nsift.test_cut_with_standby = on";
 sub wbl { return "SELECT sift.table_set_option('$_[0]', 'write_buffer_limit', '2048kB')" }
