@@ -29,6 +29,7 @@
 #include "utils/timestamp.h"
 
 #include "agg/agg.h"
+#include "agg/qual/qual.h"
 #include "col/f2/agg/scan.h"
 #include "col/f2/agg/scope/int.h"
 #include "core/zoneoff.h"
@@ -64,6 +65,8 @@ typedef struct ScopeState
 	Relation	heap;
 	ScanKey		scan_keys;
 	int			nscan_keys;
+	IndexRuntimeKeyInfo *rtkeys;	/* the keys of parameters of the quals: their values are those of each run */
+	int			nrt;
 	MemoryContext gcx;
 	SiftV6Group *group;
 	const SiftScopeRouter *router;	/* scan: the granules of the key that the summary names, NULL when it cannot route */
@@ -99,13 +102,8 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 		st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private));
 	if (st->spec->scan)
 	{
-		IndexRuntimeKeyInfo *rtkeys = NULL;
-		int			nrt = 0;
-
 		st->heap = table_open(st->rel->rd_index->indrelid, AccessShareLock);
-		ExecIndexBuildScanKeys(&node->ss.ps, st->rel, st->v6->indexqual, false, &st->scan_keys, &st->nscan_keys, &rtkeys, &nrt, NULL, NULL);
-		SIFT_INVARIANT(nrt == 0, "the quals of the aggregate scan are constants");
-		sift_v6_json_scankeys(st->v6, st->rel, &st->scan_keys, &st->nscan_keys);
+		sift_v6_qual_scankeys(&node->ss.ps, st->v6->jsonqual, st->rel, st->v6->indexqual, &st->scan_keys, &st->nscan_keys, &st->rtkeys, &st->nrt);
 	}
 }
 
@@ -522,6 +520,8 @@ scan_run(ScopeState *st, EState *estate)
 	ScanKey		keys = palloc((st->nscan_keys + 1) * sizeof(ScanKeyData));
 
 	st->started = true;
+	if (st->nrt > 0)
+		ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->rtkeys, st->nrt);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
 	memcpy(keys, st->scan_keys, st->nscan_keys * sizeof(ScanKeyData));
 	keys[st->nscan_keys] = (ScanKeyData) {.sk_flags = SK_SEARCHARRAY,.sk_attno = st->spec->member_col,.sk_strategy = BTEqualStrategyNumber,

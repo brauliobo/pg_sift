@@ -64,5 +64,36 @@ SELECT pg_temp.check_phase('vacuumed', 'in_ev', 'in_pr');
 SELECT pg_temp.check_phase('vacuumed', 'in_ev2', 'in_pm');
 SELECT pg_temp.check_phase('vacuumed', 'in_ev3', 'in_pp');
 SELECT phase, pairs, tried, (served > 0) AS served, bad AS mismatches FROM in_result ORDER BY 1, 2;
-DROP TABLE in_ev, in_ev2, in_ev3, in_pr, in_pm, in_pp CASCADE;
+-- a parameter of a condition of the facts (a generic plan, a sub-select run per row) is a runtime key of the scan of the members of the key
+CREATE TABLE in_pf (id int PRIMARY KEY, entity_id int NOT NULL, kind text NOT NULL, qty int NOT NULL);
+INSERT INTO in_pf SELECT g, 1 + g % 30, 'k' || g % 3, g % 17 FROM generate_series(1, 300) g;
+CREATE TABLE in_pk (entity_id int NOT NULL, parent_id int NOT NULL, PRIMARY KEY (entity_id, parent_id));
+INSERT INTO in_pk SELECT e, 1 + e % 5 FROM generate_series(1, 30) e;
+CREATE INDEX in_scope_pf ON in_pf USING sift_col (id, entity_id, kind, qty) WITH (scope = 'parent_id: entity_id -> in_pk(entity_id, parent_id)');
+VACUUM (ANALYZE) in_pf; ANALYZE in_pk;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+SET plan_cache_mode = force_generic_plan;
+PREPARE in_by_kind(int, text) AS SELECT count(*), sum(f.qty) FROM in_pf f JOIN in_pk p ON p.entity_id = f.entity_id WHERE p.parent_id = $1 AND f.kind = $2;
+CREATE FUNCTION pg_temp.scope_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; plan text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || l; END LOOP;
+	RETURN plan LIKE '%SiftAggV6Scope%scan of the facts%';
+END $$;
+SELECT pg_temp.scope_scan('EXECUTE in_by_kind(2, ''k1'')') AS generic_scan,
+	pg_temp.scope_scan('SELECT k, (SELECT count(*) FROM in_pf f JOIN in_pk p ON p.entity_id = f.entity_id WHERE p.parent_id = 3 AND f.qty > k AND f.kind <> ''k2'') FROM generate_series(1, 4) k') AS subplan_scan;
+CREATE TEMP TABLE in_param_on AS SELECT k, (SELECT count(*) || '/' || sum(f.qty) FROM in_pf f JOIN in_pk p ON p.entity_id = f.entity_id WHERE p.parent_id = 3 AND f.qty > k AND f.kind <> 'k2') AS r FROM generate_series(1, 4) k;
+CREATE TEMP TABLE in_generic_on AS EXECUTE in_by_kind(2, 'k1');
+SET sift.enable_agg = off;
+CREATE TEMP TABLE in_param_off AS SELECT k, (SELECT count(*) || '/' || sum(f.qty) FROM in_pf f JOIN in_pk p ON p.entity_id = f.entity_id WHERE p.parent_id = 3 AND f.qty > k AND f.kind <> 'k2') AS r FROM generate_series(1, 4) k;
+CREATE TEMP TABLE in_generic_off AS EXECUTE in_by_kind(2, 'k1');
+RESET sift.enable_agg;
+SELECT (SELECT array_agg(r ORDER BY k) FROM in_param_on) = (SELECT array_agg(r ORDER BY k) FROM in_param_off) AS subplan_same,
+	(SELECT row(count, sum) FROM in_generic_on) = (SELECT row(count, sum) FROM in_generic_off) AS generic_same, (SELECT count FROM in_generic_on) AS generic_rows;
+DEALLOCATE in_by_kind;
+RESET plan_cache_mode;
+RESET random_page_cost;
+RESET seq_page_cost;
+DROP TABLE in_ev, in_ev2, in_ev3, in_pr, in_pm, in_pp, in_pf, in_pk CASCADE;
 DROP EXTENSION pg_sift;
