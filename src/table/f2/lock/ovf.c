@@ -12,6 +12,7 @@
 #include "utils/resowner.h"
 
 #include "col/dsmreg.h"
+#include "core/cachebudget.h"
 #include "table/f2/lock/esc.h"
 #include "table/f2/lock/ovf.h"
 
@@ -87,6 +88,8 @@ area_try(SiftRowLockTable *t, bool make)
 	return a;
 }
 
+static SIFT_BACKEND_LOCAL MemoryContext area_cx;
+
 /* The one area of the table, mapped for the life of the backend: made here when create and nobody has made it. NULL only where create and the server has no memory for it: the caller then keeps the lock in the lock manager of PostgreSQL */
 static dsa_area *
 area_of(SiftRowLockTable *t, bool create)
@@ -96,7 +99,9 @@ area_of(SiftRowLockTable *t, bool create)
 	if (area != NULL)
 		return area;
 	/* MEM[MEM-SHM-16]: the descriptor of the area of the row lock chunks, one for each backend that locks rows, kept until it exits */
-	old = MemoryContextSwitchTo(TopMemoryContext);
+	if (area_cx == NULL)
+		area_cx = sift_cache_create_context("sift rowlock dsa");
+	old = MemoryContextSwitchTo(area_cx);
 	if (create && handle_of(t) == DSA_HANDLE_INVALID)
 	{
 		LWLockAcquire(&t->area_lock, LW_EXCLUSIVE);

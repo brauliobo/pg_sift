@@ -19,6 +19,7 @@
 #include "agg/plan/int.h"
 #include "agg/cost/card.h"
 #include "agg/source_rel.h"
+#include "core/memtrack.h"
 
 /* The attribute of the parent of app that the Var of the child's attribute stands for, 0 for a column of the child that is none of the parent's (a dropped one) */
 static AttrNumber
@@ -330,8 +331,8 @@ sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *ou
 		if (ls[n++].n == 0)
 			return false;
 	}
-	pp.attempt = AllocSetContextCreate(CurrentMemoryContext, "sift agg partition plan", ALLOCSET_DEFAULT_SIZES);
-	pp.scratch = AllocSetContextCreate(CurrentMemoryContext, "sift agg partition leaf", ALLOCSET_DEFAULT_SIZES);
+	pp.attempt = sift_mem_allocset_create(CurrentMemoryContext, "sift agg partition plan");
+	pp.scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift agg partition leaf");
 	template = compile_templates(&pp, ls, n, first);
 	MemoryContextDelete(pp.scratch);
 	if (template == NULL)
