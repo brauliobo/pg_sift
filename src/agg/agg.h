@@ -31,4 +31,7 @@ sift_const_list(Node *n)
 /* agg/hybrid/plan.c: registers the path hook of SiftHybridScan, after sift_planner_init: the path competes with the best paths of a scored query */
 extern void sift_hybrid_init(void);
 
+/* agg/plan/cte.c: the planner hook that plans the shared CTEs of a statement inline when that runs the aggregate scan for less */
+extern void sift_agg_cte_init(void);
+
 #endif							/* SIFT_AGG_H */

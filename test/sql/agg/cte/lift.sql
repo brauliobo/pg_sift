@@ -12,12 +12,13 @@ CREATE INDEX events_col ON events USING sift_col (id, kind_id, ts, amount);
 VACUUM (FREEZE, ANALYZE) events;
 ANALYZE kinds;
 
--- the rows PostgreSQL expects of the scan of CTE g in the plan
+-- the rows PostgreSQL expects of the scan of CTE g in the plan, or of the aggregate scan that reads its body when the CTE is planned inline (agg/plan/cte.c)
 CREATE FUNCTION cte_rows(body text) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	EXECUTE format('EXPLAIN (FORMAT JSON) WITH g AS MATERIALIZED (%s) SELECT k.id, g.n FROM g JOIN kinds k ON k.id = g.kind_id', body) INTO j;
-	RETURN (jsonb_path_query_first(j, '$.** ? (@."Node Type" == "CTE Scan" && @."CTE Name" == "g")') ->> 'Plan Rows')::float8;
+	RETURN coalesce(jsonb_path_query_first(j, '$.** ? (@."Node Type" == "CTE Scan" && @."CTE Name" == "g")'),
+	                jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" starts with "SiftAgg")')) ->> 'Plan Rows';
 END $$;
 
 -- 20 groups out of 20,000 rows: the estimate of the groups stands

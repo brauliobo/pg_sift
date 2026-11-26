@@ -53,6 +53,17 @@ SELECT 'correlated' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(serie
 SELECT 'not in' AS filter, hoisted_ctes, hoisted_reads FROM plan_nodes(replace(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25'), 'e.parent_id IN', 'e.parent_id NOT IN'));
 SELECT differences(series_query('SELECT parent_id FROM events GROUP BY parent_id HAVING min(id) < 25')) AS aggregate_differences,
        differences(series_query($f$SELECT x.parent_id FROM events x JOIN periods p ON x.ts <@ p.range GROUP BY x.parent_id HAVING min(x.id) < 35 AND count(*) > 100$f$)) AS periods_differences;
+-- the hoisted sub-select over a 300-row table, each copy of the CTE a scan (forced: the shared copy is the cheaper plan at this size), in the format of the run; the rows are the normal plan's
+CREATE TABLE ht (id int PRIMARY KEY, k int NOT NULL, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ht SELECT g, g % 20, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 13 END FROM generate_series(1, 300) g;
+CREATE INDEX ht_col ON ht USING sift_col (id, k, v);
+VACUUM (FREEZE, ANALYZE) ht;
+SET sift.agg_force = on;
+SELECT 'small table' AS filter, p.*, differences(q) AS differences
+FROM (SELECT $q$WITH f AS (SELECT k, v FROM ht WHERE v > 2 AND k IN (SELECT k FROM ht GROUP BY k HAVING min(id) < 10))
+	SELECT 'n' AS m, k, count(*) AS x FROM f GROUP BY k UNION ALL SELECT 's', k, sum(v) FROM f GROUP BY k$q$ AS q) s, plan_nodes(s.q) p;
+RESET sift.agg_force;
+DROP TABLE ht;
 DROP TABLE events;
 DROP FUNCTION differences(text), plan_nodes(text), series_query(text);
 DROP EXTENSION pg_sift_helpers;

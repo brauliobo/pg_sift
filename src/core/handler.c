@@ -346,6 +346,7 @@ _PG_init(void)
 	define_reloptions();
 	sift_planner_init();
 	sift_hybrid_init();
+	sift_agg_cte_init();
 	sift_v6_proj_sort_plan_init();
 	sift_f2_ord_plan_init();
 	sift_v6_define_gucs();
