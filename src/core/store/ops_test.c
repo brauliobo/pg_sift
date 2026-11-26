@@ -5,6 +5,7 @@
 #include "core/store/test_int.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_namespace.h"
+#include "commands/defrem.h"
 #include "storage/buffile.h"
 #include "storage/lmgr.h"
 #include "utils/catcache.h"
@@ -73,6 +74,13 @@ sift_test_recycle(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
+/* A Format 2.0 table or index is verified by the checker of its engine; a sift_store_test index is a store of Format 1 whatever its metapage says, and the store judges that */
+static bool
+engine_checks(Relation rel)
+{
+	return strcmp(get_am_name(rel->rd_rel->relam), "sift_store_test") != 0 && sift_meta_peek_format(rel).status == SIFT_FMT_V2;
+}
+
 /* Verifies the store invariants; returns the number of orphan blocks (Format 2.0: sift.check() raises on a leaked block, so 0) */
 Datum
 sift_test_check(PG_FUNCTION_ARGS)
@@ -82,7 +90,7 @@ sift_test_check(PG_FUNCTION_ARGS)
 	Relation	index = sift_test_open_store(PG_GETARG_OID(0), mode);
 	int64		n;
 
-	if (sift_meta_peek_format(index).status == SIFT_FMT_V2)
+	if (engine_checks(index))
 	{
 		relation_close(index, mode);
 		sift_check_relation(NULL, PG_GETARG_OID(0), false);
