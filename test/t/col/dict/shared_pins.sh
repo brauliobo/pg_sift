@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The dictionaries that backends read in place from the shared ring (col/dictshm/dictshm.c): a record that a scan reads is not overwritten while the scan lives, however
-# many dictionaries the ring takes in meanwhile (a ring of 8 MB, 12 tables of about 2 MB of dictionary: it wraps twice); a backend gives the records back when its
+# many dictionaries the ring takes in meanwhile (a ring of 13 MB, 12 tables of about 2 MB of dictionary: it wraps); a backend gives the records back when its
 # transaction ends, when a statement fails and when the backend is terminated holding them.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 REPO=${SIFT_REPO:?}
@@ -23,7 +23,10 @@ TABLES=12
 node_stop primary
 node_start primary || bail "restart failed"
 
-Q1="SELECT s, count(*) FROM t1 WHERE s LIKE '%ab%' GROUP BY s"
+# the scan of the cursor is the index scan of t1, which holds its segment until the cursor closes (an aggregate reads all its rows on the first fetch and lets go
+# of its segments); it reads the ring and does not fill it, so an aggregate of t1 keeps the dictionary there first
+Q1="SELECT s FROM t1 WHERE s LIKE '%ab%'"
+SCAN="SELECT 'C:' || count(*) FROM (SELECT s FROM t1 WHERE s LIKE '%ab%' GROUP BY s) w; SET sift.enable_agg = off; SET enable_seqscan = off;"
 WANT=$(sql primary "SET sift.enable_agg = off" "SET sift.enable_col_scan = off" "$Q1" | sort | "$REPO/scripts/sha256.sh")
 pinned() { echo "SELECT 'P:' || records FROM sift._test_col_dict_pinned()"; }
 churn() { for t in $(seq 2 $TABLES); do echo "SELECT 'C:' || count(*) FROM (SELECT s FROM t$t WHERE s LIKE '%ab%' GROUP BY s) x;"; done; }
@@ -33,7 +36,9 @@ OUT=$(sql primary 2>&1 <<SQL
 LOAD 'pg_sift';
 SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on;
 BEGIN;
+$SCAN
 DECLARE c CURSOR FOR $Q1;
+RESET sift.enable_agg; RESET enable_seqscan;
 FETCH 1 FROM c;
 $(pinned);
 $(churn)
@@ -53,13 +58,13 @@ check "a transaction that ended gave the record back" test "${PINS[2]}" == 0
 
 # a statement that fails while a cursor holds the record
 sql primary >/dev/null 2>&1 <<SQL
-LOAD 'pg_sift'; SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; BEGIN; DECLARE c CURSOR FOR $Q1; FETCH 1 FROM c; SELECT 1 / (count(*) - count(*)) FROM t2;
+LOAD 'pg_sift'; SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; BEGIN; $SCAN DECLARE c CURSOR FOR $Q1; FETCH 1 FROM c; SELECT 1 / (count(*) - count(*)) FROM t2;
 SQL
 check "a failed transaction gave the records back" test "$(sql primary "$(pinned)")" == P:0
 
 # a backend that is terminated holding records
 sql primary >/dev/null 2>&1 <<SQL &
-LOAD 'pg_sift'; SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; BEGIN; DECLARE c CURSOR FOR $Q1; FETCH 1 FROM c; SELECT pg_sleep(600);
+LOAD 'pg_sift'; SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; BEGIN; $SCAN DECLARE c CURSOR FOR $Q1; FETCH 1 FROM c; SELECT pg_sleep(600);
 SQL
 victim() { sql primary "SELECT pid FROM pg_stat_activity WHERE query LIKE 'SELECT pg_sleep(600)%' AND pid <> pg_backend_pid()"; }
 for _ in $(seq 300); do [[ -n $(victim) ]] && break; sleep 0.1; done

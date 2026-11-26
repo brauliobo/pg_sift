@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The size of the ring of shared dictionaries (a quarter of sift.shared_cache_kb, col/dictshm/dictshm.c): 0 makes no segment and shares nothing, a size is four times the size of the ring
+# The size of the ring of shared dictionaries (the col_dict share of sift.shared_cache_kb, core/shm/budget.c): 0 makes no segment and shares nothing, a size makes a ring of that share
 # (one segment of that many bytes, made by the first backend that keeps a dictionary), a ring too small for the dictionary is never made, and a backend that sets another
 # size after the ring is made uses the ring as it is. The rows are those of the stock plan in every case. Observed through the segments of /dev/shm (dynamic_shared_memory_type = posix).
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
@@ -29,34 +29,39 @@ backend() {
 segments() { local f n; for f in /dev/shm/PostgreSQL.*; do n=$(wc -c <"$f" 2>/dev/null | tr -d " ") && [[ -n $n ]] && echo "$n $f"; done | sort; true; }
 sized() { segments | awk -v n="$1" '$1 == n' | wc -l; }
 restart() { node_stop primary; node_conf primary "sift.shared_cache_kb = $1"; node_start primary || bail "restart failed"; }
+# the bytes of the ring a backend with SETTING... makes: its share of sift.shared_cache_kb, a multiple of 64 (DSHM_ALIGN)
+ring() { local b; b=$(sql primary "$@" "SELECT configured_bytes FROM sift.shared_memory() WHERE name = 'col_dict'"); echo $(( (b + 63) / 64 * 64 )); }
 
-# off: the segments this backend maps (its own /proc/self/maps) are the same before and after it reads the dictionary, the caches of planning being attached first
+# off: the segments this backend maps (its own /proc/self/maps) are the same before and after it reads the dictionary, the caches of planning and the telemetry of the
+# maintenance pacer, which a statement of the aggregate feeds (core/maint/pacer.c), being attached first
 maps() { echo "SELECT 'M:' || count(*) FROM regexp_split_to_table(pg_read_file('/proc/self/maps'), E'\n') l WHERE l LIKE '%/dev/shm/PostgreSQL.%'"; }
-OUT=$(sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "EXPLAIN (COSTS OFF) $SHAPE" "$(maps)" "$SHAPE" "$(maps)" | grep -E '^(M:|[0-9a-f]{32}$)' | tr '\n' ' ' | sed 's/ $//')
+OUT=$(sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "EXPLAIN (COSTS OFF) $SHAPE" "SELECT FROM sift_internal.maint_pacer()" "$(maps)" "$SHAPE" "$(maps)" | grep -E '^(M:|[0-9a-f]{32}$)' | tr '\n' ' ' | sed 's/ $//')
 A=$(backend)
 B=$(backend)
 check "0: two backends return the rows of the stock plan" test "$A|$B" == "$WANT 0,0,0|$WANT 0,0,0"
 check "0: a backend maps no segment for the dictionary it reads" test "${OUT%% *}|${OUT##* }|$(cut -d' ' -f2 <<<"$OUT")" == "${OUT%% *}|${OUT%% *}|$WANT"
 
-# 2000 kB: a ring of exactly that, kept by the first backend, read by the next
+# 8000 kB: a ring of its share, kept by the first backend, read by the next
 restart 8000
-SEG=$(sized 2048000)
+RING=$(ring)
+SEG=$(sized "$RING")
 A=$(backend)
 B=$(backend)
-check "2000: the first backend keeps the dictionary, the second finds it, to the rows of the stock plan" test "${A% *}|${B% *}|$(( $(cut -d, -f3 <<<"${A##* }") > 0 ))|$(( $(cut -d, -f2 <<<"${B##* }") > 0 ))" == "$WANT|$WANT|1|1"
-check "2000: the ring is one more segment, of 2000 kB" test "$(( $(sized 2048000) - SEG ))" == 1
-OUT=$(sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "EXPLAIN (COSTS OFF) $SHAPE" "$(maps)" "$SHAPE" "$(maps)" | grep -E '^M:' | tr -d 'M:' | tr '\n' ' ')
-check "2000: a backend maps the directory and the ring when it reads the dictionary" test "$(( ${OUT#* } - ${OUT%% *} ))" == 2
+check "8000: the first backend keeps the dictionary, the second finds it, to the rows of the stock plan" test "${A% *}|${B% *}|$(( $(cut -d, -f3 <<<"${A##* }") > 0 ))|$(( $(cut -d, -f2 <<<"${B##* }") > 0 ))" == "$WANT|$WANT|1|1"
+check "8000: the ring is one more segment, of its share" test "$(( $(sized "$RING") - SEG ))" == 1
+OUT=$(sql primary "LOAD 'pg_sift'" "SET max_parallel_workers_per_gather = 0" "SET sift.enable_agg = on" "EXPLAIN (COSTS OFF) $SHAPE" "SELECT FROM sift_internal.maint_pacer()" "$(maps)" "$SHAPE" "$(maps)" | grep -E '^M:' | tr -d 'M:' | tr '\n' ' ')
+check "8000: a backend maps the directory and the ring when it reads the dictionary" test "$(( ${OUT#* } - ${OUT%% *} ))" == 2
 C=$(backend "SET sift.shared_cache_kb = 32004")
-check "2000: a backend that asks for 8001 kB reads the ring as it is" test "${C% *}|$(( $(cut -d, -f2 <<<"${C##* }") > 0 ))" == "$WANT|1"
-check "2000: and no ring of 8001 kB is made" test "$(sized 8193024)" == 0
+check "8000: a backend that asks for 32004 kB reads the ring as it is" test "${C% *}|$(( $(cut -d, -f2 <<<"${C##* }") > 0 ))" == "$WANT|1"
+check "8000: and no ring of the share of 32004 kB is made" test "$(sized "$(ring "SET sift.shared_cache_kb = 32004")")" == 0
 D=$(backend "SET sift.shared_cache_kb = 0")
-check "2000: a backend that sets 0 shares nothing, to the same rows" test "$D" == "$WANT 0,0,0"
+check "8000: a backend that sets 0 shares nothing, to the same rows" test "$D" == "$WANT 0,0,0"
 
-# 250 kB: a record of half of it at most, the dictionary is more, so there is no ring
+# 1000 kB: a record of half of the ring at most, the dictionary is more, so there is no ring
 restart 1000
-SEG=$(sized 256000)
+RING=$(ring)
+SEG=$(sized "$RING")
 A=$(backend)
-check "250: the dictionary is parsed by each backend, to the rows of the stock plan" test "$A" == "$WANT 0,0,0"
-check "250: and no ring is made" test "$(( $(sized 256000) - SEG ))" == 0
+check "1000: the dictionary is parsed by each backend, to the rows of the stock plan" test "$A" == "$WANT 0,0,0"
+check "1000: and no ring is made" test "$(( $(sized "$RING") - SEG ))" == 0
 finish
