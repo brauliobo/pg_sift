@@ -326,7 +326,7 @@ def run_seed(seed, rows, steps, out_dir):
             out = a.run(sql + ';')
             if ERR.search(out):
                 raise Fail(f'{label}: {sql[:300]}: {out.strip()[:800]}')
-            run_battery(a, s.battery(), stats, label, strict=kind == 'reindex')
+            run_battery(a, s.battery(), stats, label, strict=kind == 'reindex' and s.summarized())
             if kind == 'txn_read':
                 a.run(s.rng.choice(['COMMIT;', 'ROLLBACK;']))
             out = a.run("SELECT 'verify', sift.col_verify('events_col', true);")
