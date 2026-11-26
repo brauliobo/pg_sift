@@ -306,7 +306,7 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 	f->a = *a;
 	f->cx = cx;
 	setup_quals(f);
-	f->count_only = spec->rows == false && spec->ext == NULL && spec->vqual == NIL && f->residual == NIL && sift_v6_spec_count_only(spec);
+	f->count_only = a->emit == NULL && spec->rows == false && spec->ext == NULL && spec->vqual == NIL && f->residual == NIL && sift_v6_spec_count_only(spec);
 	f->keyvec = palloc0(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	f->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	if (!f->count_only)
