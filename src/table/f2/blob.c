@@ -139,6 +139,22 @@ take_pages(const SiftExtent *ext, int *e, uint32 *off, uint64 npages, SiftExtent
 	return n;
 }
 
+/* The extents of a stage whose write failed, which nothing names, go back to the allocator; when that fails too, the next VACUUM sweeps them */
+static void
+give_back(Relation rel, const SiftExtent *ext, int n)
+{
+	PG_TRY();
+	{
+		sift_fsm_release(rel, ext, n, InvalidFullTransactionId);
+	}
+	PG_CATCH();
+	{
+		sift_fsm_note_orphans(rel);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
 /* The values that do not fit in their reference, in one stream of extents taken at once and cut in their order: one allocation and full batches of pages for the whole stage */
 static void
 write_values(Relation rel, const SiftRowBuf *rb, WideValue *vals, int nvals, uint64 npages)
@@ -151,6 +167,7 @@ write_values(Relation rel, const SiftRowBuf *rb, WideValue *vals, int nvals, uin
 	int			e = 0;
 	uint32		off = 0;
 	SiftPartBulkWriter w;
+	MemoryContext cx = CurrentMemoryContext;
 
 	PG_TRY();
 	{
@@ -174,9 +191,15 @@ write_values(Relation rel, const SiftRowBuf *rb, WideValue *vals, int nvals, uin
 	}
 	PG_CATCH();
 	{
+		ErrorData  *err;
+
+		MemoryContextSwitchTo(cx);
+		err = CopyErrorData();
+		FlushErrorState();
 		if (run != NULL)
 			sift_bulk_run_abort(run);
-		PG_RE_THROW();
+		give_back(rel, ext, next);
+		ReThrowError(err);
 	}
 	PG_END_TRY();
 	pfree(ext);

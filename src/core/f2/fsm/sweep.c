@@ -14,9 +14,11 @@
 #include "core/host.h"
 
 #include "access/xlog.h"
+#include "common/hashfn.h"
 #include "storage/lmgr.h"
 #include "utils/timestamp.h"
 
+#include "col/dsmreg.h"
 #include "col/f2/meta.h"
 #include "col/f2/f2.h"
 #include "col/f2/drop/parts.h"
@@ -439,8 +441,11 @@ hold_partitions(Sweep *s)
 		return false;
 	mr = sift_manifest_read_range(s->rel, NULL, NULL);
 	for (int i = 0; i < mr.n; i++)
+	{
+		sift_vacuum_delay_point();
 		if (!hold_partition(s, &mr.entries[i]))
 			return false;
+	}
 	return true;
 }
 
@@ -580,12 +585,72 @@ remember_swept_clean(Relation rel)
 		swept_clean_used++;
 }
 
+/*
+ * A count for each slot of a hash of the relation files that an error path left extents in (sift_fsm_note_orphans): the next VACUUM sweeps them without a restart of the server. Relations that
+ * share a slot only sweep once more than they need to; a server whose registry has no room for the table waits for the sweep of its next start, as before it had one.
+ */
+#define ORPHAN_HINTS		256
+
+typedef struct OrphanHints
+{
+	pg_atomic_uint32 n[ORPHAN_HINTS];
+} OrphanHints;
+
+static void
+orphan_hints_init(SIFT_DSM_INIT_ARGS)
+{
+	OrphanHints *h = ptr;
+
+	for (int i = 0; i < ORPHAN_HINTS; i++)
+		pg_atomic_init_u32(&h->n[i], 0);
+}
+
+static pg_atomic_uint32 *
+orphan_hint(Relation rel)
+{
+	static OrphanHints *hints;
+
+	/* MEM[MEM-SHM-19]: DSM orphan hints sift_orphan_hint_1 (1 kB fixed) */
+	if (hints == NULL)
+		hints = sift_dsm_try("sift_orphan_hint_1", sizeof(OrphanHints), orphan_hints_init);
+	return hints != NULL ? &hints->n[hash_bytes((const unsigned char *) &rel->rd_locator, sizeof(RelFileLocator)) % ORPHAN_HINTS] : NULL;
+}
+
+static uint32
+orphan_hint_read(Relation rel)
+{
+	pg_atomic_uint32 *h = orphan_hint(rel);
+
+	return h != NULL ? pg_atomic_read_u32(h) : 0;
+}
+
+void
+sift_fsm_note_orphans(Relation rel)
+{
+	pg_atomic_uint32 *h = orphan_hint(rel);
+
+	if (h != NULL)
+		pg_atomic_fetch_add_u32(h, 1);
+}
+
+/* A complete sweep took what the error paths counted before it started */
+static void
+orphan_hint_clear(Relation rel, uint32 seen)
+{
+	pg_atomic_uint32 *h = orphan_hint(rel);
+
+	if (h != NULL && seen != 0)
+		(void) pg_atomic_compare_exchange_u32(h, &seen, 0);
+}
+
 bool
 sift_fsm_sweep_due(Relation rel)
 {
 	Buffer		buf;
 	bool		due;
 
+	if (orphan_hint_read(rel) != 0)
+		return true;
 	if (swept_clean_here(rel))
 		return false;
 	buf = sift_blk_read(rel, SIFT_FSM_BLKNO, BUFFER_LOCK_SHARE);
@@ -594,17 +659,16 @@ sift_fsm_sweep_due(Relation rel)
 	return due;
 }
 
-/* Records that this server has swept the relation; when the sweep named every page and freed what nothing names, the window of the last batch of a pool has none that it leaves unnamed any more */
+/* Records that this server has swept the relation: the sweep named every page and freed what nothing names, so the window of the last batch of a pool has none that it leaves unnamed any more */
 static void
-mark_swept(Relation rel, bool complete)
+mark_swept(Relation rel)
 {
 	Buffer		buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
 	SiftXlog	x = sift_xlog_start(rel);
 	Page		root = sift_xlog_register(&x, sift_fsm_lock_root(rel), 0);
 
 	FSMM(root)->swept_start = server_start();
-	if (complete)
-		FSMM(root)->pool_lo = FSMM(root)->pool_mask = 0;
+	FSMM(root)->pool_lo = FSMM(root)->pool_mask = 0;
 	sift_fsm_root_seal(root);
 	sift_xlog_done(&x);
 	UnlockReleaseBuffer(buf0);
@@ -663,6 +727,7 @@ sweep_locked(Relation rel)
 		.open_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift orphan sweep part")};
 	ExtVec		orphans = {0};
 	uint64		blocks = 0;
+	uint32		hint = orphan_hint_read(rel);
 	bool		complete = false;
 
 	if (!collect(&s) || !orphan_runs(&s, &orphans, &blocks) || !orphans_safe(&s, blocks))
@@ -679,10 +744,13 @@ sweep_locked(Relation rel)
 	}
 	if (blocks > 0)
 		ereport(LOG, (errmsg("sift index \"%s\": the orphan sweep freed %llu blocks", RelationGetRelationName(rel), (unsigned long long) blocks)));
-	if (complete && blocks == 0 && FSMM(s.root.data)->pool_mask == 0)
+	if (!complete)
+		return blocks;
+	if (blocks == 0 && FSMM(s.root.data)->pool_mask == 0)
 		remember_swept_clean(rel);
 	else
-		mark_swept(rel, complete);
+		mark_swept(rel);
+	orphan_hint_clear(rel, hint);
 	return blocks;
 }
 

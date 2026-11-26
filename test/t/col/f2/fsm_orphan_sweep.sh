@@ -3,13 +3,14 @@
 # the server starts (sift_fsm_sweep_orphans, core/f2/fsm/sweep.c): used_blocks falls by what leaked and the file is as healthy as before. The sweep never frees a block that something names: it
 # runs only with the index to itself (a session that holds the index, and so may be between an allocation and its commit, makes it give up and a later VACUUM frees), and on indexes
 # that hold a scope, projections, a key journal, deletion vectors, micro-slabs, pending deletes and column delta chains it frees nothing until a block is leaked, and then exactly that block.
-# A leak is an extent the test functions allocate and never name, which is what a crash between the allocation and the commit leaves.
+# A leak is an extent the test functions allocate and never name, which is what a crash between the allocation and the commit leaves. A sweep that gave up (the orphans were over half of
+# the index) is tried again by the next VACUUM: only a sweep that named everything stands for the server start.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_SWEEP_ROWS 120000 60000)
 RICH=(zr_col tenant_scope_journal p_idx dim_col ev_col)
-plan $((4 + 4 + 3 * ${#RICH[@]} + 3))
+plan $((4 + 4 + 3 * ${#RICH[@]} + 3 + 2))
 
 p=osw
 F2="SET sift.test_create_format1 = off"
@@ -112,4 +113,16 @@ check "a sift_table without a column of variable length is swept and nothing it 
 out=$(sql "$p" "SELECT problem FROM sift.check('ti', true)" 2>&1)
 check "sift.check of the table is clean" test -z "$out"
 check "a sift_table with a column of variable length (its wide values are named by a granule only) is not swept" test "$(sql "$p" "SELECT sift._test_f2_sweep('tv')")" == 0
+
+# 4. the first sweep after the start gives up (the orphans are over half of a small index); once the index has grown past them, the next VACUUM sweeps and frees them, with no restart
+sql "$p" "$F2" "CREATE TABLE g (id int, a bigint)" "INSERT INTO g SELECT x, x FROM generate_series(1, 2000) x" "CREATE INDEX g_col ON g USING sift_col (id, a)" \
+	"SELECT count(*) FROM sift._test_f2_alloc_stream('g_col', 32)" "VACUUM g" >/dev/null || bail "the small index failed"
+gused() { sql "$p" "SELECT used_blocks FROM sift.space('g_col')"; }
+gave_up=$(gused)
+sql "$p" "INSERT INTO g SELECT x, x FROM generate_series(2001, 600000) x" >/dev/null
+grown=$(gused)
+sql "$p" "VACUUM g" >/dev/null
+check "the VACUUM after a sweep that gave up sweeps again and frees the 32 leaked blocks ($gave_up, $grown -> $(gused) in use)" test "$(gused)" -le $((grown - 32))
+out=$(problems g_col)
+check "sift.check of the small index is clean after it" test -z "$out"
 finish

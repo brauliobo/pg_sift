@@ -147,12 +147,15 @@ extern uint64 sift_fsm_reclaim_exclusive(Relation rel);
 /*
  * Gives the extents that nothing names back to the allocator: what a crash, or a failure after the write of a part and before the commit that names it, leaves allocated. It has the relation to itself
  * (ExclusiveLock, which no standby replays, taken without waiting unless held, the load lock, no VACUUM reading the manifest) and frees nothing, DEBUG1 says why, when the relation holds
- * what it cannot name (core/f2/fsm/sweep.c); the blocks freed. sift_fsm_tail_shrink, which every VACUUM ends with, runs it once for each relation and server start.
+ * what it cannot name (core/f2/fsm/sweep.c); the blocks freed. sift_fsm_tail_shrink, which every VACUUM ends with, runs it until it completes once for each relation and server start, and again after an error path left extents (sift_fsm_note_orphans).
  */
 extern uint64 sift_fsm_sweep_orphans(Relation rel);
 
-/* Whether this server has not swept the orphans of the relation yet: until it has, what a crash left allocated is not a leak */
+/* Whether this server has not swept the orphans of the relation yet, or an error path left extents in it since: until a complete sweep, what a crash or that error left allocated is not a leak */
 extern bool sift_fsm_sweep_due(Relation rel);
+
+/* An error path of a writer could not give back the extents it took: the next VACUUM sweeps the relation (no lock is taken, no page is read) */
+extern void sift_fsm_note_orphans(Relation rel);
 
 /* Whether every extent of the relation has a name that a pass over its parts finds: a sift_table keeps its wide values in extents that only a granule or a micro-slab names, so a table with a column of variable length has not */
 extern bool sift_fsm_names_all_extents(Relation rel);
