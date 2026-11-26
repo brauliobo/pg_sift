@@ -40,7 +40,7 @@ setup
 		PERFORM set_config('enable_sort', 'off', true);
 		ordered := false;
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT id, k FROM iso_wo ORDER BY k, id LIMIT 300' LOOP
-			ordered := ordered OR l LIKE '%Global Order: true%';
+			ordered := ordered OR l ~ 'Top-N Rows: ';
 		END LOOP;
 		PERFORM set_config('sift.test_col_open_gate', gate::text, true);
 		EXECUTE 'SELECT string_agg(id || '':'' || k, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, id, k FROM (SELECT id, k FROM iso_wo ORDER BY k, id LIMIT 300) s) s' INTO a;
