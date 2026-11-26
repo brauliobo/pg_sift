@@ -749,6 +749,7 @@ core/f2/io_stream.c
 core/f2/io_stream.h
 core/f2/manifest/manifest.c
 core/f2/manifest/manifest.h
+core/f2/manifest/many.c
 core/f2/manifest/check.c
 core/f2/manifest/combine.c
 core/f2/manifest/counters.c
