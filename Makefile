@@ -356,6 +356,7 @@ TESTING_REGRESS += col/f2/mutation
 TESTING_REGRESS += col/f2/mvcc_churn
 TESTING_REGRESS += col/f2/on63c_parity
 TESTING_REGRESS += col/f2/ordered_scan
+TESTING_REGRESS += col/f2/pack_one_commit
 TESTING_REGRESS += col/f2/parallel_conc
 TESTING_REGRESS += col/f2/partitioned_agg
 TESTING_REGRESS += col/f2/partitioned_only

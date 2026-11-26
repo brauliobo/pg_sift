@@ -70,7 +70,6 @@ blocknumber-sum	src/table/f2/blob.c	BlockNumber blk = ref->ext[e].start + b;	the
 array-append	src/agg/win/datebin.c	dig[nd++] = (char) ('0' + (int) (v % 10));	v is a 128-bit magnitude of at most 39 decimal digits and dig holds 1100
 cast-after-product	src/agg/vexpr/cal.c	d[i] = (int64) (q * per - bias + shift);	q is the floor of u / per, so q * per is at most u, which fits 64 bits
 cast-after-product	src/col/f2/maint.c	v[3] = Int64GetDatum(autovacuum_vac_thresh + (int64) (autovacuum_vac_scale * Max(tab->live_tuples, 0)));	a double: the scale (a GUC of at most 100) times a tuple count, far below 2^63
-array-append	src/col/f2/pack.c	rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};	one part is swapped and the array holds its one extent
 array-append	src/col/f2/key/plan.c	k->set[k->nset++] = vs[i];	at most SET_CAP values are taken (n > SET_CAP narrows by range instead) and the set holds SET_CAP
 array-append	src/col/f2/key/plan.c	kept[nk++] = k->set[i];	the kept values are some of the at most SET_CAP of the set and kept holds SET_CAP
 array-append	src/col/f2/key/plan.c	k->set[m++] = v;	the values kept are some of those of the set, which holds at most SET_CAP

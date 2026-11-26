@@ -204,54 +204,73 @@ left_add(PackJudge *j, SiftPartRef ref)
 	j->left[at] = ref;
 }
 
-static bool
-swap_to_slot(Relation rel, const PackCand *c, BlockNumber blk, int slot, PackJudge *judge)
+/* The parts of the batch that sit in the partition of the slots' first part still as the batch read them: the descriptors the commit expects and the ones it puts in their place */
+static int
+swap_prepare(Relation rel, const PackCand *c, const int *slots, int n, const SiftPartDesc *parts, int np, BlockNumber blk, PackJudge *judge, SiftPartDesc *upd, SiftPartDesc *expect,
+			 SiftExtent *rel_ext, int *nrel)
 {
+	int			nupd = 0;
+
+	for (int k = 0; k < n; k++)
+	{
+		const PackCand *cand = &c[slots[k]];
+		int			p = 0;
+
+		while (p < np && parts[p].part_gen != cand->d.part_gen)
+			p++;
+		if (p == np || parts[p].header_blk != cand->d.header_blk)
+			continue;
+		expect[nupd] = upd[nupd] = parts[p];
+		upd[nupd].header_blk = blk;
+		upd[nupd].flags = (upd[nupd].flags & ~(SIFT_PART_FLAG_PACKED_SLOT | SIFT_PART_PACK_SLOT_MASK)) | SIFT_PART_PACK_FLAGS(slots[k]);
+		nupd++;
+		if (cand->from == InvalidBlockNumber)
+			rel_ext[(*nrel)++] = (SiftExtent) {cand->d.header_blk, 1};
+		else
+		{
+			left_add(judge, (SiftPartRef) {(uint32) cand->part_id, cand->d.part_gen});
+			if (sift_packed_unreferenced_in(rel, cand->from, judge->left, judge->nleft, &judge->live))
+				rel_ext[(*nrel)++] = (SiftExtent) {cand->d.header_blk, 1};
+		}
+	}
+	return nupd;
+}
+
+/* The slots of a batch that name parts of one partition leave their pages in one commit of the manifest: the parts swapped */
+static int
+swap_to_slots(Relation rel, const PackCand *c, const int *slots, int n, BlockNumber blk, PackJudge *judge)
+{
+	const PackCand *first = &c[slots[0]];
 	SiftManifestRead mr;
 	SiftPartDesc *parts,
-				upd;
-	SiftExtent	rel_ext[1];
-	SiftPartRef leaving = {(uint32) c->part_id, c->d.part_gen};
-	SiftManifestEdit e;
+				upd[SIFT_PACKED_MAX_SLOTS],
+				expect[SIFT_PACKED_MAX_SLOTS];
+	SiftExtent	rel_ext[SIFT_PACKED_MAX_SLOTS];
 	int			np,
-				p = 0,
-				nrel = 0;
-	bool		packed_source;
+				nrel = 0,
+				nupd = 0;
 
-	if (!ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(c->part_id), ExclusiveLock))
-		return false;
-	packed_source = c->from != InvalidBlockNumber;
-	LockPage(rel, SIFT_PART_LOCK_BLKNO(c->part_id), ExclusiveLock);
-	mr = sift_manifest_read_range(rel, c->key_lo, NULL);
-	parts = mr.n > 0 && mr.entries[0].part_id == c->part_id ? sift_manifest_read_parts(rel, &mr.entries[0], &np) : NULL;
-	while (parts != NULL && p < np && parts[p].part_gen != c->d.part_gen)
-		p++;
-	if (parts == NULL || p == np || parts[p].header_blk != c->d.header_blk)
+	if (!ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(first->part_id), ExclusiveLock))
+		return 0;
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(first->part_id), ExclusiveLock);
+	mr = sift_manifest_read_range(rel, first->key_lo, NULL);
+	if (mr.n > 0 && mr.entries[0].part_id == first->part_id)
 	{
-		unlock_swap(rel, c->part_id);
-		return false;
+		parts = sift_manifest_read_parts(rel, &mr.entries[0], &np);
+		nupd = swap_prepare(rel, c, slots, n, parts, np, blk, judge, upd, expect, rel_ext, &nrel);
 	}
-	upd = parts[p];
-	upd.header_blk = blk;
-	upd.flags = (upd.flags & ~(SIFT_PART_FLAG_PACKED_SLOT | SIFT_PART_PACK_SLOT_MASK)) | SIFT_PART_PACK_FLAGS(slot);
-	if (packed_source)
-	{
-		left_add(judge, leaving);
-		if (sift_packed_unreferenced_in(rel, c->from, judge->left, judge->nleft, &judge->live))
-			rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};
-	}
-	else
-		rel_ext[nrel++] = (SiftExtent) {c->d.header_blk, 1};
-	e = (SiftManifestEdit) {.part_id = c->part_id,.key_lo = mr.entries[0].key_lo,.update_parts = &upd,.expect_parts = &parts[p],.nupdate = 1,.release = rel_ext,.nrelease = nrel};
-	sift_manifest_commit(rel, &e);
-	unlock_swap(rel, c->part_id);
-	return true;
+	if (nupd > 0)
+		sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = first->part_id,.key_lo = mr.entries[0].key_lo,.update_parts = upd,.expect_parts = expect,.nupdate = nupd,
+													   .release = rel_ext,.nrelease = nrel});
+	unlock_swap(rel, first->part_id);
+	return nupd;
 }
 
 static int
 pack_batch(Relation rel, const PackCand *c, int n)
 {
 	SiftPackItem items[SIFT_PACKED_MAX_SLOTS] = {0};
+	bool		grouped[SIFT_PACKED_MAX_SLOTS] = {false};
 	PackJudge  *judge = palloc(sizeof(PackJudge));
 	bool		packed_source = false;
 	BlockNumber blk;
@@ -263,10 +282,9 @@ pack_batch(Relation rel, const PackCand *c, int n)
 		char	   *image = sift_part_inline_image(rel, &c[i].d, (uint32) c[i].part_id, &len);
 
 		items[i] = (SiftPackItem) {.part_gen = c[i].d.part_gen,.part_id = (uint32) c[i].part_id,.image = image,.len = (uint16) len};
+		packed_source |= c[i].from != InvalidBlockNumber;
 	}
 	blk = sift_pack_write(rel, items, n);
-	for (int i = 0; i < n; i++)
-		packed_source |= c[i].from != InvalidBlockNumber;
 	judge->nleft = 0;
 	if (packed_source)
 	{
@@ -274,7 +292,18 @@ pack_batch(Relation rel, const PackCand *c, int n)
 		sift_live_packed_set_build(rel, &judge->live);
 	}
 	for (int i = 0; i < n; i++)
-		swapped += swap_to_slot(rel, &c[i], blk, i, judge);
+	{
+		int			slots[SIFT_PACKED_MAX_SLOTS],
+					ns = 0;
+
+		for (int j = i; j < n; j++)
+			if (!grouped[j] && c[j].part_id == c[i].part_id)
+				slots[ns++] = j;
+		for (int k = 0; k < ns; k++)
+			grouped[slots[k]] = true;
+		if (ns > 0)
+			swapped += swap_to_slots(rel, c, slots, ns, blk, judge);
+	}
 	if (packed_source)
 	{
 		sift_live_packed_set_free(&judge->live);
