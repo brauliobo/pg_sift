@@ -7,7 +7,8 @@
 plan 9
 
 node_init dq 54 "autovacuum = off
-sift.test_dsm_fail = 'pg_sift_dsm_dir'"
+sift.test_dsm_fail = 'pg_sift_dsm_dir'
+sift.test_create_format1 = on"
 node_start dq || bail "start failed"
 D=$(dir dq)
 sql dq "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test" "CREATE TABLE w (id int PRIMARY KEY, g int NOT NULL, v int NOT NULL) WITH (autovacuum_enabled = false)" \

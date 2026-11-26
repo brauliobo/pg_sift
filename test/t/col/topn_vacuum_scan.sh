@@ -8,7 +8,8 @@
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 4
-node_init vs 14 "autovacuum = off"
+node_init vs 14 "autovacuum = off
+sift.test_create_format1 = off"
 node_start vs || bail "start failed"
 D=$(dir vs)
 sql vs "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
@@ -36,21 +37,21 @@ differ() {
 }
 
 # stored units: the index is built last, on the rows; the largest ids are the deleted ones
-sql vs "$F2" "CREATE TABLE stored (id int, g int, n int)" "INSERT INTO stored SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
+sql vs "CREATE TABLE stored (id int, g int, n int)" "INSERT INTO stored SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
 	"CREATE INDEX stored_idx ON stored USING sift_col (id, g, n)" "VACUUM stored" "DELETE FROM stored WHERE id % 5 = 0" >/dev/null || bail "setup stored failed"
 check "the query is a top-N scan" test "$(sql vs "SET enable_sort = off" "EXPLAIN (COSTS OFF) SELECT id FROM stored ORDER BY id DESC LIMIT 10" | grep -c 'SiftAggV6TopN')" == 1
 race stored
 check "stored units: the top-N returns the rows of its snapshot" test "$(differ stored)" == 0
 
 # a unit already dirty: an earlier VACUUM removed rows, and the scan opens before the next one
-sql vs "$F2" "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
+sql vs "CREATE TABLE dirty (id int, g int, n int)" "INSERT INTO dirty SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" \
 	"CREATE INDEX dirty_idx ON dirty USING sift_col (id, g, n)" "DELETE FROM dirty WHERE id % 5 = 0" "VACUUM dirty" \
 	"DELETE FROM dirty WHERE id % 7 = 0" >/dev/null || bail "setup dirty failed"
 race dirty
 check "dirty units: the top-N returns the rows of its snapshot" test "$(differ dirty)" == 0
 
 # the write buffer
-sql vs "$F2" "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
+sql vs "CREATE TABLE lane (id int, g int, n int)" "CREATE INDEX lane_idx ON lane USING sift_col (id, g, n) WITH (write_buffer_limit = 65536)" \
 	"INSERT INTO lane SELECT i, i % 7, i % 100 FROM generate_series(1, 20000) i" "VACUUM lane" "DELETE FROM lane WHERE id % 5 = 0" >/dev/null || bail "setup lane failed"
 race lane
 check "lane rows: the top-N returns the rows of its snapshot" test "$(differ lane)" == 0
