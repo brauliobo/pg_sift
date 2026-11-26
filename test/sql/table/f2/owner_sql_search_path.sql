@@ -41,6 +41,43 @@ SELECT count(*) AS rows_kept FROM sp.facts;
 SELECT count(*) AS ttl_rows FROM sift.ttl_policies;
 
 ALTER ROLE sp_owner NOSUPERUSER;
+
+-- the refresh of the pairs of a followed table, as the owner of the pairs: the view of a role can neither change the search_path of the session that wrote the table nor make a
+-- temporary table that a later statement of that session reads
+SET ROLE sp_owner;
+CREATE TABLE sp.src (member int, tenant int);
+CREATE TABLE sp.pairs (member int, tenant int, UNIQUE (member, tenant));
+CREATE FUNCTION sp.plant(int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM pg_catalog.set_config('search_path', 'sp, pg_catalog', false);
+	RETURN $1;
+END $$;
+CREATE FUNCTION sp.plant_temp(int) RETURNS int LANGUAGE plpgsql AS $$
+BEGIN
+	CREATE TEMP TABLE IF NOT EXISTS pg_roles (rolname name, rolsuper bool);
+	RETURN $1;
+END $$;
+CREATE VIEW sp.pairs_v AS SELECT sp.plant(member) AS member, tenant FROM sp.src;
+SELECT * FROM sift.scope_follow_pairs('sp.pairs', 'sp.pairs_v', 'sp.src', 'member', 'member');
+RESET search_path;
+RESET ROLE;
+INSERT INTO sp.src VALUES (1, 1);
+SHOW search_path;
+SELECT 1::oid = 1::oid AS planted_operator;
+RESET search_path;
+SELECT rolsuper AS superuser_after_follow_refresh FROM pg_roles WHERE rolname = 'sp_owner';
+ALTER ROLE sp_owner NOSUPERUSER;
+SET ROLE sp_owner;
+CREATE OR REPLACE VIEW sp.pairs_v AS SELECT sp.plant_temp(member) AS member, tenant FROM sp.src;
+RESET ROLE;
+INSERT INTO sp.src VALUES (2, 2);
+SELECT count(*) AS planted_temp_tables FROM pg_class WHERE relpersistence = 't' AND relname = 'pg_roles';
+SELECT count(*) AS pairs FROM sp.pairs;
+SET ROLE sp_owner;
+SELECT sift.scope_unfollow_pairs('sp.pairs');
+RESET ROLE;
+
+ALTER ROLE sp_owner NOSUPERUSER;
 DROP SCHEMA sp CASCADE;
 DROP TABLE events;
 DROP ROLE sp_owner;
