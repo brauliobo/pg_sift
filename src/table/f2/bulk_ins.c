@@ -4,7 +4,7 @@
  * A multi_insert call of SIFT_BATCH_MIN_SLOTS rows or more, on a table that is in no publication and has no row trigger, packs each row into cells that the table keeps from one call to the
  * next and hands them to the stage of the transaction, which copies them into the column buffer of the partition: no allocation for a row. The values that need a copy of their own (a
  * detoasted datum) are made in a batch context that is reset every SIFT_BATCH_RESET_ROWS rows. The rows are packed SIFT_BULK_PACK_ROWS at a time and staged together. The stage writes the buffer of a
- * partition as one part of level 1 when it holds the flush count of rows (col/f2/l0/stage.c, sift_stage_set_bulk), so the rows are encoded once and written once; the maintenance rewrites it cold.
+ * partition as one part of level 1 when it holds the flush count of rows (col/f2/l0/stage.c, sift_stage_set_bulk), so the rows are encoded and written once.
  */
 #include "postgres.h"
 

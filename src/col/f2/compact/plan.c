@@ -72,13 +72,6 @@ part_is_consolidated(const SiftPartDesc *d)
 	return d->level > 0 && (d->flags & SIFT_PART_FLAG_BUILT) != 0;
 }
 
-/* A part a bulk insert wrote whole at level 1 (l0_stage_flush.c): rewritten once as a part of the cold tier, with its dictionaries and skip indexes, whether or not neighbours join it */
-bool
-sift_part_needs_retier(const SiftPartDesc *d)
-{
-	return d->level == SIFT_MAX_PART_LEVEL - 1 && (d->flags & SIFT_PART_FLAG_BUILT) != 0;
-}
-
 /* A part the compaction merges with the other small ones: a build packs whole granules into parts that can end under the floor, and those stay as they are */
 static bool
 part_is_small(const SiftPartDesc *d)
@@ -143,22 +136,6 @@ append_group(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *const *at,
 
 	add_group(out, ngroups, at, taken, false);
 	return taken;
-}
-
-/* The parts of a level that a bulk insert wrote warm and that no other group of the pass takes: as many groups as the budget makes, each a part of the cold tier, side by side in key order */
-static void
-plan_retier(SiftCompactGroup *out, int *ngroups, const SiftPartDesc *parts, int nparts, const bool *taken, int level, bool cold, uint64 budget)
-{
-	const SiftPartDesc **at = palloc(Max(nparts, 1) * sizeof(SiftPartDesc *));
-	int			n = 0;
-
-	for (int i = 0; i < nparts; i++)
-		if (!taken[i] && plannable(&parts[i], level, cold) && sift_part_needs_retier(&parts[i]))
-			at[n++] = &parts[i];
-	qsort(at, n, sizeof(SiftPartDesc *), by_key_lo);
-	for (int i = 0; i < n;)
-		i += append_group(out, ngroups, at + i, n - i, budget);
-	pfree(at);
 }
 
 /*
@@ -264,7 +241,6 @@ plan_groups(const SiftPartDesc *parts, int nparts, uint64 budget, int64 hot_cut,
 			qsort(at, n, sizeof(SiftPartDesc *), by_size);
 			(void) append_group(out, ngroups, at, n, budget);
 		}
-		plan_retier(out, ngroups, parts, nparts, taken, level, cold, budget);
 		plan_join(out, ngroups, parts, nparts, taken, level, cold, rewrites, budget);
 	}
 	pfree(at);

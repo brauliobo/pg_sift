@@ -572,7 +572,6 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	int			dominant = -1;
 	const SiftColRemap **remap = palloc0(Max(ngens, 1) * sizeof(SiftColRemap *));
 	bool		mapped = false,
-				retier = false,
 				read = true;
 	SiftCompactParResult par;
 
@@ -582,10 +581,9 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		remap[i] = in[i].remap;
 		level = Max(level, at[i]->level);
 		mapped |= remap[i] != NULL;
-		retier |= sift_part_needs_retier(at[i]);
 	}
 	res->nparts_in = ngens;
-	if (!slice && !mapped && !retier && !folds_any(fold, at, ngens) && sift_compact_join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
+	if (!slice && !mapped && !folds_any(fold, at, ngens) && sift_compact_join_parts(rel, part_id, memcpy(palloc(Max(ngens, 1) * sizeof(*at)), at, ngens * sizeof(*at)), ngens, spec, hot_cut, bounds_hold, hc->horizon, rel_ext, nrel, res, &joined))
 	{
 		*out = memcpy(palloc(sizeof(SiftPartDesc)), &joined, sizeof(SiftPartDesc));
 		*nout = 1;

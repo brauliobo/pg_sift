@@ -97,9 +97,6 @@ typedef struct SiftCompactGroup
 	bool		join;			/* the parts are joined as they are (sift_partition_join_online), their rows not read */
 } SiftCompactGroup;
 
-/* A part a bulk insert wrote at level 1 for the cold tier to rewrite: the plan takes it in a group of its own kind, and a compaction of it never copies its granules */
-extern bool sift_part_needs_retier(const SiftPartDesc *d);
-
 /* The blocks of a part, added to those a commit releases: its deletion vector is not among them, the commit releases the one the manifest holds when it is made */
 extern void sift_compact_release_part(const SiftPart *part, SiftExtent **rel_ext, int *nrel);
 

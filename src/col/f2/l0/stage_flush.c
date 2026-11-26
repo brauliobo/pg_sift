@@ -238,18 +238,14 @@ flush_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
 		if (sift_l0_slab_append(rel, p->part_id, p->key_lo, p->rb, &st->spec))
 			return;
 	}
-	bool		bulk = st->bulk_rows > 0 && p->rb->n >= SIFT_BATCH_COLD_MIN_ROWS;
-	uint16		level = bulk || p->rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0;
-	/* a bulk part keeps to the light codecs: the warm tier already trains dictionaries and builds skip indexes, which the cold rewrite of the part does once */
-	SiftCompressTier tier = level > 0 && !bulk ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
+	uint16		level = p->rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0;
+	SiftCompressTier tier = level > 0 ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
 
 	cols = palloc(Max(st->spec.ncols, 1) * sizeof(SiftColIn));
 	sift_rowbuf_sort(p->rb, &st->spec);
 	sift_rowbuf_cluster(p->rb, &st->spec, tier);
 	r = sift_rowbuf_rows(p->rb, cols, &st->spec);
-	r.bulk_tail = bulk;
-	r.part_flags = bulk ? SIFT_PART_FLAG_BUILT : 0;
-	st->bulk_warm |= bulk;
+	r.bulk_tail = st->bulk_rows > 0 && p->rb->n >= SIFT_BATCH_COLD_MIN_ROWS;
 	d = sift_part_write_rows(rel, (uint32) p->part_id, sift_manifest_new_gen(rel, 1), level, tier, &r);
 	e.add_parts = &d;
 	e.nadd = 1;
@@ -459,16 +455,6 @@ staged_part(const SiftPartitionEntry *e, void *arg)
 	return false;
 }
 
-/* The partitions that got parts of a bulk insert are asked to be compacted by the maintenance once the transaction commits: the plan finds the parts that are to be written again as parts of the cold tier */
-static void
-ask_retier(Relation rel, SiftTxnStage *st, const SiftManifestRead *now)
-{
-	for (int i = 0; i < now->n; i++)
-		if (staged_part(&now->entries[i], st))
-			sift_stage_ask_retier(rel, now->entries[i].part_id);
-	st->bulk_warm = false;
-}
-
 /* Each buffer with the lock of its partition; false when a split or a merge took a partition since the manifest was read, with the buffers of the partitions before it written and renewed */
 static bool
 flush_locked(Relation rel, SiftTxnStage *st, const SiftManifestRead *now, DelRun *runs, int nruns)
@@ -513,8 +499,6 @@ write_stage(Relation rel, SiftTxnStage *st, bool at_end)
 			drop_done_deletes(st, runs, nruns);
 	}
 	sift_f2_maint_note_parts(rel, now.entries, now.n, staged_part, st);
-	if (st->bulk_warm)
-		ask_retier(rel, st, &now);
 	if (at_end)
 		drop_done_deletes(st, runs, nruns);
 }

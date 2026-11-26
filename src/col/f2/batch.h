@@ -1,7 +1,7 @@
 /*
  * col/f2/batch.h - the policy of a batched bulk insert (COPY, CTAS, INSERT ... SELECT into a sift_table) and the string arena its row buffers copy values into. Portable: core/host.h only.
  *
- * A multi_insert call of nslots rows takes the direct route (rows buffered in the transaction's stage and written as parts of level 1 that the maintenance rewrites as parts of the cold tier) when it has SIFT_BATCH_MIN_SLOTS rows or more, the
+ * A multi_insert call of nslots rows takes the direct route (rows buffered in the transaction's stage and written as parts of level 1) when it has SIFT_BATCH_MIN_SLOTS rows or more, the
  * table is in no logical publication and has no row trigger; anything else keeps the staged route, which a small INSERT needs (a handful of rows is a slab batch, not a part). The buffer of a
  * partition is written when it holds a flush count of rows: a whole number of granules between SIFT_BATCH_MIN_ROWS and SIFT_BATCH_MAX_ROWS that the memory budget holds.
  */
