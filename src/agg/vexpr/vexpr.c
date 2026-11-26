@@ -126,7 +126,7 @@ nword(const Run *r, const SiftVec *v, int w)
 	return v->nan != NULL ? v->nan[w] & ones(r, w) : 0;
 }
 
-/* A NaN is a value no register holds: a row that computes on one is refused, the comparisons and IS NULL answer for it as PostgreSQL does */
+/* A NaN is a value no register holds: a row that computes on one is refused, a rescale or a widening of a numeric keeps it, the comparisons and IS NULL answer for it as PostgreSQL does */
 static void
 refuse_nan(const Run *r, const SiftVec *v, int act)
 {
@@ -386,16 +386,20 @@ static void
 op_cast(Run *r, const SiftVecOp *op)
 {
 	const SiftVec a = r->c->regs[op->a];
+	const bool	numeric = op->type_to == SVEC_NUM128;
 	SiftVec    *d;
 	const void *src;
 
-	refuse_nan(r, &a, op->act);
+	if (!numeric)
+		refuse_nan(r, &a, op->act);
 	d = own_reg(r, op->dst, op->type_to, op->scale);
 	for (int w = 0; w < r->nw; w++)
 		d->valid[w] = vword(r, &a, w);
 	d->all_valid = a.all_valid;
 	if (a.all_valid)
 		d->valid = NULL;
+	if (numeric)
+		d->nan = a.nan;
 	src = source_of(r, &a, d, esize(op->type), esize(op->type_to));
 	if (op->type == SVEC_I32 && op->type_to == SVEC_I64)
 		cast_i32_i64(d->data, src, r->n);
@@ -423,13 +427,13 @@ op_rescale(Run *r, const SiftVecOp *op)
 	const SiftVec a = r->c->regs[op->a];
 	SiftVec    *d;
 
-	refuse_nan(r, &a, op->act);
 	d = own_reg(r, op->dst, op->type, op->scale);
 	for (int w = 0; w < r->nw; w++)
 		d->valid[w] = vword(r, &a, w);
 	d->all_valid = a.all_valid;
 	if (a.all_valid)
 		d->valid = NULL;
+	d->nan = a.nan;
 	if (op->type == SVEC_NUM64)
 		rescale_i64(d->data, a.data, r->n, (int64) pow10_i128(op->aux));
 	else
