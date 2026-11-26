@@ -83,6 +83,7 @@ typedef struct SiftRowLockShmLayout
 	SiftRowLockTable rows;
 	SiftEscStripe esc_stripes[SIFT_ESC_STRIPES];
 	SiftEscStripeHdr esc[SIFT_ESC_STRIPES];
+	pg_atomic_uint32 prepared_epoch;	/* the PREPAREs of transactions that held row locks: a backend that found no prepared one asks again when it moved */
 } SiftRowLockShmLayout;
 
 /*
@@ -215,10 +216,10 @@ extern TransactionId sift_esc_find_conflicting_xid(const RelFileLocator *loc, ui
 
 /*
  * The fast intentions (fast_intent.c): slot is the one of this process that holds the intention of the key (-1: none yet). sift_fast_intent_set records the mode in it, or in a free one, and returns the
- * slot; -1 where a coarse lock of the key is held or asked for, or no slot is free (the caller takes the page lock). sift_fast_intent_restore puts a slot back to the mode it had (-1: free).
+ * slot; -1 where a coarse lock of the key is held or asked for, a transaction prepared since epoch (prepared_epoch) or no slot is free (the caller takes the page lock). sift_fast_intent_restore puts a slot back to the mode it had (-1: free).
  * sift_fast_intent_conflict is a transaction of another process, still running, whose intention conflicts with the coarse modes.
  */
-extern int	sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode);
+extern int	sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode, uint32 epoch);
 extern void sift_fast_intent_restore(SiftRowLockShmLayout *s, int slot, int mode);
 extern TransactionId sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, SiftEscModes want);
 extern void sift_fast_intent_release_all(SiftRowLockShmLayout *s);

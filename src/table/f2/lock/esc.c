@@ -50,6 +50,7 @@ shm_init(SIFT_DSM_INIT_ARGS)
 		LWLockInitialize(&s->esc[i].lock, escs);
 		pg_atomic_init_u32(&s->esc[i].coarse_active, 0);
 	}
+	pg_atomic_init_u32(&s->prepared_epoch, 0);
 	sift_fast_intent_init(s);
 }
 
@@ -265,6 +266,7 @@ typedef struct SiftLocalLock
 	bool		published;
 	bool		prepared_marked;	/* PREPARE took the page lock that says the relation has row locks in the lock manager */
 	uint8		prepared_probe;	/* of a relation: 0 not asked, 1 no prepared transaction holds row locks of it in the lock manager, 2 some does */
+	uint32		probe_epoch;	/* the prepared_epoch the probe was made at: 1 holds only while it stands */
 	SubTransactionId esc_sub;
 	struct SiftLocalLock *rel_parts;	/* of a relation: the locks of its partitions, linked by rel_next */
 	struct SiftLocalLock *rel_next;
@@ -406,8 +408,12 @@ sift_esc_prepared_locks_possible(Relation rel)
 	if (max_prepared_xacts == 0)
 		return false;
 	rl = lock_of(rel, SIFT_ESC_PART_ALL);
-	if (rl->prepared_probe == 0)
+	if (rl->prepared_probe == 0 || (rl->prepared_probe == 1 && shm != NULL && pg_atomic_read_u32(&shm->prepared_epoch) != rl->probe_epoch))
+	{
+		rl->probe_epoch = shm != NULL ? pg_atomic_read_u32(&shm->prepared_epoch) : 0;
+		pg_read_barrier();
 		rl->prepared_probe = sift_lock_2pc_present(rl->dbid, rl->relid) ? 2 : 1;
+	}
 	return rl->prepared_probe == 2;
 }
 
@@ -599,10 +605,14 @@ drop_sub_records(SubTransactionId mysub, SubTransactionId parent, bool abort)
 	for (int i = first; i < nsub && !abort; i++)
 	{
 		SiftEscSubRecord r = sublog[i];
+		SiftEscSubRecord *existing;
 
 		r.subxid = parent;
-		if (sub_find(parent, &r.locator, r.part_id) != NULL)
+		if ((existing = sub_find(parent, &r.locator, r.part_id)) != NULL)
+		{
+			existing->took_split_pin |= r.took_split_pin;
 			continue;
+		}
 		sublog[kept] = r;
 		sub_chain_push(kept++);
 	}
@@ -677,7 +687,7 @@ take_modes(const SiftLocalLock *l, SiftEscModes modes, LockWaitPolicy wait_polic
 
 /*
  * The coarse modes of the mode on the partition or relation: the count of its stripe goes up first, so that no row locker records an intention from now on, then the transactions whose records conflict
- * are waited for (a wait for a transaction is one the deadlock detector sees), and then the page lock. A refusal gives the count back.
+ * are waited for (a wait for a transaction is one the deadlock detector sees), and then the page lock. A refusal, or an error of a wait, gives the count back.
  */
 static TM_Result
 take_coarse(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bool *waited)
@@ -692,15 +702,25 @@ take_coarse(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bo
 		sift_esc_coarse_enter(shm, &l->loc, l->part_id);
 		l->coarse_counted = true;
 	}
-	while (shm != NULL && r == TM_Ok && TransactionIdIsValid(holder = sift_fast_intent_conflict(shm, &l->loc, l->part_id, want)))
-		if (wait_policy != LockWaitBlock)
-			r = TM_BeingModified;
-		else
-		{
-			XactLockTableWait(holder, NULL, NULL, XLTW_None);
-			*waited = true;
-		}
-	r = r == TM_Ok ? take_modes(l, want, wait_policy, waited) : r;
+	PG_TRY();
+	{
+		while (shm != NULL && r == TM_Ok && TransactionIdIsValid(holder = sift_fast_intent_conflict(shm, &l->loc, l->part_id, want)))
+			if (wait_policy != LockWaitBlock)
+				r = TM_BeingModified;
+			else
+			{
+				XactLockTableWait(holder, NULL, NULL, XLTW_None);
+				*waited = true;
+			}
+		r = r == TM_Ok ? take_modes(l, want, wait_policy, waited) : r;
+	}
+	PG_CATCH();
+	{
+		if (!counted)
+			coarse_leave(l);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 	if (r != TM_Ok && !counted)
 		coarse_leave(l);
 	return r;
@@ -722,7 +742,7 @@ take_intent(SiftLocalLock *l, LockTupleMode mode, LockWaitPolicy wait_policy, bo
 
 	if (l->intent_mode >= (int8) mode)
 		return TM_Ok;
-	if (fast_allowed(l) && (slot = sift_fast_intent_set(shm, &l->loc, l->part_id, l->fast_slot, mode)) >= 0)
+	if (fast_allowed(l) && (slot = sift_fast_intent_set(shm, &l->loc, l->part_id, l->fast_slot, mode, find_lock(&l->loc, SIFT_ESC_PART_ALL)->probe_epoch)) >= 0)
 	{
 		note_transition(l);
 		l->fast_slot = slot;
@@ -936,6 +956,9 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 		}
 		hold_prepared(locks[i]);
 	}
+	/* after the markers and before the coarse counts go: a backend that probed before them sees the epoch move */
+	if (shm != NULL && nlocks > 0)
+		pg_atomic_fetch_add_u32(&shm->prepared_epoch, 1);
 }
 
 void

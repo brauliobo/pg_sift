@@ -76,7 +76,7 @@ sift_fast_intent_init(SiftRowLockShmLayout *s)
 }
 
 int
-sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode)
+sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, int slot, LockTupleMode mode, uint32 epoch)
 {
 	SiftFastProc *p = mine(s);
 	SiftFastIntent *i;
@@ -94,7 +94,11 @@ sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 
 	}
 	pg_atomic_write_membarrier_u32(&i->mode, mode + 1);
 	if (pg_atomic_read_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active) == 0)
-		return slot;
+	{
+		pg_read_barrier();
+		if (pg_atomic_read_u32(&s->prepared_epoch) == epoch)
+			return slot;
+	}
 	pg_atomic_write_u32(&i->mode, before);
 	return -1;
 }
