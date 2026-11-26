@@ -119,6 +119,7 @@ typedef struct Facets
 	int64		nres;
 	int64		rescap;
 	Size		viewbytes;		/* the dirty-SB views of the segments (view and viewed arrays) */
+	Size		wbufbytes;		/* the counts of the values of the write buffers, while they are collected */
 	int64		lim;			/* results wanted, < 0 all */
 	bool		bounded;		/* results beyond lim are dropped while collecting */
 	/* phrase recheck */
@@ -134,7 +135,7 @@ static void
 facet_budget(const Facets *f, Size vals)
 {
 	sift_budget_check(f->qsbcap * sizeof(QSb) + f->nqsb * sizeof(sift_grp) + f->rowcap * ROW_BYTES + f->termcap +
-					  f->entcap * sizeof(Entry) + f->rescap * sizeof(Res) + f->viewbytes + vals,
+					  f->entcap * sizeof(Entry) + f->rescap * sizeof(Res) + f->viewbytes + f->wbufbytes + vals,
 					  work_mem, "sift.facets", "work_mem", "facet a keyword index with fewer distinct values, or narrow the query");
 }
 
@@ -377,6 +378,11 @@ count_wbuf(Facets *f, const SiftSegEntry *entry, HTAB *tab)
 		memcpy(term, doc.terms, doc.len[0]);
 		c = hash_search(tab, term, HASH_ENTER, &found);
 		c->n = found ? c->n + 1 : 1;
+		if (!found)
+		{
+			f->wbufbytes += sizeof(WbufCount);
+			facet_budget(f, 0);
+		}
 	}
 	sift_wbuf_close(r);
 }
@@ -427,6 +433,8 @@ collect_entries(Facets *f, SiftIndexState *st)
 
 		add_entry(f, c->term, strlen(c->term), -1, &info);
 	}
+	hash_destroy(wbuf);
+	f->wbufbytes = 0;
 }
 
 /* The matches among the docs of a term kept inline in the dictionary */
@@ -655,6 +663,7 @@ sort_entries(Facets *f)
 	}
 	runs[nruns - 1].end = f->nent;
 	heap = palloc(nruns * sizeof(int));
+	facet_budget(f, f->entcap * sizeof(Entry));
 	out = ents_regrow(f, NULL, f->entcap);
 	for (int i = 0; i < nruns; i++)
 		heap[i] = i;
@@ -683,9 +692,9 @@ collect_values(Facets *f, int64 *nvals)
 	Value	   *vals;
 	int64		n = 0;
 
+	sort_entries(f);
 	facet_budget(f, Max(f->nent, 1) * sizeof(Value));
 	vals = MemoryContextAlloc(f->mcxt, Max(f->nent, 1) * sizeof(Value));
-	sort_entries(f);
 	for (int64 i = 0, j; i < f->nent; i = j)
 	{
 		uint64		bound = 0;

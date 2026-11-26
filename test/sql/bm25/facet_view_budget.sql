@@ -33,5 +33,20 @@ SET work_mem = '1MB';
 SELECT * FROM sift.facets('d_body', 'd_cat', 'common', 3);
 RESET work_mem;
 
+-- the counts of the values of a write buffer are part of the budget: 3000 distinct values of a write buffer take more than 640 kB, and fit 2 MB
+CREATE TABLE fw (id int, body text, cat text) WITH (autovacuum_enabled = off);
+CREATE INDEX fw_body ON fw USING sift (body);
+CREATE INDEX fw_cat ON fw USING sift (cat) WITH (analyzer = keyword, write_buffer_limit = 65536);
+INSERT INTO fw SELECT i, 'common', 'v' || i FROM generate_series(1, 3000) i;
+SELECT kind, count(*) AS segments FROM sift.segments('fw_cat') GROUP BY 1;
+SET work_mem = '640kB';
+\set VERBOSITY sqlstate
+SELECT count(*) FROM sift.facets('fw_body', 'fw_cat', 'common', 3);
+\set VERBOSITY default
+SET work_mem = '2MB';
+SELECT count(*) FROM sift.facets('fw_body', 'fw_cat', 'common', 3);
+RESET work_mem;
+DROP TABLE fw;
+
 DROP TABLE d;
 DROP EXTENSION pg_sift;
