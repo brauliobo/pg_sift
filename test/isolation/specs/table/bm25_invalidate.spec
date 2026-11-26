@@ -1,4 +1,4 @@
-# The heap check of a BM25 count over a sift_table (sift_tbl_filter_page) judges the pages with the tombstones its scan began with, whatever
+# The heap check of a BM25 count (SiftCount, the aggregate pushdown off) over a sift_table (sift_tbl_filter_page) judges the pages with the tombstones its scan began with, whatever
 # the cache entry of the table is when it asks: a VACUUM invalidates it while the count waits, and an older snapshot keeps the log entries
 # of the rows deleted before the count's snapshot, so the new entry would have to read them again.
 # requires: tam gates
@@ -17,12 +17,12 @@ setup
 		b bigint;
 	BEGIN
 		PERFORM set_config('enable_seqscan', 'off', true);
+		PERFORM set_config('sift.enable_agg', 'off', true);
 		PERFORM set_config('sift.test_count_gate', gate::text, true);
 		SELECT count(*) INTO a FROM iso_bd WHERE body @@> 'express';
 		PERFORM set_config('sift.test_count_gate', 'off', true);
 		PERFORM set_config('enable_indexscan', 'off', true);
 		PERFORM set_config('enable_bitmapscan', 'off', true);
-		PERFORM set_config('sift.enable_scan', 'off', true);
 		PERFORM set_config('sift.enable_scan', 'off', true);
 		PERFORM set_config('enable_seqscan', 'on', true);
 		SELECT count(*) INTO b FROM iso_bd WHERE body ~ '(^| )express( |$)';

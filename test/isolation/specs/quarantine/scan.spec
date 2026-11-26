@@ -51,7 +51,7 @@ step s1plan	{ SELECT iso_q_plan() AS plan; }
 session s2
 setup	{ SET sift.on_corruption = quarantine; }
 step s2lock	{ SELECT pg_advisory_lock(7101); }
-step s2poke	{ SELECT sift._test_poke('iso_q_idx', 2, 8176, 9, 2); }
+step s2poke	{ SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('iso_q_idx', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('iso_q_idx') / 8192 - 1)) b) p; }
 step s2meet	{ SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(0); }
 step s2unlock	{ SELECT pg_advisory_unlock(7101); }
 step s2listed	{ SELECT index, error_code, detections FROM sift.quarantine; }

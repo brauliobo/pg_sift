@@ -8,10 +8,10 @@ pg_advisory_lock
 (1 row)
 
 step s1scan: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(7101); <waiting ...>
-step s2poke: SELECT sift._test_poke('iso_q_idx', 2, 8176, 9, 2);
-_test_poke
-----------
-          
+step s2poke: SELECT count(*) > 0 AS poked FROM (SELECT sift._test_poke('iso_q_idx', b, 8176, 9, 2) FROM generate_series(2, least(4, pg_relation_size('iso_q_idx') / 8192 - 1)) b) p;
+poked
+-----
+t    
 (1 row)
 
 step s2meet: SELECT result, coalesce(hint ~ '^REINDEX INDEX', false) AS reindex_hint FROM iso_q_try(0);
