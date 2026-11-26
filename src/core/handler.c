@@ -16,6 +16,7 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type_d.h"
 #include "commands/defrem.h"
+#include "commands/vacuum.h"
 #include "datatype/timestamp.h"
 #include "fmgr.h"
 #include "funcapi.h"
@@ -630,8 +631,7 @@ sift_am_routine(int strategies, int support, bool multicol)
 	am->amsupport = support;
 	am->amcanmulticol = am->amoptionalkey = multicol;
 	am->amcanbuildparallel = am->amusemaintenanceworkmem = true;
-	/* Bulk deletion stays on the leader. Other eligible indexes can still put VACUUM in parallel mode through cleanup, where the space step cannot assign an xid (sift_maint_space). */
-	am->amparallelvacuumoptions = 0;
+	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP;
 	am->amkeytype = InvalidOid;
 	return am;
 }
@@ -659,6 +659,7 @@ sift_handler(PG_FUNCTION_ARGS)
 {
 	IndexAmRoutine *am = sift_am_routine(SIFT_STRATEGY_KEY_EQUAL, 0, false);
 
+	am->amparallelvacuumoptions = 0;
 	am->amcaninclude = true;
 	am->amcanmulticol = am->amcanunique = true;
 	am->ambuild = sift_ambuild;

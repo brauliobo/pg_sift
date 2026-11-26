@@ -16,6 +16,7 @@
 #include "storage/bufmgr.h"
 #include "storage/bulk_write.h"
 #include "storage/smgr.h"
+#include "core/page.h"
 #include "utils/rel.h"
 
 #ifdef SIFT_TESTING
@@ -42,15 +43,16 @@ extern Buffer sift_extend_zeroed_to(Relation rel, BlockNumber nblocks);
 extern Buffer sift_extend_zeroed_to_bas(Relation rel, BlockNumber nblocks, BufferAccessStrategy bas);
 
 /*
- * A run of fresh pages written with smgr_bulk_write (WAL-logged and checksummed by it) under the extension lock, which no other writer of the file holds meanwhile: the pages past the end of the file
- * are queued in bulk memory and the file is extended once; a block that is already in the file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). The
- * pages reach the file ahead of the flush of their WAL, which only a file that no recovery or standby can have yet allows (the file this transaction made: CREATE INDEX, REINDEX): a relation
- * of an earlier commit, and one with local buffers (a temporary one), has no run, sift_bulk_run_begin gives NULL and its pages go through the buffers and generic WAL. The lock is released by
- * sift_bulk_run_end or by the abort of the transaction.
+ * A run of fresh pages written with smgr_bulk_write (WAL-logged and checksummed by it): the pages past the end of the file are queued in bulk memory and written without a lock, every
+ * page of them built, summed and copied before it is queued, never under one. The extension lock is held for the one extension of the file to the end of the extents of the run
+ * (sift_bulk_run_begin), which the blocks of no other writer of the file are in: the blocks of the run are in the file, zeroed, when the first page is queued. A block that is already in the
+ * file may be cached in shared buffers and is never written this way (sift_bulk_run_fresh says which). The pages reach the file ahead of the flush of their WAL, which only a file that no recovery
+ * or standby can have yet allows (the file this transaction made: CREATE INDEX, REINDEX): a relation of an earlier commit, and one with local buffers (a temporary one), has no run,
+ * sift_bulk_run_begin gives NULL and its pages go through the buffers and generic WAL.
  */
 typedef struct SiftBulkRun SiftBulkRun;
 
-extern SiftBulkRun *sift_bulk_run_begin(Relation rel);
+extern SiftBulkRun *sift_bulk_run_begin(Relation rel, const SiftExtent *ext, int next);
 extern bool sift_bulk_run_fresh(const SiftBulkRun *run, BlockNumber blk);
 
 /* A zeroed page to build, for sift_bulk_run_write */
@@ -60,7 +62,7 @@ extern Page sift_bulk_run_page(SiftBulkRun *run);
 extern void sift_bulk_run_write(SiftBulkRun *run, BlockNumber blk, Page page);
 extern void sift_bulk_run_end(SiftBulkRun *run);
 
-/* The run of a write that failed: the pages already written reach the checkpointer's fsync like those of a run that ended, the rest of the pages queued in bulk memory goes the same way, and the lock is given back before anything else takes a lock of the relation (the error has not reached the abort that would release it) */
+/* The run of a write that failed: the pages already written reach the checkpointer's fsync like those of a run that ended, the rest of the pages queued in bulk memory goes the same way */
 extern void sift_bulk_run_abort(SiftBulkRun *run);
 
 #endif							/* SIFT_EXTLOCK_H */

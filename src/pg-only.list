@@ -231,6 +231,9 @@ col/f2/compact/compact.c
 col/f2/compact/compact.h
 col/f2/compact/dict.c
 col/f2/compact/join.c
+col/f2/compact/neighbours.c
+col/f2/compact/par.c
+col/f2/compact/par.h
 col/f2/compact/plan.c
 col/f2/core_test.c
 col/f2/decoders_test.c
@@ -248,6 +251,7 @@ col/f2/batch.h
 col/f2/build/build.c
 col/f2/build/build.h
 col/f2/build/par.c
+col/f2/build/par.h
 col/f2/cache.c
 col/f2/cache.h
 col/f2/check.c

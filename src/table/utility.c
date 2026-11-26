@@ -7,12 +7,14 @@
 
 #include "access/relation.h"
 #include "catalog/namespace.h"
+#include "commands/defrem.h"
 #include "commands/tablecmds.h"
 #include "nodes/parsenodes.h"
 #include "tcop/utility.h"
 #include "utils/rel.h"
 
 #include "core/cachebudget.h"
+#include "col/f2/compact/par.h"
 #include "core/catalog.h"
 #include "table/dispatch.h"
 #include "table/wal.h"
@@ -79,6 +81,17 @@ check_new_partitions(Node *parse)
 		}
 }
 
+/* The participants VACUUM (PARALLEL n) asks the compaction of its indexes and tables for (par.h); the options of every other statement ask none */
+static int
+vacuum_parallel(Node *parse)
+{
+	if (IsA(parse, VacuumStmt))
+		foreach_ptr(DefElem, opt, castNode(VacuumStmt, parse)->options)
+			if (strcmp(opt->defname, "parallel") == 0)
+				return defGetInt32(opt);
+	return 0;
+}
+
 static void
 tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *env, DestReceiver *dest, QueryCompletion *qc)
 {
@@ -96,10 +109,19 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 			ops->ddl_before(rel, castNode(AlterTableStmt, parse));
 		relation_close(rel, NoLock);
 	}
-	if (prev_utility != NULL)
-		prev_utility(pstmt, query, readonly, context, params, env, dest, qc);
-	else
-		standard_ProcessUtility(pstmt, query, readonly, context, params, env, dest, qc);
+	PG_TRY();
+	{
+		sift_vacuum_parallel_workers = vacuum_parallel(parse);
+		if (prev_utility != NULL)
+			prev_utility(pstmt, query, readonly, context, params, env, dest, qc);
+		else
+			standard_ProcessUtility(pstmt, query, readonly, context, params, env, dest, qc);
+	}
+	PG_FINALLY();
+	{
+		sift_vacuum_parallel_workers = 0;
+	}
+	PG_END_TRY();
 	check_new_partitions(parse);
 	if (IsA(parse, DiscardStmt) && castNode(DiscardStmt, parse)->target == DISCARD_ALL)
 		sift_cache_discard_all();

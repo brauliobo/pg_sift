@@ -2,7 +2,7 @@
 """The probes of bench/scaling.sh (Spec 14 section 4): warm compute scaling (suite A), cold I/O scaling (suite B) and concurrent writer scaling (suite C).
 
     scaling_io.py load    --rows N                         the wide `events` table, the sift_col index on it, the extensions
-    scaling_io.py suite-a --rows N --workers 1,2,4,8       A1-A4 scans and group-bys, A5 parallel CREATE INDEX, A6 parallel VACUUM
+    scaling_io.py suite-a --rows N --workers 1,2,4,8       A1-A4 scans and group-bys, A5 parallel CREATE INDEX, A6 parallel VACUUM (w participants, the leader of A5 and A6 included)
     scaling_io.py suite-b --io-method M --data-dir DIR     B1-B4 cold scans for each workers x read-stream setting (the server runs with io_method M)
     scaling_io.py finish  --out FILE                       the speedups and gates of the B rows, after every io_method has run
     scaling_io.py suite-b5 --data-dir DIR                  B5 the hot table survives a cold scan and an index build (needs shared_buffers = 256MB)
@@ -163,7 +163,7 @@ def a_build(pg, out, args, ladder):
     base = None
     for w in ladder:
         ddl = 'CREATE INDEX events_scale ON events (entity_id, event_date, group_key, status)' if args.control else index_ddl('events', 'events_scale')
-        ms, wal = timed_ddl(pg, ddl, f"SET max_parallel_maintenance_workers = {w}; SET maintenance_work_mem = '256MB'")
+        ms, wal = timed_ddl(pg, ddl, f"SET max_parallel_maintenance_workers = {w - 1}; SET maintenance_work_mem = '256MB'")
         pg.exec_sql('DROP INDEX events_scale')
         base = base or ms
         speed = base / ms
@@ -178,7 +178,7 @@ def a_vacuum(pg, out, args, ladder):
         if not args.control:
             pg.exec_sql(index_ddl('events_v', 'events_v_sift'))
         pg.exec_sql("DELETE FROM events_v WHERE id % 5 = 0")
-        ms, _ = timed_ddl(pg, f"VACUUM (PARALLEL {w}) events_v", "SET maintenance_work_mem = '256MB'")
+        ms, _ = timed_ddl(pg, f"VACUUM (PARALLEL {w}) events_v", f"SET max_parallel_maintenance_workers = {w - 1}; SET maintenance_work_mem = '256MB'")
         pg.exec_sql('DROP TABLE events_v')
         base = base or ms
         speed = base / ms

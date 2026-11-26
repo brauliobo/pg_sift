@@ -15,7 +15,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/f2.h"
-#include "col/f2/build/build.h"
+#include "col/f2/build/par.h"
 #include "col/f2/connect.h"
 #include "col/f2/compact/compact.h"
 #include "col/f2/del/delete.h"
@@ -53,6 +53,9 @@ struct SiftF2Build
 	uint64		rows;
 	SiftF2RowTicker tick;
 	SiftF2UniqueBuild *unique;	/* the rows of a unique index by key, to find two of one key (NULL: the index is not unique) */
+	SiftF2BuildHand *hand;		/* a participant of a parallel build: where the parts it ends with wait for the commit of the leader (NULL: it commits them) */
+	SiftF2BuildGens *gens;		/* the generations the leader reserved for the runs of the participants */
+	bool		tiny;			/* a part of the build is small enough for sift_compact_pack_tails */
 };
 typedef struct SiftF2Build BuildState;
 
@@ -76,16 +79,42 @@ write_ended(BuildState *bs)
 }
 
 static void
-commit_written(BuildState *bs)
+commit_parts(Relation index, const SiftPartDesc *parts, int n)
 {
 	uint8		lo[SIFT_BOUND_BYTES] = {0};
-	SiftManifestEdit e = {.part_id = 1,.key_lo = lo,.add_parts = bs->written,.nadd = bs->nwritten};
+	SiftManifestEdit e = {.part_id = 1,.key_lo = lo,.add_parts = parts,.nadd = n};
 
-	if (bs->nwritten == 0)
-		return;
-	sift_manifest_commit(bs->index, &e);
+	if (n > 0)
+		sift_manifest_commit(index, &e);
+}
+
+static void
+commit_written(BuildState *bs)
+{
+	commit_parts(bs->index, bs->written, bs->nwritten);
 	bs->nwritten = 0;
-	(void) sift_fsm_reclaim(bs->index);
+}
+
+static void
+hand_over(BuildState *bs)
+{
+	memcpy(bs->hand->parts, bs->written, bs->nwritten * sizeof(SiftPartDesc));
+	bs->hand->n = bs->nwritten;
+	bs->hand->tiny = bs->tiny;
+	bs->nwritten = 0;
+}
+
+static uint64
+next_gen(BuildState *bs)
+{
+	if (bs->gens != NULL)
+	{
+		uint64		gen = pg_atomic_fetch_add_u64(&bs->gens->next, 1);
+
+		if (gen < bs->gens->end)
+			return gen;
+	}
+	return sift_manifest_new_gen(bs->index, 1);
 }
 
 static void
@@ -108,7 +137,8 @@ write_run(BuildState *bs)
 	/* STOR[STOR-WAL-02]: enable bulk_tail on F2 build (32-page smgr_bulk_write; F6 CIC WAL 26.45 -> 26.43 B/row measured) */
 	rows.bulk_tail = true;
 	SIFT_INVARIANT(bs->nwritten < SIFT_PARTLIST_CAP, "a build commits its parts before the list of them is full");
-	bs->written[bs->nwritten++] = sift_part_write_rows(bs->index, 1, sift_manifest_new_gen(bs->index, 1), SIFT_BUILD_LEVEL, SIFT_BUILD_TIER, &rows);
+	bs->written[bs->nwritten] = sift_part_write_rows(bs->index, 1, next_gen(bs), SIFT_BUILD_LEVEL, SIFT_BUILD_TIER, &rows);
+	bs->tiny |= bs->written[bs->nwritten++].nbytes <= SIFT_PACKED_SLOT_MAX_BYTES;
 	if (bs->nwritten == SIFT_PARTLIST_CAP || bs->nended > 0)
 		commit_written(bs);
 	write_ended(bs);
@@ -211,8 +241,40 @@ sift_f2_build_scan(SiftF2Build *bs, IndexInfo *info, TableScanDesc scan, bool pr
 	bs->unique = NULL;
 	sift_f2_progress_rows_flush(&bs->tick);
 	write_run(bs);
-	commit_written(bs);
+	if (bs->hand != NULL)
+		hand_over(bs);
+	else
+		commit_written(bs);
 	return reltuples;
+}
+
+void
+sift_f2_build_share(SiftF2Build *bs, SiftF2BuildHand *hand, SiftF2BuildGens *gens)
+{
+	bs->hand = hand;
+	bs->gens = gens;
+}
+
+void
+sift_f2_build_commit_hands(SiftF2Build *leader, const SiftF2BuildHand *hands, int n)
+{
+	SiftPartDesc *all = palloc(n * sizeof(hands->parts));
+	int			nall = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		memcpy(all + nall, hands[i].parts, hands[i].n * sizeof(SiftPartDesc));
+		nall += hands[i].n;
+		leader->tiny |= hands[i].tiny;
+	}
+	commit_parts(leader->index, all, nall);
+	pfree(all);
+}
+
+bool
+sift_f2_build_tiny(const SiftF2Build *bs)
+{
+	return bs->tiny;
 }
 
 uint64
@@ -256,6 +318,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	SiftF2Build *volatile bs;
 	TimestampTz start = GetCurrentTimestamp();
 	SiftF2Choices choices;
+	bool		tiny;
 
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
@@ -290,6 +353,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	}
 	PG_END_TRY();
 	res->index_tuples += bs->rows;
+	tiny = bs->tiny;
 	sift_f2_build_end(bs);
 	if (sift_f2_scoped(index) && !info->ii_Concurrent && !IsBinaryUpgrade)
 	{
@@ -310,7 +374,8 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	sift_f2_connect_build(heap, index);
 	sift_scope_start(heap, index, info->ii_Concurrent);
 	sift_f2_say_build(heap, index, start, res->index_tuples, choices);
-	(void) sift_compact_pack_tails(index);
+	if (tiny || sift_f2_scoped(index))
+		(void) sift_compact_pack_tails(index);
 	(void) sift_fsm_tail_shrink(index);
 	return res;
 }

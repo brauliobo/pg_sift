@@ -2,19 +2,21 @@
  * table/f2/scan.c - reading a sift_table: the granules of its parts as virtual tuples.
  *
  * The parts of the table, and the partitions' pending deletes, are what a scan reads; the rows of a granule that the snapshot sees are one bitmap (f2_mvcc.c), and the rows come out
- * of it in the order of the granule (or backwards). A parallel scan hands units of up to SIFT_TBL_SCAN_UNIT_GRANULES granules of one part to its workers through the unit queue of
- * shared memory; the units are listed once, by the leader, so that the workers read one and the same set of parts. Part pins and decoded granules are those of the shared cache types.
+ * of it in the order of the granule (or backwards). A parallel scan lists units of up to SIFT_TBL_SCAN_UNIT_GRANULES granules of one part, once, in the leader, so that the workers read one
+ * and the same set of parts, and hands the granules of the units to its workers as the guided morsels of the queue of shared memory that follows them (core/par/morsel.h): a table of a few units is shared by all of them. Part pins and decoded granules are those of the shared cache types.
  * A granule of a partition that has column deltas (table/f2/col_delta/col_delta.h) takes the patches its snapshot sees as its columns are decoded.
  */
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/parallel.h"
 #include "access/tsmapi.h"
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "datatype/timestamp.h"
 #include "executor/executor.h"
 #include "nodes/execnodes.h"
+#include "optimizer/cost.h"
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
@@ -27,7 +29,6 @@
 #include "utils/timestamp.h"
 
 #include "col/f2/store/schema.h"
-#include "core/f2/unit_queue.h"
 #include "core/cachebudget.h"
 #include "core/maint/pacer.h"
 #include "table/f2/col_delta/col_delta.h"
@@ -35,6 +36,7 @@
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
 #include "core/memtrack.h"
+#include "core/par/morsel.h"
 
 /* ---- the units of a scan ---- */
 
@@ -50,9 +52,27 @@ typedef struct SiftTblF2Parallel
 {
 	ParallelTableScanDescData base;
 	uint64		nunits;
-	SiftUnitQueue queue;
 	ScanUnit	units[FLEXIBLE_ARRAY_MEMBER];
+	/* then, at the next SIFT_PAR_SHM_ALIGN, the SiftMorselQueue of the granules of the units */
 } SiftTblF2Parallel;
+
+static SiftMorselQueue *
+par_queue(SiftTblF2Parallel *par)
+{
+	return (SiftMorselQueue *) TYPEALIGN(SIFT_PAR_SHM_ALIGN, par->units + par->nunits);
+}
+
+static void
+par_queue_init(SiftTblF2Parallel *par)
+{
+	/* check-memory: allow the units are those the leader listed in shared memory, one 4-byte count each */
+	uint32	   *granules = palloc(Max(par->nunits, 1) * sizeof(uint32));
+
+	for (uint64 i = 0; i < par->nunits; i++)
+		granules[i] = par->units[i].n;
+	sift_morsel_init(par_queue(par), (uint32) par->nunits, granules, max_parallel_workers_per_gather + 1);
+	pfree(granules);
+}
 
 /* The parts of a view in the order of a scan, taken one at a time: the units of a part are known once its header is read */
 typedef struct UnitCursor
@@ -158,7 +178,7 @@ sift_tbl_f2_parallelscan_estimate(Relation rel)
 	}
 	par_images = lappend(par_images, im);
 	MemoryContextSwitchTo(old);
-	return offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit);
+	return offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit) + SIFT_PAR_SHM_ALIGN + sift_morsel_size((uint32) im->nunits);
 }
 
 Size
@@ -185,8 +205,8 @@ sift_tbl_f2_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 	par->base.phs_syncscan = false;
 	par->nunits = im->nunits;
 	memcpy(par->units, im->units, im->nunits * sizeof(ScanUnit));
-	sift_unit_queue_init(&par->queue, im->nunits);
-	len = offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit);
+	par_queue_init(par);
+	len = offsetof(SiftTblF2Parallel, units) + im->nunits * sizeof(ScanUnit) + SIFT_PAR_SHM_ALIGN + sift_morsel_size((uint32) im->nunits);
 	MemoryContextDelete(im->cx);
 	return len;
 }
@@ -194,7 +214,7 @@ sift_tbl_f2_parallelscan_initialize(Relation rel, ParallelTableScanDesc pscan)
 void
 sift_tbl_f2_parallelscan_reinitialize(Relation rel pg_attribute_unused(), ParallelTableScanDesc pscan)
 {
-	sift_unit_queue_reset(&((SiftTblF2Parallel *) pscan)->queue);
+	par_queue_init((SiftTblF2Parallel *) pscan);
 }
 
 /* ---- the cursor ---- */
@@ -546,13 +566,12 @@ next_selected(const SiftTblF2Scan *s, int step)
 static bool
 claim_span(SiftTblF2Scan *s)
 {
-	uint64		first;
-	uint32		count;
+	SiftMorsel	m;
 
-	if (s->par == NULL || !sift_unit_queue_next(&s->par->queue, &first, &count))
+	if (s->par == NULL || !sift_morsel_claim(par_queue(s->par), ParallelWorkerNumber + 1, &m))
 		return false;
-	s->span_lo = (int64) s->prefix[first];
-	s->span_hi = (int64) s->prefix[first + count];
+	s->span_lo = (int64) s->prefix[m.part] + m.first;
+	s->span_hi = s->span_lo + m.n;
 	s->G = s->span_lo - 1;
 	return true;
 }

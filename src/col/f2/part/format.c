@@ -144,7 +144,7 @@ write_stream(Relation rel, const SiftPartIn *in, const SiftSecInput *secs, SiftS
 				g = 0;
 	pg_crc32c  *crc = palloc(Max(nsec, 1) * sizeof(pg_crc32c));
 	SiftPartBulkWriter w;
-	SiftBulkRun *run = in->bulk_tail ? sift_bulk_run_begin(rel) : NULL;
+	SiftBulkRun *run = in->bulk_tail ? sift_bulk_run_begin(rel, ext, next) : NULL;
 
 	for (int i = 0; i < nsec; i++)
 		INIT_CRC32C(crc[i]);

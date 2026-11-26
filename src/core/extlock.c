@@ -85,17 +85,35 @@ struct SiftBulkRun
 	bool		written;
 };
 
+/* The file made long enough for the blocks of the extents, the lock held for that alone: the length it had */
+static BlockNumber
+extend_file_to(Relation rel, BlockNumber nblocks)
+{
+	SMgrRelation smgr = RelationGetSmgr(rel);
+	BlockNumber eof;
+
+	test_disk_full(nblocks);
+	sift_extension_lock(rel);
+	eof = smgrnblocks(smgr, MAIN_FORKNUM);
+	if (eof < nblocks)
+		smgrzeroextend(smgr, MAIN_FORKNUM, eof, nblocks - eof, false);
+	sift_extension_unlock(rel);
+	return eof;
+}
+
 SiftBulkRun *
-sift_bulk_run_begin(Relation rel)
+sift_bulk_run_begin(Relation rel, const SiftExtent *ext, int next)
 {
 	SiftBulkRun *run;
+	BlockNumber end = 0;
 
 	if (RelationUsesLocalBuffers(rel) || !sift_maint_file_is_new(rel))
 		return NULL;
+	for (int e = 0; e < next; e++)
+		end = Max(end, ext[e].start + ext[e].nblocks);
 	run = palloc(sizeof(SiftBulkRun));
 	run->rel = rel;
-	sift_extension_lock(rel);
-	run->eof = RelationGetNumberOfBlocks(rel);
+	run->eof = extend_file_to(rel, end);
 	run->state = smgr_bulk_start_rel(rel, MAIN_FORKNUM);
 	return run;
 }
@@ -129,7 +147,6 @@ sift_bulk_run_abort(SiftBulkRun *run)
 {
 	if (run->written)
 		smgr_bulk_finish(run->state);
-	sift_extension_unlock(run->rel);
 	pfree(run);
 }
 
@@ -137,6 +154,5 @@ void
 sift_bulk_run_end(SiftBulkRun *run)
 {
 	smgr_bulk_finish(run->state);
-	sift_extension_unlock(run->rel);
 	pfree(run);
 }
