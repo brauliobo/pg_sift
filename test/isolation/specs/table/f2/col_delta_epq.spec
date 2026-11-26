@@ -23,12 +23,14 @@ teardown
 
 session s1
 step s1u	{ BEGIN; UPDATE iso_cd SET b = 5 WHERE id = 1; }
+step s1i	{ BEGIN; UPDATE iso_cd SET c = c + 1 WHERE id = 1; }
 step s1c	{ COMMIT; }
 step s1r	{ ROLLBACK; }
 
 session s2
 step s2u	{ UPDATE iso_cd SET c = c + 10 WHERE id = 1 AND b <> 5; }
 step s2v	{ UPDATE iso_cd SET c = c + 10 WHERE id = 1; }
+step s2m	{ UPDATE iso_cd SET c = c + 10 WHERE id = (SELECT id FROM iso_cd WHERE id = 1 FOR UPDATE); }
 step s2rr	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS n FROM iso_cd WHERE id = 1; }
 step s2e	{ ROLLBACK; }
 step s2s	{ SELECT concat_ws('/', b, c) AS bc FROM iso_cd WHERE id = 1; }
@@ -41,3 +43,5 @@ permutation s1u s2u s1r s2s
 permutation s1u s2v s1c s2s
 # a snapshot older than the writer's commit cannot update the row
 permutation s2rr s1u s1c s2v s2e s2s
+# a row mark of the subquery waits for the writer and locks the row it left: the update read the row before the writer's delta, so it meets the delta and runs again on top of it
+permutation s1i s2m s1c s2s

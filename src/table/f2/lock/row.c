@@ -137,6 +137,10 @@ sift_tbl_f2_record_delete(Relation rel, uint64 tid, CommandId cid, bool changing
 	sift_tbl_rowlock_mark_updated(rel, tid, 0, cid, true, changing_part);
 }
 
+/*
+ * A modify that meets a patch its snapshot does not see locks the row (EvalPlanQual, a BEFORE trigger, ON CONFLICT) and builds its new row from the one locked here: the acknowledgement
+ * lets that modify write over the patch. A row mark (TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS) feeds no modify, so a modify of the row its scan read before the patch meets it.
+ */
 TM_Result
 sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 					   uint8 flags, TM_FailureData *tmfd)
@@ -173,7 +177,7 @@ sift_tbl_f2_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTa
 
 			SIFT_INVARIANT(found, "a locked row of table \"%s\" is gone", RelationGetRelationName(rel));
 			sift_tbl_f2_predicate_point(rel, sift_tbl_tid_pack(&cur), snapshot);
-			if (at_latest)
+			if (at_latest && (flags & TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS) == 0)
 				sift_row_delta_ack(rel, sift_tbl_tid_pack(&cur), cid);
 			slot->tts_tid = cur;
 			tmfd->traversed = traversed;
