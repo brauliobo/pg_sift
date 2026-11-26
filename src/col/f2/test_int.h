@@ -37,6 +37,8 @@
 #define F2_NCOLS 4
 
 extern Relation f2t_open_index(FunctionCallInfo fcinfo, int lockmode);
+/* The allocator as sift.check() judges it: the metadata pages of the pool are given back first, so what it reports does not depend on whether the shared lease registry had a slot for the file */
+extern SiftFsmStats f2t_fsm_check(Relation rel);
 extern Datum f2t_record_result(FunctionCallInfo fcinfo, Datum *values, bool *nulls);
 extern ReturnSetInfo *f2t_srf_begin(FunctionCallInfo fcinfo);
 extern void f2t_srf_put(ReturnSetInfo *rsi, Datum *values, bool *nulls);

@@ -97,6 +97,13 @@ f2t_open_index(FunctionCallInfo fcinfo, int lockmode)
 	return relation_open(sift_rel_must_exist(PG_GETARG_OID(0)), lockmode);
 }
 
+SiftFsmStats
+f2t_fsm_check(Relation rel)
+{
+	sift_fsm_meta_pool_drain(rel);
+	return sift_fsm_check(rel);
+}
+
 uint64
 f2t_tid(int64 base, int i)
 {
@@ -629,7 +636,7 @@ sift_test_f2_check(PG_FUNCTION_ARGS)
 {
 	Relation	rel = f2t_open_index(fcinfo, AccessShareLock);
 	uint64		parts = sift_manifest_check(rel);
-	SiftFsmStats st = sift_fsm_check(rel);
+	SiftFsmStats st = f2t_fsm_check(rel);
 	char		buf[160];
 
 	snprintf(buf, sizeof(buf), "parts=%llu quarantined=%u/%llu meta_free=%llu/%llu", (unsigned long long) parts, st.quarantine_extents,

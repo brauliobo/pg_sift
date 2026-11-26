@@ -209,7 +209,7 @@ Datum
 sift_test_f2_fsm(PG_FUNCTION_ARGS)
 {
 	Relation	rel = f2t_open_index(fcinfo, AccessShareLock);
-	SiftFsmStats st = sift_fsm_check(rel);
+	SiftFsmStats st = f2t_fsm_check(rel);
 	StringInfoData s;
 
 	initStringInfo(&s);
