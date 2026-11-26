@@ -93,10 +93,11 @@ checkout_key() { echo "$(basename "$REPO")-$(printf %s "$REPO" | cksum | awk '{ 
 # flavor_key: the flavor and the PostgreSQL it builds for (a cassert server and a plain one of the same major compile the headers differently)
 flavor_key() { echo "$(tr ' +(),' '_____' <<<"${FLAVOR% }")-$(pg_config --bindir --configure --cppflags | cksum | awk '{ printf "%08x", $1 }')"; }
 
-# build_dir: the SIFT_BUILD_DIR of this flavor, empty for objects beside the sources (the staging build of scripts/ci-build.sh keeps them in its own throwaway tree)
+# build_dir: the SIFT_BUILD_DIR of this flavor, empty for objects beside the sources. The staging build of scripts/ci-build.sh keeps them in its own throwaway SIFT_TMP, one directory
+# for each flavor, so that the next flavor neither cleans nor overwrites them
 build_dir() {
 	[[ -z ${SIFT_BUILD_DIR:-} ]] || { echo "$SIFT_BUILD_DIR"; return; }
-	[[ -z ${SIFT_STAGE:-} ]] || return 0
+	[[ -z ${SIFT_STAGE:-} ]] || { echo "$TMP/build/$(flavor_key)"; return; }
 	[[ -n ${SIFT_BUILD_ROOT:-}${SIFT_TMP:-} || $(df -P /tmp 2>/dev/null | awk 'NR == 2 { print $1 }') == tmpfs ]] || return 0
 	echo "${SIFT_BUILD_ROOT:-/tmp/sift-build}/$(checkout_key)/$(flavor_key)"
 }
@@ -237,14 +238,14 @@ run() {
 	return $rc
 }
 
-# ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300). A backend that dies (a sanitizer that halts it, a PANIC test) makes the postmaster
-# recover every other session; under ASan that takes a minute, and a job that starts in it fails at once with "the database system is not yet accepting connections"
+# ready: waits until the cluster accepts connections (SIFT_READY_SECS, 300), polling 10, 20, then every 50 ms. A backend that dies (a sanitizer that halts it, a PANIC test) makes the
+# postmaster recover every other session; under ASan that takes a minute, and a job that starts in it fails at once with "the database system is not yet accepting connections"
 ready() {
 	local i
-	for ((i = 0; i < ${SIFT_READY_SECS:-300} * 2; i++)); do
+	for ((i = 0; i < ${SIFT_READY_SECS:-300} * 20; i++)); do
 		pg_isready -q -h "$SOCK" -p "$PORT" && return 0
 		[[ -f $DATA/postmaster.pid ]] || break
-		sleep 0.5
+		case $i in 0) sleep 0.01 ;; 1) sleep 0.02 ;; *) sleep 0.05 ;; esac
 	done
 	echo "pgtest: the cluster at $SOCK does not accept connections (no postmaster, or not ready after ${SIFT_READY_SECS:-300} s)" >&2
 	return 1

@@ -210,15 +210,16 @@ sub kill9_wait
 	wait_for(sub { !grep { running($_) } @children }, 120) or die "children of the killed postmaster still run: @children";
 }
 
-# wait_for(CODE, SECONDS): true as soon as CODE returns true, false when it still does not after SECONDS; polls every 0.1 s and does not sleep after
-# success. A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes it longer (poll_query_until for SQL)
+# wait_for(CODE, SECONDS): true as soon as CODE returns true, false when it still does not after SECONDS; the first polls come 10, 20 and 50 ms apart, then every
+# 50 ms (as wait_for of common.bash), and it does not sleep after success. A wait on an observable condition with a large cap, not a fixed budget: a loaded host only makes
+# it longer (poll_query_until for SQL)
 sub wait_for
 {
 	my ($cond, $seconds) = @_;
-	for (1 .. $seconds * 10)
+	for my $i (0 .. $seconds * 20 - 1)
 	{
 		return 1 if $cond->();
-		usleep(100_000);
+		usleep($i == 0 ? 10_000 : $i == 1 ? 20_000 : 50_000);
 	}
 	return $cond->();
 }

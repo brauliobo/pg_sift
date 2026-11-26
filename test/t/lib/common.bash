@@ -400,24 +400,23 @@ pgbench_bg() {
 	PGBENCH_PID=$!
 }
 
+# crash_ready NAME: the clients of crash_cycle have done some work (CRASH_READY returns t)
+crash_ready() { [[ $(sql "$1" "$CRASH_READY" 2>/dev/null) == t ]]; }
 # crash_cycle NAME LABEL MAXSLEEP CLIENTS ARGS...: pgbench (600 s at most) under CLIENTS clients, killed with the cluster after a random delay
 # of up to MAXSLEEP seconds, then the restart; false (not ok LABEL, the log) when the node does not come back. The delay counts from the first
 # work of the clients when CRASH_READY names a query that returns t once they have done some (pgbench connects its clients before it runs
 # anything, which on a busy host outlasts the delay and kills a cluster that has done nothing): false, with the log of pgbench, when that
 # does not happen within 120 s
 crash_cycle() {
-	local name=$1 label=$2 max=$3 clients=$4 w ready=
+	local name=$1 label=$2 max=$3 clients=$4
 	shift 4
 	pgbench_bg "$name" "$clients" 600 "$@"
-	if [[ -n ${CRASH_READY:-} ]]; then
-		for w in $(seq 240); do [[ $(sql "$name" "$CRASH_READY" 2>/dev/null) == t ]] && { ready=1; break; }; sleep 0.5; done
-		if [[ -z $ready ]]; then
-			crash "$name"
-			wait "$PGBENCH_PID"
-			not_ok "$label: the clients did no work within 120 s"
-			diag "$(tail -5 "$(dir "$name")/pgbench.log")"
-			return 1
-		fi
+	if [[ -n ${CRASH_READY:-} ]] && ! wait_for "crash_ready $name" 120; then
+		crash "$name"
+		wait "$PGBENCH_PID"
+		not_ok "$label: the clients did no work within 120 s"
+		diag "$(tail -5 "$(dir "$name")/pgbench.log")"
+		return 1
 	fi
 	sleep "$((RANDOM % max)).$((RANDOM % 9 + 1))$((RANDOM % 10))"
 	crash "$name"
@@ -464,14 +463,18 @@ upgrade_failed() {
 	diag "$(tail -n 20 "$d/pg_upgrade.log"; cat "$d"/data/pg_upgrade_output.d/*/loadable_libraries.txt 2>/dev/null; grep -hE -A2 'ERROR|error:|TRAP|FATAL|PANIC' "$d"/upgrade-logs/*.log 2>/dev/null | head -n 40)"
 }
 
+# finish: the leak checks of the nodes, the clusters all at once (each one's shutdown waits out the 100 ms polls of pg_ctl on its own); a node made twice is checked once
 finish() {
-	local name out
+	local name out names=() pids=() i
 	plan_audit
 	for name in "${!POOL_DB[@]}"; do
 		out=$(pool_end "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
 	done
-	for name in "${NODES[@]}"; do
-		out=$(node_leakcheck "$name" 2>&1) || { not_ok "leak check of node $name"; diag "$out"; }
+	mapfile -t names < <(printf '%s\n' "${NODES[@]}" | awk 'NF && !seen[$0]++')
+	for name in "${names[@]}"; do node_leakcheck "$name" >"$TAPDIR/$name.leak" 2>&1 & pids+=($!); done
+	for i in "${!names[@]}"; do
+		wait "${pids[i]}" || { not_ok "leak check of node ${names[i]}"; diag "$(<"$TAPDIR/${names[i]}.leak")"; }
+		rm -f "$TAPDIR/${names[i]}.leak"
 	done
 	plan_close
 	[[ $NFAIL -eq 0 ]] || diag "$NFAIL of $NTEST failed"

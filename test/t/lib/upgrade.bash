@@ -41,13 +41,23 @@ build_old() {
 	[[ -z $cache ]] || { mkdir -p "${cache%/*}" && tmp=$(mktemp -d "${cache%/*}/.tmp.XXXXXX") && cp -a "$2/." "$tmp/" && { mv -T "$tmp" "$cache" 2>/dev/null || rm -rf "$tmp"; }; }
 }
 
+# checksum_template BINDIR: the data directory initdb of BINDIR makes, with data checksums: made once for the binaries of BINDIR under $SIFT_TMP/initdb-k, copied from then on
+checksum_template() {
+	local t=$SIFT_TMP/initdb-k/$(cat "$1/initdb" "$1/postgres" | cksum | cut -d' ' -f1) tmp
+	[[ -d $t ]] && { echo "$t"; return; }
+	mkdir -p "${t%/*}" && tmp=$(mktemp -d "$t.XXXXXX") || return 1
+	"$1/initdb" -k --no-sync -D "$tmp" -A trust -U postgres -E UTF8 --no-locale --no-instructions --wal-segsize=1 >"$TAPDIR/initdb-k.log" 2>&1 || { rm -rf "$tmp"; return 1; }
+	mv -T "$tmp" "$t" 2>/dev/null || rm -rf "$tmp"
+	echo "$t"
+}
+
 # initdb_node NAME OFFSET BINDIR: the cluster every test starts from, with data checksums on both sides
 initdb_node() {
-	local d
+	local d t
 	d=$(dir "$1")
 	mkdir -p "$d/sock"
 	echo "$2" >"$d/offset"
-	"$3/initdb" -k --no-sync -D "$d/data" -A trust -U postgres -E UTF8 --no-locale --no-instructions --wal-segsize=1 >"$d/initdb.log" 2>&1 || bail "initdb $1 failed"
+	t=$(checksum_template "$3") && cp -a "$t" "$d/data" || bail "initdb $1 failed"
 	node_conf "$1" "port = $(port "$1")
 listen_addresses = ''
 unix_socket_directories = '$d/sock'

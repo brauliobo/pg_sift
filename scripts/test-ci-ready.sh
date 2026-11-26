@@ -26,7 +26,7 @@ ready_after() {
 touch "$TMP/data/postmaster.pid"
 [[ $(ready_after 5 0) == "0 1" ]] || fail "a cluster that accepts connections is waited for: $(ready_after 5 0)"
 [[ $(ready_after 5 3) == "0 4" ]] || fail "a cluster in recovery is waited for until it accepts: $(ready_after 5 3)"
-[[ $(ready_after 1 99) == "1 2" ]] || fail "a cluster that never accepts fails after SIFT_READY_SECS: $(ready_after 1 99)"
+[[ $(ready_after 1 99) == "1 20" ]] || fail "a cluster that never accepts fails after SIFT_READY_SECS: $(ready_after 1 99)"
 rm "$TMP/data/postmaster.pid"
 [[ $(ready_after 5 99) == "1 1" ]] || fail "a cluster with no postmaster stops the wait at once: $(ready_after 5 99)"
 grep -q 'ready || return 1' <(sed -n '/^clean() {/,/^}/p' "$REPO/scripts/pgtest.sh") || fail "clean does not wait for the cluster"
