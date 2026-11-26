@@ -1,18 +1,15 @@
--- The rows of the write buffers have no scope entries. A read of a scope key reads them from the buffers, once for each pair of their member under the statement's snapshot (the delta, as the promotion
--- would write them) and the stored units of every member that did not change: the rows it reads besides the units are those of the buffers, not the entity rows of the table. Table-driven: each state
--- of the facts and the pairs (the states accumulate), each read shape; every read is md5 equal to the plain join, says whether it took the units, and how many rows its delta read next to the
--- rows of the buffers and those read for the changed pairs. A member whose pairs changed is patched through the entity rows, the buffer rows of it with the rest of its rows (sift.test_scope_patch: the cluster of the tests patches
--- whatever it costs).
+-- The rows of the write buffers have no place in the scope summary yet. A read of a scope key answers from the summary and the changes since it (Scope Cube: delta), or from the join when the
+-- summary is not exact for its snapshot. Table-driven: each state of the facts and the pairs (the states accumulate), each read shape; every read is md5 equal to the heap (sift.enable_agg = off)
+-- and says how the scope node read it. The joins of one key or of several keys (a row for each pair) are scope reads; IN and EXISTS are read by the plain node.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
--- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
--- q: the statement over the scope units; plain: the same over the join of the pairs
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT patched_keys int, OUT patched_rows int, OUT delta_rows int)
+-- q read by the node and by the heap: equal or not, the Scope Read of the node (NULL: not a scope read) and its Scope Cube
+CREATE FUNCTION scope_run(q text, OUT same boolean, OUT route text, OUT cube text)
 LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
@@ -20,24 +17,14 @@ DECLARE
 	b text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
-	BEGIN
-		EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
-	EXCEPTION WHEN feature_not_supported THEN
-		same := NULL;
-		stored := false;
-		why := 'error: ' || substring(SQLERRM FROM '"(.*)"');
-		RETURN;
-	END;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
+	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = on;
 	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	patched_keys := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Keys"')::text::int, 0);
-	patched_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Patched Rows"')::text::int, 0);
-	delta_rows := coalesce(jsonb_path_query_first(p, '$.**."Scope Delta Rows"')::text::int, 0);
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
 
 -- 12 groups; member m is in 1 + m % 6 of them (1 to 6), members 100..109 are in none, members 301..320 have facts and no pair; 20,000 padded facts, some without a member
@@ -53,29 +40,19 @@ REINDEX INDEX facts_col;
 VACUUM (FREEZE, ANALYZE) facts;
 VACUUM (ANALYZE) membership;
 
--- the read shapes: nkeys the keys each has (a read per pair of them counts a row for each pair, so its delta may hold that many copies of a buffer row), @ the scope conjunct and $ its keys
-CREATE TABLE shapes (n int, label text, nkeys int, pairs boolean, keys int8[], q text, plain text);
+-- the read shapes, $ the keys
+CREATE TABLE shapes (n int, label text, keys int8[], q text);
 INSERT INTO shapes VALUES
-	(1, 'one key, count and sum', 1, false, '{3}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE @',
+	(1, 'one key, count and sum', '{3}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY ($)'),
+	(2, 'IN list of keys', '{7,9,11}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = ANY ($))'),
+	(3, 'EXISTS, dim_b in several keys', '{1,2,3,4,5,6}',
 		'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY ($))'),
-	(2, 'IN list of keys', 3, false, '{7,9,11}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE @',
-		'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = ANY ($))'),
-	(3, 'EXISTS, dim_b in several keys', 6, false, '{1,2,3,4,5,6}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE @',
-		'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY ($))'),
-	(4, 'a row for each pair of three keys', 3, true, '{3,5,7}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f WHERE @',
-		'SELECT count(*), sum(v), min(id), max(id) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY ($)'),
-	(5, 'listing of one key', 1, false, '{4}', 'SELECT id, v FROM facts f WHERE @ ORDER BY id DESC LIMIT 25',
-		'SELECT id, v FROM facts f WHERE EXISTS (SELECT 1 FROM membership m WHERE m.dim_a_id = f.dim_a_id AND m.group_id = ANY ($)) ORDER BY id DESC LIMIT 25');
+	(4, 'a row for each pair of three keys', '{3,5,7}', 'SELECT count(*), sum(v), min(id), max(id) FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY ($)'),
+	(5, 'listing of one key', '{4}', 'SELECT id, v FROM facts f JOIN membership m ON m.dim_a_id = f.dim_a_id WHERE m.group_id = ANY ($) ORDER BY id DESC LIMIT 25');
 
--- delta: none, within the rows of the buffers and those read for the changed pairs (the copies a pair of each of the keys makes at most), or more than they hold
-CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text, delta text, patched boolean) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' WHEN false THEN 'DIFFERENT' ELSE 'needs the join' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' END),
-		CASE WHEN r.delta_rows IS NULL THEN 'no read' WHEN r.delta_rows = 0 THEN 'none' WHEN r.delta_rows <= (b.rows + r.patched_rows) * s.nkeys THEN 'within the rows read' ELSE 'MORE THAN THE ROWS READ' END, r.patched_keys > 0
-	FROM shapes s,
-		LATERAL (SELECT coalesce(sum(rows), 0) AS rows FROM sift.col_segments('facts_col') WHERE kind = 'buffer') b,
-		LATERAL scope_run(
-			replace(s.q, '@', format('sift.in_scope%s(''facts_col''::regclass, ''group_id'', f.dim_a_id, %L::int8[])', CASE WHEN s.pairs THEN '_pairs' END, s.keys)),
-			replace(s.plain, '$', format('%L::int8[]', s.keys))) r
+CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text, cube text) LANGUAGE sql AS $$
+	SELECT s.n, s.label, CASE WHEN r.same THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.route, 'not a scope read'), r.cube
+	FROM shapes s, LATERAL scope_run(replace(s.q, '$', format('%L::int8[]', s.keys))) r
 	ORDER BY s.n
 $$;
 
@@ -114,10 +91,8 @@ SELECT * FROM probe();
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('facts_col', true);
 
--- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too, so the pairs of a buffered row's member are those of the btree.
--- A buffered row of a member with only soft deleted pairs reads nothing, one of a member with some active pairs reads a copy for each of them; every key's answer is the join's on the active pairs,
--- from the units through each state of the pairs and the buffers. The reads take the units whatever they cost (sift.test_scope_patch of the cluster): the price of the patch against the join sits
--- within a factor of two of the size of these tables, on both sides, and it follows the planner's estimates, which a PostgreSQL version may move across it (the tests of the price are col_scope_patch_price and col_scope_price_terms)
+-- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too. A buffered row of a member with only soft deleted pairs
+-- reads nothing, one of a member with some active pairs reads a row for each of them; every key's answer is the heap's on the active pairs, through each state of the pairs and the buffers
 CREATE TABLE sd_pairs (dim_a_id int, group_id int, deleted_at timestamptz, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
 INSERT INTO sd_pairs SELECT m, 1 + (m * 5 + j * 7) % 12, CASE WHEN (m + j) % 5 = 0 THEN now() END FROM generate_series(1, 200) m, generate_series(0, m % 3) j ON CONFLICT DO NOTHING;
 CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, group_id) WHERE deleted_at IS NULL;
@@ -128,12 +103,11 @@ CREATE INDEX sd_facts_col ON sd_facts USING sift_col (id, dim_a_id, at, v) WITH 
 REINDEX INDEX sd_facts_col;
 VACUUM (FREEZE, ANALYZE) sd_facts;
 
--- the groups 1..12 one at a time: how many answer as the join does, are read from the units, and read a delta
-CREATE FUNCTION sd_probe(OUT same int, OUT units int, OUT with_delta int) LANGUAGE sql AS $$
-	SELECT count(*) FILTER (WHERE r.same), count(*) FILTER (WHERE r.stored), count(*) FILTER (WHERE r.delta_rows > 0)
+-- the groups 1..12 one at a time: how many answer as the heap does, and how many are scope reads
+CREATE FUNCTION sd_probe(OUT same int, OUT scope_reads int) LANGUAGE sql AS $$
+	SELECT count(*) FILTER (WHERE r.same), count(*) FILTER (WHERE r.route IS NOT NULL)
 	FROM generate_series(1, 12) k, LATERAL scope_run(
-		format('SELECT count(*), sum(v), min(id), max(id) FROM sd_facts f WHERE sift.in_scope(''sd_facts_col''::regclass, ''group_id'', f.dim_a_id, %s)', k),
-		format('SELECT count(*), sum(v), min(id), max(id) FROM sd_facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM sd_pairs WHERE group_id = %s AND deleted_at IS NULL)', k)) r
+		format('SELECT count(*), sum(v), min(id), max(id) FROM sd_facts f JOIN sd_pairs p ON p.dim_a_id = f.dim_a_id WHERE p.group_id = %s AND p.deleted_at IS NULL', k)) r
 $$;
 CREATE TABLE sd_states (n int, label text, stmt text);
 INSERT INTO sd_states VALUES
@@ -148,6 +122,5 @@ DROP TABLE sd_states, sd_facts, sd_pairs;
 DROP FUNCTION sd_probe();
 
 DROP TABLE shapes, states, facts, membership;
-DROP FUNCTION probe(), apply(int), scope_run(text, text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION probe(), apply(int), scope_run(text);
 DROP EXTENSION pg_sift;
