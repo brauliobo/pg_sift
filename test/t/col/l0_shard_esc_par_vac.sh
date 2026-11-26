@@ -9,6 +9,7 @@
 plan 8
 node_init p 2 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 max_connections = 80
 max_prepared_transactions = 8
 max_worker_processes = 16

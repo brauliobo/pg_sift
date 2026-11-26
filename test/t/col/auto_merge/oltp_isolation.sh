@@ -8,6 +8,7 @@
 
 plan 19
 node_init iso 1 "shared_preload_libraries = 'pg_sift'
+sift.test_create_format1 = off
 autovacuum = off
 shared_buffers = '16MB'
 max_worker_processes = 16
