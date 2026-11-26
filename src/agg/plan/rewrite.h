@@ -38,6 +38,10 @@ typedef struct SiftV6Resolver
 /* a copy of expr in which every SUM(x + C) is the expression over SUM(x) and COUNT(x); the same tree gives the same copy, so that the plan can make it again */
 extern Node *sift_v6_collapse_offset_sums(Node *expr);
 
+/* count(x) or count(DISTINCT x) of a is count(*): x a constant that is not NULL, a NOT NULL column or the whole row of a table no outer join nulls; DISTINCT x the unique
+ * key of the one table of the statement */
+extern bool sift_v6_count_counts_rows(PlannerInfo *root, const Aggref *a);
+
 /* e is the first key plus delta, a column of type *type (int4 or int8): the first key's Var (not copied) */
 extern const Var *sift_v6_affine_of(const Expr *e, int64 *delta, Oid *type);
 /* the range of x for which x + delta stays in the type: its bounds, tightened by the delta of one more derived key */

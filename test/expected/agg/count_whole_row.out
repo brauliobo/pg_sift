@@ -71,7 +71,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM cases ORDER BY n;
  16 | whole row: DISTINCT stays as it was                         | plain same
  17 | join: inner join to a lookup                                | scan same
  18 | join: the scanned table preserved by a LEFT JOIN            | scan same
- 19 | join: the preserved table and the nullable lookup row       | plain same
+ 19 | join: the preserved table and the nullable lookup row       | scan same
  20 | join: the scanned table is the nullable side (rows missing) | plain same
  21 | join: a RIGHT JOIN that preserves the lookup                | plain same
  22 | join: a FULL JOIN                                           | plain same

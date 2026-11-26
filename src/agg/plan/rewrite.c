@@ -132,6 +132,39 @@ sift_v6_collapse_offset_sums(Node *expr)
 	return collapse_mutator(expr, NULL);
 }
 
+/* ---- count(x) of every row ---- */
+
+/* the column of x is a key of a unique index of rel, the one table of the statement (so no join repeats a row) */
+static bool
+unique_key(const PlannerInfo *root, const RelOptInfo *rel, const Var *x)
+{
+	if (bms_membership(root->all_baserels) != BMS_SINGLETON)
+		return false;
+	foreach_node(IndexOptInfo, ix, rel->indexlist)
+		if (ix->unique && ix->immediate && ix->indpred == NIL && ix->nkeycolumns == 1 && ix->indexkeys[0] == x->varattno)
+			return true;
+	return false;
+}
+
+bool
+sift_v6_count_counts_rows(PlannerInfo *root, const Aggref *a)
+{
+	const Expr *arg = list_length(a->args) == 1 ? ((const TargetEntry *) linitial(a->args))->expr : NULL;
+	const Var  *x = (const Var *) arg;
+	const RelOptInfo *rel;
+
+	if (arg != NULL && IsA(arg, Const))
+		return a->aggdistinct == NIL && !((const Const *) arg)->constisnull;
+	if (arg == NULL || !IsA(arg, Var) || x->varlevelsup != 0 || !bms_is_empty(x->varnullingrels) || a->aggorder != NIL || x->varno >= root->simple_rel_array_size)
+		return false;
+	rel = root->simple_rel_array[x->varno];
+	if (rel == NULL || rel->rtekind != RTE_RELATION || x->varattno < 0)
+		return false;
+	if (a->aggdistinct != NIL)
+		return bms_is_member(x->varattno, rel->notnullattnums) && unique_key(root, rel, x);
+	return x->varattno == 0 || bms_is_member(x->varattno, rel->notnullattnums);
+}
+
 /* ---- the first key plus a constant ---- */
 
 const Var *
