@@ -5,6 +5,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_exact_float = on;
 CREATE TABLE os_kinds (id int PRIMARY KEY, name text, enabled bool);
 CREATE TABLE os_members (kind_id int, tag int, gone timestamptz);
 CREATE TABLE os_events (id int PRIMARY KEY, kind_id int, region text, qty int, amount float8) WITH (autovacuum_enabled = false);

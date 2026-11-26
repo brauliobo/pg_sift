@@ -4,6 +4,7 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_exact_float = on;
 CREATE TABLE dims (id int PRIMARY KEY, grp int, label text);
 INSERT INTO dims SELECT g, 1 + g % 6, 'label_' || g FROM generate_series(1, 400) g;
 -- facts: dim_id 1 to 300 and 401 to 420 (no such row in dims) and NULL; dims 301 to 400 have no fact

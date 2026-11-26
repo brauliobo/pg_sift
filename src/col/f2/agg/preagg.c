@@ -235,6 +235,8 @@ bind_agg(const SiftV6Preagg *pa, const SiftF2GranOffer *o, const SiftPreaggCubeD
 			return false;
 		*out = (AggBind) {ASRC_DIST, k, leaf};
 	}
+	else if (sift_agg_exact_float && is_float && (a->kind == SV6_SUM || a->kind == SV6_AVG))
+		return false;
 	else if ((m = find_meas(cd, leaf, is_float, numeric)) >= 0)
 	{
 		if (numeric && cd->meas_kind[m] == SIFT_PMEAS_NUM64 && schema->cols[today].scale != a->arg.scale)
