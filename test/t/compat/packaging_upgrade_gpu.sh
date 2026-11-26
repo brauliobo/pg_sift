@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# tap: pooled
 # The packaging and the 5.1 to 6.0 update: the SQL parts are built by one recipe however many jobs make runs, the compiler of PGXS (not the host) names the target of the code generation flags,
 # every recipe installs python3, the preflight names a view over sift.table_paths_maintained (the update drops it), the update leaves no stub of a function 6.0 removed, ddl_hooks_enable(true)
 # sweeps the policy tables, and packaging/smoke.sql passes from 5.1 and from 6.0.
@@ -36,7 +35,8 @@ check "the Homebrew formula lists curl before icu4c" test "$(grep -n -E 'depends
 # the Vulkan header is for a build with Vulkan
 check "agg/vk/spv.h is included only in a build with Vulkan" test "$(awk '/^#ifdef SIFT_VULKAN/ {on = 1} /#include "agg\/vk\/spv.h"/ {print on + 0}' "$REPO/src/agg/vk/dev.c")" == 1
 
-node_init pk 1 "autovacuum = off"
+node_init pk 1 "autovacuum = off
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start pk || bail "start failed"
 q "$(node_db pk)" "CREATE DATABASE old" "CREATE DATABASE fresh" "CREATE DATABASE smoke51" "CREATE DATABASE smoke60" >/dev/null
 
