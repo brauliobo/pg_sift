@@ -11,10 +11,14 @@
 #include "agg/ht/ht.h"
 #include "agg/group/int.h"
 #include "agg/gen/gen.h"
+#include "agg/gpu/cfg.h"
+#include "agg/gpu/scan.h"
 #include "agg/group/rows.h"
+#include "core/par/pool.h"
 
-#define ROW_PARTS		16
-#define PART_BITS		4
+#define ROW_PARTS		32
+#define PART_BITS		5
+#define PART_LEVELS		(64 / PART_BITS)
 #define VEC_BYTES		(SIFT_VEC_LEN * 16 + SIFT_VEC_PAD + SIFT_VEC_ALIGN)
 #define ROW_VALID		1
 #define ROW_NAN			2
@@ -63,6 +67,8 @@ struct V6Rows
 	int			cap;
 	StringInfoData rec;
 	StringInfoData key;
+	uint64		puts;			/* the rows sent to a partition, and their bytes */
+	uint64		bytes;
 	int			nslots;
 	int			set;
 	uint16		n;
@@ -232,7 +238,7 @@ row_hash(const SiftV6Group *g, const V6Set *set, SiftVec *const *keyvec, uint16 
 static inline uint32
 part_of(uint64 hash, uint32 level)
 {
-	return (uint32) (hash >> (64 - PART_BITS * ((level % 15) + 1))) & (ROW_PARTS - 1);
+	return (uint32) (hash >> (64 - PART_BITS * ((level % PART_LEVELS) + 1))) & (ROW_PARTS - 1);
 }
 
 static void
@@ -264,6 +270,15 @@ put_row(SiftV6Group *g, V6Rows *rs, V6Set *set, SiftVec *const *keyvec, SiftVec 
 		MemoryContextSwitchTo(old);
 	}
 	BufFileWrite(rs->out[part], rs->rec.data, len);
+	rs->puts++;
+	rs->bytes += len;
+}
+
+void
+v6g_rows_stats(const SiftV6Group *g, uint64 *puts, uint64 *bytes)
+{
+	*puts += g->rows != NULL ? g->rows->puts : 0;
+	*bytes += g->rows != NULL ? g->rows->bytes : 0;
 }
 
 uint16
@@ -291,7 +306,24 @@ v6g_can_freeze(const SiftV6Group *g)
 
 	for (int s = 0; s < g->nsets; s++)
 		keyed |= g->set[s].nk > 0;
-	return keyed && g->gen != NULL && g->gkeys == NULL;
+	return keyed && g->gkeys == NULL;
+}
+
+/* Nothing folds the partial states of a thread into the table beside the rows (a granule of cells is scanned when the table is frozen): the threads need a pool, the unnest maps an extension, the device a setting */
+static bool
+rows_only(const SiftV6Spec *spec)
+{
+	return spec->ext == NULL && sift_gpu_mode == SIFT_GPU_OFF && sift_par_pool_threads() < 2;
+}
+
+bool
+v6g_rows_cheaper(const SiftV6Group *g)
+{
+	bool		slots = g->gen == NULL && g->ndist == 0 && !g->spilled && rows_only(g->spec);
+
+	for (int j = 0; slots && j < g->spec->naggs; j++)
+		slots = !v6g_is_text_mm(&g->spec->agg[j]) && g->spec->agg[j].kind != SV6_PCT_CONT;
+	return slots && v6g_can_freeze(g);
 }
 
 void
@@ -600,7 +632,8 @@ v6g_rows_replay(SiftV6Group *g)
 	next = rs->pending[--rs->npending];
 	old = MemoryContextSwitchTo(g->cx);
 	sift_v6_group_recycle(g);
-	v6_gen_restart(g->gen);
+	if (g->gen != NULL)
+		v6_gen_restart(g->gen);
 	for (int s = 0; s < g->nsets; s++)
 	{
 		g->set[s].frozen = false;

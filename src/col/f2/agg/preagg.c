@@ -787,7 +787,7 @@ sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 	int			ndead;
 	bool		done = false;
 
-	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || o->patched)
+	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || o->patched || !sift_v6_group_takes_cells(pa->group))
 		return false;
 	if ((!pb->bound || pb->gen != o->desc->part_gen) && !bind_part(pa, o))
 		return false;

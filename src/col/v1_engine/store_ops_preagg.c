@@ -530,7 +530,7 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 	Verdict		v;
 	bool		done;
 
-	if (unit->nsu != 0 || !rd->unit_exact(src, unit))
+	if (unit->nsu != 0 || !rd->unit_exact(src, unit) || !sift_v6_group_takes_cells(c->group))
 		return false;
 	if ((v = unit_verdict(c, rd, src, unit)) == V_SOME)
 		return false;

@@ -516,6 +516,16 @@ v6g_spill_if_over(SiftV6Group *g)
 	v6g_spill_all(g);
 }
 
+/* After a batch of rows: a table of slots that is over its memory sends the rows of the groups it has no room for away, in place of the records of its groups */
+void
+v6g_rows_if_over(SiftV6Group *g)
+{
+	if (!g->frozen && group_bytes(g) > g->budget - g->dist_budget && v6g_rows_cheaper(g))
+		v6g_freeze(g);
+	else
+		v6g_spill_if_over(g);
+}
+
 void
 v6g_spill_open(SiftV6Group *g)
 {

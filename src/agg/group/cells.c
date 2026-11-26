@@ -27,6 +27,12 @@ v6g_table_only(SiftV6Group *g, V6Set *set)
 		v6g_presize_set(g, set);
 }
 
+bool
+sift_v6_group_takes_cells(const SiftV6Group *g)
+{
+	return !g->frozen;
+}
+
 void
 sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *acc, uint16 n)
 {
@@ -34,6 +40,7 @@ sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *a
 	const int	naggs = g->spec->naggs;
 	MemoryContext old = MemoryContextSwitchTo(g->cx);
 
+	SIFT_INVARIANT(!g->frozen, "cells reached a table that sends the rows of its other groups away");
 	if (set->nk > 0)
 	{
 		v6g_table_only(g, set);
@@ -54,6 +61,7 @@ sift_v6_group_merge_dist(SiftV6Group *g, int agg, SiftVec *const *keyvec, SiftVe
 	SiftVec   **argvec = palloc0(Max(g->spec->naggs, 1) * sizeof(SiftVec *));
 	uint64		all[SIFT_VEC_WORDS] = {0};
 
+	SIFT_INVARIANT(!g->frozen, "distinct values of cells reached a table that sends the rows of its other groups away");
 	argvec[agg] = arg;
 	if (set->nk > 0)
 	{

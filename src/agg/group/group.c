@@ -517,7 +517,7 @@ v6g_update_set(SiftV6Group *g, int only, const SiftBatchSel *bs, SiftVec *const 
 		}
 		else
 			grouped_batch(g, &g->set[s], bs, keyvec, argvec);
-	v6g_spill_if_over(g);
+	v6g_rows_if_over(g);
 	MemoryContextSwitchTo(old);
 }
 
@@ -824,6 +824,7 @@ sift_v6_group_spill_stats(const SiftV6Group *g, uint64 *puts, uint64 *bytes)
 			*puts += sift_gspill_puts(g->set[s].spill);
 			*bytes += sift_gspill_bytes(g->set[s].spill);
 		}
+	v6g_rows_stats(g, puts, bytes);
 }
 
 void

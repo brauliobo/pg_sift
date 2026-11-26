@@ -229,6 +229,7 @@ sift_v6_group_fold_rec(SiftV6Group *g, const int64 *key, const SiftV6StrIn *str,
 	uint8	   *state;
 
 	Assert(g->spec->nsets == 0);
+	SIFT_INVARIANT(!g->frozen, "a record of states reached a table that sends the rows of its other groups away");
 	g->dist_done = true;		/* a record has the count of its distinct values: its group lives in the table, not in the set of pairs, and leaves with the table when it spills */
 	if (g->bulk != NULL && g->bulk->open)
 	{

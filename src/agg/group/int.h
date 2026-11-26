@@ -278,6 +278,7 @@ extern void v6g_merge_acc(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6
 
 /* the budget the tables of the groups may take: what the distinct sets do not */
 extern void v6g_spill_if_over(SiftV6Group *g);
+extern void v6g_rows_if_over(SiftV6Group *g);
 /* Every group table of the state to its spill, now, and the values its groups pointed to given back (no batch is in hand) */
 extern void v6g_spill_all(SiftV6Group *g);
 /* The same with those values kept, for the batch in hand that still holds their codes */
@@ -356,6 +357,7 @@ extern void v6g_presize_set(SiftV6Group *g, V6Set *set);
 extern void v6g_table_only(SiftV6Group *g, V6Set *set);
 
 /* group_cells.c: n cells of a granule (keyvec[i] is key i, one row for each; acc[c * naggs + j] the partial state of aggregate j of cell c) folded into the groups */
+extern bool sift_v6_group_takes_cells(const SiftV6Group *g);
 extern void sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *acc, uint16 n);
 /* n rows of the keys with a value of the COUNT(DISTINCT) aggregate agg each */
 extern void sift_v6_group_merge_dist(SiftV6Group *g, int agg, SiftVec *const *keyvec, SiftVec *arg, uint16 n);
