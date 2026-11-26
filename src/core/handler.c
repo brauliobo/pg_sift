@@ -40,6 +40,7 @@
 #include "core/quarantine/quarantine.h"
 #include "core/wal_conflict.h"
 #include "core/worker.h"
+#include "core/maint/drain.h"
 #include "core/maint/maint.h"
 #include "core/maint/sched.h"
 #include "agg/agg.h"
@@ -143,6 +144,7 @@ define_workers(void)
 	sift_worker_define(SIFT_WK_TBL_SETTLE, sift_tbl_settle_worker_main);
 	sift_worker_define(SIFT_WK_QUARANTINE, sift_quarantine_main);
 	sift_maint_set_stepper(sift_maint_step);
+	sift_maint_drain_install();
 	if (process_shared_preload_libraries_in_progress)
 		sift_maint_launcher_register();
 }

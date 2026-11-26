@@ -12,6 +12,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lmgr.h"
@@ -19,11 +20,11 @@
 #include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
+#include "utils/guc.h"
 
 #include "col/dsmreg.h"
 #include "core/compat.h"
 #include "core/f2/pace.h"
-#include "core/maint/drain.h"
 #include "core/waits.h"
 #include "core/worker.h"
 
@@ -311,6 +312,16 @@ nap(long ms)
 	CHECK_FOR_INTERRUPTS();
 }
 
+/* A reload of the configuration (pg_reload_conf) reaches the settings of the scheduler and of the pacer in the processes that run it, between two of their rounds */
+static void
+reload_config(void)
+{
+	if (!ConfigReloadPending)
+		return;
+	ConfigReloadPending = false;
+	ProcessConfigFile(PGC_SIGHUP);
+}
+
 /* The pages a step reads and writes are paced at the tier of its claim (core/f2/pace.c) */
 static SiftMaintStep
 paced_step(const SiftMaintClaim *claim, void *arg)
@@ -352,6 +363,7 @@ sift_maint_sched_worker_main(Datum main_arg)
 	memcpy(&worker, MyBgworkerEntry->bgw_extra, sizeof(worker));
 	worker_db = db;
 	pqsignal(SIGTERM, worker_term);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 	if ((m = sift_maint_table()) == NULL)
 		proc_exit(0);
@@ -365,6 +377,7 @@ sift_maint_sched_worker_main(Datum main_arg)
 	Assert(stepper != NULL);
 	for (int idle = 0; idle < SIFT_MAINT_IDLE_NAPS && !yielded;)
 	{
+		reload_config();
 		idle = run_guarded(m, db, &yielded) > 0 ? 0 : idle + 1;
 		sift_maint_reap(m, &sift_maint_server_host);
 		if (idle < SIFT_MAINT_IDLE_NAPS && !yielded)
@@ -379,7 +392,6 @@ sift_maint_launcher_register(void)
 	BackgroundWorker bw = {0};
 
 	launcher_registered = true;
-	sift_maint_drain_install();
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS;
 	bw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bw.bgw_restart_time = 10;
@@ -397,6 +409,7 @@ sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 	SiftMaintShmem *m;
 
 	pqsignal(SIGTERM, die);
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 	if ((m = sift_maint_table()) == NULL)
 		proc_exit(0);
@@ -404,6 +417,7 @@ sift_maint_sched_launcher_main(Datum main_arg pg_attribute_unused())
 	before_shmem_exit(launcher_exit_cb, 0);
 	for (;;)
 	{
+		reload_config();
 		while (sift_maint_kick(m, &sift_maint_server_host) == SIFT_KICK_SPAWNED)
 			;
 		sift_maint_reap(m, &sift_maint_server_host);
