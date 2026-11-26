@@ -1,35 +1,33 @@
--- The scan of an index with a scope (WITH (scope = 'key: fk -> relation(member, scope_key)')) reads the rows of one scope key from the scope segments of the index: the units of
--- the other keys are not read, and the rows are those of the join to the scope relation. Every state the scope segments cannot answer for (a setting, a write buffer, a journal that
--- does not vouch, a set of keys counted once) is read through the entity rows, and EXPLAIN says why. The test form of the conjunct is the marker sift.in_scope(index, key_name, fk, key).
--- The scope relation has its journal index (a scope index needs it); the first scope index of a relation starts its journal at the end of its build, so the stamps of the segments are taken by
--- the REINDEX that follows it, and the reads say "unfilled" until then.
+-- The scan of an index with a scope (WITH (scope = 'key: fk -> relation(member, scope_key)')) reads one scope key of the join to the scope relation from the scope summary, with the changes since it
+-- (a write buffer, deleted facts, pairs that changed), or the join when the summary is not exact for the snapshot (a journal that does not vouch for it); EXPLAIN says which (Scope Read). Every
+-- statement is md5 equal through the scope node, through sift with sift.agg_scope off and through the normal plan, in each state.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
--- what a statement does: the same rows as the plain join, the scope read (or why not), the units of the scope segments it read and skipped, the entries it read
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT units_read int, OUT units_skipped int, OUT entries int, OUT workers boolean)
+-- what a statement does: the same rows through every plan, the Scope Read of the node, and whether workers ran
+CREATE FUNCTION scope_run(q text, OUT same boolean, OUT route text, OUT workers boolean)
 LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
+	c text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
 	SET LOCAL sift.enable_agg = on;
-	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	units_read := coalesce(jsonb_path_query_first(p, '$.**."Scope Units Read"')::text::int, 0);
-	units_skipped := coalesce(jsonb_path_query_first(p, '$.**."Scope Units Skipped"')::text::int, 0);
-	entries := coalesce(jsonb_path_query_first(p, '$.**."Scope Entries Read"')::text::int, 0);
+	SET LOCAL sift.agg_scope = on;
+	same := a = b AND b = c;
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
 	workers := coalesce(jsonb_path_query_first(p, '$.**."Workers Launched"')::text::int, 0) > 0;
 END $$;
 
@@ -47,10 +45,9 @@ VACUUM (FREEZE, ANALYZE) events;
 VACUUM (ANALYZE) tenant_scope;
 SELECT sift.col_verify('events_col', true);
 
-CREATE TABLE shapes (n int, q text, plain text);
+CREATE TABLE shapes (n int, q text);
 INSERT INTO shapes
-SELECT n, replace(q, '@', 'sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, ' || k || ')'),
-	replace(plain, '@', 'e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ' || k || ')')
+SELECT n, replace(replace(q, '@', 's.tenant_id = ' || k), 'FROM events e', 'FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id')
 FROM (VALUES
 	(1, 3, 'SELECT count(*), sum(v), min(id), max(id) FROM events e WHERE @'),
 	(2, 3, 'SELECT v, count(*) FROM events e WHERE id > 5000 AND @ GROUP BY v ORDER BY v'),
@@ -58,33 +55,26 @@ FROM (VALUES
 	(4, 11, 'SELECT count(*), avg(v) FROM events e WHERE v > 4 AND @'),
 	(5, 99, 'SELECT count(*), sum(v) FROM events e WHERE @'),
 	(6, 5, 'SELECT date_trunc(''month'', created_at) m, count(*) FROM events e WHERE @ GROUP BY 1 ORDER BY 1'),
-	(7, 3, 'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20')) s(n, k, q),
-	LATERAL (SELECT q AS plain) p;
-CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean, stored boolean, why text, fewer_units boolean) LANGUAGE sql AS $$
-	SELECT s.n, r.same, r.stored, r.why, r.units_skipped > 0 FROM shapes s, LATERAL scope_run(s.q, s.plain) r ORDER BY s.n
+	(7, 3, 'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20')) s(n, k, q);
+CREATE FUNCTION phase() RETURNS TABLE (n int, same boolean, route text) LANGUAGE sql AS $$
+	SELECT s.n, r.same, r.route FROM shapes s, LATERAL scope_run(s.q) r ORDER BY s.n
 $$;
 
--- built: every shape reads the scope units of its key and skips those of the others (key 99 has no pair: no unit)
+-- built (key 99 has no pair)
 SELECT * FROM phase();
 
--- a scope read is decided once, by the leader (the verdict, the changed members and the patch are made from the snapshot of the statement): with workers allowed and the price of a
--- Gather at zero a read of this size still runs in one process (col_scope_workers launches them), and answers as the join
+-- workers allowed and the price of a Gather at zero: every read answers as the join
 SET max_parallel_workers_per_gather = 4;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
-SELECT bool_and(r.same) AS all_same, bool_and(r.stored) AS all_stored, bool_or(r.workers) AS workers_launched FROM shapes s, LATERAL scope_run(s.q, s.plain) r;
+SELECT bool_and(r.same) AS all_same FROM shapes s, LATERAL scope_run(s.q) r;
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET min_parallel_table_scan_size;
 
--- the setting off: the marker is no conjunct of the scan, the statement is the one as written, and the plan says so (Scope Fallback: disabled)
-SET sift.agg_scope = off;
-SELECT * FROM phase();
-RESET sift.agg_scope;
-
--- a journal that does not vouch for the stamp (a REINDEX of its index is a new lineage): the entity rows are read until the scope index is made again
+-- a journal that does not vouch for the summary (a REINDEX of its index is a new lineage), and the scope index made again
 REINDEX INDEX tenant_scope_journal;
 SELECT * FROM phase();
 REINDEX INDEX events_col;
@@ -97,18 +87,18 @@ VACUUM events;
 SELECT * FROM phase();
 SELECT sift.col_verify('events_col', true);
 
--- rows in a write buffer have no scope entries: the entity rows are read, with the members of the key
+-- rows in a write buffer: the changes since the summary
 INSERT INTO events SELECT 30000 + i, 1 + i % 300, timestamptz '2026-02-01', 1, 'y' FROM generate_series(1, 200) i;
 SELECT * FROM phase();
 
--- promoted: the rows of the buffer are an entity segment and scope segments of the same switch of the directory, so the scope units are read again; and the same after a merge (col_scope_maint has the states of the maintenance)
+-- promoted, and the same after a merge (col_scope_maint has the states of the maintenance)
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
 SELECT * FROM phase();
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 SELECT * FROM phase();
 SELECT sift.col_verify('events_col', true);
 
--- keys of a few rows share units of the scope segment (col/v1/order/order.c): a key's rows are told from the other keys' by the test of the derived key, and the units of the other keys are still skipped
+-- keys of a few rows each, 150 of them
 CREATE TABLE small_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
 INSERT INTO small_scope SELECT m, 1 + (m * 7) % 150 FROM generate_series(1, 1500) m;
 INSERT INTO small_scope SELECT m, 1 + (m * 7 + 11) % 150 FROM generate_series(1, 1500) m WHERE m % 10 = 0 ON CONFLICT DO NOTHING;
@@ -119,21 +109,17 @@ CREATE INDEX small_col ON small_events USING sift_col (id, dim_a_id, created_at,
 REINDEX INDEX small_col;
 VACUUM (FREEZE, ANALYZE) small_events;
 SELECT sift.col_verify('small_col', true);
-SELECT count(DISTINCT (gen, unit)) < count(DISTINCT key) AS units_shared FROM sift._test_col_scope_entries('small_col');
-SELECT n, r.same, r.stored, r.why, r.units_skipped > 0 AS fewer_units
+SELECT n, r.same, r.route
 FROM (VALUES (1, 1), (2, 77), (3, 150), (4, 151)) k(n, t),
-	LATERAL scope_run(
-		'SELECT v, count(*), sum(id), max(created_at) FROM small_events e WHERE sift.in_scope(''small_col''::regclass, ''tenant_id'', e.dim_a_id, ' || k.t || ') GROUP BY v ORDER BY v',
-		'SELECT v, count(*), sum(id), max(created_at) FROM small_events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM small_scope WHERE tenant_id = ' || k.t || ') GROUP BY v ORDER BY v') r
+	LATERAL scope_run('SELECT count(*), sum(id), max(created_at) FROM small_events e JOIN small_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ' || k.t) r
 ORDER BY n;
 
--- the journal of the scope relation vouches for the stamp; pairs deleted and added are read through the entity path for their members (docs/COL-CONNECT.md "The rule"), a top-N reads the entity rows (col_scope_maint and col_scope_patch have the refill and the other shapes)
+-- the journal of the scope relation names the members of the pairs deleted and added (docs/COL-CONNECT.md "The rule"; col_scope_maint and col_scope_patch have the refill and the other shapes)
 DELETE FROM tenant_scope WHERE tenant_id = 3 AND dim_a_id % 5 = 0;
 INSERT INTO tenant_scope VALUES (1, 3), (2, 3), (301, 3) ON CONFLICT DO NOTHING;
 SELECT * FROM phase();
 
 DROP TABLE small_events, small_scope;
 DROP TABLE shapes, events, tenant_scope;
-DROP FUNCTION phase(), scope_run(text, text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION phase(), scope_run(text);
 DROP EXTENSION pg_sift;

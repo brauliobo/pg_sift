@@ -1,14 +1,13 @@
--- A fact read for several scope keys at once with the meaning of IN / EXISTS counts once, though its member has pairs with several of the keys: the scope units of each key hold it, and the
--- units of all but the least key of the member leave its facts out (a list of members for each key that has them: Scope Dedupe Keys), so the answer is the plain join's (md5) and a naive IN over
--- the units replicated by key would count the members of two keys twice. A top-N over several keys reads the same units, and a join to another
--- relation per fact (GROUP BY the key of another scope) goes on top of the scan of the scope units of one key: the scope units expose the same rows as the entity scan.
+-- A fact read for several scope keys at once with the meaning of IN / EXISTS counts once, though its member has pairs with several of the keys, and the join counts it once for each pair. An
+-- index of two scopes, members in up to six keys: every statement (IN, EXISTS, a top-N over several keys, a join to the relation of the other scope) is md5 equal through the scope node, through
+-- sift with sift.agg_scope off and through the normal plan, and says how the node read it.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- 12 tenants and 20 groups; 300 members in one to six tenants (a quarter of them in two or more) and in zero to four groups
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -25,60 +24,59 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v)
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 
--- the same rows as the plain statement, whether the scope units were read, why not, whether the facts of a replica are left to the first key, and the scope the statement reads
-CREATE FUNCTION scope_run(q text, plain text, OUT same boolean, OUT stored boolean, OUT why text, OUT dedupe boolean, OUT scopes_read bigint)
+-- the same rows through every plan, and the Scope Read of the node (none: not a scope read)
+CREATE FUNCTION scope_run(q text, OUT same boolean, OUT route text)
 LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 	a text;
 	b text;
+	c text;
 BEGIN
 	SET LOCAL sift.enable_agg = on;
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO a;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
 	SET LOCAL sift.enable_agg = off;
-	EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || plain || ') t' INTO b;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
 	SET LOCAL sift.enable_agg = on;
-	same := a = b;
-	why := jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}';
-	stored := jsonb_path_exists(p, '$.**."Scope Units Read"');
-	dedupe := jsonb_path_exists(p, '$.**."Scope Dedupe Keys"');
-	scopes_read := (SELECT count(*) FROM jsonb_path_query(p, '$.**."Scope Index"'));
+	SET LOCAL sift.agg_scope = on;
+	same := a = b AND b = c;
+	route := coalesce(jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}', 'none');
 END $$;
 
 CREATE TABLE sets (n int, keys int8[]);
 INSERT INTO sets VALUES (1, '{2,9}'), (2, '{1,2,3,4,5,6}'), (3, '{7,9,11}'), (4, '{12,13}'), (5, '{5}'), (6, '{9,9,2}'), (7, '{}');
 
 -- once: IN and EXISTS over several keys, several classes
-CREATE FUNCTION once_phase() RETURNS TABLE (n int, class text, same boolean, stored boolean, why text, dedupe boolean) LANGUAGE sql AS $$
-	SELECT s.n, c.class, r.same, r.stored, r.why, r.dedupe
+CREATE FUNCTION once_phase() RETURNS TABLE (n int, class text, same boolean, route text) LANGUAGE sql AS $$
+	SELECT s.n, c.class, r.same, r.route
 	FROM sets s,
 	LATERAL (VALUES
 		('count', 'SELECT count(*), sum(v), min(id), max(id) FROM events e WHERE @', 'SELECT count(*), sum(v), min(id), max(id) FROM events e WHERE EXISTS (SELECT 1 FROM tenant_scope t WHERE t.dim_a_id = e.dim_a_id AND t.tenant_id = ANY (''' || s.keys::text || '''::int8[]))'),
 		('groups', 'SELECT v, count(*) FROM events e WHERE id > 5000 AND @ GROUP BY v ORDER BY v', 'SELECT v, count(*) FROM events e WHERE id > 5000 AND e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (''' || s.keys::text || '''::int8[])) GROUP BY v ORDER BY v'),
 		('window', 'SELECT count(*), sum(v) FROM events e WHERE @ AND created_at >= timestamptz ''2026-03-01'' AND created_at < timestamptz ''2026-04-01''', 'SELECT count(*), sum(v) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (''' || s.keys::text || '''::int8[])) AND created_at >= timestamptz ''2026-03-01'' AND created_at < timestamptz ''2026-04-01'''),
 		('top20', 'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20', 'SELECT id, created_at FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (''' || s.keys::text || '''::int8[])) ORDER BY created_at DESC, id DESC LIMIT 20')) c(class, q, plain),
-	LATERAL scope_run(replace(c.q, '@', 'sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, ''' || s.keys::text || '''::int8[])'), c.plain) r
+	LATERAL scope_run(c.plain) r
 	ORDER BY s.n, c.class
 $$;
 SELECT * FROM once_phase();
 
--- a naive read of the units replicated by key counts the members of two keys twice: what the dedupe leaves out
+-- the join counts the members of two keys twice, IN once
 SELECT (SELECT count(*) FROM events e JOIN tenant_scope t ON t.dim_a_id = e.dim_a_id WHERE t.tenant_id IN (2, 9)) AS naive_count,
 	   (SELECT count(*) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 9))) AS once_count;
-SELECT count(*) AS scope_read_count FROM events e WHERE sift.in_scope('events_col'::regclass, 'tenant_id', e.dim_a_id, '{2,9}'::int8[]);
 
--- per pair (the join and GROUP BY the key): a fact counts once for each pair, which the unit of each key gives, and a join on top of the scan of the scope units of the tenants gives the
--- rows of the groups of each fact: the facts of the tenant once for each live group of their member (md5 against the plain join); the group scope is not read as units there
-CREATE FUNCTION join_phase() RETURNS TABLE (n int, class text, same boolean, stored boolean, why text, scopes_read bigint) LANGUAGE sql AS $$
-	SELECT s.n, c.class, r.same, r.stored, r.why, r.scopes_read
+-- a join to the relation of the other scope, by the keys of the first: the facts of the tenants once for each live group of their member
+CREATE FUNCTION join_phase() RETURNS TABLE (n int, class text, same boolean, route text) LANGUAGE sql AS $$
+	SELECT s.n, c.class, r.same, r.route
 	FROM sets s,
 	LATERAL (VALUES
 		('group_join', 'SELECT g.group_id, count(*), sum(e.v) FROM events e JOIN group_scope g ON g.dim_a_id = e.dim_a_id WHERE @ GROUP BY 1 ORDER BY 1',
 		 'SELECT g.group_id, count(*), sum(e.v) FROM events e JOIN group_scope g ON g.dim_a_id = e.dim_a_id WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (''' || s.keys::text || '''::int8[])) GROUP BY 1 ORDER BY 1'),
 		('group_join_month', 'SELECT g.group_id, date_trunc(''month'', e.created_at) m, count(*) FROM events e JOIN group_scope g ON g.dim_a_id = e.dim_a_id WHERE @ AND e.v > 3 GROUP BY 1, 2 ORDER BY 1, 2',
 		 'SELECT g.group_id, date_trunc(''month'', e.created_at) m, count(*) FROM events e JOIN group_scope g ON g.dim_a_id = e.dim_a_id WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (''' || s.keys::text || '''::int8[])) AND e.v > 3 GROUP BY 1, 2 ORDER BY 1, 2')) c(class, q, plain),
-	LATERAL scope_run(replace(c.q, '@', 'sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, ''' || s.keys::text || '''::int8[])'), c.plain) r
+	LATERAL scope_run(c.plain) r
 	WHERE s.n IN (1, 2, 5)
 	ORDER BY s.n, c.class
 $$;
@@ -90,11 +88,10 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 DELETE FROM events WHERE id % 7 = 0;
 VACUUM events;
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
-SELECT n, class, same, stored, why, dedupe FROM once_phase() WHERE class IN ('count', 'top20');
-SELECT n, class, same, stored, why, scopes_read FROM join_phase() WHERE class = 'group_join';
+SELECT n, class, same, route FROM once_phase() WHERE class IN ('count', 'top20');
+SELECT n, class, same, route FROM join_phase() WHERE class = 'group_join';
 SELECT sift.col_verify('events_col', true);
 
 DROP TABLE sets, events, tenant_scope, group_scope;
-DROP FUNCTION once_phase(), join_phase(), scope_run(text, text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION once_phase(), join_phase(), scope_run(text);
 DROP EXTENSION pg_sift;

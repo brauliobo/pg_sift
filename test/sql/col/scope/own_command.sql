@@ -1,15 +1,13 @@
 -- A scope read by the transaction that changed the pairs or the events. The journal record of a pair change carries the transaction and the command: the changes of the reader's own transaction (an
--- earlier command, an open savepoint) are changed pairs of its next reads and are read through the pairs under its snapshot; those of a savepoint that rolled back, or of a transaction that rolled back, are
--- void; a cursor opened before a change reads the pairs and the events as they were at its command. Every read is md5 equal to the join with the scope off and to the plain plan, takes the scope units
--- (no fallback), and the changes move the answer (the join answer differs from that of the committed state), so a read that ignored them would fail here. Counts and hashes only, no timings.
+-- earlier command, an open savepoint) are changes of its next reads and are read through the pairs under its snapshot; those of a savepoint that rolled back, or of a transaction that rolled back, are
+-- void; a cursor opened before a change reads the pairs and the events as they were at its command. Every read is md5 equal to the join with the scope off and to the plain plan, says how the scope
+-- node read it (Scope Read), and the changes move the answer (the join answer differs from that of the committed state), so a read that ignored them would fail here. Counts and hashes only, no timings.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
--- the narrowed read is taken whatever it costs: the price is the subject of col_scope_patch_price
-SET sift.test_scope_patch = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- 8 keys; dim_a_id d is in 1 + d % 3 of them (1 to 100), 101..120 have events and no pair
 CREATE TABLE tenant_scope (dim_a_id int, tenant_id int, PRIMARY KEY (dim_a_id, tenant_id));
@@ -43,13 +41,13 @@ BEGIN
 	RETURN h;
 END $$;
 
--- the route of a statement: "units" when the plan reads the scope units, else the fallback reason or "no scope read"
+-- the route of a statement: the Scope Read of the node, else "no scope read"
 CREATE FUNCTION own_route(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE
 	p jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
-	RETURN coalesce(jsonb_path_query_first(p, '$.**."Scope Fallback"') #>> '{}', CASE WHEN jsonb_path_exists(p, '$.**."Scope Units Read"') THEN 'units' ELSE 'no scope read' END);
+	RETURN coalesce(jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}', 'no scope read');
 END $$;
 
 -- the answers of the committed state, to say that a change moved them
@@ -166,5 +164,4 @@ SELECT sift.col_verify('events_col', true);
 
 DROP TABLE shapes, own_base, events, tenant_scope;
 DROP FUNCTION own_hash(text, boolean, boolean), own_route(text), own_rebase(), own_probe(text), own_cursor(text, text);
-DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
