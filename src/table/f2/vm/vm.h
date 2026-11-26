@@ -13,7 +13,9 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/transam.h"
+#include "storage/bufmgr.h"
 #include "utils/relcache.h"
 
 /* Whether this server logs the map of the table: preloaded, and the table is not a temporary one */
@@ -42,11 +44,17 @@ extern TransactionId sift_vm_horizon_xid(FullTransactionId fx, FullTransactionId
 /* Clears the bits of the vblock before the delete or the update of a row of it is staged; an ERROR where the table has a map and the server cannot log it */
 extern void sift_tbl_vm_clear(Relation rel, BlockNumber vblock);
 
+typedef struct SiftTblVmSwept SiftTblVmSwept;
+
+/* Sweeps orphan index entries (aborted staged inserts or compacted holes) in clean partial vblocks below the lease floor so VACUUM can mark them all visible */
+extern SiftTblVmSwept *sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *indexes, int nindexes, IndexBulkDeleteResult **stats, BufferAccessStrategy bstrategy);
+extern void sift_tbl_vm_swept_free(SiftTblVmSwept *swept);
+
 /*
  * VACUUM's pass, after the indexes were cleaned of the rows that are dead for everyone and the parts were compacted: sets the bits of the vblocks that are all visible (and all frozen)
  * and stores the counts in the metapage. Where a writer holds the table it sets nothing and keeps the counts it had.
  */
-extern void sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId freeze);
+extern void sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId freeze, const SiftTblVmSwept *swept);
 
 /* The all visible and all frozen vblocks, of the vblocks that hold a row, as of the last VACUUM (as pg_class holds them in blocks, scaled to the size of the file) */
 extern void sift_tbl_vm_fractions(Relation rel, BlockNumber nblocks, BlockNumber *allvisible, BlockNumber *allfrozen, double *allvisfrac);

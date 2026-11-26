@@ -815,6 +815,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	int			elevel = (params->options & VACOPT_VERBOSE) != 0 ? INFO : DEBUG2;
 	SiftF2TableTrace trace = {0};
 	SiftColMetaPageData meta;
+	SiftTblVmSwept *vm_swept;
 	/* STOR[STOR-TBL-01]: vacuum_rel resolves UNSPECIFIED to ENABLED/DISABLED before the AM runs, so the gate is the resolved value (tail shrink of the free trailing extents) */
 	const bool	truncate = params->truncate == VACOPTVALUE_ENABLED && store->opts.vacuum_truncate;
 
@@ -841,6 +842,7 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	cutoffs.OldestMxact = sift_tbl_rowlock_vacuum_mxid(rel, cutoffs.OldestMxact);
 	settle_all(rel, store, &mr, &cutoffs, oldest_fx, target_fx, aggressive, vc.nblocks, elevel);
 	sift_f2_tier_maintain(rel, store, oldest_fx);
+	vm_swept = sift_tbl_vm_sweep_orphans(rel, oldest_fx, vc.indexes, vc.nindexes, vc.stats, bstrategy);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_INDEX_CLEANUP);
 	sift_f2_vacuum_progress_indexes(vc.nindexes, 0);
 	for (int i = 0; i < vc.nindexes; i++)
@@ -858,7 +860,8 @@ sift_tbl_f2_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessSt
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_FINAL_CLEANUP);
 	new_oldest = recompute_oldest(rel, oldest_fx);
 	store_oldest_active(rel, new_oldest, oldest_fx);
-	sift_tbl_vm_vacuum(rel, oldest_fx, freeze_fx);
+	sift_tbl_vm_vacuum(rel, oldest_fx, freeze_fx, vm_swept);
+	sift_tbl_vm_swept_free(vm_swept);
 	update_relstats(rel, new_oldest, &cutoffs);
 	sift_horizon_vacuum_read_end(rel);
 	sift_f2_vacuum_progress_phase(PROGRESS_VACUUM_PHASE_TRUNCATE);

@@ -8,6 +8,7 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xlog.h"
@@ -338,9 +339,117 @@ count_window(Relation rel, SiftF2Store *store, const VmPlan *plan, CountWindow *
 	win->counted = true;
 }
 
-/* The vblocks the plan lets be all visible but are not yet and are not full are taken out of visible (a hole in the addresses of a vblock may be an index entry of a row that is not there) */
+struct SiftTblVmSwept
+{
+	BlockNumber *vblocks;		/* sorted ascending */
+	uint32		n;
+};
+
+static int32
+swept_find(const BlockNumber *vblocks, uint32 n, BlockNumber blk)
+{
+	uint32		lo = 0,
+				hi = n;
+
+	while (lo < hi)
+	{
+		uint32		mid = lo + (hi - lo) / 2;
+
+		if (vblocks[mid] < blk)
+			lo = mid + 1;
+		else if (vblocks[mid] > blk)
+			hi = mid;
+		else
+			return (int32) mid;
+	}
+	return -1;
+}
+
+static bool
+swept_has(const SiftTblVmSwept *swept, BlockNumber blk)
+{
+	return swept != NULL && swept_find(swept->vblocks, swept->n, blk) >= 0;
+}
+
+void
+sift_tbl_vm_swept_free(SiftTblVmSwept *swept)
+{
+	if (swept == NULL)
+		return;
+	if (swept->vblocks != NULL)
+		pfree(swept->vblocks);
+	pfree(swept);
+}
+
+typedef struct VmOrphanSweep
+{
+	const BlockNumber *vblocks;
+	uint32		n;
+	const uint64 *live;			/* n * SIFT_TBL_OFFMASK_WORDS */
+} VmOrphanSweep;
+
+static bool
+vm_orphan_reaped(ItemPointer itemptr, void *state)
+{
+	const VmOrphanSweep *sw = state;
+	BlockNumber blk = ItemPointerGetBlockNumber(itemptr);
+	OffsetNumber off = ItemPointerGetOffsetNumber(itemptr);
+	int32		idx = swept_find(sw->vblocks, sw->n, blk);
+
+	if (idx < 0)
+		return false;
+	if (off < 1 || off > SIFT_TBL_ROWS_PER_VBLOCK)
+		return true;
+	return (sw->live[(uint64) idx * SIFT_TBL_OFFMASK_WORDS + off / 64] & (UINT64CONST(1) << (off % 64))) == 0;
+}
+
 static void
-drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, uint64 *visible, const uint64 *set, CountWindow *win)
+mark_live_part(Relation rel, SiftF2Store *store, const Span *s, const BlockNumber *vblocks, uint32 n, uint64 *live, uint64 *tids)
+{
+	SiftF2PartPin *pin = sift_f2_pin_open(rel, store, s->part, s->part_id);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift vm live");
+	uint64		lo = vblocks[0],
+				hi = vblocks[n - 1];
+
+	PG_TRY();
+	{
+		for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
+		{
+			const SiftGranuleDesc *gd = &pin->gdir[g];
+			MemoryContext old;
+
+			sift_vacuum_delay_point();
+			if ((gd->tid_max >> 16) < lo || (gd->tid_min >> 16) > hi)
+				continue;
+			old = MemoryContextSwitchTo(cx);
+			sift_f2_pin_granule_tids(rel, pin, g, tids);
+			MemoryContextSwitchTo(old);
+			MemoryContextReset(cx);
+			for (uint16 r = 0; r < gd->nrows; r++)
+			{
+				BlockNumber blk = (BlockNumber) (tids[r] >> 16);
+				OffsetNumber off = (OffsetNumber) (tids[r] & 0xFFFF);
+				int32		idx;
+
+				if (blk < lo || blk > hi || off < 1 || off > SIFT_TBL_ROWS_PER_VBLOCK)
+					continue;
+				idx = swept_find(vblocks, n, blk);
+				if (idx >= 0)
+					live[(uint64) idx * SIFT_TBL_OFFMASK_WORDS + off / 64] |= UINT64CONST(1) << (off % 64);
+			}
+		}
+	}
+	PG_FINALLY();
+	{
+		sift_f2_pin_release(pin);
+	}
+	PG_END_TRY();
+	MemoryContextDelete(cx);
+}
+
+/* The vblocks the plan lets be all visible but are not yet and are not full are taken out of visible unless VACUUM just swept any orphan index entries of theirs */
+static void
+drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, uint64 *visible, const uint64 *set, CountWindow *win, const SiftTblVmSwept *swept)
 {
 	for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
 	{
@@ -352,7 +461,7 @@ drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, 
 
 			if (!win->counted)
 				count_window(rel, store, plan, win);
-			if (win->counts[base - win->base + v] != SIFT_TBL_ROWS_PER_VBLOCK)
+			if (win->counts[base - win->base + v] != SIFT_TBL_ROWS_PER_VBLOCK && !swept_has(swept, (BlockNumber) (base + v)))
 				visible[w] &= ~(UINT64CONST(1) << (v % SIFT_VM_BLOCKS_PER_WORD * BITS_PER_HEAPBLOCK));
 		}
 	}
@@ -360,7 +469,7 @@ drop_partial(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, 
 
 /* The page of the map that covers base set to what the plan allows; the vblocks of the page that hold rows */
 static uint64
-set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, CountWindow *win)
+set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, CountWindow *win, const SiftTblVmSwept *swept)
 {
 	uint64		clean[SIFT_VM_WORDS_PER_PAGE] = {0},
 				unfit[SIFT_VM_WORDS_PER_PAGE] = {0},
@@ -394,7 +503,7 @@ set_page(Relation rel, SiftF2Store *store, const VmPlan *plan, uint64 base, Coun
 		ReleaseBuffer(vmbuf);
 		vmbuf = InvalidBuffer;
 	}
-	drop_partial(rel, store, plan, base, clean, set, win);
+	drop_partial(rel, store, plan, base, clean, set, win, swept);
 	for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
 	{
 		uint64		frozen = clean[w] & ~unfrozen[w];
@@ -457,8 +566,118 @@ store_counts(Relation rel, bool counts, BlockNumber all_visible, BlockNumber all
 	}
 }
 
+SiftTblVmSwept *
+sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *indexes, int nindexes, IndexBulkDeleteResult **stats, BufferAccessStrategy bstrategy)
+{
+	SiftColMetaPageData meta;
+	SiftF2Store *store;
+	VmPlan		plan = {0};
+	MemoryContext outer = CurrentMemoryContext,
+				cx;
+	SiftManifestRead mr;
+	const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
+	CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};
+	uint32		max_partial = (uint32) Min(Max(budget / 4 / (sizeof(BlockNumber) + SIFT_TBL_OFFMASK_WORDS * sizeof(uint64)), 1), (Size) PG_UINT32_MAX),
+				npartial = 0,
+				cap = 0;
+	BlockNumber *vblocks = NULL;
+	SiftTblVmSwept *res = NULL;
+
+	if (!sift_tbl_vm_active(rel))
+		return NULL;
+	meta = sift_col_meta_read(rel);
+	plan.limit = Min(meta.next_vblock, InvalidBlockNumber);
+	plan.next = ReadNextFullTransactionId();
+	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) != 0 || !sift_shm_tid_lease_floor(&rel->rd_locator, plan.limit, &plan.floor) || plan.floor == 0)
+		return NULL;
+	store = sift_f2_store_open(rel);
+	cx = sift_mem_allocset_create(outer, "sift vm orphan sweep");
+	MemoryContextSwitchTo(cx);
+	plan.budget = budget - budget / 4;
+	win.counts = palloc(sizeof(uint16) * win.nvblocks);
+	mr = sift_manifest_read_range(rel, NULL, NULL);
+	for (int i = 0; i < mr.n && !plan.incomplete; i++)
+	{
+		sift_vacuum_delay_point();
+		plan_partition(rel, store, &mr.entries[i], oldest, oldest, &plan);
+	}
+	for (uint64 base = 0; !plan.incomplete && base < plan.limit && npartial < max_partial; base += SIFT_VM_BLOCKS_PER_PAGE)
+	{
+		uint64		clean[SIFT_VM_WORDS_PER_PAGE] = {0},
+					unfit[SIFT_VM_WORDS_PER_PAGE] = {0},
+					below[SIFT_VM_WORDS_PER_PAGE] = {0},
+					set[SIFT_VM_WORDS_PER_PAGE] = {0};
+		Buffer		vmbuf = InvalidBuffer;
+		bool		any = false;
+
+		sift_vacuum_delay_point();
+		if (base % win.nvblocks == 0)
+			window_open(&win, base);
+		spans_mark(&plan.clean, clean, base, NULL);
+		spans_mark(&plan.unfit, unfit, base, NULL);
+		words_mark(below, base, 0, Min(plan.floor, plan.limit) - 1);
+		for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
+		{
+			clean[w] = clean[w] & below[w] & ~unfit[w];
+			any |= clean[w] != 0;
+		}
+		if (!any)
+			continue;
+		(void) visibilitymap_get_status(rel, (BlockNumber) base, &vmbuf);
+		if (BufferIsValid(vmbuf))
+		{
+			for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE; w++)
+				set[w] = sift_vm_page_word(BufferGetPage(vmbuf), w) & EVEN_BITS;
+			ReleaseBuffer(vmbuf);
+		}
+		for (int w = 0; w < (int) SIFT_VM_WORDS_PER_PAGE && npartial < max_partial; w++)
+			for (uint64 fresh = clean[w] & ~set[w]; fresh != 0 && npartial < max_partial; fresh &= fresh - 1)
+			{
+				int			v = w * SIFT_VM_BLOCKS_PER_WORD + pg_rightmost_one_pos64(fresh) / BITS_PER_HEAPBLOCK;
+
+				if (!win.counted)
+					count_window(rel, store, &plan, &win);
+				if (win.counts[base - win.base + v] > 0 && win.counts[base - win.base + v] < SIFT_TBL_ROWS_PER_VBLOCK)
+				{
+					if (npartial == cap)
+					{
+						cap = Min(Max(cap * 2, 64), max_partial);
+						vblocks = vblocks ? repalloc(vblocks, sizeof(BlockNumber) * cap) : palloc(sizeof(BlockNumber) * cap);
+					}
+					vblocks[npartial++] = (BlockNumber) (base + v);
+				}
+			}
+	}
+	if (!plan.incomplete && npartial > 0)
+	{
+		if (nindexes > 0)
+		{
+			uint64	   *live = palloc0((Size) npartial * SIFT_TBL_OFFMASK_WORDS * sizeof(uint64));
+			uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
+			VmOrphanSweep sw = {.vblocks = vblocks,.n = npartial,.live = live};
+
+			for (int i = 0; i < plan.clean.n; i++)
+				if (plan.clean.v[i].hi >= vblocks[0] && plan.clean.v[i].lo <= vblocks[npartial - 1])
+					mark_live_part(rel, store, &plan.clean.v[i], vblocks, npartial, live, tids);
+			for (int i = 0; i < nindexes; i++)
+			{
+				IndexVacuumInfo ivinfo = {.index = indexes[i],.heaprel = rel,.estimated_count = true,.message_level = DEBUG2,.strategy = bstrategy};
+
+				stats[i] = index_bulk_delete(&ivinfo, stats[i], vm_orphan_reaped, &sw);
+			}
+		}
+		res = MemoryContextAlloc(outer, sizeof(SiftTblVmSwept));
+		res->n = npartial;
+		res->vblocks = MemoryContextAlloc(outer, sizeof(BlockNumber) * npartial);
+		memcpy(res->vblocks, vblocks, sizeof(BlockNumber) * npartial);
+	}
+	MemoryContextSwitchTo(outer);
+	MemoryContextDelete(cx);
+	return res;
+}
+
 void
-sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId freeze)
+sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId freeze, const SiftTblVmSwept *swept)
 {
 	SiftColMetaPageData meta;
 	SiftF2Store *store = sift_f2_store_open(rel);
@@ -503,7 +722,7 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 				sift_vacuum_delay_point();
 				if (base % win.nvblocks == 0)
 					window_open(&win, base);
-				total += set_page(rel, store, &plan, base, &win);
+				total += set_page(rel, store, &plan, base, &win, swept);
 			}
 		}
 		MemoryContextSwitchTo(old);
