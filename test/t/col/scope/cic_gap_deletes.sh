@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # Rows that a writer deletes or updates while CREATE INDEX CONCURRENTLY of a second scope index runs are not in the answers the index gives a snapshot that sees the change. The writer is out of
 # the index's way twice: before its triggers are visible (the first pass indexed the rows its snapshot saw, and nobody tells the index which of them the heap ended since), and until it is valid
 # (a trigger of an index that is not valid did nothing, and the validation pass only added the rows the first pass missed). The summary of the scope and the newest rows of a key count the stale

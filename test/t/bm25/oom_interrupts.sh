@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The memory of a row is let go with the row, a long loop over the parts of an index can be cancelled, and a scan asks for the maintenance of the partitions it reads only:
 # (1) sift.verify(heapallindexed) and sift.promote of 10,000 toasted 4 kB docs hold no copy of each doc until they end (the detoasted text of a row was kept in the context of the
 # whole pass, 40 MB here); (2) a cancel that comes while CREATE INDEX of a wide sift_col index writes its parts ends it within 500 ms (the loop over the granules of a part had no

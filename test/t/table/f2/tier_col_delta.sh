@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The tiering of a sift_table moves the cold parts of a partition to the object store. A partition with a column delta chain is left alone whatever column the chain patches: an UPDATE of a column
 # that is not the time column of 100 rows of an old part is a column delta, a snapshot older than the UPDATE holds the chain unfolded while VACUUM runs the tiering, and the rows read back as updated.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

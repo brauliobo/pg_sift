@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The registry of the manifests in shared memory when the snapshot of a slot cannot be dropped (the memory of the system is short, or a session cannot attach the area of the snapshots): an index
 # put out of service is out of service, as damaged as the statement that met the damage said it is, and the snapshot a publication made for its commit is not left behind by a publication that

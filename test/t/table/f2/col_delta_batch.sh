@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # Many narrow UPDATEs of one part and granule are written to the column-delta chain as batched records. Readers see the rows as they were: an old snapshot the old values, a new one the new,
 # a point fetch the row, a savepoint rollback none of its rows, a string column the NULLs of its rows; the fold of the chain keeps them, and the table is the same as the heap twin that took

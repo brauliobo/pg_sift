@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # A full disk (sift.test_disk_blocks) under the flush of the staged column deltas of a savepoint: the transaction staged an UPDATE before the savepoint, the savepoint stages enough more for the
 # flush to need a block the file does not have. The flush fails, the savepoint is rolled back, and the UPDATE the transaction made before it is still staged: it commits. The partition lock the

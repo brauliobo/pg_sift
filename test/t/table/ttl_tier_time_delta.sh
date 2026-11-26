@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The TTL and the tiering of a sift_table go by the time bounds of the parts of a partition. An UPDATE of the time column of a row of a published part is a column delta: the part keeps the
 # bounds of the row it held, and the partition's chain says that they do not hold (the dirty time flag of its anchor). The old rows of a table that took such an UPDATE move to the present with the
 # chain, so no maintenance may drop the part they are in as expired or move it to the object store as cold: 100 rows of an old part updated to now under a snapshot older than the UPDATE, which holds

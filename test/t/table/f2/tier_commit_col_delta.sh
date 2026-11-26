@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The commit of a tiered part looks again at its partition under the partition lock: an UPDATE of a column that is not the time column, which becomes a column delta while the object is
 # uploaded, keeps the part local (the fold of the chain rewrites it), the rows read back as updated, and the object no commit names is left to the sweep.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

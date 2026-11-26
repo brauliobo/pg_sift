@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # The tail shrink of VACUUM cuts the file of a sift_table (core/f2/fsm/fsm.c) and keeps its visibility map: the map is indexed by the virtual block of a row, which the size of the file does
 # not bound, so a cut of the map to the blocks of the file would clear the bits of the vblocks past it, and the next VACUUM would set them again.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

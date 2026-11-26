@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# tap: pooled
 # What a DELETE leaves to the BM25 index of a table when sift.async_maintenance is on: a lone segment of which a quarter of the documents are deleted is rewritten by the VACUUM that
 # marks them (exactly a quarter counts, one under it does not), the segments that the rewrite limit of that VACUUM left are rewritten by the maintenance in the background, the
 # maintenance settles (no worker, no queued job, no WAL written), and the scans of the index, a bitmap scan, the count and the ranked scan, each count in pg_stat_user_indexes.idx_scan.
