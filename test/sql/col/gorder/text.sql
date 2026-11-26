@@ -4,6 +4,8 @@
 -- collation than the column's, a text that is a unit's inline string, and an expression of the column read the units.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

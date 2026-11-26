@@ -3,6 +3,8 @@
 -- writes the column to point_tid_columns as 'auto: col' and says so. A column in heap order reads one unit, and gets it once the table is large enough for the unit to cost (col_point_auto_ordered: 500,000 instructions
 -- saved); not one of few values, not a table where the lookup is cheap, not an option the user set. The table is 100,000 rows because the formula weighs the bytes of its rows against the instructions of a scan of them.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

@@ -49,6 +49,8 @@ SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answer
  16 | f            | t
  17 | f            | t
 (17 rows)
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 
 -- rows that changed: updated, deleted, a rolled-back update, the write buffer, a promotion
 UPDATE tt SET n = 3.5 WHERE id % 500 = 3;

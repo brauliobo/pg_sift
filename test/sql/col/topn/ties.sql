@@ -2,6 +2,8 @@
 -- improve a one-key result (the SQL order does not say which of them comes), so a unit whose best row only ties with it is not read. The keys of the rows are those
 -- of the normal plan, after the build, a write buffer, deletes, an OFFSET and a VACUUM; a two-key order still reads the tied units for the second key.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

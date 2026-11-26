@@ -3,6 +3,8 @@
 -- has ORDER BY ts LIMIT, ts >= x ORDER BY ts LIMIT, OFFSET and a bounded min/max read the array (an unbounded min(ts), max(ts) of a table of several segments is priced
 -- against the pre-aggregates of the units, which cost less).
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)
 SET sift.test_limits = 'gord_seek_pct=0';

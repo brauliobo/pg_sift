@@ -3,6 +3,8 @@
 -- (sift.enable_agg off) and the pushed one, and the rows are compared in order: after the build and after each kind of write.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET sift.async_maintenance = off;
 

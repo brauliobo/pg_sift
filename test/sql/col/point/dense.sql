@@ -1,6 +1,8 @@
 -- The point directory answers a list of few rows. A list whose keys have, on average, many rows for each unit of the segment lists a row in nearly
 -- every unit, so the units answer it and the directory is not read (sift_col scan.c prune_point); the rows are the heap's either way.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE pdn (id int, u int, d int, v int, pad text DEFAULT repeat('x', 400));

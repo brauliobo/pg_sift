@@ -2,6 +2,8 @@
 -- superblock. In a key-cut segment they do not: the units are cut by the key, not by heap pages. The bitmap scan and the index scan must return the rows of the heap
 -- whatever the layout: one segment, a promotion after UPDATE, INSERT and DELETE, VACUUM, REINDEX.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

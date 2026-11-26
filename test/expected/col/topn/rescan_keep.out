@@ -4,6 +4,8 @@
 -- (a build with CATCACHE_FORCE_RELEASE reads the catalog again at every lookup: some 6 buffers a probe more than a release build, for 2 groups as for 250). The answers are those of the heap (a scan without the engine) through the same changes between probes as agg_topn_rescan: deleted and updated rows, rows in the write
 -- buffer, VACUUM, a promotion in the middle of the statement, a cursor read both ways, a generic plan.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

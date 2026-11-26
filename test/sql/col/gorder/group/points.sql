@@ -2,6 +2,8 @@
 -- (the NULL-key rows of the group too; the groups of a range are one span of the table), so the plan is an index scan that hands the heap the addresses, not an index-only scan that reads every unit. The answers are the table's (a copy
 -- without an index is the oracle): a hit, a miss, a duplicate, rows with a NULL key, a write buffer, deleted and updated rows, a promotion.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

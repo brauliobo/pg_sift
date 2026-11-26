@@ -4,6 +4,8 @@
 -- blocks of values (the walk), a random one and one with ties and NULLs, after deletes, moved rows, rows in the write buffer and the promotion;
 -- and for a text search, a generic plan, a node that is scanned again and a cursor.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
 -- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks

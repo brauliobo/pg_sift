@@ -3,6 +3,8 @@
 -- the direction, the keys after the first, the NULL keys, a write buffer, a promotion, deleted and updated rows. A table with rows that have no g (they are not in the second order) does not
 -- use it and answers all the same.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

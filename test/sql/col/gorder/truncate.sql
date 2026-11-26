@@ -2,6 +2,8 @@
 -- rows of a segment, it does not take them out of its order). The top-N that reads the order skips an address past the end of the heap, as it skips one of a dead row.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET enable_sort = off;

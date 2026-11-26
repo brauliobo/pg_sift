@@ -2,6 +2,8 @@
 -- of an ordered pair are bounded by work_mem: the sort moves from arrays to a tuplesort that spills, the kept rows from an array to a temporary file, and the
 -- groups are merged as they are read. The rows are the heap's, in the order of the heap's sort, under the default work_mem and under 64 kB.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

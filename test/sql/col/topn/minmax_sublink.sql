@@ -5,6 +5,8 @@
 -- walk is refused at planning and no heap row is fetched. The answers are those of a copy of the table without an index (the oracle) over NULLs in the column, entities without rows, NULL
 -- outer keys, both aggregates, a text column under its collation, other conditions of the sub-select, writes, and 100 random statements (fixed seed).
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

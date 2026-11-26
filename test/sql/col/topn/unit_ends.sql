@@ -3,6 +3,8 @@
 -- last row taken on the first key, which the others may order before it. Every shape runs with and without the top-N
 -- scan (sift.enable_agg), after every kind of write, and the rows must be the same; "ends" is the number of units the scan read from their ends.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

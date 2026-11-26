@@ -3,6 +3,8 @@
 -- negative and large keys, text and uuid, DML, the write buffer, promotion and a merge; a leaf that cannot be listed (a key in very many rows, an
 -- inline string) gets no table, and an index written without the option is read as before.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 

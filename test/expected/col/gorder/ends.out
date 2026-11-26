@@ -3,6 +3,8 @@
 -- or reads the units; the rows are the heap's either way. The choice between the ends and the whole order is the zones' (sift_cgord_pay): the testing setting sift.test_col_gorder_choice forces it for the 768 shapes, the last part leaves it to the rule.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)

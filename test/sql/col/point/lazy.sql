@@ -2,6 +2,8 @@
 -- name, merged in order, so a scan that stops after a few rows decodes a few. The rows and the addresses are those of the eager decode, in chunks of any size, over
 -- lists longer than a read of the cursor, DML, dead rows (those units come after the addresses), several segments, a rescan and a LIMIT.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

@@ -3,6 +3,8 @@
 -- (sift.enable_agg off) and the pushed one, and the rows are compared in order.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE cd (id int PRIMARY KEY, a int, b int, c int, d int, e int, f int, amount numeric(10,2), ts timestamp, kind text, note text);

@@ -3,6 +3,8 @@
 -- keys, values the table does not have, repeated values, a bound or another condition beside the list, rows in a write buffer, updated, deleted and vacuumed rows; the walk decodes
 -- the entries of the values it reads, not those of the table.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET synchronous_commit = on;
 SET sift.async_maintenance = off;

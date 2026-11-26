@@ -2,6 +2,8 @@
 -- instead of 8-byte slots. Every key of every shape is found with all its rows and an absent one lists almost none, a table that would be larger than the slots (a key in more than
 -- 1,024 rows) stays slots, the older layouts are read and merged with it, and sift.col_verify accepts all of it.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET client_min_messages = warning;

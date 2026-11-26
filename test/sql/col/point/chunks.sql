@@ -2,6 +2,8 @@
 -- executor asks for rows: a LIMIT reads the addresses of a few keys, not of all. The rows are the heap's over every chunk, the write buffer, dead rows (a segment
 -- with some is read by its units), a cursor fetched in pieces, a rescan and keys that share a fingerprint.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 

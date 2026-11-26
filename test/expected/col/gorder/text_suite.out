@@ -31,6 +31,8 @@ SELECT sift.col_verify('tr_i');
 ------------
  
 (1 row)
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 
 ANALYZE tr;
 -- an answer is right when the rows are the heap's, in order; 'global order' says the scan read the arrays

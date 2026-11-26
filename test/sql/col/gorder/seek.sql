@@ -2,6 +2,8 @@
 -- The limit gord_seek_pct (115) says how many percent of the plain bytes a seekable chunk may take; 0 writes plain chunks (minor 38), sift.test_col_gorder_seek makes every chunk seekable.
 -- The entries, the answers and the verify are the same in both, one table holds segments of both, and a merge writes the current ones.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

@@ -3,6 +3,8 @@
 -- units; a scalar sub-select that gives one row is a constant of the scan, tested like a number; a string against a constant is tested, col_topn_gorder_filter_text); NULL semantics of IS NULL, = NULL, a boolean that is NULL; the row tested is the version the scan's snapshot sees (own writes, a cursor opened before an update, a
 -- rolled-back subtransaction, HOT chains); a scan that is rewound or restarted with another parameter (the budget starts again); parallel plans keep the units.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

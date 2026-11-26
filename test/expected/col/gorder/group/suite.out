@@ -32,6 +32,8 @@ SELECT sift.col_verify('gk_ix'), sift.col_verify('gn_ix');
 ------------+------------
             | 
 (1 row)
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 
 SELECT (SELECT sum(bytes) FROM sift.col_sections('gn_ix') WHERE section = 'order_arrays') - (SELECT sum(bytes) FROM sift.col_sections('gk_ix') WHERE section = 'order_arrays') > 40000 AS table_packed;
  table_packed 

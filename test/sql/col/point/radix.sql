@@ -1,6 +1,8 @@
 -- The entries of a point directory are sorted by key and row, by a radix sort on the bytes the keys differ in (the comparison sort under 512 entries and when the
 -- rows do not arrive in order). Keys of every span give the same rows as the table, and col_verify checks the directory against the chunks.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 

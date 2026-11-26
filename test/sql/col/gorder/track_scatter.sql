@@ -2,6 +2,8 @@
 -- superblock of each: the keys are spread over the whole heap, so a mask of the superblock made from the log reads the tombstones of the whole table for a top-N of 20 rows.
 -- The rows are the heap's, and the log is still the way a page the map does not hold is taken for all-visible.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET synchronous_commit = on;
 SET sift.async_maintenance = off;

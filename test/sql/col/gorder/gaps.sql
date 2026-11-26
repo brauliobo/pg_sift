@@ -2,6 +2,8 @@
 -- (column format minor 38; sift.test_col_gorder_unpacked writes the 9 bits of the point directory): the entries, the answers and the verify are the same in both,
 -- one table holds segments of both, a merge writes the current ones, and a chunk where the addresses of a key do not ascend (the NULL rows follow a key of 0) is written without gaps.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)

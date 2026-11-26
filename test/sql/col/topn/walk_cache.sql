@@ -2,6 +2,8 @@
 -- plan, and the units skipped are the same, when the walk is built and when it is found again, after rows in a write buffer, a promotion, a merge, deletes, a
 -- VACUUM and a REINDEX. A page holds one row, so a superblock is 256 rows and 60 of them make the walk (it starts from 10 superblocks).
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

@@ -4,6 +4,8 @@
 -- heap's over NULLs, duplicates, DML and the write buffer. The plan is asked with SiftAgg off: it is then the paths the index offers that show (an index or bitmap scan, or
 -- the sequential scan that their absence leaves), whatever the size of the table; which of SiftAgg and the index scan wins is a matter of the cost, the gate of the planner and the bench cases.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

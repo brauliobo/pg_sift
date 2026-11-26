@@ -1,5 +1,7 @@
 -- The point lookups, the tracking and the connections of a sift_col index. The tests that were one file each, one segment for each, each in a schema of its own with the settings reset between them; every segment runs as its test did.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 
 -- >>> col_point_auto_ordered
 CREATE SCHEMA s1;

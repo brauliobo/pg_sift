@@ -2,6 +2,8 @@
 -- setting sift.test_col_format_minor of 9, so that a 3.2 library keeps reading what an index without it writes; read back by the same decoder that refuses a
 -- damaged rollup; checked against the chunks by sift.col_verify; kept by promotion, merge and VACUUM; bounded by the cap of cells a unit may hold.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 

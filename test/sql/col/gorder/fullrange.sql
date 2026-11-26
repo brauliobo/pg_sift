@@ -1,6 +1,8 @@
 -- the order arrays over the whole range of a 64-bit key: the smallest and the largest bigint together (a range of 2^64 - 1 for the quantized buckets and the ranges of a write buffer), a bigint that all rows share, two values only, an int4
 -- from end to end, a timestamp with -infinity and infinity, NULLs and a write buffer. Every ordered read (ASC and DESC, LIMIT, OFFSET, bounds at the extremes) answers what a copy without the index does.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 -- plain chunks: the column format minors below tell the layouts apart (col_gorder_seek covers the seekable ones)

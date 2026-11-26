@@ -2,6 +2,8 @@
 -- two with a mask. Every key of every size is found and an absent one lists no address, a segment of the older layout (sift.test_col_format_minor 14, tables of a power of two) is read
 -- as before, and a merge of both writes the new one.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 -- the tables of slots (the packed table of column format minor 35 is the next test, col_point_packed)
 SET sift.test_col_point_unpacked = on;
 SET sift.async_maintenance = off;

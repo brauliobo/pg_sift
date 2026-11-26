@@ -3,6 +3,8 @@
 -- byte of it damaged, one bit at a time, is refused by the reader or by the check, never read outside the block.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE cs (id int, kind int, grp text, val bigint, small int, amt numeric(10, 2), flt float8, d date, pad text) WITH (autovacuum_enabled = off);
 ALTER TABLE cs ALTER COLUMN pad SET STORAGE PLAIN;

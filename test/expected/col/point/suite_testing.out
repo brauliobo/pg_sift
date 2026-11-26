@@ -31,6 +31,8 @@ FROM unnest(ARRAY['pk_auto', 'pk_dir']) i ORDER BY 1;
  pk_auto | auto: id, ts | -
  pk_dir  | ts           | id
 (2 rows)
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 
 SELECT pg_relation_size('pk_auto') < pg_relation_size('pk_dir') AS smaller,
 	round(pg_relation_size('pk_dir')::numeric / pg_relation_size('pk_auto'), 1) AS dir_over_auto;

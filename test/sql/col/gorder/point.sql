@@ -1,6 +1,8 @@
 -- An equality on a column with an order array is a seek in the sorted keys, like the range [x, x]: the plan is an index scan that hands the heap the addresses of the key, not an index-only scan
 -- that reads the key column of every unit. The answers are the table's (a copy without an index is the oracle), whatever the key: a hit, a miss, a duplicate, NULL, the ends of the range.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

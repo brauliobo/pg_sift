@@ -4,6 +4,8 @@
 -- without a tie-break, offsets, filters, and after deletes, moved rows, rows in the write buffer and the promotion of the buffer.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 5 rows: 30000 rows are about 24 superblocks

@@ -2,6 +2,8 @@
 -- of a few entries are those of the build that holds them all, for every kind of leaf (integers with NULL rows, a time, a text under the C collation and under an ICU one, an array that
 -- keeps the ends only), and the runs are merged in passes of at most 64 files.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the options this test writes are of a Format 1 index (col/v1); a Format 2.0 index ignores them
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
