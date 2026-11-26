@@ -379,6 +379,7 @@ TESTING_REGRESS += col/f2/scope_ddl
 TESTING_REGRESS += col/f2/scope_live
 TESTING_REGRESS += col/f2/size
 TESTING_REGRESS += col/f2/stage_spec_abort
+TESTING_REGRESS += col/f2/stage_subxact
 TESTING_REGRESS += col/f2/status_heapref_slab
 TESTING_REGRESS += col/f2/stor_mem
 TESTING_REGRESS += col/f2/storage_codec_suite

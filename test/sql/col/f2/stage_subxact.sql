@@ -1,0 +1,26 @@
+-- The stage of a transaction and its subtransactions: a subtransaction that stages nothing (a PL/pgSQL block with an EXCEPTION clause) reads none of the rows the stage holds, one that staged
+-- rows reads the stage once, and the rows of a committed one are written at the commit.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+CREATE FUNCTION pg_temp.sub_scans() RETURNS int8 LANGUAGE C STRICT AS 'pg_sift', 'sift_test_f2_stage_sub_scans';
+CREATE TABLE ss (id int, v int);
+CREATE INDEX ss_idx ON ss USING sift_col (id, v);
+BEGIN;
+INSERT INTO ss SELECT g, g FROM generate_series(1, 100) g;
+SELECT pg_temp.sub_scans() AS before \gset
+DO $$ BEGIN FOR i IN 1..200 LOOP BEGIN PERFORM 1; EXCEPTION WHEN OTHERS THEN NULL; END; END LOOP; END $$;
+SELECT pg_temp.sub_scans() - :before AS scans_by_empty_subtransactions;
+SAVEPOINT a;
+INSERT INTO ss VALUES (101, 101);
+RELEASE a;
+SAVEPOINT b;
+INSERT INTO ss VALUES (102, 102);
+ROLLBACK TO b;
+SELECT pg_temp.sub_scans() - :before AS scans_by_subtransactions_that_staged;
+COMMIT;
+SET enable_seqscan = off;
+SELECT count(*), sum(v) FROM ss;
+DROP TABLE ss;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

@@ -66,8 +66,16 @@ StaticAssertDecl(sizeof(SiftL0BatchHeader) == 96, "SiftL0BatchHeader must be 96 
 /* A compact batch has the first 16 bytes of the header only: its rows have no key bounds, the reader makes the keys */
 #define SIFT_L0_COMPACT_HDR		offsetof(SiftL0BatchHeader, key_lo)
 
-/* Appends the rows of the buffer as one batch of the partition; a chain that is full is flushed to an L0 part first (the micro-slab turns over); false when they do not fit one page (the caller writes a part) */
-extern bool sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPartSpec *spec);
+/* What an append to the micro-slab of a partition did: wrote the rows, found no room (nothing written, the caller writes a part), or found the range [key_lo, key_hi) the rows were routed by split or merged (nothing written) */
+typedef enum SiftL0Append
+{
+	SIFT_L0_APPENDED,
+	SIFT_L0_NO_ROOM,
+	SIFT_L0_MOVED
+} SiftL0Append;
+
+/* Appends the rows of the buffer as one batch of the partition; a chain that is full is flushed to an L0 part first (the micro-slab turns over); SIFT_L0_NO_ROOM when they do not fit one page */
+extern SiftL0Append sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftRowBuf *rows, const SiftPartSpec *spec);
 
 /* The rows of the buffer as one batch in the tail page of the slab chain at head, registered in x with its buffer locked; false, with nothing registered, when they are not one batch or the tail has no room */
 extern bool sift_l0_slab_place(SiftXlog *x, Relation rel, uint64 part_id, BlockNumber head, const SiftRowBuf *rows);
@@ -77,10 +85,11 @@ extern bool sift_l0_slab_first(SiftXlog *x, Relation rel, SiftMetaNew page, uint
 
 /*
  * The rows of an UPDATE that stay in a partition and the deletes of the rows they replace, under one partition lock and in one record: the tail of the slab and the tail of the pending deletes take them.
- * A partition that has no slab or no pending deletes yet gets the first page of each in that record and the one commit of the manifest that names them. False, with nothing written, when a tail has no
- * room, or the chain of pending deletes is long enough to be folded: the caller appends and deletes apart.
+ * A partition that has no slab or no pending deletes yet gets the first page of each in that record and the one commit of the manifest that names them. Nothing is written when a tail has no
+ * room, or the chain of pending deletes is long enough to be folded (SIFT_L0_NO_ROOM): the caller appends and deletes apart.
  */
-extern bool sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPendDelRec *dels, int ndel, const SiftPartSpec *spec);
+extern SiftL0Append sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftRowBuf *rows, const SiftPendDelRec *dels, int ndel,
+												 const SiftPartSpec *spec);
 
 /* The rows of the chain at head, from the headers of its pages: one page read for each page of the chain, no batch decoded */
 extern uint64 sift_l0_slab_rows(Relation rel, uint64 part_id, BlockNumber head);

@@ -288,6 +288,13 @@ stage_index(SiftTxnStage *st)
 		((StageSlot *) hash_search(stage_htab, &st->relid, HASH_ENTER, NULL))->st = st;
 }
 
+/* The stage holds rows, deletes or records of its host to write */
+static bool
+stage_holds(const SiftTxnStage *st)
+{
+	return st->ndels > 0 || st->host_pending > 0 || st->total_rows > 0;
+}
+
 static void
 stage_xact(XactEvent event, void *arg)
 {
@@ -299,7 +306,7 @@ stage_xact(XactEvent event, void *arg)
 		foreach(lc, stages)
 		{
 			SiftTxnStage *st = lfirst(lc);
-			Relation	rel = try_relation_open(st->relid, RowExclusiveLock);
+			Relation	rel = stage_holds(st) ? try_relation_open(st->relid, RowExclusiveLock) : NULL;
 
 			if (rel == NULL)
 				continue;
@@ -321,36 +328,49 @@ stage_xact(XactEvent event, void *arg)
 	}
 }
 
+#ifdef SIFT_TESTING
+uint64		sift_stage_sub_scans = 0;
+#endif
+
+/* The rows and the deletes of the subtransaction that ended go (an abort) or are its parent's (a commit) */
+static void
+end_sub(SiftTxnStage *st, bool commit, SubTransactionId mySubid, SubTransactionId parentSubid)
+{
+	int			kept = 0;
+
+#ifdef SIFT_TESTING
+	sift_stage_sub_scans++;
+#endif
+	stage_compact(st);
+	for (int i = 0; i < st->nparts; i++)
+		if (sift_rowbuf_drop_sub(st->parts[i].rb, mySubid, commit ? parentSubid : 0) > 0)
+		{
+			sift_stage_part_changed(st, &st->parts[i]);
+			sift_stage_tid_invalidate(st);
+		}
+	for (int i = 0; i < st->ndels; i++)
+	{
+		if (st->dels[i].subxid == mySubid && !commit)
+			continue;
+		if (st->dels[i].subxid == mySubid)
+			st->dels[i].subxid = parentSubid;
+		st->dels[kept++] = st->dels[i];
+	}
+	st->ndels = kept;
+	del_htab_rebuild(st);
+	st->sub_max = parentSubid;
+}
+
+/* A subtransaction that ends after the last row or delete of a stage was staged has none of them (a PL/pgSQL block with an EXCEPTION clause that stages nothing reads none) */
 static void
 stage_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId parentSubid, void *arg)
 {
-	ListCell   *lc;
-
 	if (event != SUBXACT_EVENT_ABORT_SUB && event != SUBXACT_EVENT_COMMIT_SUB)
 		return;
-	foreach(lc, stages)
+	foreach_ptr(SiftTxnStage, st, stages)
 	{
-		SiftTxnStage *st = lfirst(lc);
-
-		int			kept = 0;
-
-		stage_compact(st);
-		for (int i = 0; i < st->nparts; i++)
-			if (sift_rowbuf_drop_sub(st->parts[i].rb, mySubid, event == SUBXACT_EVENT_COMMIT_SUB ? parentSubid : 0) > 0)
-			{
-				sift_stage_part_changed(st, &st->parts[i]);
-				sift_stage_tid_invalidate(st);
-			}
-		for (int i = 0; i < st->ndels; i++)
-		{
-			if (st->dels[i].subxid == mySubid && event == SUBXACT_EVENT_ABORT_SUB)
-				continue;
-			if (st->dels[i].subxid == mySubid)
-				st->dels[i].subxid = parentSubid;
-			st->dels[kept++] = st->dels[i];
-		}
-		st->ndels = kept;
-		del_htab_rebuild(st);
+		if (st->sub_max >= mySubid)
+			end_sub(st, event == SUBXACT_EVENT_COMMIT_SUB, mySubid, parentSubid);
 		sift_cdi_cache_staged_changed(st);
 		if (st->host_stage != NULL)
 			st->host_event(NULL, st, event == SUBXACT_EVENT_COMMIT_SUB ? SIFT_STAGE_SUB_COMMIT : SIFT_STAGE_SUB_ABORT, mySubid, parentSubid);
@@ -407,67 +427,6 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 	stage_epoch++;
 	MemoryContextSwitchTo(old);
 	return st;
-}
-
-static uint32
-part_home(const SiftTxnStage *st, uint64 part_id)
-{
-	return (uint32) (sift_fmix64(part_id) & st->part_htab_mask);
-}
-
-static void
-part_htab_rebuild(SiftTxnStage *st)
-{
-	MemoryContext old = MemoryContextSwitchTo(st->cx);
-
-	if (st->part_htab != NULL)
-		pfree(st->part_htab);
-	st->part_htab_mask = pg_nextpower2_32(Max(4 * (uint32) st->nparts, 16)) - 1;
-	st->part_htab = palloc0((st->part_htab_mask + 1) * sizeof(uint32));
-	MemoryContextSwitchTo(old);
-	for (int i = 0; i < st->nparts; i++)
-	{
-		uint32		h = part_home(st, st->parts[i].part_id);
-
-		while (st->part_htab[h] != 0)
-			h = (h + 1) & st->part_htab_mask;
-		st->part_htab[h] = i + 1;
-	}
-}
-
-SiftStagePart *
-sift_stage_part_get(SiftTxnStage *st, const SiftPartitionEntry *e)
-{
-	MemoryContext old;
-	SiftStagePart *p;
-
-	if (st->part_htab != NULL)
-		for (uint32 h = part_home(st, e->part_id); st->part_htab[h] != 0; h = (h + 1) & st->part_htab_mask)
-			if (st->parts[st->part_htab[h] - 1].part_id == e->part_id)
-				return &st->parts[st->part_htab[h] - 1];
-	old = MemoryContextSwitchTo(st->cx);
-	if (st->nparts == st->cap_parts)
-	{
-		st->cap_parts = st->cap_parts > 0 ? st->cap_parts * 2 : 8;
-		st->parts = st->parts ? repalloc(st->parts, st->cap_parts * sizeof(SiftStagePart)) : palloc(st->cap_parts * sizeof(SiftStagePart));
-	}
-	p = &st->parts[st->nparts];
-	*p = (SiftStagePart) {.part_id = e->part_id,.rb = sift_rowbuf_new(&st->spec),.tid_min = UINT64_MAX};
-	memcpy(p->key_lo, e->key_lo, SIFT_BOUND_BYTES);
-	MemoryContextSwitchTo(old);
-	st->nparts++;
-	if (st->part_htab == NULL || (uint32) st->nparts * 2 > st->part_htab_mask + 1)
-		part_htab_rebuild(st);
-	else
-	{
-		uint32		h = part_home(st, e->part_id);
-
-		while (st->part_htab[h] != 0)
-			h = (h + 1) & st->part_htab_mask;
-		st->part_htab[h] = st->nparts;
-	}
-	sift_stage_part_changed(st, p);
-	return p;
 }
 
 void
@@ -634,7 +593,10 @@ sift_stage_bulk_budget(void)
 	return Max((uint64) work_mem * 1024, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4));
 }
 
-/* The stage of the transaction that holds the most memory is written (a stage of a file its relation no longer has goes) */
+/*
+ * The stage of the transaction that holds the most memory and anything to write is written; one of a file its relation no longer has, or of a relation the quarantine keeps from writes, goes,
+ * as it would at the commit
+ */
 static void
 flush_largest(void)
 {
@@ -642,10 +604,12 @@ flush_largest(void)
 	Relation	rel;
 
 	foreach_ptr(SiftTxnStage, st, stages)
-		if (big == NULL || st->mem_bytes + st->host_mem > big->mem_bytes + big->host_mem)
+		if (stage_holds(st) && (big == NULL || st->mem_bytes + st->host_mem > big->mem_bytes + big->host_mem))
 			big = st;
+	if (big == NULL)
+		return;
 	rel = try_relation_open(big->relid, RowExclusiveLock);
-	if (rel != NULL && RelFileLocatorEquals(big->locator, rel->rd_locator))
+	if (rel != NULL && RelFileLocatorEquals(big->locator, rel->rd_locator) && !sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
 		flush_stage_rows(rel, big, false);
 	else
 		sift_stage_discard(big->relid);
@@ -690,6 +654,7 @@ stage_row(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key, ui
 
 	sift_rowbuf_add(p->rb, tid, xmin, cmin, sub, key, cells, elem);
 	MemoryContextSwitchTo(old);
+	st->sub_max = Max(st->sub_max, sub);
 	sift_stage_row_added(st, p, tid);
 	bulk_when_loading(rel, st);
 	if (st->bulk_rows > 0)
@@ -745,6 +710,7 @@ add_delete(SiftTxnStage *st, const uint8 *key, uint64 tid, uint64 succ_tid, Tran
 	MemoryContextSwitchTo(old);
 	st->dels[st->ndels] = (SiftStageDel) {.tid = tid,.succ_tid = succ_tid,.xmax = xmax,.cmax = GetCurrentCommandId(true),
 		.subxid = GetCurrentSubTransactionId(),.is_update = is_update};
+	st->sub_max = Max(st->sub_max, st->dels[st->ndels].subxid);
 	memcpy(st->dels[st->ndels++].key, key, SIFT_BOUND_BYTES);
 	if (st->del_htab == NULL || (uint32) st->ndels * 4 > st->del_htab_cap * 3)
 		del_htab_rebuild(st);
@@ -993,5 +959,5 @@ sift_stage_has_pending(Relation rel)
 {
 	const SiftTxnStage *st = stage_of(rel);
 
-	return st != NULL && (st->ndels > 0 || st->host_pending > 0 || st->total_rows > 0);
+	return st != NULL && stage_holds(st);
 }

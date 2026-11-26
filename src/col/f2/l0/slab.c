@@ -627,66 +627,61 @@ place_or_add(Relation rel, uint64 part_id, const uint8 *key_lo, SlabChain *c, co
 	c->rows += ((const SiftL0BatchHeader *) rec)->nrows;
 }
 
-bool
-sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPartSpec *spec)
+SiftL0Append
+sift_l0_slab_append(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftRowBuf *rows, const SiftPartSpec *spec)
 {
 	/* check-memory: allow the rows of one transaction batch, which work_mem bounds */
 	StringInfo *recs = palloc((rows->n + 1) * sizeof(StringInfo));
 	int			nrecs;
 	bool		hot_ok,
 				first;
-	SiftManifestRead mr;
+	SiftPartitionEntry e;
 	SlabChain	c;
 
 	encode_batches(rows, recs, &nrecs);
 	for (int i = 0; i < nrecs; i++)
 		if (recs[i]->len > SLAB_ROOM)
-			return false;
+			return SIFT_L0_NO_ROOM;
 	hot_ok = nrecs == 1 && recs[0]->len <= SIFT_L0_GC_MAX_BYTES;
 	for (;;)
 	{
 		const SiftL0BatchHeader *rec = (const SiftL0BatchHeader *) recs[0]->data;
 		uint32		applied;
 		bool		busy;
-		const SiftPartitionEntry *e;
 
 		CHECK_FOR_INTERRUPTS();
 		if (hot_ok && sift_l0_hot_batches(rel, part_id, key_lo, &rec, 1, &applied) == SIFT_L0_GC_APPLIED)
-			return true;
+			return SIFT_L0_APPENDED;
 		busy = sift_l0_lock_busy(rel, part_id);
-		e = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
-		if (hot_ok && sift_l0_settle(rel, part_id, key_lo, e, false, busy) == SIFT_L0_HOT)
+		if (!sift_l0_lock_range(rel, part_id, key_lo, key_hi, &e))
+			return SIFT_L0_MOVED;
+		if (hot_ok && sift_l0_settle(rel, part_id, key_lo, &e, false, busy) == SIFT_L0_HOT)
 		{
 			UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 			continue;
 		}
-		c = chain_to_append(rel, part_id, key_lo, spec, e->l0_slab_blk, nrecs);
+		c = chain_to_append(rel, part_id, key_lo, spec, e.l0_slab_blk, nrecs);
 		break;
 	}
-	if (c.live)
-	{
-		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
-	}
 	first = c.tail == InvalidBlockNumber;
-	if (c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
+	if (c.live || c.pages + nrecs > SIFT_L0_SLAB_MAX_PAGES)
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
+		return SIFT_L0_NO_ROOM;
 	}
 	for (int i = 0; i < nrecs; i++)
 		place_or_add(rel, part_id, key_lo, &c, recs[i]->data);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	if (first)
 		sift_l0_slab_request_flush(rel, part_id);
-	return true;
+	return SIFT_L0_APPENDED;
 }
 
-bool
-sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftRowBuf *rows, const SiftPendDelRec *dels, int ndel, const SiftPartSpec *spec)
+SiftL0Append
+sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftRowBuf *rows, const SiftPendDelRec *dels, int ndel,
+							 const SiftPartSpec *spec)
 {
-	SiftManifestRead mr;
-	SiftPartitionEntry e = *sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+	SiftPartitionEntry e;
 	BlockNumber lock = SIFT_PART_LOCK_BLKNO(part_id);
 	SiftManifestEdit edit = {.part_id = part_id,.key_lo = key_lo};
 	SiftMetaNew slab_page = {InvalidBlockNumber},
@@ -696,10 +691,12 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	SiftXlog	x;
 	bool		fused;
 
+	if (!sift_l0_lock_range(rel, part_id, key_lo, key_hi, &e))
+		return SIFT_L0_MOVED;
 	if (e.l0_slab_blk != InvalidBlockNumber && sift_l0_slab_is_dir(rel, part_id, e.l0_slab_blk))
 	{
 		UnlockPage(rel, lock, ExclusiveLock);
-		return false;
+		return SIFT_L0_NO_ROOM;
 	}
 	if (chain_to_append(rel, part_id, key_lo, spec, e.l0_slab_blk, 1).tail == InvalidBlockNumber && e.l0_slab_blk != InvalidBlockNumber)
 		e = sift_manifest_read_range(rel, key_lo, NULL).entries[0];
@@ -741,7 +738,7 @@ sift_l0_slab_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	UnlockPage(rel, lock, ExclusiveLock);
 	if (fused && edit.set_l0_slab)
 		sift_l0_slab_request_flush(rel, part_id);
-	return fused;
+	return fused ? SIFT_L0_APPENDED : SIFT_L0_NO_ROOM;
 }
 
 static void

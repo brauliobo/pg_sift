@@ -102,6 +102,7 @@ typedef struct SiftTxnStage
 	uint32		host_pending;	/* the records the host staged that the next read of the relation must see written */
 	uint64		host_mem;		/* the bytes the host staged, as it last told them (sift_stage_host_staged) */
 	bool		by_value;		/* the rows are not tuples of the heap (a test stages them), so no flush may hold them as references */
+	SubTransactionId sub_max;	/* no row or delete of the stage is of a later subtransaction: one that ends after it started changes none of them */
 } SiftTxnStage;
 
 extern void sift_stage_define_gucs(void);
@@ -172,6 +173,7 @@ extern void sift_stage_rebind(Relation rel, const RelFileLocator *locator);
 extern void sift_stage_flush(Relation rel);
 #ifdef SIFT_TESTING
 extern uint64 sift_stage_flushes;
+extern uint64 sift_stage_sub_scans;		/* the stages whose rows and deletes the end of a subtransaction read */
 #endif
 
 /* The same with the deletes too: the workers of a parallel scan have no stage, so what the leader deleted must be on disk for them */

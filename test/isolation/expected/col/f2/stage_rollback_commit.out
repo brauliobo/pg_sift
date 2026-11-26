@@ -1,0 +1,7 @@
+Parsed test spec with 2 sessions
+
+starting permutation: w_rolled_back d_drop w_commit d_end
+step w_rolled_back: BEGIN; SAVEPOINT a; INSERT INTO iso_srb VALUES (1, 1); ROLLBACK TO a;
+step d_drop: BEGIN; DROP INDEX iso_srb_idx;
+step w_commit: COMMIT;
+step d_end: ROLLBACK;

@@ -122,12 +122,13 @@ extern uint32 sift_l0_href_submit(struct SiftL0GroupCommit *gc, const struct Sif
 
 /*
  * Appends the references to the chain of the partition (a first page and the manifest entry that names it when there is none) under the lock of the partition, the tail anchored in the
- * entry; false, with nothing written, when the partition's slab is a chain of batches, is sealed or has reached its limits: the caller writes a part.
+ * entry; SIFT_L0_NO_ROOM, with nothing written, when the partition's slab is a chain of batches, is sealed or has reached its limits: the caller writes a part.
  */
-extern bool sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n);
+extern SiftL0Append sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftL0HeapRef *refs, uint32 n);
 
-/* The references of an UPDATE that stay in a partition and the deletes of the rows they replace, in one record of the tail of the chain and the tail of the pending deletes; false, with nothing written, when a tail has no room */
-extern bool sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n, const SiftPendDelRec *dels, int ndel);
+/* The references of an UPDATE that stay in a partition and the deletes of the rows they replace, in one record of the tail of the chain and the tail of the pending deletes; SIFT_L0_NO_ROOM, with nothing written, when a tail has no room */
+extern SiftL0Append sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftL0HeapRef *refs, uint32 n, const SiftPendDelRec *dels,
+												 int ndel);
 
 #endif							/* !SIFT_HREF_STANDALONE */
 

@@ -13,7 +13,7 @@
 #include "col/f2/batch.h"
 #include "col/f2/store/store.h"
 #include "col/f2/vacuum/run.h"
-#include "col/f2/l0/href.h"
+#include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/stage_int.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
@@ -87,21 +87,20 @@ retries_exhausted(Relation rel)
 					errmsg("sift index \"%s\": its partitions were split or merged %d times while the transaction wrote its rows", RelationGetRelationName(rel), SIFT_STAGE_ROUTE_TRIES)));
 }
 
+/* The upper bound of the partition at of the manifest read: the lower bound of the next one, NULL for the last */
+static const uint8 *
+key_hi_of(const SiftManifestRead *mr, int at)
+{
+	return at + 1 < mr->n ? mr->entries[at + 1].key_lo : NULL;
+}
+
 /* The partition at of the manifest read, with its lock: a split or a merge holds it to change the partition, so nothing changes it until the writer gives it back. False, and no lock, when the manifest has changed that partition since the read */
 static bool
 lock_partition(Relation rel, const SiftManifestRead *mr, int at)
 {
-	const SiftPartitionEntry *e = &mr->entries[at];
-	SiftManifestRead now;
-	bool		held;
+	SiftPartitionEntry e;
 
-	sift_part_page_lock(rel, e->part_id, ExclusiveLock);
-	now = sift_manifest_read_range(rel, e->key_lo, at + 1 < mr->n ? mr->entries[at + 1].key_lo : NULL);
-	held = now.n == 1 && now.entries[0].part_id == e->part_id && memcmp(now.entries[0].key_lo, e->key_lo, SIFT_BOUND_BYTES) == 0;
-	pfree(now.entries);
-	if (!held)
-		sift_part_page_unlock(rel, e->part_id, ExclusiveLock);
-	return held;
+	return sift_l0_lock_range(rel, mr->entries[at].part_id, mr->entries[at].key_lo, key_hi_of(mr, at), &e);
 }
 
 /* The deletes of the runs from run on are the ones that are left: the earlier ones were written */
@@ -182,12 +181,12 @@ fused_run(const SiftStagePart *p, const DelRun *run)
 }
 
 /* The rows of a partition of an index over a heap as references to the tuples the heap holds: the rows are not written */
-static bool
-append_refs(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
+static SiftL0Append
+append_refs(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run, const uint8 *key_hi)
 {
 	uint32		n = p->rb->n;
 	SiftL0HeapRef *refs = palloc(n * sizeof(SiftL0HeapRef));
-	bool		done = false;
+	SiftL0Append done = SIFT_L0_NO_ROOM;
 
 	for (uint32 r = 0; r < n; r++)
 	{
@@ -199,65 +198,79 @@ append_refs(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
 		int			nrecs;
 		SiftPendDelRec *recs = run_recs(st, run, &nrecs, true);
 
-		run->done = sift_l0_href_append_deleting(rel, p->part_id, p->key_lo, refs, n, recs, nrecs);
+		done = sift_l0_href_append_deleting(rel, p->part_id, p->key_lo, key_hi, refs, n, recs, nrecs);
+		run->done = done == SIFT_L0_APPENDED;
 		pfree(recs);
-		done = run->done;
 	}
-	done = done || sift_l0_href_append(rel, p->part_id, p->key_lo, refs, n);
+	if (done == SIFT_L0_NO_ROOM)
+		done = sift_l0_href_append(rel, p->part_id, p->key_lo, key_hi, refs, n);
 	pfree(refs);
 	return done;
 }
 
-/* Writes the rows of one partition as a part (or as references or a slab batch when they are few) */
-static void
-flush_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
+/* The rows of a partition as one batch of its micro-slab, with the deletes of the run when few of both are written */
+static SiftL0Append
+append_slab(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run, const uint8 *key_hi)
 {
-	SiftColIn  *cols;
-	SiftRows	r;
-	SiftPartDesc d;
-	SiftManifestEdit e = {.part_id = p->part_id,.key_lo = p->key_lo};
+	SiftL0Append done = SIFT_L0_NO_ROOM;
 
-	if (p->rb->n == 0)
-		return;
-	if (!st->by_value && sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX && p->rb->n <= SIFT_L0_HEAPREF_BATCH_MAX && append_refs(rel, st, p, run))
-		return;
-	spill_wide_blobs(rel, p->rb);
-	if (p->rb->n < SIFT_L0_MICRO_MIN)
+	sift_rowbuf_sort(p->rb, &st->spec);
+	if (fused_run(p, run))
 	{
-		sift_rowbuf_sort(p->rb, &st->spec);
-		if (fused_run(p, run))
-		{
-			int			nrecs;
-			SiftPendDelRec *recs = run_recs(st, run, &nrecs, true);
+		int			nrecs;
+		SiftPendDelRec *recs = run_recs(st, run, &nrecs, true);
 
-			run->done = sift_l0_slab_append_deleting(rel, p->part_id, p->key_lo, p->rb, recs, nrecs, &st->spec);
-			pfree(recs);
-			if (run->done)
-				return;
-		}
-		if (sift_l0_slab_append(rel, p->part_id, p->key_lo, p->rb, &st->spec))
-			return;
+		done = sift_l0_slab_append_deleting(rel, p->part_id, p->key_lo, key_hi, p->rb, recs, nrecs, &st->spec);
+		run->done = done == SIFT_L0_APPENDED;
+		pfree(recs);
 	}
+	return done == SIFT_L0_NO_ROOM ? sift_l0_slab_append(rel, p->part_id, p->key_lo, key_hi, p->rb, &st->spec) : done;
+}
+
+/* The rows of a partition as a part: written with no lock, which is taken only to commit it while the partition is still the one they were routed to; a part the manifest no longer has room for goes back */
+static SiftL0Append
+write_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key_hi)
+{
 	uint16		level = p->rb->n >= SIFT_L0_TO_L1_DIRECT_ROWS ? 1 : 0;
 	SiftCompressTier tier = level > 0 ? SIFT_TIER_WARM_L1 : SIFT_TIER_HOT_L0;
+	SiftColIn  *cols = palloc(Max(st->spec.ncols, 1) * sizeof(SiftColIn));
+	SiftPartitionEntry now;
+	SiftRows	r;
+	SiftPartDesc d;
 
-	cols = palloc(Max(st->spec.ncols, 1) * sizeof(SiftColIn));
 	sift_rowbuf_sort(p->rb, &st->spec);
 	sift_rowbuf_cluster(p->rb, &st->spec, tier);
 	r = sift_rowbuf_rows(p->rb, cols, &st->spec);
 	r.bulk_tail = st->bulk_rows > 0 && p->rb->n >= SIFT_BATCH_COLD_MIN_ROWS;
 	d = sift_part_write_rows(rel, (uint32) p->part_id, sift_manifest_new_gen(rel, 1), level, tier, &r);
-	e.add_parts = &d;
-	e.nadd = 1;
-	sift_manifest_commit(rel, &e);
+	if (!sift_l0_lock_range(rel, p->part_id, p->key_lo, key_hi, &now))
+	{
+		sift_compact_release_outputs(rel, p->part_id, &d, 1);
+		return SIFT_L0_MOVED;
+	}
+	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = p->part_id,.key_lo = p->key_lo,.add_parts = &d,.nadd = 1});
+	sift_part_page_unlock(rel, p->part_id, ExclusiveLock);
+	return SIFT_L0_APPENDED;
 }
 
-static void
-flush_and_renew(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run)
+/* Writes the rows of one partition as references or a slab batch when they are few, else as a part; SIFT_L0_MOVED, with none of them written, when a split or a merge changed the partition */
+static SiftL0Append
+flush_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, DelRun *run, const uint8 *key_hi)
 {
-	flush_part(rel, st, p, run);
-	sift_stage_renew_part(st, p);
+	SiftL0Append done = SIFT_L0_NO_ROOM;
+
+	if (p->rb->n == 0)
+		return SIFT_L0_APPENDED;
+	if (!st->by_value && sift_f2_store_open(rel)->host->host_kind == SIFT_F2_HOST_INDEX && p->rb->n <= SIFT_L0_HEAPREF_BATCH_MAX)
+		done = append_refs(rel, st, p, run, key_hi);
+	if (done != SIFT_L0_NO_ROOM)
+		return done;
+	spill_wide_blobs(rel, p->rb);
+	if (p->rb->n < SIFT_L0_MICRO_MIN)
+		done = append_slab(rel, st, p, run, key_hi);
+	return done == SIFT_L0_NO_ROOM ? write_part(rel, st, p, key_hi) : done;
 }
+
 
 /* The context goes with what it held, which is given back to the system */
 static void
@@ -293,6 +306,7 @@ sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 	MemoryContext caller;
 	SiftManifestRead now;
 	bool		same;
+	int			at;
 
 	if (p->rb->n == (int) st->bulk_rows)
 		st->bulk_rows = Max(st->bulk_rows, sift_batch_flush_rows(st->bulk_budget, p->rb->mem_bytes / p->rb->n));
@@ -302,12 +316,8 @@ sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 	scratch = sift_mem_allocset_create(TopTransactionContext, "sift stage bulk flush");
 	caller = MemoryContextSwitchTo(scratch);
 	now = sift_manifest_read_range(rel, NULL, NULL);
-	same = sift_manifest_same_topology(&now, &st->routing) && lock_partition(rel, &now, sift_stage_route(&now, victim->key_lo));
-	if (same)
-	{
-		flush_part(rel, st, victim, NULL);
-		sift_part_page_unlock(rel, victim->part_id, ExclusiveLock);
-	}
+	at = sift_stage_route(&now, victim->key_lo);
+	same = sift_manifest_same_topology(&now, &st->routing) && flush_part(rel, st, victim, NULL, key_hi_of(&now, at)) != SIFT_L0_MOVED;
 	MemoryContextSwitchTo(caller);
 	end_scratch(scratch);
 	if (same)
@@ -459,18 +469,20 @@ staged_part(const SiftPartitionEntry *e, void *arg)
 	return false;
 }
 
-/* Each buffer with the lock of its partition; false when a split or a merge took a partition since the manifest was read, with the buffers of the partitions before it written and renewed */
+/*
+ * Each buffer for its partition, which the writes lock themselves for as long as they change it: the writers of a hot partition go to its directory without the lock. False when a split or a merge
+ * took a partition since the manifest was read, with the buffers of the partitions before it written and renewed
+ */
 static bool
-flush_locked(Relation rel, SiftTxnStage *st, const SiftManifestRead *now, DelRun *runs, int nruns)
+flush_parts(Relation rel, SiftTxnStage *st, const SiftManifestRead *now, DelRun *runs, int nruns)
 {
 	for (int i = 0; i < st->nparts; i++)
 	{
 		SiftStagePart *p = &st->parts[i];
 
-		if (!lock_partition(rel, now, sift_stage_route(now, p->key_lo)))
+		if (flush_part(rel, st, p, run_of(runs, nruns, now, p), key_hi_of(now, sift_stage_route(now, p->key_lo))) == SIFT_L0_MOVED)
 			return false;
-		flush_and_renew(rel, st, p, run_of(runs, nruns, now, p));
-		sift_part_page_unlock(rel, p->part_id, ExclusiveLock);
+		sift_stage_renew_part(st, p);
 	}
 	return true;
 }
@@ -495,7 +507,7 @@ write_stage(Relation rel, SiftTxnStage *st, bool at_end)
 			reroute(st, &now);
 		nruns = 0;
 		runs = at_end ? del_runs(st, &now, &nruns) : NULL;
-		if (flush_locked(rel, st, &now, runs, nruns))
+		if (flush_parts(rel, st, &now, runs, nruns))
 			break;
 		if (tries + 1 == SIFT_STAGE_ROUTE_TRIES)
 			retries_exhausted(rel);

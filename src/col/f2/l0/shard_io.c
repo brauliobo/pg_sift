@@ -5,6 +5,7 @@
 #include "core/host.h"
 
 #include "access/transam.h"
+#include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 
@@ -27,7 +28,54 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftL0Table
 	SiftL0HotTable hot;
 } SiftL0Table;
 
+#define HELD_MAX		8
+
 static SiftL0Table *table;
+
+/* The entries this backend holds (nested: a writer that holds one flushes the directory, which holds it again): an exit that no PG_FINALLY sees (FATAL) gives them back, or no other partition gets them */
+static SiftL0ShardShm *held[HELD_MAX];
+static int	nheld;
+
+static void
+release_held(int code, Datum arg)
+{
+	while (nheld > 0)
+		sift_l0_hot_unpin(held[--nheld]);
+}
+
+static SiftL0ShardShm *
+hold(SiftL0ShardShm *e)
+{
+	if (e != NULL)
+	{
+		SIFT_INVARIANT(nheld < HELD_MAX, "sift: a backend holds at most %d entries of the hot partitions", HELD_MAX);
+		held[nheld++] = e;
+	}
+	return e;
+}
+
+static void
+unhold(SiftL0ShardShm *e)
+{
+	int			i = nheld - 1;
+
+	while (held[i] != e)
+		i--;
+	held[i] = held[--nheld];
+	sift_l0_hot_unpin(e);
+}
+
+static SiftL0ShardShm *
+find_held(SiftL0Table *t, Relation rel, uint64 part_id)
+{
+	return hold(t != NULL ? sift_l0_hot_find(&t->hot, &rel->rd_locator, part_id) : NULL);
+}
+
+static SiftL0ShardShm *
+claim_held(SiftL0Table *t, Relation rel, uint64 part_id)
+{
+	return hold(sift_l0_hot_claim(&t->hot, &rel->rd_locator, part_id));
+}
 
 static SiftL0Table *
 table_base(void *raw)
@@ -55,6 +103,7 @@ table_try(void)
 
 		if (raw == NULL)
 			return NULL;
+		before_shmem_exit(release_held, 0);
 		table = table_base(raw);
 		sift_tranche_register(table->hot.claim_lock.tranche, TRANCHE_NAME);
 	}
@@ -73,13 +122,14 @@ my_shard(void)
 static SiftL0ShardShm *
 hot_entry(SiftL0Table *t, Relation rel, uint64 part_id, bool href, BlockNumber *dir)
 {
-	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_find(&t->hot, &rel->rd_locator, part_id) : NULL;
+	SiftL0ShardShm *shm = find_held(t, rel, part_id);
 
 	*dir = shm != NULL ? pg_atomic_read_u32(&shm->dir_blk) : NO_BLOCK;
+	pg_read_barrier();
 	if (*dir != NO_BLOCK && (pg_atomic_read_u32(&shm->heapref) != 0) == href)
 		return shm;
 	if (shm != NULL)
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	return NULL;
 }
 
@@ -118,7 +168,7 @@ sift_l0_hot_refs(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0
 	}
 	PG_FINALLY();
 	{
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	}
 	PG_END_TRY();
 	return result;
@@ -154,7 +204,7 @@ sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	}
 	PG_FINALLY();
 	{
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	}
 	PG_END_TRY();
 	return result;
@@ -169,6 +219,23 @@ sift_l0_lock_busy(Relation rel, uint64 part_id)
 		return true;
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	return false;
+}
+
+bool
+sift_l0_lock_range(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, SiftPartitionEntry *e)
+{
+	SiftManifestRead now;
+	bool		held;
+
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	now = sift_manifest_read_range(rel, key_lo, key_hi);
+	held = now.n == 1 && now.entries[0].part_id == part_id && memcmp(now.entries[0].key_lo, key_lo, SIFT_BOUND_BYTES) == 0;
+	if (held)
+		*e = now.entries[0];
+	else
+		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
+	pfree(now.entries);
+	return held;
 }
 
 /* The lock of the partition was busy (or not): after SIFT_COMB_HOT_STREAK busy ones in a row the partition is one the writers fight for */
@@ -266,7 +333,7 @@ sift_l0_settle(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPart
 		return SIFT_L0_COLD;
 	if (!is_dir && !partition_is_hot(rel, part_id, busy))
 		return SIFT_L0_COLD;
-	if ((shm = sift_l0_hot_claim(&t->hot, &rel->rd_locator, part_id)) == NULL)
+	if ((shm = claim_held(t, rel, part_id)) == NULL)
 		return is_dir ? SIFT_L0_REFUSED : SIFT_L0_COLD;
 	PG_TRY();
 	{
@@ -277,7 +344,7 @@ sift_l0_settle(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPart
 	}
 	PG_FINALLY();
 	{
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	}
 	PG_END_TRY();
 	return SIFT_L0_HOT;
@@ -357,7 +424,7 @@ flush_shared(HotFlush *hf, const SiftPartSpec *spec, SiftL0Table *t, SiftL0Shard
 	PG_FINALLY();
 	{
 		sift_href_io_unreserve(&h);
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	}
 	PG_END_TRY();
 }
@@ -367,7 +434,7 @@ sift_l0_hot_flush(Relation rel, uint64 part_id, const uint8 *key_lo, BlockNumber
 {
 	SiftL0Table *t = table_try();
 	const SiftPartSpec *spec = &sift_f2_store_open(rel)->spec;
-	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_claim(&t->hot, &rel->rd_locator, part_id) : NULL;
+	SiftL0ShardShm *shm = t != NULL ? claim_held(t, rel, part_id) : NULL;
 	HotFlush	hf = {.rel = rel,.part_id = part_id,.key_lo = key_lo};
 
 	if (shm == NULL)
@@ -404,17 +471,19 @@ void
 sift_l0_dir_pages_frozen(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx)
 {
 	SiftL0Table *t = table_try();
-	SiftL0ShardShm *shm = t != NULL ? sift_l0_hot_find(&t->hot, &rel->rd_locator, part_id) : NULL;
-	uint32		held[SIFT_L0_SHARD_ABS_MAX],
-				nheld = 0;
+	SiftL0ShardShm *shm = find_held(t, rel, part_id);
+	uint32		stripes[SIFT_L0_SHARD_ABS_MAX],
+				nstripes = 0;
+	bool		live = shm != NULL && pg_atomic_read_u32(&shm->dir_blk) == anchor;
 
-	if (shm != NULL && pg_atomic_read_u32(&shm->dir_blk) == anchor)
-		nheld = sift_l0_gc_lock_shards(&t->gc, &rel->rd_locator, part_id, pg_atomic_read_u32(&shm->nshards), held);
+	pg_read_barrier();
+	if (live)
+		nstripes = sift_l0_gc_lock_shards(&t->gc, &rel->rd_locator, part_id, pg_atomic_read_u32(&shm->nshards), stripes);
 	if (shm != NULL)
-		sift_l0_hot_unpin(shm);
+		unhold(shm);
 	sift_l0_dir_pages(rel, part_id, anchor, visit, ctx);
-	if (nheld > 0)
-		sift_l0_gc_unlock_shards(&t->gc, held, nheld);
+	if (nstripes > 0)
+		sift_l0_gc_unlock_shards(&t->gc, stripes, nstripes);
 }
 
 static void
@@ -456,3 +525,31 @@ sift_l0_dir_stamp(Relation rel, uint64 part_id, BlockNumber anchor)
 	sift_l0_dir_pages(rel, part_id, anchor, add_stamp, &st);
 	return st;
 }
+
+#ifdef SIFT_TESTING
+/* The entry of the partition held by this backend, which then exits as a FATAL error does: what a backend terminated in the middle of a flush of the directory leaves */
+void
+sift_l0_hot_test_hold_fatal(Relation rel, uint64 part_id)
+{
+	SiftL0Table *t = table_try();
+
+	if (t == NULL || claim_held(t, rel, part_id) == NULL)
+		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE), errmsg("sift: no entry of the hot partitions for partition %llu", (unsigned long long) part_id)));
+	ereport(FATAL, (errcode(ERRCODE_ADMIN_SHUTDOWN), errmsg("sift: the backend exits holding the entry of partition %llu (test)", (unsigned long long) part_id)));
+}
+
+/* The backends that hold the entry of the partition, this one not counted; 0 when it has none */
+uint32
+sift_l0_hot_test_holders(Relation rel, uint64 part_id)
+{
+	SiftL0Table *t = table_try();
+	SiftL0ShardShm *shm = find_held(t, rel, part_id);
+	uint32		n;
+
+	if (shm == NULL)
+		return 0;
+	n = pg_atomic_read_u32(&shm->active) - 1;
+	unhold(shm);
+	return n;
+}
+#endif

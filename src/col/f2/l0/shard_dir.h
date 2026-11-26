@@ -218,6 +218,9 @@ extern uint32 sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key
 /* Whether the lock of the partition is held by another backend now (a probe that takes it and lets it go when it is free) */
 extern bool sift_l0_lock_busy(Relation rel, uint64 part_id);
 
+/* The lock of the partition and its entry e, while the manifest has it with the range [key_lo, key_hi) the writer routed rows by (key_hi NULL: unbounded); false, and no lock, once a split or a merge changed it */
+extern bool sift_l0_lock_range(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, SiftPartitionEntry *e);
+
 /* Under the lock of the partition, e its entry: sends the writer to the directory when the partition is hot (a directory in the entry that the shared table does not know is loaded, a cold chain the writers fight for becomes one) */
 extern SiftL0Route sift_l0_settle(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPartitionEntry *e, bool href, bool busy);
 
@@ -234,6 +237,12 @@ extern SiftChainStamp sift_l0_dir_stamp(Relation rel, uint64 part_id, BlockNumbe
 /* Calls visit for every block a directory owns, its own, its slab and pending delete pages, and those of the directory it drains; ctx and the page as the scan has it share-locked */
 extern void sift_l0_dir_pages(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx);
 extern void sift_l0_dir_pages_frozen(Relation rel, uint64 part_id, BlockNumber anchor, void (*visit) (void *ctx, BlockNumber blk, const char *pg), void *ctx);
+
+#ifdef SIFT_TESTING
+/* Holds the entry of the partition (claimed when it has none) and exits as a FATAL error does; the backends that hold the entry of the partition */
+extern void sift_l0_hot_test_hold_fatal(Relation rel, uint64 part_id);
+extern uint32 sift_l0_hot_test_holders(Relation rel, uint64 part_id);
+#endif
 
 #endif							/* !SIFT_HREF_STANDALONE */
 

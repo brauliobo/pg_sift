@@ -482,10 +482,10 @@ seal_if_full(Relation rel, uint64 part_id, BlockNumber tail)
 	sift_xlog_done(&x);
 }
 
-bool
-sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n)
+SiftL0Append
+sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftL0HeapRef *refs, uint32 n)
 {
-	SiftManifestRead mr;
+	SiftPartitionEntry e;
 	SiftHrefIo	h;
 	BlockNumber head,
 				tail;
@@ -496,17 +496,17 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	{
 		uint32		applied;
 		bool		busy;
-		const SiftPartitionEntry *e;
 
 		CHECK_FOR_INTERRUPTS();
 		if (hot_ok && sift_l0_hot_refs(rel, part_id, key_lo, refs, n, &applied) == SIFT_L0_GC_APPLIED)
-			return true;
+			return SIFT_L0_APPENDED;
 		busy = sift_l0_lock_busy(rel, part_id);
-		e = sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
-		head = e->l0_slab_blk;
+		if (!sift_l0_lock_range(rel, part_id, key_lo, key_hi, &e))
+			return SIFT_L0_MOVED;
+		head = e.l0_slab_blk;
 		if (hot_ok)
 		{
-			SiftL0Route route = sift_l0_settle(rel, part_id, key_lo, e, true, busy);
+			SiftL0Route route = sift_l0_settle(rel, part_id, key_lo, &e, true, busy);
 
 			if (route == SIFT_L0_HOT)
 			{
@@ -516,7 +516,7 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 			if (route == SIFT_L0_REFUSED)
 			{
 				UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-				return false;
+				return SIFT_L0_NO_ROOM;
 			}
 		}
 		break;
@@ -526,7 +526,7 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	if (head != InvalidBlockNumber && !chain_takes(rel, part_id, head, n))
 	{
 		UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		return false;
+		return SIFT_L0_NO_ROOM;
 	}
 	if (head == InvalidBlockNumber)
 	{
@@ -548,14 +548,13 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	if (first)
 		sift_l0_slab_request_flush(rel, part_id);
-	return true;
+	return SIFT_L0_APPENDED;
 }
 
-bool
-sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n, const SiftPendDelRec *dels, int ndel)
+SiftL0Append
+sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, const uint8 *key_hi, const SiftL0HeapRef *refs, uint32 n, const SiftPendDelRec *dels, int ndel)
 {
-	SiftManifestRead mr;
-	SiftPartitionEntry e = *sift_manifest_lock_part(rel, &part_id, &key_lo, &mr);
+	SiftPartitionEntry e;
 	BlockNumber lock = SIFT_PART_LOCK_BLKNO(part_id);
 	SiftManifestEdit edit = {.part_id = part_id,.key_lo = key_lo};
 	SiftMetaNew slab_page = {InvalidBlockNumber},
@@ -565,6 +564,8 @@ sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	bool		fused;
 	Buffer		buf = InvalidBuffer;
 
+	if (!sift_l0_lock_range(rel, part_id, key_lo, key_hi, &e))
+		return SIFT_L0_MOVED;
 	if (e.l0_slab_blk == InvalidBlockNumber && n <= SIFT_L0_HEAPREF_CAP)
 		slab_page = sift_meta_new(rel);
 	if (e.pend_del_blk == InvalidBlockNumber)
@@ -623,7 +624,7 @@ sift_l0_href_append_deleting(Relation rel, uint64 part_id, const uint8 *key_lo, 
 	UnlockPage(rel, lock, ExclusiveLock);
 	if (fused && edit.set_l0_slab)
 		sift_l0_slab_request_flush(rel, part_id);
-	return fused;
+	return fused ? SIFT_L0_APPENDED : SIFT_L0_NO_ROOM;
 }
 
 #endif							/* !SIFT_HREF_STANDALONE */
