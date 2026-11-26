@@ -327,7 +327,7 @@ sift_v6_fact_paths(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, SiftV6C
 	src = sift_v6_rel_sources_alloc(root, fact, &nsrc);
 	for (int i = 0; i < nsrc; i++)
 	{
-		V6Plan		p = {.root = root,.rel = fact,.out = out};
+		V6Plan		p = {.root = root,.rel = fact,.out = out,.batch_ok = true};
 		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
 
 		if (sift_v6_plan_bind(&p, &src[i], rel) && compile(&p, stmt))
