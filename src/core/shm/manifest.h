@@ -92,10 +92,11 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftShmIndexSlot
  * the vblock it fills now. VACUUM marks a vblock all visible only below the least lo of the table, because a row that has not been written yet may still come to it. A slot is
  * taken until its run is used up, and is idle (SIFT_TID_LEASE_IDLE) from the end of a transaction of the backend to its next row: an idle slot is taken by any backend that finds none free and by VACUUM of its table, and the backend that comes back finds it gone and
  * takes a new run, so a pooled backend that sits idle on a connection holds nothing back. A slot is claimed in two steps: while it is CLAIMING a reader takes it for a lease on every table from vblock 0. A backend that
- * inserts with no slot (all are taken) is counted instead, and while there is one VACUUM sets no bit of any table: the vblocks it fills are in no slot to be found.
+ * inserts with no slot (all are taken) is counted instead, in the bucket of its table, and while there is one VACUUM sets no bit of the tables of that bucket: the vblocks it fills are in no slot to be found.
  * A backend that wakes its lease checks the seq it claimed it with and takes it back from idle in one step, so that a lease taken in between is never used. A reader of a slot reads its seq before its owner and again after its locator and lo: a slot that was claimed in between is read as a lease on every table.
  */
 #define SIFT_SHM_TID_LEASES			2048
+#define SIFT_SHM_TID_UNLEASED		64	/* the buckets of the tables that runs of vblocks with no slot are counted in */
 #define SIFT_TID_LEASE_CLAIMING		UINT32_MAX
 #define SIFT_TID_LEASE_IDLE			(1U << 30)	/* a flag of the owner: its backend is between transactions and its lease may be taken by another backend, or by VACUUM, which then no longer waits for it */
 
@@ -219,8 +220,8 @@ extern void sift_shm_tid_lease_set(int slot, uint64 lo);
 extern void sift_shm_tid_lease_idle(int slot);
 extern bool sift_shm_tid_lease_wake(int slot, uint64 seq);
 extern void sift_shm_tid_lease_release(int slot, uint64 seq);
-/* A backend takes up (delta 1) or lets go of (-1) a run of vblocks with no slot of the registry; the count is taken before the run is, so that VACUUM that sees the run sees the count. False, and nothing counted, where the registry cannot be had: VACUUM sets no bit there */
-extern bool sift_shm_tid_unleased(int delta);
+/* A backend takes up (delta 1) or lets go of (-1) a run of vblocks of the table with no slot of the registry; the count is taken before the run is, so that VACUUM that sees the run sees the count. False, and nothing counted, where the registry cannot be had: VACUUM sets no bit there */
+extern bool sift_shm_tid_unleased(const RelFileLocator *locator, int delta);
 /* The vblock below which no backend may still put a row (the least lo of the leases of the table, at most next_vblock; the idle leases of the table are taken away); false where the registry cannot be had */
 extern bool sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint64 *floor);
 

@@ -29,7 +29,7 @@ typedef struct Table
 	pg_atomic_uint32 snaps_live TABLE_LINE;
 	pg_atomic_uint64 snap_bytes;
 	pg_atomic_uint64 list_copies;	/* the lists copied into the area */
-	pg_atomic_uint32 unleased;	/* the runs of vblocks that backends fill with no lease slot */
+	pg_atomic_uint32 unleased[SIFT_SHM_TID_UNLEASED];	/* the runs of vblocks that backends fill with no lease slot, by the bucket of their table */
 	pg_atomic_uint64 global_epoch TABLE_LINE;	/* bumped when a snapshot is retired */
 	LWLock		retire_lock TABLE_LINE;
 	dsa_pointer retired_head;	/* the snapshots retired and not freed yet, oldest first: their retire epochs grow along the list (retire_lock) */

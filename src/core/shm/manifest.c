@@ -83,7 +83,8 @@ table_init(SIFT_DSM_INIT_ARGS)
 	pg_atomic_init_u32(&t->snaps_live, 0);
 	pg_atomic_init_u64(&t->snap_bytes, 0);
 	pg_atomic_init_u64(&t->list_copies, 0);
-	pg_atomic_init_u32(&t->unleased, 0);
+	for (int i = 0; i < SIFT_SHM_TID_UNLEASED; i++)
+		pg_atomic_init_u32(&t->unleased[i], 0);
 	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
 	{
 		pg_atomic_init_u32(&t->lease[i].owner, 0);

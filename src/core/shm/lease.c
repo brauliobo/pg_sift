@@ -587,13 +587,19 @@ sift_shm_tid_lease_release(int slot, uint64 seq)
 		(void) pg_atomic_compare_exchange_u32(&l->owner, &idle, 0);
 }
 
+static pg_atomic_uint32 *
+unleased_of(Table *t, const RelFileLocator *locator)
+{
+	return &t->unleased[slot_hash(locator) % SIFT_SHM_TID_UNLEASED];
+}
+
 bool
-sift_shm_tid_unleased(int delta)
+sift_shm_tid_unleased(const RelFileLocator *locator, int delta)
 {
 	Table	   *t = sift_shm_registry();
 
 	if (t != NULL)
-		pg_atomic_fetch_add_u32(&t->unleased, (uint32) delta);
+		pg_atomic_fetch_add_u32(unleased_of(t, locator), (uint32) delta);
 	return t != NULL;
 }
 
@@ -604,7 +610,7 @@ sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint
 
 	if (t == NULL)
 		return false;
-	*floor = pg_atomic_read_u32(&t->unleased) > 0 ? 0 : Min(next_vblock, sift_lease_vblock_cursor(locator));
+	*floor = pg_atomic_read_u32(unleased_of(t, locator)) > 0 ? 0 : Min(next_vblock, sift_lease_vblock_cursor(locator));
 	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
 	{
 		SiftShmTidLease *l = &t->lease[i];
