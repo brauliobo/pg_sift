@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tap: pooled
-# The cut of the free end of a sift_col file asks for its AccessExclusiveLock again for a few seconds, like the truncation of a heap, instead of once: a reader that
-# holds the table for a moment no longer keeps VACUUM from giving the free blocks back. lock_timeout ends the wait, and the file is cut by the next VACUUM once the reader is gone.
+# The cut of the free end of a sift_col file asks for its AccessExclusiveLock again for 250 ms, like the tail cut of Format 2, instead of once, and then gives up instead of
+# waiting for a reader: VACUUM stays short and the file is cut by the next VACUUM once the reader is gone. A shorter lock_timeout ends the wait sooner.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 ROWS=$(knob SIFT_CL_ROWS 200000 100000)
@@ -15,7 +15,8 @@ sql cut "CREATE EXTENSION pg_sift" \
 	"INSERT INTO t SELECT g, g % 500, g % 997, md5(g::text) || md5((g * 7)::text) FROM generate_series(1, $ROWS) g" \
 	"VACUUM (FREEZE, ANALYZE) t" >/dev/null || bail "setup failed"
 size() { sql cut "SELECT pg_relation_size('t_idx')"; }
-vacuum() { sql cut "SET sift.async_maintenance = off" "$@" "VACUUM t" >/dev/null; }
+vacuum() { sql cut "SET sift.async_maintenance = off" "SET client_min_messages = info" "$@" "VACUUM (VERBOSE) t" 2>&1; }
+waited_ms() { grep -o 'index "t_idx": a lock is held on it (waited [0-9]* ms)' <<<"$1" | grep -o '[0-9]* ms'; }
 # a merge writes its output above its inputs: the file is left with free blocks below and a segment at its end
 loosen() {
 	sql cut "DROP INDEX IF EXISTS t_idx" >/dev/null
@@ -37,24 +38,22 @@ check "the merge left the file loose" test "$loose" -gt "$(( $(live) * 15 / 10 )
 
 hold 2
 t0=$(now_ms)
-vacuum
-waited=$(( $(now_ms) - t0 ))
+out=$(vacuum)
+took=$(( $(now_ms) - t0 ))
+diag "reader held 2 s: VACUUM took $took ms, cut waited $(waited_ms "$out"), file $loose -> $(size)"
+check "the cut asked again for 250 ms and gave up" test "$(waited_ms "$out")" == "250 ms"
+check "VACUUM did not wait for the reader" test "$took" -lt 1500
+check "the file stays while the reader holds it" test "$(size)" -eq "$loose"
 wait "$HOLDER"
-diag "reader held 2 s: VACUUM took $waited ms, file $loose -> $(size)"
-check "VACUUM waited for the reader and cut the file" test "$(size)" -lt "$(( loose * 7 / 10 ))"
-check "the wait was the reader's, not more than the bound" test "$waited" -ge 1000 -a "$waited" -lt 8000
+vacuum >/dev/null
+check "the next VACUUM cuts it" test "$(size)" -lt "$(( loose * 7 / 10 ))"
 
 loosen
 loose=$(size)
 hold 4
-t0=$(now_ms)
-vacuum "SET lock_timeout = '500ms'"  # timeout-ok: the lock_timeout ends the cut's wait while the reader holds the table for 4 s
-waited=$(( $(now_ms) - t0 ))
-diag "reader held 4 s, lock_timeout 500 ms: VACUUM took $waited ms, file $loose -> $(size)"
-check "lock_timeout ends the wait" test "$waited" -lt 3000
-check "the file stays while the reader holds it" test "$(size)" -eq "$loose"
+out=$(vacuum "SET lock_timeout = '100ms'")  # timeout-ok: the lock_timeout ends the cut's wait while the reader holds the table for 4 s
+diag "reader held 4 s, lock_timeout 100 ms: cut waited $(waited_ms "$out"), file $loose -> $(size)"
+check "a shorter lock_timeout ends the wait sooner" test "$(waited_ms "$out")" == "100 ms"
 wait "$HOLDER"
-vacuum
-check "the next VACUUM cuts it" test "$(size)" -lt "$(( loose * 7 / 10 ))"
 check "intact" test -z "$(sql cut "SELECT sift.col_verify('t_idx', true)" 2>&1)"
 finish
