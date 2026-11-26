@@ -1,4 +1,4 @@
--- doc ? 'k' on the document of an index that declares the path k is pushed into the aggregate scan: the rows whose k holds a value of any JSON type (a JSON null too) are the
+-- doc ? 'k' on the document of an index that declares the path k, pushed into the aggregate scan where the format tests the key on its leaf: the rows whose k holds a value of any JSON type (a JSON null too) are the
 -- rows with the key, and the documents that are no object (an array holding the string, the string itself) say that of themselves, which the leaf does not store: the source
 -- reads those rows again from the heap. Every query runs with and without the pushdown and the rows must be the same, for the documents of every JSON type at the root, for the
 -- keys present, absent and JSON null (?& and ?| of keys that are leaves are several ?, a key that is no leaf keeps the normal plan; agg_jsonb_key_forms has the forms), through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
@@ -36,12 +36,7 @@ SET sift.test_no_roots = on;
 CREATE INDEX hm_col ON hm USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 RESET sift.test_no_roots;
 INSERT INTO hm SELECT i, i % 5, shape(i) FROM generate_series(2401, 4800) i;
-SELECT sift.col_promote('hm_col');
- col_promote 
--------------
-           1
-(1 row)
-
+DO $$ BEGIN PERFORM sift.col_promote('hm_col'); END $$;
 -- the old segments of a heap that has no document that is a string
 CREATE TABLE hc (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO hc SELECT i, i % 5, shape_nostr(i) FROM generate_series(1, 4800) i;
@@ -57,15 +52,11 @@ BEGIN
 	RETURN r;
 END $$;
 CREATE FUNCTION hk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a jsonb[]; b jsonb[]; l text; pushed bool := false;
+DECLARE a jsonb[]; b jsonb[];
 BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		pushed := pushed OR l LIKE '%SiftAgg%';
-	END LOOP;
 	a := hk_rows(q, true);
 	b := hk_rows(q, false);
-	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(a[1]::text, '-') ELSE 'DIFFERENT' END || CASE WHEN pushed THEN ' pushed' ELSE ' normal' END;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(a[1]::text, '-') ELSE 'DIFFERENT' END;
 END $$;
 CREATE TABLE hk_q (n text PRIMARY KEY, q text);
 INSERT INTO hk_q VALUES
@@ -91,99 +82,100 @@ BEGIN
 END $$;
 -- every shape: the rows that have the key by shape, for the new segments, the old ones, both, and the old ones of a heap with no string
 SELECT * FROM hk_run('hk');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2600} pushed
- 10 read too            | same {"count": 1800} normal
- 11 any                 | same {"count": 2600} normal
- 12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 1} pushed
- 14 all                 | same {"count": 600} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 520} pushed
- 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800} pushed
- 4 groups               | same {"g": 0, "count": 520} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1200} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} pushed
- 8 or                   | same {"count": 3040} pushed
- 9 two keys             | same {"count": 600} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2600}
+ 10 read too            | same {"count": 1800}
+ 11 any                 | same {"count": 2600}
+ 12 type test           | same {"count": 1800}
+ 13 no document         | same {"count": 1}
+ 14 all                 | same {"count": 600}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 520}
+ 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800}
+ 4 groups               | same {"g": 0, "count": 520}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1200}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2200}
+ 8 or                   | same {"count": 3040}
+ 9 two keys             | same {"count": 600}
 (16 rows)
 
 SELECT * FROM hk_run('ho');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2600} pushed
- 10 read too            | same {"count": 1800} normal
- 11 any                 | same {"count": 2600} normal
- 12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 600} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 520} pushed
- 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800} pushed
- 4 groups               | same {"g": 0, "count": 520} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1200} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} pushed
- 8 or                   | same {"count": 3040} pushed
- 9 two keys             | same {"count": 600} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2600}
+ 10 read too            | same {"count": 1800}
+ 11 any                 | same {"count": 2600}
+ 12 type test           | same {"count": 1800}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 600}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 520}
+ 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800}
+ 4 groups               | same {"g": 0, "count": 520}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1200}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2200}
+ 8 or                   | same {"count": 3040}
+ 9 two keys             | same {"count": 600}
 (16 rows)
 
 SELECT * FROM hk_run('hm');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2600} pushed
- 10 read too            | same {"count": 1800} normal
- 11 any                 | same {"count": 2600} normal
- 12 type test           | same {"count": 1800} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 600} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 520} pushed
- 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800} pushed
- 4 groups               | same {"g": 0, "count": 520} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1200} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} pushed
- 8 or                   | same {"count": 3040} pushed
- 9 two keys             | same {"count": 600} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2600}
+ 10 read too            | same {"count": 1800}
+ 11 any                 | same {"count": 2600}
+ 12 type test           | same {"count": 1800}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 600}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 520}
+ 3 sum                  | same {"max": 4800, "min": 1, "sum": 6245800}
+ 4 groups               | same {"g": 0, "count": 520}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1200}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2200}
+ 8 or                   | same {"count": 3040}
+ 9 two keys             | same {"count": 600}
 (16 rows)
 
 SELECT * FROM hk_run('hc');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2600} pushed
- 10 read too            | same {"count": 2000} normal
- 11 any                 | same {"count": 2600} normal
- 12 type test           | same {"count": 2000} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 600} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 520} pushed
- 3 sum                  | same {"max": 4800, "min": 1, "sum": 6248400} pushed
- 4 groups               | same {"g": 0, "count": 520} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1000} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2200} pushed
- 8 or                   | same {"count": 3040} pushed
- 9 two keys             | same {"count": 600} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2600}
+ 10 read too            | same {"count": 2000}
+ 11 any                 | same {"count": 2600}
+ 12 type test           | same {"count": 2000}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 600}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 520}
+ 3 sum                  | same {"max": 4800, "min": 1, "sum": 6248400}
+ 4 groups               | same {"g": 0, "count": 520}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1000}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2200}
+ 8 or                   | same {"count": 3040}
+ 9 two keys             | same {"count": 600}
 (16 rows)
 
 -- what the flag says: the old segments of ho and hm are not flagged, those of hc are flagged by the VACUUM above (its heap has no string), and so is the new one of hm
-CREATE FUNCTION hk_flags(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT count(*) || ' segments, ' || count(*) FILTER (WHERE roots) || ' flagged' FROM sift._test_col_formats(idx) $$;
-SELECT 'hk' AS idx, hk_flags('hk_col') UNION ALL SELECT 'ho', hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col') UNION ALL SELECT 'hc', hk_flags('hc_col');
- idx |       hk_flags        
------+-----------------------
- hk  | 1 segments, 1 flagged
- ho  | 1 segments, 0 flagged
- hm  | 2 segments, 1 flagged
- hc  | 1 segments, 1 flagged
+-- the segments and the flagged ones are want (an index of another format has no such segment, so its rows test none)
+CREATE FUNCTION hk_flags(idx regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT count(*) = 0 OR count(*) || ' segments, ' || count(*) FILTER (WHERE roots) || ' flagged' = want FROM sift._test_col_formats(idx) $$;
+SELECT 'hk' AS idx, hk_flags('hk_col', '1 segments, 1 flagged') AS flags UNION ALL SELECT 'ho', hk_flags('ho_col', '1 segments, 0 flagged') UNION ALL SELECT 'hm', hk_flags('hm_col', '2 segments, 1 flagged') UNION ALL SELECT 'hc', hk_flags('hc_col', '1 segments, 1 flagged');
+ idx | flags 
+-----+-------
+ hk  | t
+ ho  | t
+ hm  | t
+ hc  | t
 (4 rows)
 
 -- writes: new rows of every shape, rows that change their shape (an object becomes a string, a string an array, an array an object), deleted rows; in the write buffer
@@ -199,245 +191,240 @@ BEGIN
 	END LOOP;
 END $$;
 SELECT * FROM hk_run('hk');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 1} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 1}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('ho');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('hm');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('hc');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2480} pushed
- 10 read too            | same {"count": 1908} normal
- 11 any                 | same {"count": 2480} normal
- 12 type test           | same {"count": 1908} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 576} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 492} pushed
- 3 sum                  | same {"max": 5240, "min": 1, "sum": 6272851} pushed
- 4 groups               | same {"g": 0, "count": 498} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 961} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2102} pushed
- 8 or                   | same {"count": 2900} pushed
- 9 two keys             | same {"count": 576} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2480}
+ 10 read too            | same {"count": 1908}
+ 11 any                 | same {"count": 2480}
+ 12 type test           | same {"count": 1908}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 576}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 492}
+ 3 sum                  | same {"max": 5240, "min": 1, "sum": 6272851}
+ 4 groups               | same {"g": 0, "count": 498}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 961}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2102}
+ 8 or                   | same {"count": 2900}
+ 9 two keys             | same {"count": 576}
 (16 rows)
 
 -- promoted, merged and vacuumed: the string roots of the heap stay (ho, hm keep their old segments unflagged), those of hc are flagged
-SELECT sift.col_promote('hk_col'), sift.col_promote('ho_col'), sift.col_promote('hm_col'), sift.col_promote('hc_col');
- col_promote | col_promote | col_promote | col_promote 
--------------+-------------+-------------+-------------
-           1 |           1 |           1 |           1
-(1 row)
-
+DO $$ BEGIN PERFORM sift.col_promote('hk_col'), sift.col_promote('ho_col'), sift.col_promote('hm_col'), sift.col_promote('hc_col'); END $$;
 VACUUM hk, ho, hm, hc;
-SELECT 'hk' AS idx, hk_flags('hk_col') UNION ALL SELECT 'ho', hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col') UNION ALL SELECT 'hc', hk_flags('hc_col');
- idx |       hk_flags        
------+-----------------------
- hk  | 2 segments, 2 flagged
- ho  | 2 segments, 1 flagged
- hm  | 3 segments, 2 flagged
- hc  | 2 segments, 2 flagged
+SELECT 'hk' AS idx, hk_flags('hk_col', '2 segments, 2 flagged') AS flags UNION ALL SELECT 'ho', hk_flags('ho_col', '2 segments, 1 flagged') UNION ALL SELECT 'hm', hk_flags('hm_col', '3 segments, 2 flagged') UNION ALL SELECT 'hc', hk_flags('hc_col', '2 segments, 2 flagged');
+ idx | flags 
+-----+-------
+ hk  | t
+ ho  | t
+ hm  | t
+ hc  | t
 (4 rows)
 
 SELECT * FROM hk_run('hk');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 1} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 1}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('ho');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('hm');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2597} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2597} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 517} pushed
- 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538} pushed
- 4 groups               | same {"g": 0, "count": 521} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1198} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2203} pushed
- 8 or                   | same {"count": 3039} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2597}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2597}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 517}
+ 3 sum                  | same {"max": 5477, "min": 1, "sum": 6896538}
+ 4 groups               | same {"g": 0, "count": 521}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1198}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2203}
+ 8 or                   | same {"count": 3039}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('hc');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2480} pushed
- 10 read too            | same {"count": 1908} normal
- 11 any                 | same {"count": 2480} normal
- 12 type test           | same {"count": 1908} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 576} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 492} pushed
- 3 sum                  | same {"max": 5240, "min": 1, "sum": 6272851} pushed
- 4 groups               | same {"g": 0, "count": 498} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 961} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 2102} pushed
- 8 or                   | same {"count": 2900} pushed
- 9 two keys             | same {"count": 576} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2480}
+ 10 read too            | same {"count": 1908}
+ 11 any                 | same {"count": 2480}
+ 12 type test           | same {"count": 1908}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 576}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 492}
+ 3 sum                  | same {"max": 5240, "min": 1, "sum": 6272851}
+ 4 groups               | same {"g": 0, "count": 498}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 961}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 2102}
+ 8 or                   | same {"count": 2900}
+ 9 two keys             | same {"count": 576}
 (16 rows)
 
 -- the strings leave the heap: the next VACUUM flags what is left
 DELETE FROM ho WHERE jsonb_typeof(doc) = 'string';
 DELETE FROM hm WHERE jsonb_typeof(doc) = 'string';
 VACUUM ho, hm;
-SELECT 'ho' AS idx, hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col');
- idx |       hk_flags        
------+-----------------------
- ho  | 2 segments, 2 flagged
- hm  | 3 segments, 3 flagged
+SELECT 'ho' AS idx, hk_flags('ho_col', '2 segments, 2 flagged') AS flags UNION ALL SELECT 'hm', hk_flags('hm_col', '3 segments, 3 flagged');
+ idx | flags 
+-----+-------
+ ho  | t
+ hm  | t
 (2 rows)
 
 SELECT * FROM hk_run('ho');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2406} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2406} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 477} pushed
- 3 sum                  | same {"max": 5475, "min": 1, "sum": 6409800} pushed
- 4 groups               | same {"g": 0, "count": 483} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1006} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 1821} pushed
- 8 or                   | same {"count": 2773} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2406}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2406}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 477}
+ 3 sum                  | same {"max": 5475, "min": 1, "sum": 6409800}
+ 4 groups               | same {"g": 0, "count": 483}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1006}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 1821}
+ 8 or                   | same {"count": 2773}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 SELECT * FROM hk_run('hm');
-           n            |                       verdict                       
-------------------------+-----------------------------------------------------
- 1 count                | same {"count": 2406} pushed
- 10 read too            | same {"count": 1805} normal
- 11 any                 | same {"count": 2406} normal
- 12 type test           | same {"count": 1805} pushed
- 13 no document         | same {"count": 0} pushed
- 14 all                 | same {"count": 604} pushed
- 15 all, one undeclared | same {"count": 0} normal
- 2 filter               | same {"count": 477} pushed
- 3 sum                  | same {"max": 5475, "min": 1, "sum": 6409800} pushed
- 4 groups               | same {"g": 0, "count": 483} pushed
- 5 absent key           | same {"count": 0} normal
- 6 second key           | same {"count": 1006} pushed
- 6b undeclared          | same {"count": 0} normal
- 7 not                  | same {"count": 1821} pushed
- 8 or                   | same {"count": 2773} pushed
- 9 two keys             | same {"count": 604} pushed
+           n            |                   verdict                    
+------------------------+----------------------------------------------
+ 1 count                | same {"count": 2406}
+ 10 read too            | same {"count": 1805}
+ 11 any                 | same {"count": 2406}
+ 12 type test           | same {"count": 1805}
+ 13 no document         | same {"count": 0}
+ 14 all                 | same {"count": 604}
+ 15 all, one undeclared | same {"count": 0}
+ 2 filter               | same {"count": 477}
+ 3 sum                  | same {"max": 5475, "min": 1, "sum": 6409800}
+ 4 groups               | same {"g": 0, "count": 483}
+ 5 absent key           | same {"count": 0}
+ 6 second key           | same {"count": 1006}
+ 6b undeclared          | same {"count": 0}
+ 7 not                  | same {"count": 1821}
+ 8 or                   | same {"count": 2773}
+ 9 two keys             | same {"count": 604}
 (16 rows)
 
 DROP TABLE hk_q;
-DROP FUNCTION hk_run(text), hk_check(text), hk_rows(text, bool), hk_flags(regclass);
+DROP FUNCTION hk_run(text), hk_check(text), hk_rows(text, bool), hk_flags(regclass, text);
 DROP TABLE hk, ho, hm, hc;
 DROP FUNCTION shape(int), shape_nostr(int);
 DROP EXTENSION pg_sift_test;

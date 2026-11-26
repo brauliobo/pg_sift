@@ -96,6 +96,13 @@ key_leaf(const SiftV6Rel *rel, int att, const char *key)
 	return jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key));
 }
 
+/* the format tests whether the key is on a document with the leaf of the key */
+static bool
+exists_leaf(const SiftV6Rel *rel, int att, const char *key)
+{
+	return rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->key_exists && key_leaf(rel, att, key) >= 0;
+}
+
 /* the empty path '{}' of a #>> */
 static bool
 empty_path(const Expr *e)
@@ -279,7 +286,7 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	if (func_of(clause) == F_JSONB_EXISTS && list_length(args_of(clause)) == 2)
 	{
 		key = text_const(lsecond(args_of(clause)));
-		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && key_leaf(rel, att, key) >= 0)
+		if (key != NULL && doc_of(rel, linitial(args_of(clause)), &att) && exists_leaf(rel, att, key))
 			return qual_of(JQ_EXISTS, att, key, 0);
 		return NIL;
 	}

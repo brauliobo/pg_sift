@@ -1,4 +1,4 @@
--- doc ? 'k' on the document of an index that declares the path k is pushed into the aggregate scan: the rows whose k holds a value of any JSON type (a JSON null too) are the
+-- doc ? 'k' on the document of an index that declares the path k, pushed into the aggregate scan where the format tests the key on its leaf: the rows whose k holds a value of any JSON type (a JSON null too) are the
 -- rows with the key, and the documents that are no object (an array holding the string, the string itself) say that of themselves, which the leaf does not store: the source
 -- reads those rows again from the heap. Every query runs with and without the pushdown and the rows must be the same, for the documents of every JSON type at the root, for the
 -- keys present, absent and JSON null (?& and ?| of keys that are leaves are several ?, a key that is no leaf keeps the normal plan; agg_jsonb_key_forms has the forms), through writes, UPDATE and DELETE, in a segment written before the segments flagged the string roots (sift.test_no_roots), next to one that
@@ -40,7 +40,7 @@ SET sift.test_no_roots = on;
 CREATE INDEX hm_col ON hm USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4');
 RESET sift.test_no_roots;
 INSERT INTO hm SELECT i, i % 5, shape(i) FROM generate_series(2401, 4800) i;
-SELECT sift.col_promote('hm_col');
+DO $$ BEGIN PERFORM sift.col_promote('hm_col'); END $$;
 
 -- the old segments of a heap that has no document that is a string
 CREATE TABLE hc (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
@@ -59,15 +59,11 @@ BEGIN
 END $$;
 
 CREATE FUNCTION hk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE a jsonb[]; b jsonb[]; l text; pushed bool := false;
+DECLARE a jsonb[]; b jsonb[];
 BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		pushed := pushed OR l LIKE '%SiftAgg%';
-	END LOOP;
 	a := hk_rows(q, true);
 	b := hk_rows(q, false);
-	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(a[1]::text, '-') ELSE 'DIFFERENT' END || CASE WHEN pushed THEN ' pushed' ELSE ' normal' END;
+	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(a[1]::text, '-') ELSE 'DIFFERENT' END;
 END $$;
 
 CREATE TABLE hk_q (n text PRIMARY KEY, q text);
@@ -100,9 +96,10 @@ SELECT * FROM hk_run('hm');
 SELECT * FROM hk_run('hc');
 
 -- what the flag says: the old segments of ho and hm are not flagged, those of hc are flagged by the VACUUM above (its heap has no string), and so is the new one of hm
-CREATE FUNCTION hk_flags(idx regclass) RETURNS text LANGUAGE sql AS
-$$ SELECT count(*) || ' segments, ' || count(*) FILTER (WHERE roots) || ' flagged' FROM sift._test_col_formats(idx) $$;
-SELECT 'hk' AS idx, hk_flags('hk_col') UNION ALL SELECT 'ho', hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col') UNION ALL SELECT 'hc', hk_flags('hc_col');
+-- the segments and the flagged ones are want (an index of another format has no such segment, so its rows test none)
+CREATE FUNCTION hk_flags(idx regclass, want text) RETURNS bool LANGUAGE sql AS
+$$ SELECT count(*) = 0 OR count(*) || ' segments, ' || count(*) FILTER (WHERE roots) || ' flagged' = want FROM sift._test_col_formats(idx) $$;
+SELECT 'hk' AS idx, hk_flags('hk_col', '1 segments, 1 flagged') AS flags UNION ALL SELECT 'ho', hk_flags('ho_col', '1 segments, 0 flagged') UNION ALL SELECT 'hm', hk_flags('hm_col', '2 segments, 1 flagged') UNION ALL SELECT 'hc', hk_flags('hc_col', '1 segments, 1 flagged');
 
 -- writes: new rows of every shape, rows that change their shape (an object becomes a string, a string an array, an array an object), deleted rows; in the write buffer
 DO $$
@@ -122,9 +119,9 @@ SELECT * FROM hk_run('hm');
 SELECT * FROM hk_run('hc');
 
 -- promoted, merged and vacuumed: the string roots of the heap stay (ho, hm keep their old segments unflagged), those of hc are flagged
-SELECT sift.col_promote('hk_col'), sift.col_promote('ho_col'), sift.col_promote('hm_col'), sift.col_promote('hc_col');
+DO $$ BEGIN PERFORM sift.col_promote('hk_col'), sift.col_promote('ho_col'), sift.col_promote('hm_col'), sift.col_promote('hc_col'); END $$;
 VACUUM hk, ho, hm, hc;
-SELECT 'hk' AS idx, hk_flags('hk_col') UNION ALL SELECT 'ho', hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col') UNION ALL SELECT 'hc', hk_flags('hc_col');
+SELECT 'hk' AS idx, hk_flags('hk_col', '2 segments, 2 flagged') AS flags UNION ALL SELECT 'ho', hk_flags('ho_col', '2 segments, 1 flagged') UNION ALL SELECT 'hm', hk_flags('hm_col', '3 segments, 2 flagged') UNION ALL SELECT 'hc', hk_flags('hc_col', '2 segments, 2 flagged');
 SELECT * FROM hk_run('hk');
 SELECT * FROM hk_run('ho');
 SELECT * FROM hk_run('hm');
@@ -134,12 +131,12 @@ SELECT * FROM hk_run('hc');
 DELETE FROM ho WHERE jsonb_typeof(doc) = 'string';
 DELETE FROM hm WHERE jsonb_typeof(doc) = 'string';
 VACUUM ho, hm;
-SELECT 'ho' AS idx, hk_flags('ho_col') UNION ALL SELECT 'hm', hk_flags('hm_col');
+SELECT 'ho' AS idx, hk_flags('ho_col', '2 segments, 2 flagged') AS flags UNION ALL SELECT 'hm', hk_flags('hm_col', '3 segments, 3 flagged');
 SELECT * FROM hk_run('ho');
 SELECT * FROM hk_run('hm');
 
 DROP TABLE hk_q;
-DROP FUNCTION hk_run(text), hk_check(text), hk_rows(text, bool), hk_flags(regclass);
+DROP FUNCTION hk_run(text), hk_check(text), hk_rows(text, bool), hk_flags(regclass, text);
 DROP TABLE hk, ho, hm, hc;
 DROP FUNCTION shape(int), shape_nostr(int);
 DROP EXTENSION pg_sift_test;

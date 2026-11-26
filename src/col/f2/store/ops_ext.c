@@ -81,6 +81,7 @@ jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
 const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
 	.table_key_leaf = jsonb_table_key_leaf,
+	.key_exists = true,
 	.exact_values = true,
 	.unnest_run = sift_v6_unnest_run
 };
