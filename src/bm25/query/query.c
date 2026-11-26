@@ -583,10 +583,11 @@ parse_or(QParser *p, int depth)
 	return list_node(SQ_OR, kids);
 }
 
-SiftQuery *
-sift_query_parse(const char *src, int len)
+/* The query of src, whose terms count after nleaves terms of the queries it is part of */
+static SiftQuery *
+parse_query(const char *src, int len, int nleaves)
 {
-	QParser		p = {.src = src,.len = len,.cpos = 1};
+	QParser		p = {.src = src,.len = len,.cpos = 1,.nleaves = nleaves};
 	SiftQuery  *q = palloc0(sizeof(SiftQuery));
 	int64_t		max_bytes = sift_limit(query_bytes, SIFT_QUERY_MAX_BYTES);
 
@@ -606,9 +607,15 @@ sift_query_parse(const char *src, int len)
 	return q;
 }
 
+SiftQuery *
+sift_query_parse(const char *src, int len)
+{
+	return parse_query(src, len, 0);
+}
+
 /*
  * The OR of the queries srcs[0..n): each parsed on its own (its errors, its positions), then joined as the
- * parser joins the arms of an OR, so that analysis sees the tree of "q1 OR q2 OR ..."
+ * parser joins the arms of an OR, so that analysis sees the tree of "q1 OR q2 OR ..." and its terms count against one limit
  */
 SiftQuery *
 sift_query_parse_any(const char *const *srcs, const int *lens, int n)
@@ -619,10 +626,11 @@ sift_query_parse_any(const char *const *srcs, const int *lens, int n)
 	Assert(n > 0);
 	for (int i = 0; i < n; i++)
 	{
-		SiftQuery  *e = sift_query_parse(srcs[i], lens[i]);
+		SiftQuery  *e = parse_query(srcs[i], lens[i], q->nleaves);
 
+		CHECK_FOR_INTERRUPTS();
 		kids = sift_query_add_child(kids, e->root, SQ_OR);
-		q->nleaves += e->nleaves;
+		q->nleaves = e->nleaves;
 	}
 	q->root = list_node(SQ_OR, kids);
 	return q;

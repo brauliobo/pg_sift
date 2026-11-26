@@ -269,11 +269,14 @@ phrase_seek(sift_cur *c, uint32_t target)
 	if (c->state == 1 && c->g.gid >= target)
 		return &c->g;
 	for (const sift_grp *g; (g = sift_seek(pc->kidp[0], target)); target = g->gid + 1)
+	{
+		CHECK_FOR_INTERRUPTS();
 		if (phrase_group(pc, g))
 		{
 			c->state = 1;
 			return &c->g;
 		}
+	}
 	c->state = 2;
 	return NULL;
 }

@@ -1,0 +1,20 @@
+-- The queries of body @@> ANY (array) are one OR, and their terms count against the one limit of SIFT_MAX_LEAVES (65535): an array of
+-- queries under the limit each is refused as a whole, by the index scan and by the scoring of rows without one
+CREATE EXTENSION pg_sift;
+CREATE TABLE t (id int, body text);
+INSERT INTO t SELECT i, 'w' || i % 5 FROM generate_series(1, 50) i;
+CREATE INDEX t_idx ON t USING sift (body);
+SET enable_seqscan = off;
+\set VERBOSITY sqlstate
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY[rtrim(repeat('w1 OR ', 40000), 'OR '), rtrim(repeat('w2 OR ', 40000), 'OR ')]);
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY[rtrim(repeat('w1 OR ', 30000), 'OR '), rtrim(repeat('w2 OR ', 30000), 'OR ')]);
+-- 70000 queries of one term: more terms than SIFT_MAX_LEAVES only when the elements count together
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY(SELECT 'w' || i % 5 FROM generate_series(1, 70000) i));
+SET sift.enable_scan = off;
+SELECT count(*) FROM t WHERE body @@> ANY (ARRAY[rtrim(repeat('w1 OR ', 40000), 'OR '), rtrim(repeat('w2 OR ', 40000), 'OR ')]);
+RESET sift.enable_scan;
+RESET enable_seqscan;
+SELECT id, sift.score(ctid) > 0 AS scored FROM t WHERE body @@> ANY (ARRAY[rtrim(repeat('w1 OR ', 40000), 'OR '), 'w2']) ORDER BY id LIMIT 2;
+\set VERBOSITY default
+DROP TABLE t;
+DROP EXTENSION pg_sift;
