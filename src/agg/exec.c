@@ -705,6 +705,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_v6_explain_group_keys(st->spec, es);
 		if (st->spec->topk > 0)
 			sift_v6_explain_topn_groups(st->spec, es);
+		if (st->topk != NULL && es->analyze)
+			ExplainPropertyUInteger("Groups Dropped By Top-N", NULL, sift_v6_topk_run_dropped(st->topk), es);
 	}
 	if (OidIsValid(st->spec->text_indexoid) && es->analyze)
 	{

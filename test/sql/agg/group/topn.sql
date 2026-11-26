@@ -26,7 +26,7 @@ CREATE FUNCTION pushed(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF l ~ '[1-9][0-9]* dropped by top-N' THEN r := 'dropped'; ELSIF l LIKE '%Custom Scan (SiftAgg%' AND r = 'normal' THEN r := 'SiftAgg'; END IF;
+		IF l ~ 'Groups Dropped By Top-N: [1-9]' THEN r := 'dropped'; ELSIF l LIKE '%Custom Scan (SiftAgg%' AND r = 'normal' THEN r := 'SiftAgg'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -96,13 +96,13 @@ SELECT 'sum_float' AS what, * FROM same_keys('SELECT g, sum(f) v FROM gt WHERE f
 SELECT 'avg_float' AS what, * FROM same_keys('SELECT g, avg(f) v FROM gt WHERE f <> ''NaN'' GROUP BY g ORDER BY v, g LIMIT 10', 'v');
 SELECT 'avg' AS what, * FROM same_keys('SELECT tie, avg(f) v FROM gt WHERE f < ''Infinity'' GROUP BY tie ORDER BY v LIMIT 25', 'v');
 
--- left alone: a HAVING, a window, DISTINCT, grouping sets, a first key that is not an aggregate, an expression of aggregates, a text sum
+-- a HAVING and a first key that is not an aggregate drop groups too; left alone: a window, DISTINCT, grouping sets, an expression of aggregates, a text sum
 SELECT 'having' AS what, * FROM same('SELECT g, sum(n) v FROM gt GROUP BY g HAVING count(*) > 5 ORDER BY v DESC NULLS LAST, g LIMIT 10');
 SELECT 'key_first' AS what, * FROM same('SELECT g, sum(n) v FROM gt GROUP BY g ORDER BY g DESC LIMIT 10');
 SELECT 'expression' AS what, * FROM same('SELECT g, sum(n) + count(*) v FROM gt GROUP BY g ORDER BY v DESC NULLS LAST, g LIMIT 10');
 SELECT 'rollup' AS what, * FROM same('SELECT g, sum(n) v FROM gt GROUP BY ROLLUP (g) ORDER BY v DESC NULLS LAST, g LIMIT 10');
 SELECT 'with_ties' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt GROUP BY g ORDER BY v DESC FETCH FIRST 10 ROWS WITH TIES', 'v');
--- no group ranks after the n-th: nothing is dropped
+-- every group ties with the n-th: the scan keeps n of them, any n
 SELECT 'all_tied' AS what, * FROM same_keys('SELECT g, count(*) v FROM gt WHERE id <= 30000 GROUP BY g ORDER BY v DESC LIMIT 10', 'v');
 SELECT 'window' AS what, * FROM same('SELECT g, v, rank() OVER (ORDER BY v DESC NULLS LAST, g) r FROM (SELECT g, sum(n) v FROM gt GROUP BY g) s ORDER BY r LIMIT 10');
 

@@ -31,6 +31,8 @@ struct SiftV6TopKRun
 	Datum	   *values;
 	bool	   *isnull;
 	uint32		tmp_uses;
+	uint64		refused;		/* the candidates the heap did not take */
+	uint64		put;			/* the candidates it took, some of which a better one pushed out */
 };
 
 static int
@@ -189,12 +191,23 @@ having_passes(SiftV6TopKRun *r, ExprState *qual, ExprContext *ec, TupleTableSlot
 
 /* a tuple whole: offered whether or not it stays */
 static void
+heap_put(SiftV6TopKRun *r, const Datum *values, const bool *isnull)
+{
+	sift_gtopk_put(r->heap, values, isnull);
+	r->put++;
+}
+
+static void
 offer_whole(SiftV6TopKRun *r, Datum *values, bool *isnull, ExprState *qual, ExprContext *ec, TupleTableSlot *slot)
 {
 	Cand		c = {.r = r,.values = values,.isnull = isnull};
 
-	if (having_passes(r, qual, ec, slot, values, isnull) && sift_gtopk_wants(r->heap, cand_whole, &c))
-		sift_gtopk_put(r->heap, values, isnull);
+	if (!having_passes(r, qual, ec, slot, values, isnull))
+		return;
+	if (sift_gtopk_wants(r->heap, cand_whole, &c))
+		heap_put(r, values, isnull);
+	else
+		r->refused++;
 }
 
 void
@@ -252,7 +265,10 @@ offer_group(SiftV6TopKRun *r, SiftV6Group *g, const V6Set *set, const SiftAggSlo
 	Cand		c = {.g = g,.set = set,.slot = s,.cslot = cslot,.acc = acc,.r = r,.values = r->values,.isnull = r->isnull};
 
 	if (count_loses(r, bar, acc))
+	{
+		r->refused++;
 		return;
+	}
 	memset(r->isnull, true, g->spec->nkeys * sizeof(bool));
 	if (qual != NULL)
 	{
@@ -263,9 +279,11 @@ offer_group(SiftV6TopKRun *r, SiftV6Group *g, const V6Set *set, const SiftAggSlo
 	else if (sift_gtopk_wants(r->heap, cand_lazy, &c))
 	{
 		cand_whole_tuple(&c);
-		sift_gtopk_put(r->heap, r->values, r->isnull);
+		heap_put(r, r->values, r->isnull);
 		count_bar(r, bar);
 	}
+	else
+		r->refused++;
 	tmp_release(r);
 }
 
@@ -289,7 +307,10 @@ offer_compact(void *arg, const uint64 *s)
 
 	CHECK_FOR_INTERRUPTS();
 	if (o->bar.set && count_loses_n(o->r, &o->bar, (int64) v6g_compact_count(o->set, s)))
+	{
+		o->r->refused++;
 		return;
+	}
 	v6g_compact_acc(o->g, o->set, s, o->acc);
 	offer_group(o->r, o->g, o->set, NULL, s, o->acc, &o->bar, o->qual, o->ec, o->slot);
 }
@@ -368,13 +389,22 @@ sift_v6_topk_run_next(SiftV6TopKRun *r, Datum *values, bool *isnull)
 bool
 sift_v6_topk_run_wants(SiftV6TopKRun *r, SiftTopKValue value, void *ctx)
 {
-	return sift_gtopk_wants(r->heap, value, ctx);
+	const bool	wants = sift_gtopk_wants(r->heap, value, ctx);
+
+	r->refused += !wants;
+	return wants;
 }
 
 void
 sift_v6_topk_run_put(SiftV6TopKRun *r, const Datum *values, const bool *isnull)
 {
-	sift_gtopk_put(r->heap, values, isnull);
+	heap_put(r, values, isnull);
+}
+
+uint64
+sift_v6_topk_run_dropped(const SiftV6TopKRun *r)
+{
+	return r->refused + r->put - sift_gtopk_count(r->heap);
 }
 
 void
