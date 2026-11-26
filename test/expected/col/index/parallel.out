@@ -2,6 +2,8 @@
 -- their own, so the column data must equal the serial build's whatever the segment boundaries. sift.test_col_workers is the number of
 -- workers the last build launched.
 CREATE EXTENSION pg_sift;
+-- Format 1: superblocks claimed by the participants and the leaves of the segments are Format 1 structures (Format 2.0: col/f2/parallel_conc).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
 -- Every leaf of two indexes: the same rows with the same values

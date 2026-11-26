@@ -3,6 +3,8 @@
 -- (a segmentation fault, in a parallel worker too). sift.test_col_rel_inval invalidates the entry at every tuple, after it overwrote the
 -- state the entry held, so a caller that kept it reads garbage.
 CREATE EXTENSION pg_sift;
+-- Format 1: segments, promotion and merges are Format 1 structures (Format 2.0: col/f2/relcache_uaf_closure).
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_test;
 
 CREATE FUNCTION rb_norm(d jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
