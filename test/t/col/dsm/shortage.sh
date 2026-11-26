@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # A shortage of dynamic shared memory (no room in /dev/shm, no free segment) is never an error for what asks for a shared table where sift_dsm_attach cannot catch it in a subtransaction:
-# a parallel operation (the pools of the lookups, the directory and ring of the dictionaries), a statement that writes (the pool of the write buffers' references), a background worker (the
+# a parallel operation (the directory and ring of the dictionaries), a statement that writes (the pool of the write buffers' references), a background worker (the
 # queue of the rollup refresh). sift_dsm_try (col/dsmreg.c) catches the shortage where the segment is made, gives the attempt a resource owner of its own (no "dynamic shared memory
 # leak" warning at the commit) and returns no table; each caller goes without it. sift.test_dsm_fail makes the segment of a table whose name has the given part fail with the error a full
-# /dev/shm raises, so the tables are the ones of a server that never had them: a fresh cluster, the failing cases first.
+# /dev/shm raises, so the tables are the ones of a server that never had them: a fresh cluster, the failing cases first. Format 1: the dictionary ring and the arena of the write buffers are
+# Format 1's.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
-plan 18
+plan 15
 
-node_init sh 53 "autovacuum = off
+node_init sh 53 "sift.test_create_format1 = on
+autovacuum = off
 sift.test_dsm_fail = 'bgworker:rollup'"
 node_start sh || bail "start failed"
 D=$(dir sh)
@@ -20,18 +22,11 @@ fails() { PGOPTIONS="-c client_min_messages=warning" sql sh "LOAD 'pg_sift'" "SE
 logged() { grep -c "$1" "$D/postgres.log" || true; }
 entries() { sql sh "SELECT count(*) FROM sift._test_dsm_entries() WHERE name LIKE '%$1%'"; }
 
-for c in "agg_lookup lookup_rows" "agg_dimmap lookup_dim"; do
-	set -- $c
-	L0=$(logged "are not shared with other backends")
-	check "$2 in a parallel operation, no room for its table: no table, no error, one line in the log" \
-		test "$(fails "$1" "$2" true)|$(cat "$D/err")|$(($(logged "are not shared with other backends") - L0))|$(entries "$1")" == "f||1|0"
-done
 check "dictionary_worker: no table, no error" test "$(fails sift_col_dict_5 dictionary_worker true)|$(cat "$D/err")|$(entries sift_col_dict)" == "f||0"
 check "a backend that went without a table makes the tables of other names (nothing is left held)" \
-	test "$(sql sh "LOAD 'pg_sift'" "SET sift.test_dsm_fail = 'agg_lookup'" "SELECT sift._test_dsm_caller('lookup_rows', true)" "RESET sift.test_dsm_fail" "SELECT sift._test_dsm_attach('shortage_probe', 1024)" 2>&1 | paste -sd' ' -)" == "f t"
+	test "$(sql sh "LOAD 'pg_sift'" "SET sift.test_dsm_fail = 'sift_col_dict_5'" "SELECT sift._test_dsm_caller('dictionary_worker', true)" "RESET sift.test_dsm_fail" "SELECT sift._test_dsm_attach('shortage_probe', 1024)" 2>&1 | paste -sd' ' -)" == "f t"
 
 # the same asks with room: the tables are made
-check "lookup_rows with room, in a parallel operation: the table is made" test "$(fails none lookup_rows true)|$(entries agg_lookup)" == "t|1"
 check "dictionary_worker with room: the table is made" test "$(fails none dictionary_worker true)|$(entries sift_col_dict)" == "t|1"
 
 # a statement that writes: the pool of the references of the write buffers has no room; the rows carry their values
@@ -63,6 +58,6 @@ check "a rollup refresh worker that cannot make its table says so in the log and
 wait_for '[[ $(sql sh "SELECT count(*) FROM pg_stat_activity WHERE backend_type = '"'"'sift rollup refresh'"'"'") == 0 ]]' 30
 check "... no worker is left, and none ended with an error" test "$(sql sh "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'sift rollup refresh'")|$(grep -c 'ERROR:.*rollup' "$D/postgres.log" || true)" == "0|0"
 check "no shared table is left half made: the entries are the ones of the successful asks" \
-	test "$(sql sh "SELECT string_agg(name, ' ' ORDER BY name) FROM sift._test_dsm_entries() WHERE name ~ '(arena|probe|lookup|dict_5)'")" == "shortage_probe sift_agg_lookup sift_col_dict_5 sift_col_wbuf_arena_4 sift_col_wbuf_arena_4_seg0"
+	test "$(sql sh "SELECT string_agg(name, ' ' ORDER BY name) FROM sift._test_dsm_entries() WHERE name ~ '(arena|probe|dict_5)'")" == "shortage_probe sift_col_dict_5 sift_col_wbuf_arena_4 sift_col_wbuf_arena_4_seg0"
 check "the server is up" test "$(sql sh "SELECT 1")" == 1
 finish
