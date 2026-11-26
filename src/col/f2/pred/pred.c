@@ -229,7 +229,7 @@ sift_f2_collation_undecided(const SiftColPred *p)
 {
 	if (p->collid == InvalidOid)
 		return false;
-	return !get_collation_isdeterministic(p->collid) || (sift_col_pred_is_bound(p) && !sift_collate_is_c(p->collid));
+	return !sift_collation_deterministic(p->collid) || (sift_col_pred_is_bound(p) && !sift_collate_is_c(p->collid));
 }
 
 uint8
