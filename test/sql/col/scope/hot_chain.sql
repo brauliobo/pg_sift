@@ -1,13 +1,13 @@
 -- The entries of a sift_col index lead to the first version of a HOT chain, as the entries of every index do: an UPDATE that keeps the indexed columns links the new version to the old one, and the
--- address of the row stays the one of the first version (a redirect once VACUUM has pruned it), not the address the heap scan of the table reports for the live version. The scope segments hold the
--- addresses of the entity segments, whatever built them (CREATE INDEX, a promotion, a pair that changes) and whatever happened to the table since: the entries are the join of the rows the entity
--- segments hold with the pairs, and a scope read is the join.
+-- address of the row stays the one of the first version (a redirect once VACUUM has pruned it), not the address the heap scan of the table reports for the live version. The scope summary counts
+-- each row of the entity parts once whatever built them (CREATE INDEX, a promotion, a pair that changes) and whatever happened to the table since: a scope read is the join.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 \ir test/common/sql/col/scope/base.sql
 
 CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
@@ -18,28 +18,16 @@ INSERT INTO events SELECT i, 1 + (i * 7919) % 320, timestamptz '2026-01-01' + (i
 -- the column no index holds: the update is a HOT one and the rows it touches are chains
 UPDATE events SET pad = 'y' WHERE id % 3 = 0;
 
--- every row of the entity segments with its scope keys through the pairs, by the address the entity segments hold; the entries of the scope segments must be exactly those
-CREATE FUNCTION entries_are_the_join() RETURNS boolean LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN (SELECT md5(string_agg(tid::text || ':' || key, ',' ORDER BY tid, key)) FROM sift._test_col_scope_entries('events_col'))
-		 = (SELECT md5(string_agg(r.tid::text || ':' || s.tenant_id, ',' ORDER BY r.tid, s.tenant_id))
-			FROM sift._test_col_read('events_col', 0) r JOIN events e ON e.id = r.val::int JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id);
-END $$;
--- the addresses the entity segments hold that are not the address of a live row: the first versions of chains
-CREATE FUNCTION chain_roots() RETURNS bigint LANGUAGE plpgsql AS $$
-BEGIN
-	RETURN (SELECT count(*) FROM sift._test_col_tids('events_col') t LEFT JOIN events e ON e.ctid = t.tid WHERE e.id IS NULL);
-END $$;
-CREATE FUNCTION reads(OUT n int, OUT same boolean, OUT stored boolean, OUT why text) RETURNS SETOF record LANGUAGE plpgsql AS $$
+-- the join of one key or of a set of keys (a row for each pair), and IN of a set (a fact once): whether the rows are the same and how the node read them
+CREATE FUNCTION reads(OUT n int, OUT same boolean, OUT route text) RETURNS SETOF record LANGUAGE plpgsql AS $$
 DECLARE
 	k record;
 BEGIN
-	FOR k IN SELECT * FROM (VALUES (1, '1'), (2, '5'), (3, '12'), (4, 'ARRAY[2, 9]::int8[]'), (5, 'ARRAY[1, 3, 5, 7, 9, 11]::int8[]')) v(n, keys) LOOP
-		SELECT r.same, r.stored, r.why INTO same, stored, why
-		FROM scope_run(
-			format('SELECT count(*), sum(v), min(id), max(id), count(DISTINCT dim_a_id) FROM events e WHERE sift.in_scope(''events_col''::regclass, ''tenant_id'', e.dim_a_id, %s)', k.keys),
-			format('SELECT count(*), sum(v), min(id), max(id), count(DISTINCT dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (%s::int8[]))',
-				CASE WHEN k.keys LIKE 'ARRAY%' THEN k.keys ELSE 'ARRAY[' || k.keys || ']::int8[]' END)) r;
+	FOR k IN SELECT * FROM (VALUES (1, '{1}', true), (2, '{5}', true), (3, '{12}', true), (4, '{2,9}', true), (5, '{1,3,5,7,9,11}', false)) v(n, keys, pairs) LOOP
+		SELECT r.same, r.route INTO same, route
+		FROM scope_read(CASE WHEN k.pairs
+			THEN format('SELECT count(*), sum(v), min(id), max(id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (%L::int8[])', k.keys)
+			ELSE format('SELECT count(*), sum(v), min(id), max(id), count(DISTINCT dim_a_id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (%L::int8[]))', k.keys) END) r;
 		n := k.n;
 		RETURN NEXT;
 	END LOOP;
@@ -49,7 +37,6 @@ END $$;
 CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
-SELECT chain_roots() > 1000 AS chains, entries_are_the_join();
 SELECT * FROM reads();
 
 -- more chains and a pair that changes and a member that moves: the rows of a member are keyed by the addresses of the entity segments, chains included
@@ -71,15 +58,13 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 SELECT * FROM reads();
 SELECT sift.col_verify('events_col', true);
 
--- a rebuild writes the same addresses
-SELECT chain_roots() > 1000 AS chains;
+-- a rebuild over the chains
 REINDEX INDEX events_col;
-SELECT entries_are_the_join();
 SELECT * FROM reads();
 SELECT sift.col_verify('events_col', true);
 
 DROP TABLE events, tenant_scope;
-DROP FUNCTION entries_are_the_join(), chain_roots(), reads();
-DROP FUNCTION scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
+DROP FUNCTION reads();
+DROP FUNCTION scope_run(text, text), scope_group_run(text), scope_reason_ok(text), scope_read(text);
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

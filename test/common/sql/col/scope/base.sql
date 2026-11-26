@@ -8,6 +8,8 @@
 --   answered from its pre-aggregates, delta_rows: the rows of the write buffers it read as its delta.
 -- scope_run(q, plain): the scope form q and the plain form `plain` of one statement: same rows through the scope path, the planned plan and the plain plan (sift.enable_agg off), whether the
 --   scope units were read (stored), the fallback reason (why), the patched members (patched), whether the scan has a scope conjunct at all (engaged), and whether the path is accounted for (path_ok: stored, or a documented reason).
+-- scope_read(q): the statement q read by sift (the scope node of a Format 2.0 index where the planner takes it), by sift with sift.agg_scope off and by the normal plan (sift.enable_agg off):
+--   the same rows (the md5 of the sorted rows), the Scope Read of the node (NULL: not a scope read) and its Scope Cube.
 CREATE FUNCTION scope_reason_ok(why text) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
 	SELECT why ~ '^(disabled|no scope index|column .* not in the scope units|unfilled|write buffer|'
 		'dedupe over work_mem|dedupe keys|no journal|log not complete|other lineage|trimmed|snapshot|snapshot older than the stamp|stamp aged|too many changed keys|'
@@ -66,5 +68,26 @@ BEGIN
 	patched := jsonb_path_exists(p, '$.**."Scope Patched Keys"');
 	engaged := jsonb_path_exists(p, '$.**."Scope Index"');
 	path_ok := stored OR scope_reason_ok(why);
+END $$;
+
+CREATE FUNCTION scope_read(q text, OUT same boolean, OUT route text, OUT cube text) LANGUAGE plpgsql AS $$
+DECLARE
+	p jsonb;
+	a text;
+	b text;
+	c text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO a;
+	SET LOCAL sift.agg_scope = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO b;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'SELECT md5(coalesce(string_agg(t::text, ''|'' ORDER BY t::text), '''')) FROM (' || q || ') t' INTO c;
+	SET LOCAL sift.enable_agg = on;
+	SET LOCAL sift.agg_scope = on;
+	same := a = b AND b = c;
+	route := jsonb_path_query_first(p, '$.**."Scope Read"') #>> '{}';
+	cube := jsonb_path_query_first(p, '$.**."Scope Cube"') #>> '{}';
 END $$;
 \set ECHO all

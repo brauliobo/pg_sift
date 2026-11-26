@@ -1,16 +1,14 @@
--- GROUP BY the scope key, "every tenant": a scan of every key of a scope reads the scope units key by key, a fact counted once for each pair of its member (the join's meaning), and groups by the derived leaf
--- "<key_name>#scope", which each row it reads has. A read of the write buffers is expanded by the pairs of their members (the delta); the stored entries of a member whose pairs changed leave, and the rows of
--- such a member are read once from the entity segments and expanded by the pairs it has now, so that every row has its key (col_scope_changed_pairs: what that reads). Table-driven: each state of the facts and
--- the pairs (the states accumulate) by each shape (aggregates, filters, members in one, three or no key); the statement is the join `f JOIN pairs m ON m.member = f.fk GROUP BY m.key` as an application writes it (the
--- planner recognises it: agg_scope_group_key), and every read is md5 equal to the join under sift.agg_scope = off and to the normal plan (the group rows included), from the units or, where the reader refuses,
--- from the join the node runs (the route says why).
+-- GROUP BY the scope key, "every tenant": the scope node reads every key of a scope from the scope summary, a fact counted once for each pair of its member (the join's meaning). The rows of the
+-- write buffers and the members whose pairs changed are the changes since the summary (Scope Cube: delta). Table-driven: each state of the facts and the pairs (the states accumulate) by each shape
+-- (aggregates, filters, members in one, three or no key); the statement is the join `f JOIN pairs m ON m.member = f.fk GROUP BY m.key` as an application writes it, and every read is md5 equal to the
+-- join under sift.agg_scope = off and to the normal plan (the group rows included); the route is the Scope Read of the node, none where the node does not take the statement.
 CREATE EXTENSION pg_sift;
-CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 0;
 -- members in up to six keys on purpose: above the default limit of the multiplicity
 SET jit = off;
 SET client_min_messages = warning;
-SET sift.agg_force = on;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 \ir test/common/sql/col/scope/base.sql
 
@@ -42,10 +40,9 @@ INSERT INTO shapes VALUES
 
 -- facts: the table, pairs: the relation of the pairs (a sub-select when its active pairs are a partial btree's)
 CREATE FUNCTION probe(facts text, pairs text)
-RETURNS TABLE (n int, label text, verdict text, route text, group_key boolean, preagg boolean, delta text) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' END), r.group_key, r.preagg,
-		CASE WHEN r.delta_rows IS NULL THEN 'no read' WHEN r.delta_rows = 0 THEN 'none' ELSE 'read' END
-	FROM shapes s, LATERAL scope_group_run(
+RETURNS TABLE (n int, label text, verdict text, route text, cube text) LANGUAGE sql AS $$
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.route, 'none'), r.cube
+	FROM shapes s, LATERAL scope_read(
 		format('SELECT %s%s FROM %s f JOIN %s m ON m.dim_a_id = f.dim_a_id%s%s', CASE WHEN s.grouped THEN 'm.group_id AS k, ' END, s.aggs, facts, pairs,
 			coalesce(' WHERE ' || s.filter, ''), CASE WHEN s.grouped THEN ' GROUP BY 1' END)) r
 	ORDER BY s.n
@@ -56,7 +53,7 @@ CREATE TABLE states (n int, label text, stmt text);
 INSERT INTO states VALUES
 	(1, 'buffered inserts, 1% of the table (dim_b of any number of keys, of none, of no member)',
 		'INSERT INTO facts SELECT 20000 + i, CASE WHEN i % 50 = 0 THEN NULL ELSE 1 + (i * 37) % 320 END, timestamptz ''2026-02-01'', 1, ''y'' FROM generate_series(1, 200) i'),
-	(2, 'buffered updates (the old versions dead in their units) and deletes (stored rows and buffered ones)',
+	(2, 'buffered updates (the old versions dead in the summary) and deletes (stored rows and buffered ones)',
 		'UPDATE facts SET v = v + 100 WHERE id % 9 = 0 AND id <= 20000; DELETE FROM facts WHERE id % 11 = 0 AND id <= 20000; DELETE FROM facts WHERE id > 20000 AND id % 7 = 0'),
 	(3, 'promoted (the buffers are in the segments)',
 		'SELECT sift.col_promote(''facts_col'')'),
@@ -64,7 +61,7 @@ INSERT INTO states VALUES
 		'INSERT INTO facts SELECT 22000 + i, 1 + (i * 17) % 320, timestamptz ''2026-02-03'', 3, ''w'' FROM generate_series(1, 150) i'),
 	(5, 'merged',
 		'SELECT sift.col_merge(''facts_col'', true)'),
-	(6, 'dim_b that lose every pair, after a rebuild (their stored entries leave, no entity row needs a key)',
+	(6, 'dim_b that lose every pair, after a rebuild',
 		'REINDEX INDEX facts_col; DELETE FROM membership WHERE dim_a_id IN (8, 9, 10, 14)'),
 	(7, 'buffered rows of dim_b that lose every pair, and of dim_b that did not change',
 		'INSERT INTO facts SELECT 24000 + i, CASE WHEN i % 4 = 0 THEN 8 + i % 3 ELSE 20 + i % 40 END, timestamptz ''2026-02-05'', 4, ''u'' FROM generate_series(1, 120) i; DELETE FROM membership WHERE dim_a_id IN (20, 21)'),
@@ -74,7 +71,7 @@ INSERT INTO states VALUES
 		'REINDEX INDEX facts_col; DELETE FROM membership WHERE group_id = 3 AND dim_a_id % 5 = 0'),
 	(10, 'pairs moved (a member changes tenant), after a rebuild',
 		'REINDEX INDEX facts_col; WITH d AS (DELETE FROM membership WHERE dim_a_id % 7 = 0 RETURNING dim_a_id, group_id) INSERT INTO membership SELECT dim_a_id, 1 + group_id % 12 FROM d ON CONFLICT DO NOTHING'),
-	(11, 'promoted (the pairs that changed still leave their dim_b out of the units)',
+	(11, 'promoted (the pairs that changed are still changes since the summary)',
 		'SELECT sift.col_promote(''facts_col'')'),
 	(12, 'merged',
 		'SELECT sift.col_merge(''facts_col'', true)'),
@@ -95,7 +92,7 @@ SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n
 SELECT sift.col_verify('facts_col', true);
 
 -- soft deleted pairs: the pairs are the rows of a partial unique btree, the journal index is plain and lists the soft deleted rows too, so the pairs of a buffered row's member are those of the btree. A buffered row of a member
--- with only soft deleted pairs reads nothing, one of a member with some active pairs a copy for each of them; every shape's answer is the join's on the active pairs through each state
+-- with only soft deleted pairs reads nothing, one of a member with some active pairs a row for each of them; every shape's answer is the join's on the active pairs through each state
 CREATE TABLE sd_pairs (dim_a_id int, group_id int, deleted_at timestamptz, PRIMARY KEY (dim_a_id, group_id)) WITH (autovacuum_enabled = false);
 INSERT INTO sd_pairs SELECT m, 1 + (m * 5 + j * 7) % 12, CASE WHEN (m + j) % 5 = 0 THEN now() END FROM generate_series(1, 200) m, generate_series(0, m % 3) j ON CONFLICT DO NOTHING;
 CREATE UNIQUE INDEX sd_pairs_active ON sd_pairs (dim_a_id, group_id) WHERE deleted_at IS NULL;
@@ -106,10 +103,9 @@ CREATE INDEX sd_facts_col ON sd_facts USING sift_col (id, dim_a_id, at, v) WITH 
 REINDEX INDEX sd_facts_col;
 VACUUM (FREEZE, ANALYZE) sd_facts;
 
--- the shapes: how many answer as the join does, are read from the units, say the key and read a delta, and how many the node answers with the join
-CREATE FUNCTION sd_probe(OUT same int, OUT units int, OUT with_key int, OUT with_delta int, OUT needs_join int) LANGUAGE sql AS $$
-	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route = 'units'), count(*) FILTER (WHERE group_key),
-		count(*) FILTER (WHERE delta = 'read'), count(*) FILTER (WHERE route <> 'units')
+-- the shapes: how many answer as the join does, are read from the summary, take the changes since it, and are read by the join
+CREATE FUNCTION sd_probe(OUT same int, OUT summary int, OUT with_delta int, OUT join_read int) LANGUAGE sql AS $$
+	SELECT count(*) FILTER (WHERE verdict = 'same'), count(*) FILTER (WHERE route = 'summary'), count(*) FILTER (WHERE cube = 'delta'), count(*) FILTER (WHERE route LIKE 'join%')
 	FROM probe('sd_facts', '(SELECT * FROM sd_pairs WHERE deleted_at IS NULL)')
 $$;
 CREATE TABLE sd_states (n int, label text, stmt text);
@@ -125,6 +121,5 @@ DROP TABLE sd_states, sd_facts, sd_pairs;
 DROP FUNCTION sd_probe();
 
 DROP TABLE shapes, states, facts, membership;
-DROP FUNCTION probe(text, text), apply(int), scope_group_run(text), scope_run(text, text), scope_reason_ok(text);
-DROP EXTENSION pg_sift_test;
+DROP FUNCTION probe(text, text), apply(int), scope_group_run(text), scope_run(text, text), scope_reason_ok(text), scope_read(text);
 DROP EXTENSION pg_sift;
