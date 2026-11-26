@@ -129,7 +129,7 @@ reap_prepared(SiftRowLockEntry *e, const SiftMxMembers *seen, SiftXidAsk *a)
 static bool
 removable(const SiftRowLockEntry *e, SiftXidAsk *a)
 {
-	return (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && sift_ask_gone(a, e->updater_fxid);
+	return (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && sift_rowlock_unheld(e) && sift_ask_gone(a, e->updater_fxid);
 }
 
 /* Asks every answer that judging the entry for the mode needs: a try that has one outstanding lets go of the stripe and comes back with it */
@@ -153,7 +153,7 @@ in_table(int si, const SiftRowLockEntry *e)
 static bool
 idle(const SiftRowLockEntry *e)
 {
-	return (e->flags & ~SIFT_ROWLOCK_LAST_LOCKER) == 0 && e->nholders == 0 && !MultiXactIdIsValid(e->overflow_mxid);
+	return (e->flags & ~SIFT_ROWLOCK_LAST_LOCKER) == 0 && sift_rowlock_unheld(e);
 }
 
 static bool
@@ -210,7 +210,7 @@ reclaimable(SiftRowLockEntry *e, void *arg)
 	Outside    *o = arg;
 
 	reap_prepared(e, NULL, o->ask);
-	return ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && FullTransactionIdPrecedes(e->updater_fxid, o->horizon)) || idle(e);
+	return ((e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && sift_rowlock_unheld(e) && FullTransactionIdPrecedes(e->updater_fxid, o->horizon)) || idle(e);
 }
 
 /* The end of a transaction keeps the xmax its locks left: only a stripe that has no room for an entry gives those up */

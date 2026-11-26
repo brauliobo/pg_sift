@@ -72,6 +72,13 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftRowLockEntry
 StaticAssertDecl(sizeof(SiftRowLockEntry) == 128, "SiftRowLockEntry must occupy 128 bytes");
 StaticAssertDecl(offsetof(SiftRowLockEntry, delta_ver) == 60, "delta_ver sits at byte 60 of the entry");
 
+/* No transaction holds the row: an entry a holder still has is kept, whatever its committed update */
+static inline bool
+sift_rowlock_unheld(const SiftRowLockEntry *e)
+{
+	return e->nholders == 0 && !MultiXactIdIsValid(e->overflow_mxid);
+}
+
 typedef struct SiftRowLockStripe
 {
 	SiftRowLockEntry entries[SIFT_ROWLOCK_BUCKETS];
