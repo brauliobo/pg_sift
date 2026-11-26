@@ -82,7 +82,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -111,7 +111,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -150,7 +150,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -173,7 +173,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -197,7 +197,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -220,7 +220,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
@@ -258,7 +258,7 @@ SELECT same(q) FROM queries;
  same node SELECT e, count(*), sum(v) FROM u LEFT JOIN LATERAL unnest(arr) e ON true GROUP BY e
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
- same normal SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
+ same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
  same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
  same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)

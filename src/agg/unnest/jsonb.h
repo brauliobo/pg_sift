@@ -66,6 +66,19 @@ extern bool sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6
 extern bool sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names);
 extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
 
+/*
+ * agg/unnest/members.c, SV6E_MEMBERS: jsonb_array_elements(doc) or (doc -> 'key') AS e over a list of objects the index keeps shredded, read by `e ->> 'k'` and `(e ->> 'k')::type`. rte: the function
+ * of a lateral relation. seed: the group of attribute att, with no column yet. column: e is such a read, as the column of the element the leaf of its member is (added at its first read). late: column
+ * slot of the element is computed after the quals of the element (the cast of a member, the value of jsonb_each), which test it among the clauses of the pairs only. member_text: elem ->> name.
+ */
+extern bool sift_v6_members_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
+extern bool sift_v6_members_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att);
+extern bool sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out);
+extern bool sift_v6_elem_late(const SiftV6XElem *e, int slot);
+extern Datum sift_v6_member_text(Datum elem, text *name, bool *isnull);
+/* the leaf of the key `name` of the objects of the group of attribute att (-1: none) */
+extern int	sift_v6_unnest_member_leaf(const SiftColRel *r, int att, int group, const char *name);
+
 /* The leaves of the map `col.* type` of attribute att: its lengths, the keys of its members and their values; false when att holds no such map, or the index keeps the members in no leaf a column can read */
 extern bool sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value);
 

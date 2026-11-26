@@ -39,7 +39,9 @@ typedef struct SiftV6XDim
 	Oid			ptype[SIFT_STAR_MAX_PAY];
 } SiftV6XDim;
 
-/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_array_elements_text, jsonb_each or jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table; SV6E_PATH: no lateral relation, the tests are over the keys of the objects of a jsonb array (jsonpath, @>) */
+/* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_array_elements_text, jsonb_array_elements of objects read by their members (SV6E_MEMBERS), jsonb_each or
+ * jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table; SV6E_PATH: no lateral relation, the tests are over the keys of the objects of
+ * a jsonb array (jsonpath, @>) */
 typedef enum SiftV6ElemFn
 {
 	SV6E_UNNEST = 0,
@@ -47,6 +49,7 @@ typedef enum SiftV6ElemFn
 	SV6E_PATH,
 	SV6E_KEYS,
 	SV6E_ELEMS_TEXT,
+	SV6E_MEMBERS,
 	SV6E_EACH,
 	SV6E_EACH_TEXT
 } SiftV6ElemFn;
