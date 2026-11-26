@@ -4,6 +4,8 @@
 -- units, never a bloom filter, and a NOTICE says which, with the bytes, and how to turn it off.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the key orders and runs of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -29,14 +31,17 @@ VACUUM (FREEZE, ANALYZE) au;
 
 CREATE FUNCTION au_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
 CREATE FUNCTION au_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int;
+DECLARE l text; n int; r0 bigint;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from 'Rows: (\d+) scanned')::int, n);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN n := 0; END IF;
 	END LOOP;
-	RETURN n;
+	IF n IS NULL THEN RETURN NULL; END IF;
+	SELECT value INTO r0 FROM sift.stats(local => true) WHERE name = 'rows_decoded';
+	EXECUTE q;
+	RETURN (SELECT value FROM sift.stats(local => true) WHERE name = 'rows_decoded') - r0;
 END $$;
 CREATE FUNCTION au_option(i text) RETURNS text LANGUAGE sql AS
 $$ SELECT coalesce((SELECT o FROM pg_class c, unnest(c.reloptions) o WHERE c.relname = i AND o LIKE 'key_columns=%'), 'not set') $$;

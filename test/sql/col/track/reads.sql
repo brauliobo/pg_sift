@@ -2,6 +2,8 @@
 -- off and on the heap (no sift plan). The rows are the same three ways, and only the tracked index leaves the heap out: after each statement the plans are asserted to be SiftAgg plans, the tracked read
 -- visits no heap page and the one of the index with the option off visits them.
 CREATE EXTENSION pg_sift;
+-- Format 1: the tombstone log and the row queue of track_changes are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int) WITH (autovacuum_enabled = false, fillfactor = 100);
@@ -25,11 +27,17 @@ BEGIN
 	EXECUTE 'SELECT coalesce(string_agg(format(''%s:%s:%s'', tenant_id, n, s), '' '' ORDER BY tenant_id), ''none'') FROM (' || q || ') q' INTO r;
 	RETURN r;
 END $$;
+-- the heap blocks the aggregate fetched beyond the one every read of a vacuumed table takes: those of the statement less those of planning it (the second EXPLAIN alone)
 CREATE FUNCTION pages(t text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
+DECLARE q constant text := format('SELECT tenant_id, count(*), sum(counter_a) FROM %s GROUP BY tenant_id', t); b0 bigint; b1 bigint; b2 bigint;
 BEGIN
-	EXECUTE format('EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT tenant_id, count(*), sum(counter_a) FROM %s GROUP BY tenant_id', t) INTO j;
-	RETURN coalesce(jsonb_path_query_first(j, 'strict $.**."Heap Pages"')::int, -1);
+	EXECUTE 'EXPLAIN ' || q;
+	b0 := coalesce(pg_stat_get_xact_blocks_fetched(t::regclass), 0);
+	EXECUTE 'EXPLAIN ' || q;
+	b1 := coalesce(pg_stat_get_xact_blocks_fetched(t::regclass), 0);
+	EXECUTE q;
+	b2 := coalesce(pg_stat_get_xact_blocks_fetched(t::regclass), 0);
+	RETURN b2 - b1 - (b1 - b0) - 1;
 END $$;
 -- one row per case: the tracked read, the read of the index with the option off and the heap give the same rows (the same statements ran on both tables), and the heap pages each read visited
 CREATE FUNCTION chk(what text, OUT test text, OUT same_rows bool, OUT tracked_reads_heap bool, OUT untracked_reads_heap bool)

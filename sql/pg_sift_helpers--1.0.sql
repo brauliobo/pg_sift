@@ -526,12 +526,17 @@ BEGIN
 	IF sift_helpers.plan_pushed(p) <> (mode < 2) THEN RAISE EXCEPTION 'the plan is not the one asked for: %', p || E'\n'; END IF;
 	RETURN coalesce((SELECT string_agg(format('%s:%s:%s', tenant, n, s), ' ' ORDER BY tenant) FROM (SELECT tenant, count(*) AS n, sum(amount) AS s FROM tk GROUP BY tenant) q), 'none');
 END $$;
+-- the heap blocks the grouped aggregate of t fetched, less the pages of the visibility map a read looks at once (a view has none), -1 when the plan is not the aggregate scan
 CREATE FUNCTION sift_helpers.grouped_read_heap_pages(t regclass) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = on SET seq_page_cost = 10000 AS $$
-DECLARE j jsonb;
+DECLARE q constant text := format('SELECT g, count(*), sum(v) FROM %s GROUP BY g', t); b0 bigint; b1 bigint; b2 bigint;
 BEGIN
-	EXECUTE format('EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT g, count(*), sum(v) FROM %s GROUP BY g', t) INTO j;
-	RETURN CASE WHEN jsonb_path_exists(j, 'strict $.**."Custom Plan Provider" ? (@ starts with "SiftAgg")')
-		THEN coalesce((SELECT sum((x #>> '{}')::int) FROM jsonb_path_query(j, 'strict $.**."Heap Pages"') x), 0) ELSE -1 END;
+	IF NOT sift_helpers.plan_pushed(sift_helpers.plan_text(q)) THEN RETURN -1; END IF;
+	b0 := coalesce(pg_stat_get_xact_blocks_fetched(t), 0);
+	EXECUTE 'EXPLAIN ' || q;
+	b1 := coalesce(pg_stat_get_xact_blocks_fetched(t), 0);
+	EXECUTE q;
+	b2 := coalesce(pg_stat_get_xact_blocks_fetched(t), 0);
+	RETURN b2 - b1 - (b1 - b0) - pg_relation_size(t, 'vm') / 8192;
 END $$;
 CREATE FUNCTION sift_helpers.rows_agree(q text, col text, a_rel text, b_rel text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE a text; b text;

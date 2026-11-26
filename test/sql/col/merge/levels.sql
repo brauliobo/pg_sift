@@ -3,6 +3,8 @@
 -- when the units and segments a request for a key would no longer open, times the requests the index has had, come to half of the rewrite of their rows. The largest
 -- segment is not rewritten, an index nobody reads is not merged, and a promotion of a write buffer made of many small ones ends in few segments.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segment merges are Format 1.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
@@ -25,7 +27,7 @@ CREATE FUNCTION ml_units(key int) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text; n bigint := 0;
 BEGIN
   FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT kind_id, count(*), sum(amount) FROM ml WHERE k = %s GROUP BY kind_id', key) LOOP
-    IF l LIKE '%Units:%' THEN n := (regexp_match(l, 'Units: (\d+) read'))[1]::bigint; END IF;
+    IF l LIKE '%Granules: %' THEN n := (regexp_match(l, 'Granules: scanned=(\d+)'))[1]::bigint; END IF;
   END LOOP;
   RETURN n;
 END $$;
