@@ -293,9 +293,9 @@ promote(Relation rel, SiftL0ShardShm *shm, uint64 part_id, const uint8 *key_lo, 
 		(void) sift_l0_slab_flush(rel, part_id, key_lo, &sift_f2_store_open(rel)->spec);
 		anchor = NO_BLOCK;
 	}
-	sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 1);
 	PG_TRY();
 	{
+		sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 1);
 		dir = anchor == NO_BLOCK ? sift_l0_dir_create(&h.io, SIFT_L0_SHARD_ABS_MAX, NO_BLOCK, 1, flags, xid_floor()) :
 			sift_l0_dir_promote(&h.io, anchor, SIFT_L0_SHARD_ABS_MAX, xid_floor());
 	}
@@ -407,12 +407,12 @@ flush_shared(HotFlush *hf, const SiftPartSpec *spec, SiftL0Table *t, SiftL0Shard
 	SiftRowBuf *rb;
 
 	sift_href_io_init(&h, hf->rel, (uint32) hf->part_id);
-	if (pg_atomic_read_u32(&shm->dir_blk) != anchor)
-		sift_l0_shm_load(&h.io, shm, anchor);
-	f = (SiftL0Flush) {.io = &h.io,.gc = &t->gc,.shm = shm,.floor = xid_floor()};
-	sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 2);
 	PG_TRY();
 	{
+		if (pg_atomic_read_u32(&shm->dir_blk) != anchor)
+			sift_l0_shm_load(&h.io, shm, anchor);
+		f = (SiftL0Flush) {.io = &h.io,.gc = &t->gc,.shm = shm,.floor = xid_floor()};
+		sift_href_io_reserve(&h, SIFT_L0_SHARD_ABS_MAX + 2);
 		sift_l0_flush_seal(&f, flush_anchor, hf);
 		/* check-memory: allow bounded to one micro-slab: the rows the directory held when it was sealed */
 		rb = sift_rowbuf_new(spec);
