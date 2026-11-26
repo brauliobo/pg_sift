@@ -314,6 +314,8 @@ col/f2/rel.c
 col/f2/scan/scan.c
 col/f2/scope/scope.c
 col/f2/scope/scope.h
+col/f2/scope/spool.c
+col/f2/scope/spool.h
 col/f2/scope/added.c
 col/f2/scope/build.c
 col/f2/scope/cache.c

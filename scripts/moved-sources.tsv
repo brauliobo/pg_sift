@@ -449,7 +449,6 @@ src/col/dictshm/int.h	src/col/dictshm_int.h
 src/col/dictshm/test.c	src/col/dictshm_test.c	
 src/col/f2/build/ext_gate.c	src/col/f2/build_ext_gate.c	
 src/col/f2/build/ext_gate.h	src/col/f2/build_ext_gate.h	
-src/col/f2/build/ext_gate_pg.c	src/col/f2/build_ext_gate_pg.c	
 src/col/f2/meta.c	src/col/f2/col_meta.c	
 src/col/f2/meta.h	src/col/f2/col_meta.h	
 src/col/f2/stats.c	src/col/f2/col_stats.c	

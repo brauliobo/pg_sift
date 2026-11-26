@@ -45,6 +45,7 @@ for t in "${tests[@]}"; do
 		printf 'diff -U3 /in/expected/%s.out /out/results/%s.out\n--- a\n+++ b\n@@ -1 +1 @@\n-1\n+2\n' "$t" "$t" >>"$out/regression.diffs"
 	fi
 	if [[ -n $bad ]]; then rc=1; printf 'not ok %d     - %-20s 5 ms\n' "$n" "$t" | tee -a "$out/regression.out"
+		! has "${STUB_CRASH:-}" "$t" || echo '# (test process exited with exit code 2)' | tee -a "$out/regression.out"
 	else printf 'ok %d         - %-20s 5 ms\n' "$n" "$t" | tee -a "$out/regression.out"; fi
 done
 if [[ -n ${STUB_TOGETHER:-} ]]; then

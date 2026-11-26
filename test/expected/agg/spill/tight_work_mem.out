@@ -50,6 +50,7 @@ BEGIN
 END $$;
 -- the window frame
 CREATE TABLE ev_win (id int, p int, k int, v int);
+-- 50,000 rows of one peer group (k = 7): the tied rows of the LEAD frame stand far past the 64kB work_mem the frame runs at
 INSERT INTO ev_win SELECT i, 1, CASE WHEN i <= 50000 THEN 7 ELSE 8 END, i % 1000 FROM generate_series(1, 50100) i;
 CREATE INDEX ev_win_col ON ev_win USING sift_col (id, p, k, v);
 VACUUM (FREEZE, ANALYZE) ev_win;
@@ -76,6 +77,7 @@ CREATE TABLE ev (id int, k int, g int, v int, t text);
 INSERT INTO ev SELECT i, (i % 100) * 1000, i % 3, i % 1000, 'v' || (i % 100) FROM generate_series(1, 20000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, g, v, t);
 VACUUM (FREEZE, ANALYZE) ev;
+-- 100,000 more rows make the 60,000 groups (distinct k) that stand far past the 64kB work_mem the aggregates run at
 INSERT INTO ev SELECT i, (i % 60000) * 7 + 1, i % 3, ((i::bigint * 7919) % 1000)::int, 't' || (i % 20000) FROM generate_series(20001, 120000) i;
 SELECT tight('generic: string_agg + count(DISTINCT)', 'SELECT k, string_agg(v::text, '','' ORDER BY v) AS b, count(DISTINCT g) AS c FROM ev GROUP BY k');
                                        tight                                       

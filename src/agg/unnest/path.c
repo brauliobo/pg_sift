@@ -67,7 +67,7 @@ numeric_int(Numeric num, int64 *out)
 {
 	bool		err = false;
 
-	*out = numeric_int8_opt_error(num, &err);
+	*out = sift_numeric_int8(num, &err);
 	return !err && DatumGetBool(DirectFunctionCall2(numeric_eq, NumericGetDatum(num), NumericGetDatum(int64_to_numeric(*out))));
 }
 

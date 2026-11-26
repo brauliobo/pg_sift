@@ -5,6 +5,10 @@
  */
 #include "postgres.h"
 
+#if defined(__x86_64__)
+#include <cpuid.h>
+#endif
+
 #include "bm25/kernels/int.h"
 
 #include "bm25/bitmap/kern.h"
@@ -28,6 +32,19 @@ sift_cpu_register(SiftDispatchRebind fn)
 	fn(&sift_cpu);
 }
 
+#if defined(__x86_64__)
+static bool
+has_movbe(void)
+{
+	unsigned int eax,
+				ebx,
+				ecx,
+				edx;
+
+	return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & bit_MOVBE);
+}
+#endif
+
 static void
 detect(void)
 {
@@ -45,7 +62,7 @@ detect(void)
 	f |= __builtin_cpu_supports("avx512vpopcntdq") ? SIFT_CPU_AVX512_VPOPCNT : 0;
 	f |= __builtin_cpu_supports("avx512vbmi2") ? SIFT_CPU_AVX512_VBMI2 : 0;
 	if (__builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") && __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("fma") &&
-		__builtin_cpu_supports("popcnt") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("movbe"))
+		__builtin_cpu_supports("popcnt") && __builtin_cpu_supports("f16c") && has_movbe())
 		f |= SIFT_CPU_X86_V3;
 	if ((f & SIFT_CPU_X86_V3) && (f & SIFT_CPU_AVX512))
 		f |= SIFT_CPU_X86_V4;

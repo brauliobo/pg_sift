@@ -297,7 +297,7 @@ plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 		if (!sift_star_dim_add(&dim, &row))
 		{
 			if (r->nchunks[d] == cap)
-				r->cstart[d] = repalloc(r->cstart[d], sizeof(uint32) * (cap *= 2));
+				r->cstart[d] = repalloc_huge(r->cstart[d], sizeof(uint32) * (cap *= 2));
 			r->cstart[d][r->nchunks[d]++] = at;
 			sift_star_dim_free(&dim);
 			sift_star_dim_init(&dim, &sh);

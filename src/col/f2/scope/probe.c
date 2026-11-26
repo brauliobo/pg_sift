@@ -301,7 +301,7 @@ set_keys(Survey *sv, uint32 *n)
 			if (*n == 0 || keys[*n - 1] != a)
 			{
 				if (*n == cap)
-					keys = repalloc(keys, sizeof(int64) * (cap *= 2));
+					keys = repalloc_huge(keys, sizeof(int64) * (cap *= 2));
 				keys[(*n)++] = a;
 			}
 		sift_scope_spool_free(sv->spill);
