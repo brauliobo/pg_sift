@@ -40,12 +40,14 @@ sift_scope_index_predicate(Oid indexoid)
  * The journal indexes of the scope relation: ready sift_col indexes of format major 1 (the key log is that format's) with track_changes = 'ctid' whose first column is the member and that hold the scope key; the lowest oid of those that hear of
  * every pair. A journal records the pairs a statement ends and inserts, so a partial one qualifies only when the predicate of the btree that defines the pairs implies its predicate (every pair
  * row is in it): else it never hears of a pair inserted outside its predicate and a read would take the member for unchanged.
- * The restore of a binary upgrade makes the dumped journal an empty index of the new default format, whose file the old one replaces when the upgrade ends: its catalog entry says what it is.
+ * The restore of a binary upgrade makes the dumped journal an empty index of the new default format, whose file the old one replaces when the upgrade ends: its format says nothing, so the
+ * journal the scope made (its comment, which the dump keeps) is the one taken, over an index of the user's that the same test passes.
  */
 static Oid
 journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btree)
 {
 	List	   *pair_pred = sift_scope_index_predicate(pair_btree);
+	Oid			first = InvalidOid;
 
 	foreach_oid(ioid, RelationGetIndexList(rel))
 	{
@@ -60,10 +62,12 @@ journal_scan(Relation rel, AttrNumber member, AttrNumber scope_key, Oid pair_btr
 			ok = jpred == NIL || predicate_implied_by(jpred, pair_pred, false);
 		}
 		index_close(idx, AccessShareLock);
-		if (ok)
+		if (ok && (!IsBinaryUpgrade || sift_scope_journal_managed(ioid)))
 			return ioid;
+		if (ok && !OidIsValid(first))
+			first = ioid;
 	}
-	return InvalidOid;
+	return first;
 }
 
 Oid
