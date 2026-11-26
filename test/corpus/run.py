@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""run.py [--only GLOB[|GLOB...]] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
+"""run.py [--only GLOB[|GLOB...]] [--update] [--no-plans] [--plans FILE] [--keys N] [--out DIR] [--jobs N]   (scripts/corpus.sh starts the cluster and loads test/corpus/lab.sql)
 
-Every statement of test/corpus/cases/*.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. In the
+Every statement of test/corpus/cases/*.sql runs in a NEW backend (psql \\connect) twice, with sift off (the native planner) and on, and the sorted rows must be equal. --jobs N (default 4)
+psql sessions for each of off and on take every Nth statement: the statements read the lab and roll back what they write, so they run side by side as the two arms always did. In the
 backend of the "on" run the plan is then explained: the Custom Scan (Sift...) nodes it holds and the verdict of sift.explain_why per arm (used, or the slug of the refusal). That
 is the plan slug of the statement; test/corpus/plans.tsv pins it, so a statement that stops being engaged (or starts) fails until the file is updated in the same change
 (--update rewrites it: read the diff). Libpq environment as for psql (PGHOST, PGPORT, PGUSER, PGDATABASE). Exit 1 on a difference, an error or a plan that is not the pinned one.
@@ -45,9 +46,9 @@ def statement(c):
 
 
 def script(cases, mode, out):
-    """one psql script: a new connection for each case; the rows of case i in out/MODE.i, the plan of the on run in out/plan.i, an error as a line @@ERR"""
+    """one psql script: a new connection for each (i, case); the rows of case i in out/MODE.i, the plan of the on run in out/plan.i, an error as a line @@ERR"""
     s = ["\\set ON_ERROR_STOP off"]
-    for i, c in enumerate(cases):
+    for i, c in cases:
         st = statement(c)
         s += ["\\connect", BASE + (OFF if mode == "off" else ON)] + [q if q.rstrip().endswith(";") else q + ";" for q in c["pre"]]
         s.append("\\o %s/%s.%d" % (out, mode, i))
@@ -71,12 +72,12 @@ def script(cases, mode, out):
     return "\n".join(s) + "\n"
 
 
-def run(cases, mode, out, errs):
+def run(cases, mode, out, errs, bad):
     p = subprocess.run(["psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=0"], input=script(cases, mode, out), capture_output=True, text=True)
     for m in re.finditer(r"@@ERR (\d+) (.*)", p.stdout):
         errs[(mode, int(m.group(1)))] = m.group(2)[:160]
-    if p.returncode not in (0, 2) and not errs:
-        errs[(mode, -1)] = p.stderr.strip()[:300]
+    if p.returncode not in (0, 2):
+        bad.append("psql of the %s arm exited %d: %s" % (mode, p.returncode, p.stderr.strip()[:300]))
 
 
 def rows(path):
@@ -102,8 +103,10 @@ def main(a):
     cases = [c for c in parse() if any(fnmatch.fnmatch(c["slug"], g) for g in globs)]
     out = a[a.index("--out") + 1] if "--out" in a else tempfile.mkdtemp(prefix="corpus.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.makedirs(out, exist_ok=True)
-    errs = {}
-    th = [threading.Thread(target=run, args=(cases, m, out, errs)) for m in ("off", "on")]
+    jobs = int(a[a.index("--jobs") + 1]) if "--jobs" in a else 4
+    errs, bad = {}, []
+    part = list(enumerate(cases))
+    th = [threading.Thread(target=run, args=(part[k::jobs], m, out, errs, bad)) for m in ("off", "on") for k in range(jobs)]
     [t.start() for t in th]
     [t.join() for t in th]
     pinned = {}
@@ -114,7 +117,7 @@ def main(a):
             if l and not l.startswith("#"):
                 s, n, w = l.split("\t")
                 pinned[s] = (n, w)
-    bad, plans = [], {}
+    plans = {}
     for i, c in enumerate(cases):
         s = c["slug"]
         if (("off", i) in errs) or (("on", i) in errs):
