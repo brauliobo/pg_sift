@@ -200,10 +200,12 @@ sift_plan_disabled(const Plan *plan, double *cost)
 #define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key, SO_NONE)
 #define sift_table_beginscan_parallel(rel, pscan)	table_beginscan_parallel(rel, pscan, SO_NONE)
 #define sift_table_index_fetch_begin(rel)			table_index_fetch_begin(rel, SO_NONE)
+#define sift_table_beginscan_tidrange(rel, snapshot, lo, hi)	table_beginscan_tidrange(rel, snapshot, lo, hi, SO_NONE)
 #else
 #define sift_table_beginscan(rel, snapshot, nkeys, key)	table_beginscan(rel, snapshot, nkeys, key)
 #define sift_table_beginscan_parallel(rel, pscan)	table_beginscan_parallel(rel, pscan)
 #define sift_table_index_fetch_begin(rel)			table_index_fetch_begin(rel)
+#define sift_table_beginscan_tidrange(rel, snapshot, lo, hi)	table_beginscan_tidrange(rel, snapshot, lo, hi)
 #endif
 
 /* index_beginscan takes the scan's instrumentation (18) and its flags (19) */
