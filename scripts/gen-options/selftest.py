@@ -1,8 +1,9 @@
 # --selftest: proves missing rows, unknown rows, new C options, bad links, and missing or wrong replacements are caught.
 def selftest():
     srcs = sources()
+    collected = collect(srcs)   # parsed once: a case that edits only docs/options.tsv reuses it, a case that edits a source parses its own
     errs = []
-    opts, notes, released = load(errs)
+    opts, notes, released = load(errs, collected=collected)
     if errs:
         return errs
     text = read('docs/options.tsv')
@@ -36,7 +37,7 @@ def selftest():
     ]
     for what, kw, want in cases:
         e = []
-        load(e, **kw)
+        load(e, **kw) if 'srcs' in kw else load(e, collected=collected, **kw)
         if not any(want in x for x in e):
             errs.append('selftest: %s was not caught (wanted "%s", got %s)' % (what, want, e[:2]))
     return errs

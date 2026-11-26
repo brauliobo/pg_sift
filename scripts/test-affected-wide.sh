@@ -10,7 +10,7 @@ bad=0
 fail() { echo "FAIL: $*"; bad=1; }
 T=$(mktemp -d "${TMPDIR:-/tmp}/wide-scratch.XXXXXX")
 trap 'git -C "$SRC" worktree remove --force "$T/wt-wide" >/dev/null 2>&1; rm -rf "$T"' EXIT
-git -C "$SRC" worktree add -q --detach "$T/wt-wide" HEAD || { echo "FAIL: no work tree of HEAD"; exit 1; }
+git -C "$SRC" -c checkout.workers=8 worktree add -q --detach "$T/wt-wide" HEAD || { echo "FAIL: no work tree of HEAD"; exit 1; }
 REPO=$T/wt-wide
 for i in 1 2 3; do echo 'SELECT 1;' >"$REPO/test/sql/zz_wide_probe$i.sql"; done   # three changed files that a row of scripts/areas.tsv covers
 pick() { "$REPO/scripts/ci.sh" affected --list HEAD 2>&1; }

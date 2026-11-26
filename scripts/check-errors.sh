@@ -18,7 +18,8 @@ set -euo pipefail
 
 SRC=$(cd "$(dirname "$0")/../src" && pwd)
 exec python3 -I - "$SRC" "$(dirname "$0")/errctx.tsv" <<'PY'
-import os, re, sys
+import multiprocessing, os, re, sys
+from concurrent.futures import ProcessPoolExecutor
 
 src = sys.argv[1]
 registry = sys.argv[2]
@@ -70,57 +71,62 @@ def balanced(text, start):
     return len(text)
 
 
-bad = []
-files = 0
-unnamed = set()		# files with a corruption message that names no index
-for root, _, names in os.walk(src):
-    for name in sorted(names):
-        if not name.endswith((".c", ".h")):
+def scan(path):
+    """(sites, files with a corruption message that names no index) of one source; None for a test-only file"""
+    root, name = os.path.split(path)
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    if (re.search(r"(^|_)test(_am)?\.c$", name) or os.path.basename(root) == "test") and "SIFT_TESTING" in raw:
+        return None
+    text, notes = blank(raw)
+    bad, unnamed = [], set()
+    for m in detail_call.finditer(text):
+        end = balanced(text, m.end() - 1)
+        body = raw[m.end():end - 1]
+        n = text.count("\n", 0, m.start()) + 1
+        if any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
             continue
-        path = os.path.join(root, name)
-        with open(path, encoding="utf-8") as f:
-            raw = f.read()
-        if (re.search(r"(^|_)test(_am)?\.c$", name) or os.path.basename(root) == "test") and "SIFT_TESTING" in raw:
+        where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
+        if oid_name.search(body):
+            bad.append(f"{where}: a relation named by its OID (%u): use its name, or sift_rel_label(oid)")
+        if m.group(1) == "errmsg" and option_no_value.search(body):
+            bad.append(f"{where}: an option error without the value of the option: use sift_col_option_error(option, value, why)")
+        if m.group(1) == "errhint" and ddl_hint.search(body) and not quoted.search(body):
+            bad.append(f"{where}: a hint with DDL for a relation: pass the name through sift_col_index_ref() or quote_identifier()")
+    for m in call.finditer(text):
+        end = balanced(text, m.end() - 1)
+        body = text[m.end():end - 1]
+        level = re.match(r"\s*(\w+)", body)
+        if not level or level.group(1) not in ("ERROR", "FATAL"):
             continue
-        text, notes = blank(raw)
-        files += 1
-        for m in detail_call.finditer(text):
-            end = balanced(text, m.end() - 1)
-            body = raw[m.end():end - 1]
-            n = text.count("\n", 0, m.start()) + 1
-            if any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
-                continue
-            where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
-            if oid_name.search(body):
-                bad.append(f"{where}: a relation named by its OID (%u): use its name, or sift_rel_label(oid)")
-            if m.group(1) == "errmsg" and option_no_value.search(body):
-                bad.append(f"{where}: an option error without the value of the option: use sift_col_option_error(option, value, why)")
-            if m.group(1) == "errhint" and ddl_hint.search(body) and not quoted.search(body):
-                bad.append(f"{where}: a hint with DDL for a relation: pass the name through sift_col_index_ref() or quote_identifier()")
-        for m in call.finditer(text):
-            end = balanced(text, m.end() - 1)
-            body = text[m.end():end - 1]
-            level = re.match(r"\s*(\w+)", body)
-            if not level or level.group(1) not in ("ERROR", "FATAL"):
-                continue
-            n = text.count("\n", 0, m.start()) + 1
-            if any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
-                continue
-            where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
-            # the raw text keeps the names of the errcode and report calls (blank() kept every identifier)
-            codes = re.findall(r"\berrcode\s*\(\s*(\w+)", body)
-            if codes and codes[0] in ("ERRCODE_INDEX_CORRUPTED", "ERRCODE_DATA_CORRUPTED") and "RelationGetRelationName" not in body:
-                unnamed.add(os.path.relpath(path, os.path.dirname(src)))
-            if m.group(1) == "elog" or not codes or codes[0] == "ERRCODE_INTERNAL_ERROR":
-                bad.append(f"{where}: XX000 ({m.group(1)}): use SIFT_INVARIANT(cond, \"text\") for a condition the code rules out, or an errcode")
-            elif codes[0] in NEEDS_HELP and not re.search(r"\berr(hint|detail)\w*\s*\(", body):
-                bad.append(f"{where}: {codes[0]} without errhint or errdetail: say what to do")
+        n = text.count("\n", 0, m.start()) + 1
+        if any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
+            continue
+        where = f"{os.path.relpath(path, os.path.dirname(src))}:{n}"
+        # the raw text keeps the names of the errcode and report calls (blank() kept every identifier)
+        codes = re.findall(r"\berrcode\s*\(\s*(\w+)", body)
+        if codes and codes[0] in ("ERRCODE_INDEX_CORRUPTED", "ERRCODE_DATA_CORRUPTED") and "RelationGetRelationName" not in body:
+            unnamed.add(os.path.relpath(path, os.path.dirname(src)))
+        if m.group(1) == "elog" or not codes or codes[0] == "ERRCODE_INTERNAL_ERROR":
+            bad.append(f"{where}: XX000 ({m.group(1)}): use SIFT_INVARIANT(cond, \"text\") for a condition the code rules out, or an errcode")
+        elif codes[0] in NEEDS_HELP and not re.search(r"\berr(hint|detail)\w*\s*\(", body):
+            bad.append(f"{where}: {codes[0]} without errhint or errdetail: say what to do")
 
-        for m in damage_call.finditer(text):
-            n = text.count("\n", 0, m.start()) + 1
-            body = text[m.end():balanced(text, m.end() - 1) - 1]
-            if name not in ("damage.h", "arena.h") and "RelationGetRelationName" not in body and not any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
-                unnamed.add(os.path.relpath(path, os.path.dirname(src)))
+    for m in damage_call.finditer(text):
+        n = text.count("\n", 0, m.start()) + 1
+        body = text[m.end():balanced(text, m.end() - 1) - 1]
+        if name not in ("damage.h", "arena.h") and "RelationGetRelationName" not in body and not any("check-errors: allow" in notes.get(k, "") for k in (n - 2, n - 1, n)):
+            unnamed.add(os.path.relpath(path, os.path.dirname(src)))
+    return bad, unnamed
+
+
+# blank() walks every character: the 1,767 sources are split over the cores (a regex in its place backtracks and was 2.8 times slower), the sites kept in the order of the walk
+paths = [os.path.join(root, name) for root, _, names in os.walk(src) for name in sorted(names) if name.endswith((".c", ".h"))]
+with ProcessPoolExecutor(min(os.cpu_count() or 1, 16), mp_context=multiprocessing.get_context("fork")) as pool:
+    scanned = [r for r in pool.map(scan, paths, chunksize=16) if r is not None]
+bad = [b for sites, _ in scanned for b in sites]
+unnamed = set().union(*(u for _, u in scanned))
+files = len(scanned)
 
 # the registry: FILE <TAB> files that push the context scope its errors are raised under (or "-": a known gap)
 scopes, gaps = {}, 0

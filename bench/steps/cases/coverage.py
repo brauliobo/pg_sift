@@ -39,13 +39,18 @@ def last_tag(root):
 
 def landed(root, since):
     """[(sha, short sha, subject, touches the CHANGELOG)] of the commits since `since` that change src/ or sql/ and say a measured speed in their message"""
-    out = []
-    for block in git(root, 'log', '--first-parent', '--format=%x00%H %h%x01%B%x01', '--name-only', since + '..HEAD').split('\0')[1:]:
-        shas, message, files = block.split('\x01')
-        files = files.split()
-        if any(f.startswith(('src/', 'sql/')) for f in files) and CLAIM.search(VERSION.sub('', message)):
-            out.append((*shas.split(), message.split('\n')[0], 'CHANGELOG.md' in files))
-    return out
+    said = []   # the messages first: the files of a commit are a diff against its first parent, seconds over a release of merges, so only the commits that say a speed get one
+    for block in git(root, 'log', '--first-parent', '--format=%x00%H %h%x01%B', since + '..HEAD').split('\0')[1:]:
+        shas, message = block.split('\x01')
+        if CLAIM.search(VERSION.sub('', message)):
+            said.append((*shas.split(), message))
+    names = {}
+    if said:
+        for block in git(root, 'log', '--no-walk=unsorted', '--first-parent', '--format=%x00%H', '--name-only', *(c[0] for c in said)).split('\0')[1:]:
+            sha, _, files = block.partition('\n')
+            names[sha] = files.split()
+    return [(sha, short, message.split('\n')[0], 'CHANGELOG.md' in names[sha]) for sha, short, message in said
+            if any(f.startswith(('src/', 'sql/')) for f in names[sha])]
 
 
 def waived_commits(key, commits):

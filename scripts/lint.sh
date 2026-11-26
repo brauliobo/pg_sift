@@ -10,8 +10,8 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 cd "$(dirname "$0")/.." || exit 2
 
-# bench-fresh, docs, plan, portable, testing-regress, worker-tests and the selftests of the tools go through scripts/lint-cache.sh: a pass is kept per box by the content of the check's inputs, and the same check on the same inputs in another run
-# waits for the one that is running and takes its result; CI always runs them.
+# the checks go through scripts/lint-cache.sh (the ones below with their own inputs, the others with the whole tree: TREE_UNCACHED): a pass is kept per box by the content of the
+# check's inputs, and the same check on the same inputs in another run waits for the one that is running and takes its result; CI always runs them.
 
 # bench-cases compares with the base branch: a CI checkout is shallow. Only a shallow one is given the base: in a full clone (fetch-depth 0, the macOS job) a depth-1 fetch makes
 # origin/main a shallow commit, its history is cut, and the neutral check then judges every commit of HEAD that main reached before (3 600 instead of 271 on the merge of main)
@@ -141,7 +141,35 @@ CHECKS+=(
 	'fast-gate	scripts/fast-gate.sh --selftest'
 	'fast-gate-select	python3 -I scripts/test-fast-gate-select.py'
 	'test-hygiene	python3 -I scripts/check-test-hygiene.py --selftest && python3 -I scripts/check-test-hygiene.py'
+	'pdtm		python3 -I scripts/pdtm.py --selftest && scripts/regress-times.sh --selftest'
 )
+
+# every other check reads the tree and the tools of the box only: it goes through scripts/lint-cache.sh too, keyed by every tracked and untracked file, so a run with no change since a
+# pass takes it at once (a warm run spent 20 to 55 s on checks that computed the same answer). The tree is read once: the tracked files, their unstaged changes, and the untracked ones
+# with their content (a check that walks a directory sees them; a/ is a nested repository). bench-coverage (the commits since the last tag) and alternates (the commits after NEUTRAL_BASE)
+# read the history too: their key adds HEAD, the tags and the commit NEUTRAL_BASE names. Not cached: neutral reads a private vocabulary and the text of the pull request, pg-includes
+# remembers each compile with the compiler and the server itself.
+TREE_UNCACHED=' neutral pg-includes ' HISTORY=' bench-coverage alternates '
+tree_digest() {
+	local u
+	git ls-files -s; git diff --no-ext-diff
+	u=$(git ls-files --others --exclude-standard | grep -v '/$')
+	[[ -z $u ]] || paste <(git hash-object --stdin-paths <<<"$u") - <<<"$u"
+}
+tree_cache() {
+	local i name cmd tree history digest
+	tree=$(tree_digest | scripts/sha256.sh | cut -c1-64)
+	history=$({ echo "$tree"; git rev-parse HEAD; git for-each-ref refs/tags; git rev-parse -q --verify "${NEUTRAL_BASE:-}^{commit}"; } | scripts/sha256.sh | cut -c1-64)
+	for i in "${!CHECKS[@]}"; do
+		name=${CHECKS[i]%%$'\t'*} cmd=${CHECKS[i]##*$'\t'}
+		[[ $cmd == scripts/lint-cache.sh* || $TREE_UNCACHED == *" $name "* ]] && continue
+		[[ $HISTORY == *" $name "* ]] && digest=$history || digest=$tree
+		CHECKS[i]=$name$'\t'"scripts/lint-cache.sh $name --digest $digest -- bash -c $(printf %q "$cmd")"
+	done
+}
+# the checks that take longest on a cold box start first (the longest processing time first: launched in the order of the list, gen-docs-skip, land and affected-* came 112th to 116th
+# and were the tail of the run); the output keeps the order of the list
+FIRST='plan-formats pg-includes plan-tooling plan-areas-files plan-shards-quick gen-docs-skip bench-resume land affected-wide affected-untracked options-selftest plan-areas-select plan-spread'
 
 # the checks the macOS job runs: the shell syntax and the portability of the scripts (the BSD paste, stat, seq, wc and sed; bash 4), the portable core and the stubs of the SQLite and MariaDB hosts
 # (the clang of macOS), the runner and the helpers of the harness that call those tools. The 100 others (python, documents, policy of the sources) give the same answer on every system
@@ -166,14 +194,19 @@ run_check() {
 
 # at most LINT_JOBS checks at a time (default: half the cores, at least 8: a hosted runner of 4 cores waits on its checks as much as it computes); LINT_TIMES=FILE appends "name wall-seconds cpu-seconds" of every check
 run_checks() {
-	local cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu) jobs running=0 c name rc wall cpu bad=0 sel=() walls=()
+	local cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu) jobs running=0 c name rc wall cpu bad=0 sel=() order=() walls=()
+	local -A cmd=()
 	jobs=${LINT_JOBS:-$(( cores / 2 > 8 ? cores / 2 : 8 ))}
 	for c in "${CHECKS[@]}"; do
 		name=${c%%$'\t'*}
 		[[ $# == 0 || " $* " == *" $name "* ]] || continue
-		sel+=("$name")
+		sel+=("$name") cmd[$name]=${c##*$'\t'}
+	done
+	for name in $FIRST; do [[ -z ${cmd[$name]:-} ]] || order+=("$name"); done
+	for name in "${sel[@]}"; do [[ " $FIRST " == *" $name "* ]] || order+=("$name"); done
+	for name in "${order[@]}"; do
 		(( running < jobs )) || { wait -n; running=$((running - 1)); }
-		( run_check "$name" "${c##*$'\t'}" ) &
+		( run_check "$name" "${cmd[$name]}" ) &
 		running=$((running + 1))
 	done
 	wait
@@ -207,9 +240,19 @@ if [[ ${1:-} == --selftest ]]; then
 	CHECKS=(); for i in 1 2 3 4 5 6; do CHECKS+=("w$i"$'\t'"mkdir $tmp/at-once/$i; ls $tmp/at-once | wc -l >>$tmp/seen; sleep 0.2; rmdir $tmp/at-once/$i"); done
 	LINT_JOBS=2 run_checks >/dev/null
 	[[ $(sort -n "$tmp/seen" | tail -n 1) -le 2 ]] || { echo "FAIL: LINT_JOBS=2 ran $(sort -n "$tmp/seen" | tail -n 1) checks at once"; exit 1; }
-	echo "lint.sh: seconds of each check, the slowest five, the log of a failure and the cap on parallel checks (LINT_JOBS)"
+	CHECKS=($'early\techo early >>'"$tmp/order" $'late\techo late >>'"$tmp/order")
+	out=$(FIRST=late LINT_JOBS=1 run_checks)
+	[[ $(cat "$tmp/order") == $'late\nearly' && $out == $'ok    early'*$'\nok    late'* ]] || { echo "FAIL: a check of FIRST does not start first, or the output leaves the order of the list: $(cat "$tmp/order") / $out"; exit 1; }
+	CHECKS=($'plain\ttrue' $'bench-coverage\ttrue' $'neutral\ttrue' $'own\tscripts/lint-cache.sh own x -- true')
+	tree_cache
+	digest() { local d=${CHECKS[$1]#*--digest }; echo "${d%% *}"; }
+	[[ ${CHECKS[0]} == $'plain\tscripts/lint-cache.sh plain --digest '*' -- bash -c true' && ${CHECKS[1]} == *' --digest '* && $(digest 0) != "$(digest 1)" &&
+		${CHECKS[2]} == $'neutral\ttrue' && ${CHECKS[3]} == $'own\tscripts/lint-cache.sh own x -- true' ]] ||
+		{ echo "FAIL: tree_cache keys a check by the tree, a check of the history by the history, and leaves neutral and a check with its own inputs: ${CHECKS[*]}"; exit 1; }
+	echo "lint.sh: seconds of each check, the slowest five, the log of a failure, the cap on parallel checks (LINT_JOBS), the slow checks first (FIRST) and the keys of the cache"
 	exit 0
 fi
 
 [[ ${1:-} != --macos ]] || set -- $MACOS_CHECKS
+[[ -n ${CI:-} || -n ${SIFT_LINT_NOCACHE:-} ]] || tree_cache
 run_checks "$@"

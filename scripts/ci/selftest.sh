@@ -234,21 +234,21 @@ if [[ $MODE == --selftest ]]; then
 		done < "$REPO/scripts/leftovers.allow"
 	fi
 	if st_on portability; then
-		# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message
+		# a rule is one grep over the files it reads (a grep per file was 4,169 processes and 20 s): in_files FLAGS ERE FILE... names the files grep FLAGS picks, in the order given
+		in_files() { local flags=$1 re=$2; shift 2; (( $# )) || return 0; (cd "$REPO" && grep -s "$flags" -- "$re" "$@") || :; }
+		mapfile -t sh < <(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash')
+		# bash 3.2 (stock macOS) exits 0 on the syntax of bash 4: a script that uses it starts with the check that stops it with a message (scripts/ci/: the parts scripts/ci.sh sources, its first command is the check)
 		b4='declare -A|local -A|local -n|declare -n|mapfile|readarray|\[\[ -v |\$\{[A-Za-z_]+(,,|\^\^)\}|wait -n|EPOCHSECONDS|EPOCHREALTIME|printf .%\(|&>>|\|&|coproc|;;&|read -[a-zA-Z]*N'
-		for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
-			[[ $f == scripts/ci/* ]] && continue   # the parts scripts/ci.sh sources: its first command is the check
-			! grep -qE "$b4" "$REPO/$f" || grep -q 'needs bash 4+' "$REPO/$f" || { echo "FAIL: $f uses bash 4 and lacks the first-line check of scripts/ci.sh"; bad=1; }
+		for f in $(in_files -L 'needs bash 4+' $(in_files -lE "$b4" "${sh[@]}" | grep -v '^scripts/ci/')); do
+			echo "FAIL: $f uses bash 4 and lacks the first-line check of scripts/ci.sh"; bad=1
 		done
 		# a script that makes a temporary file or directory removes it on the way out, also when it is stopped (8,552 entries of /tmp/tmp.* were left by lint and ci helpers)
-		for f in $(git -C "$REPO" ls-files 'scripts/*.sh'); do
-			! grep -qE '^[^#]*\bmktemp\b' "$REPO/$f" || grep -qE '^[^#]*\btrap .*\b(EXIT|RETURN)\b' "$REPO/$f" || { echo "FAIL: $f calls mktemp and sets no EXIT trap that removes it"; bad=1; }
+		for f in $(in_files -LE '^[^#]*\btrap .*\b(EXIT|RETURN)\b' $(in_files -lE '^[^#]*\bmktemp\b' $(git -C "$REPO" ls-files 'scripts/*.sh'))); do
+			echo "FAIL: $f calls mktemp and sets no EXIT trap that removes it"; bad=1
 		done
 		# the checksum tool of macOS is BSD's (`-c --quiet` needs a file operand) and older releases have none: scripts/sha256.sh is the one caller (the pattern is split so that this line is not a match)
 		h='sha256''sum|md5''sum'
-		for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
-			[[ $f == scripts/sha256.sh ]] || ! grep -qE "\\b($h)\\b" "$REPO/$f" || { echo "FAIL: $f calls the system checksum tool; use scripts/sha256.sh"; bad=1; }
-		done
+		for f in $(in_files -lE "\\b($h)\\b" "${sh[@]}" | grep -vx scripts/sha256.sh); do echo "FAIL: $f calls the system checksum tool; use scripts/sha256.sh"; bad=1; done
 		# the other tools of macOS are BSD's too: constructs GNU accepts that they reject or print differently, one row per pattern and the portable spelling. The Linux-only scripts and this file (it holds the patterns) are exempt
 		bsd=(
 			'stat (-c|--format)	a size: wc -c <FILE | tr -d " "'
@@ -256,17 +256,14 @@ if [[ $MODE == --selftest ]]; then
 			'seq -s	BSD seq ends the list with the separator: seq 1 N | tr "\n" " "'
 			'pg_sift\.so	the module of macOS is pg_sift.dylib: pg_sift$DLSUFFIX (test/t/lib/common.bash)'
 		)
+		mapfile -t bsd_sh < <(printf '%s\n' "${sh[@]}" | grep -vxE 'scripts/(ci[.]sh|ci/selftest[.]sh|apt-install[.]sh|isa_check[.]sh|release[.]sh)')
 		for row in "${bsd[@]}"; do
 			IFS=$'\t' read -r re why <<<"$row"
-			for f in $(git -C "$REPO" ls-files 'scripts/*.sh' 'test/t/*.sh' 'test/t/*.bash'); do
-				case $f in scripts/ci.sh|scripts/ci/selftest.sh|scripts/apt-install.sh|scripts/isa_check.sh|scripts/release.sh) continue ;; esac
-				! grep -qE "$re" "$REPO/$f" || { echo "FAIL: $f: /$re/ is not portable to macOS; $why"; bad=1; }
-			done
+			for f in $(in_files -lE "$re" "${bsd_sh[@]}"); do echo "FAIL: $f: /$re/ is not portable to macOS; $why"; bad=1; done
 		done
 		# the python3 of macOS is 3.9: `X | None` in an annotation fails at import there unless the annotations are not evaluated
-		for f in $(git -C "$REPO" ls-files '*.py'); do
-			! grep -qE '(:|->) *[A-Za-z_.]+(\[[^]]*\])? *\| *None' "$REPO/$f" || grep -q '^from __future__ import annotations' "$REPO/$f" ||
-				{ echo "FAIL: $f has an annotation 'X | None' and lacks 'from __future__ import annotations' (Python 3.9)"; bad=1; }
+		for f in $(in_files -L '^from __future__ import annotations' $(in_files -lE '(:|->) *[A-Za-z_.]+(\[[^]]*\])? *\| *None' $(git -C "$REPO" ls-files '*.py'))); do
+			echo "FAIL: $f has an annotation 'X | None' and lacks 'from __future__ import annotations' (Python 3.9)"; bad=1
 		done
 	fi
 	if st_on tooling; then
@@ -394,20 +391,34 @@ if [[ $MODE == --selftest ]]; then
 			done
 			echo "$lo $hi $empty"
 		}
-		for spec in 2:18:4: 1:18:3: 2:17:2:$COMPAT_JOBS_17 2:19:2:$COMPAT_JOBS 2:arm:2:$COMPAT_JOBS_ARM; do
-			IFS=: read -r fmt fl n re <<<"$spec"
-			read -r lo hi empty < <(shard_spread "$fmt" "$fl" "$n" "$re") || { echo "FAIL: formats: --plan of Format $fmt on $fl in $n shards"; bad=1; continue; }
+		# the plans below are independent and seconds each: they run side by side, their answers are read in the order of the list
+		spreads=(2:18:4: 1:18:3: 2:17:2:$COMPAT_JOBS_17 2:19:2:$COMPAT_JOBS 2:arm:2:$COMPAT_JOBS_ARM) pids=()
+		for i in "${!spreads[@]}"; do
+			IFS=: read -r fmt fl n re <<<"${spreads[i]}"
+			shard_spread "$fmt" "$fl" "$n" "$re" >"$ST/spread.$i" & pids+=($!)
+		done
+		wait "${pids[@]}"
+		for i in "${!spreads[@]}"; do
+			IFS=: read -r fmt fl n re <<<"${spreads[i]}"
+			read -r lo hi empty <"$ST/spread.$i" || { echo "FAIL: formats: --plan of Format $fmt on $fl in $n shards"; bad=1; continue; }
 			(( empty == 0 )) || { echo "FAIL: formats: $empty of the $n shards of the quick plan of Format $fmt on $fl have no job"; bad=1; }
 			(( hi * 100 <= lo * 115 )) || { echo "FAIL: formats: the $n shards of the quick plan of Format $fmt on $fl are unbalanced by the weights (heaviest $hi s, lightest $lo s)"; bad=1; }
 		done
 		# only the shard of PostgreSQL 18 on x86 that holds the jobs that build older releases reads the history of the tags
+		# history WANT FAILURE FORMAT FLAVOUR SHARD [MODE JOBS]: `--history` of that shard, side by side with the others, must say WANT
 		history_of() { env SIFT_FORMAT="$1" SIFT_CI_JOBS="${5:-}" SIFT_CI_PG_MAJOR="${2/arm/18}" FLAVOUR="$2" SIFT_CI_SHARD="$3" "$0" --history "${4:-quick}"; }
+		hists=() pids=()
+		history() { history_of "${@:3}" >"$ST/hist.${#hists[@]}" & pids+=($!) hists+=("$1	$2"); }
 		for spec in 17:"$COMPAT_JOBS_17" 19:"$COMPAT_JOBS" arm:"$COMPAT_JOBS_ARM"; do
-			[[ $(history_of 2 "${spec%%:*}" 1/1 quick "${spec#*:}") == no ]] || { echo "FAIL: formats: the compatibility entry of ${spec%%:*} reads the history of the tags"; bad=1; }
+			history no "the compatibility entry of ${spec%%:*} reads the history of the tags" 2 "${spec%%:*}" 1/1 quick "${spec#*:}"
 		done
-		for k in 1 2 3; do [[ $(history_of 1 18 $k/3) == no ]] || { echo "FAIL: formats: shard $k/3 of the Format 1.0 run reads the history of the tags"; bad=1; }; done
-		[[ $(history_of 2 18 1/4) == yes ]] || { echo "FAIL: formats: shard 1/4 of the Format 2.0 run, which holds the jobs that build older releases, does not read the history of the tags"; bad=1; }
-		for k in 2 3 4; do [[ $(history_of 2 18 $k/4) == no ]] || { echo "FAIL: formats: shard $k/4 of the Format 2.0 run reads the history of the tags"; bad=1; }; done
+		for k in 1 2 3; do history no "shard $k/3 of the Format 1.0 run reads the history of the tags" 1 18 $k/3; done
+		history yes "shard 1/4 of the Format 2.0 run, which holds the jobs that build older releases, does not read the history of the tags" 2 18 1/4
+		for k in 2 3 4; do history no "shard $k/4 of the Format 2.0 run reads the history of the tags" 2 18 $k/4; done
+		wait "${pids[@]}"
+		for i in "${!hists[@]}"; do
+			[[ $(<"$ST/hist.$i") == "${hists[i]%%	*}" ]] || { echo "FAIL: formats: ${hists[i]#*	}"; bad=1; }
+		done
 		out=$(SIFT_FORMAT=3 "$0" --plan quick 2>&1) && { echo "FAIL: formats: ci.sh accepts SIFT_FORMAT=3"; bad=1; }
 		[[ $out == *'SIFT_FORMAT is 2'* ]] || { echo "FAIL: formats: ci.sh does not say which formats SIFT_FORMAT takes: $out"; bad=1; }
 	fi

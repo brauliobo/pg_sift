@@ -51,12 +51,13 @@ areas_regex() {
 	local IFS='|'
 	echo "^\$${out[*]:+|${out[*]}}"
 }
-# areas_unmatched FILE...: the files that no row matches, found with the paths of all rows as one ERE (areas_regex runs every row on every file, which a map of
-# every tracked file makes 400,000 matches)
+# areas_unmatched FILE...: the files that no row matches, found with the paths of all rows as one ERE in one grep (areas_regex runs every row on every file, which a map of
+# every tracked file makes 400,000 matches; a bash =~ per file took 19 s on the tree)
 areas_unmatched() {
-	local f rx
+	local rx
+	(( $# )) || return 0
 	rx=$(printf '(%s)|' "${ROWS[@]%%$'\t'*}"); rx=${rx%|}
-	for f in "$@"; do [[ $f =~ $rx ]] || echo "$f"; done
+	printf '%s\n' "$@" | LC_ALL=C grep -Ev -- "$rx" || :
 }
 # areas_invalid: a line for each row whose path or jobs (with the groups filled in and no captures) is not a valid ERE
 areas_invalid() {

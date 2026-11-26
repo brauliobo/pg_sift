@@ -17,8 +17,9 @@ def sources():
     return out
 
 
-def load(errors, srcs=None, notes_text=None, released_text=None):
-    opts, errs = collect(srcs or sources())
+# collected: the (options, errors) of collect() on the sources as they are, for a caller that varies only the record
+def load(errors, srcs=None, notes_text=None, released_text=None, collected=None):
+    opts, errs = collected or collect(srcs or sources())
     errors += errs
     notes = read_tsv(notes_text if notes_text is not None else read('docs/options.tsv'), NOTE_COLS, 'docs/options.tsv', errors)
     rel = read_tsv(released_text if released_text is not None else read('scripts/options-released.tsv'), ['key', 'default'], 'scripts/options-released.tsv', errors)
