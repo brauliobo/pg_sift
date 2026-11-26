@@ -2,7 +2,8 @@
  * test/unit/core/shm/lease.c - the slots of the lease table of core/shm/lease.c: two backends that claim a slot for one relation file at once end with one slot of it, and the word of the page pool
  * of a slot is never the same after a filling as after the one before, however many fillings the slot has had (a pop that read the word before a drain and a filling must fail its swap). A claim
  * gives up a slot that holds no pages before one that does, a probe window of busy pools still finds a slot, a file that is gone (or the files of a database) give their slots back at once, and a
- * backend that exits while it fills a pool ends the filling.
+ * backend that exits while it fills a pool ends the filling. A backend that found a pool empty and wins the filling after another backend filled the pool, or after the slot went to
+ * another file, does not fill it. VACUUM reads the cursor of the vblocks before the runs counted with no slot: a run counted in between starts at the cursor it read or later.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -14,6 +15,42 @@
 #undef qsort
 
 #include "test/common/bench.h"
+
+#include "port/atomics.h"
+#include "core/shm/manifest_int.h"
+
+/* What another backend does just before the code under test swaps (or reads) the atomic at a place */
+static volatile void *hook_at;
+static void (*hook) (void);
+
+static void
+hook_fire(volatile void *p)
+{
+	if (hook != NULL && p == hook_at)
+	{
+		void		(*fn) (void) = hook;
+
+		hook = NULL;
+		fn();
+	}
+}
+
+static inline bool
+hooked_cas_u32(volatile pg_atomic_uint32 *p, uint32 *expected, uint32 newval)
+{
+	hook_fire(p);
+	return pg_atomic_compare_exchange_u32(p, expected, newval);
+}
+
+static inline uint64
+hooked_read_u64(volatile pg_atomic_uint64 *p)
+{
+	hook_fire(p);
+	return pg_atomic_read_u64(p);
+}
+
+#define pg_atomic_compare_exchange_u32 hooked_cas_u32
+#define pg_atomic_read_u64 hooked_read_u64
 
 #include "core/shm/lease.c"
 
@@ -31,6 +68,13 @@ before_shmem_exit(pg_on_exit_callback function, Datum arg)
 	exit_cb = function;
 }
 static TimestampTz clock_now = 1000;
+static Table *tid_table;
+
+Table *
+sift_shm_registry(void)
+{
+	return tid_table;
+}
 
 static const RelFileLocator test_loc = {.spcOid = 1663,.dbOid = 5,.relNumber = 16384};
 
@@ -230,6 +274,80 @@ test_exit_while_filling(void)
 	(void) sift_lease_page_fill(NULL, 0);
 }
 
+
+static SiftMetaLeaseSlot *room_slot;
+
+static void
+other_fills(void)
+{
+	bool		lost;
+	BlockNumber blks[4] = {10, 11, 12, 13};
+
+	SIFT_CHECK(sift_lease_page_room(&test_loc, &lost) && sift_lease_page_fill(blks, 4) == 4);
+}
+
+static void
+slot_goes(void)
+{
+	sift_lease_invalidate(&test_loc);
+}
+
+/* The backend reads the pool empty; before it swaps the filling flag another backend fills the pool (or the slot goes): it gives the filling up */
+static void
+room_after(void (*between) (void), const char *what)
+{
+	uint64		seq;
+	bool		lost = false,
+				room;
+
+	fresh_table();
+	SIFT_CHECK((room_slot = slot_get(lease_table, &test_loc, &seq)) != NULL);
+	hook_at = &room_slot->pool.filling;
+	hook = between;
+	room = sift_lease_page_room(&test_loc, &lost);
+	SIFT_CHECKF(hook == NULL, "the other backend came between");
+	SIFT_CHECKF(!room, "a backend that read the pool empty fills it after %s (%u pages in it)", what, POOL_MASK(pg_atomic_read_u64(&room_slot->pool.word)));
+	SIFT_CHECKF(pg_atomic_read_u32(&room_slot->pool.filling) == 0, "the backend that gave the filling up after %s leaves the pool to fill", what);
+}
+
+static void
+test_room_rechecks(void)
+{
+	room_after(other_fills, "another filled it");
+	room_after(slot_goes, "the slot went");
+}
+
+static SiftMetaLeaseSlot *cursor_slot;
+
+/* A backend with no lease slot counts itself and takes a run of vblocks from the cursor */
+static void
+unleased_run(void)
+{
+	pg_atomic_fetch_add_u32(unleased_of(tid_table, &test_loc), 1);
+	pg_atomic_write_u64(&cursor_slot->vb_cur, 150);
+}
+
+static void
+test_floor_reads_cursor_first(void)
+{
+	uint64		seq,
+				floor = 0;
+
+	fresh_table();
+	tid_table = aligned_alloc(PG_CACHE_LINE_SIZE, TYPEALIGN(PG_CACHE_LINE_SIZE, sizeof(Table)));
+	memset(tid_table, 0, sizeof(Table));
+	SIFT_CHECK((cursor_slot = slot_get(lease_table, &test_loc, &seq)) != NULL);
+	pg_atomic_write_u64(&cursor_slot->vb_end, 1000);
+	pg_atomic_write_u64(&cursor_slot->vb_cur, 50);
+	hook_at = &cursor_slot->vb_cur;
+	hook = unleased_run;
+	SIFT_CHECK(sift_shm_tid_lease_floor(&test_loc, 1000, &floor));
+	SIFT_CHECKF(hook == NULL, "the backend with no slot came between");
+	SIFT_CHECKF(floor <= 50, "the floor is %llu past the run [50, 150) of a backend with no slot", (unsigned long long) floor);
+	free(tid_table);
+	tid_table = NULL;
+}
+
 int
 main(void)
 {
@@ -240,5 +358,7 @@ main(void)
 	test_claim_between();
 	test_claim_race();
 	test_fills_wrap();
+	test_floor_reads_cursor_first();
+	test_room_rechecks();
 	return sift_check_summary();
 }

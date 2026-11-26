@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "port/atomics.h"
+#include "storage/block.h"
 #include "storage/lwlock.h"
 #include "storage/relfilelocator.h"
 #include "utils/dsa.h"

@@ -449,13 +449,21 @@ sift_lease_page_room(const RelFileLocator *loc, bool *lost)
 	SiftMetaLeaseSlot *s;
 	uint64		seq,
 				w;
-	uint32		expected = 0;
+	uint32		flag,
+				expected = 0;
 
 	if (t == NULL || (s = slot_get(t, loc, &seq)) == NULL)
 		return false;
-	w = pg_atomic_read_u64(&s->pool.word);
-	if (POOL_MASK(w) != 0 || !pg_atomic_compare_exchange_u32(&s->pool.filling, &expected, ((uint32) SEQ_CLAIM(seq) << 1) | 1))
+	flag = ((uint32) SEQ_CLAIM(seq) << 1) | 1;
+	if (POOL_MASK(pg_atomic_read_u64(&s->pool.word)) != 0 || !pg_atomic_compare_exchange_u32(&s->pool.filling, &expected, flag))
 		return false;
+	/* the pool as the filling found it: another backend may have filled it, or the slot gone to another file, since the read above */
+	w = pg_atomic_read_u64(&s->pool.word);
+	if (POOL_MASK(w) != 0 || pg_atomic_read_u64(&s->seq) != seq)
+	{
+		(void) pg_atomic_compare_exchange_u32(&s->pool.filling, &flag, 0);
+		return false;
+	}
 	*lost = POOL_FILLS(w) == 0;
 	filling_slot = s;
 	filling_seq = seq;
@@ -610,15 +618,21 @@ sift_shm_tid_lease_floor(const RelFileLocator *locator, uint64 next_vblock, uint
 
 	if (t == NULL)
 		return false;
-	*floor = pg_atomic_read_u32(unleased_of(t, locator)) > 0 ? 0 : Min(next_vblock, sift_lease_vblock_cursor(locator));
+	/* the cursor before the runs with no slot: a run counted after the cursor was read starts at it or later */
+	*floor = Min(next_vblock, sift_lease_vblock_cursor(locator));
+	pg_read_barrier();
+	if (pg_atomic_read_u32(unleased_of(t, locator)) > 0)
+		*floor = 0;
 	for (int i = 0; i < SIFT_SHM_TID_LEASES; i++)
 	{
 		SiftShmTidLease *l = &t->lease[i];
 		uint64		seq = pg_atomic_read_u64(&l->seq),
 					lo;
-		uint32		owner = pg_atomic_read_u32(&l->owner);
+		uint32		owner;
 		bool		mine;
 
+		pg_read_barrier();
+		owner = pg_atomic_read_u32(&l->owner);
 		pg_read_barrier();
 		if (owner == 0)
 			continue;
