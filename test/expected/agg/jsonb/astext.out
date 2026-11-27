@@ -82,7 +82,7 @@ SELECT query, same, pushed FROM a_compare();
  SELECT e.score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1                                                                         | t    | t
  SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>'score' = '12')                                                                          | t    | t
  SELECT e.kind, count(*) FILTER (WHERE e.score = '1.50'), count(*) FILTER (WHERE e.score IS NULL) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1 | t    | t
- SELECT e.kind, avg(e.score::float8) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) WHERE e.score ~ '^[0-9.]+$' GROUP BY 1                                  | t    | f
+ SELECT e.kind, avg(e.score::float8) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) WHERE e.score ~ '^[0-9.]+$' GROUP BY 1                                  | t    | t
  SELECT d.doc->>'label' AS label, count(*) FROM a_t d GROUP BY 1                                                                                                                                | t    | t
  SELECT count(*) FROM a_t d WHERE d.doc->>'label' = '1.50'                                                                                                                                      | t    | t
  SELECT count(*) FROM a_t d WHERE d.doc->>'label' IN ('true', '12', '100')                                                                                                                      | t    | t
