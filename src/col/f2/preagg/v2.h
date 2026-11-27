@@ -222,13 +222,29 @@ extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *
 
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
-/* The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none */
+/*
+ * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none.
+ * The parts a compaction cuts its output into where its memory filled share one budget, as the part they would be if written whole.
+ */
 #define SIFT_PAG_BUDGET_PERCENT	4
 #define SIFT_PAG_BUDGET_SLACK	65536
 
-extern SiftPreaggBuild *sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules);
-/* The granule g: its columns (nrows rows), the dictionaries of the part per column and the bytes of the granules written so far, this one included. True when every cube holds it; false when one left it out (the caller marks SIFT_GDESC_PREAGG_SKIP) */
-extern bool sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, int nrows, const SiftDictEnc *const *dicts, uint64 data_bytes);
+typedef struct SiftPreaggBudget
+{
+	uint64		data;			/* the bytes of the granules */
+	uint64		used[2];		/* the bytes of the cells and sets of the cubes of the rows, and of the cubes of the members of the maps */
+} SiftPreaggBudget;
+
+static inline bool
+sift_preagg_v2_fits(const SiftPreaggBudget *b, bool elements, uint64 bytes)
+{
+	return b->used[elements] + bytes <= b->data / 100 * SIFT_PAG_BUDGET_PERCENT + SIFT_PAG_BUDGET_SLACK;
+}
+
+/* budget: the one the part shares with the parts written before it (NULL: its own) */
+extern SiftPreaggBuild *sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules, SiftPreaggBudget *budget);
+/* The granule g: its columns (nrows rows), the dictionaries of the part per column and its bytes. True when every cube holds it; false when one left it out (the caller marks SIFT_GDESC_PREAGG_SKIP) */
+extern bool sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, int nrows, const SiftDictEnc *const *dicts, uint64 granule_bytes);
 /* The section, palloc'd in the context the build was begun in */
 extern void *sift_preagg_v2_finish(SiftPreaggBuild *b, uint64 *len);
 
@@ -240,8 +256,8 @@ extern void *sift_preagg_v2_assemble(int ncubes, const SiftPreaggCubeDesc *cube,
 /* ---- joining ---- */
 
 struct SiftPart;
-/* The section of the parts joined end to end, or NULL when their cubes are not the same */
-extern void *sift_preagg_v2_join(Relation rel, struct SiftPart *const *src, int n, uint64 *len);
+/* The section of the parts joined end to end (dir: the granules of the joined part; declared: its cubes of the rows are those of the option preagg), or NULL when their cubes are not the same */
+extern void *sift_preagg_v2_join(Relation rel, struct SiftPart *const *src, int n, SiftGranuleDesc *dir, bool declared, uint64 *len);
 
 /* ---- reading ---- */
 

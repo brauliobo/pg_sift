@@ -227,7 +227,8 @@ join_fill(void *arg, uint64 off, uint64 n, char *out)
 }
 
 SiftPartDesc
-sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, SiftF2KllBuild *kll, uint64 *granules, uint64 *writer_bytes)
+sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, bool preagg_declared, SiftF2KllBuild *kll, uint64 *granules,
+					   uint64 *writer_bytes)
 {
 	StringInfoData excs,
 				tstrides,
@@ -339,7 +340,7 @@ sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 lev
 	if (has_preagg)
 	{
 		uint64		pa_len;
-		void	   *pa_sec = sift_preagg_v2_join(rel, (SiftPart *const *) src, n, &pa_len);
+		void	   *pa_sec = sift_preagg_v2_join(rel, (SiftPart *const *) src, n, dir, preagg_declared, &pa_len);
 
 		if (pa_sec != NULL)
 			sift_part_add_section(secs, &nsec, SEC_PREAGG, 0, pa_sec, pa_len, false);

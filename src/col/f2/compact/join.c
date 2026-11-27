@@ -7,6 +7,7 @@
 #include "col/f2/dv_join.h"
 #include "col/f2/key_sig.h"
 #include "col/f2/kll/kll.h"
+#include "col/f2/preagg/v2.h"
 #include "core/page_io.h"
 #include "core/xid_cache.h"
 
@@ -104,7 +105,8 @@ sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, i
 				return false;
 			}
 	}
-	*out = sift_part_write_joined(rel, (uint32) part_id, res->new_gen, Min(level + 1, SIFT_MAX_PART_LEVEL), src, sorted, n, kll, &ngranules, &writer_bytes);
+	*out = sift_part_write_joined(rel, (uint32) part_id, res->new_gen, Min(level + 1, SIFT_MAX_PART_LEVEL), src, sorted, n,
+								  spec->preagg_decl != NULL && spec->preagg_decl->ndims > 0, kll, &ngranules, &writer_bytes);
 	for (int i = 0; i < n; i++)
 	{
 		res->rows_in += at[i]->nrows;

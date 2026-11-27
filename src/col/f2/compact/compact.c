@@ -20,6 +20,7 @@
 #include "col/f2/dv_join.h"
 #include "col/f2/key_sig.h"
 #include "col/f2/kll/kll.h"
+#include "col/f2/preagg/v2.h"
 #include "col/f2/store/store.h"
 #include "core/compat.h"
 #include "core/crash_point.h"
@@ -172,6 +173,7 @@ typedef struct Sink
 	FullTransactionId horizon;
 	bool		folding;		/* the compaction folds column-delta records: its outputs stay as written, joining them left the chain unfolded */
 	int			open[2];		/* the output of each side that is still under the floor (its place in out), or -1 */
+	SiftPreaggBudget preagg[2];	/* the cubes of the outputs of each side */
 	SiftRowBuf *rb[2];
 	SiftPartDesc *out;
 	int			nout;
@@ -184,8 +186,7 @@ typedef struct Sink
 int			sift_test_compact_delete = 0;
 #endif
 
-static SiftPartDesc write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt,
-							   SiftCompactResult *res);
+static SiftPartDesc write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggBudget *preagg, SiftCompactResult *res);
 
 /*
  * The part just written joins the last one of its side, when both stay under the floor together and follow one another (rows with no key do): a compaction under a small budget cuts its
@@ -230,7 +231,7 @@ sink_flush(Sink *s, int side, bool whole)
 	MemoryContext scratch = sift_mem_allocset_create(s->cx, "sift compact output");
 	MemoryContext old = MemoryContextSwitchTo(scratch);
 	uint32		flags = (!s->split || !s->cut->tier ? 0 : side ? SIFT_PART_FLAG_TIME_COLD : SIFT_PART_FLAG_TIME_HOT) | (whole && s->level + 1 >= SIFT_MAX_PART_LEVEL ? SIFT_PART_FLAG_BUILT : 0);
-	SiftPartDesc d = write_side(s->rel, s->part_id, s->level, s->rb[side], s->spec, s->dm, flags, s->adopt, s->res);
+	SiftPartDesc d = write_side(s->rel, s->part_id, s->level, s->rb[side], s->spec, s->dm, flags, s->adopt, &s->preagg[side], s->res);
 	Size		freed = s->rb[side]->mem_bytes;
 
 	MemoryContextSwitchTo(old);
@@ -459,7 +460,7 @@ part_granules(Relation rel, const SiftPartDesc *d, uint32 part_id)
 /* MEM[MEM-COL-10]: f2 compact write_side scratch (avoid leaking SiftPart in caller ctx) */
 /* The rows of one side of the cut written as a part of the level above: sorted, their merged dictionaries put back, the tier flagged */
 static SiftPartDesc
-write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftCompactResult *res)
+write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggBudget *preagg, SiftCompactResult *res)
 {
 	SiftColIn  *cols = palloc(Max(spec->ncols, 1) * sizeof(SiftColIn));
 	SiftRows	r;
@@ -474,6 +475,7 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 	sift_dict_merge_finish(dm, rb, cols, res);
 	r.part_flags = tier;
 	r.adopt_dicts = adopt;
+	r.preagg_budget = preagg;
 	r.bulk_tail = true;
 	d = sift_part_write_rows(rel, part_id, gen, Min(level + 1, SIFT_MAX_PART_LEVEL), out_tier, &r);
 	res->new_gen = res->new_gen == 0 ? gen : res->new_gen;
@@ -481,7 +483,6 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 	res->bytes_out += d.nbytes;
 	return d;
 }
-
 
 /* What a compaction keeps of a part it reads, which is opened for the one step that needs it: its descriptor, the rows of its granules, its deletion vector as it was then and how its columns map to the current ones */
 typedef struct CompactIn

@@ -537,6 +537,7 @@ typedef struct SiftRows
 	const uint8 *key_hi;
 	bool		preagg;			/* a part of level 1 and up gets SEC_PREAGG: the cubes of preagg_decl (SiftPreaggDecl), or chosen from the data */
 	const struct SiftPreaggDecl *preagg_decl;
+	struct SiftPreaggBudget *preagg_budget;	/* the budget of the cubes the part shares with the parts written before it (NULL: its own) */
 	const bool *map_key;		/* per column: the `#key` leaf of a map, whose elements the cubes of SEC_PREAGG group by (NULL: none) */
 	int			time_col;		/* 1 + the integer column the part keeps a time stride index of (SEC_GRANULE_TSTRIDE), 0: none */
 	int			time_cols[SIFT_MANIFEST_TIME_COLS];	/* 1 + the integer column the part's time bounds are of (SiftPartDesc.time_min), 0: none */
@@ -648,11 +649,13 @@ extern SiftGranuleDesc *sift_part_granule_dir(Relation rel, const SiftPart *part
 
 /*
  * Parts that can be joined as they are: the same schema and dictionaries, rows frozen, no pre-aggregate. sift_part_write_joined writes one part whose granules are those of the
- * parts in the order given (their keys ascend from one to the next), copied with their zones, address index, time strides and exceptions; *granules is how many. The granules are read from the parts and written
+ * parts in the order given (their keys ascend from one to the next), copied with their zones, address index, time strides and exceptions, and their pre-aggregates within the budget of one
+ * part (preagg_declared: the cubes of the rows are declared and have none); *granules is how many. The granules are read from the parts and written
  * one page at a time, so what the writer holds is the metadata of the sections and one granule, *writer_bytes of them.
  */
 extern bool sift_parts_joinable(Relation rel, SiftPart *const *src, int n);
-extern SiftPartDesc sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, struct SiftF2KllBuild *kll, uint64 *granules, uint64 *writer_bytes);
+extern SiftPartDesc sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, bool preagg_declared,
+										  struct SiftF2KllBuild *kll, uint64 *granules, uint64 *writer_bytes);
 
 /* The inserter transactions of the rows of granule g (xmin, cmin per row; a granule of one transaction and command keeps none in SEC_VERS and is made from its entry), or NULL when the granule is frozen */
 typedef struct SiftRowVer

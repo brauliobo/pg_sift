@@ -456,7 +456,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 			put_dicts(rows, tier, dicts, codecs, &dictsec);
 	}
 	if (want_preagg && sift_preagg_v2_plan(rows, (const SiftDictEnc *const *) dicts, &pa_plan))
-		pa = sift_preagg_v2_begin(&pa_plan, ng);
+		pa = sift_preagg_v2_begin(&pa_plan, ng, rows->preagg_budget);
 	stats = sift_col_stats_begin((uint16) nc);
 	granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift part granule encode");
 	for (int g = 0; g < ng; g++)
@@ -502,7 +502,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 		dir[g].data_off = gdata.len;
 		part_buf_append(&gdata, granule.data, granule.len);
 		if (pa != NULL)
-			dir[g].flags |= SIFT_GDESC_HAS_PREAGG | (sift_preagg_v2_add_granule(pa, g, gcols, cnt, (const SiftDictEnc *const *) dicts, gdata.len) ? 0 : SIFT_GDESC_PREAGG_SKIP);
+			dir[g].flags |= SIFT_GDESC_HAS_PREAGG | (sift_preagg_v2_add_granule(pa, g, gcols, cnt, (const SiftDictEnc *const *) dicts, granule.len) ? 0 : SIFT_GDESC_PREAGG_SKIP);
 		if (!FullTransactionIdIsValid(pmin) || FullTransactionIdPrecedes(gi.min_xid, pmin))
 			pmin = gi.min_xid;
 		if (!FullTransactionIdIsValid(pmax) || FullTransactionIdFollows(gi.max_xid, pmax))

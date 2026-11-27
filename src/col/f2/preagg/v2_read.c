@@ -139,19 +139,39 @@ same_cube(const SiftPreaggCubeDesc *a, const SiftPreaggCubeDesc *b)
 		memcmp(a->dist_leaf, b->dist_leaf, sizeof(a->dist_leaf)) == 0;
 }
 
-/* The cells of a cube of a part with the sets of distinct values they name moved on by dist_base */
-static void
-rebase_cells(const SiftPreaggCubeDesc *cd, char *cells, uint32 ncells, uint32 dist_base)
+/* The cells of granule g of a cube with the sets of distinct values they name, appended to cells and dist: the bytes they take in the section */
+static uint64
+copy_cells(Relation rel, const SiftPart *part, const char *sec, uint64 slen, const SiftPreaggCubeDesc *cd, const uint32 *pf, uint32 g, StringInfo cells, StringInfo dist)
 {
+	const SiftPreaggSecHdr *hdr = (const SiftPreaggSecHdr *) sec;
 	const uint32 size = sift_pag_cell_size(cd);
+	const uint64 before = (uint64) cells->len + dist->len;
 
-	for (uint32 i = 0; i < ncells; i++)
+	for (uint32 i = pf[g]; i < pf[g + 1]; i++)
+	{
+		SiftPreaggDistRef *ref;
+
+		appendBinaryStringInfo(cells, sec + cd->cells_off + (uint64) i * size, size);
+		ref = (SiftPreaggDistRef *) (cells->data + cells->len - cd->ndistinct * sizeof(SiftPreaggDistRef));
 		for (int d = 0; d < cd->ndistinct; d++)
-			((SiftPreaggDistRef *) (cells + (uint64) i * size + sizeof(SiftPreaggGroupHdr) + cd->nmeasures * sizeof(SiftPreaggMeasure)))[d].off += dist_base;
+		{
+			const uint32 off = ref[d].off;
+
+			if (ref[d].len > 0 && (hdr->dist_off == 0 || hdr->dist_off + off + ref[d].len > slen))
+				CORRUPT(rel, part, "a set of distinct values");
+			ref[d].off = (uint32) dist->len;
+			appendBinaryStringInfo(dist, sec + hdr->dist_off + off, ref[d].len);
+		}
+	}
+	return (uint64) cells->len + dist->len - before;
 }
 
+/*
+ * The cells of the first part are kept as they are; those of the parts after it are kept while the cubes of the joined part stay within the budget of a part (SiftPreaggBudget) over the bytes of
+ * its granules so far, as if it had been written whole: a granule a cube leaves out is marked in dir (SIFT_GDESC_PREAGG_SKIP)
+ */
 void *
-sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, uint64 *len)
+sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, SiftGranuleDesc *dir, bool declared, uint64 *len)
 {
 	SiftPreaggSecHdr h0 = {0};
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
@@ -161,6 +181,7 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, uint64 *len)
 	uint32		ng = 0,
 				goff = 0,
 				flags = 0;
+	SiftPreaggBudget budget = {0};
 	void	   *out = NULL;
 
 	for (int i = 0; i < n; i++)
@@ -172,7 +193,6 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, uint64 *len)
 		char	   *sec = sift_part_read_section(rel, src[i], SEC_PREAGG, &slen);
 		const SiftPreaggSecHdr *hdr = (const SiftPreaggSecHdr *) sec;
 		const SiftPreaggCubeDesc *cd;
-		const uint32 dist_base = dist.len;
 
 		if (sec == NULL || slen < sizeof(*hdr))
 			CORRUPT(rel, src[i], "its size");
@@ -195,25 +215,38 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, uint64 *len)
 		for (int k = 0; k < h0.ncubes; k++)
 		{
 			const uint32 *pf = (const uint32 *) (sec + cd[k].gran_dir_off);
-			const uint32 size = sift_pag_cell_size(&cd[k]);
-			const uint32 nc = pf[hdr->ngranules];
-			char	   *copy;
 
 			if (!same_cube(&cd[k], &cube[k]))
 				goto done;
-			if (cd[k].cells_off + (uint64) nc * size > slen)
+			if (cd[k].cells_off + (uint64) pf[hdr->ngranules] * sift_pag_cell_size(&cd[k]) > slen)
 				CORRUPT(rel, src[i], "the cells of a cube");
-			for (uint32 g = 0; g < hdr->ngranules; g++)
-				first[k][goff + g] = cells[k].len / size + pf[g];
 			cube[k].flags |= cd[k].flags;
-			copy = palloc(Max(nc, 1) * (uint64) size);
-			memcpy(copy, sec + cd[k].cells_off, (uint64) nc * size);
-			rebase_cells(&cd[k], copy, nc, dist_base);
-			appendBinaryStringInfo(&cells[k], copy, (uint64) nc * size);
-			pfree(copy);
 		}
-		if (hdr->dist_off > 0)
-			appendBinaryStringInfo(&dist, sec + hdr->dist_off, slen - hdr->dist_off);
+		for (uint32 g = 0; g < hdr->ngranules; g++)
+		{
+			budget.data += dir[goff + g].data_len;
+			for (int k = 0; k < h0.ncubes; k++)
+			{
+				const uint32 *pf = (const uint32 *) (sec + cd[k].gran_dir_off);
+				const bool	elements = (cd[k].flags & SIFT_PCUBE_ELEMENTS) != 0;
+				const uint32 at = cells[k].len,
+							dat = dist.len;
+				uint64		bytes;
+
+				first[k][goff + g] = at / sift_pag_cell_size(&cd[k]);
+				if (pf[g] == pf[g + 1])
+					continue;
+				bytes = copy_cells(rel, src[i], sec, slen, &cd[k], pf, g, &cells[k], &dist);
+				if (i > 0 && !(declared && !elements) && !sift_preagg_v2_fits(&budget, elements, bytes))
+				{
+					cells[k].len = at;
+					dist.len = dat;
+					dir[goff + g].flags |= SIFT_GDESC_PREAGG_SKIP;
+				}
+				else
+					budget.used[elements] += bytes;
+			}
+		}
 		goff += hdr->ngranules;
 		pfree(sec);
 	}

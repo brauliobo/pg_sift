@@ -438,7 +438,8 @@ struct SiftPreaggBuild
 	MemoryContext gcx;
 	SiftPreaggPlan plan;
 	uint32		ng;
-	uint64		used[2];		/* the bytes of the cells and sets of the cubes of the rows, and of the cubes of the members of the maps: each has the budget */
+	SiftPreaggBudget own;
+	SiftPreaggBudget *budget;
 	StringInfoData cells[SIFT_PREAGG_MAX_CUBES];
 	uint32	   *first[SIFT_PREAGG_MAX_CUBES];
 	uint32		ncells[SIFT_PREAGG_MAX_CUBES];
@@ -448,10 +449,11 @@ struct SiftPreaggBuild
 };
 
 SiftPreaggBuild *
-sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules)
+sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules, SiftPreaggBudget *budget)
 {
 	SiftPreaggBuild *b = palloc0(sizeof(SiftPreaggBuild));
 
+	b->budget = budget != NULL ? budget : &b->own;
 	b->cx = CurrentMemoryContext;
 	b->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift preagg v2 granule");
 	b->plan = *plan;
@@ -828,12 +830,12 @@ cube_granule(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int ncols, int
 }
 
 bool
-sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, int nrows, const SiftDictEnc *const *dicts, uint64 data_bytes)
+sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, int nrows, const SiftDictEnc *const *dicts, uint64 granule_bytes)
 {
-	const uint64 budget = data_bytes / 100 * SIFT_PAG_BUDGET_PERCENT + SIFT_PAG_BUDGET_SLACK;
 	bool		all = true;
 	MemoryContext old = MemoryContextSwitchTo(b->gcx);
 
+	b->budget->data += granule_bytes;
 	for (int k = 0; k < b->plan.ncubes; k++)
 	{
 		StringInfoData cells,
@@ -841,12 +843,11 @@ sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, 
 		uint32		ncells = 0;
 		uint8		cflags = 0;
 		const bool	elements = (b->plan.cube[k].flags & SIFT_PCUBE_ELEMENTS) != 0;
-		uint64	   *used = &b->used[elements];
 		bool		ok;
 
 		initStringInfo(&cells);
 		initStringInfo(&dist);
-		ok = cube_granule(&b->plan.cube[k], cols, b->plan.ncols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || *used + cells.len + dist.len <= budget);
+		ok = cube_granule(&b->plan.cube[k], cols, b->plan.ncols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || sift_preagg_v2_fits(b->budget, elements, cells.len + dist.len));
 		b->first[k][g] = b->ncells[k];
 		if (ok)
 		{
@@ -863,7 +864,7 @@ sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, 
 			appendBinaryStringInfo(&b->cells[k], cells.data, cells.len);
 			appendBinaryStringInfo(&b->dist, dist.data, dist.len);
 			b->ncells[k] += ncells;
-			*used += cells.len + dist.len;
+			b->budget->used[elements] += cells.len + dist.len;
 			b->cube_flags[k] |= cflags;
 		}
 		all &= ok;
