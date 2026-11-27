@@ -279,7 +279,10 @@ lut_subplan_ok(PlannerInfo *root, SubPlan *sp)
 		sp->setParam == NIL && subplan_runs_at_start(root, sp);
 }
 
-/* does the sub-select give one row at most whatever the data? aggregates with no GROUP BY give one; a table read by equalities to constants that hold a whole unique key gives one or none */
+/*
+ * does the sub-select give one row at most whatever the data? one without FROM (the planner reads it from an RTE_RESULT) gives one or none; aggregates with no GROUP BY give one; a table
+ * read by equalities to constants that hold a whole unique key gives one or none
+ */
 static bool
 one_row_query(Query *q)
 {
@@ -289,6 +292,8 @@ one_row_query(Query *q)
 
 	if (q->setOperations != NULL || q->hasTargetSRFs || q->groupingSets != NIL || q->hasWindowFuncs || q->limitOffset != NULL)
 		return false;
+	if (list_length(q->rtable) == 1 && linitial_node(RangeTblEntry, q->rtable)->rtekind == RTE_RESULT)
+		return true;
 	if (q->hasAggs)
 		return q->groupClause == NIL;
 	if (q->groupClause != NIL || q->distinctClause != NIL || q->jointree == NULL || list_length(q->rtable) != 1 || q->jointree->quals == NULL)
