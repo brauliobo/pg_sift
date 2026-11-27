@@ -32,7 +32,10 @@ struct SiftSegmentWriter
 	uint64		pagemask[SIFT_PAGEMASK_WORDS];
 	uint16		maxoff[SIFT_SB_PAGES];
 	uint64	   *offmask;		/* [page][SIFT_OFFMASK_WORDS] */
-	uint16	   *dl;				/* [page][MAXOFF] */
+	uint32		rowstart[SIFT_SB_PAGES];	/* where the row of each present page starts in dl and fdl */
+	uint32		nslots;			/* the slots of the rows so far, ... */
+	uint32		slotcap;		/* ... and of dl and of each field of fdl */
+	uint16	   *dl;				/* the rows of the present pages one after the other */
 	SiftDocSBRef *sbdir;
 	uint32		nsb;
 	uint32		maxsb;
@@ -51,7 +54,7 @@ struct SiftSegmentWriter
 	SiftAttrRef *adir;			/* [SB][col] */
 	/* the length of each field of every doc (SIFT_SEGFMT_FIELDDL): the rows of the SB being accumulated, the records of the SBs flushed (SB by SB, field by field) and where they are */
 	int			nf;
-	uint16	   *fdl;			/* [field][page][MAXOFF] */
+	uint16	   *fdl;			/* [field][slotcap]: the rows as dl's */
 	SiftSpool  *frecs;
 	uint64		frec_len;
 	SiftFieldDlRef *fdir;		/* [SB][field] */
@@ -90,7 +93,8 @@ sift_segw_begin(SiftWriteTarget *wt, uint64 gen, const SiftScoreRef *ref, Memory
 	w->positions = positions;
 	w->sw = sift_sw_begin(wt, gen);
 	w->offmask = palloc0(SIFT_SB_PAGES * SIFT_OFFMASK_WORDS * sizeof(uint64));
-	w->dl = palloc0(SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+	w->slotcap = MAXOFF;
+	w->dl = palloc0(w->slotcap * sizeof(uint16));
 	w->maxsb = 64;
 	w->sbdir = palloc(w->maxsb * sizeof(SiftDocSBRef));
 	if (w->fmt >= SIFT_SEGFMT_LIVEROWS)
@@ -189,7 +193,7 @@ sift_segw_fields(SiftSegmentWriter *w, int nfields)
 #endif
 	w->nf = nfields;
 	w->fmt = Max(w->fmt, SIFT_SEGFMT_FIELDDL);
-	w->fdl = palloc0((Size) nfields * SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
+	w->fdl = palloc0((Size) nfields * w->slotcap * sizeof(uint16));
 	w->frecs = sift_spool_begin();
 	w->fdir = palloc(w->maxsb * nfields * sizeof(SiftFieldDlRef));
 	w->ft = (SiftFieldDlTrailer) {.magic = SIFT_FIELDDL_MAGIC,.nfields = nfields};
@@ -207,12 +211,12 @@ flush_fields(SiftSegmentWriter *w)
 
 		for (int p = 0; p < SIFT_SB_PAGES; p++)
 			for (int s = 0; w->pagemask[p / 64] >> (p % 64) & 1 && s < w->maxoff[p]; s++)
-				maxdl = Max(maxdl, w->fdl[((Size) f * SIFT_SB_PAGES + p) * MAXOFF + s]);
+				maxdl = Max(maxdl, w->fdl[(Size) f * w->slotcap + w->rowstart[p] + s]);
 		if (maxdl > 0)
 			ref.dlcode = dl_code(w, maxdl);
 		for (int p = 0; p < SIFT_SB_PAGES; p++)
 		{
-			uint16	   *row = w->fdl + ((Size) f * SIFT_SB_PAGES + p) * MAXOFF;
+			uint16	   *row = w->fdl + (Size) f * w->slotcap + w->rowstart[p];
 			uint8		buf[SIFT_MAX_OFFSET];
 			int			len;
 			const uint8 *bytes;
@@ -225,7 +229,6 @@ flush_fields(SiftSegmentWriter *w)
 				sift_spool_write(w->frecs, bytes, len);
 				ref.len += len;
 			}
-			memset(row, 0, w->maxoff[p] * sizeof(uint16));
 		}
 		w->frec_len += ref.len;
 		w->fdir[(Size) w->nsb * w->nf + f] = ref;
@@ -411,16 +414,41 @@ flush_sb(SiftSegmentWriter *w)
 	{
 		if (!(w->pagemask[p / 64] & (1ULL << (p % 64))))
 			continue;
-		write_dl_row(w->sw, w->dl + p * MAXOFF, w->maxoff[p], code);
-		memset(w->dl + p * MAXOFF, 0, w->maxoff[p] * sizeof(uint16));
+		write_dl_row(w->sw, w->dl + w->rowstart[p], w->maxoff[p], code);
 		memset(w->offmask + p * SIFT_OFFMASK_WORDS, 0, SIFT_OFFMASK_WORDS * sizeof(uint64));
 		w->maxoff[p] = 0;
 	}
 	memset(w->pagemask, 0, sizeof(w->pagemask));
+	memset(w->dl, 0, w->nslots * sizeof(uint16));
+	for (int f = 0; f < w->nf; f++)
+		memset(w->fdl + (Size) f * w->slotcap, 0, w->nslots * sizeof(uint16));
+	w->nslots = 0;
 	w->sb_ndocs = 0;
 	w->sb_maxdl = 0;
 	pfree(om);
 	pfree(chunk);
+}
+
+/* Room in dl and fdl for the rows up to slot need, the new slots zero: what they hold grows with the docs of an SB, not with the rows an SB may have */
+static void
+reserve_slots(SiftSegmentWriter *w, uint32 need)
+{
+	uint32		cap = Max(need, 2 * w->slotcap);
+	uint16	   *fdl;
+
+	if (need <= w->slotcap)
+		return;
+	w->dl = repalloc(w->dl, cap * sizeof(uint16));
+	memset(w->dl + w->slotcap, 0, (cap - w->slotcap) * sizeof(uint16));
+	if (w->nf)
+	{
+		fdl = MemoryContextAllocZero(w->mcxt, (Size) w->nf * cap * sizeof(uint16));
+		for (int f = 0; f < w->nf; f++)
+			memcpy(fdl + (Size) f * cap, w->fdl + (Size) f * w->slotcap, w->nslots * sizeof(uint16));
+		pfree(w->fdl);
+		w->fdl = fdl;
+	}
+	w->slotcap = cap;
 }
 
 void
@@ -443,12 +471,16 @@ sift_segw_add_docs(SiftSegmentWriter *w, const SiftKey *keys, const uint16 *dl, 
 		}
 		if (w->ndocs == 0)
 			w->hdr.sb_lo = w->sb;
+		if (!(w->pagemask[page / 64] & (1ULL << (page % 64))))
+			w->rowstart[page] = w->nslots;
+		reserve_slots(w, w->rowstart[page] + off);
+		w->nslots = w->rowstart[page] + off;
 		w->pagemask[page / 64] |= 1ULL << (page % 64);
 		w->offmask[page * SIFT_OFFMASK_WORDS + (off - 1) / 64] |= 1ULL << ((off - 1) % 64);
-		w->dl[page * MAXOFF + off - 1] = dl[i];
+		w->dl[w->nslots - 1] = dl[i];
 		for (int f = 0; f < w->nf; f++)
 		{
-			w->fdl[((Size) f * SIFT_SB_PAGES + page) * MAXOFF + off - 1] = fdl[i * w->nf + f];
+			w->fdl[(Size) f * w->slotcap + w->nslots - 1] = fdl[i * w->nf + f];
 			w->ft.sum_dl[f] += fdl[i * w->nf + f];
 			w->ft.ndocs_nz[f] += fdl[i * w->nf + f] > 0;
 		}
