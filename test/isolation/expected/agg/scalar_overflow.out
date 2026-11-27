@@ -13,39 +13,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5', 'parts', jsonb_build_array(jsonb_build_object('score', '7.5'))));
 step s1io: EXECUTE io;
@@ -96,39 +104,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1io: EXECUTE io;
@@ -148,39 +164,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1ga: EXECUTE ga;
@@ -208,39 +232,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1el: EXECUTE el;
@@ -260,39 +292,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2num: INSERT INTO iso_sc VALUES (100001, 0, jsonb_build_object('v', '7.5', 'parts', jsonb_build_array(jsonb_build_object('score', '7.5'))));
 step s1ga: EXECUTE ga;
@@ -326,39 +366,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));
 step s1whg: EXECUTE whg;
@@ -385,39 +433,47 @@ step s1prep: BEGIN;
 		  EXPLAIN (COSTS OFF) EXECUTE io;
 		  EXPLAIN (COSTS OFF) EXECUTE jc;
 		  EXPLAIN (COSTS OFF) EXECUTE el;
-QUERY PLAN                              
-----------------------------------------
-Custom Scan (SiftAgg)                   
-  Index: iso_sc_col                     
-  Filters: doc.v > '3'::double precision
-  Group Keys: grp                       
-  Pushed Aggregates: count(*)           
-(5 rows)
+QUERY PLAN                         
+-----------------------------------
+Sort                               
+  Sort Key: grp                    
+  ->  Custom Scan (SiftAggV6)      
+        Index: iso_sc_col          
+        Group Keys: grp            
+        Pushed Aggregates: count(*)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                    
+------------------------------------------------------------------------------
+Sort                                                                          
+  Sort Key: grp                                                               
+  ->  Custom Scan (SiftAggV6)                                                 
+        Index: iso_sc_col                                                     
+        Group Keys: grp                                                       
+        Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
+(6 rows)
 
-QUERY PLAN                     
--------------------------------
-Custom Scan (SiftAgg)          
-  Index: iso_sc_col            
-  Group Keys: grp              
-  Pushed Aggregates: sum(doc.v)
-(4 rows)
+QUERY PLAN                                                                   
+-----------------------------------------------------------------------------
+Sort                                                                         
+  Sort Key: grp                                                              
+  ->  Custom Scan (SiftAggV6)                                                
+        Index: iso_sc_col                                                    
+        Group Keys: grp                                                      
+        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
+        Map Keys: doc['v'] double precision                                  
+(7 rows)
 
-QUERY PLAN                                 
--------------------------------------------
-Custom Scan (SiftAgg)                      
-  Index: iso_sc_col                        
-  Group Keys: grp                          
-  Pushed Aggregates: avg(doc.parts[].score)
-  Unnests: yes                             
-(5 rows)
+QUERY PLAN                                                                     
+-------------------------------------------------------------------------------
+Sort                                                                           
+  Sort Key: iso_sc.grp                                                         
+  ->  Custom Scan (SiftAggV6)                                                  
+        Index: iso_sc_col                                                      
+        Group Keys: grp                                                        
+        Pushed Aggregates: avg(((p.value ->> 'score'::text))::double precision)
+        Unnest: lateral columnar                                               
+(7 rows)
 
 step s2begin: BEGIN;
 step s2text: INSERT INTO iso_sc VALUES (100002, 0, jsonb_build_object('v', 'x', 'parts', jsonb_build_array(jsonb_build_object('score', 'x'))));

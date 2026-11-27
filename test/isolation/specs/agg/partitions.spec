@@ -1,4 +1,4 @@
-# A partitioned table is one source of Custom Scan (SiftAgg), each partition read through its own index. A partition attached (it gets the table's index), detached (also
+# A partitioned table is one source of Custom Scan (SiftAggV6), each partition read through its own index. A partition attached (it gets the table's index), detached (also
 # concurrently) or rows moved between partitions while a scan runs, in a snapshot older than the change or not, give the rows of the normal plan, and a prepared
 # statement made before a partition changed is planned again with the partitions it has now.
 # requires: build col

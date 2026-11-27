@@ -1,6 +1,6 @@
-# A SiftAgg plan that reads a key of an object leaf (`m.* float8`) or the length of an array leaf, kept by a transaction (a prepared
+# A SiftAggV6 plan that reads a key of an object leaf (`m.* float8`) or the length of an array leaf, kept by a transaction (a prepared
 # statement with a generic plan: the locks it holds keep it), when another session commits a value the leaf cannot store: the
-# scan raises its error for the row the statement sees instead of reading the value as NULL; a row it does not see raises nothing.
+# statement raises the error of the normal plan for the row it sees instead of reading the value as NULL; a row it does not see raises nothing.
 # requires: build col
 
 setup

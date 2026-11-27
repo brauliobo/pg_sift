@@ -83,12 +83,7 @@ fetched| idsum
 
 step rown: INSERT INTO iso_fp SELECT g, 'common own ' || g FROM generate_series(7001, 7500) g;
 step wmod: INSERT INTO iso_fp SELECT g, 'common new ' || g FROM generate_series(3001, 6000) g; DELETE FROM iso_fp WHERE id % 7 = 0;
-step wmaint: SELECT busy FROM sift.table_maintain('iso_fp');
-busy
-----
-f   
-(1 row)
-
+step wmaint: SELECT busy FROM sift.table_maintain('iso_fp'); <waiting ...>
 step rrest: SELECT * FROM iso_fp_fetch(100000);
 fetched|  idsum
 -------+-------
@@ -96,3 +91,9 @@ fetched|  idsum
 (1 row)
 
 step rend: COMMIT;
+step wmaint: <... completed>
+busy
+----
+f   
+(1 row)
+

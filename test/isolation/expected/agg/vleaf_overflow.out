@@ -6,87 +6,16 @@ step s1prep: BEGIN;
 		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE member;
 		  EXPLAIN (COSTS OFF) EXECUTE len;
-QUERY PLAN                   
------------------------------
-Custom Scan (SiftAgg)        
-  Index: iso_vl_col          
-  Group Keys: grp            
-  Pushed Aggregates: sum(m.a)
-(4 rows)
-
-QUERY PLAN                                         
----------------------------------------------------
-Custom Scan (SiftAgg)                              
-  Index: iso_vl_col                                
-  Group Keys: grp                                  
-  Pushed Aggregates: sum(jsonb_array_length(doc.l))
-(4 rows)
-
-step s2text: INSERT INTO iso_vl VALUES (100001, 0, jsonb_build_object('a', 'x'), jsonb_build_object('l', jsonb_build_array(1)));
-step s1member: EXECUTE member;
-ERROR:  sift: a column of the aggregate scan holds values its index cannot store
-step s1end: ROLLBACK; DEALLOCATE ALL;
-
-starting permutation: s1prep s2scalar s1len s1end
-step s1prep: BEGIN;
-		  PREPARE member AS SELECT grp, sum((m ->> 'a')::float8) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
-		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
-		  EXPLAIN (COSTS OFF) EXECUTE member;
-		  EXPLAIN (COSTS OFF) EXECUTE len;
-QUERY PLAN                   
------------------------------
-Custom Scan (SiftAgg)        
-  Index: iso_vl_col          
-  Group Keys: grp            
-  Pushed Aggregates: sum(m.a)
-(4 rows)
-
-QUERY PLAN                                         
----------------------------------------------------
-Custom Scan (SiftAgg)                              
-  Index: iso_vl_col                                
-  Group Keys: grp                                  
-  Pushed Aggregates: sum(jsonb_array_length(doc.l))
-(4 rows)
-
-step s2scalar: INSERT INTO iso_vl VALUES (100002, 0, jsonb_build_object('a', 1), jsonb_build_object('l', 'x'));
-step s1len: EXECUTE len;
-ERROR:  sift: a column of the aggregate scan holds values its index cannot store
-step s1end: ROLLBACK; DEALLOCATE ALL;
-
-starting permutation: s1prep s2num s1member s1rollback s1again s1drop
-step s1prep: BEGIN;
-		  PREPARE member AS SELECT grp, sum((m ->> 'a')::float8) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
-		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
-		  EXPLAIN (COSTS OFF) EXECUTE member;
-		  EXPLAIN (COSTS OFF) EXECUTE len;
-QUERY PLAN                   
------------------------------
-Custom Scan (SiftAgg)        
-  Index: iso_vl_col          
-  Group Keys: grp            
-  Pushed Aggregates: sum(m.a)
-(4 rows)
-
-QUERY PLAN                                         
----------------------------------------------------
-Custom Scan (SiftAgg)                              
-  Index: iso_vl_col                                
-  Group Keys: grp                                  
-  Pushed Aggregates: sum(jsonb_array_length(doc.l))
-(4 rows)
-
-step s2num: INSERT INTO iso_vl VALUES (100003, 0, jsonb_build_object('a', '7'), jsonb_build_object('l', jsonb_build_array(1)));
-step s1member: EXECUTE member;
-ERROR:  sift: a column of the aggregate scan holds values its index cannot store
-step s1rollback: ROLLBACK;
-step s1again: EXECUTE member; EXPLAIN (COSTS OFF) EXECUTE member;
-grp|   s
----+----
-  0|3010
-  1|3000
-  2|2997
-(3 rows)
+QUERY PLAN                                                                  
+----------------------------------------------------------------------------
+Sort                                                                        
+  Sort Key: grp                                                             
+  ->  Custom Scan (SiftAggV6)                                               
+        Index: iso_vl_col                                                   
+        Group Keys: grp                                                     
+        Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 QUERY PLAN                    
 ------------------------------
@@ -97,6 +26,97 @@ GroupAggregate
         ->  Seq Scan on iso_vl
 (5 rows)
 
+step s2text: INSERT INTO iso_vl VALUES (100001, 0, jsonb_build_object('a', 'x'), jsonb_build_object('l', jsonb_build_array(1)));
+step s1member: EXECUTE member;
+ERROR:  invalid input syntax for type double precision: "x"
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2scalar s1len s1end
+step s1prep: BEGIN;
+		  PREPARE member AS SELECT grp, sum((m ->> 'a')::float8) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
+		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE member;
+		  EXPLAIN (COSTS OFF) EXECUTE len;
+QUERY PLAN                                                                  
+----------------------------------------------------------------------------
+Sort                                                                        
+  Sort Key: grp                                                             
+  ->  Custom Scan (SiftAggV6)                                               
+        Index: iso_vl_col                                                   
+        Group Keys: grp                                                     
+        Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
+
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_vl
+(5 rows)
+
+step s2scalar: INSERT INTO iso_vl VALUES (100002, 0, jsonb_build_object('a', 1), jsonb_build_object('l', 'x'));
+step s1len: EXECUTE len;
+ERROR:  cannot get array length of a scalar
+step s1end: ROLLBACK; DEALLOCATE ALL;
+
+starting permutation: s1prep s2num s1member s1rollback s1again s1drop
+step s1prep: BEGIN;
+		  PREPARE member AS SELECT grp, sum((m ->> 'a')::float8) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
+		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
+		  EXPLAIN (COSTS OFF) EXECUTE member;
+		  EXPLAIN (COSTS OFF) EXECUTE len;
+QUERY PLAN                                                                  
+----------------------------------------------------------------------------
+Sort                                                                        
+  Sort Key: grp                                                             
+  ->  Custom Scan (SiftAggV6)                                               
+        Index: iso_vl_col                                                   
+        Group Keys: grp                                                     
+        Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
+
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_vl
+(5 rows)
+
+step s2num: INSERT INTO iso_vl VALUES (100003, 0, jsonb_build_object('a', '7'), jsonb_build_object('l', jsonb_build_array(1)));
+step s1member: EXECUTE member;
+grp|   s
+---+----
+  0|3010
+  1|3000
+  2|2997
+(3 rows)
+
+step s1rollback: ROLLBACK;
+step s1again: EXECUTE member; EXPLAIN (COSTS OFF) EXECUTE member;
+grp|   s
+---+----
+  0|3010
+  1|3000
+  2|2997
+(3 rows)
+
+QUERY PLAN                                                                  
+----------------------------------------------------------------------------
+Sort                                                                        
+  Sort Key: grp                                                             
+  ->  Custom Scan (SiftAggV6)                                               
+        Index: iso_vl_col                                                   
+        Group Keys: grp                                                     
+        Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
+
 step s1drop: DEALLOCATE ALL;
 
 starting permutation: s1prep s2begin s2text s1member s2abort s1member s1end
@@ -105,21 +125,25 @@ step s1prep: BEGIN;
 		  PREPARE len AS SELECT grp, sum(jsonb_array_length(doc -> 'l')) AS s FROM iso_vl GROUP BY grp ORDER BY grp;
 		  EXPLAIN (COSTS OFF) EXECUTE member;
 		  EXPLAIN (COSTS OFF) EXECUTE len;
-QUERY PLAN                   
------------------------------
-Custom Scan (SiftAgg)        
-  Index: iso_vl_col          
-  Group Keys: grp            
-  Pushed Aggregates: sum(m.a)
-(4 rows)
+QUERY PLAN                                                                  
+----------------------------------------------------------------------------
+Sort                                                                        
+  Sort Key: grp                                                             
+  ->  Custom Scan (SiftAggV6)                                               
+        Index: iso_vl_col                                                   
+        Group Keys: grp                                                     
+        Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
-QUERY PLAN                                         
----------------------------------------------------
-Custom Scan (SiftAgg)                              
-  Index: iso_vl_col                                
-  Group Keys: grp                                  
-  Pushed Aggregates: sum(jsonb_array_length(doc.l))
-(4 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_vl
+(5 rows)
 
 step s2begin: BEGIN;
 step s2text: INSERT INTO iso_vl VALUES (100001, 0, jsonb_build_object('a', 'x'), jsonb_build_object('l', jsonb_build_array(1)));

@@ -2,9 +2,9 @@ Parsed test spec with 2 sessions
 
 starting permutation: s1plan s1decl s2write s1got s1same s1end
 step s1plan: SELECT iso_tp_plan() AS plan;
-plan          
---------------
-parallel top-N
+plan        
+------------
+serial top-N
 (1 row)
 
 step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -24,9 +24,9 @@ step s1end: COMMIT; DROP TABLE got;
 
 starting permutation: s1plan s1decl s2begin s2write s1got s1same s2commit s1end
 step s1plan: SELECT iso_tp_plan() AS plan;
-plan          
---------------
-parallel top-N
+plan        
+------------
+serial top-N
 (1 row)
 
 step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -48,9 +48,9 @@ step s1end: COMMIT; DROP TABLE got;
 
 starting permutation: s1plan s1decl s2begin s2write s2abort s1got s1same s1end
 step s1plan: SELECT iso_tp_plan() AS plan;
-plan          
---------------
-parallel top-N
+plan        
+------------
+serial top-N
 (1 row)
 
 step s1decl: BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -72,9 +72,9 @@ step s1end: COMMIT; DROP TABLE got;
 
 starting permutation: s1plan s2write s1decl s1got s1same s1end
 step s1plan: SELECT iso_tp_plan() AS plan;
-plan          
---------------
-parallel top-N
+plan        
+------------
+serial top-N
 (1 row)
 
 step s2write: UPDATE iso_tp SET k = 1000000 WHERE id IN (3000, 5000);

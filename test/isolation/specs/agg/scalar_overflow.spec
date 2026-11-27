@@ -1,4 +1,4 @@
-# A SiftAgg plan that reads a path declared float8 as `(doc ->> 'v')::float8` or as the cast of `doc -> 'v'`, kept by a transaction (a prepared
+# A SiftAggV6 plan that reads a path declared float8 as `(doc ->> 'v')::float8` or as the cast of `doc -> 'v'`, kept by a transaction (a prepared
 # statement with a generic plan: the locks it holds keep it), when another session commits a value the leaf cannot store: the scan reads the
 # row again from the heap and answers as the normal plan does, a numeric string converted, a value SQL cannot convert raising its error; a row the
 # statement does not see raises nothing. The same for a condition of the WHERE that casts the path: the row passes it and raises only if the other
