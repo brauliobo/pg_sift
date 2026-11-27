@@ -1,0 +1,66 @@
+-- A sift_col index of a temporary table through its ON COMMIT actions and a TRUNCATE in the transaction that made the table: ON COMMIT DELETE ROWS truncates the file in place and
+-- builds the index again in it, so nothing the backend or the shared memory holds of the file's earlier contents is used again; every commit answers what the rows give and the index stays sound.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET enable_seqscan = off;
+
+CREATE TEMP TABLE t_r (id int8, grp int, v int8, body text) ON COMMIT DELETE ROWS;
+CREATE INDEX t_r_ix ON t_r USING sift_col (id, grp, v);
+BEGIN;
+INSERT INTO t_r SELECT g, g % 3, g, 'x' FROM generate_series(1, 4) g;
+COMMIT;
+SELECT count(*) FROM t_r WHERE id > 0;
+BEGIN;
+INSERT INTO t_r SELECT g, g % 3, g, 'x' FROM generate_series(1, 256) g;
+SELECT count(*), sum(v) FROM t_r WHERE id > 0;
+UPDATE t_r SET v = v + 1 WHERE id % 4 = 0;
+DELETE FROM t_r WHERE id % 5 = 0;
+SELECT count(*), sum(v) FROM t_r WHERE id > 0;
+COMMIT;
+SELECT count(*) FROM t_r WHERE id > 0;
+BEGIN;
+INSERT INTO t_r SELECT g, g % 3, g, 'y' FROM generate_series(1, 3000) g;
+SELECT count(*), sum(v), count(*) FILTER (WHERE grp = 1) FROM t_r WHERE id > 0;
+COMMIT;
+BEGIN;
+INSERT INTO t_r VALUES (1, 1, 1, 'z');
+SELECT count(*), sum(v) FROM t_r WHERE id > 0;
+COMMIT;
+SELECT count(*) AS problems FROM sift.check('t_r_ix', heapallindexed => true);
+SELECT sift.col_verify('t_r_ix', true);
+
+-- the rows of the transaction, then the table emptied in it: a table the transaction made keeps its file through a TRUNCATE
+BEGIN;
+CREATE TEMP TABLE t_n (id int8, v int8) ON COMMIT PRESERVE ROWS;
+CREATE INDEX t_n_ix ON t_n USING sift_col (id, v);
+INSERT INTO t_n SELECT g, g FROM generate_series(1, 500) g;
+UPDATE t_n SET v = v * 2 WHERE id <= 10;
+DELETE FROM t_n WHERE id > 490;
+TRUNCATE t_n;
+INSERT INTO t_n SELECT g, g FROM generate_series(1, 20) g;
+SELECT count(*), sum(v) FROM t_n WHERE id > 0;
+COMMIT;
+SELECT count(*), sum(v) FROM t_n WHERE id > 0;
+INSERT INTO t_n SELECT g, g FROM generate_series(21, 40) g;
+TRUNCATE t_n;
+INSERT INTO t_n VALUES (7, 7);
+SELECT count(*), sum(v) FROM t_n WHERE id > 0;
+SELECT count(*) AS problems FROM sift.check('t_n_ix', heapallindexed => true);
+
+-- ON COMMIT DROP takes the index with it, again and again
+BEGIN;
+CREATE TEMP TABLE t_d (id int8, v int8) ON COMMIT DROP;
+CREATE INDEX t_d_ix ON t_d USING sift_col (id, v);
+INSERT INTO t_d SELECT g, g FROM generate_series(1, 512) g;
+SELECT count(*), sum(v) FROM t_d WHERE id > 0;
+COMMIT;
+BEGIN;
+CREATE TEMP TABLE t_d (id int8, v int8) ON COMMIT DROP;
+CREATE INDEX t_d_ix ON t_d USING sift_col (id, v);
+INSERT INTO t_d SELECT g, g FROM generate_series(1, 64) g;
+SELECT count(*), sum(v) FROM t_d WHERE id > 0;
+COMMIT;
+SELECT count(*) FROM pg_class WHERE relname IN ('t_d', 't_d_ix');
+DROP TABLE t_r, t_n;
+DROP EXTENSION pg_sift;

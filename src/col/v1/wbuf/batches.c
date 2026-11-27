@@ -688,6 +688,15 @@ set_kept_for(Relation index, const SiftSegEntry *entry)
 	return NULL;
 }
 
+/* The index is built again: in its truncated file (ON COMMIT DELETE ROWS, a TRUNCATE in the transaction that made it) the generations of its buffers start again */
+void
+sift_cwbuf_batches_forget(Relation index)
+{
+	for (int i = 0; i < BATCH_SETS; i++)
+		if (sets[i] && sets[i]->rel == index->rd_locator.relNumber && sets[i]->db == index->rd_locator.dbOid)
+			set_drop(sets[i]);
+}
+
 /* The batches of the write buffer at its end now. Built with the rows read since the last scan of this backend when nothing else holds them, else built again. */
 static BatchSet *
 set_current(Relation index, const SiftSegEntry *entry, const SiftColSchema *schema, uint32 dirver, MemoryContext tmp)

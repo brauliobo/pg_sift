@@ -193,6 +193,7 @@ build_index(Relation heap, Relation index, IndexInfo *info)
 	heap_only = sift_cwbuf_pending(&buffered) && buffered == RelationGetRelid(index);
 	sift_cwbuf_discard(RelationGetRelid(index));
 	sift_cwbuf_arena_forget(RelationGetRelid(index));
+	sift_cwbuf_batches_forget(index);
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));

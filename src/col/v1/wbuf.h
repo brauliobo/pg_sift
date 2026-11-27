@@ -101,6 +101,8 @@ extern void sift_cwbuf_arena_gc(void);
 extern void sift_cwbuf_arena_drop(Relation index, uint64 gen);
 /* The index is dropped or rebuilt: the slots of all its buffers are free */
 extern void sift_cwbuf_arena_forget(Oid indexoid);
+/* The index is rebuilt: the batches this backend keeps of its buffers are not used again */
+extern void sift_cwbuf_batches_forget(Relation index);
 
 /* Seals the active segment (only above write_buffer_limit unless force) and opens a fresh one; returns the sealed gen or 0 (sift_wbuf_seal) */
 extern uint64 sift_cwbuf_seal(Relation index, bool force);
