@@ -537,7 +537,7 @@ typedef struct SiftRows
 	const uint8 *key_hi;
 	bool		preagg;			/* a part of level 1 and up gets SEC_PREAGG: the cubes of preagg_decl (SiftPreaggDecl), or chosen from the data */
 	const struct SiftPreaggDecl *preagg_decl;
-	struct SiftPreaggBudget *preagg_budget;	/* the budget of the cubes the part shares with the parts written before it (NULL: its own) */
+	struct SiftPreaggShare *preagg_share;	/* the plan and the budget of the cubes the part shares with the parts written before it (NULL: its own) */
 	const bool *map_key;		/* per column: the `#key` leaf of a map, whose elements the cubes of SEC_PREAGG group by (NULL: none) */
 	int			time_col;		/* 1 + the integer column the part keeps a time stride index of (SEC_GRANULE_TSTRIDE), 0: none */
 	int			time_cols[SIFT_MANIFEST_TIME_COLS];	/* 1 + the integer column the part's time bounds are of (SiftPartDesc.time_min), 0: none */

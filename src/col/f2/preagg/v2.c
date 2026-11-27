@@ -345,8 +345,8 @@ add_elem_cubes(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreagg
 	}
 }
 
-bool
-sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
+static bool
+plan_rows(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
 {
 	const int	nc = rows->ncols;
 	ColInfo    *ci = palloc0(Max(nc, 1) * sizeof(ColInfo));
@@ -384,6 +384,58 @@ sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftP
 	pfree(dims);
 	pfree(dist);
 	return plan->ncubes > 1 || plan->cube[0].nmeasures > 0 || plan->cube[0].ndistinct > 0;
+}
+
+/* The column holds what a cube reads of it as this kind: the codes of a string in the dictionary of the part, an integer, or a float */
+static bool
+leaf_holds(const SiftRows *rows, const SiftDictEnc *const *dicts, int leaf, bool str, bool flt)
+{
+	const SiftColIn *c = leaf < rows->ncols ? &rows->cols[leaf] : NULL;
+
+	if (c == NULL)
+		return false;
+	if (str)
+		return c->kind == SIFT_CELL_STR && dicts != NULL && dict_codes_kept(c, dicts[leaf]);
+	return c->kind == (flt ? SIFT_CELL_F8 : SIFT_CELL_INT);
+}
+
+/* Every cube of the plan reads columns these rows hold as it reads them: the plan made from the rows of another part can be this part's */
+static bool
+plan_holds(const SiftRows *rows, const SiftDictEnc *const *dicts, const SiftPreaggPlan *plan)
+{
+	for (int k = 0; k < plan->ncubes; k++)
+	{
+		const SiftPreaggCubeDesc *cd = &plan->cube[k];
+
+		for (int d = 0; d < cd->ndims; d++)
+			if (cd->dim_kind[d] != SIFT_PDIM_NULLFLAG && !leaf_holds(rows, dicts, cd->dim_leaf[d], cd->dim_kind[d] == SIFT_PDIM_DICT32, false))
+				return false;
+		for (int m = 0; m < cd->nmeasures; m++)
+			if (!leaf_holds(rows, dicts, cd->meas_leaf[m], false, cd->meas_kind[m] >= SIFT_PMEAS_F4))
+				return false;
+		for (int d = 0; d < cd->ndistinct; d++)
+			if (cd->dist_leaf[d] >= rows->ncols || !leaf_holds(rows, dicts, cd->dist_leaf[d], rows->cols[cd->dist_leaf[d]].kind == SIFT_CELL_STR, false))
+				return false;
+	}
+	return true;
+}
+
+bool
+sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
+{
+	SiftPreaggShare *share = rows->preagg_share;
+
+	if (share == NULL)
+		return plan_rows(rows, dicts, plan);
+	if (!share->planned)
+	{
+		share->has_plan = plan_rows(rows, dicts, &share->plan);
+		share->planned = true;
+	}
+	if (!share->has_plan || !plan_holds(rows, dicts, &share->plan))
+		return plan_rows(rows, dicts, plan);
+	*plan = share->plan;
+	return true;
 }
 
 /* ---- the cells of a granule ---- */

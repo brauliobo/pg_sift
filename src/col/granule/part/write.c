@@ -456,7 +456,7 @@ write_rows(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftComp
 			put_dicts(rows, tier, dicts, codecs, &dictsec);
 	}
 	if (want_preagg && sift_preagg_v2_plan(rows, (const SiftDictEnc *const *) dicts, &pa_plan))
-		pa = sift_preagg_v2_begin(&pa_plan, ng, rows->preagg_budget);
+		pa = sift_preagg_v2_begin(&pa_plan, ng, rows->preagg_share != NULL ? &rows->preagg_share->budget : NULL);
 	stats = sift_col_stats_begin((uint16) nc);
 	granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift part granule encode");
 	for (int g = 0; g < ng; g++)

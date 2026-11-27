@@ -173,7 +173,7 @@ typedef struct Sink
 	FullTransactionId horizon;
 	bool		folding;		/* the compaction folds column-delta records: its outputs stay as written, joining them left the chain unfolded */
 	int			open[2];		/* the output of each side that is still under the floor (its place in out), or -1 */
-	SiftPreaggBudget preagg[2];	/* the cubes of the outputs of each side */
+	SiftPreaggShare preagg[2];	/* the cubes of the outputs of each side */
 	SiftRowBuf *rb[2];
 	SiftPartDesc *out;
 	int			nout;
@@ -186,7 +186,7 @@ typedef struct Sink
 int			sift_test_compact_delete = 0;
 #endif
 
-static SiftPartDesc write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggBudget *preagg, SiftCompactResult *res);
+static SiftPartDesc write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggShare *preagg, SiftCompactResult *res);
 
 /*
  * The part just written joins the last one of its side, when both stay under the floor together and follow one another (rows with no key do): a compaction under a small budget cuts its
@@ -460,7 +460,7 @@ part_granules(Relation rel, const SiftPartDesc *d, uint32 part_id)
 /* MEM[MEM-COL-10]: f2 compact write_side scratch (avoid leaking SiftPart in caller ctx) */
 /* The rows of one side of the cut written as a part of the level above: sorted, their merged dictionaries put back, the tier flagged */
 static SiftPartDesc
-write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggBudget *preagg, SiftCompactResult *res)
+write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const SiftPartSpec *spec, const SiftDictMerge *dm, uint32 tier, const SiftPartDicts *adopt, SiftPreaggShare *preagg, SiftCompactResult *res)
 {
 	SiftColIn  *cols = palloc(Max(spec->ncols, 1) * sizeof(SiftColIn));
 	SiftRows	r;
@@ -475,7 +475,7 @@ write_side(Relation rel, uint32 part_id, uint16 level, SiftRowBuf *rb, const Sif
 	sift_dict_merge_finish(dm, rb, cols, res);
 	r.part_flags = tier;
 	r.adopt_dicts = adopt;
-	r.preagg_budget = preagg;
+	r.preagg_share = preagg;
 	r.bulk_tail = true;
 	d = sift_part_write_rows(rel, part_id, gen, Min(level + 1, SIFT_MAX_PART_LEVEL), out_tier, &r);
 	res->new_gen = res->new_gen == 0 ? gen : res->new_gen;

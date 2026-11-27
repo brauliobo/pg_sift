@@ -217,14 +217,13 @@ typedef struct SiftPreaggPlan
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
 } SiftPreaggPlan;
 
-/* False when the rows have no column a cube can hold */
+/* False when the rows have no column a cube can hold; the parts that share a plan (SiftRows.preagg_share) take the one made from the rows of the first when their columns hold it */
 extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan);
 
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
 /*
  * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none.
- * The parts a compaction cuts its output into where its memory filled share one budget, as the part they would be if written whole.
  */
 #define SIFT_PAG_BUDGET_PERCENT	4
 #define SIFT_PAG_BUDGET_SLACK	65536
@@ -240,6 +239,18 @@ sift_preagg_v2_fits(const SiftPreaggBudget *b, bool elements, uint64 bytes)
 {
 	return b->used[elements] + bytes <= b->data / 100 * SIFT_PAG_BUDGET_PERCENT + SIFT_PAG_BUDGET_SLACK;
 }
+
+/*
+ * The parts a compaction cuts its output into where its memory filled share one plan and one budget, as the part they would be if written whole: their cubes stay the same, so a join of
+ * them keeps its section, and the slack is granted once
+ */
+typedef struct SiftPreaggShare
+{
+	bool		planned;
+	bool		has_plan;
+	SiftPreaggPlan plan;
+	SiftPreaggBudget budget;
+} SiftPreaggShare;
 
 /* budget: the one the part shares with the parts written before it (NULL: its own) */
 extern SiftPreaggBuild *sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules, SiftPreaggBudget *budget);
