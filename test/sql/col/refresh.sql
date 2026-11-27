@@ -29,8 +29,10 @@ DECLARE l text; x text; y text;
 BEGIN
 	PERFORM set_config('seq_page_cost', '10000', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		IF l ~ '^\s*Granules: ' THEN
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := substring(l from 'scanned=(\d+)')::int + pre;
+		END IF;
 	END LOOP;
 	pre := coalesce(pre, 0);
 	PERFORM set_config('sift.enable_agg', 'on', true);

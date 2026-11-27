@@ -55,10 +55,12 @@ BEGIN
 	PERFORM set_config('sift.test_col_rollup_on_demand', 'off', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
+		IF l ~ '^\s*Granules: ' THEN
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := substring(l from 'scanned=(\d+)')::int + pre;
+		END IF;
 	END LOOP;
+	scanned := sift_helpers.rows_decoded(q);
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; scanned := NULL;
 END $$;
