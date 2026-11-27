@@ -1,0 +1,53 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1fill s2end s1take s1c
+step s1fill: BEGIN; SELECT iso_uqs_fill(11, 511, txid_current()) AS running; SELECT iso_uqs_sweep(11); SELECT iso_uqs_fill(11, 1, 3) AS ended;
+running
+-------
+    511
+(1 row)
+
+iso_uqs_sweep
+-------------
+             
+(1 row)
+
+ended
+-----
+    1
+(1 row)
+
+step s2end: CALL iso_uqs_end(1);
+step s1take: SELECT iso_uqs_take(11) AS added;
+added
+-----
+    1
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1fill s2many s1take s1c
+step s1fill: BEGIN; SELECT iso_uqs_fill(11, 511, txid_current()) AS running; SELECT iso_uqs_sweep(11); SELECT iso_uqs_fill(11, 1, 3) AS ended;
+running
+-------
+    511
+(1 row)
+
+iso_uqs_sweep
+-------------
+             
+(1 row)
+
+ended
+-----
+    1
+(1 row)
+
+step s2many: CALL iso_uqs_end(512);
+step s1take: SELECT iso_uqs_take(11) AS added;
+added
+-----
+    0
+(1 row)
+
+step s1c: COMMIT;

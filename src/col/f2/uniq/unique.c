@@ -502,7 +502,8 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 	uint32		hash;
 	BlockNumber lock;
 	bool		write = check != UNIQUE_CHECK_EXISTING,
-				spilled = false;
+				spilled = false,
+				published = false;
 
 	if (key_has_null(k, isnull) && !k->nulls_not_distinct)
 	{
@@ -522,7 +523,7 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 		LockPage(index, lock, ExclusiveLock);
 		find_conflict(k, &u->row, heap, &rk, values, isnull, heap_tid, &c);
 		deferred = c.found != FOUND_NONE && check == UNIQUE_CHECK_PARTIAL && !(c.found == FOUND_RUNNING && c.in_stage);
-		if (write && (c.found == FOUND_NONE || deferred))
+		if (write && !published && (c.found == FOUND_NONE || deferred))
 		{
 			bool		reserved = sift_uniq_shm_reserve(&rk, GetCurrentTransactionId(), heap_tid);
 
@@ -535,7 +536,13 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 			}
 			sift_f2_stage_row(index, values, isnull, heap_tid);
 			if (!reserved)
+			{
+				/* no entry holds the key: the row is published by a flush, with no lock, and the key is looked for again past it, so that a writer that took it meanwhile is found */
+				UnlockPage(index, lock, ExclusiveLock);
 				sift_stage_flush(index);
+				published = true;
+				continue;
+			}
 		}
 		UnlockPage(index, lock, ExclusiveLock);
 		if (c.found == FOUND_NONE)

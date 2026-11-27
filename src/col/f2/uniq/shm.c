@@ -26,6 +26,7 @@
 #define SLOTS_PER_STRIPE	(SIFT_UNIQ_SHM_SLOTS / SIFT_UNIQ_SHM_STRIPES)
 #define BUCKETS_PER_STRIPE	(SIFT_UNIQ_SHM_BUCKETS / SIFT_UNIQ_SHM_STRIPES)
 #define STRIPE_BITS			8
+#define SWEEP_EVERY			SLOTS_PER_STRIPE	/* the transactions that end between two sweeps of a full stripe that has spare entries to borrow */
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) Stripe
 {
@@ -536,8 +537,9 @@ sweep_ended(UniqShm *u, Stripe *s)
 }
 
 /*
- * Takes a free entry of the stripe, else a spare one. A stripe with none gives back the entries of the transactions that ended first, with no lock held, when one has ended since its last
- * sweep or no spare is left. The stripe is locked on return; 0 where no entry is free even then
+ * Takes a free entry of the stripe, else a spare one. A stripe with none gives back the entries of the transactions that ended first, with no lock held, when no spare is left or when
+ * SWEEP_EVERY transactions have ended since its last sweep: a sweep asks the process array once for each transaction of the stripe, which a full stripe of running ones would otherwise
+ * pay for every insert once any transaction of the server ends. The stripe is locked on return; 0 where no entry is free even then
  */
 static uint32
 reserve_slot(UniqShm *u, Stripe *s, uint32 hash)
@@ -545,7 +547,7 @@ reserve_slot(UniqShm *u, Stripe *s, uint32 hash)
 	uint32		i;
 
 	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-	if ((i = take_free(u, s, hash)) != 0 || (s->swept_at == completions() && (i = take_spare(u)) != 0))
+	if ((i = take_free(u, s, hash)) != 0 || (completions() - s->swept_at < SWEEP_EVERY && (i = take_spare(u)) != 0))
 		return i;
 	LWLockRelease(&s->lock);
 	sweep_ended(u, s);
