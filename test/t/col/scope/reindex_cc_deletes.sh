@@ -29,7 +29,7 @@ every_tenant() {
 }
 
 mkfifo "$D/s.in"
-psql -X -At -q -h "$(dir rd)/sock" -p "$(port rd)" -U postgres -d "$(node_db rd)" <"$D/s.in" >"$D/s.out" 2>&1 &
+psql -X -At -q -h "$(node_sock rd)" -p "$(port rd)" -U postgres -d "$(node_db rd)" <"$D/s.in" >"$D/s.out" 2>&1 &
 exec {FDS}>"$D/s.in"
 echo "BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT 'snap', count(*) FROM tenant_scope;" >&$FDS
 wait_for "grep -q '^snap' '$D/s.out'" 30 || bail "the snapshot holder did not start"

@@ -10,6 +10,7 @@ Manifests (no PostgreSQL, no build):
   - scripts/weights-*.tsv, scratch.tsv name no job twice (the loader keeps the last row, so the first one lied);
   - a regression test never sorts by a constant (`ORDER BY 1::text` casts the number 1, it names no column): its rows come out in scan order;
   - a `# tap: pooled` shell test (test/t) that runs CREATE DATABASE pins no sift. setting in node_init: the pool sets it on the database of the node alone, never on the ones the test creates.
+  - a `# tap: pooled` shell test connects through $(node_sock NAME), never $(dir NAME)/sock: a pooled node is a database of the cluster of the lane, its directory holds no socket.
 High-level harnesses (test/{corpus,col,plan,fuzz,matrix}/, scripts/{corpus,coldiff,plangate,coverage,fast-gate}.sh) run on Format 1, Format 2.0 and the release library:
   - a plan node is matched by its prefix (`Custom Scan (SiftAgg` or "SiftAgg), never `Custom Scan (SiftAgg)` or "SiftAgg", which SiftAggV6, SiftAggV6Sip, SiftAggV6TopN... are not;
   - the maintenance and the explanation go through the public 6.0 API (sift.promote, sift.merge, sift.maintain, sift.explain_why), never through the retired
@@ -89,22 +90,34 @@ def check_weights(root):
 
 
 POOLED_PIN = re.compile(r'node_init \S+ \d+ "([^"]*)"')
+POOLED_SOCK = re.compile(r'\$\(dir [^)]+\)/sock')
 
 
-def check_pooled_taps(root):
-    errs = []
+def tap_scripts(root):
     for r, _, files in os.walk(os.path.join(root, 'test/t')):
         for f in sorted(x for x in files if x.endswith('.sh')):
             rel = os.path.relpath(os.path.join(r, f), root)
             with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as fh:
-                text = fh.read()
-            if '\n# tap: pooled\n' not in text or 'CREATE DATABASE' not in text:
-                continue
-            for m in POOLED_PIN.finditer(text):
-                if re.search(r'^sift\.[a-z0-9_]+ = ', m.group(1), re.M):
-                    errs.append(f"{rel}:{text.count(chr(10), 0, m.start()) + 1}: a pooled node pins a sift. setting and the test runs CREATE DATABASE, where the pool never sets it: "
-                                "drop `# tap: pooled`, so the setting is the server's")
+                yield rel, fh.read()
+
+
+def line_of(text, m):
+    return text.count('\n', 0, m.start()) + 1
+
+
+def check_pooled_taps(root):
+    errs = []
+    for rel, text in tap_scripts(root):
+        if '\n# tap: pooled\n' not in text:
+            continue
+        errs += [f"{rel}:{line_of(text, m)}: a pooled node has no socket in its directory (it is a database of the cluster of the lane): connect through $(node_sock NAME)"
+                 for m in POOLED_SOCK.finditer(text)]
+        for m in POOLED_PIN.finditer(text):
+            if 'CREATE DATABASE' in text and re.search(r'^sift\.[a-z0-9_]+ = ', m.group(1), re.M):
+                errs.append(f"{rel}:{line_of(text, m)}: a pooled node pins a sift. setting and the test runs CREATE DATABASE, where the pool never sets it: "
+                            "drop `# tap: pooled`, so the setting is the server's")
     return sorted(errs)
+
 
 
 CONSTANT_ORDER = re.compile(r'\bORDER BY \d+::', re.I)
@@ -218,6 +231,10 @@ def selftest():
         ('a server of its own may pin and create databases', {'test/t/x.sh': '#!/bin/bash\nnode_init r 3 "sift.test_create_format1 = on"\nq "CREATE DATABASE d"\n'}, False, {}, []),
         ('a pooled test that creates databases without a pin is fine',
          {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\nnode_init r 3 "autovacuum = off"\nq "CREATE DATABASE d"\n'}, False, {}, []),
+        ('a pooled test that connects to the socket of its node directory', {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\npsql -h "$(dir rd)/sock" -p "$(port rd)"\n'}, False, {},
+         ['test/t/x.sh:3: a pooled node has no socket in its directory']),
+        ('a pooled test that connects through node_sock is fine', {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\npsql -h "$(node_sock rd)" -p "$(port rd)"\n'}, False, {}, []),
+        ('a server of its own may use the socket of its directory', {'test/t/x.sh': '#!/bin/bash\npsql -h "$(dir rd)/sock"\n'}, False, {}, []),
         ('a sort by a constant', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1::text;\n'}, False, {}, ['test/sql/a.sql:1: ORDER BY a cast number']),
         ('a sort by a column is fine', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1, r::text COLLATE "C";\n'}, False, {}, []),
         ('an exact SiftAgg node in a harness', {'test/col/run.sql': "SELECT 1 WHERE p LIKE '%Custom Scan (SiftAgg)%';\n"}, False, {}, ['test/col/run.sql:1: an exact SiftAgg plan node']),
