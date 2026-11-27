@@ -1,7 +1,7 @@
 -- A lookup table that is a plan (a UNION ALL of two fact tables) is made of the rows of the plan, and the scan reads a dimension: each of its rows is joined with the rows of the plan
 -- that carry its key, so the tuples that reach the groups are the rows PostgreSQL expects of the join (500,000 here, not the 2,000 rows of the dimension), and each row of
 -- the plan costs the scan its tuple, a hash of the key and a copy of each numeric column (about 1,000 instructions a row with one numeric column, four times a count(*) over it).
--- Seven numeric sums of a CASE over the day of the dimension took 540 ms against the normal plan's 215 ms, priced a third of it. The statements run with enable_agg on and off: the rows must be the same.
+-- Seven numeric sums of a CASE over the day of the dimension take the scan 45 ms against the normal plan's 55 ms. The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
@@ -27,7 +27,7 @@ FROM (SELECT dim_id, price FROM sp_a UNION ALL SELECT dim_id, price FROM sp_b) w
 $q$);
  used | slug 
 ------+------
- f    | cost
+ t    | 
 (1 row)
 
 SELECT differences($q$
