@@ -235,6 +235,16 @@ parse_v5_options(Relation index, SiftColRel *r, SiftColDef *defs, char **names, 
 	}
 }
 
+/* A jsonb column with no leaf: its paths are declared, or a column of another type gives the index the leaf it is built on while Format 2.0 reads them from the documents */
+static void
+needs_paths(Form_pg_attribute att)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+			 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
+			 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
+}
+
 /* The cached state of the index, in mcxt (the relcache entry's own in rd_indexcxt, a copy of a caller's in its context) */
 static SiftColRel *
 build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
@@ -280,10 +290,7 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 		if (isjson && k == 0 && f2 && sift_col_paths_unresolved(index))
 			r->paths_pending = true;
 		else if (isjson && k == 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("the jsonb column \"%s\" of a sift_col index needs paths", NameStr(att->attname)),
-					 errhint("Declare them with the paths option: WITH (paths = '%s.* float4'), or REINDEX to read them from the documents.", NameStr(att->attname))));
+			needs_paths(att);
 		if (n + k > max_leaves && r->shred && sift_col_shred_drop_present(r->shred, a))
 			k--;
 		if (n + k > max_leaves)
@@ -327,6 +334,8 @@ build_rel_with(Relation index, MemoryContext mcxt, uint32 present)
 			if (r->ret[a] && index->rd_index->indkey.values[a - 1] == 0)
 				sift_col_option_error("return_columns", sift_col_options_return_columns(index), psprintf("\"%s\" is an expression, not a column", NameStr(TupleDescAttr(desc, a - 1)->attname)));
 	}
+	if (n == 0)
+		needs_paths(TupleDescAttr(desc, 0));
 	r->schema = sift_cschema_create(mcxt, defs, n);
 	r->policy = palloc(n * sizeof(SiftCcPolicy));
 	names = palloc(n * sizeof(char *));

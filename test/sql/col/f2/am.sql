@@ -78,6 +78,8 @@ VACUUM f2_empty;
 SELECT sift_helpers.f2_same('SELECT id FROM f2_empty WHERE g = 1');
 SELECT sift._test_f2_check('f2_empty_idx') ~ '^parts=[0-9]+ ' AS consistent;
 
+-- an index on a jsonb column alone has no leaf to build on before its paths: it needs them declared (with another column, they are read from the documents)
+CREATE INDEX f2_doc_only ON f2 USING sift_col (doc);
 DROP TABLE f2, f2_empty;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
