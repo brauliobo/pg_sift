@@ -138,11 +138,12 @@ sift_tbl_require(Relation rel)
 Relation
 sift_tbl_open_verifiable(Oid relid)
 {
-	Relation	rel = table_open(sift_rel_must_exist(relid), AccessShareLock);
+	Relation	rel;
 
+	sift_require_acl(sift_rel_must_exist(relid), ACL_MAINTAIN);
+	rel = table_open(relid, AccessShareLock);
 	sift_tbl_require(rel);
-	if (pg_class_aclcheck(relid, GetUserId(), ACL_MAINTAIN) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(rel->rd_rel->relkind), RelationGetRelationName(rel));
+	sift_require_acl(relid, ACL_MAINTAIN);
 	return rel;
 }
 

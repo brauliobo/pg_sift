@@ -49,11 +49,14 @@ is_f2(Relation rel)
 	return (is_col_index(rel) || sift_tbl_is_table(rel)) && sift_meta_resolve_major(rel) == SIFT_FORMAT2_MAJOR;
 }
 
-/* The table whose privileges decide what the caller may do with the relation: an index has none of its own */
-static Oid
-acl_relid(Relation rel)
+/* SELECT on the table of the relation of a policy (an index: its table), asked by oid before the relation is locked and again after; a relation that is gone has no row */
+static bool
+may_read_policy(Oid relid)
 {
-	return is_col_index(rel) ? rel->rd_index->indrelid : RelationGetRelid(rel);
+	Oid			table = get_rel_relkind(relid) == RELKIND_INDEX ? IndexGetRelation(relid, true) : relid;
+	bool		missing = false;
+
+	return OidIsValid(table) && pg_class_aclcheck_ext(table, GetUserId(), ACL_SELECT, &missing) == ACLCHECK_OK && !missing;
 }
 
 /*
@@ -174,8 +177,8 @@ sift_set_tier_policy(PG_FUNCTION_ARGS)
 	require_arg(fcinfo, 0, "rel");
 	require_arg(fcinfo, 1, "uri");
 	require_arg(fcinfo, 2, "move_after");
-	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	require_server_resource_owner("set a tier policy");
+	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	uri = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	move_after = PG_GETARG_INTERVAL_P(2);
 	endpoint = PG_ARGISNULL(3) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(3));
@@ -211,8 +214,8 @@ sift_clear_tier_policy(PG_FUNCTION_ARGS)
 	SiftTierPolicy old;
 	bool		had;
 
-	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	require_server_resource_owner("clear a tier policy");
+	rel = open_f2_rel(PG_GETARG_OID(0), ACL_MAINTAIN);
 	had = sift_tier_policy_of(rel, &old);
 	if (had)
 	{
@@ -352,11 +355,14 @@ sift_tier_status(PG_FUNCTION_ARGS)
 	rows = sift_tier_policy_all(&n);
 	for (int i = 0; i < n; i++)
 	{
-		Relation	rel = try_relation_open(rows[i].relid, AccessShareLock);
+		Relation	rel;
 
+		if (!may_read_policy(rows[i].relid))
+			continue;
+		rel = try_relation_open(rows[i].relid, AccessShareLock);
 		if (rel == NULL)
 			continue;
-		if (pg_class_aclcheck(acl_relid(rel), GetUserId(), ACL_SELECT) == ACLCHECK_OK && is_f2(rel))
+		if (may_read_policy(rows[i].relid) && is_f2(rel))
 			status_rows(&rows[i], rel, rsi);
 		relation_close(rel, AccessShareLock);
 	}

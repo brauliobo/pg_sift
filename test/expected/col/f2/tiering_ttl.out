@@ -72,9 +72,9 @@ SET ROLE tier_probe;
 SELECT sift.set_ttl('ev', 'ts', interval '30 days');
 ERROR:  permission denied for table ev
 SELECT sift.set_tier_policy('ev', 'file://' || :'tierdir');
-ERROR:  permission denied for table ev
+ERROR:  must be superuser to set a tier policy
 SELECT sift.clear_tier_policy('ev');
-ERROR:  permission denied for table ev
+ERROR:  must be superuser to clear a tier policy
 SELECT count(*) AS parts FROM sift.tier_status;
  parts 
 -------

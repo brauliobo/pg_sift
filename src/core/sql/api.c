@@ -56,7 +56,9 @@ sift_api_open(Oid relid, LOCKMODE lock)
 	SiftApiRel	r = {0};
 
 	sift_inspect_expect(relid, NULL, NULL);
-	r.rel = relation_open(sift_rel_must_exist(relid), lock);
+	if (!sift_may_inspect_rel(sift_rel_must_exist(relid)))
+		sift_require_acl(relid, ACL_SELECT | ACL_MAINTAIN);
+	r.rel = relation_open(relid, lock);
 	if (!sift_api_am_of(r.rel, &r.am))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or sift_table", RelationGetRelationName(r.rel))));
 	sift_check_inspect(r.rel);

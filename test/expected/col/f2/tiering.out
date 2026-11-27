@@ -30,9 +30,9 @@ ERROR:  "evc_col" is a sift_col index: a TTL would drop index entries of rows it
 CREATE ROLE tier_probe_col;
 SET ROLE tier_probe_col;
 SELECT sift.set_tier_policy('evc_col', 'file://' || :'tierdir');
-ERROR:  permission denied for index evc_col
+ERROR:  must be superuser to set a tier policy
 SELECT sift.clear_tier_policy('evc_col');
-ERROR:  permission denied for index evc_col
+ERROR:  must be superuser to clear a tier policy
 SELECT count(*) AS parts FROM sift.tier_status;
  parts 
 -------

@@ -536,13 +536,13 @@ $$);
  SELECT segments > 0 FROM sift.col_index_info('rrd.ins_col')   | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT segments > 0 FROM sift.col_index_info('rrd.ins_col')   | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT count(*) > 0 FROM sift.col_segments('rrd.ins_col')     | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT count(*) > 0 FROM sift.col_segments('rrd.ins_col')     | ERROR: permission denied for index "ins_col" | rrd_none
+ SELECT count(*) > 0 FROM sift.col_segments('rrd.ins_col')     | ERROR: permission denied for index ins_col   | rrd_none
  SELECT used_blocks > 0 FROM sift.col_space('rrd.ins_col')     | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT used_blocks > 0 FROM sift.col_space('rrd.ins_col')     | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT segments > 0 FROM sift.index_info('rrd.ins_bm')        | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT segments > 0 FROM sift.index_info('rrd.ins_bm')        | ERROR: permission denied for index "ins_bm"  | rrd_none
+ SELECT segments > 0 FROM sift.index_info('rrd.ins_bm')        | ERROR: permission denied for index ins_bm    | rrd_none
  SELECT count(*) > 0 FROM sift.segments('rrd.ins_bm')          | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT count(*) > 0 FROM sift.segments('rrd.ins_bm')          | ERROR: permission denied for index "ins_bm"  | rrd_none
+ SELECT count(*) > 0 FROM sift.segments('rrd.ins_bm')          | ERROR: permission denied for index ins_bm    | rrd_none
  SELECT segments > 0 FROM sift.worker_state('rrd.ins_col')     | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT segments > 0 FROM sift.worker_state('rrd.ins_col')     | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT segments >= 0 FROM sift.worker_state('rrd.ins_bm')     | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
@@ -569,7 +569,7 @@ NOTICE:  sift_col index "ins_col": parts=1 granules=1 rows=300 exact
                                             stmt                                            |                    result                    |              by_role               
 --------------------------------------------------------------------------------------------+----------------------------------------------+------------------------------------
  SELECT count(*) > 0 FROM sift.col_sections('rrd.ins_col')                                  | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT count(*) > 0 FROM sift.col_sections('rrd.ins_col')                                  | ERROR: permission denied for index "ins_col" | rrd_none
+ SELECT count(*) > 0 FROM sift.col_sections('rrd.ins_col')                                  | ERROR: permission denied for index ins_col   | rrd_none
  SELECT count(*) >= 0 FROM sift.col_stamps('rrd.ins_col')                                   | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT count(*) >= 0 FROM sift.col_stamps('rrd.ins_col')                                   | ERROR: permission denied for index "ins_col" | rrd_none
  SELECT count(*) >= 0 FROM sift.col_unit_agg('rrd.ins_col', 'v')                            | ok: (t)                                      | rrd_owner, rrd_reader
@@ -585,9 +585,9 @@ NOTICE:  sift_col index "ins_col": parts=1 granules=1 rows=300 exact
  SELECT count(*) > 0 FROM sift.cluster_advice('rrd.ins', 1)                                 | ok: (t)                                      | rrd_owner, rrd_reader, rrd_monitor
  SELECT count(*) > 0 FROM sift.cluster_advice('rrd.ins', 1)                                 | ok: (f)                                      | rrd_none
  SELECT major FROM sift.index_format('rrd.ins_col')                                         | ok: (2)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT major FROM sift.index_format('rrd.ins_col')                                         | ERROR: permission denied for index "ins_col" | rrd_none
+ SELECT major FROM sift.index_format('rrd.ins_col')                                         | ERROR: permission denied for index ins_col   | rrd_none
  SELECT major FROM sift.index_format('rrd.ins_bm')                                          | ok: (1)                                      | rrd_owner, rrd_reader, rrd_monitor
- SELECT major FROM sift.index_format('rrd.ins_bm')                                          | ERROR: permission denied for index "ins_bm"  | rrd_none
+ SELECT major FROM sift.index_format('rrd.ins_bm')                                          | ERROR: permission denied for index ins_bm    | rrd_none
  SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ok: (t)                                      | rrd_owner
  SELECT count(*) >= 0 FROM sift.col_verify('rrd.ins_col')                                   | ERROR: permission denied for index "ins_col" | rrd_reader, rrd_monitor, rrd_none
  SELECT count(*) FROM sift.workers WHERE "table" = 'rrd.ins'::regclass AND relation = index | ok: (2)                                      | rrd_owner, rrd_reader, rrd_monitor

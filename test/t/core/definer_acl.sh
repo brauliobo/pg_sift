@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# What a role reaches through the definer functions of the extension: no statement of its own runs when a superuser makes the index of its projection, no row of
-# sift.scope_follows of another role is read or locked, and a rename of its own table locks no index of another role. The statement of each check is the attack; the check is what the
-# server must answer.
+# What a role reaches through the definer functions and the inspectors of the extension: no statement of its own runs when a superuser makes the index of its projection, no row of
+# sift.scope_follows of another role is read or locked, a rename of its own table locks no index of another role, no inspector waits for the lock of a relation the role may not look at,
+# and sift.status leaves no relation open for the temporary index of another session. The statement of each check is the attack; the check is what the server must answer.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 8
+plan 11
 node_init da 4 "autovacuum = off"
 node_start da || bail "start failed"
 D=$(dir da)
@@ -61,5 +61,41 @@ out=$(as atk <<<"CREATE TABLE mine (id int); BEGIN; ALTER TABLE mine RENAME TO m
 check "the rename of a table of a role leaves the indexes of the others unlocked" test "$(tail -n 1 <<<"$out")" == 0
 out=$(as own <<<"ALTER TABLE dim RENAME TO dim2; SELECT sift.projection_option('ev_col'::regclass, 'connect')")
 check "the rename of a table that an index names still follows into the index" test "$out" == 'dim_id -> dim2(id)'
+
+# --- the inspectors refuse a relation the role may not look at before they wait for its lock; the tier policy is refused to a role that is not a superuser before the lock
+as own <<'SQL' >/dev/null || bail "inspector setup failed"
+CREATE TABLE docs (id int, body text);
+INSERT INTO docs VALUES (1, 'a b c');
+CREATE INDEX docs_bm ON docs USING sift (body);
+CREATE TABLE tt (id int8, ts timestamp NOT NULL) USING sift_table;
+INSERT INTO tt VALUES (1, '2020-01-01');
+SQL
+as postgres <<<"SELECT sift.set_tier_policy('tt', 'file://$D/tier', interval '1 day')" >/dev/null
+sess_open da held
+sess_say held "BEGIN; DROP INDEX docs_bm; LOCK TABLE tt IN ACCESS EXCLUSIVE MODE; \\echo locked"
+wait_for "grep -q '^locked\$' $D/held.out" 60
+LOCK_WAIT="SET lock_timeout = '3s'"  # timeout-ok: the product side must refuse at once; the lock is held until the test releases it
+out=$(as atk <<SQL
+$LOCK_WAIT;
+SELECT count(*) FROM sift.tokenize('a b', 'docs_bm');
+SELECT count(*) FROM sift.segments('docs_bm');
+SELECT count(*) FROM sift.maintain('docs_bm');
+SELECT sift.promote('tt');
+SELECT count(*) FROM sift.check('tt');
+SELECT count(*) FROM sift.tier_status;
+SQL
+)
+check "the inspectors refuse a relation of another role without waiting for its lock" test "$(grep -c 'permission denied' <<<"$out"),$(grep -c 'lock timeout' <<<"$out")" == 5,0
+out=$(as own <<<"$LOCK_WAIT; SELECT sift.set_tier_policy('tt', 'file:///nonexistent', interval '1 day'); SELECT sift.clear_tier_policy('tt')")
+check "a tier policy is refused to the owner of a table before the lock of the table" test "$(grep -c 'must be superuser' <<<"$out")" == 2
+sess_say held "ROLLBACK"; sess_close held
+
+# --- sift.status skips the temporary index of another session and closes it
+sess_open da tmp
+sess_say tmp "CREATE TEMP TABLE tv (id int); CREATE INDEX tv_col ON tv USING sift_col (id); \\echo made"
+wait_for "grep -q '^made\$' $D/tmp.out" 60
+out=$(as postgres <<<"SELECT count(*) >= 0 FROM sift.status()")
+sess_close tmp
+check "sift.status leaves no relation of another session's temporary index open" test "$(grep -c 'not closed\|leak' <<<"$out"),$(tail -n 1 <<<"$out")" == 0,t
 
 finish

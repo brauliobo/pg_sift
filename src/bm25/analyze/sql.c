@@ -12,6 +12,7 @@
 #include "bm25/analyze/analyze.h"
 #include "core/sql/sql.h"
 #include "core/catname.h"
+#include "core/inspect.h"
 
 /* Required-index lookup; callers decide when to use the default analyzer. */
 void
@@ -27,12 +28,14 @@ sift_analyzer_config_lookup_index(Oid indexoid, SiftAnalyzerConfig *cfg)
 	index_close(index, AccessShareLock);
 }
 
-/* Config of a sift index, or the default when index is NULL */
+/* Config of a sift index the caller may look at (asked before its lock), or the default when index is NULL */
 static void
 config_for(FunctionCallInfo fcinfo, SiftAnalyzerConfig *cfg)
 {
 	if (PG_ARGISNULL(1))
 		return sift_analyzer_config_default(cfg);
+	if (!sift_may_inspect_rel(sift_rel_must_exist(PG_GETARG_OID(1))))
+		sift_require_acl(PG_GETARG_OID(1), ACL_SELECT | ACL_MAINTAIN);
 	sift_analyzer_config_lookup_index(PG_GETARG_OID(1), cfg);
 }
 

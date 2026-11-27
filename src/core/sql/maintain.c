@@ -27,6 +27,7 @@
 #include "core/catname.h"
 #include "core/explain.h"
 #include "core/f2/meta.h"
+#include "core/inspect.h"
 #include "core/maint/maint.h"
 #include "core/maint/int.h"
 #include "core/meta_peek.h"
@@ -224,9 +225,14 @@ sift_maintain_f2(Oid relid, const char *what, int32 *promoted, int32 *merged)
 {
 	MaintainResult res = {0};
 	SiftApiRel	r;
-	Relation	rel = relation_open(sift_rel_must_exist(relid), AccessShareLock);
+	Relation	rel;
 	SiftApiAm	am;
-	bool		f2 = sift_api_am_of(rel, &am) && (rel->rd_rel->relkind == RELKIND_INDEX || rel->rd_rel->relkind == RELKIND_RELATION) &&
+	bool		f2;
+
+	if (!sift_may_inspect_rel(sift_rel_must_exist(relid)))
+		sift_require_acl(relid, ACL_SELECT | ACL_MAINTAIN);
+	rel = relation_open(relid, AccessShareLock);
+	f2 = sift_api_am_of(rel, &am) && (rel->rd_rel->relkind == RELKIND_INDEX || rel->rd_rel->relkind == RELKIND_RELATION) &&
 		sift_meta_peek_format(rel).status == SIFT_FMT_V2;
 
 	relation_close(rel, AccessShareLock);

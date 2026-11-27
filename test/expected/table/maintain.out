@@ -216,8 +216,7 @@ CREATE ROLE tbl_maintain_user;
 GRANT USAGE ON SCHEMA sift TO tbl_maintain_user;
 SET ROLE tbl_maintain_user;
 SELECT sift.table_maintain('mt');
-ERROR:  permission denied for table "mt"
-DETAIL:  Only a role that can read table "mt", maintain it, or is a member of pg_monitor can do this.
+ERROR:  permission denied for table mt
 RESET ROLE;
 GRANT MAINTAIN ON mt TO tbl_maintain_user;
 SET ROLE tbl_maintain_user;

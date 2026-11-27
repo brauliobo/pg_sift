@@ -641,9 +641,14 @@ status_one(const Candidate *c, StatusRow *row)
 		return true;
 	}
 	r.rel = try_relation_open(c->relid, NoLock);
-	if (r.rel == NULL || RELATION_IS_OTHER_TEMP(r.rel))
+	if (r.rel == NULL)
 	{
 		UnlockRelationOid(c->relid, AccessShareLock);
+		return false;
+	}
+	if (RELATION_IS_OTHER_TEMP(r.rel))
+	{
+		relation_close(r.rel, AccessShareLock);
 		return false;
 	}
 	r.peek = sift_meta_peek_format(r.rel);
