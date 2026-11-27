@@ -31,6 +31,7 @@ lookup_members(SiftShred *sh, JsonbContainer *c, int nkeys, SiftShredRecheck *rc
 		const char *key = sift_shred_object_key(sh, i, &len);
 		JsonbValue	v;
 
+		CHECK_FOR_INTERRUPTS();
 		if (getKeyJsonValueFromContainer(c, key, len, &v) == NULL)
 			continue;
 		sift_shred_key(sh, key, len);
@@ -62,6 +63,7 @@ walk_object(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 	{
 		SiftShredKey act = sift_shred_key(sh, k.val.string.val, k.val.string.len);
 
+		CHECK_FOR_INTERRUPTS();
 		JsonbIteratorNext(&it, &v, true);	/* WJB_VALUE */
 		if (act == SIFT_SHRED_SKIP)
 			continue;
@@ -88,6 +90,7 @@ walk_array(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 	JsonbIteratorNext(&it, &v, true);	/* WJB_BEGIN_ARRAY */
 	while (JsonbIteratorNext(&it, &v, true) == WJB_ELEM)
 	{
+		CHECK_FOR_INTERRUPTS();
 		walk_value(sh, &v, rc);
 		if (sift_shred_full(sh))
 		{
@@ -240,12 +243,13 @@ sift_shred_array(SiftShred *sh, ArrayType *arr)
 	bool	   *nulls;
 	int			n;
 
-	elem_storage(elem, &len, &byval, &align);
-	deconstruct_array(arr, elem, len, byval, align, &vals, &nulls, &n);
 	if (!sift_shred_enter(sh, true))
 		return;
+	elem_storage(elem, &len, &byval, &align);
+	deconstruct_array(arr, elem, len, byval, align, &vals, &nulls, &n);
 	for (int i = 0; i < n; i++)
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (nulls[i])
 			sift_shred_null(sh);
 		else if (elem == INT2OID || elem == INT4OID || elem == INT8OID)
@@ -265,6 +269,8 @@ sift_shred_array(SiftShred *sh, ArrayType *arr)
 		if (sift_shred_full(sh))
 			break;
 	}
+	pfree(vals);
+	pfree(nulls);
 	sift_shred_leave(sh);
 }
 

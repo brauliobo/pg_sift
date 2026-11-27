@@ -282,6 +282,16 @@ open_element(SiftShred *sh, int g, uint32 keyid)
 }
 
 static void
+release_buf(char **buf, uint32 *cap, uint32 retain)
+{
+	if (*cap <= retain)
+		return;
+	pfree(*buf);
+	*buf = NULL;
+	*cap = 0;
+}
+
+static void
 release_large(SiftShred *sh)
 {
 	for (int g = 0; g < sh->spec->ngroups; g++)
@@ -316,12 +326,9 @@ release_large(SiftShred *sh)
 			gr->pcap = 0;
 		}
 	}
-	if (sh->doc.textcap > SIFT_SHRED_RETAIN * 16)
-	{
-		pfree(sh->doc.text);
-		sh->doc.text = NULL;
-		sh->doc.textcap = 0;
-	}
+	release_buf(&sh->doc.text, &sh->doc.textcap, SIFT_SHRED_RETAIN * 16);
+	release_buf((char **) &sh->doc.pay, &sh->doc.paycap, SIFT_SHRED_RETAIN);
+	release_buf(&sh->doc.paytext, &sh->doc.paytextcap, SIFT_SHRED_RETAIN * 16);
 }
 
 #define PAY_HT_MIN_PAYLOADS		16		/* up to this many a document finds its payloads by looking at each */
@@ -387,8 +394,8 @@ pay_ht_grow(SiftShred *sh, SiftShredDoc *doc)
 void
 sift_shred_begin(SiftShred *sh)
 {
-	release_large(sh);
 	pay_ht_reset(&sh->doc);
+	release_large(sh);
 	for (int g = 0; g < sh->spec->ngroups; g++)
 		sh->doc.grp[g].n = sh->doc.grp[g].pn = 0;
 	for (int c = 0; c < sh->spec->ncols; c++)
@@ -425,6 +432,18 @@ list_set(SiftShred *sh, NodeP n, SiftShredState st)
 	sh->doc.grp[n->group].lstate[sh->doc.grp[n->pgroup].n - 1] = st;
 }
 
+/* Room for need items of width bytes in an array of payloads that doubles up to MaxAllocSize; a document whose payloads need more raises */
+static void *
+pay_grow(SiftShred *sh, void *p, uint32 *cap, Size min, Size need, Size width)
+{
+	if (need > MaxAllocSize / width)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("sift shred: the values of a document its columns cannot hold need more than %zu bytes", (size_t) MaxAllocSize),
+						errhint("Take the paths of those values out of the declared paths, or store them in smaller documents.")));
+	*cap = Min(Max(Max(min, (Size) *cap * 2), need), MaxAllocSize / width);
+	return regrow(sh, p, *cap * width);
+}
+
 /* Keeps the value of the current event as the payload of an OVERFLOW slot, when the driver can serialise it and the slot holds that value (not the absence of one) */
 static void
 pay_keep(SiftShred *sh, const void *ev, int32 key, uint32 slot, uint8 tag)
@@ -437,16 +456,11 @@ pay_keep(SiftShred *sh, const void *ev, int32 key, uint32 slot, uint8 tag)
 		return;
 	bytes = sh->pay_fn(ev, &len);
 	if (doc->npay == doc->paycap)
-	{
-		doc->paycap = Max(16, doc->paycap * 2);
-		doc->pay = regrow(sh, doc->pay, doc->paycap * sizeof(SiftShredPay));
-	}
-	if (doc->npaytext + len > doc->paytextcap)
-	{
-		doc->paytextcap = Max(Max(256, doc->paytextcap * 2), doc->npaytext + len);
-		doc->paytext = regrow(sh, doc->paytext, doc->paytextcap);
-	}
+		doc->pay = pay_grow(sh, doc->pay, &doc->paycap, 16, (Size) doc->npay + 1, sizeof(SiftShredPay));
+	if ((Size) doc->npaytext + len > doc->paytextcap)
+		doc->paytext = pay_grow(sh, doc->paytext, &doc->paytextcap, 256, (Size) doc->npaytext + len, 1);
 	memcpy(doc->paytext + doc->npaytext, bytes, len);
+	pfree((void *) bytes);
 	doc->pay[doc->npay++] = (SiftShredPay) {.key = key,.slot = slot,.off = doc->npaytext,.len = len,.tag = tag};
 	doc->npaytext += len;
 	if (doc->pay_ht == NULL ? doc->npay > PAY_HT_MIN_PAYLOADS : doc->npay * 2 > doc->pay_ht_cap)

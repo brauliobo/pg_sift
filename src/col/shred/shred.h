@@ -207,7 +207,7 @@ typedef struct SiftShred
 	bool		any_length;		/* a text leaf takes a string of any length (the recheck of a row, col/shred/recheck.c): no LENGTH overflow */
 	uint8		evtag;			/* SIFT_COLTAG_* of the value the current event delivers: what an overflow slot it makes records */
 	const void *ev;				/* the value the current event delivers, as the driver holds it (NULL: the driver keeps no payloads) */
-	const char *(*pay_fn) (const void *ev, uint32 *len);	/* the bytes of that value, called only for the slot it makes OVERFLOW */
+	const char *(*pay_fn) (const void *ev, uint32 *len);	/* the bytes of that value in a palloc'd buffer the shredder frees, called only for the slot it makes OVERFLOW */
 } SiftShred;
 
 extern SiftShred *sift_shred_create(const SiftShredSpec *spec, const SiftShredLimits *limits, bool cached);
