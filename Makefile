@@ -59,7 +59,7 @@ endif
 # SIFT_TESTING=1 compiles the sift._test_* functions and installs the
 # test-only pg_sift_test extension; regress tests using it are skipped otherwise.
 # Switching it needs `make clean`.
-include $(dir $(SIFT_MK))scripts/testing-regress.mk
+-include $(dir $(SIFT_MK))scripts/testing-regress.mk
 ifdef SIFT_SB_SHIFT
 ifndef SIFT_TESTING
 $(error SIFT_SB_SHIFT changes the on-disk geometry: for SIFT_TESTING=1 test flavours only)
