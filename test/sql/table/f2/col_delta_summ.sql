@@ -41,7 +41,8 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN ' || q LOOP IF l LIKE '%' || what || '%' THEN RETURN true; END IF; END LOOP;
 	RETURN false;
 END $$;
-SELECT sift_helpers.assert_eq('the BRIN index plan was used', plan_uses('SELECT * FROM s WHERE brin_col > 1000000', 'Bitmap Index Scan on s_brin'), true);
+SELECT sift_helpers.assert_eq('the BRIN index plan was used where a sift_table takes bitmap scans (PostgreSQL 18 on)', plan_uses('SELECT * FROM s WHERE brin_col > 1000000', 'Bitmap Index Scan on s_brin'),
+	current_setting('server_version_num')::int >= 180000);
 RESET enable_seqscan;
 RESET enable_indexscan;
 SELECT sift_helpers.assert_eq('the old values are gone', (SELECT count(*)::int FROM s WHERE brin_col = 1000), 0);
