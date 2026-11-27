@@ -1,5 +1,5 @@
 -- sift_table: a TID range scan takes the bounds PostgreSQL derives from the qual, which may have offset 0 (ctid < '(1,1)' is (1,0), no lower bound is (0,0)), and
--- reads the rows the same qual selects without a TID range scan, in both formats. No pageinspect. About 2 s. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off).
+-- reads the rows the same qual selects without a TID range scan, in both formats (the aggregate engine, which would answer the count without it, is off for the scan). No pageinspect. About 2 s. Run on a build where new tables take Format 2.0 (sift.test_create_format1 off).
 CREATE EXTENSION IF NOT EXISTS pg_sift CASCADE;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
@@ -23,6 +23,7 @@ DECLARE n bigint;
 BEGIN
 	PERFORM set_config('enable_tidscan', tidscan::text, true);
 	PERFORM set_config('enable_seqscan', (NOT tidscan)::text, true);
+	PERFORM set_config('sift.enable_agg', (NOT tidscan)::text, true);
 	EXECUTE format('SELECT count(*) FROM %s WHERE %s', rel, qual) INTO n;
 	RETURN n;
 END $$;
@@ -31,6 +32,7 @@ CREATE FUNCTION scan_plan(rel regclass, qual text) RETURNS text LANGUAGE plpgsql
 DECLARE line text;
 BEGIN
 	PERFORM set_config('enable_tidscan', 'true', true);
+	PERFORM set_config('sift.enable_agg', 'off', true);
 	FOR line IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT count(*) FROM %s WHERE %s', rel, qual) LOOP
 		IF line LIKE '%Tid Range Scan%' THEN RETURN 'Tid Range Scan'; END IF;
 	END LOOP;
