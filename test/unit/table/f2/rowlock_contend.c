@@ -51,8 +51,7 @@ fill(int si, int n)
 	for (int i = 0; i < n; i++)
 	{
 		SiftRowLockKey k = key_n((uint64) si * 1000 + i);
-		dsa_pointer spare = InvalidDsaPointer;
-		SiftRowLockEntry *e = sift_rowlock_add(tbl, si, &k, &spare);
+		SiftRowLockEntry *e = sift_rowlock_add(tbl, si, &k);
 
 		e->nholders = 1;
 	}
