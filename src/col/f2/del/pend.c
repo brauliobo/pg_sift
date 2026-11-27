@@ -3,6 +3,7 @@
  */
 #include "core/host.h"
 
+#include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 
@@ -171,13 +172,13 @@ SiftPendDelIndex *
 sift_pdel_idx_build(const uint64 *tids, int n)
 {
 	SiftPendDelIndex *px = palloc0(sizeof(SiftPendDelIndex));
-	uint32		slots = 16;
+	Size		slots = pg_nextpower2_size_t(Max((Size) n * 2, 16));
 
-	while (slots < 2 * (uint32) n)
-		slots *= 2;
 	px->n = n;
-	px->mask = slots - 1;
-	px->htab = palloc0(slots * sizeof(uint64));
+	px->mask = (uint32) (slots - 1);
+	/* check-memory: allow the addresses of one chain of pending deletes, as many as the chain decodes to */
+	px->htab = MemoryContextAllocHuge(CurrentMemoryContext, slots * sizeof(uint64));
+	memset(px->htab, 0, slots * sizeof(uint64));
 	px->tid_min = PG_UINT64_MAX;
 	for (int i = 0; i < n; i++)
 	{
@@ -241,7 +242,8 @@ sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nk
 	*nkeep = 0;
 	for (int i = 0; i < n; i++)
 		*nkeep += 2 * ((recs[i].tid & SIFT_PD_TID_SUCC) == 0 && pair_kept(recs, i, n));
-	*keep = palloc(Max(*nkeep + n, 1) * sizeof(SiftPendDelRec));
+	/* check-memory: allow the pairs a fold keeps of one chain */
+	*keep = MemoryContextAllocHuge(CurrentMemoryContext, (Size) Max(*nkeep, 1) * sizeof(SiftPendDelRec));
 	*nkeep = 0;
 	for (int i = 0; i < n; i++)
 	{
@@ -270,8 +272,8 @@ static SiftPendDelRec *
 read_chain(Relation rel, uint64 part_id, BlockNumber head, BlockNumber *settled, int *n, BlockNumber **pages, int *npages)
 {
 	int			cap = 8,
-				np = 0,
-				total = 0;
+				np = 0;
+	int64		total = 0;
 	BlockNumber *blks = palloc(cap * sizeof(BlockNumber));
 	SiftPendDelRec **chunk = palloc(cap * sizeof(SiftPendDelRec *));
 	int		   *nrecs = palloc(cap * sizeof(int));
@@ -286,9 +288,12 @@ read_chain(Relation rel, uint64 part_id, BlockNumber head, BlockNumber *settled,
 		*settled = InvalidBlockNumber;
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{
-		Buffer		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
-		Page		page = BufferGetPage(buf);
+		Buffer		buf;
+		Page		page;
 
+		CHECK_FOR_INTERRUPTS();
+		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
 		if (settled != NULL && (PD(page)->flags & SIFT_PEND_DEL_SETTLED) != 0)
 		{
 			*settled = blk;
@@ -310,11 +315,14 @@ read_chain(Relation rel, uint64 part_id, BlockNumber head, BlockNumber *settled,
 			SIFT_CORRUPT(rel, "Block %u: the pending deletes of partition %u are damaged.", blk, (uint32) part_id);
 		total += nrecs[np];
 		np++;
+		if (total > INT_MAX)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the pending deletes of partition %u hold more than %d records", (uint32) part_id, INT_MAX),
+							errhint("End the transactions that hold old snapshots, then VACUUM the table so that a fold drops the settled pairs.")));
 		blk = PD(page)->next_blk;
 		UnlockReleaseBuffer(buf);
 	}
-	/* check-memory: allow the records of the pages of one chain, which the fold at SIFT_PEND_DEL_FOLD_PAGES pages bounds */
-	out = palloc(Max(total, 1) * sizeof(SiftPendDelRec));
+	/* check-memory: allow the records of the pages of one chain: the fold at SIFT_PEND_DEL_FOLD_PAGES pages bounds the unsettled ones, the horizon the settled pairs, runs that decode past 1 GB */
+	out = MemoryContextAllocHuge(CurrentMemoryContext, (Size) Max(total, 1) * sizeof(SiftPendDelRec));
 	*n = 0;
 	for (int i = 0; i < np; i++)
 	{
@@ -363,10 +371,16 @@ settled_droppable(Relation rel, uint64 part_id, BlockNumber settled)
 {
 	for (BlockNumber blk = settled;;)
 	{
-		Buffer		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
-		const SiftPendDelPageData *pd = PD(BufferGetPage(buf));
-		BlockNumber prev = pd->prev_blk;
-		bool		droppable = prev == InvalidBlockNumber && GlobalVisCheckRemovableFullXid(NULL, pd->min_xid);
+		Buffer		buf;
+		const SiftPendDelPageData *pd;
+		BlockNumber prev;
+		bool		droppable;
+
+		CHECK_FOR_INTERRUPTS();
+		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
+		pd = PD(BufferGetPage(buf));
+		prev = pd->prev_blk;
+		droppable = prev == InvalidBlockNumber && GlobalVisCheckRemovableFullXid(NULL, pd->min_xid);
 
 		UnlockReleaseBuffer(buf);
 		if (prev == InvalidBlockNumber)
@@ -396,9 +410,12 @@ sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head)
 
 	for (BlockNumber blk = head; blk != InvalidBlockNumber;)
 	{
-		Buffer		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
-		const SiftPendDelPageData *pd = PD(BufferGetPage(buf));
+		Buffer		buf;
+		const SiftPendDelPageData *pd;
 
+		CHECK_FOR_INTERRUPTS();
+		buf = lock_pd(rel, blk, (uint32) part_id, BUFFER_LOCK_SHARE);
+		pd = PD(BufferGetPage(buf));
 		st.lsn += PageGetLSN(BufferGetPage(buf));
 		st.count += pd->nrecs;
 		st.pages++;

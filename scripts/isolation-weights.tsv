@@ -81,6 +81,7 @@ table/concurrency	0.2
 table/f2/autottl_rr	0.1
 table/f2/col_delta_dir	1.4
 table/f2/col_delta_epq	0.2
+table/f2/col_delta_foreign_si	0.5
 table/f2/col_delta_long_chain	0.2
 table/f2/col_delta_rollback	0.4
 table/f2/drop_parts_rr	0.1

@@ -1,10 +1,9 @@
 /*
  * table/f2/col_delta/foreign.c - what a modify asks of a column delta chain that is too long to keep whole in the cache of the chains (f2_chain_cache.h).
  *
- * The records that matter to a modify are the ones another transaction wrote and whose writer is not past every snapshot: they say that the row changed under it. A writer older than the
- * oldest transaction a snapshot can see is committed for all of them or never visible, and a modify finds the same without its record. The records of the transaction itself are known to it (its
- * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records: the log keeps none of them, only their writers, and reads the
- * chain again once one of those ended, for the records not past every snapshot by then. The log keeps the headers of the records left, and follows the chain
+ * The records that matter to a modify are the ones whose writer is not past every snapshot of the backend (TransactionXmin): another transaction's say that the row changed under it, and
+ * the transaction's own that a later command of it meets the row it changed (TM_SelfModified, its xmin and cmin). A writer older than the oldest transaction a snapshot of the backend can
+ * see is committed for all of them or never visible, and a modify finds the same without its record. The log keeps the headers of those records, and follows the chain
  * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain, and merges their records into the ones it has. A backend keeps the logs of the FOREIGN_LOGS partitions it modified last, so that a statement that goes from one
  * partition to another reads neither chain again.
  *
@@ -61,9 +60,6 @@ typedef struct ForeignLog
 	int			n;
 	int			cap;
 	ForeignRec *recs;			/* ascending by (tid, seq) */
-	int			nskipped;
-	int			capskipped;
-	TransactionId *skipped;		/* the writers of the transaction itself whose records the log left out */
 	uint64		tick;
 } ForeignLog;
 
@@ -183,30 +179,16 @@ log_reset(void)
 {
 	flog->n = 0;
 	flog->seq = 0;
-	flog->nskipped = 0;
 	sift_col_delta_watch_reset(&flog->watch);
 }
 
 /* ---- what the log keeps of a record ---- */
 
-static void
-log_skip(TransactionId xmin)
-{
-	for (int i = 0; i < flog->nskipped; i++)
-		if (flog->skipped[i] == xmin)
-			return;
-	if (flog->nskipped == flog->capskipped)
-	{
-		flog->capskipped = Max(4, flog->capskipped * 2);
-		flog->skipped = flog->skipped == NULL ? MemoryContextAlloc(flog->cx, sizeof(TransactionId) * flog->capskipped) : repalloc(flog->skipped, sizeof(TransactionId) * flog->capskipped);
-	}
-	flog->skipped[flog->nskipped++] = xmin;
-}
-
+/* RecentXmin is the xmin of the newest snapshot, a catalog one included: past it, a writer may still be running for the snapshot of a REPEATABLE READ transaction */
 static bool
 writer_settled(TransactionId xmin)
 {
-	return TransactionIdPrecedes(xmin, RecentXmin);
+	return TransactionIdPrecedes(xmin, TransactionXmin);
 }
 
 /* A list of records that grows asks the budget for the room first: the other caches give theirs back before the log passes the limit, which it does alone for the statement that needs it */
@@ -236,9 +218,7 @@ log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
 	{
 		ForeignRec	r = {.tid = sift_col_delta_hdr_tid(&h),.seq = flog->seq++,.hdr = h};
 
-		if (TransactionIdIsCurrentTransactionId(h.xmin))
-			log_skip(h.xmin);
-		else if (!writer_settled(h.xmin))
+		if (!writer_settled(h.xmin))
 			recs_push(&flog->recs, &flog->n, &flog->cap, &r);
 	}
 #ifdef SIFT_TESTING
@@ -262,15 +242,6 @@ log_forget_settled(void)
 
 /* ---- following the chain ---- */
 
-static bool
-log_skipped_gone(void)
-{
-	for (int i = 0; i < flog->nskipped; i++)
-		if (!TransactionIdIsCurrentTransactionId(flog->skipped[i]))
-			return true;
-	return false;
-}
-
 /* The records from sorted on, the ones the pages the log read last added, sorted and merged into the ones before them: the newer record of a row comes after the older one */
 static void
 log_merge(int sorted)
@@ -289,11 +260,11 @@ log_merge(int sorted)
 	pfree(tail);
 }
 
-/* A read of the chain that did not end, or a writer of the transaction whose records the log left out ended: the chain is read again */
+/* A read of the chain that did not end: the chain is read again */
 static void
 log_settle(void)
 {
-	if (flog->following || log_skipped_gone())
+	if (flog->following)
 		log_reset();
 }
 

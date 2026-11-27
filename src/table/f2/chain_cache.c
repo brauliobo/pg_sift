@@ -97,27 +97,36 @@ index_slot(const RowIndex *ix, uint64 key)
 	return p;
 }
 
+/* A log of a chain is one allocation of each of its arrays, past 1 GB for a chain of pending deletes that decodes to tens of millions of records */
+static void *
+log_resize(void *p, Size bytes)
+{
+	/* check-memory: allow a slot of the chain cache, which the budget of core/cachebudget.h bounds (sift_cache_commit) */
+	return p == NULL ? MemoryContextAllocHuge(CurrentMemoryContext, bytes) : repalloc_huge(p, bytes);
+}
+
 /* Room for n records: the vector of the links grows by doubling and the table is made again, from its slots, when it would be more than half full */
 static void
 index_reserve(RowIndex *ix, int n)
 {
-	uint32		cap = pg_nextpower2_32(Max(n * 2, 16));
+	Size		cap = pg_nextpower2_size_t(Max((Size) n * 2, 16));
 
 	if (n > ix->room)
 	{
-		ix->room = Max(n, ix->room * 2);
-		ix->prev = ix->prev == NULL ? palloc(sizeof(int32) * ix->room) : repalloc(ix->prev, sizeof(int32) * ix->room);
+		ix->room = (int) Max(n, Min((int64) ix->room * 2, INT_MAX));
+		ix->prev = log_resize(ix->prev, sizeof(int32) * (Size) ix->room);
 	}
-	if (ix->key == NULL || cap > ix->mask + 1)
+	if (ix->key == NULL || cap > (Size) ix->mask + 1)
 	{
 		uint64	   *key = ix->key;
 		int32	   *newest = ix->newest;
-		uint32		old = key == NULL ? 0 : ix->mask + 1;
+		Size		old = key == NULL ? 0 : (Size) ix->mask + 1;
 
-		ix->mask = cap - 1;
-		ix->key = palloc(sizeof(uint64) * cap);
-		ix->newest = palloc0(sizeof(int32) * cap);
-		for (uint32 i = 0; i < old; i++)
+		ix->mask = (uint32) (cap - 1);
+		ix->key = log_resize(NULL, sizeof(uint64) * cap);
+		ix->newest = log_resize(NULL, sizeof(int32) * cap);
+		memset(ix->newest, 0, sizeof(int32) * cap);
+		for (Size i = 0; i < old; i++)
 			if (newest[i] != 0)
 			{
 				uint32		p = index_slot(ix, key[i]);
@@ -425,7 +434,7 @@ cd_reserve(SiftColDeltaLog *l, int n)
 
 	index_reserve(&l->ix, n);
 	if (l->ix.room != room)
-		l->hdr = l->hdr == NULL ? palloc(sizeof(SiftColDeltaEntryHdr) * l->ix.room) : repalloc(l->hdr, sizeof(SiftColDeltaEntryHdr) * l->ix.room);
+		l->hdr = log_resize(l->hdr, sizeof(SiftColDeltaEntryHdr) * (Size) l->ix.room);
 }
 
 /* The records of page i of the arena from p (NULL: its first), into the log, which has room for them */

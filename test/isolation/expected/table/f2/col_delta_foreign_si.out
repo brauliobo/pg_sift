@@ -1,0 +1,73 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2begin s2other s1upd s1ddl s2cat s2same s2c s2v
+step s2begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows FROM iso_lf;
+rows
+----
+4000
+(1 row)
+
+step s2other: UPDATE iso_lf SET c = c + 10 WHERE id = 6;
+step s1upd: UPDATE iso_lf SET c = c + 1 WHERE id = 5;
+step s1ddl: CREATE TABLE iso_lf_ddl (a int); DROP TABLE iso_lf_ddl;
+step s2cat: SELECT to_regclass('iso_lf_none') IS NULL AS none;
+none
+----
+t   
+(1 row)
+
+step s2same: UPDATE iso_lf SET c = c + 10 WHERE id = 5;
+ERROR:  could not serialize access due to concurrent update
+step s2c: COMMIT;
+step s2v: SELECT id, c FROM iso_lf WHERE id IN (5, 6, 7, 4000) ORDER BY id;
+  id|c
+----+-
+   5|1
+   6|0
+   7|0
+4000|0
+(4 rows)
+
+
+starting permutation: s2begin s1upd s1ddl s2cat s2same s2c s2v
+step s2begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS rows FROM iso_lf;
+rows
+----
+4000
+(1 row)
+
+step s1upd: UPDATE iso_lf SET c = c + 1 WHERE id = 5;
+step s1ddl: CREATE TABLE iso_lf_ddl (a int); DROP TABLE iso_lf_ddl;
+step s2cat: SELECT to_regclass('iso_lf_none') IS NULL AS none;
+none
+----
+t   
+(1 row)
+
+step s2same: UPDATE iso_lf SET c = c + 10 WHERE id = 5;
+ERROR:  could not serialize access due to concurrent update
+step s2c: COMMIT;
+step s2v: SELECT id, c FROM iso_lf WHERE id IN (5, 6, 7, 4000) ORDER BY id;
+  id|c
+----+-
+   5|1
+   6|0
+   7|0
+4000|0
+(4 rows)
+
+
+starting permutation: s2merge s2mergeall s2v
+step s2merge: MERGE INTO iso_lf USING (SELECT 7 AS id UNION ALL SELECT 7) s ON iso_lf.id = s.id WHEN MATCHED THEN UPDATE SET c = c + 1;
+ERROR:  MERGE command cannot affect row a second time
+step s2mergeall: MERGE INTO iso_lf USING (SELECT id FROM generate_series(1, 4000) id UNION ALL SELECT 4000) s ON iso_lf.id = s.id WHEN MATCHED THEN UPDATE SET c = c + 1;
+ERROR:  MERGE command cannot affect row a second time
+step s2v: SELECT id, c FROM iso_lf WHERE id IN (5, 6, 7, 4000) ORDER BY id;
+  id|c
+----+-
+   5|0
+   6|0
+   7|0
+4000|0
+(4 rows)
+
