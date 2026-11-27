@@ -95,8 +95,8 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.g, kv.key, count(*) FROM em o LEFT JOIN LATERAL jsonb_each(o.metrics) kv ON true GROUP BY 1, 2'
 ]) q;
 
--- Q-04. What the scan does not take keeps the normal plan and the same answers: a test on the value, a key pattern of another form, another type than the leaf's, the value as it is,
--- a key that an equality fixes (it is no group), and the value read in two ways
+-- Q-04. What the scan does not take keeps the normal plan and the same answers: a test on the value, another type than the leaf's, the value as it is, a key that an equality
+-- fixes (it is no group), and the value read in two ways; a key pattern of another form is PostgreSQL's to test on the members the scan gives (agg/unnest/test.h)
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.key = ''tip'' GROUP BY 1',
 	'SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE kv.value::float8 > 3 GROUP BY 1',

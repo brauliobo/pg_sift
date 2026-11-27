@@ -14,12 +14,19 @@
 #include "agg/ext.h"
 #include "agg/vec.h"
 
+struct SiftUnnestIn;
+
 typedef struct SiftV6ElemEval SiftV6ElemEval;
 
-/* The quals (SiftV6Ext.elem_where) over the element columns; they compiled when the statement was planned */
+/* The quals (SiftV6Ext.elem_where) over the element columns, in their order; they compiled when the statement was planned */
 extern SiftV6ElemEval *sift_v6_elem_eval_open(MemoryContext cx, const List *quals);
-/* bit e of keep, for the elements [lo, hi), is whether element e passes the quals; ev: the element columns */
-extern void sift_v6_elem_eval(SiftV6ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, uint64 *keep);
+/* Some of the quals are PostgreSQL's to evaluate: the executor's own functions, which only the backend that runs the statement can call (no compute thread) */
+extern bool sift_v6_elem_eval_pg(const SiftV6ElemEval *ee);
+/*
+ * bit e of keep, for the elements [lo, hi), is whether element e passes the quals; ev: the element columns. Each qual PostgreSQL evaluates runs, as in the normal plan, only on the elements the quals
+ * before it keep, of the rows of rows (its parent_mask, poison and doc_valid; the elements of rows read from the heap: NULL, all of them): an error it raises is one the normal plan raises
+ */
+extern void sift_v6_elem_eval(SiftV6ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, const struct SiftUnnestIn *rows, uint64 *keep);
 
 /* the arms of a disjunction over the element columns as one qual: the arm, or their OR */
 extern Expr *sift_v6_unnest_or_arms(List *arms);

@@ -337,7 +337,7 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 			if (u->eev != NULL)
 			{
 				keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-				sift_v6_elem_eval(u->eev, ev, 0, nel, keep);
+				sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
 			}
 			if (u->rec != NULL)
 			{

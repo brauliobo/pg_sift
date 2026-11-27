@@ -59,9 +59,8 @@ computes_only_months(const SiftV6Spec *s)
 	return true;
 }
 
-/* the quals of the table as the executor of the statement runs them: the cheaper first (a row that fails one is not given to a cast that raises for it), the order of the statement among equals */
-static List *
-cheapest_first(PlannerInfo *root, List *infos)
+List *
+sift_v6_quals_in_order(PlannerInfo *root, List *infos)
 {
 	List	   *ordered = NIL;
 
@@ -167,7 +166,7 @@ sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause	clause;
 
-	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
+	foreach_node(RestrictInfo, ri, sift_v6_quals_in_order(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)

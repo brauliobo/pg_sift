@@ -170,6 +170,8 @@ extern bool sift_v6_unnest_ready(V6Plan *p);
 extern Aggref *sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a);
 /* the pieces of it that the planner of an EXISTS over the elements (v6_unnest_exists.h) takes apart: the statement compiles to what the scan of an unnest computes; the quals of the table become those the scan evaluates on its batches and on a row of the heap */
 extern bool sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
+/* the quals of a relation (RestrictInfo) as the executor of the statement runs them: the cheaper first (a row that fails one is not given to a cast that raises for it), the order of the statement among equals */
+extern List *sift_v6_quals_in_order(PlannerInfo *root, List *infos);
 extern bool sift_v6_unnest_where(V6Plan *p);
 /* v6_unnest_exists.c: the qual of the flag of the test a conjunct of a FILTER is (the virtual attribute SIFT_V6_XFLAG_VATT + the test against true or false); NULL when it is none of the tests of the plan */
 extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);

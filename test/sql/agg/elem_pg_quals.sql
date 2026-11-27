@@ -1,0 +1,28 @@
+-- A WHERE clause over the columns of the elements of an unnest that the scan has no comparison for (a regex, a function, a cast) is evaluated by PostgreSQL's executor for each
+-- element, in the order the normal plan runs the clauses: after the clauses of the table (a row they drop gives no element to a cast that would raise) and after the cheaper clauses of
+-- the element. Each statement runs with the scan off and on and the answers, or the errors, are compared; the second column says the plan runs the scan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.test_create_format1 = off;
+CREATE TABLE ep (id int, grp int, items jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ep SELECT i, i % 9,
+	jsonb_build_array(jsonb_build_object('kind', CASE WHEN i % 4 = 0 THEN 'txt' ELSE 'num' END, 'val', CASE WHEN i % 4 = 0 AND i % 9 = 0 THEN 'x' || i ELSE (i % 50)::text END),
+					  jsonb_build_object('kind', 'num', 'val', (i % 7)::text))
+FROM generate_series(1, 3000) i;
+CREATE INDEX ep_col ON ep USING sift_col (id, grp, items) WITH (paths = 'items[]{kind text, val text}');
+VACUUM (FREEZE, ANALYZE) ep;
+\ir test/common/sql/agg/base.sql
+SELECT n, outcome(q, false) = outcome(q, true) AS same, runs_in_scan(q) AS scan
+FROM (VALUES
+	('1 regex', $q$SELECT i.kind, count(*), sum(i.val::int) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE i.val ~ '^[0-9]+$' GROUP BY 1$q$),
+	('2 function', $q$SELECT i.val, count(*) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE upper(i.kind) || '' = 'NUM' GROUP BY 1$q$),
+	('3 after a comparison', $q$SELECT count(*) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE i.kind = 'num' AND i.val::int > 3$q$),
+	('4 after the table', $q$SELECT i.kind, count(*) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE e.grp <> 0 AND i.val::int > 3 GROUP BY 1$q$),
+	('5 raises', $q$SELECT i.kind, count(*) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE i.val::int > 3 GROUP BY 1$q$)
+) s(n, q)
+ORDER BY n;
+SELECT outcome($q$SELECT i.kind, count(*) FROM ep e, jsonb_to_recordset(e.items) i(kind text, val text) WHERE i.val::int > 3 GROUP BY 1$q$, true) AS error;
+DROP FUNCTION outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
+DROP TABLE ep;
+DROP EXTENSION pg_sift;

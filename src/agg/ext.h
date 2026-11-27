@@ -136,7 +136,8 @@ typedef struct SiftV6Ext
 	bool		unnest;
 	SiftV6XElem elem;
 	List	   *where;			/* unnest: the quals of the fact table over INDEX_VAR attributes, which the scan evaluates on its batches (it has no index keys) */
-	List	   *elem_where;		/* unnest: the quals of the element over the virtual attributes of its columns (v6_unnest_jsonb.h), which the scan evaluates on the elements of a batch */
+	List	   *elem_where;		/* unnest: the quals of the element in the order the executor of the statement runs them (agg/unnest/test.h): a comparison the scan decides, over the virtual attributes of its
+								 * columns (v6_unnest_jsonb.h), or a clause PostgreSQL evaluates as (the clause over the inputs of SIFT_V6_PGX_RELID, the slot and type of each input) */
 	int			ntests;			/* tests of the row's elements: the scan gives each row once, with a flag for each test (the attribute SIFT_V6_XFLAG_VATT + i of a FILTER) */
 	SiftV6XTest test[SIFT_V6_XTESTS];
 	List	   *test_quals;		/* of each test: its quals over the element columns, the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function), and its

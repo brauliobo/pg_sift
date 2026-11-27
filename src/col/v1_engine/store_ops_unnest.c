@@ -317,7 +317,7 @@ emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 	{
 		uint64	   *keep = MemoryContextAllocZero(u->bcx, ((eb->layout.n_elems + 63) / 64 + 1) * sizeof(uint64));
 
-		sift_v6_elem_eval(u->eev, ev, 0, eb->layout.n_elems, keep);
+		sift_v6_elem_eval(u->eev, ev, 0, eb->layout.n_elems, &in, keep);
 		in.elem_mask = keep;
 	}
 	while (!sift_unnest_done(&in, &cur))

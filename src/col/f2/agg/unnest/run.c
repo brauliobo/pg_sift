@@ -505,7 +505,7 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		if (u->eev != NULL)
 		{
 			keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
-			sift_v6_elem_eval(u->eev, ev, 0, es->n_elems, keep);
+			sift_v6_elem_eval(u->eev, ev, 0, es->n_elems, &in, keep);
 			in.elem_mask = keep;
 		}
 		while (!sift_unnest_done(&in, &cur))
@@ -530,13 +530,14 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		}
 }
 
-/* a statement of plain columns of the table and of the element, the pairs of which the compute threads can fold as the serial run does */
+/* a statement of plain columns of the table and of the element, the pairs of which the compute threads can fold as the serial run does (no qual of the element PostgreSQL evaluates) */
 static bool
 par_plain(const UnRun *u)
 {
 	const SiftV6ElemFn fn = u->x->elem.fn;
 
-	if ((fn != SV6E_UNNEST && fn != SV6E_RECORDSET) || u->ntests > 0 || u->row_slot >= 0 || u->spec->nderive > 0 || u->x->ndims > 0 || u->attr_slot != NULL)
+	if ((fn != SV6E_UNNEST && fn != SV6E_RECORDSET) || u->ntests > 0 || u->row_slot >= 0 || u->spec->nderive > 0 || u->x->ndims > 0 || u->attr_slot != NULL ||
+		(u->eev != NULL && sift_v6_elem_eval_pg(u->eev)))
 		return false;
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].month || u->cols[i].json)
@@ -614,7 +615,7 @@ batch_keep(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *ev)
 	if (u->eev == NULL)
 		return NULL;
 	keep = MemoryContextAllocZero(u->bcx, ((es->n_elems + 63) / 64 + 1) * sizeof(uint64));
-	sift_v6_elem_eval(u->eev, ev, es->layout.offsets[0], es->layout.offsets[b->n], keep);
+	sift_v6_elem_eval(u->eev, ev, es->layout.offsets[0], es->layout.offsets[b->n], NULL, keep);
 	return keep;
 }
 
