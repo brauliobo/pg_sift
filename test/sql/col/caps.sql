@@ -6,6 +6,8 @@ SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET statement_timeout = '60s';
 CREATE EXTENSION pg_sift;
+-- Format 1: the cube and rollup limits of the build are Format 1.
+SET sift.test_create_format1 = on;
 
 -- 100,000 rows in 3 units. few: 7 values; many and many2: 50,000 and 60,000 values (more than the 4,096 groups of a cube dim in every unit); mid: 400 values, none next to another
 -- (a bloom filter beyond 32 keys, and no gap-free range that a zone would tell); wide: 3,000 values

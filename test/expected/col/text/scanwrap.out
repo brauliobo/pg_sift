@@ -3,6 +3,8 @@
 -- that took LZ4 and the ones that kept zstd when the formula was close (mid, a vocabulary of 2,200 words: B 23 against C 28), with the numbers and the off switch, and the rows are the normal plan's with each wrapper.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the wrap of inline text leaves and its notice are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.agg_force = on;

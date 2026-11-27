@@ -1,6 +1,8 @@
 -- An index-only scan of a sift_col index whose returned columns are all fixed-size (integers, boolean, date, timestamps, floats) writes the values into one index tuple it keeps; the rows
 -- must be the heap's for every width and for the rows with a NULL in a returned column, with the column subsets a plan reads, a rescan, deleted rows and a write buffer.
 CREATE EXTENSION pg_sift;
+-- Format 1: the index tuple of fixed-size columns is the Format 1 index-only scan.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET timezone = 'UTC';
 SET datestyle = 'ISO, YMD';

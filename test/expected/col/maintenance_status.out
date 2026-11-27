@@ -2,6 +2,8 @@
 -- nothing does). The statistics of a table (last VACUUM, rows changed) lag the statements that wrote them and are the TAP test's: here the table, the
 -- number that starts the VACUUM and the blockers.
 CREATE EXTENSION pg_sift;
+-- Format 1: the rewrite of segments that sift.col_maintenance_status reports is Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = on;
 CREATE TABLE ms_facts (id int, key int, kind text, amount numeric(10,2)) WITH (autovacuum_enabled = false);
 INSERT INTO ms_facts SELECT g, g % 100, 'cat_' || (g % 8), g % 997 FROM generate_series(1, 20000) g;

@@ -4,6 +4,8 @@
 -- long (stored inline) and non-ASCII strings, a write buffer, updates, deletes, promotion and a merge.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: return_columns is a Format 1 option; Format 2.0 ignores it.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 CREATE TABLE rs (id int, s text, u uuid, vc varchar(30), c char(6), pad text DEFAULT repeat('x', 500));
 ALTER TABLE rs ALTER COLUMN pad SET STORAGE PLAIN;

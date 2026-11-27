@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the leaf statistics block is written by Format 1 segments.
+SET sift.test_create_format1 = on;
 SET sift.test_limits = 'par_build_rows=1';
 SET max_parallel_workers_per_gather = 0;
 

@@ -2,6 +2,8 @@
 -- attribute c. The index below has three attributes and four leaves (j.a, j.b, id, t): the notice says id, the third leaf, not t, the third attribute, and reading the
 -- fourth leaf as an attribute went past the descriptor (PostgreSQL 19 with assertions stopped the CREATE INDEX of agg_wildcard_key_cost on it).
 CREATE EXTENSION pg_sift;
+-- Format 1: the build notices that name the leaves are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ln (j jsonb, id int PRIMARY KEY, t int) WITH (autovacuum_enabled = false);
