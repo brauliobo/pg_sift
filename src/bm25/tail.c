@@ -141,17 +141,34 @@ leaf_ub_max(const SiftPlan *p, const EvalLeaf *l, int s)
 	return sift_kern_ub_weight(l->deferred ? l->wide_w : l->terms[s][0].w, p->stats.avgdl, p->seg[s]->hdr->avgdl_ref, p->nleaves) * (float4) mb;
 }
 
+/* The largest score the scoring leaves give a document of each segment, summed once: the leaves a bound adds to one leaf are that sum without the leaf */
+static double *
+seg_ub_sums(const SiftPlan *p)
+{
+	double	   *sum = palloc0(Max(p->nsegs, 1) * sizeof(double));
+
+	for (int s = 0; s < p->nsegs; s++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		for (int j = 0; j < p->nleaves; j++)
+			if (p->leaves[j].scoring)
+				sum[s] += leaf_ub_max(p, &p->leaves[j], s);
+	}
+	return sum;
+}
+
+/* The largest score the leaves other than i give a document of segment s */
+static float4
+others_ub(const SiftPlan *p, int i, int s, const double *sum)
+{
+	return (float4) (sum[s] - (p->leaves[i].scoring ? leaf_ub_max(p, &p->leaves[i], s) : 0));
+}
+
 /* The largest score a term of bound mb of leaf i gives a document of segment s, and the other leaves give it at most */
 static float4
-term_bound(const SiftPlan *p, int i, int s, int mb)
+term_bound(const SiftPlan *p, int i, int s, int mb, float4 others)
 {
-	const EvalLeaf *l = &p->leaves[i];
-	float4		others = 0;
-
-	for (int j = 0; j < p->nleaves; j++)
-		if (j != i && p->leaves[j].scoring)
-			others += leaf_ub_max(p, &p->leaves[j], s);
-	return sift_kern_ub_weight(l->wide_w, p->stats.avgdl, p->seg[s]->hdr->avgdl_ref, p->nleaves) * (float4) mb + others;
+	return sift_kern_ub_weight(p->leaves[i].wide_w, p->stats.avgdl, p->seg[s]->hdr->avgdl_ref, p->nleaves) * (float4) mb + others;
 }
 
 /* A document that scores through a term with this bound is not above theta, so it is not among the K best that the K-th score theta names */
@@ -163,21 +180,27 @@ bound_settled(float4 bound, float4 theta)
 
 /* The terms of leaf i that segment s holds and the leaf does not read cannot change a result of a search whose K-th score is above theta */
 static bool
-seg_settled(const SiftPlan *p, int i, int s, float4 theta)
+seg_settled(const SiftPlan *p, int i, int s, float4 theta, const double *sum)
 {
 	uint8		mb = p->leaves[i].tail_mb[s];
 
-	return mb == 0 || bound_settled(term_bound(p, i, s, mb), theta);
+	return mb == 0 || bound_settled(term_bound(p, i, s, mb, others_ub(p, i, s, sum)), theta);
 }
 
 bool
 sift_plan_tail_settled(const SiftPlan *p, float4 theta)
 {
-	for (int i = 0; i < p->nleaves; i++)
-		for (int s = 0; p->leaves[i].deferred && s < p->nsegs; s++)
-			if (!seg_settled(p, i, s, theta))
-				return false;
-	return true;
+	double	   *sum;
+	bool		settled = true;
+
+	if (p->ndeferred == 0)
+		return true;
+	sum = seg_ub_sums(p);
+	for (int i = 0; settled && i < p->nleaves; i++)
+		for (int s = 0; settled && p->leaves[i].deferred && s < p->nsegs; s++)
+			settled = seg_settled(p, i, s, theta, sum);
+	pfree(sum);
+	return settled;
 }
 
 /*
@@ -210,16 +233,12 @@ sift_plan_tail_doomed(const SiftPlan *p)
  * remain are taken on the float4 bounds themselves, and the answer is that of testing every mb.
  */
 static int
-tail_min_bound(const SiftPlan *p, int i, int s, float4 theta)
+tail_min_bound(const SiftPlan *p, int i, int s, float4 theta, float4 others)
 {
-	float4		others = 0;
 	float4		ubw = sift_kern_ub_weight(p->leaves[i].wide_w, p->stats.avgdl, p->seg[s]->hdr->avgdl_ref, p->nleaves);
 	double		est;
 	int			mb;
 
-	for (int j = 0; j < p->nleaves; j++)
-		if (j != i && p->leaves[j].scoring)
-			others += leaf_ub_max(p, &p->leaves[j], s);
 	if (!bound_settled(ubw * (float4) 0 + others, theta))
 		return 0;
 	if (!(ubw > 0))
@@ -238,10 +257,10 @@ tail_min_bound(const SiftPlan *p, int i, int s, float4 theta)
  * document that has none of them is never decoded), else as the one union of those. Every term with a bound below is settled by it and not read.
  */
 static void
-widen_seg(SiftPlan *p, int i, int s, float4 theta, bool direct)
+widen_seg(SiftPlan *p, int i, int s, float4 theta, bool direct, const double *sum)
 {
 	EvalLeaf   *l = &p->leaves[i];
-	int			bound = tail_min_bound(p, i, s, theta);
+	int			bound = tail_min_bound(p, i, s, theta, others_ub(p, i, s, sum));
 	uint8		left_out = 0;
 
 	leaf_release(l, s);
@@ -263,10 +282,16 @@ widen_seg(SiftPlan *p, int i, int s, float4 theta, bool direct)
 void
 sift_plan_widen(SiftPlan *p, float4 theta)
 {
+	double	   *sum;
+
+	if (p->ndeferred == 0)
+		return;
+	sum = seg_ub_sums(p);
 	for (int i = 0; i < p->nleaves; i++)
 		for (int s = 0; p->leaves[i].deferred && s < p->nsegs; s++)
-			if (!seg_settled(p, i, s, theta))
-				widen_seg(p, i, s, theta, true);
+			if (!seg_settled(p, i, s, theta, sum))
+				widen_seg(p, i, s, theta, true, sum);
+	pfree(sum);
 }
 
 /*
@@ -277,6 +302,7 @@ sift_plan_widen(SiftPlan *p, float4 theta)
 bool
 sift_plan_warm_begin(SiftPlan *p, int64 k)
 {
+	double	   *sum = NULL;
 	bool		widened = false;
 
 	for (int i = 0; i < p->nleaves; i++)
@@ -290,11 +316,14 @@ sift_plan_warm_begin(SiftPlan *p, int64 k)
 		else
 		{
 			l->warm = false;
+			sum = sum ? sum : seg_ub_sums(p);
 			for (int s = 0; s < p->nsegs; s++)
-				widen_seg(p, i, s, l->warm_theta, false);
+				widen_seg(p, i, s, l->warm_theta, false, sum);
 			widened = true;
 		}
 	}
+	if (sum)
+		pfree(sum);
 	return widened;
 }
 
