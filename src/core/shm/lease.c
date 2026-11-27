@@ -297,9 +297,11 @@ chunk_take(pg_atomic_uint64 *cur, pg_atomic_uint64 *end, uint64 n, uint64 min, u
 	for (;;)
 	{
 		uint64		e = pg_atomic_read_u64(end),
-					c = pg_atomic_read_u64(cur),
+					c,
 					k;
 
+		pg_read_barrier();
+		c = pg_atomic_read_u64(cur);
 		if (c >= e || e - c < min)
 			return false;
 		k = Min(n, e - c);
@@ -378,11 +380,15 @@ sift_lease_vblock_cursor(const RelFileLocator *loc)
 	SiftMetaLeaseTable *t = lease_registry();
 	SiftMetaLeaseSlot *s;
 	uint64		seq,
+				end,
 				cur;
 
 	if (t == NULL || (s = slot_find(t, loc, &seq)) == NULL)
 		return UINT64_MAX;
-	cur = pg_atomic_read_u64(&s->vb_end) == 0 ? UINT64_MAX : pg_atomic_read_u64(&s->vb_cur);
+	end = pg_atomic_read_u64(&s->vb_end);
+	pg_read_barrier();
+	cur = end == 0 ? UINT64_MAX : pg_atomic_read_u64(&s->vb_cur);
+	pg_read_barrier();
 	return pg_atomic_read_u64(&s->seq) == seq ? cur : UINT64_MAX;
 }
 
