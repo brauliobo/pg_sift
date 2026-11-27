@@ -148,7 +148,7 @@ is_untyped(const SiftV6Col *col)
 	const SiftV6Col c = sift_v6_vatt_is_json(col->attno) ? sift_v6_vatt_col(col->attno, col->attno, col->typid, col->scale) : *col;
 	const SiftV6Class cls = sift_v6_col_class(&c);
 
-	if (col->src != SV6SRC_ATTR || (col->attno >= SIFT_V6_XFLAG_VATT && col->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS))
+	if (col->src != SV6SRC_ATTR || sift_v6_col_is_flag(col))
 		return false;
 	return c.jtype || (c.attno >= SIFT_V6_JLEAF_VATT && c.jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE;
 }

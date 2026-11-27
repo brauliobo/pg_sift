@@ -129,7 +129,7 @@ SELECT fmt('k_col', '3') AS minors;
 SELECT n, t_check(q) FROM q ORDER BY n;
 DROP TABLE k;
 
--- a sift_table with declared paths: a group written under minor 3 keeps the plan with the documents, one of minor 6 is a SiftAgg plan
+-- a sift_table with declared paths: the call decides each row of a table, so a group written under minor 3 is a SiftAgg plan as one of minor 6 is
 -- the minors of its column segments are want (the columns of a table of another format have no minor, 0, so its rows test none)
 CREATE FUNCTION tfmt(t regclass, want text) RETURNS bool LANGUAGE sql AS
 $$ SELECT coalesce(string_agg(least(format, 15)::text, ',' ORDER BY format), want) = want FROM sift.table_segments(t) WHERE kind = 'columns' AND format > 0 $$;

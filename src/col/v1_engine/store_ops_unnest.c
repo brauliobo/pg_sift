@@ -30,18 +30,11 @@ key_is_month(const SiftV6Spec *spec, int key)
 	return false;
 }
 
-/* the column is the flag of a test of the elements of a row (the virtual attribute a FILTER reads it by) */
-static bool
-is_flag(const SiftV6Col *c)
-{
-	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
-}
-
 /* the column of the table the statement names, when it is one the batches hold */
 static bool
 reads_batch(const SiftV6Col *c)
 {
-	return c->src == SV6SRC_ATTR && !is_flag(c);
+	return c->src == SV6SRC_ATTR && !sift_v6_col_is_flag(c);
 }
 
 /* the column of the batches a column of the statement is read from */
@@ -86,7 +79,7 @@ source_col(UnRun *u, int leaf)
 static int
 slot_of(UnRun *u, const SiftV6Col *c, bool month)
 {
-	if (is_flag(c))
+	if (sift_v6_col_is_flag(c))
 	{
 		u->flag_used[c->attno - SIFT_V6_XFLAG_VATT] = true;
 		return flag_slot(u, c->attno - SIFT_V6_XFLAG_VATT);

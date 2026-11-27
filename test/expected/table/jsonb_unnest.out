@@ -55,6 +55,15 @@ INSERT INTO q VALUES
 	-- containment as tests of the leaves of the declared paths; its negation also tests that the document is no SQL NULL, which the batches of a table do not: the normal plan
 	(20, $$SELECT t.qty, count(*) FROM tj t WHERE t.doc @> '{"channel": "ch_1", "k": 3}' GROUP BY 1$$),
 	(21, $$SELECT t.qty, count(*) FROM tj t WHERE NOT (t.doc @> '{"channel": "ch_0"}') GROUP BY 1$$),
+	-- jsonpath and containment tests of a row's arrays: the call decides each row of the table, so != and !(), NOT of the test, strict mode, variables,
+	-- arrays of two keys and an object of two elements answer as PostgreSQL does, errors included
+	(22, $$SELECT t.qty, count(*) FROM tj t WHERE jsonb_path_exists(t.doc, '$.items[*] ? (@.kind == "k1" && @.score > 4)') GROUP BY 1$$),
+	(23, $$SELECT t.qty, count(*) FILTER (WHERE t.doc @? '$.items[*] ? (!(@.kind == "k1"))'), count(*) FILTER (WHERE NOT (t.doc @? '$.items[*] ? (@.kind != "k2")'))
+		FROM tj t GROUP BY 1$$),
+	(24, $$SELECT t.qty, count(*) FILTER (WHERE jsonb_path_exists(t.doc, '$.items[*] ? (@.score == $s)', '{"s": 3}')),
+		count(*) FILTER (WHERE jsonb_path_exists(t.doc, '$.tags[*] ? (@ == "t1")')), count(*) FILTER (WHERE t.doc @> '{"items": [{"kind": "k0"}, {"kind": "k2"}]}') FROM tj t GROUP BY 1$$),
+	(25, $$SELECT count(*) FILTER (WHERE jsonb_path_exists(t.doc, 'strict $.items[*] ? (@.kind == "k1")')) FROM tj t$$),
+	(26, $$SELECT count(*) FROM tx t WHERE jsonb_path_exists(t.doc, 'strict $.items[*] ? (@.score == "abc")')$$),
 	-- a dimension joined to the elements of a table is the normal plan's: the pairs of its rows probe no dimension
 	(13, $$SELECT i.kind, count(*) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = i.kind) GROUP BY 1$$),
 	(14, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL unnest(t.tags) v WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = v) GROUP BY 1$$);
@@ -84,8 +93,13 @@ SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
  18 | same | t    | t
  19 | same | t    | t
  20 | same | t    | t
- 21 | same | f    | f
-(21 rows)
+ 21 | same | t    | t
+ 22 | same | t    | t
+ 23 | same | t    | t
+ 24 | same | t    | t
+ 25 | same | t    | t
+ 26 | same | t    | t
+(26 rows)
 
 DROP TABLE q, tj, tx, kinds;
 DROP FUNCTION used(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);

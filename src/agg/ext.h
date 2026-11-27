@@ -17,6 +17,13 @@
 
 #define SIFT_V6_XELEM_COLS	16		/* the columns of an element: at most SIFT_F2_PULL_MAX_CHILD */
 #define SIFT_V6_XTESTS		16		/* the tests of the elements of an array a statement makes of a row (EXISTS, jsonpath): each is a boolean of the row */
+
+/* the column is the flag of a test (the virtual attribute SIFT_V6_XFLAG_VATT + the test a FILTER reads it by), no column of the table */
+static inline bool
+sift_v6_col_is_flag(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
+}
 #define SIFT_V6_XCMPS		4		/* the comparisons of an element with a column of its row one test has */
 
 /* A dimension of a star join: the fact attributes and the columns of the plan of the dimension its keys and payload are */

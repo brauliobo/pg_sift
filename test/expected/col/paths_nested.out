@@ -214,8 +214,8 @@ SELECT same(q) FROM unnest(ARRAY[
   nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*) FROM %T t WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(t.j->'a') a(x text, b jsonb) WHERE a.x = 'k0' AND jsonb_array_length(a.b) > 1)
   nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*) FROM %T t, jsonb_to_recordset(t.j->'a') a(x text), jsonb_array_elements(t.j->'a') e
   nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT a.x, a.b FROM %T t, jsonb_to_recordset(t.j->'a') a(x text, b text) WHERE t.id < 20
-  nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*), sum(id) FROM %T t WHERE j @> '{"a":[{"b":[{"c":3}]}]}'
-  nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT count(*), sum(id) FROM %T t WHERE j @? '$.a[*].b[*] ? (@.c == 1)'
+  nc1:normal/same/same nc2:normal/same/same nt1:node/same/same nt2:node/same/same  SELECT count(*), sum(id) FROM %T t WHERE j @> '{"a":[{"b":[{"c":3}]}]}'
+  nc1:normal/same/same nc2:normal/same/same nt1:node/same/same nt2:node/same/same  SELECT count(*), sum(id) FROM %T t WHERE j @? '$.a[*].b[*] ? (@.c == 1)'
   nc1:normal/same/same nc2:normal/same/same nt1:normal/same/same nt2:normal/same/same  SELECT t.id, t.j->'a'->0->'b' FROM %T t WHERE t.id IN (1, 2, 3, 100001)
 (10 rows)
 

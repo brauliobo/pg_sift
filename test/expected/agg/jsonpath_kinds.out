@@ -286,7 +286,7 @@ SELECT n, t_check(q) FROM q ORDER BY n;
 (9 rows)
 
 DROP TABLE k;
--- a sift_table with declared paths: a group written under minor 3 keeps the plan with the documents, one of minor 6 is a SiftAgg plan
+-- a sift_table with declared paths: the call decides each row of a table, so a group written under minor 3 is a SiftAgg plan as one of minor 6 is
 -- the minors of its column segments are want (the columns of a table of another format have no minor, 0, so its rows test none)
 CREATE FUNCTION tfmt(t regclass, want text) RETURNS bool LANGUAGE sql AS
 $$ SELECT coalesce(string_agg(least(format, 15)::text, ',' ORDER BY format), want) = want FROM sift.table_segments(t) WHERE kind = 'columns' AND format > 0 $$;
@@ -308,17 +308,17 @@ SELECT tfmt('kt', '3') AS minors;
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 INSERT INTO kt SELECT i, i % 7, doc(i + 5) FROM generate_series(8001, 12000) i;
@@ -331,17 +331,17 @@ SELECT tfmt('kt', '3,15') AS minors;
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 VACUUM (FULL) kt;
@@ -352,32 +352,32 @@ SELECT tfmt('kt', '15') AS minors;
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 INSERT INTO kt SELECT i, i % 7, doc(i + 9) FROM generate_series(12001, 13000) i;
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 SET sift.test_col_format_minor = 4;
@@ -389,17 +389,17 @@ SELECT tfmt('kt', '4') AS minors;
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 RESET sift.test_col_format_minor;
@@ -411,17 +411,17 @@ SELECT tfmt('kt', '15') AS minors;
 (1 row)
 
 SELECT n, t_check(replace(q, ' FROM k', ' FROM kt')) FROM q ORDER BY n;
- n |  t_check   
----+------------
- 1 | not pushed
- 2 | not pushed
- 3 | not pushed
- 4 | not pushed
- 5 | not pushed
- 6 | not pushed
- 7 | not pushed
- 8 | not pushed
- 9 | not pushed
+ n | t_check 
+---+---------
+ 1 | same
+ 2 | same
+ 3 | same
+ 4 | same
+ 5 | same
+ 6 | same
+ 7 | same
+ 8 | same
+ 9 | same
 (9 rows)
 
 DROP TABLE kt;

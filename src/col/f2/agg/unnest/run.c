@@ -88,18 +88,11 @@ key_is_month(const SiftV6Spec *spec, int key)
 	return false;
 }
 
-/* the column is the flag of a test (the virtual attribute a FILTER reads it by) */
-static bool
-is_flag(const SiftV6Col *c)
-{
-	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
-}
-
 /* the vector of the pipe a column of the statement is read from: a column of the table, the column of the element, or what the pairs compute from them */
 static int
 slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 {
-	if (is_flag(c))
+	if (sift_v6_col_is_flag(c))
 	{
 		u->flag_used[c->attno - SIFT_V6_XFLAG_VATT] = true;
 		return flag_slot(u, c->attno - SIFT_V6_XFLAG_VATT);
@@ -125,7 +118,7 @@ sift_v6_unnest_attr_cols(const SiftV6Spec *spec, SiftV6UnnestColFn fn, void *arg
 		if (spec->key[i].src == SV6SRC_ATTR && spec->key[i].derive == 0)
 			fn(arg, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0 && !is_flag(sift_v6_vec_col(spec, v)))
+		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0 && !sift_v6_col_is_flag(sift_v6_vec_col(spec, v)))
 			fn(arg, sift_v6_vec_col(spec, v), false);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -156,7 +149,7 @@ sift_v6_unnest_attr_cols(const SiftV6Spec *spec, SiftV6UnnestColFn fn, void *arg
 		}
 	}
 	for (int i = 0; x->where != NIL && i < spec->nfcols; i++)
-		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
+		if (spec->fcol[i].src == SV6SRC_ATTR && !sift_v6_col_is_flag(&spec->fcol[i]))
 			fn(arg, &spec->fcol[i], false);
 }
 
@@ -721,7 +714,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
-			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]) ? col_index(u, r, &spec->fcol[i], false) : -1;
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !sift_v6_col_is_flag(&spec->fcol[i]) ? col_index(u, r, &spec->fcol[i], false) : -1;
 	}
 	if (u->x->pair_where != NIL)
 	{

@@ -274,6 +274,7 @@ build_exists(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
 	return b->elem_rel != NULL && sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) && sift_v6_unnest_array_ok(p->root, p->rel, one.array) && merge_declared(rte, &one, b);
 }
 
+/* a jsonpath or containment test: over an index the quals of the elements of the one array the tests share, over a table the call itself, whatever array it reads, decides each row */
 static bool
 build_path(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
 {
@@ -284,12 +285,14 @@ build_path(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
 	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array))
 		return false;
 	sift_v6_unnest_array_rte(array, &base);
-	if (rte->fn == SV6E_RECORDSET || (rte->array != NULL && !equal(rte->array, array)))
-		return false;
-	if (rte->array == NULL)
-		*rte = base;
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
+	if (rte->array == NULL)
+		*rte = base;
+	if (p->is_table)
+		return true;
+	if (rte->fn == SV6E_RECORDSET || !equal(rte->array, array))
+		return false;
 	return sift_v6_unnest_path_quals(p, rte, e, &b->quals) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1);
 }
 
