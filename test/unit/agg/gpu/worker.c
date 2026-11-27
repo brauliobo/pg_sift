@@ -1,7 +1,8 @@
 /*
  * test/unit/agg/gpu/worker.c - the slots of the GPU worker that a backend claims (agg/gpu/worker.c): a backend that finds every slot busy gives the job back to the CPU after a short wait, not
  * after the 30 s of a statement held up, and a result the backend cannot copy (an allocation that fails) leaves the slot free for the other backends. A backend that left acts only on
- * the generation of the slot it claimed (agg/gpu/slot.c): it frees no other backend's answer, and no backend takes a live slot for the pid of the owner before it.
+ * the generation of the slot it claimed (agg/gpu/slot.c): it frees no other backend's answer, and no backend takes a live slot for the pid of the owner before it. A worker that ends
+ * finishes only the jobs it took or would have taken, and leaves the state, the pid and the jobs of a worker that replaced it alone.
  */
 #include "postgres.h"
 
@@ -245,6 +246,46 @@ test_claim_dead_owner(void)
 	SIFT_CHECK(sift_gpu_slot_claim(shm, &gen) == 0 && gen == 2);
 }
 
+void
+sift_vk_seat_close(SiftVkSeat *s)
+{
+}
+
+static WorkerState exiting;
+
+/* W1 ends after W2 replaced it: W2's pid, state and RUNNING job stay as they are, W2's staging area is no backend's to reuse */
+static void
+test_exit_superseded(void)
+{
+	fresh_shm();
+	pg_atomic_write_u32(&shm->worker_pid, (uint32) MyProcPid + 1);
+	sift_gpu_slot_set(&shm->slot[0], 7, SIFT_GPU_S_RUNNING);
+	sift_gpu_slot_set(&shm->slot[1], 3, SIFT_GPU_S_SUBMITTED);
+	worker = &exiting;
+	worker_exit(0, PointerGetDatum(shm));
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_pid) == (uint32) MyProcPid + 1);
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_READY);
+	SIFT_CHECK(slot_state(0) == SIFT_GPU_S_RUNNING && slot_state(1) == SIFT_GPU_S_SUBMITTED);
+}
+
+/* W1 ends with its own job and one it did not take yet: both are lost, a RUNNING job of another worker is not, and the state says STOPPED once nothing is left */
+static void
+test_exit_drains_own(void)
+{
+	fresh_shm();
+	sift_gpu_slot_set(&shm->slot[0], 7, SIFT_GPU_S_RUNNING);
+	sift_gpu_slot_set(&shm->slot[1], 3, SIFT_GPU_S_RUNNING);
+	sift_gpu_slot_set(&shm->slot[2], 5, SIFT_GPU_S_SUBMITTED);
+	exiting = (WorkerState) {.shm = shm,.cur = &shm->slot[1],.gen = 3};
+	worker = &exiting;
+	worker_exit(0, PointerGetDatum(shm));
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_pid) == 0);
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STOPPED);
+	SIFT_CHECK(slot_state(0) == SIFT_GPU_S_RUNNING && shm->slot[0].status == 0);
+	SIFT_CHECK(slot_state(1) == SIFT_GPU_S_DONE && shm->slot[1].status == SIFT_VK_LOST);
+	SIFT_CHECK(slot_state(2) == SIFT_GPU_S_DONE && shm->slot[2].status == SIFT_VK_LOST);
+}
+
 int
 main(void)
 {
@@ -265,6 +306,10 @@ main(void)
 		test_claim_theft();
 	if (unit_wants("gpu_claim_dead_owner"))
 		test_claim_dead_owner();
+	if (unit_wants("gpu_exit_superseded"))
+		test_exit_superseded();
+	if (unit_wants("gpu_exit_drains_own"))
+		test_exit_drains_own();
 	free(shm);
 	puts("gpu_worker: ok");
 	return 0;

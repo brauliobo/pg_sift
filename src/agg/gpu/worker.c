@@ -314,26 +314,44 @@ attach_shm(void)
 	return shm;
 }
 
-/* The worker ends, whatever the way: the state says so and every job it holds is lost, so that no backend waits for it */
+/* A job the ending worker holds: its own RUNNING one, or one it takes from SUBMITTED, is lost; the move on the generation first, so that no job of another worker is touched */
+static void
+worker_lose(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState st)
+{
+	if (st == SIFT_GPU_S_SUBMITTED && !sift_gpu_slot_move(s, gen, st, SIFT_GPU_S_RUNNING))
+		return;
+	s->status = SIFT_VK_LOST;
+	snprintf(s->error, sizeof(s->error), "the GPU worker ended");
+	sift_gpu_slot_finish(s, gen, SIFT_GPU_S_RUNNING);
+}
+
+/*
+ * The worker ends, whatever the way. Its pid leaves first: one that is no longer there was replaced, and the state and the jobs belong to the new worker but for its own job. Else the state is
+ * STOPPING while every job it holds is lost, so that no backend waits for it and no new worker takes a slot it still writes, then STOPPED.
+ */
 static void
 worker_exit(pg_attribute_unused() int code, Datum arg)
 {
 	SiftGpuShm *shm = (SiftGpuShm *) DatumGetPointer(arg);
+	uint32		pid = (uint32) MyProcPid;
+	uint32		st = SIFT_GPU_W_READY;
+	const bool	stopping = pg_atomic_compare_exchange_u32(&shm->worker_pid, &pid, 0) &&
+		pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STOPPING);
 
-	pg_atomic_write_u32(&shm->worker_pid, 0);
-	if (pg_atomic_read_u32(&shm->worker_state) != SIFT_GPU_W_FAILED)
-		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 	{
 		SiftGpuSlot *s = &shm->slot[i];
-		uint64		w = sift_gpu_slot_read(s);
-		SiftGpuSlotState st = sift_gpu_slot_state(w);
+		const uint64 w = sift_gpu_slot_read(s);
+		const uint32 gen = sift_gpu_slot_gen(w);
+		const SiftGpuSlotState sst = sift_gpu_slot_state(w);
 
-		if (st != SIFT_GPU_S_SUBMITTED && st != SIFT_GPU_S_RUNNING)
-			continue;
-		s->status = SIFT_VK_LOST;
-		snprintf(s->error, sizeof(s->error), "the GPU worker ended");
-		sift_gpu_slot_finish(s, sift_gpu_slot_gen(w), st);
+		if ((sst == SIFT_GPU_S_RUNNING && s == worker->cur && gen == worker->gen) || (sst == SIFT_GPU_S_SUBMITTED && stopping))
+			worker_lose(s, gen, sst);
+	}
+	if (stopping)
+	{
+		pg_write_barrier();
+		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
 	}
 	if (worker->jobcx != NULL)
 	{
@@ -489,9 +507,11 @@ worker_loop(WorkerState *w, const WorkerExtra *extra)
 	{
 		strlcpy(shm->last_error, err, sizeof(shm->last_error));
 		pg_atomic_write_u64(&shm->failed_at_us, (uint64) GetCurrentTimestamp());
+		pg_write_barrier();
 		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_FAILED);
 		return;
 	}
+	pg_write_barrier();
 	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_READY);
 	for (;;)
 	{
@@ -549,6 +569,7 @@ sift_gpu_worker_main(pg_attribute_unused() Datum main_arg)
 	worker = &w;
 	before_shmem_exit(worker_exit, PointerGetDatum(w.shm));
 	w.shm->worker_procno = MyProcNumber;
+	pg_write_barrier();
 	pg_atomic_write_u32(&w.shm->worker_pid, (uint32) MyProcPid);
 	heartbeat(w.shm);
 	worker_loop(&w, &extra);
@@ -600,6 +621,7 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 	{
 		uint32		st = pg_atomic_read_u32(&shm->worker_state);
 
+		pg_read_barrier();
 		if (st == SIFT_GPU_W_READY && sift_gpu_worker_fresh(shm))
 			return true;
 		if (st == SIFT_GPU_W_FAILED && (uint64) GetCurrentTimestamp() - pg_atomic_read_u64(&shm->failed_at_us) < (uint64) FAILED_RETRY_US)
@@ -607,7 +629,7 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 			*why = shm->last_error;
 			return false;
 		}
-		if (st != SIFT_GPU_W_STARTING && pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STARTING))
+		if (st != SIFT_GPU_W_STARTING && st != SIFT_GPU_W_STOPPING && pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STARTING))
 		{
 			if (!register_worker(shm))
 			{

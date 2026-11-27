@@ -34,7 +34,8 @@ typedef enum SiftGpuWorkerState
 	SIFT_GPU_W_STOPPED = 0,
 	SIFT_GPU_W_STARTING,
 	SIFT_GPU_W_READY,
-	SIFT_GPU_W_FAILED			/* the device could not be opened: last_error says why, a backend tries again after a while */
+	SIFT_GPU_W_FAILED,			/* the device could not be opened: last_error says why, a backend tries again after a while */
+	SIFT_GPU_W_STOPPING			/* the worker ends and finishes its jobs: no other is started until it has */
 } SiftGpuWorkerState;
 
 typedef enum SiftGpuSlotState
