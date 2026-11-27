@@ -41,7 +41,7 @@ BEGIN
 	LOOP
 		m := '';
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || r.qq LOOP
-			IF l LIKE '%search matches%' THEN m := 'search'; END IF;
+			IF l LIKE '%Bridge TIDs:%' THEN m := 'search'; END IF;
 		END LOOP;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', r.qq) INTO a;
 		SET LOCAL sift.enable_agg = off;
@@ -55,7 +55,7 @@ END $$;
 SELECT * FROM kscheck('built');
  after_step |            shape            |   result    
 ------------+-----------------------------+-------------
- built      | a few rows                  | same 
+ built      | a few rows                  | same search
  built      | a fifth                     | same search
  built      | most rows                   | same search
  built      | two words                   | same search
@@ -68,7 +68,7 @@ INSERT INTO ks SELECT 100000 + i, 42, date '2026-04-01', 7, 'cable common extra'
 SELECT * FROM kscheck('write buffer');
   after_step  |            shape            |   result    
 --------------+-----------------------------+-------------
- write buffer | a few rows                  | same 
+ write buffer | a few rows                  | same search
  write buffer | a fifth                     | same search
  write buffer | most rows                   | same search
  write buffer | two words                   | same search
@@ -86,7 +86,7 @@ SELECT sift.col_promote('ks_col') > 0 AS promoted;
 SELECT * FROM kscheck('promoted');
  after_step |            shape            |   result    
 ------------+-----------------------------+-------------
- promoted   | a few rows                  | same 
+ promoted   | a few rows                  | same search
  promoted   | a fifth                     | same search
  promoted   | most rows                   | same search
  promoted   | two words                   | same search
@@ -116,7 +116,7 @@ VACUUM ks;
 SELECT * FROM kscheck('vacuumed');
  after_step |            shape            |   result    
 ------------+-----------------------------+-------------
- vacuumed   | a few rows                  | same 
+ vacuumed   | a few rows                  | same search
  vacuumed   | a fifth                     | same search
  vacuumed   | most rows                   | same search
  vacuumed   | two words                   | same search
@@ -134,7 +134,7 @@ SELECT sift.col_merge('ks_col', true) >= 0 AS merged;
 SELECT * FROM kscheck('merged');
  after_step |            shape            |   result    
 ------------+-----------------------------+-------------
- merged     | a few rows                  | same 
+ merged     | a few rows                  | same search
  merged     | a fifth                     | same search
  merged     | most rows                   | same search
  merged     | two words                   | same search

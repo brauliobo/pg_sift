@@ -23,8 +23,8 @@ CREATE FUNCTION lk_cost(key_col text) RETURNS TABLE (plan text, scan_cost float8
 DECLARE j jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || lk_q(key_col) INTO j;
-	plan := CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
-	scan_cost := (jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') ->> 'Total Cost')::float8;
+	plan := CASE WHEN j::text LIKE '%"SiftAggV6"%' THEN 'SiftAgg' ELSE 'normal' END;
+	scan_cost := (jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAggV6")') ->> 'Total Cost')::float8;
 	RETURN NEXT;
 END $$;
 CREATE FUNCTION lk_same(key_col text) RETURNS bigint LANGUAGE plpgsql AS $$

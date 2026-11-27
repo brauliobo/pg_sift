@@ -33,7 +33,7 @@ BEGIN
 	LOOP
 		m := '';
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || r.qq LOOP
-			IF l LIKE '%search matches%' THEN m := 'search'; END IF;
+			IF l LIKE '%Bridge TIDs:%' THEN m := 'search'; END IF;
 		END LOOP;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', r.qq) INTO a;
 		SET LOCAL sift.enable_agg = off;
