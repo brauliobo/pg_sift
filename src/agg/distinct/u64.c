@@ -138,7 +138,7 @@ sift_du64_create(MemoryContext cx, uint64 budget_bytes)
 	SiftDistinctU64 *d = MemoryContextAllocZero(cx, sizeof(SiftDistinctU64));
 
 	d->cx = cx;
-	d->budget = budget_bytes;
+	d->budget = Min(budget_bytes, MaxAllocSize);
 	table_alloc(d, DU64_FIRST_CAP);
 	return d;
 }
@@ -278,6 +278,7 @@ typedef SiftDuPair DuPair;
 #define DU64G_RADIX_CAP		(UINT64CONST(1) << 17)
 #define DU64G_DEDUP_SHIFT	3		/* the pairs that make a first deduplication worth it: this many table fulls */
 #define DU64G_BUCKET_FIRST	256
+#define DU64G_MAX_BUDGET	(MaxAllocSize / 4)	/* the table a bucket is deduplicated in is up to four times the bytes of its pairs, and one allocation */
 
 typedef struct DuBucket
 {
@@ -323,7 +324,7 @@ sift_du64g_create_ex(MemoryContext cx, uint64 budget_bytes, uint64 radix_cap)
 	SiftDu64G  *d = MemoryContextAllocZero(cx, sizeof(SiftDu64G));
 
 	d->cx = cx;
-	d->budget = budget_bytes;
+	d->budget = Min(budget_bytes, DU64G_MAX_BUDGET);
 	d->radix_cap = radix_cap;
 	d->cap = DU64_FIRST_CAP;
 	d->tab = MemoryContextAllocZero(cx, d->cap * sizeof(DuPair));

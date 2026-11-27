@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 #include "agg/dictseen.h"
 #include "agg/distinct/distinct.h"
@@ -194,10 +195,13 @@ dist_tab_insert_raw(DistEntry *tab, uint32 cap, const DistEntry *e)
 	tab[i] = *e;
 }
 
+/* The table at ncap entries: the budget of the set bounds it, which may be over 1 GB */
 static void
 dist_tab_resize(SiftDistinct *d, uint32 ncap)
 {
-	DistEntry  *n = MemoryContextAllocZero(d->cx, sizeof(DistEntry) * ncap);
+	DistEntry  *n = MemoryContextAllocHuge(d->cx, sizeof(DistEntry) * ncap);
+
+	memset(n, 0, sizeof(DistEntry) * ncap);
 
 	for (uint32 i = 0; i < d->cap; i++)
 		if (d->tab[i].key != NULL)
@@ -210,19 +214,13 @@ dist_tab_resize(SiftDistinct *d, uint32 ncap)
 
 #define DIST_PACK_MAX		254
 
-/* A spilled record is its slot and key without the zero bytes (the integers of a key are mostly zeros): its length, a bitmap of the bytes that are not zero, and those. A longer one is kept whole after a byte of 255 */
+/* A spilled record of at most DIST_PACK_MAX bytes is its slot and key without the zero bytes (the integers of a key are mostly zeros): its length, a bitmap of the bytes that are not zero, and those */
 static uint32
 dist_pack(uint8 *out, const uint8 *in, uint32 n)
 {
 	const uint32 m = (n + 7) / 8;
 	uint32		o = 1 + m;
 
-	if (n > DIST_PACK_MAX)
-	{
-		out[0] = UINT8_MAX;
-		memcpy(out + 1, in, n);
-		return n + 1;
-	}
 	out[0] = (uint8) n;
 	memset(out + 1, 0, m);
 	for (uint32 i = 0; i < n; i++)
@@ -318,16 +316,28 @@ dist_nparts(const SiftDistinct *d)
 	return n;
 }
 
+/* The record of a key: packed after its plain bytes, or, longer than DIST_PACK_MAX, kept whole after a byte of 255 */
 static void
 dist_put_spill(SiftDistinct *d, uint32 part, uint32 slot, const void *key, uint32 len)
 {
 	const uint32 n = len + (uint32) sizeof(uint32);
+	uint8	   *rec;
 
-	dist_scratch(d, 2 * n + n / 8 + 2);
-	memcpy(d->scratch, &slot, sizeof(uint32));
+	if ((uint64) n + 1 > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a COUNT(DISTINCT) value is over 1 GB"),
+						errdetail("A spilled value is written as one record."), errhint("Count shorter values.")));
+	dist_scratch(d, n > DIST_PACK_MAX ? n + 1 : 2 * n + n / 8 + 2);
+	rec = d->scratch + 1;
+	memcpy(rec, &slot, sizeof(uint32));
 	if (len > 0)
-		memcpy(d->scratch + sizeof(uint32), key, len);
-	sift_spill_put(d->spill, part, 0, d->scratch + n, dist_pack(d->scratch + n, d->scratch, n));
+		memcpy(rec + sizeof(uint32), key, len);
+	if (n > DIST_PACK_MAX)
+	{
+		d->scratch[0] = UINT8_MAX;
+		sift_spill_put(d->spill, part, 0, d->scratch, n + 1);
+	}
+	else
+		sift_spill_put(d->spill, part, 0, rec + n, dist_pack(rec + n, rec, n));
 }
 
 /*

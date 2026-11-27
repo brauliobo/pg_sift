@@ -39,3 +39,8 @@ FX_agg/par/win         = $(HOST)
 TESTS    += agg/group/topk
 AUTOSTUB += agg/group/topk
 LIB_agg/group/topk = agg/group/topk.c
+
+TESTS    += agg/distinct/u64 agg/distinct/set
+AUTOSTUB += agg/distinct/u64 agg/distinct/set
+XFLAGS_agg/distinct/u64      = -Wno-unused-function
+XFLAGS_agg/distinct/set      = -Wno-unused-function

@@ -87,6 +87,7 @@ AK6_GID_MAX_NOSEL	tuning bound of an algorithm (memory, batch or radix size, loa
 BIAS_LIMIT	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 DENSE_MAX_GROUPS	the most items (columns, keys, filters, masks, operations) one scan node handles: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same
 DIST_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
+DU64G_MAX_BUDGET	bytes (256 MB) a grouped COUNT(DISTINCT) set of integers holds (agg/distinct/u64.c), so that the table a bucket is deduplicated in stays one allocation: a set that reaches it is full and its pairs move to the set that spills; the rows are the same
 F2_AUTO_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
 GJ_MAX_CHUNK	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 MAX_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement
