@@ -275,34 +275,33 @@ dist_group_bytes(const uint8 *key)
 }
 
 /*
- * The partition of a key: a grouped set that holds several groups when it first spills keeps the keys of a group together, so that the count of a group reaches emit once and not once a partition
- * (each piece is an upsert of the table of the groups, which spills in turn); one that holds a single group splits it by the whole key
+ * The partition of a key: a grouped set whose groups spread over the partitions keeps the keys of a group together, so that the count of a group reaches emit once and not once a partition
+ * (each piece is an upsert of the table of the groups, which spills in turn); one of fewer groups splits them by the whole key, since a partition of whole groups could not be smaller than a group
  */
+static uint32
+dist_group_part(const SiftDistinct *d, const uint8 *key)
+{
+	return sift_spill_part_of(hash_bytes_extended(key, (int) dist_group_bytes(key), d->level), sift_spill_nparts_of(d->spill));
+}
+
 static uint32
 dist_part(const SiftDistinct *d, uint64 h, const uint8 *key)
 {
-	if (d->by_group)
-		h = hash_bytes_extended(key, (int) dist_group_bytes(key), d->level);
-	return sift_spill_part_of(h, sift_spill_nparts_of(d->spill));
+	return d->by_group ? dist_group_part(d, key) : sift_spill_part_of(h, sift_spill_nparts_of(d->spill));
 }
 
+/* The keys of the table split by group no fuller than twice an even share in any partition */
 static bool
-dist_has_groups(const SiftDistinct *d)
+dist_groups_spread(const SiftDistinct *d)
 {
-	const uint8 *first = NULL;
+	const uint32 nparts = sift_spill_nparts_of(d->spill);
+	uint64		keys[SIFT_SPILL_MAX_PARTS] = {0};
+	uint64		fullest = 0;
 
 	for (uint32 i = 0; i < d->cap; i++)
-	{
-		const uint8 *k = d->tab[i].key;
-
-		if (k == NULL)
-			continue;
-		if (first == NULL)
-			first = k;
-		else if (dist_group_bytes(k) != dist_group_bytes(first) || memcmp(k, first, dist_group_bytes(k)) != 0)
-			return true;
-	}
-	return false;
+		if (d->tab[i].key != NULL)
+			fullest = Max(fullest, ++keys[dist_group_part(d, d->tab[i].key)]);
+	return fullest * nparts < 2 * d->nent;
 }
 
 /* The partitions the keys of a set that outgrew its budget go to: their buffers (8 KB each) take at most half the budget, and the more of them, the likelier a partition fits the budget when it is read back */
@@ -357,7 +356,7 @@ dist_evict(SiftDistinct *d)
 	if (d->spill == NULL)
 	{
 		d->spill = sift_spill_create(d->cx, dist_nparts(d));
-		d->by_group = d->emit != NULL && dist_has_groups(d);
+		d->by_group = d->emit != NULL && dist_groups_spread(d);
 		d->resident = 0;
 	}
 	else
