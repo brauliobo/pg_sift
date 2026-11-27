@@ -59,6 +59,8 @@ typedef struct ScopeState
 	int			cap_rows;
 	int			at;
 	uint64		keys_read;
+	int64		nkeys;			/* the keys the run had (-1: not run) */
+	const char *fallback;		/* why the run took the join (NULL: it read the summary) */
 	SiftV6Spec *v6;				/* the newest rows of a key (spec->topk): the columns of the rows */
 	bool		inexact;		/* a minimum or maximum cannot be kept after the pair edits: the join answers */
 	SiftScopeServeMode mode;	/* how the summary served the read */
@@ -73,6 +75,7 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 	st->spec = sift_v6_scope_spec_unpack(linitial(cs->custom_private));
 	st->rel = st->spec->is_table ? table_open(st->spec->relid, AccessShareLock) : index_open(st->spec->relid, AccessShareLock);
 	st->rcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope rows");
+	st->nkeys = -1;
 	if (sift_keymap_type(st->spec->key_type))
 		st->km = sift_f2_scope_keymap(st->rel, st->spec->ord);
 	foreach_ptr(Plan, child, cs->custom_plans)
@@ -558,15 +561,25 @@ scope_run(ScopeState *st, EState *estate)
 	uint32		nkeys = 0;
 
 	st->started = true;
-	if (months_exact(st) && month_window(st, &w) && key_list(st, &keys, &nkeys))
-		sc = open_summary(st, estate, keys, nkeys);
+	if (!months_exact(st))
+		st->fallback = "the months of the summary are those of UTC, not of the session time zone";
+	else if (!month_window(st, &w))
+		st->fallback = "the time window has a NULL or infinite bound, or spans more months than the cubes are worth";
+	else if (!key_list(st, &keys, &nkeys))
+		st->fallback = psprintf("more than %d keys", SCOPE_KEYS_MAX);
+	else if ((sc = open_summary(st, estate, keys, nkeys)) == NULL)
+		st->fallback = "the summary is not exact for the snapshot";
+	st->nkeys = st->fallback == NULL ? nkeys : -1;
 	if (sc != NULL)
 	{
 		st->mode = sift_f2_scope_mode(sc);
+		if (!st->spec->key_given && !st->spec->topk)
+			st->nkeys = sc->meta.hdr.nkeys;
 		st->from_summary = st->spec->topk ? topk_read(st, sc) : read_summary(st, sc, &w, keys, nkeys);
 		sift_f2_scope_close(sc);
 		if (!st->from_summary)
 		{
+			st->fallback = st->inexact ? "a minimum or a maximum of the cubes cannot be kept after the pair edits" : "the summary is not exact for the snapshot";
 			st->nrows = st->cap_rows = st->at = 0;
 			st->vals = NULL;
 			st->nulls = NULL;
@@ -628,6 +641,8 @@ scope_reset(ScopeState *st)
 	st->nrows = st->cap_rows = st->at = 0;
 	st->started = st->from_summary = st->inexact = false;
 	st->keys_read = 0;
+	st->nkeys = -1;
+	st->fallback = NULL;
 }
 
 static void
@@ -658,8 +673,10 @@ static void
 scope_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	ScopeState *st = (ScopeState *) node;
+	const ScopeShow show = {st->rel, st->spec, st->spec->key_given ? linitial(((CustomScan *) node->ss.ps.plan)->custom_exprs) : NULL, st->started ? st->nkeys : -1, st->fallback};
 
 	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->rel), es);
+	sift_v6_scope_show(&show, &node->ss.ps, ancestors, es);
 	ExplainPropertyText("Scope Read", !st->started ? "summary or join" : st->from_summary ? (st->spec->topk ? "ring" : "summary") : "join (the summary is not exact for the snapshot)", es);
 	if (st->started && st->from_summary && !st->spec->topk)
 	{

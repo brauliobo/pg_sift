@@ -7,6 +7,7 @@
 
 #include "postgres.h"
 
+#include "nodes/execnodes.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
@@ -31,6 +32,7 @@ typedef struct ScopeSpec
 	bool		key_given;		/* key = constant, or key = ANY(array): the keys the statement names */
 	bool		key_array;		/* key_given by an array: the sorted distinct keys it holds; the cubes of the keys, added when the statement does not group by the key */
 	bool		grouped_const;	/* GROUP BY of columns that are constants: no tuple when there is no row */
+	bool		once;			/* a semi join (IN, EXISTS): a fact counts once, not once for each pair of its member with the keys */
 	bool		by_month;		/* GROUP BY date_trunc('month', time leaf) */
 	Oid			month_type;		/* timestamptz or timestamp: what date_trunc answers */
 	bool		ranged;			/* a window [lo, hi) of the time leaf, bounds on month starts, is the only other condition on the facts */
@@ -109,6 +111,19 @@ extern void sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *roo
 /* The scope of the index ix of the facts that summarizes the pairs relation the statement joins by member (fact column fact_att = pairs column pairs_att) and binds to one key: its ordinal and the expression of the key */
 extern bool sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord,
 								  Expr **key);
+
+/* show.c: the EXPLAIN lines of a node of the scope aggregate: its relation and spec, the expression of its keys (NULL: none named), the keys of its run (-1: not run), why it ran the join (NULL: it did not) */
+typedef struct ScopeShow
+{
+	Relation	rel;
+	const ScopeSpec *spec;
+	const Expr *key;
+	int64		nkeys;
+	const char *fallback;
+} ScopeShow;
+
+struct ExplainState;
+extern void sift_v6_scope_show(const ScopeShow *s, PlanState *ps, List *ancestors, struct ExplainState *es);
 
 /* scan.c: the executor of the plans that scan the facts of the members of a key (ScopeSpec.scan), for every format */
 extern PGDLLIMPORT const CustomScanMethods sift_v6_scope_scan_methods;

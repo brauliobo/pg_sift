@@ -574,6 +574,7 @@ sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInf
 			cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * root->limit_tuples;
 			cp->path.pathkeys = root->sort_pathkeys;
 			cp->methods = &scope_path_methods;
+			p.spec.once = p.semi;
 			cp->custom_paths = list_make1(join);
 			cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p.spec), p.v6_tlist, NIL, scope_exprs(&p), sift_v6_spec_pack(&p.v6));
 			sift_v6_force_price(&cp->path);
@@ -595,7 +596,7 @@ sift_v6_scope_spec_pack(const ScopeSpec *s)
 	ints = lappend_int(ints, s->is_table);
 	ints = list_concat(ints, list_make2_int(s->scan, s->member_col));
 	ints = list_concat(ints, list_make5_int(s->topk, s->ring_col, s->nulls_first, s->leaf_not_null, s->limit));
-	ints = list_concat(ints, list_make3_int(s->key_array, s->tie_col, s->tie_desc));
+	ints = list_concat(ints, list_make4_int(s->key_array, s->tie_col, s->tie_desc, s->once));
 	for (int i = 0; i < s->ncols; i++)
 		ints = lappend_int(ints, s->col[i]);
 	for (int j = 0; j < s->naggs; j++)
@@ -607,7 +608,7 @@ ScopeSpec *
 sift_v6_scope_spec_unpack(const List *ints)
 {
 	ScopeSpec  *s = palloc0(sizeof(ScopeSpec));
-	int			at = 26;
+	int			at = 27;
 
 	s->relid = (Oid) list_nth_int(ints, 0);
 	s->ord = list_nth_int(ints, 1);
@@ -635,6 +636,7 @@ sift_v6_scope_spec_unpack(const List *ints)
 	s->key_array = list_nth_int(ints, 23);
 	s->tie_col = list_nth_int(ints, 24);
 	s->tie_desc = list_nth_int(ints, 25);
+	s->once = list_nth_int(ints, 26);
 	for (int i = 0; i < s->ncols; i++)
 		s->col[i] = list_nth_int(ints, at++);
 	s->agg = palloc(Max(s->naggs, 1) * sizeof(SiftV6Agg));
@@ -693,6 +695,7 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 		cp->path.total_cost = open + kept * (cp->path.total_cost - open + cpu_operator_cost * p->fact->rows) + cpu_tuple_cost * groups;
 	}
 	cp->methods = &scope_path_methods;
+	p->spec.once = p->semi;
 	if (p->spec.scan)
 		cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p->spec), p->v6_tlist, extra->havingQual, scope_exprs(p), sift_v6_spec_pack(&p->v6));
 	else

@@ -43,6 +43,7 @@ typedef struct ScopeScanState
 	const struct SiftScopeRouter *router;	/* the granules of the key, NULL when the format does not route */
 	SiftV6ScanStats stats;
 	int64		members;
+	int64		nscope_keys;	/* the keys of the run: 0 for a NULL key */
 } ScopeScanState;
 
 static void
@@ -73,6 +74,7 @@ key_members(ScopeScanState *st, EState *estate)
 		st->ops->scope->key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->key_type, key, member_type, st->gcx, &n, &st->router);
 
 	sift_budget_check((Size) n * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
+	st->nscope_keys = !no_key;
 	st->members = n;
 	return members;
 }
@@ -165,7 +167,10 @@ scan_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	int64		kept,
 				total;
 
+	const ScopeShow show = {st->rel, st->spec, linitial(((CustomScan *) node->ss.ps.plan)->custom_exprs), st->started ? st->nscope_keys : -1, NULL};
+
 	ExplainPropertyText("Index", RelationGetRelationName(st->rel), es);
+	sift_v6_scope_show(&show, &node->ss.ps, ancestors, es);
 	ExplainPropertyText("Scope Read", "scan of the facts (the members of the key)", es);
 	if (!st->started)
 		return;
