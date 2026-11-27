@@ -1,0 +1,9 @@
+-- The summary build of a scope (col/f2/cube/build.c, evict.c) under a memory budget smaller than what its keys accumulate: it evicts open nodes and writes month cubes of level 2 to a
+-- temporary file, so it holds fewer bytes than a build that does not, flushes a number of nodes that follows the budget and not the bytes of the object it writes, answers as the build
+-- of the default budget does, and ends at its first granule when a cancel is pending.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+SELECT sift._test_scope_v6('spill', 1);
+SELECT sift._test_scope_v6('evict', 1);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

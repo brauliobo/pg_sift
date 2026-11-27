@@ -38,6 +38,7 @@ typedef struct Builder
 
 #define TAB_N			16384
 #define TRI_TAB_N		8192
+#define TRI_CANCEL_BYTES	65536
 
 static Stream *
 stream_new(Builder *b, int col, SiftSkipKind kind, int param)
@@ -358,6 +359,8 @@ distinct_trigrams(Builder *b, const SiftColIn *c, int n)
 			uint32		t = sift_skip_trigram(p + i) + 1,
 						at = (t * UINT32_C(0x9E3779B1)) >> 19;
 
+			if ((i & (TRI_CANCEL_BYTES - 1)) == 0)
+				CHECK_FOR_INTERRUPTS();
 			while (b->tri_tab[at] != 0 && b->tri_tab[at] != t)
 				at = (at + 1) & (TRI_TAB_N - 1);
 			if (b->tri_tab[at] == 0)
@@ -497,14 +500,14 @@ write_section(Builder *b, const bool *const *empty, StringInfo out)
 	}
 }
 
-/* The average length of the strings of a column, from the first rows of it */
+/* The average length of the strings of a column, from the first of its nrows rows */
 static uint64
-avg_len(const SiftColIn *col)
+avg_len(const SiftColIn *col, int nrows)
 {
 	uint64		bytes = 0,
 				cnt = 0;
 
-	for (int i = 0; i < 4096 && col->slen != NULL && cnt < 1024; i++)
+	for (int i = 0; i < Min(nrows, 4096) && col->slen != NULL && cnt < 1024; i++)
 		if (col->isnull == NULL || !col->isnull[i])
 		{
 			bytes += col->slen[i];
@@ -557,7 +560,7 @@ sift_skip_build(const SiftRows *rows, const int *gstart, int ng, const SiftDictE
 		}
 		if ((c != lead || col->kind == SIFT_CELL_STR) && sift_aux_bloom_ok(aux, dicts != NULL && dicts[c] != NULL ? dicts[c]->n : UINT64_MAX))
 			cand[ncand++] = (Candidate) {c, SIFT_SKIP_BLOOM_SB, wide};
-		if (col->kind == SIFT_CELL_STR && !small_dict && sift_aux_trigram_ok(aux, true, avg_len(col), promos != NULL && promos[c].kind != SIFT_PROMO_NONE))
+		if (col->kind == SIFT_CELL_STR && !small_dict && sift_aux_trigram_ok(aux, true, avg_len(col, rows->nrows), promos != NULL && promos[c].kind != SIFT_PROMO_NONE))
 			cand[ncand++] = (Candidate) {c, SIFT_SKIP_TRIGRAM_SB, text};
 	}
 	for (int pass = 0; pass < 3; pass++)

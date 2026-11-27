@@ -23,6 +23,7 @@ extern void scope_v6_scenario_format(TCheck *t);
 extern void scope_v6_scenario_cubewire(TCheck *t);
 extern void scope_v6_scenario_heap(TCheck *t);
 extern void scope_v6_scenario_spill(TCheck *t);
+extern void scope_v6_scenario_evict(TCheck *t);
 extern void scope_v6_scenario_delta(TCheck *t);
 extern void scope_v6_scenario_refresh(TCheck *t);
 extern void scope_v6_scenario_compact(TCheck *t);
@@ -950,7 +951,7 @@ static const Scenario scenarios[] = {
 	{"cluster", scenario_cluster}, {"coded", scenario_coded}, {"delete", scope_v6_scenario_delete},
 	{"edit", scope_v6_scenario_edit}, {"dedupe", scope_v6_scenario_dedupe}, {"format", scope_v6_scenario_format},
 	{"cubewire", scope_v6_scenario_cubewire}, {"heap", scope_v6_scenario_heap},
-	{"spill", scope_v6_scenario_spill}, {"delta", scope_v6_scenario_delta}, {"refresh", scope_v6_scenario_refresh}, {"compact", scope_v6_scenario_compact},
+	{"spill", scope_v6_scenario_spill}, {"evict", scope_v6_scenario_evict}, {"delta", scope_v6_scenario_delta}, {"refresh", scope_v6_scenario_refresh}, {"compact", scope_v6_scenario_compact},
 	{"primary", scope_v6_scenario_primary}, {"route", scope_v6_scenario_route}, {"rings", scope_v6_scenario_rings}, {"union", scope_v6_scenario_union}, {"probed", scope_v6_scenario_probed},
 	{"f8", scope_v6_scenario_f8}, {"monthtz", scope_v6_scenario_monthtz}, {"inline", scope_v6_scenario_inline},
 	{"nullfilter", scope_v6_scenario_nullfilter}, {"mapedit", scope_v6_scenario_mapedit},

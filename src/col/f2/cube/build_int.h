@@ -5,8 +5,17 @@
 #ifndef SIFT_COL_SCOPE_V6_BUILD_INT_H
 #define SIFT_COL_SCOPE_V6_BUILD_INT_H
 
+#include "storage/buffile.h"
+
 #include "col/f2/cube/int.h"
 #include "col/f2/cube/wire.h"
+
+/* Where a spill of the month cubes of level 2 of a key begins in the spill file of the build; file -1: none */
+typedef struct SpillAt
+{
+	int			file;
+	off_t		off;
+} SpillAt;
 
 typedef struct KeyAcc
 {
@@ -38,15 +47,8 @@ typedef struct KeyAcc
 	struct KeyAcc *lru_prev;	/* the keys with month cubes of level 2 in memory, most recently touched first */
 	struct KeyAcc *lru_next;
 	bool		in_lru;
-	struct KeySpill *spill;		/* the month cubes of level 2 that went out of memory, the latest spill first */
+	SpillAt		spill;			/* the latest spill of the month cubes of level 2 (evict.c, SpillHead) */
 } KeyAcc;
-
-/* One spill: nmonths, (month, length) for each, the cubes */
-typedef struct KeySpill
-{
-	struct KeySpill *next;
-	char	   *blob;
-} KeySpill;
 
 typedef struct NodeRec
 {
@@ -65,11 +67,13 @@ struct SiftScopeBuild
 	KeyAcc	  **acc;
 	uint32		nactive;
 	Size		live;
+	Size		l2m_live;		/* of live, what the month cubes of level 2 hold */
 	Size		budget;
 	Size	   *open_size;		/* the bytes of the open node of each key: what a flush of it gives back */
 	SiftMaxHeap open;			/* the keys with an open node, the largest on top */
 	KeyAcc	   *lru_head;
 	KeyAcc	   *lru_tail;
+	BufFile    *spills;			/* the month cubes of level 2 that went out of memory */
 	const SiftScopeGranMask *mask;
 	StringInfoData l0pool;
 	SiftScopeL0SliceEntry *slices;
@@ -106,7 +110,7 @@ extern void sift_sbld_flush_l1(SiftScopeBuild *b, KeyAcc *k, bool release);
 /* Brings the bytes the build counts for a key, the heap of open nodes and the list of keys with month cubes in memory up to what the key holds now */
 extern void sift_sbld_account(SiftScopeBuild *b, KeyAcc *k);
 extern void sift_sbld_lru_front(SiftScopeBuild *b, KeyAcc *k);
-/* The month cubes of level 2 of a key that went out of memory come back into its table */
+/* The month cubes of level 2 of a key that went to the spill file come back into its table */
 extern void sift_sbld_unspill(SiftScopeBuild *b, KeyAcc *k);
 /* Brings the accumulators back under the budget: flushes open nodes, then spills month cubes */
 extern void sift_sbld_evict_if_over(SiftScopeBuild *b);

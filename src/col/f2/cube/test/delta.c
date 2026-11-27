@@ -8,13 +8,19 @@
 
 #ifdef SIFT_TESTING
 
+#include "access/xact.h"
+#include "miscadmin.h"
+#include "utils/resowner.h"
+
 #include "core/cmp.h"
+#include "core/memtrack.h"
 #include "col/f2/cube/int.h"
 #include "col/f2/cube/test/world.h"
 
 #define OUTL(t, ...)	do { appendStringInfo(&(t)->out, __VA_ARGS__); appendStringInfoChar(&(t)->out, '\n'); } while (0)
 
 extern void scope_v6_scenario_spill(TCheck *t);
+extern void scope_v6_scenario_evict(TCheck *t);
 extern void scope_v6_scenario_delta(TCheck *t);
 
 /* ---------------------------------------------------------------------------
@@ -56,6 +62,125 @@ scope_v6_scenario_spill(TCheck *t)
 	TCHK(t, m.hdr.nkeys == mb.hdr.nkeys, "the spilled build holds the same keys");
 	OUTL(t, "spill spilled_keys_positive=%d evictions_positive=%d peak_within_budget=%d lower_peak=%d", ss.l2_spills > 0, ss.evictions > 0, ss.peak_live <= budget,
 		 ss.peak_live < sb.peak_live);
+}
+
+/* ---------------------------------------------------------------------------
+ * evict: under a budget the output outgrows, the build flushes no more nodes than the budget needs, its spills leave memory, and it takes a cancel
+ * ------------------------------------------------------------------------- */
+
+static void (*probed_head) (void *arg, uint32 gidx, SiftScopeGranHead *h);
+static MemoryContext probed_cx;
+static Size probed_peak;
+static uint32 probed_heads;
+
+static void
+sampled_head(void *arg, uint32 gidx, SiftScopeGranHead *h)
+{
+	probed_heads++;
+	probed_peak = Max(probed_peak, MemoryContextMemAllocated(probed_cx, true));
+	probed_head(arg, gidx, h);
+}
+
+/* A build of pass 2 in a context of its own: the most bytes it held when a granule began; the dictionary maps of the world outlive it */
+static void
+probed_build(TWorld *w, SiftScopeBuildSpec *spec, SiftScopePairMap *pm, StringInfo out, SiftScopeBuildStats *st)
+{
+	MemoryContext old = MemoryContextSwitchTo(probed_cx = sift_mem_allocset_create(CurrentMemoryContext, "scope evict probe"));
+	SiftScopeGranSource src = tw_source(w);
+	SiftScopeBuild *b = sift_scope_build_begin(spec, pm);
+
+	probed_head = src.head;
+	src.head = sampled_head;
+	probed_peak = probed_heads = 0;
+	MemoryContextSwitchTo(old);
+	tw_dict_maps(w, b);
+	MemoryContextSwitchTo(probed_cx);
+	w->cur_pm = pm;
+	for (uint32 p = 0; p < w->nparts; p++)
+		sift_scope_build_add_part(b, w->part_gen[p], w->part_n[p]);
+	sift_scope_build_pass2(b, &src);
+	MemoryContextSwitchTo(old);
+	sift_scope_build_end(b, out, st);
+	MemoryContextDelete(probed_cx);
+}
+
+/* A build that a cancel is pending for: the SQLSTATE it ends with, 0 when it ends */
+static int
+cancelled_build(TWorld *w, SiftScopeBuildSpec *spec, SiftScopePairMap *pm)
+{
+	MemoryContext old = CurrentMemoryContext;
+	ResourceOwner owner = CurrentResourceOwner;
+	StringInfoData out;
+	int			code = 0;
+
+	initStringInfo(&out);
+	BeginInternalSubTransaction(NULL);
+	MemoryContextSwitchTo(old);
+	PG_TRY();
+	{
+		QueryCancelPending = InterruptPending = true;
+		probed_build(w, spec, pm, &out, NULL);
+		QueryCancelPending = false;
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old);
+		CurrentResourceOwner = owner;
+	}
+	PG_CATCH();
+	{
+		ErrorData  *e;
+
+		MemoryContextSwitchTo(old);
+		e = CopyErrorData();
+		FlushErrorState();
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(old);
+		CurrentResourceOwner = owner;
+		MemoryContextDelete(probed_cx);
+		code = e->sqlerrcode;
+		FreeErrorData(e);
+	}
+	PG_END_TRY();
+	return code;
+}
+
+void
+scope_v6_scenario_evict(TCheck *t)
+{
+	TWorld		w;
+	TWorldSpec	sp = {.nmembers = 600, .maxrows = 40, .long_pct = 10, .granule_rows = 32, .nparts = 2, .months = 24, .nkeys = 200, .keys_per_member = 3};
+	SiftScopeBuildSpec spec;
+	StringInfoData big,
+				small;
+	SiftScopeBuildStats sb,
+				ss;
+	SiftScopeMeta m;
+	SiftScopePairMap *pm;
+	Size		big_peak;
+	uint64		squeeze,
+				flush_cap;
+	int			code;
+
+	tw_gen(&w, t, &sp);
+	pm = tw_pm(&w);
+	tw_spec(&w, &spec, 0);
+	initStringInfo(&big);
+	initStringInfo(&small);
+	probed_build(&w, &spec, pm, &big, &sb);
+	big_peak = probed_peak;
+	spec.mem_budget = sb.peak_live / 4;
+	squeeze = sb.peak_live / spec.mem_budget;
+	flush_cap = (squeeze + 1) * sb.l1_flushes;
+	probed_build(&w, &spec, pm, &small, &ss);
+	TCHK(t, ss.l2_spills > 0 && ss.evictions > 0, "a budget of a quarter of the peak evicts and spills: %llu and %llu", (unsigned long long) ss.evictions, (unsigned long long) ss.l2_spills);
+	TCHK(t, ss.l1_flushes <= flush_cap, "a budget %llu times smaller flushes at most %llu nodes: %llu, %llu without it", (unsigned long long) squeeze, (unsigned long long) flush_cap,
+		 (unsigned long long) ss.l1_flushes, (unsigned long long) sb.l1_flushes);
+	TCHK(t, probed_peak < big_peak, "the spilled build holds less than the one that does not spill: %zu and %zu bytes", probed_peak, big_peak);
+	tw_open(t, &small, &m);
+	tw_check_meta(t, &w, &m, pm, "evicted");
+	code = cancelled_build(&w, &spec, pm);
+	TCHK(t, code == ERRCODE_QUERY_CANCELED && probed_heads <= 1, "a pending cancel ends the build at its first granule: %s after %u", unpack_sql_state(code), probed_heads);
+	OUTL(t, "evict spills_and_evicts=%d flushes_bounded=%d spill_frees_memory=%d cancel=%d", ss.l2_spills > 0 && ss.evictions > 0, ss.l1_flushes <= flush_cap,
+		 probed_peak < big_peak, code == ERRCODE_QUERY_CANCELED && probed_heads <= 1);
 }
 
 /* ---------------------------------------------------------------------------

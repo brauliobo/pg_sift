@@ -457,6 +457,7 @@ TESTING_REGRESS += col/scan/unit_order
 TESTING_REGRESS += col/scope/alter
 TESTING_REGRESS += col/scope/auto_rollup
 TESTING_REGRESS += col/scope/build
+TESTING_REGRESS += col/scope/build_budget
 TESTING_REGRESS += col/scope/build_rule
 TESTING_REGRESS += col/scope/build_temp
 TESTING_REGRESS += col/scope/changed_pairs

@@ -1,5 +1,5 @@
 /*
- * col/f2/cube/build.c - builds the scope summary in one pass over the granules of the entity parts, with no temporary file.
+ * col/f2/cube/build.c - builds the scope summary in one pass over the granules of the entity parts.
  *
  * Plain CREATE INDEX calls sift_scope_build_on_granule for every granule the part writer finishes, while its arrays and its pre-aggregate cube
  * are in cache; CREATE INDEX CONCURRENTLY calls sift_scope_build_pass2 over the parts already written, where a granule is read from its zone
@@ -9,7 +9,7 @@
  * What a key accumulates is bounded: one open level-1 node (at most SIFT_SCOPE_L1_CAP granules), the running level-2 cube and a ring of
  * SIFT_SCOPE_TOPK_CAP rows. When the accumulators of all keys pass the memory budget the key with the largest open node is flushed (a heap
  * finds it without a scan); when the flushed nodes' month cubes of level 2 are what holds the memory, the least recently touched keys write
- * theirs out as bytes and read them back when the object is laid out.
+ * theirs to a temporary file and read them back when the object is laid out.
  */
 /* check-memory: allow-allocs the arrays follow the keys of the pair map, the level-1 nodes and the granules of one build, not the rows of a table */
 #include "core/host.h"
@@ -156,6 +156,7 @@ key_acc(SiftScopeBuild *b, uint32 ord)
 			k->ring[q].depth = b->depth[q];
 		k->ord = ord;
 		k->scope_key = b->pm->scope_keys[ord];
+		k->spill.file = -1;
 		sift_scube_init(&k->l1_all, sh);
 		sift_scube_init(&k->l2_all, sh);
 		sift_smonth_init(&k->l1_months);
@@ -598,6 +599,7 @@ sift_scope_build_on_granule(SiftScopeBuild *b, const SiftScopeGranSource *src, u
 				hi;
 	IN_BUILD(b);
 
+	CHECK_FOR_INTERRUPTS();
 	memset(&h, 0, sizeof(h));
 	SRC_CALL(b, src->head(src->arg, gidx, &h));
 	b->stats.granules++;
@@ -672,6 +674,7 @@ sift_scope_build_note_homes(SiftScopeBuild *b, const SiftScopeGranSource *src, c
 		SiftScopeGranHead h;
 
 		SIFT_INVARIANT(gidx[i] < b->total_granules, "scope build: granule %u is outside the parts", gidx[i]);
+		CHECK_FOR_INTERRUPTS();
 		memset(&h, 0, sizeof(h));
 		SRC_CALL(b, src->head(src->arg, gidx[i], &h));
 		b->stats.route_granules++;
@@ -734,6 +737,7 @@ sift_scope_build_end(SiftScopeBuild *b, StringInfo out, SiftScopeBuildStats *sta
 		StringInfoData mm,
 					l2;
 
+		CHECK_FOR_INTERRUPTS();
 		if (k == NULL)
 			continue;
 		r = &recs[nrecs++];
@@ -812,6 +816,8 @@ sift_scope_build_end(SiftScopeBuild *b, StringInfo out, SiftScopeBuildStats *sta
 		sift_smonth_free(&k->l2_months);
 		sift_mmap_free(&k->mmap);
 	}
+	if (b->spills != NULL)
+		BufFileClose(b->spills);
 	initStringInfo(&dict);
 	sift_sdict_write(&b->dict, &dict);
 	memset(&em, 0, sizeof(em));
