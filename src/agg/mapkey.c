@@ -26,12 +26,8 @@ member_read(const Node *e, const Var **doc, const char **key, Oid *type)
 		const FuncExpr *f = (const FuncExpr *) e;
 
 		*type = f->funcresulttype;
-#if PG_VERSION_NUM < 180000
-		return false;
-#else
-		return (f->funcid == F_FLOAT8_JSONB || f->funcid == F_INT2_JSONB || f->funcid == F_INT4_JSONB || f->funcid == F_INT8_JSONB) &&
+		return !SIFT_JSON_NULL_CAST_RAISES && (f->funcid == F_FLOAT8_JSONB || f->funcid == F_INT2_JSONB || f->funcid == F_INT4_JSONB || f->funcid == F_INT8_JSONB) &&
 			sift_v6_json_member(linitial(f->args), false, doc, key);
-#endif
 	}
 	if (e != NULL && IsA(e, CoerceViaIO) && ((const CoerceViaIO *) e)->resulttype == FLOAT8OID)
 	{

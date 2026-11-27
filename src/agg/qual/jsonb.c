@@ -361,7 +361,7 @@ sift_v6_values_exact(const SiftV6Rel *rel)
 static bool
 jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
 {
-	return PG_VERSION_NUM >= 180000 && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
+	return !SIFT_JSON_NULL_CAST_RAISES && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
 }
 
 /*

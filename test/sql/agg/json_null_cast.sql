@@ -1,5 +1,5 @@
--- The cast of a JSON null to a number or boolean is NULL in PostgreSQL 18 and an error before it. The scan reads the NULL slot, so before 18 a cast of a
--- leaf that may hold a JSON null keeps the normal plan (which raises), while a leaf without one, and `->>` and its cast (NULL in every version), keep the scan.
+-- The cast of a JSON null to a number or boolean is NULL in PostgreSQL 18 and an error before it. The scan reads the NULL slot of the leaf, so before 18 the jsonb
+-- cast of a leaf keeps the normal plan (which raises for a JSON null), while `->>` and its cast (NULL in every version) keep the scan.
 -- Every result below is the same with the scan off and on; the columns say what differs by version: `scan` (pushed as the version allows) and `raises`.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -30,21 +30,21 @@ BEGIN
   FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP found := found OR line LIKE '%Custom Scan (SiftAgg%'; END LOOP;
   RETURN found;
 END $$;
--- jnull: the query casts a leaf that holds a JSON null. scan: it runs in the scan, which it does unless that cast raises before 18; raises: it fails, as before 18 it must
-CREATE FUNCTION check_query(name text, q text, jnull bool) RETURNS TABLE (label text, scan bool, same bool, raises bool) LANGUAGE plpgsql AS $$
+-- jnull: the query casts a leaf that holds a JSON null. scan: it runs in the scan, which a jsonb cast does from 18 on; raises: it fails, as before 18 it must
+CREATE FUNCTION check_query(name text, q text, jnull bool, jsonb_cast bool DEFAULT true) RETURNS TABLE (label text, scan bool, same bool, raises bool) LANGUAGE plpgsql AS $$
 DECLARE old bool := current_setting('server_version_num')::int < 180000;
 BEGIN
-  RETURN QUERY SELECT name, runs_in_scan(q) = NOT (jnull AND old), outcome(q, false) = outcome(q, true), (outcome(q, true) = 'error 22023') = (jnull AND old);
+  RETURN QUERY SELECT name, runs_in_scan(q) = NOT (jsonb_cast AND old), outcome(q, false) = outcome(q, true), (outcome(q, true) = 'error 22023') = (jnull AND old);
 END $$;
 SELECT * FROM check_query('cast of a path', $q$SELECT id % 3 AS g, count(*) AS n, sum((doc -> 'k')::float8) AS total FROM docs GROUP BY 1$q$, true);
 SELECT * FROM check_query('cast of a member', $q$SELECT r.key, count(*) AS n, sum(CAST(r.value AS float)) AS total FROM dim_b, jsonb_each(doc) r GROUP BY 1$q$, true);
 SELECT * FROM check_query('integer cast of a path', $q$SELECT id % 3 AS g, sum((doc -> 'k')::int) AS total FROM docs GROUP BY 1$q$, true);
 -- the text of the value is NULL for a JSON null in every version
-SELECT * FROM check_query('text cast of a path', $q$SELECT count(*) AS n, sum((doc ->> 'k')::float8) AS total FROM docs$q$, false);
--- a leaf without a JSON null (a missing key is a NULL that raises nowhere) keeps the scan
+SELECT * FROM check_query('text cast of a path', $q$SELECT count(*) AS n, sum((doc ->> 'k')::float8) AS total FROM docs$q$, false, false);
+-- a leaf without a JSON null (a missing key is a NULL that raises nowhere) gives the rows of the normal plan
 SELECT * FROM check_query('cast of a leaf without one', $q$SELECT id % 3 AS g, count(*) AS n, sum((doc -> 'c')::float8) AS total FROM docs GROUP BY 1$q$, false);
 SELECT * FROM check_query('integer cast, leaf without one', $q$SELECT id % 3 AS g, sum((doc -> 'c')::int) AS total FROM docs GROUP BY 1$q$, false);
--- a write buffer keeps which leaves hold a JSON null: rows without one keep the scan, one with it is a cast that raises
+-- a write buffer of rows with and without a JSON null: a cast that raises before 18 for the rows with one
 CREATE TABLE late (id int, doc jsonb);
 INSERT INTO late SELECT i, jsonb_build_object('c', i % 4) FROM generate_series(1, 20000) i;
 CREATE INDEX late_col ON late USING sift_col (id, doc) WITH (paths = 'doc.c float8');
@@ -71,6 +71,6 @@ FROM (VALUES ($q$SELECT id % 3 AS g, sum((doc -> 'k')::float8) AS total FROM tdo
 VACUUM tdocs;
 SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
 FROM (VALUES ($q$SELECT sum((doc -> 'k')::float8) AS total FROM tdocs$q$)) v(q);
-DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION check_query(text, text, bool, bool), outcome(text, bool), runs_in_scan(text);
 DROP TABLE docs, dim_b, late, tdocs;
 DROP EXTENSION pg_sift;

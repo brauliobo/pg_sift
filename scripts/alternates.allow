@@ -18,6 +18,31 @@ test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
 test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
 test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
+test/expected/agg/jsonb_each_map_1.out	13200387f333b1fdd22fd1cdfd10a1cf2fe2e529	17	same node ok SELECT kv.key, sum(kv.value::float8) FILTER (WHERE kv.key LIKE 'm%
+test/expected/agg/jsonb_each_map_1.out	1583d64df7350e94e402635b2541e8752109e9de	17	
+test/expected/agg/jsonb_each_map_1.out	2477bcf7fb44c7ba1a84f0cceee69b89b2f92426	17	same node ok SELECT kv.key, sum(kv.value::int4), count(*) FROM ei o, jsonb_each
+test/expected/agg/jsonb_each_map_1.out	29b12222597839417343c0592db0f0a76fa06105	17	same node error 22023 cannot cast jsonb string to type double precision SELECT
+test/expected/agg/jsonb_each_map_1.out	3cf51b74cda4a831f78fd20499ded5cff0e0f5ae	17	same node ok SELECT o.g, kv.key, sum(kv.value::float8) FROM em o, jsonb_each(o.
+test/expected/agg/jsonb_each_map_1.out	70159366e799ca42924bfd4908821e59712cb5b7	17	same node ok SELECT kv.key, avg(kv.value::float8), min(kv.value::float8), max(k
+test/expected/agg/jsonb_each_map_1.out	794c69912d46b4cb94c6fd2dba1cfff9e049aa61	17	QUERY PLAN
+test/expected/agg/jsonb_each_map_1.out	92e447d5a15c76e34d6ccb1ba9ab0a6cbbb4387a	17	same node ok SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metri
+test/expected/agg/jsonb_each_map_1.out	ae1a41d6631651937035510741fbbefd8224ba33	17	same node ok SELECT d.grp, count(*), sum(kv.value::float8) FROM em o CROSS JOIN
+test/expected/agg/jsonb_each_map_1.out	af1841420b9063f79d36166f091025f39c0e735d	17	same node ok SELECT kv.key, count(*), avg(kv.value::float8) FROM em o, jsonb_ea
+test/expected/agg/jsonb_each_map_1.out	c6b6503f68a596b55ef5cd81660a0d0aea2c7bbd	17	
+test/expected/agg/jsonb_each_map_1.out	d26252bc94006016fd657c2b2efd341aa01d851c	17	same
+test/expected/agg/jsonb_each_map_1.out	dbeadf12287f441a7377d6e8e125eeee37d91ee4	17	same node error 22023 cannot cast jsonb boolean to type double precision SELECT
+test/expected/agg/jsonb_map_keyread_1.out	037aa4c0ada0392d3e71dee50bfc856f3213981a	17	same node ok SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::f
+test/expected/agg/jsonb_map_keyread_1.out	6b8fd9e0475211bc048938b872bf09a7996a8843	17	Custom Scan (SiftAggV6)
+test/expected/agg/jsonb_map_keyread_1.out	813ac5b3ef5f04cccb10aeb54a3609e24ebfea59	17	QUERY PLAN
+test/expected/agg/jsonb_map_keyread_1.out	86e5aa6f0148a47c30e423ce3f4458fc05ad8856	17	same
+test/expected/agg/jsonb_map_keyread_1.out	9dfda98e77a82af5844248d4444f0a481f21154b	17	
+test/expected/agg/jsonb_map_keyread_1.out	a1d884e7164f7a95109acf72bc8a21bb08d521a3	17	same node18 ok SELECT (metrics -> 'tip')::int, count(*) FROM mn GROUP BY 1
+test/expected/agg/jsonb_map_keyread_1.out	dca4d93920e74ec2c453e930608bf5a86a9d5382	17	
+test/expected/agg/jsonb_map_keyread_1.out	f8a4f310c1d62b3ecd31a5447fae91dd16cd99c4	17	QUERY PLAN
+test/expected/agg/lateral_flatten_f2_1.out	6f540c46750276a381d5c0b16ae5a727f774094b	17	cast of an excluded row | t    | t    | [{"n": 1, "day": "2026-02-01", "total":
+test/expected/agg/lateral_flatten_f2_1.out	7c04f665678c062b18861951cfda5e346f850c1c	17	mapping below an outer join | t    | t    | [{"day": "2026-01-01", "score": 2,
+test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874d9d	17	cast out of range | t    | t    | 22003 integer out of range
+test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	json map key     | v6 same
 test/expected/agg/plan/tables_1.out	1003fd94fbe2001151019b9a1ddbe67dddc08361	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
 test/expected/agg/plan/tables_1.out	e27dc9de096ede2f9088587ed6eb69289afab2e5	19	plan                  | result_rows | vs_normal_plan
@@ -73,6 +98,14 @@ test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	1
 test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
 test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
 test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
+test/expected/col/f2/map_cubes_1.out	2674f56104d70ea7697ad4e424b7faac1dafc60d	17	same preagg ok
+test/expected/col/f2/map_cubes_1.out	393bf2fbdd5da3fffc753ba0b9d3a36b9fc7ed61	17	same preagg ok
+test/expected/col/f2/map_cubes_1.out	3993714840d36a870bbaceaef9860785924d511c	17	r
+test/expected/col/f2/map_cubes_1.out	3bebe8a72273692aa52a1e20b6f6f0e932216dbb	17	t
+test/expected/col/f2/map_cubes_1.out	55d1881db4657fc2f9f4893999f85c74f30e3348	17	same preagg ok
+test/expected/col/f2/map_cubes_1.out	6e82b6c0b3dc6c9c13ca1c4310ff61100e28a886	17	same preagg ok
+test/expected/col/f2/map_cubes_1.out	71bb2afbe27c37a8fd312f21cf6bce8f24fab5c4	17	late_keys
+test/expected/col/f2/map_cubes_1.out	783258202a97d7dccbf912572e088798e587c839	17	same
 test/expected/col/skip_map_1.out	200271921995c65698d6521f4cb726bcc492fec3	18	sm_o | avg(f)  | 6 | k < 0                 | normal                    |
 test/expected/col/skip_map_1.out	42c9691c59600b08f1427499788fe9278580ae86	18	sm_o | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	5a8f08ada73519eef481c9df90c4f91e234796f7	18	sm   | sum(id) | 3 | k = 500               | normal                    |
