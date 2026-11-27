@@ -1,5 +1,6 @@
 /*
- * table/f2/cost_hook.c - the price of the rows an index path of a sift_table of Format 2.0 fetches (f2_cost_hook.h). It is added to the cost the access method of the index estimates, so that every
+ * table/f2/cost_hook.c - the index paths of a sift_table: before PostgreSQL 18 no bitmap heap scan (its executor prefetches the virtual blocks of the TIDs from the file, core/compat.h), and the
+ * price of the rows an index path of a sift_table of Format 2.0 fetches (f2_cost_hook.h). It is added to the cost the access method of the index estimates, so that every
  * path built on the index (an index scan, a bitmap index scan, a parameterized scan of a nested loop) carries it when the planner compares it with the others, and none is thrown away as dearer than a
  * path it was priced too cheaply against.
  */
@@ -37,13 +38,19 @@ f2_index_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cos
 	release_am_routine(am);
 }
 
+/* The index paths of a sift_table: no bitmap heap scan where the executor prefetches the virtual blocks of its TIDs from the file, and the price of the rows a Format 2.0 table fetches */
 static void
-price_fetches(Oid relid, RelOptInfo *rel)
+adjust_index_paths(Oid relid, RelOptInfo *rel)
 {
-	if (!sift_relid_is_sift_table(relid) || !sift_tbl_is_f2_oid(relid))
+	if (!sift_relid_is_sift_table(relid))
 		return;
 	foreach_node(IndexOptInfo, index, rel->indexlist)
-		index->amcostestimate = f2_index_costestimate;
+	{
+		if (SIFT_BITMAP_EXECUTOR_PREFETCH)
+			index->amhasgetbitmap = false;
+		if (sift_tbl_is_f2_oid(relid))
+			index->amcostestimate = f2_index_costestimate;
+	}
 }
 
 #if PG_VERSION_NUM < 190000
@@ -54,7 +61,7 @@ f2_get_relation_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *r
 {
 	if (prev_info_hook)
 		prev_info_hook(root, relid, inhparent, rel);
-	price_fetches(relid, rel);
+	adjust_index_paths(relid, rel);
 }
 
 void
@@ -72,7 +79,7 @@ f2_build_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
 	if (prev_simple_rel_hook)
 		prev_simple_rel_hook(root, rel, rte);
 	if (rte->rtekind == RTE_RELATION)
-		price_fetches(rte->relid, rel);
+		adjust_index_paths(rte->relid, rel);
 }
 
 void
