@@ -265,7 +265,7 @@ chunk_put(PosChunk *pc, uint8 c)
 	if (pc->len == pc->cap)
 	{
 		pc->cap = Max(4096, pc->cap * 2);
-		SIFT_REGROW_IN(CurrentMemoryContext, pc->buf, pc->cap);
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, pc->buf, pc->cap);
 	}
 	pc->buf[pc->len++] = c;
 }

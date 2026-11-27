@@ -112,7 +112,7 @@ add_tie(KeyTop *t, const ItemPointerData *entry)
 	{
 		t->captie = Max(64, 2 * t->captie);
 		keytop_budget(t, binaryheap_size(t->heap), t->captie);
-		SIFT_REGROW_IN(t->ss->kcx, t->tie, t->captie * sizeof(ItemPointerData));
+		SIFT_REGROW_HUGE_IN(t->ss->kcx, t->tie, t->captie * sizeof(ItemPointerData));
 	}
 	t->tie[t->ntie++] = *entry;
 }
@@ -187,8 +187,8 @@ static KeyRow **
 keytop_rows(KeyTop *t, int64 *nrows)
 {
 	int64		nheap = binaryheap_size(t->heap);
-	KeyRow	  **rows = palloc((nheap + t->ntie) * sizeof(KeyRow *));
-	KeyRow	   *tied = palloc(t->ntie * sizeof(KeyRow));
+	KeyRow	  **rows = MemoryContextAllocHuge(CurrentMemoryContext, (nheap + t->ntie) * sizeof(KeyRow *));
+	KeyRow	   *tied = MemoryContextAllocHuge(CurrentMemoryContext, t->ntie * sizeof(KeyRow));
 
 	for (int64 i = 0; i < nheap; i++)
 		rows[i] = (KeyRow *) DatumGetPointer(binaryheap_get_node(t->heap, i));
@@ -224,6 +224,7 @@ keyed_score(SiftScanState *ss, KeyRow **rows, int64 nrows)
 		BlockNumber blk = ItemPointerGetBlockNumber(&rows[i]->tid);
 		uint64		mask[SIFT_OFFMASK_WORDS] = {0};
 
+		CHECK_FOR_INTERRUPTS();
 		for (; i < nrows && ItemPointerGetBlockNumber(&rows[i]->tid) == blk; i++)
 		{
 			int			off = ItemPointerGetOffsetNumber(&rows[i]->tid) - 1;
@@ -238,6 +239,7 @@ keyed_score(SiftScanState *ss, KeyRow **rows, int64 nrows)
 	{
 		KeyRow	  **row = bsearch(&tid, rows, nrows, sizeof(KeyRow *), entry_find);
 
+		CHECK_FOR_INTERRUPTS();
 		if (row)
 		{
 			(*row)->score = score;

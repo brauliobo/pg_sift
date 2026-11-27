@@ -75,7 +75,7 @@ void
 sift_posbuf_grow(SiftPosBuf *out, uint32 n)
 {
 	out->cap = Max(n, Max(64, out->cap * 2));
-	SIFT_REGROW_IN(out->mcxt, out->v, (Size) out->cap * sizeof(uint32));
+	SIFT_REGROW_HUGE_IN(out->mcxt, out->v, (Size) out->cap * sizeof(uint32));
 }
 
 /* LEB128 at *pp, which the writer made */
@@ -110,7 +110,7 @@ sift_posblk_put(const uint8 *p, Size len, uint32 k, StringInfo out)
 	uint32		first[SIFT_POS_EVERY],
 				cnt[SIFT_POS_EVERY],
 				sbuf[512],
-			   *gap = len <= lengthof(sbuf) ? sbuf : palloc(len * sizeof(uint32)),
+			   *gap = len <= lengthof(sbuf) ? sbuf : MemoryContextAllocHuge(CurrentMemoryContext, len * sizeof(uint32)),
 				ngap = 0,
 				maxfirst = 0,
 				multi = 0,

@@ -165,6 +165,8 @@ doccache_init(DocCache *dc, SiftSegment *seg, MemoryContext mcxt, Size budget)
 
 /* A term can have this many postings (a group, the most the evaluator decodes at once) */
 #define STREAM_POSTINGS		SIFT_GRP_MAXTIDS
+/* The position records the pending postings of a term whose df went first may hold before they go */
+#define STREAM_POS_KEEP		(128 * 1024)
 
 typedef struct Stream
 {
@@ -176,6 +178,7 @@ typedef struct Stream
 	sift_tid   *tids;
 	uint8	   *gtf;
 	bool		dirty;			/* some doc was vacuumed */
+	bool		streaming;		/* the df of the term went first: its postings go as they come */
 	int			nf;				/* fields whose lengths the docs deliver */
 	uint16	   *legacy;			/* their lengths for a segment that has none */
 	/* the live postings not yet delivered */
@@ -249,7 +252,7 @@ stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *
 			if (s->poslen + len > s->poscap)
 			{
 				s->poscap = Max(s->poslen + len, Max(8192, s->poscap * 2));
-				SIFT_REGROW_IN(s->dc.mcxt, s->pos, s->poscap);
+				SIFT_REGROW_HUGE_IN(s->dc.mcxt, s->pos, s->poscap);
 			}
 			memcpy(s->pos + s->poslen, rec, len);
 			s->poslen += len;
@@ -258,6 +261,8 @@ stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *
 		s->keys[s->n] = s->tids[j];
 		s->tf[s->n] = s->gtf[j];
 		s->dl[s->n++] = dl;
+		if (s->streaming && s->poslen >= STREAM_POS_KEEP)
+			stream_flush(s, true);
 	}
 }
 
@@ -296,6 +301,7 @@ stream_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		live.df = stream_count(s, c);
 	if (!buffered && live.df > 0)
 		s->sink->term(s->arg, term, len, &live);
+	s->streaming = !buffered;
 	if (buffered || live.df > 0)
 		for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 		{

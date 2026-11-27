@@ -174,6 +174,7 @@ TESTING_REGRESS += bm25/analyze/version
 TESTING_REGRESS += bm25/build/limits
 TESTING_REGRESS += bm25/build/page_text
 TESTING_REGRESS += bm25/build/pool
+TESTING_REGRESS += bm25/build/unique_budget
 TESTING_REGRESS += bm25/dead_windows
 TESTING_REGRESS += bm25/dict_block_limit
 TESTING_REGRESS += bm25/facets_rls

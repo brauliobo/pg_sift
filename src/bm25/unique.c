@@ -10,6 +10,8 @@
 #include "access/genam.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "catalog/pg_operator_d.h"
+#include "catalog/pg_type_d.h"
 #include "catalog/index.h"
 #include "miscadmin.h"
 #include "utils/acl.h"
@@ -18,17 +20,18 @@
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
-#include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
+#include "utils/tuplesort.h"
 #include "utils/typcache.h"
 
 #include "bm25/doc.h"
 #include "bm25/eval/eval.h"
 #include "bm25/query/int.h"
 #include "core/compat.h"
+#include "core/memtrack.h"
 
 #define DETAIL_BYTES		256
 
@@ -373,63 +376,113 @@ sift_bm25_unique_release(Relation index, uint64 key)
 	UnlockTuple(index, &lock, ExclusiveLock);
 }
 
-typedef struct KeyEntry
-{
-	uint64		key;
-	int			ntids;
-	int			cap;
-	ItemPointerData *tids;
-} KeyEntry;
-
+/* The rows of a build sorted by key, in a share of the maintenance memory beside the buffers of the build: a key two rows have is checked once the scan ends */
 struct SiftUniqueBuild
 {
 	Prober		p;
-	HTAB	   *seen;
-	MemoryContext cx;
+	Prober		row;			/* fetches the row whose key an earlier row had */
+	TupleDesc	desc;			/* (key, tid) */
+	Tuplesortstate *sort;
+	TupleTableSlot *put;
 };
 
 SiftUniqueBuild *
 sift_unique_build_begin(Relation heap, Relation index, MemoryContext cx)
 {
-	SiftUniqueBuild *ub = MemoryContextAllocZero(cx, sizeof(SiftUniqueBuild));
-	HASHCTL		ctl = {.keysize = sizeof(uint64),.entrysize = sizeof(KeyEntry),.hcxt = cx};
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftUniqueBuild *ub = palloc0(sizeof(SiftUniqueBuild));
+	AttrNumber	col = 1;
+	Oid			lt = Int8LessOperator,
+				coll = InvalidOid;
+	bool		nulls_first = false;
 
-	ub->cx = cx;
-	ub->seen = hash_create("sift unique keys", 1024, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	ub->desc = CreateTemplateTupleDesc(2);
+	TupleDescInitEntry(ub->desc, 1, "key", INT8OID, -1, 0);
+	TupleDescInitEntry(ub->desc, 2, "tid", TIDOID, -1, 0);
+	sift_tupdesc_finalize(ub->desc);
+	ub->sort = tuplesort_begin_heap(ub->desc, 1, &col, &lt, &coll, &nulls_first,
+									(int) (sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 8) / 1024), NULL, TUPLESORT_NONE);
+	ub->put = MakeSingleTupleTableSlot(ub->desc, &TTSOpsVirtual);
 	prober_open(&ub->p, heap, index);
+	prober_open(&ub->row, heap, index);
+	MemoryContextSwitchTo(old);
 	return ub;
 }
 
 void
 sift_unique_build_add(SiftUniqueBuild *ub, ItemPointer tid, uint64 key, const Datum *values, const bool *isnull)
 {
-	bool		found;
-	KeyEntry   *e = hash_search(ub->seen, &key, HASH_ENTER, &found);
+	ExecClearTuple(ub->put);
+	ub->put->tts_values[0] = Int64GetDatum((int64) key);
+	ub->put->tts_values[1] = ItemPointerGetDatum(tid);
+	ub->put->tts_isnull[0] = ub->put->tts_isnull[1] = false;
+	ExecStoreVirtualTuple(ub->put);
+	tuplesort_puttupleslot(ub->sort, ub->put);
+}
 
-	if (!found)
-	{
-		e->ntids = e->cap = 0;
-		e->tids = NULL;
-	}
-	for (int i = 0; i < e->ntids; i++)
+/* The row at tid against the rows before it with its key: one that has its values too is a duplicate */
+static void
+check_twins(SiftUniqueBuild *ub, ItemPointerData tid, const List *same)
+{
+	SnapshotData dirty;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS],
+				again = false,
+				all_dead = false;
+	ExprContext *econtext = GetPerTupleExprContext(ub->row.estate);
+
+	InitDirtySnapshot(dirty);
+	if (!table_index_fetch_tuple(ub->row.fetch, &tid, &dirty, ub->row.slot, &again, &all_dead))
+		return;
+	ResetExprContext(econtext);
+	econtext->ecxt_scantuple = ub->row.slot;
+	FormIndexDatum(ub->row.info, ub->row.slot, ub->row.estate, values, isnull);
+	foreach_ptr(ItemPointerData, twin, same)
 	{
 		TransactionId xwait;
 		uint32		token;
 
-		if (probe_row(&ub->p, &e->tids[i], values, isnull, &xwait, &token) != PROBE_FREE)
+		if (probe_row(&ub->p, twin, values, isnull, &xwait, &token) != PROBE_FREE)
 			duplicate(ub->p.heap, ub->p.index, values, isnull, true);
 	}
-	if (e->ntids == e->cap)
-	{
-		e->cap = e->cap ? e->cap * 2 : 1;
-		SIFT_REGROW_IN(ub->cx, e->tids, (Size) e->cap * sizeof(ItemPointerData));
-	}
-	e->tids[e->ntids++] = *tid;
 }
 
 void
 sift_unique_build_end(SiftUniqueBuild *ub)
 {
+	TupleTableSlot *got = MakeSingleTupleTableSlot(ub->desc, &TTSOpsMinimalTuple);
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift unique key"),
+				old;
+	List	   *same = NIL;
+	ItemPointer twin;
+	int64		key = 0;
+	bool		isnull;
+
+	tuplesort_performsort(ub->sort);
+	while (tuplesort_gettupleslot(ub->sort, true, false, got, NULL))
+	{
+		int64		k = DatumGetInt64(slot_getattr(got, 1, &isnull));
+		ItemPointerData tid = *DatumGetItemPointer(slot_getattr(got, 2, &isnull));
+
+		CHECK_FOR_INTERRUPTS();
+		if (same != NIL && k == key)
+			check_twins(ub, tid, same);
+		else
+		{
+			MemoryContextReset(cx);
+			same = NIL;
+			key = k;
+		}
+		old = MemoryContextSwitchTo(cx);
+		twin = palloc(sizeof(ItemPointerData));
+		*twin = tid;
+		same = lappend(same, twin);
+		MemoryContextSwitchTo(old);
+	}
+	MemoryContextDelete(cx);
+	ExecDropSingleTupleTableSlot(got);
+	ExecDropSingleTupleTableSlot(ub->put);
+	tuplesort_end(ub->sort);
+	prober_close(&ub->row);
 	prober_close(&ub->p);
-	hash_destroy(ub->seen);
 }

@@ -58,9 +58,15 @@ defaultsizes	table/v1/scan.c	1
 defaultsizes	table/v1/reader.c	1
 defaultsizes	table/v1/reader_read.c	1
 huge	agg/distinct/distinct.c	1
+huge	bm25/cscan/keyed.c	3
 huge	bm25/doctext.c	1
+huge	bm25/inv.c	1
 huge	bm25/liveness.c	1
+huge	bm25/livestream.c	1
+huge	bm25/phrase.c	1
+huge	bm25/posblk.c	1
 huge	bm25/postw.c	1
+huge	bm25/runs/reader.c	1
 huge	bm25/wbind.c	2
 huge	bm25/wread.c	4
 huge	col/granule/part/write.c	1

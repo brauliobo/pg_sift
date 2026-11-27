@@ -149,7 +149,7 @@ record_put(RunReader *rd, uint8 c)
 	if (rd->prlen == rd->prcap)
 	{
 		rd->prcap = Max(256, rd->prcap * 2);
-		SIFT_REGROW_IN(CurrentMemoryContext, rd->prec, rd->prcap);
+		SIFT_REGROW_HUGE_IN(CurrentMemoryContext, rd->prec, rd->prcap);
 	}
 	rd->prec[rd->prlen++] = c;
 }

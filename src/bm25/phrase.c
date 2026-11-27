@@ -139,6 +139,7 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 	uint32		n = 0;
 	int			drive = 0;
 
+	CHECK_FOR_INTERRUPTS();
 	if (ph->nterms == 2)
 		return phrase_match2(c, ph);
 	/* the starts come from the term with the fewest positions in this doc (the rarest by df, unless the doc has it often), the others narrow them in order */
@@ -160,7 +161,7 @@ phrase_match(PosCtx *c, const PhraseCheck *ph)
 			if (pb->n > c->startcap)
 			{
 				c->startcap = Max(pb->n, 2 * c->startcap);
-				SIFT_REGROW_IN(c->mcxt, c->start, (Size) c->startcap * sizeof(uint32));
+				SIFT_REGROW_HUGE_IN(c->mcxt, c->start, (Size) c->startcap * sizeof(uint32));
 			}
 			for (; j < pb->n; j++)
 				if (pb->v[j] >= o)
