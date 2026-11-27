@@ -39,6 +39,7 @@ typedef struct SiftF2Slot
 	const SiftRowPackRow *rp;	/* a row of the row pack of the part (in rowcx): the cells are read from it, and from the granule only when it is external */
 	SiftF2PartPin *pin;			/* referenced while rp is: the part the row is in */
 	uint32		granule_id;
+	SiftF2Frame **frames;		/* by attribute, the copy of the frame its last framed cell was read from, which the rows that follow read */
 	bool		decoded_any;	/* decoded_ahead has a bit set */
 	uint64		decoded_ahead[(MaxTupleAttributeNumber + 63) / 64];	/* the attributes a read of one attribute decoded ahead of the leading ones */
 } SiftF2Slot;
@@ -52,6 +53,8 @@ typedef struct CellSource
 	uint32		granule_id;
 	uint16		row;			/* in the granule */
 	const SiftRowPackRow *rp;
+	SiftF2Frame **frames;		/* by attribute, the frames the reader keeps (NULL: none), made in frames_cx */
+	MemoryContext frames_cx;
 } CellSource;
 
 static TupleTableSlotOps f2_slot_ops;
@@ -113,22 +116,29 @@ str_datum(Relation rel, const SiftF2Store *store, const SiftF2GranuleBuf *gb, in
 	return str_image_datum(c->s.p, c->s.len, cx);
 }
 
-/* The string or the double of a lazy granule's framed chunk, from the frame the cache keeps; false when the chunk is not framed or the cell is null */
+/* The string or the double of attribute a of a lazy granule's framed chunk, from the frame the reader keeps or the cache's; false when the chunk is not framed or the cell is null */
 static bool
-frame_cell(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, SiftF2Cell *cell)
+frame_cell(Relation rel, const SiftF2GranuleBuf *gb, const CellSource *src, int a, int phys, SiftCellKind kind, SiftF2Cell *cell)
 {
 	const int	chunk = phys + 1;
+	SiftF2Frame *keep = NULL;
 
 	if (kind == SIFT_CELL_INT || gb->lazy == NULL || gb->col_decoded[phys])
 		return false;
 	sift_lazy_granule_load(rel, gb->lazy, &chunk, 1);
 	*cell = (SiftF2Cell) {0};
-	return kind == SIFT_CELL_F8 ? sift_f2_gcache_cell_f8(rel, gb, phys, row, &cell->f) : sift_f2_gcache_cell_str(rel, gb, phys, row, &cell->s);
+	if (src->frames != NULL)
+	{
+		if (src->frames[a - 1] == NULL)
+			src->frames[a - 1] = sift_f2_gcache_frame_new(src->frames_cx);
+		keep = src->frames[a - 1];
+	}
+	return kind == SIFT_CELL_F8 ? sift_f2_gcache_cell_f8(rel, gb, phys, src->row, keep, &cell->f) : sift_f2_gcache_cell_str(rel, gb, phys, src->row, keep, &cell->s);
 }
 
 /* The cell of column phys; true when it made the granule decode the column whole */
 static bool
-read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int phys, SiftCellKind kind, bool wide, SiftF2Cell *cell)
+read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int a, int phys, SiftCellKind kind, bool wide, SiftF2Cell *cell)
 {
 	if (src->rp != NULL && sift_row_pack_cell(src->rp, phys, cell) != SIFT_RPACK_EXTERNAL)
 		return false;
@@ -138,7 +148,7 @@ read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int phys, Sif
 		if (src->held)
 			(void) sift_f2_gbuf_hold(*src->gb);
 	}
-	if (frame_cell(rel, *src->gb, phys, kind, src->row, cell))
+	if (frame_cell(rel, *src->gb, src, a, phys, kind, cell))
 		return false;
 	return sift_f2_gbuf_cell(rel, *src->gb, phys, kind, src->row, wide, cell);
 }
@@ -176,7 +186,7 @@ fill_att(Relation rel, SiftF2Store *store, const CellSource *src, const SiftColD
 		return false;
 	}
 	kind = map == NULL ? store->kinds[leaf] : (SiftCellKind) map->phys_kind[leaf];
-	decoded = read_cell(rel, store, src, phys, kind, sift_tbl_extra(store)->has_wide || sift_f2_attr_may_have_exceptions(att), &cell);
+	decoded = read_cell(rel, store, src, a, phys, kind, sift_tbl_extra(store)->has_wide || sift_f2_attr_may_have_exceptions(att), &cell);
 	if (cell.isnull && !is_wide_blob(&cell) && !(kind == SIFT_CELL_INT && cell.tag == SIFT_COLTAG_UNSURE))
 		return decoded;
 	slot->tts_isnull[a - 1] = false;
@@ -248,6 +258,13 @@ slot_release(TupleTableSlot *slot)
 	lazy_drop(ss);
 	if (ss->holder != NULL)
 		holder_release(ss->holder);
+	if (ss->frames != NULL)
+	{
+		for (int a = 0; a < slot->tts_tupleDescriptor->natts; a++)
+			if (ss->frames[a] != NULL)
+				sift_f2_gcache_frame_free(ss->frames[a]);
+		pfree(ss->frames);
+	}
 	MemoryContextDelete(ss->rowcx);
 }
 
@@ -268,7 +285,11 @@ slot_clear(TupleTableSlot *slot)
 static CellSource
 slot_source(SiftF2Slot *ss)
 {
-	return (CellSource) {&ss->gb, true, ss->pin != NULL ? ss->pin : ss->gb->pin, ss->granule_id, ss->row, ss->rp};
+	TupleTableSlot *slot = &ss->base.base;
+
+	if (ss->frames == NULL)
+		ss->frames = MemoryContextAllocZero(slot->tts_mcxt, Max(slot->tts_tupleDescriptor->natts, 1) * sizeof(SiftF2Frame *));
+	return (CellSource) {&ss->gb, true, ss->pin != NULL ? ss->pin : ss->gb->pin, ss->granule_id, ss->row, ss->rp, ss->frames, slot->tts_mcxt};
 }
 
 static inline bool

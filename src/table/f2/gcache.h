@@ -19,9 +19,19 @@
 /* The lazy granule of the part pin, from the cache or read now; a reference the caller gives back with sift_f2_gbuf_unref */
 extern SiftF2GranuleBuf *sift_f2_gcache_get(Relation rel, SiftF2Store *store, SiftF2PartPin *pin, uint32 g);
 
-/* The string or the double of a row of column phys of a granule whose chunk is framed (SIFT_ENC_FRAMED), from the frame of 256 values the row lies in, which the cache keeps for the rows that follow; false when the row is null or the chunk is not framed */
-extern bool sift_f2_gcache_cell_str(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftStrCell *cell);
-extern bool sift_f2_gcache_cell_f8(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, double *value);
+/* A frame a reader keeps of one column (sift_f2_gcache_frame_new, palloc'd in cx, given back with sift_f2_gcache_frame_free) */
+typedef struct SiftF2Frame SiftF2Frame;
+
+extern SiftF2Frame *sift_f2_gcache_frame_new(MemoryContext cx);
+extern void sift_f2_gcache_frame_free(SiftF2Frame *f);
+
+/*
+ * The string or the double of a row of column phys of a granule whose chunk is framed (SIFT_ENC_FRAMED), from the frame of 256 values the row lies in, which the cache keeps for the rows that follow; false
+ * when the row is null or the chunk is not framed. keep (NULL: none) becomes a copy of the row's frame, which the rows of the reader that follow read whatever the cache evicts: a reader that walks the
+ * rows in order decodes each frame once, at any budget
+ */
+extern bool sift_f2_gcache_cell_str(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftF2Frame *keep, SiftStrCell *cell);
+extern bool sift_f2_gcache_cell_f8(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftF2Frame *keep, double *value);
 
 /* Block blk of the row pack of the part (SEC_ROW_PACK), decompressed: from the cache or read now. It stays until the next call that may drop a cache entry: a caller copies the row it needs at once */
 extern const SiftRowPackBlk *sift_f2_gcache_row_pack_block(Relation rel, SiftF2PartPin *pin, uint32 blk);

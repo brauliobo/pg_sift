@@ -189,11 +189,23 @@ typedef struct FEntry
 	FKey		key;
 	uint32		relhash;
 	uint64		tick;
-	uint32	   *off;			/* strings: SIFT_FRAME_ROWS + 1 offsets into bytes */
+	uint32	   *off;			/* strings: nstr + 1 offsets into bytes */
 	char	   *bytes;
+	uint32		nstr;
 	double	   *f8;				/* doubles: SIFT_FRAME_ROWS values */
 	dlist_node	lru;
 } FEntry;
+
+/* A copy of a frame a reader keeps (palloc'd in cx), which no eviction of the cache reaches */
+struct SiftF2Frame
+{
+	MemoryContext cx;
+	FKey		key;
+	bool		valid;
+	uint32	   *off;
+	char	   *bytes;
+	double	   *f8;
+};
 
 static HTAB *fcache = NULL;
 static MemoryContext fcache_cx = NULL;
@@ -275,29 +287,36 @@ fcache_init(void)
 	register_invalidator();
 }
 
-/* The frame of column phys that the row of the granule lies in, from the cache or inflated now (in the context of the cache); NULL when the column of the row is not in a frame */
-static FEntry *
-frame_get(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, uint16 *within)
+/* The frame of column phys that the row of the granule lies in (false: the column of the row is not in a frame, or no cache is kept) and the row's place in it */
+static bool
+frame_key(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, FKey *key, uint16 *within)
 {
-	FKey		key;
-	FEntry	   *e;
-	FEntry		made = {0};
 	SiftFrameRef ref;
-	MemoryContext old;
 
 	if (sift_backend_cache_kb == 0 || !sift_granule_frame_ref(&gb->view, phys, row, &ref))
-		return NULL;
+		return false;
+	memset(key, 0, sizeof(*key));
+	key->granule.locator = rel->rd_locator;
+	key->granule.part_gen = gb->pin->part_gen;
+	key->granule.header_blk = gb->pin->desc.header_blk;
+	key->granule.granule_id = gb->granule_id;
+	key->col = phys;
+	key->frame = ref.frame;
+	*within = ref.within;
+	return true;
+}
+
+/* The frame from the cache or inflated now (in the context of the cache) */
+static FEntry *
+frame_get(Relation rel, const SiftF2GranuleBuf *gb, SiftCellKind kind, const FKey *key)
+{
+	FEntry	   *e;
+	FEntry		made = {0};
+	MemoryContext old;
+
 	if (fcache == NULL)
 		fcache_init();
-	memset(&key, 0, sizeof(key));
-	key.granule.locator = rel->rd_locator;
-	key.granule.part_gen = gb->pin->part_gen;
-	key.granule.header_blk = gb->pin->desc.header_blk;
-	key.granule.granule_id = gb->granule_id;
-	key.col = phys;
-	key.frame = ref.frame;
-	*within = ref.within;
-	e = hash_search(fcache, &key, HASH_FIND, NULL);
+	e = hash_search(fcache, key, HASH_FIND, NULL);
 	if (e != NULL)
 	{
 		e->tick = sift_cache_tick();
@@ -308,15 +327,15 @@ frame_get(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind,
 	if (kind == SIFT_CELL_F8)
 	{
 		made.f8 = palloc(SIFT_FRAME_ROWS * sizeof(double));
-		sift_granule_frame_f8(&gb->view, phys, ref.frame, made.f8);
+		sift_granule_frame_f8(&gb->view, key->col, key->frame, made.f8);
 	}
 	else
-		sift_granule_frame_str(&gb->view, phys, ref.frame, &made.off, &made.bytes);
+		made.nstr = (uint32) sift_granule_frame_str(&gb->view, key->col, key->frame, &made.off, &made.bytes);
 	MemoryContextSwitchTo(old);
 	while (hash_get_num_entries(fcache) >= SIFT_F2_GCACHE_MAX_FRAMES && fcache_evict_one())
 		;
-	e = hash_search(fcache, &key, HASH_ENTER, NULL);
-	made.key = key;
+	e = hash_search(fcache, key, HASH_ENTER, NULL);
+	made.key = *key;
 	made.relhash = sift_f2_rel_hash(rel);
 	made.tick = sift_cache_tick();
 	*e = made;
@@ -325,27 +344,106 @@ frame_get(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind,
 	return e;
 }
 
-bool
-sift_f2_gcache_cell_str(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftStrCell *cell)
+SiftF2Frame *
+sift_f2_gcache_frame_new(MemoryContext cx)
 {
-	uint16		within;
-	FEntry	   *e = frame_get(rel, gb, phys, SIFT_CELL_STR, row, &within);
+	SiftF2Frame *f = MemoryContextAllocZero(cx, sizeof(SiftF2Frame));
 
-	if (e == NULL)
+	f->cx = cx;
+	return f;
+}
+
+static void
+frame_drop(SiftF2Frame *f)
+{
+	if (f->off != NULL)
+		pfree(f->off);
+	if (f->bytes != NULL)
+		pfree(f->bytes);
+	if (f->f8 != NULL)
+		pfree(f->f8);
+	f->off = NULL;
+	f->bytes = NULL;
+	f->f8 = NULL;
+	f->valid = false;
+}
+
+void
+sift_f2_gcache_frame_free(SiftF2Frame *f)
+{
+	frame_drop(f);
+	pfree(f);
+}
+
+/* The reader's copy becomes the frame of the entry: the frame it held goes first, so that the copy takes its memory */
+static void
+frame_copy(SiftF2Frame *f, const FEntry *e)
+{
+	frame_drop(f);
+	if (e->f8 != NULL)
+		f->f8 = memcpy(MemoryContextAlloc(f->cx, SIFT_FRAME_ROWS * sizeof(double)), e->f8, SIFT_FRAME_ROWS * sizeof(double));
+	else
+	{
+		f->off = memcpy(MemoryContextAlloc(f->cx, (e->nstr + 1) * sizeof(uint32)), e->off, (e->nstr + 1) * sizeof(uint32));
+		f->bytes = memcpy(MemoryContextAlloc(f->cx, Max(e->off[e->nstr], 1)), e->bytes, e->off[e->nstr]);
+	}
+	f->key = e->key;
+	f->valid = true;
+}
+
+/* Where the cell is read from: the reader's copy (copied now when it is of another frame), or the entry of the cache when the reader keeps none */
+static bool
+frame_of(Relation rel, const SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, uint16 row, SiftF2Frame *keep, uint16 *within, const uint32 **off, const char **bytes,
+		 const double **f8)
+{
+	FKey		key;
+	const FEntry *e;
+
+	if (!frame_key(rel, gb, phys, row, &key, within))
 		return false;
-	*cell = (SiftStrCell) {.p = e->bytes + e->off[within],.len = e->off[within + 1] - e->off[within]};
+	if (keep == NULL || !keep->valid || memcmp(&keep->key, &key, sizeof(key)) != 0)
+	{
+		e = frame_get(rel, gb, kind, &key);
+		if (keep == NULL)
+		{
+			*off = e->off;
+			*bytes = e->bytes;
+			*f8 = e->f8;
+			return true;
+		}
+		frame_copy(keep, e);
+	}
+	*off = keep->off;
+	*bytes = keep->bytes;
+	*f8 = keep->f8;
 	return true;
 }
 
 bool
-sift_f2_gcache_cell_f8(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, double *value)
+sift_f2_gcache_cell_str(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftF2Frame *keep, SiftStrCell *cell)
 {
 	uint16		within;
-	FEntry	   *e = frame_get(rel, gb, phys, SIFT_CELL_F8, row, &within);
+	const uint32 *off;
+	const char *bytes;
+	const double *f8;
 
-	if (e == NULL)
+	if (!frame_of(rel, gb, phys, SIFT_CELL_STR, row, keep, &within, &off, &bytes, &f8))
 		return false;
-	*value = e->f8[within];
+	*cell = (SiftStrCell) {.p = bytes + off[within],.len = off[within + 1] - off[within]};
+	return true;
+}
+
+bool
+sift_f2_gcache_cell_f8(Relation rel, const SiftF2GranuleBuf *gb, int phys, uint16 row, SiftF2Frame *keep, double *value)
+{
+	uint16		within;
+	const uint32 *off;
+	const char *bytes;
+	const double *f8;
+
+	if (!frame_of(rel, gb, phys, SIFT_CELL_F8, row, keep, &within, &off, &bytes, &f8))
+		return false;
+	*value = f8[within];
 	return true;
 }
 

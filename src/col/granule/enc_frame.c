@@ -68,7 +68,7 @@ frame_at(const SiftChunk *c, uint32 f, uint32 *len, int *cnt)
 	return c->body + table + lo;
 }
 
-void
+int
 sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes)
 {
 	uint32		avail,
@@ -82,6 +82,7 @@ sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes)
 	if (len > avail - 8)
 		SIFT_FAIL_CORRUPT("sift: a frame of strings of %u bytes does not fit its chunk of %u", len, avail);
 	sift_cc_decode_strs_dict(NULL, (const uint8 *) p + 8, len, cnt, cnt, 0, off, bytes, NULL);
+	return cnt;
 }
 
 void

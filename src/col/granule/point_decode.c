@@ -169,14 +169,16 @@ sift_granule_frame_ref(const SiftGranuleView *v, int col, uint16 row, SiftFrameR
 	return framed;
 }
 
-void
+int
 sift_granule_frame_str(const SiftGranuleView *v, int col, uint32 frame, uint32 **off, char **bytes)
 {
 	SiftChunk	c;
+	int			n;
 
 	sift_chunk_open_col(v, col, &c);
-	sift_frame_strs(&c, frame, off, bytes);
+	n = sift_frame_strs(&c, frame, off, bytes);
 	sift_chunk_release_strs(&c);
+	return n;
 }
 
 void

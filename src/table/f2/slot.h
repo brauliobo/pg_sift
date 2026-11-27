@@ -15,7 +15,8 @@
 extern const TupleTableSlotOps *sift_f2_slot_ops(void);
 
 /*
- * Makes slot hold row of the granule: a reference to gb is kept until the slot is cleared or overwritten. gm: the patches of column deltas the reader's snapshot sees on the granule
+ * Makes slot hold row of the granule: a reference to gb is kept until the slot is cleared or overwritten. The slot keeps a copy of the frame (of the point cache) of each attribute its last row read
+ * from one until a row of another frame replaces it, so that the rows of a reader in order decode each frame once. gm: the patches of column deltas the reader's snapshot sees on the granule
  * (a granule map of map, which the slot holds a reference of while it reads them; NULL for none, and for a granule whose decoded columns already hold them: the sequential scan's). A slot of
  * another kind is filled with every attribute now.
  */

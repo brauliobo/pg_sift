@@ -163,8 +163,8 @@ extern void sift_frames_put(StringInfo s, int nn, SiftFramePut put, void *arg);
 extern void sift_frame_f8_put(StringInfo s, const double *vals, int cnt, int alg);
 extern bool sift_chunk_framed(const SiftChunk *c);
 
-/* The offsets and bytes of the strings of frame f, palloc'd */
-extern void sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes);
+/* The offsets and bytes of the strings of frame f, palloc'd; returns how many strings it holds */
+extern int	sift_frame_strs(const SiftChunk *c, uint32 f, uint32 **off, char **bytes);
 
 /* The strings [k0, k1) of a framed block chunk, from the frames they lie in only; the buffer they point into is given in *bytes_out (palloc'd) */
 extern void sift_frames_strs(const SiftChunk *c, int k0, int k1, const char **p, uint32 *len, void **bytes_out);

@@ -335,7 +335,7 @@ extern bool sift_granule_str_is_block(const SiftGranuleView *v, int col);
 
 /*
  * A column of a framed chunk (SIFT_ENC_FRAMED) is read a frame of SIFT_FRAME_ROWS values at a time: the frame a row lies in and its place in it (false: the row is null, or the column is not
- * framed), and the frame decoded: the offsets (SIFT_FRAME_ROWS + 1) and bytes of its strings, or its doubles, palloc'd in the current context.
+ * framed), and the frame decoded: the offsets (one more than the strings, whose number sift_granule_frame_str returns) and bytes of its strings, or its doubles, palloc'd in the current context.
  */
 typedef struct SiftFrameRef
 {
@@ -344,7 +344,7 @@ typedef struct SiftFrameRef
 } SiftFrameRef;
 
 extern bool sift_granule_frame_ref(const SiftGranuleView *v, int col, uint16 row, SiftFrameRef *ref);
-extern void sift_granule_frame_str(const SiftGranuleView *v, int col, uint32 frame, uint32 **off, char **bytes);
+extern int	sift_granule_frame_str(const SiftGranuleView *v, int col, uint32 frame, uint32 **off, char **bytes);
 extern void sift_granule_frame_f8(const SiftGranuleView *v, int col, uint32 frame, double *out);
 extern uint8 sift_granule_point_tag(const SiftGranuleView *v, int col, uint16 row);
 
