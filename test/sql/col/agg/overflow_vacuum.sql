@@ -15,7 +15,9 @@ SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', 
                                                                           'n', CASE WHEN i IN (100, 101, 102, 103, 29000) THEN to_jsonb((j % 10)::text) ELSE to_jsonb(j % 10) END))
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX v_t_col ON v_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8}');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) v_t;
 
 \ir test/common/sql/agg/base.sql

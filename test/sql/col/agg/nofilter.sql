@@ -7,7 +7,9 @@ SET cpu_tuple_cost = 0.5;
 
 CREATE TABLE nf (id int, g int, n int, s text);
 INSERT INTO nf SELECT i, i % 7, i % 100, 'v' || i % 13 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX nf_col ON nf USING sift_col (id, g, n, s);
+RESET client_min_messages;
 VACUUM ANALYZE nf;
 
 \ir test/common/sql/agg/rows.sql

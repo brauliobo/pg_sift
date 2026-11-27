@@ -10,7 +10,9 @@ SET sift.test_ahead_cold = on;
 
 CREATE TABLE ev (id int PRIMARY KEY, grp int, amount int, pad text) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, (i * 31) % 1000, 'p' FROM generate_series(1, 40000) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, amount);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_vs_normal_in_session(q) $$;

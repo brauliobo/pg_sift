@@ -8,17 +8,15 @@ INSERT INTO sh
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 3000 END, CASE WHEN i % 11 = 0 THEN NULL WHEN i % 997 = 0 THEN -9223372036854775808 ELSE i * 100000000003 END,
 	   date '2020-01-01' + i % 800, timestamp '2024-01-01' + i * interval '1 minute'
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX sh_i ON sh USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
-NOTICE:  sift_col index "sh_i": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sh_i');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) sh;
 CREATE TABLE sh_small (id int, k int, b bigint, d date, ts timestamp);
 INSERT INTO sh_small SELECT i, i % 50, i, date '2020-01-01', timestamp '2024-01-01' FROM generate_series(1, 40) i;
+SET client_min_messages = warning;
 CREATE INDEX sh_small_i ON sh_small USING sift_col (id sift.col_int4_ops, k sift.col_int4_ops, b sift.col_int8_ops, d sift.col_date_ops, ts sift.col_timestamp_ops);
-NOTICE:  sift_col index "sh_small_i": 1 automatic choice (rollup_columns), 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key; rollup_columns = d, ts
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('sh_small_i');
+RESET client_min_messages;
 CREATE FUNCTION sh_idx(tbl text, w text) RETURNS bigint[] LANGUAGE plpgsql
 	SET sift.enable_col_scan = on SET enable_seqscan = off SET enable_bitmapscan = off SET max_parallel_workers_per_gather = 0 AS $$
 DECLARE r bigint[];

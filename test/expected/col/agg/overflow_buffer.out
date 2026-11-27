@@ -10,10 +10,9 @@ INSERT INTO b_t
 SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (array['a', 'b', 'c'])[1 + (i + j) % 3], 'n', to_jsonb(j % 10), 's', 'abc'))
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 5000) i;
+SET client_min_messages = warning;
 CREATE INDEX b_t_col ON b_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
-NOTICE:  sift_col index "b_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('b_t_col');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) b_t;
 \ir test/common/sql/agg/base.sql
 \set ECHO none

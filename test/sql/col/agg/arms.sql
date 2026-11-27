@@ -14,7 +14,9 @@ SELECT i, i % 7,
                                                                         'n', (i + j) % 10))
                                     FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX a_t_col ON a_t USING sift_col (id, grp, doc) WITH (paths = 'doc.lines[]{k text, p text, n int4}');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) a_t;
 
 -- the two arms (per item and key, per item), the aggregate and the FILTER of each given

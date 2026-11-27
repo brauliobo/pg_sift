@@ -15,7 +15,9 @@ SELECT i, jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', 
                                                                           's', CASE WHEN (i + j) % 50 = 0 THEN 'longer than four' ELSE 'abc' END))
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX o_t_col ON o_t USING sift_col (id, doc) WITH (paths = 'doc.lines[]{k text, n float8, s text(4)}');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) o_t;
 
 -- the strings, and the rows that hold one
