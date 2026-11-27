@@ -50,13 +50,13 @@ alternates() {
 # echoed ALT...: a line for each alternate that drops a line of its test's SQL file from the main output: psql echoes that file on every version, so no listing excuses it
 echoed() {
 	python3 - "$@" <<'PY'
-import re, subprocess, sys
+import collections, re, sys
 for alt in sys.argv[1:]:
     main = re.sub(r'_[0-9]+\.out$', '.out', alt)
     sql = 'test/sql/' + main[len('test/expected/'):-4] + '.sql'
     src = {l.rstrip() for l in open(sql) if len(l.strip()) >= 12}
-    out = subprocess.run(['diff', '-U0', main, alt], capture_output=True, text=True).stdout.split('\n')[2:]
-    n = sum(1 for l in out if l.startswith('-') and l[1:].rstrip() in src)
+    echoes = lambda f: collections.Counter(l.rstrip() for l in open(f) if l.rstrip() in src)
+    n = sum((echoes(main) - echoes(alt)).values())
     if n:
         print(f'{alt}: {n} lines of {sql} that {main} echoes are not in the alternate: no version changes them, so the alternate is stale: regenerate it from the main output (cp {main} {alt}) and inspect only the version-specific differences')
 PY
