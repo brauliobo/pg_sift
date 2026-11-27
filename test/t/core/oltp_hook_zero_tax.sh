@@ -9,6 +9,7 @@ TABLES=6
 ROUNDS=$(knob SIFT_HOOK_ROUNDS 4 9)
 PLAN_RUNS=$(knob SIFT_HOOK_PLAN_RUNS 150 100)
 LOOKUP_RUNS=$(knob SIFT_HOOK_LOOKUP_RUNS 3000 2000)
+WARMUP=20
 plan 10
 
 node_init oz 4 "shared_preload_libraries = 'pg_sift'
@@ -60,13 +61,15 @@ depend_scans() {
 	echo $((after - before))
 }
 
-# the CPU time of the backend for one statement in us, over RUNS statements of one session (a scheduler that is busy with other work does not count)
+# the CPU time of the backend for one statement in us, over RUNS statements of one session after WARMUP of them (a scheduler that is busy with other work does not count, nor do the caches a new
+# backend fills at its first statements, which the server with the library fills more of)
 latency() {
 	local node=$1 d=$2 file=$3 runs=$4 start=$(dir "$1")/cpu.start end=$(dir "$1")/cpu.end
 	{
 		echo "SELECT pg_backend_pid() AS pid \\gset"
 		echo "\\setenv BACKEND_PID :pid"
 		echo "\\o /dev/null"
+		yes "$(<"$file");" | head -n "$WARMUP"
 		echo "\\! cut -d' ' -f1 /proc/\$BACKEND_PID/schedstat >$start"
 		yes "$(<"$file");" | head -n "$runs"
 		echo "\\! cut -d' ' -f1 /proc/\$BACKEND_PID/schedstat >$end"
