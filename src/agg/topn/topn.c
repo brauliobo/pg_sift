@@ -703,6 +703,8 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	sift_v6_explain_index(es, st->spec->indexoid, st->spec->is_table);
 	sift_v6_topn_explain(es, st->spec->desc, sift_v6_topn_limit_text(st->spec->limit, st->spec->offset));
 	sift_v6_gpu_explain(&st->gpu, es);
+	if (st->tourn != NULL && st->src.global_order)
+		ExplainPropertyBool("Global Order", true, es);
 	if (st->tourn != NULL)
 		sift_v6_explain_count(es, "Top-N Rows", (int64) st->spec->rows);
 	if (st->tourn != NULL)

@@ -63,6 +63,7 @@ typedef struct SiftV6TopNSource
 	bool		(*fetch) (void *src, const SiftTopNWinRow *w, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
 	void		(*close) (void *src);
 	const SiftV6SkipStats *skips;
+	bool		global_order;	/* the winners are read off an order of the key the store keeps (the order arrays of Format 1), not off its parts */
 } SiftV6TopNSource;
 
 /* SiftOrderOps.topn_open: in is the columns the quals read; the source offers only the rows that pass quals (NULL: all) */

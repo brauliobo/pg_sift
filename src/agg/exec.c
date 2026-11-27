@@ -790,6 +790,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
 	if (st->spec->rows)
 		sift_v6_rows_explain(es, st->spec);
+	if (es->analyze && st->stats.global_order_reads > 0)
+		ExplainPropertyBool("Global Order", true, es);
 	if (!st->spec->rows)
 	{
 		sift_v6_explain_group_keys(st->spec, es);

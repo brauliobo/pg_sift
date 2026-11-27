@@ -525,6 +525,7 @@ typedef struct SiftV6ScanStats
 	uint64		heap_reread_rows;	/* rows of an unnest whose document the leaves cannot hold, which the function takes apart again from the heap */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
+	uint64		global_order_reads;	/* row Top-Ns answered off an order of the key the store keeps (the order arrays of Format 1), not off its units */
 } SiftV6ScanStats;
 
 /* The next chunk of the hits of the spec's text query as a finalized bridge that holds no lossy page, false at the end of the hits */

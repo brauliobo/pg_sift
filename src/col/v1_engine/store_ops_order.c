@@ -358,6 +358,7 @@ gorder_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation in
 		sift_v6_rows_put(rows, w.val + (size_t) i * w.nkeys, w.nul + (size_t) i * w.nkeys, w.tid[i]);
 	stats->batches += answered;
 	stats->rows += examined;
+	stats->global_order_reads += answered;
 	GORD_ANSWERED(answered);
 	MemoryContextDelete(cx);
 	return answered;
@@ -462,7 +463,8 @@ order_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *i
 	s->fetch = sift_table_index_fetch_begin(heap);
 	s->slot = table_slot_create(heap, NULL);
 	index_close(index, NoLock);
-	*dst = (SiftV6TopNSource) {.ops = {.expand = topn_unused,.frontier_next = topn_unused,.scan = topn_scan},.src = s,.seed = topn_seed,.fetch = topn_fetch,.close = topn_close};
+	*dst = (SiftV6TopNSource) {.ops = {.expand = topn_unused,.frontier_next = topn_unused,.scan = topn_scan},.src = s,.seed = topn_seed,.fetch = topn_fetch,.close = topn_close,
+		.global_order = true};
 	return true;
 }
 
