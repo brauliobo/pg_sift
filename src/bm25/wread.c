@@ -34,10 +34,10 @@ struct SiftWbufReader
 	uint64		sum_dl;
 	uint64		nwalked;		/* the docs of the pages that were loaded, not skipped for their bloom */
 	/* terms of a doc assembled from pieces */
-	int			nasm;
-	int			asmcap;
-	int			asmbytes;
-	int			asmbytescap;
+	Size		nasm;
+	Size		asmcap;
+	Size		asmbytes;
+	Size		asmbytescap;
 	uint32	   *ahash;
 	uint8	   *atf;
 	uint8	   *alen;
@@ -69,6 +69,14 @@ sift_wbuf_open(Relation index, const SiftSegEntry *entry, MemoryContext mcxt, Si
 void
 sift_wbuf_close(SiftWbufReader *r)
 {
+	if (r->ahash)
+	{
+		pfree(r->ahash);
+		pfree(r->atf);
+		pfree(r->alen);
+	}
+	if (r->aterms)
+		pfree(r->aterms);
 	pfree(r->page);
 	pfree(r);
 }
@@ -158,18 +166,15 @@ asm_piece(SiftWbufReader *r, const SiftWbufDocData *d)
 
 	if (r->nasm + d->nterms > r->asmcap)
 	{
-		MemoryContext old = MemoryContextSwitchTo(r->mcxt);
-
 		r->asmcap = Max(2 * r->asmcap, r->nasm + d->nterms);
-		SIFT_REGROW(r->ahash, r->asmcap * sizeof(uint32));
-		SIFT_REGROW(r->atf, r->asmcap);
-		SIFT_REGROW(r->alen, r->asmcap);
-		MemoryContextSwitchTo(old);
+		SIFT_REGROW_HUGE_IN(r->mcxt, r->ahash, r->asmcap * sizeof(uint32));
+		SIFT_REGROW_HUGE_IN(r->mcxt, r->atf, r->asmcap);
+		SIFT_REGROW_HUGE_IN(r->mcxt, r->alen, r->asmcap);
 	}
 	if (r->asmbytes + d->termbytes > r->asmbytescap)
 	{
 		r->asmbytescap = Max(2 * r->asmbytescap, r->asmbytes + d->termbytes);
-		SIFT_REGROW_IN(r->mcxt, r->aterms, r->asmbytescap);
+		SIFT_REGROW_HUGE_IN(r->mcxt, r->aterms, r->asmbytescap);
 	}
 	memcpy(r->ahash + r->nasm, hash, d->nterms * sizeof(uint32));
 	memcpy(r->atf + r->nasm, tf, d->nterms);

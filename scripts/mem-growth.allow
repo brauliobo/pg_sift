@@ -2,7 +2,6 @@
 double	col/v1/src_wide.c	w->bytes = repalloc(w->bytes, w->bcap);	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	col/v1/src_wide.c	w->key = repalloc(w->key, w->dcap * 3 * sizeof(uint64));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
 double	col/v1/src_wide.c	w->off = repalloc(w->off, (w->dcap + 1) * sizeof(uint32));	open: wide values (numeric, text over 8 bytes) of one aggregate, one per distinct value: no limit but the group table check
-double	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: the size of one posting block of a cursor
 double	col/f2/build/build.c	bs->ended = bs->ended != NULL ? repalloc(bs->ended, bs->capended * sizeof(SiftPendDelRec)) : MemoryContextAlloc(bs->cx, bs->capended * sizeof(SiftPendDelRec));	bounded: one record for each row of the run that the heap has deleted, charged to the memory of the run (maintenance_work_mem), which writes the part and the deletes when it is full
 double	col/skip/build.c	b->s = b->s ? repalloc(b->s, b->cap * sizeof(Stream *)) : palloc(b->cap * sizeof(Stream *));	bounded: one stream per column and kind of one part, at most two for each column of the schema
 double	col/v1/dict/dict.c	d->off = repalloc(d->off, (d->cap + 1) * sizeof(uint32));	open: the entries of a dictionary under construction: segment writer, owned by the lane build-memory
@@ -23,7 +22,6 @@ double	core/lane.c	blks = repalloc(blks, (cap *= 2) * sizeof(BlockNumber));	boun
 double	table/v1/gscan/cache.c	g->cu = repalloc(g->cu, (cap *= 2) * sizeof(UnitTids));	bounded: units of one group scan of a sift_table, the memory of its fetch contexts
 double	col/f2/cube/topk.c	l->e = repalloc(l->e, sizeof(*l->e) * (l->cap = Max(l->cap * 2, l->n + n)));	bounded: the live rows of one scope key that hold one value of an order leaf (the tie at the cut of a query), at most the rows of the key
 int	col/v1/src_sel.c	b->data = MemoryContextAlloc(cxt, b->cap * 8);	bounded: cap is a size_t of the rows of a unit
-int	bm25/step.c	pk->buf = repalloc(pk->buf, pk->cap = size * 2);	bounded: size is the length of one posting block
 lifetime	col/am/rel.c	memset(MemoryContextAlloc(CacheMemoryContext, sz), 0x7f, sz);	bounded: one planning memo per backend, reset when the catalog changes; the 0x7f fill is a leak canary of a test
 lifetime	col/am/ioss.c	MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);	bounded: emptied at the end of the transaction (ioss_pending)
 lifetime	col/dsmreg.c	cx = MemoryContextSwitchTo(TopMemoryContext);	bounded: one record per attached dynamic shared memory segment, with its settings

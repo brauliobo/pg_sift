@@ -72,7 +72,7 @@ sift_doc_next(DocCursor *c)
 		memcpy(&c->nterms, p += sizeof(c->dl), sizeof(c->nterms));
 		p += sizeof(c->nterms);
 		if (c->nterms > c->maxterms)
-			c->terms = repalloc(c->terms, (c->maxterms = c->nterms) * sizeof(SiftTermFreq));
+			c->terms = repalloc_huge(c->terms, (c->maxterms = c->nterms) * sizeof(SiftTermFreq));
 		text = p + c->nterms * PACK_TERM;
 		for (uint32 i = 0; i < c->nterms; i++, p += PACK_TERM)
 		{

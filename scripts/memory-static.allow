@@ -58,8 +58,10 @@ defaultsizes	table/v1/scan.c	1
 defaultsizes	table/v1/reader.c	1
 defaultsizes	table/v1/reader_read.c	1
 huge	agg/distinct/distinct.c	1
+huge	bm25/doctext.c	1
 huge	bm25/liveness.c	1
 huge	bm25/postw.c	1
+huge	bm25/wread.c	4
 huge	col/granule/part/write.c	1
 huge	col/keystore/run.c	1
 huge	col/v1/amscan/ordered.c	1

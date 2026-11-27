@@ -248,7 +248,7 @@ pack_doc(DocPacker *pk, SiftWbufDoc *d, uint32 seq, bool terms)
 		bytes += d->len[i];
 	size = PACK_HEAD + nterms * PACK_TERM + bytes;
 	if (size > pk->cap)
-		pk->buf = repalloc(pk->buf, pk->cap = size * 2);
+		pk->buf = repalloc(pk->buf, pk->cap = Max(size, Min(size * 2, MaxAllocSize)));
 	seq = pg_hton32(seq);
 	p = pk->buf + VARHDRSZ;
 	memcpy(p, &key, sizeof(key));
