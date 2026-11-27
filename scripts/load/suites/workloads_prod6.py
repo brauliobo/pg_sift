@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from cases import LoadCase
+from cases import KILLED, LoadCase
 from collect import AGG, BM, add, base, checks, ctx_kb, engines, halves_differ, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, row3, snap, zipf
 from suites.common import Limits
 from suites.repl import CAP, conninfo
@@ -126,7 +126,7 @@ def olap_shred_jsonb_argext_churn(ctx):
 
     def read(w, i):
         q, t = J_OPS[(w.seed + i) % len(J_OPS)], J_TABLES[i % 2]
-        w.ledger += snap_pair(w, q.format(t=t), q.format(t='j_tw'))
+        w.ledger += snap_pair(w, q.format(t=t), q.format(t='j_tw'), KILLED)
 
     roles = {'w': (ws[:2], write), 'r': (ws[2:6], read), 'c': (ws[6:], cancels(ws[2:6]))}
     ctx.phase(roles, 0.5)

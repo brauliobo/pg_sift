@@ -63,8 +63,8 @@ def conc_bm25_par_largedoc_cancel(ctx):
 
     def read(w, i):
         t = ('z_tbl', 'z_hp')[i % 2]
-        w.ledger += (snap_pair(w, Z_TOPK.format(t=t), Z_HEAP.format(t=t)), snap_oracle(w, Z_BOOL.format(t=t), 'sift.enable_scan'),
-                     snap_pair(w, Z_BOOL.format(t='z_tbl'), Z_BOOL.format(t='z_hp')))[(w.seed + i) % 3]
+        w.ledger += (snap_pair(w, Z_TOPK.format(t=t), Z_HEAP.format(t=t), KILLED), snap_oracle(w, Z_BOOL.format(t=t), 'sift.enable_scan', KILLED),
+                     snap_pair(w, Z_BOOL.format(t='z_tbl'), Z_BOOL.format(t='z_hp'), KILLED))[(w.seed + i) % 3]
 
     def maint(w, i):
         w.do(('VACUUM z_tbl, z_hp', "SELECT count(*) FROM sift.maintain('z_tbl_bm')", "SELECT count(*) FROM sift.maintain('z_hp_bm')")[i % 3])
@@ -132,7 +132,7 @@ def olap_preagg_skip_hll_churn(ctx):
     def read(w, i):
         q = K_OPS[(w.seed + i) % len(K_OPS)]
         if i % 5 == 4:
-            w.ledger += hll_off(w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {K_HLL}; COMMIT', KILLED))
+            w.ledger += hll_off(w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {K_HLL}; COMMIT'))
         else:
             w.ledger += snap_pair(w, q.format(t='k_col'), q.format(t='k_tw')) if i % 2 else snap_oracle(w, q.format(t='k_col'), 'sift.enable_agg')
 
@@ -282,7 +282,7 @@ def olap_hybrid_asof_explain_storm(ctx):
             return w.do(HY_WHY, KILLED)
         q = (HY_GROUP.format(t='hy_tbl', p=HY_TEXT['hy_tbl']), HY_ASOF.format(t='hy_tbl', r=i % 61), HY_ASOF.format(t='hy_col', r=i % 61))[n]
         twin = (HY_GROUP.format(t='hy_col', p=HY_TEXT['hy_col']), HY_ASOF.format(t='hy_col', r=i % 61), HY_ASOF.format(t='hy_tbl', r=i % 61))[n]
-        w.ledger += snap_pair(w, q, twin) if i % 2 else snap_oracle(w, q, ('sift.enable_scan', 'sift.enable_agg', 'sift.enable_agg')[n])
+        w.ledger += snap_pair(w, q, twin, KILLED) if i % 2 else snap_oracle(w, q, ('sift.enable_scan', 'sift.enable_agg', 'sift.enable_agg')[n], KILLED)
 
     roles = {'w': (ws[:2], write), 'a': (ws[2:3], analyze), 'r': (ws[3:7], read), 'c': (ws[7:], cancels(ws[3:7]))}
     ctx.phase(roles, 0.5)

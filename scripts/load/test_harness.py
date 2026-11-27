@@ -1,14 +1,18 @@
 """The harness of the load gate without a server (scripts/load/run.py --selftest runs it): fakes of the control, sampler and worker sessions, and the shell
-library of the TAP scripts with stubs of the node functions. One test a finding of Spec 116 to 119 (S116-L1..L7, S117-L1..L5, S118-L1..L6, S119-L1..L4)."""
+library of the TAP scripts with stubs of the node functions. One test a finding of Spec 116 to 120 (S116-L1..L7, S117-L1..L5, S118-L1..L6, S119-L1..L4,
+S120-L3..L6)."""
 from __future__ import annotations
 
 import ast
+import builtins
+import importlib
 import inspect
 import io
 import math
 import os
 import re
 import subprocess
+import symtable
 import sys
 import tempfile
 import threading
@@ -100,6 +104,17 @@ def newer_fstrings(text: str) -> list:
         out += [f'line {t.start[0]}: {t.string[:40]}'] if inner else []
         outer += [quote(t.string)] if name == 'FSTRING_START' else []
         outer = outer[:-1] if name == 'FSTRING_END' else outer
+    return out
+
+
+def unbound(name: str, text: str) -> list:
+    """the global names the functions of module NAME (source TEXT) read that it never binds: a NameError the first time a worker runs the line"""
+    mod, out, tables = importlib.import_module(name), [], symtable.symtable(text, name, 'exec').get_children()
+    while tables:
+        t = tables.pop()
+        tables += t.get_children()
+        out += [f'{t.get_name()}: {s.get_name()}' for s in t.get_symbols() if s.is_global() and s.is_referenced()
+                and not hasattr(mod, s.get_name()) and not hasattr(builtins, s.get_name())]
     return out
 
 
@@ -402,6 +417,62 @@ class Harness(unittest.TestCase):
         for n in files():
             with open(n) as f:
                 self.assertEqual(newer_fstrings(f.read()), [], n)
+
+    def test_s120_l3_a_cancel_session_cancels_the_backends_of_its_victims(self):
+        from suites.workloads_olap import cancels
+
+        class Victim:
+            _pid = None
+            pid = property(lambda self: 4242)
+
+        canceller = types.SimpleNamespace(sqls=[])
+        canceller.do = canceller.sqls.append
+        cancels([Victim()])(canceller, 0)
+        self.assertEqual(canceller.sqls, ['SELECT pg_cancel_backend(4242)'])
+
+    def test_s120_l4_a_snapshot_pair_expects_no_cancel_unless_asked(self):
+        from suites import workloads_prod2 as w2
+        for fn in (w2.snap_pair, w2.snap_oracle):
+            self.assertEqual(inspect.signature(fn).parameters['allow'].default, (), fn.__name__)
+
+    def test_s120_l4_every_name_a_case_reads_is_bound(self):
+        for n in files():
+            name = os.path.relpath(n, HERE)[:-3].replace(os.sep, '.')
+            with open(n) as f:
+                self.assertEqual(unbound(name, f.read()), [], n)
+
+    def test_s120_l5_a_body_that_fails_restarts_the_server_before_the_sampler_opens_again(self):
+        order, ctx = [], ctx_of()
+        run.reconnect = lambda c: order.append('reconnect') or c.db
+        run.Psql = lambda **kw: order.append(kw.get('app')) or FakeDb()
+        try:
+            run.measure(ctx, LoadCase('fault_x', 'fault', lambda c: 1 / 0, Ceilings()), collect.LogScan([]))
+        finally:
+            run.reconnect, run.Psql = REAL
+        self.assertEqual(order, ['reconnect', 'load_obs'])
+
+    def test_s120_l6_a_wedged_standby_worker_is_terminated_on_the_standby(self):
+        standby, ctx, w = FakeDb(), ctx_of(), worker(kill=lambda: None)
+        w.conn = {'PGPORT': '2'}
+        run.Psql = lambda conn=None, **kw: standby
+        try:
+            ctx.unwedge([w], [])
+        finally:
+            run.Psql = REAL[1]
+        self.assertIn(run.STUCK, standby.sqls)
+        self.assertNotIn(run.STUCK, ctx.db.sqls)
+
+    def test_s120_l6_a_session_opened_again_forgets_its_cascade_and_restores_are_dropped(self):
+        from suites import workloads_prod5 as w5
+        p, popen = run.Psql.__new__(run.Psql), run.subprocess.Popen
+        p.init, p.app, p.dbname, p.conn, p.cascade = '', 'load_w0', 'postgres', {}, True
+        run.subprocess.Popen = lambda *a, **kw: None
+        try:
+            p.open()
+        finally:
+            run.subprocess.Popen = popen
+        self.assertFalse(p.cascade)
+        self.assertIn('db.run(RESTORED)', inspect.getsource(w5.ddl_am_type_tblspc_dump))
 
 
 REAL = (run.reconnect, run.Psql)

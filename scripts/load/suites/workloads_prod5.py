@@ -173,12 +173,11 @@ def olap_highcard_spill_cancel(ctx):
     t0 = int(db.val(TEMP_BYTES))
 
     def olap(w, i):
-        w.pid
         q = H_OPS[(w.seed + i) % len(H_OPS)]
         if w.seed % 2:
             w.do(f"BEGIN; SET LOCAL statement_timeout = '30ms'; {q}; COMMIT", KILLED)
         else:
-            w.ledger += snap_oracle(w, q, 'sift.enable_agg')
+            w.ledger += snap_oracle(w, q, 'sift.enable_agg', KILLED)
 
     def write(w, i):
         k = nxt(w)
@@ -355,6 +354,9 @@ A_DDL = ('ALTER TABLE a_sw SET ACCESS METHOD heap', 'ALTER TABLE {t} ALTER COLUM
          'ALTER TABLE a_sw SET ACCESS METHOD sift_table', 'ALTER TABLE {t} ALTER COLUMN v TYPE int8', 'ALTER TABLE {t} SET TABLESPACE pg_default')
 
 
+RESTORED = "SELECT datname FROM pg_database WHERE datname ~ '^load_case_r[0-9]+$'"
+
+
 def a_restore(ctx, w, i: int, d: str) -> int:
     """a pg_dump -Fc of the two tables (into the directory D) restored into a database of its own: 1 when the restored table and twin differ (one snapshot of the dump)
     or fail their checks"""
@@ -421,6 +423,8 @@ def ddl_am_type_tblspc_dump(ctx):
     finally:
         ctx.close_sessions()
         db.q('ALTER TABLE IF EXISTS a_sw SET TABLESPACE pg_default; ALTER TABLE IF EXISTS a_tw SET TABLESPACE pg_default')
+        for name in db.run(RESTORED):
+            db.run(f'DROP DATABASE {name} WITH (FORCE)')
         db.run('DROP TABLESPACE IF EXISTS load_ts5')
 
 

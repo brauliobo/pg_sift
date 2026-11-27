@@ -28,12 +28,12 @@ TIGHT = (WIDE + ' LIMIT 5',
 
 
 def cancels(victims: list):
-    """a session that cancels the statement of one of VICTIMS every 30 ms"""
+    """a session that cancels the statement of one of VICTIMS every 30 ms (their backends read before the phase: a victim is busy in its own thread)"""
+    pids = [v.pid for v in victims]
+
     def cancel(w, i):
         time.sleep(0.03)
-        pid = victims[i % len(victims)]._pid
-        if pid:
-            w.do(f'SELECT pg_cancel_backend({pid})')
+        w.do(f'SELECT pg_cancel_backend({pids[i % len(pids)]})')
     return cancel
 
 
@@ -47,7 +47,6 @@ def olap_wide_tight_mem(ctx):
     ws = ctx.sessions(9, "SET work_mem = '512kB'")
 
     def olap(w, i):
-        w.pid
         w.do(TIGHT[(w.seed + i) % len(TIGHT)], KILLED)
 
     ctx.phase({'r': (ws[:6], olap)}, 0.4)
@@ -133,7 +132,6 @@ def mix_par_pool_saturation(ctx):
     ws = ctx.sessions(10, PAR.replace('= 2', '= 4'))
     qs = (AGG.format(t='e_col'), 'SELECT grp, count(*) FROM e_tbl GROUP BY grp ORDER BY grp', BM.format(t='e_bm'), 'SELECT count(*), sum(v) FROM e_tbl WHERE v > 10')
     def par(w, i):
-        w.pid
         w.do(qs[(w.seed + i) % len(qs)], ('57014',))
 
     def vac(w, i):

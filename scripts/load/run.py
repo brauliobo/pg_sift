@@ -74,7 +74,7 @@ class Psql:
     def open(self):
         self.p = subprocess.Popen(['psql', '-X', '-At', '-q', '-v', 'ON_ERROR_STOP=0', '-v', 'VERBOSITY=verbose'], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=self.env())
-        self._pid, self.dead, self.errs = None, False, []
+        self._pid, self.dead, self.errs, self.cascade = None, False, [], False
         if self.init:
             _, err, _ = self.q(self.init)
             if err and not self.dead:
@@ -150,7 +150,7 @@ class Worker(Psql):
     the case"""
 
     def __init__(self, init: str, app: str, db: str = 'postgres', seed: int = 0, conn: dict | None = None):
-        self.seed, self.lat, self.ok, self.expected, self.bad, self.ledger, self.last, self.cascade = seed, [], 0, 0, [], 0, None, False
+        self.seed, self.lat, self.ok, self.expected, self.bad, self.ledger, self.last = seed, [], 0, 0, [], 0, None
         super().__init__(init, app, db, conn)
 
     def do(self, sql: str, allow: tuple = ()):
@@ -247,15 +247,22 @@ class Ctx:
         return max(30.0, 5 * secs) * self.a.scale * (4 if self.assert_build else 1)
 
     def unwedge(self, stuck: list, threads: list):
-        """the workers STUCK in a statement: what their backends wait for (an unexpected error of each), their backends terminated and their psql killed, so that the
-        threads end; counted in wedged"""
+        """the workers STUCK in a statement: what their backends wait for (an unexpected error of each), their backends terminated on every server they run on (the
+        primary, the standby) and their psql killed, so that the threads end; counted in wedged"""
         if not stuck:
             return
-        out, err, _ = self.db.q(STUCK)
-        diag = f'{err[0]} {err[1]}' if err else (out or ['no active backend'])[0]
-        self.db.q("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE 'load_w%' AND state = 'active'")
+        diag = {}
+        for c in {tuple(sorted(w.conn.items())) for w in stuck}:
+            s = Psql(conn=dict(c)) if c else self.db
+            try:
+                out, err, _ = s.q(STUCK)
+                diag[c] = f'{err[0]} {err[1]}' if err else (out or ['no active backend'])[0]
+                s.q("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE 'load_w%' AND state = 'active'")
+            finally:
+                if c:
+                    s.close()
         for w in stuck:
-            w.bad.append(f'wedged: {diag}'[:300])
+            w.bad.append(f'wedged: {diag[tuple(sorted(w.conn.items()))]}'[:300])
             w.p.kill()
         for t in threads:
             t.join(30.0)
@@ -358,8 +365,9 @@ def measure(ctx: Ctx, case: LoadCase, log: collect.LogScan):
         ctx.close_sessions()
         for s in (db, ctx.obs_db):
             s.close()
-        ctx.obs_db = Psql(app='load_obs')
-        ctx.drop_case(reconnect(ctx))
+        db = reconnect(ctx)
+        ctx.obs_db = Psql(init='SELECT 1', app='load_obs')
+        ctx.drop_case(db)
         return None, [f'{type(e).__name__}: {e}'[:300]] + log.findings()[:3]
 
 

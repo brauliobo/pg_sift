@@ -19,12 +19,12 @@ from suites.workloads_olap import WORKERS, cancels, tiered  # noqa: E402
 TIGHT = "SET work_mem = '512kB'"
 
 
-def snap_pair(w, a: str, b: str, allow: tuple = KILLED) -> int:
+def snap_pair(w, a: str, b: str, allow: tuple = ()) -> int:
     """1 when the statements A and B answer differently in one REPEATABLE READ snapshot of worker W, 0 when they agree or the snapshot failed with an error of ALLOW"""
     return halves_differ(w.do(snap(a, b), allow))
 
 
-def snap_oracle(w, sql: str, guc: str, allow: tuple = KILLED) -> int:
+def snap_oracle(w, sql: str, guc: str, allow: tuple = ()) -> int:
     """oracle() in a worker: SQL with the index path GUC on and off in one snapshot"""
     return snap_pair(w, f'SET LOCAL {guc} = on; {sql}', f'SET LOCAL {guc} = off; {sql}', allow)
 
@@ -90,7 +90,7 @@ def mix_copy_stream_ingest(ctx):
         time.sleep(0.05)
 
     def read(w, i):
-        w.ledger += twin_do(w, 'c_tbl', 'c_col', KILLED) if i % 2 else snap_oracle(w, BM.format(t='c_bm'), 'sift.enable_scan')
+        w.ledger += twin_do(w, 'c_tbl', 'c_col') if i % 2 else snap_oracle(w, BM.format(t='c_bm'), 'sift.enable_scan')
 
     roles = {'s': (ws[:3], stream), 'u': (ws[3:4], churn), 'q': ([uq], copier), 'x': ([racer], race), 'm': (ws[6:7], maint), 'r': (ws[7:], read)}
     ctx.phase(roles, 0.6)
@@ -152,9 +152,8 @@ def olap_wide_toast_jsonb_mix(ctx):
                  f'UPDATE w_tw c SET v = t.v, doc = t.doc, blen = length(t.blob), bmd5 = md5(t.blob) FROM w_tbl t WHERE c.id = {k} AND t.id = {k}; COMMIT')
 
     def read(w, i):
-        w.pid
         a, b = WIDE_PAIRS[(w.seed + i) % len(WIDE_PAIRS)]
-        w.ledger += snap_oracle(w, WIDE_COL[i % len(WIDE_COL)], 'sift.enable_agg') if i % 3 == 2 else snap_pair(w, a.format(r=i % 16), b.format(r=i % 16))
+        w.ledger += snap_oracle(w, WIDE_COL[i % len(WIDE_COL)], 'sift.enable_agg', KILLED) if i % 3 == 2 else snap_pair(w, a.format(r=i % 16), b.format(r=i % 16), KILLED)
 
     ctx.phase({'w': (ws[5:7], write), 'r': (ws[:5], read)}, 0.8)
     before = [ctx_kb(w) for w in ws[:5]], ctx.rss(ws[:5])
@@ -318,7 +317,6 @@ def olap_par_star_timeout_spill(ctx):
     ws = ctx.sessions(8, f'{PAR4}; {TIGHT}')
 
     def olap(w, i):
-        w.pid
         q = STAR[(w.seed + i) % len(STAR)]
         w.do(f"BEGIN; SET LOCAL statement_timeout = '25ms'; {q}; COMMIT" if w.seed % 2 else q, KILLED)
 
