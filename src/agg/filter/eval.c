@@ -66,6 +66,13 @@ str_equal(const SiftStrView *s, const uint8 *b, uint32 len)
 	return s->len == len && (len == 0 || memcmp(str_bytes(s), b, len) == 0);
 }
 
+/* a numeric NaN is above every number and equal to none of them */
+static inline bool
+nan_holds(SiftPredOp op)
+{
+	return op == SPO_NE || op == SPO_GT || op == SPO_GE || op == SPO_NOT_IN;
+}
+
 static void
 eval_int(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 {
@@ -74,9 +81,11 @@ eval_int(const SiftPred *p, const SiftVec *v, uint32 n, uint64 *out)
 		const int64 x = int_at(v, r);
 		bool		hit = false;
 
-		if (!sift_vec_valid_at(v, r))
+		if (sift_vec_nan_at(v, r))
+			hit = nan_holds(p->op);
+		else if (!sift_vec_valid_at(v, r))
 			continue;
-		if (p->op == SPO_IN || p->op == SPO_NOT_IN)
+		else if (p->op == SPO_IN || p->op == SPO_NOT_IN)
 		{
 			for (uint32 k = 0; k < p->nin && !hit; k++)
 				hit = x == p->in_i[k];
@@ -143,7 +152,7 @@ sift_pred_eval(const SiftPred *p, const SiftVec *v, uint32 n_raw, uint64 *out)
 	if (p->op == SPO_IS_NULL || p->op == SPO_NOT_NULL)
 	{
 		for (uint32 r = 0; r < n_raw; r++)
-			out[r >> 6] |= (uint64) (sift_vec_valid_at(v, r) == (p->op == SPO_NOT_NULL)) << (r & 63);
+			out[r >> 6] |= (uint64) ((sift_vec_valid_at(v, r) || sift_vec_nan_at(v, r)) == (p->op == SPO_NOT_NULL)) << (r & 63);
 		return;
 	}
 	switch (p->kind)

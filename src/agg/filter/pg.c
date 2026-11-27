@@ -11,11 +11,14 @@
 #include "utils/array.h"
 #include "utils/date.h"
 #include "utils/fmgroids.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
+#include "utils/numeric.h"
 
 #include "agg/filter/pg.h"
 #include "agg/expr/pg.h"
 #include "agg/unnest/jsonb.h"
+#include "col/am.h"
 
 typedef struct Build
 {
@@ -45,6 +48,8 @@ fcol_index(Build *b, const Var *v)
 	if (!b->add || *b->nfcols == SIFT_V6_MAX_FCOLS)
 		return -1;
 	b->fcol[*b->nfcols] = sift_v6_vatt_is_json(v->varattno) ? sift_v6_vatt_col(v->varattno, v->varattno, v->vartype, 0) : sift_v6_elem_vatt_col(v->varattno, v->vartype);
+	if (v->vartype == NUMERICOID)
+		b->fcol[*b->nfcols].scale = sift_v6_numeric_typmod_scale(v->vartypmod);
 	return (*b->nfcols)++;
 }
 
@@ -123,6 +128,71 @@ filter_op(Oid opno, SiftPredOp *op)
 	return true;
 }
 
+int
+sift_v6_numeric_typmod_scale(int32 typmod)
+{
+	return ((((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024);
+}
+
+typedef enum NumPlace
+{
+	NUM_AT,						/* the scaled integer of a number of the column */
+	NUM_INSIDE,					/* between the scaled integer and the next one */
+	NUM_ABOVE,					/* above every number of the column (+Infinity too) */
+	NUM_BELOW,
+	NUM_NAN
+} NumPlace;
+
+/* where a numeric constant is among the scaled integers of a numeric(p <= 18, scale) leaf: *key the integer at or below it */
+static NumPlace
+num_place(int scale, Datum d, int64 *key)
+{
+	if (numeric_is_nan(DatumGetNumeric(d)))
+		return NUM_NAN;
+	if (!sift_col_numeric_key_fits(scale, d))
+		return DatumGetInt32(DirectFunctionCall2(numeric_cmp, d, NumericGetDatum(int64_to_numeric(0)))) > 0 ? NUM_ABOVE : NUM_BELOW;
+	*key = sift_col_numeric_key(scale, d, SIFT_COL_ROUND_DOWN);
+	return *key == sift_col_numeric_key(scale, d, SIFT_COL_ROUND_UP) ? NUM_AT : NUM_INSIDE;
+}
+
+static bool
+num_pred(SiftPred *p, SiftPredOp op, int64 i)
+{
+	p->op = op;
+	p->i = op == SPO_IN || op == SPO_NOT_NULL ? 0 : i;
+	return true;
+}
+
+/*
+ * A comparison of a numeric with a constant as one of its scaled integer (eval.c puts a NaN above every number): a constant between two integers is <= or > the lower one, one
+ * past every number is passed by no number, by every one, or by the NaN alone (> PG_INT64_MAX), and a NaN constant equals the NaN alone
+ */
+static bool
+set_numeric(SiftPred *p, int scale, const Const *c)
+{
+	const SiftPredOp op = p->op;
+	const bool	lower = op == SPO_LT || op == SPO_LE;
+	int64		key = 0;
+
+	p->kind = SPK_INT;
+	if (c->constisnull || c->consttype != NUMERICOID)
+		return false;
+	switch (num_place(scale, c->constvalue, &key))
+	{
+		case NUM_AT:
+			return num_pred(p, op, key);
+		case NUM_INSIDE:
+			return num_pred(p, op == SPO_EQ ? SPO_IN : op == SPO_NE ? SPO_NOT_NULL : lower ? SPO_LE : SPO_GT, key);
+		case NUM_ABOVE:
+			return num_pred(p, op == SPO_EQ ? SPO_IN : op == SPO_NE ? SPO_NOT_NULL : lower ? SPO_LE : SPO_GT, PG_INT64_MAX);
+		case NUM_BELOW:
+			return num_pred(p, op == SPO_EQ || lower ? SPO_IN : SPO_NOT_NULL, 0);
+		case NUM_NAN:
+			return num_pred(p, op == SPO_EQ || op == SPO_GE ? SPO_GT : op == SPO_NE || op == SPO_LT ? SPO_LE : op == SPO_LE ? SPO_NOT_NULL : SPO_IN, PG_INT64_MAX);
+	}
+	return false;
+}
+
 /* the kind of pred a column of coltype compared by op with a value of valtype is; false when the scan does not compare them */
 static bool
 pred_kind(Oid coltype, Oid valtype, SiftPredOp op, SiftPredKind *kind)
@@ -164,10 +234,12 @@ int_of(const Const *c)
 	}
 }
 
-/* a non-NULL constant of a type pred_kind takes as the value of p */
+/* a non-NULL constant of a type pred_kind takes as the value of p, a numeric one as a scaled integer of its column (set_numeric) */
 static bool
-set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
+set_const(Build *b, SiftPred *p, Oid coltype, int scale, const Const *c)
 {
+	if (coltype == NUMERICOID)
+		return set_numeric(p, scale, c);
 	if (c->constisnull || !pred_kind(coltype, c->consttype, p->op, &p->kind))
 		return false;
 	if (p->kind == SPK_INT)
@@ -248,7 +320,7 @@ pred_compare(Build *b, const OpExpr *op, SiftPred *p)
 		set_no_row(p);
 		return true;
 	}
-	return set_const(b, p, v->vartype, (const Const *) c);
+	return set_const(b, p, v->vartype, b->fcol[p->vec].scale, (const Const *) c);
 }
 
 static bool
@@ -300,8 +372,10 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 		}
 		if (nulls[i])
 			continue;
-		if (!set_const(b, &one, v->vartype, &e))
+		if (!set_const(b, &one, v->vartype, b->fcol[p->vec].scale, &e) || (one.op != SPO_EQ && one.op != SPO_IN))
 			return false;
+		if (one.op == SPO_IN)
+			continue;
 		p->kind = one.kind;
 		((int64 *) p->in_i)[k] = one.i;
 		((double *) p->in_f)[k] = one.f;

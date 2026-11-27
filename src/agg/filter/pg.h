@@ -23,6 +23,8 @@ extern bool sift_v6_clause_make_params(MemoryContext cx, const List *quals, Sift
 extern bool sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out);
 /* The aggregate with the FILTER of a, that the executor evaluates, as CASE WHEN filter THEN arg END of the same aggregate: NULL for an aggregate it does not fold (DISTINCT, ORDER BY, several arguments, a filter of native clauses) */
 extern Aggref *sift_v6_filter_fold(Aggref *a);
+/* the digits after the point of a numeric(p, s) of the type modifier (s of numeric(p, s), negative too) */
+extern int	sift_v6_numeric_typmod_scale(int32 typmod);
 extern bool sift_v6_clause_bind(MemoryContext cx, const List *quals, const SiftV6Spec *spec, SiftClause *out);
 
 #endif							/* SIFT_AGG_V6_FILTER_PG_H */

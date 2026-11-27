@@ -473,6 +473,17 @@ extern bool sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOpt
 extern bool sift_v6_plan_shape(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 /* is vector v of a batch (the argvec of sift_v6_group_update) one the generic or ordered-set aggregates of the spec read (v6_gen.c) */
 extern bool sift_v6_vec_of_gen(const SiftV6Spec *spec, int v);
+
+/* is vector v of a batch one that folds a NaN: the argument of an aggregate that takes it, or a numeric column of the FILTER clauses (agg/filter/eval.c puts a NaN above every number) */
+static inline bool
+sift_v6_vec_takes_nan(const SiftV6Spec *spec, int v)
+{
+	const int	f = v - sift_v6_spec_fvec(spec);
+
+	if (f >= 0 && f < spec->nfcols)
+		return spec->fcol[f].typid == NUMERICOID && spec->fcol[f].derive == 0;
+	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
+}
 extern bool sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind);
 extern bool sift_v6_kind_takes(SiftV6Kind kind, Oid typid);
 /* The aggregate of the facts of a join as a scan of the index (the tuple of its scan tlist): false when a key, an aggregate or a qual of the facts is not one the scan decides (scope_v6.c adds the members of a scope key) */

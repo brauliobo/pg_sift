@@ -316,12 +316,6 @@ setup_quals(SiftSrcFold *f)
 	setup_ranges(f);
 }
 
-static bool
-vec_takes_nan(const SiftV6Spec *spec, int v)
-{
-	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
-}
-
 SiftSrcFold *
 sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 {
@@ -347,7 +341,7 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 			const SiftV6Col *c = sift_v6_vec_col(spec, v);
 
 			if (c != NULL && c->src != SV6SRC_DIM && !sourceless(f, c))
-				f->argvec[v] = vec_for(f, *c, vec_takes_nan(spec, v));
+				f->argvec[v] = vec_for(f, *c, sift_v6_vec_takes_nan(spec, v));
 		}
 		for (int d = 0; spec->ext != NULL && d < spec->ext->ndims; d++)
 			for (int k = 0; k < spec->ext->dim[d].nkeys; k++)
@@ -375,7 +369,7 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 	return f;
 }
 
-/* A NaN that no aggregate folds (a count of the distinct values, a filter, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
+/* A NaN that no aggregate folds (a count of the distinct values, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
 static void
 refuse_nan(const FoldCol *c, const SiftVec *v, const SiftBatchSel *bs)
 {

@@ -19,6 +19,7 @@
 #include "agg/safety.h"
 #include "agg/plan/int.h"
 #include "agg/ext.h"
+#include "agg/filter/pg.h"
 #include "agg/qual/bqual.h"
 #include "agg/qual/contains.h"
 #include "agg/qual/qual.h"
@@ -77,10 +78,15 @@ col_opfamily(const V6Plan *p, const SiftV6Col *col)
 	return col->jleaf > 0 ? get_opclass_family(GetDefaultOpClass(col->typid, BTREE_AM_OID)) : sift_v6_plan_opfamily(p, col->attno);
 }
 
-/* A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c) */
+/*
+ * A numeric column of an index decides a comparison with a constant of its scale range on the scaled integers; a NaN row is decided by the scan (col/f2/scan/verdict.c). A FILTER clause
+ * compares the scaled integers of its rows with any constant (agg/filter/pg.c), for a column whose type modifier says the scale its leaf holds
+ */
 static bool
-numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Node *operand)
+numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Var *v, const Node *operand)
 {
+	if (p->in_filter)
+		return !p->is_table && v->vartypmod >= VARHDRSZ && sift_v6_numeric_typmod_scale(v->vartypmod) == col->scale;
 	return !p->is_table && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
 		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
 }
@@ -94,11 +100,13 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	const bool	index = !p->is_table;
 	int			strat = get_op_opfamily_strategy(q->opno, family);
 
-	if (strat == 0 && (index || !text) && !p->in_filter && !stable_operand(operand))
+	if (strat == 0 && (index || !text) && !stable_operand(operand))
 		strat = sift_v6_qual_private_strategy(q->opno, family);
 	if (text && (p->is_table || !sift_text_bytes_equal(q->inputcollid)))
 		return 0;
-	if (col->typid == NUMERICOID && !numeric_exact(p, strat, col, operand))
+	if (col->typid == NUMERICOID && !numeric_exact(p, strat, col, (const Var *) domain_column(linitial(q->args)), operand))
+		return 0;
+	if (p->in_filter && strat > BTMaxStrategyNumber && strat != COL_STRAT_NE)
 		return 0;
 	switch (strat)
 	{
@@ -165,7 +173,8 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	SiftV6Col	col;
 
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !in_array_usable(p, lsecond(sa->args)) ||
-		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), false, &col) || sift_v6_class(col.typid) == SV6C_F64 ||
+		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), p->in_filter, &col) || sift_v6_class(col.typid) == SV6C_F64 ||
+		(col.typid == NUMERICOID && !numeric_exact(p, BTEqualStrategyNumber, &col, (const Var *) domain_column(linitial(sa->args)), lsecond(sa->args))) ||
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;
@@ -247,8 +256,8 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
 	Expr	   *q;
 
-	/* a table, and a FILTER clause of an index, have no scan to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
-	if ((p->is_table || p->in_filter) && has_numeric_var((Node *) clause, NULL))
+	/* a table has no scan to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
+	if (p->is_table && has_numeric_var((Node *) clause, NULL))
 		return NULL;
 
 	switch (nodeTag(clause))

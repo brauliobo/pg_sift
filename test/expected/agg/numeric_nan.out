@@ -111,6 +111,24 @@ SELECT parity('SELECT qty, grp, count(amount), sum(amount) FROM @T GROUP BY qty,
  t
 (1 row)
 
+-- a FILTER that compares the numeric with a constant of more digits than its scale, one past every number, a NaN or an infinity: the NaN is above every number and equal to none
+SELECT parity($q$SELECT grp, count(*) FILTER (WHERE amount = 10.25), count(*) FILTER (WHERE amount <> 10.25), count(*) FILTER (WHERE amount < 10.255), count(*) FILTER (WHERE amount >= 10.255),
+	count(*) FILTER (WHERE amount = 10.255), count(*) FILTER (WHERE amount <> 10.255), count(*) FILTER (WHERE amount > 1e30), count(*) FILTER (WHERE amount <= 1e30),
+	count(*) FILTER (WHERE amount > -1e30), count(*) FILTER (WHERE amount < -1e30), count(*) FILTER (WHERE amount = 'NaN'), count(*) FILTER (WHERE amount <= 'NaN'),
+	count(*) FILTER (WHERE amount < 'NaN'), count(*) FILTER (WHERE amount > 'NaN'), count(*) FILTER (WHERE amount >= 'Infinity'), count(*) FILTER (WHERE amount < '-Infinity'),
+	count(*) FILTER (WHERE amount IS NULL), count(*) FILTER (WHERE amount IS NOT NULL), count(*) FILTER (WHERE amount IN (10.25, 3.5, 3.333)),
+	count(*) FILTER (WHERE amount NOT IN (10.25, 3.5)), count(*) FILTER (WHERE amount BETWEEN 1.001 AND 20) FROM @T GROUP BY grp$q$) AS numeric_filters;
+ numeric_filters 
+-----------------
+ t
+(1 row)
+
+SELECT plan_ok('SELECT grp, count(*) FILTER (WHERE amount < 10.255), count(*) FILTER (WHERE amount > ''NaN''), count(*) FILTER (WHERE amount IS NULL) FROM @T GROUP BY grp') AS numeric_filters_plan;
+ numeric_filters_plan 
+----------------------
+ t
+(1 row)
+
 -- a statement a NaN meets that SiftAggV6 cannot fold is refused never answered without the NaN (the heap decides with sift.enable_agg = off)
 CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE x text;
@@ -146,6 +164,12 @@ SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount), coun
 
 SELECT parity('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS after_dml_grouped;
  after_dml_grouped 
+-------------------
+ t
+(1 row)
+
+SELECT parity('SELECT grp, count(*) FILTER (WHERE amount >= 10), count(*) FILTER (WHERE amount <> 10) FROM @T GROUP BY grp') AS after_dml_filters;
+ after_dml_filters 
 -------------------
  t
 (1 row)

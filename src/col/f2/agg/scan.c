@@ -120,13 +120,6 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	return n;
 }
 
-/* whether the vector v of a batch is the argument of an aggregate that folds a NaN */
-static bool
-vec_takes_nan(const SiftV6Spec *spec, int v)
-{
-	return (v < spec->naggs && sift_v6_kind_reads_column(spec->agg[v].kind) && sift_v6_agg_takes_nan(&spec->agg[v])) || sift_v6_vec_of_gen(spec, v);
-}
-
 /* a column of the relation the scan reads: not one a dimension of a star join gives, nor the element of an unnested array */
 static bool
 reads_fact(const SiftV6Col *c)
@@ -233,7 +226,7 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 	for (int b = 0; b < s->nbins; b++)
 		s->pipe->key_slot[s->bins[b].key] = nbin + b;
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
-		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : sift_f2_v6_slot_of(s, first, sift_v6_vec_col(spec, v), vec_takes_nan(spec, v));
+		s->pipe->arg_slot[v] = sift_v6_vec_col(spec, v) == NULL ? -1 : sift_f2_v6_slot_of(s, first, sift_v6_vec_col(spec, v), sift_v6_vec_takes_nan(spec, v));
 	s->fact = palloc(nfact * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
 		s->fact[i] = s->cols[i].lane ? &no_vec : &s->cols[i].vec;
@@ -341,7 +334,7 @@ setup_spec(V6Scan *s, const int *first)
 			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, spec->rows)->vec;
 	for (int v = 0; v < nvec; v++)
 		if (sift_v6_vec_col(spec, v) != NULL && reads_fact(sift_v6_vec_col(spec, v)) && !sourceless(s, sift_v6_vec_col(spec, v)))
-			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, vec_takes_nan(spec, v))->vec;
+			s->argvec[v] = &col_for(s, first, *sift_v6_vec_col(spec, v), false, sift_v6_vec_takes_nan(spec, v))->vec;
 	for (int d = 0; x != NULL && d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			if (sift_v6_xdim_key_is_col(&x->dim[d], k) && x->dim[d].fsrc[k] == SV6SRC_ATTR)

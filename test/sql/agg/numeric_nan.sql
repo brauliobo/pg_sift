@@ -50,6 +50,14 @@ SELECT parity('SELECT count(amount) FILTER (WHERE qty > 2), sum(amount) FILTER (
 SELECT parity('SELECT grp, count(amount) FILTER (WHERE qty > 2), min(amount) FILTER (WHERE qty > 2) FROM @T GROUP BY grp') AS filtered_grouped;
 SELECT parity('SELECT grp, count(amount), max(amount) FROM @T GROUP BY ROLLUP (grp)') AS rollup;
 SELECT parity('SELECT qty, grp, count(amount), sum(amount) FROM @T GROUP BY qty, grp') AS two_keys;
+-- a FILTER that compares the numeric with a constant of more digits than its scale, one past every number, a NaN or an infinity: the NaN is above every number and equal to none
+SELECT parity($q$SELECT grp, count(*) FILTER (WHERE amount = 10.25), count(*) FILTER (WHERE amount <> 10.25), count(*) FILTER (WHERE amount < 10.255), count(*) FILTER (WHERE amount >= 10.255),
+	count(*) FILTER (WHERE amount = 10.255), count(*) FILTER (WHERE amount <> 10.255), count(*) FILTER (WHERE amount > 1e30), count(*) FILTER (WHERE amount <= 1e30),
+	count(*) FILTER (WHERE amount > -1e30), count(*) FILTER (WHERE amount < -1e30), count(*) FILTER (WHERE amount = 'NaN'), count(*) FILTER (WHERE amount <= 'NaN'),
+	count(*) FILTER (WHERE amount < 'NaN'), count(*) FILTER (WHERE amount > 'NaN'), count(*) FILTER (WHERE amount >= 'Infinity'), count(*) FILTER (WHERE amount < '-Infinity'),
+	count(*) FILTER (WHERE amount IS NULL), count(*) FILTER (WHERE amount IS NOT NULL), count(*) FILTER (WHERE amount IN (10.25, 3.5, 3.333)),
+	count(*) FILTER (WHERE amount NOT IN (10.25, 3.5)), count(*) FILTER (WHERE amount BETWEEN 1.001 AND 20) FROM @T GROUP BY grp$q$) AS numeric_filters;
+SELECT plan_ok('SELECT grp, count(*) FILTER (WHERE amount < 10.255), count(*) FILTER (WHERE amount > ''NaN''), count(*) FILTER (WHERE amount IS NULL) FROM @T GROUP BY grp') AS numeric_filters_plan;
 
 -- a statement a NaN meets that SiftAggV6 cannot fold is refused never answered without the NaN (the heap decides with sift.enable_agg = off)
 CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
@@ -71,6 +79,7 @@ UPDATE nc SET amount = 'NaN' WHERE id IN (1, 2, 3);
 UPDATE nt SET amount = 'NaN' WHERE id IN (1, 2, 3);
 SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount), count(DISTINCT amount) FROM @T') AS after_dml;
 SELECT parity('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS after_dml_grouped;
+SELECT parity('SELECT grp, count(*) FILTER (WHERE amount >= 10), count(*) FILTER (WHERE amount <> 10) FROM @T GROUP BY grp') AS after_dml_filters;
 DROP TABLE nh, nc, nt;
 DROP FUNCTION refused(text), plan_ok(text), parity(text);
 DROP EXTENSION pg_sift_helpers;

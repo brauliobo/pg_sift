@@ -164,7 +164,7 @@ sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen
 	v->sel = NULL;
 }
 
-/* A NaN that no aggregate folds (a count of the distinct values, a filter, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
+/* A NaN that no aggregate folds (a count of the distinct values, an argument of sift.arg_max) is not left out as a NULL would be: the statement is refused */
 static void
 refuse_nan(const V6Col *c, const SiftBatchSel *bs)
 {
