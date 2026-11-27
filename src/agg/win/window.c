@@ -41,7 +41,7 @@ enum
 	PRIV_PART = 2,
 	PRIV_ORD = 3,
 	PRIV_FUNCS = 4,
-	PRIV_BOUND = 5				/* the run condition bound: (a Const int8 or an external Param, a Const 1 when the condition is strict) or NIL */
+	PRIV_BOUND = 5				/* the bounds of the run conditions: pairs of (a Const int8 or an external Param, a Const 1 when the condition is strict), or NIL */
 };
 
 /* How the rows of a partition reach the engine: the parts are sorted by the keys and the order, by the keys only (each partition is sorted), or by neither (the partitions are put together, then sorted) */
@@ -99,12 +99,10 @@ int_datum(Oid typid, int64 v)
 	}
 }
 
-/* The bound of the run condition of this execution: rn <= K, or rn < K + 1 */
+/* The bound of one run condition in this execution: rn <= K, or rn < K + 1 */
 static int64
-bound_value(const List *bound, ParamListInfo params)
+cond_value(const Node *n, bool strict, ParamListInfo params)
 {
-	const Node *n = linitial(bound);
-	const bool	strict = DatumGetInt64(((const Const *) lsecond(bound))->constvalue) != 0;
 	int64		k = 1;
 
 	if (IsA(n, Const))
@@ -118,6 +116,17 @@ bound_value(const List *bound, ParamListInfo params)
 		k = prm->isnull ? 0 : prm->ptype == INT4OID ? DatumGetInt32(prm->value) : DatumGetInt64(prm->value);
 	}
 	return Max(k, 0) - strict;
+}
+
+/* The bound of the run conditions of this execution, all of which a row passes: the least of theirs */
+static int64
+bound_value(const List *bound, ParamListInfo params)
+{
+	int64		k = PG_INT64_MAX;
+
+	for (int i = 0; i < list_length(bound); i += 2)
+		k = Min(k, cond_value(list_nth(bound, i), DatumGetInt64(((const Const *) list_nth(bound, i + 1))->constvalue) != 0, params));
+	return k;
 }
 
 /* ORDER BY keys of a window that sorts its partitions: the flags of key j in the private ints */
@@ -396,13 +405,15 @@ count_node(const Node *n, int64 *plan_value)
 	return (*plan_value = c->consttype == INT4OID ? DatumGetInt32(c->constvalue) : DatumGetInt64(c->constvalue), true);
 }
 
-/* WHERE rn <= K as PostgreSQL left it in the run condition of the function (the outer clause is gone): the engine stops at K, so it is the only condition the node can honour; false for any other */
+/* WHERE rn <= K as PostgreSQL left it in the run conditions of the function (the outer clause is gone): the engine stops at the least K, so they are the only conditions the node can
+ * honour; false for any other, or for those of a second function */
 static bool
 run_condition(WinPlan *p)
 {
 	int			i = 0;
 
 	p->topk_func = -1;
+	p->bound = NIL;
 	foreach_node(WindowFunc, wf, p->funcs)
 	{
 		foreach_node(WindowFuncRunCondition, rc, wf->runCondition)
@@ -412,10 +423,10 @@ run_condition(WinPlan *p)
 			const bool	strict = name != NULL && strcmp(name, rc->wfunc_left ? "<" : ">") == 0;
 			int64		k;
 
-			if (p->topk_func >= 0 || !(upper || strict) || !count_node((Node *) rc->arg, &k) || (IsA(rc->arg, Const) && k < 1 + strict))
+			if ((p->topk_func >= 0 && p->topk_func != i) || !(upper || strict) || !count_node((Node *) rc->arg, &k) || (IsA(rc->arg, Const) && k < 1 + strict))
 				return false;
 			p->topk_func = i;
-			p->bound = list_make2(copyObject(rc->arg), makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(strict), false, true));
+			p->bound = lappend(lappend(p->bound, copyObject(rc->arg)), makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(strict), false, true));
 		}
 		i++;
 	}
