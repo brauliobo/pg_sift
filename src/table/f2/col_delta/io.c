@@ -421,7 +421,8 @@ scan_load_map(SiftColDeltaScan *ds, ScanPart *sp, const SiftPartitionEntry *entr
 	sp->retained = keyed && settled;
 }
 
-/* The map is of the part the granule is in; a second granule of the part is a scan's, and reads the whole of it once. The first granule a scan asks of a part reads only the pages of the chain that can name it */
+/* The map is of the part the granule is in; a second granule of the part is a scan's, and reads the whole of it once. The first granule a scan asks of a part reads only the pages of the chain that can name it.
+ * A SERIALIZABLE scan looks at the chain again at each ask: a record written since its last look is a conflict out of the reader */
 const SiftColDeltaGranMap *
 sift_col_delta_scan_granule(SiftColDeltaScan *ds, const SiftPartitionEntry *entry, const SiftF2PartPin *pin, uint32 granule_id)
 {
@@ -432,7 +433,7 @@ sift_col_delta_scan_granule(SiftColDeltaScan *ds, const SiftPartitionEntry *entr
 	sp = scan_part_find(ds, entry, pin);
 	if (sp == NULL)
 		sp = scan_part_take(ds, entry, pin);
-	if (!sp->valid || (sp->key.one_granule && sp->key.granule != granule_id))
+	if (!sp->valid || ds->vis->serializable || (sp->key.one_granule && sp->key.granule != granule_id))
 		scan_load_map(ds, sp, entry, pin, granule_id);
 	sp->used = ++ds->asks;
 	ds->cur = sp;

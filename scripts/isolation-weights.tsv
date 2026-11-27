@@ -59,6 +59,7 @@ col/scope/par_edits	0.7
 col/scope/read_directory	0.1
 col/scope/twohop_snapshot	0.1
 col/scope/verify_snapshot	0.2
+col/ssi_scan_shapes	0.2
 col/topn_parallel	0.2
 col/track/alter_deadlock	0.2
 col/track/convert_drop	0.1
@@ -96,6 +97,7 @@ table/f2/onconflict_dirty	0.1
 table/f2/pk_concurrent	0.1
 table/f2/key_share_cic	0.1
 table/f2/speculative_ssi	0.0
+table/f2/ssi_col_delta_maps	0.4
 table/f2/ssi_delvec	0.1
 table/f2/ssi_pk_skew	0.2
 table/f2/ssi_scan_caches	0.6	quiet

@@ -1,0 +1,132 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1flag s1f s2b s2flag s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+step s1flag: BEGIN; SET LOCAL enable_bitmapscan = off; DECLARE c CURSOR FOR SELECT id, v FROM iso_cdm_flag WHERE id IN (1, 2000) ORDER BY id;
+step s1f: FETCH 1 FROM c;
+id|v
+--+-
+ 1|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2flag: UPDATE iso_cdm_flag SET v = 2 WHERE id = 2000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+  id|v
+----+-
+2000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1one s1f s2b s2one s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+step s1one: BEGIN; SET LOCAL enable_bitmapscan = off; DECLARE c CURSOR FOR SELECT id, v FROM iso_cdm WHERE id IN (1, 2000) ORDER BY id;
+step s1f: FETCH 1 FROM c;
+id|v
+--+-
+ 1|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2one: UPDATE iso_cdm SET v = 2 WHERE id = 2000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+  id|v
+----+-
+2000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1whole s1f s1f s2b s2whole s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+step s1whole: BEGIN; SET LOCAL enable_bitmapscan = off; DECLARE c CURSOR FOR SELECT id, v FROM iso_cdm WHERE id IN (1, 9000, 17000) ORDER BY id;
+step s1f: FETCH 1 FROM c;
+id|v
+--+-
+ 1|0
+(1 row)
+
+step s1f: FETCH 1 FROM c;
+  id|v
+----+-
+9000|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2whole: UPDATE iso_cdm SET v = 2 WHERE id = 17000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+   id|v
+-----+-
+17000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1loop s1f s2b s2one s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+step s1loop: BEGIN; SET LOCAL enable_indexscan = off; SET LOCAL enable_hashjoin = off; SET LOCAL enable_mergejoin = off; SET LOCAL enable_material = off; SET LOCAL enable_memoize = off;
+			  DECLARE c CURSOR FOR SELECT o.k, t.v FROM (VALUES (1), (2000)) o(k) JOIN iso_cdm t ON t.id = o.k;
+step s1f: FETCH 1 FROM c;
+k|v
+-+-
+1|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2one: UPDATE iso_cdm SET v = 2 WHERE id = 2000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+   k|v
+----+-
+2000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;

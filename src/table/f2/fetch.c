@@ -247,6 +247,7 @@ fetch_packed(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *s
 	return sift_f2_locate_packed(f->base.rel, f->store, tid, packed_hit, &p) && p.found;
 }
 
+/* A SERIALIZABLE fetch locates each row again: the entry of its partition can have taken its first column delta since the last row of the granule */
 static bool
 fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot)
 {
@@ -262,7 +263,7 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 		sift_col_delta_scan_reset(f->delta);
 	}
 	f->vis.snap = f->vis.xc.snap = snapshot;
-	row = f->gb != NULL ? row_in_granule(f->gb, tid) : -1;
+	row = f->gb != NULL && !f->vis.serializable ? row_in_granule(f->gb, tid) : -1;
 	ExecClearTuple(slot);
 	MemoryContextReset(f->rowcx);
 	if (row < 0)

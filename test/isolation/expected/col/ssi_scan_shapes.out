@@ -1,0 +1,79 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s1ix2 s2b s2i2 s2c s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1ix2: SET LOCAL enable_indexonlyscan = off; SELECT id FROM iso_sh2 WHERE k = 5000;
+id
+--
+(0 rows)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT n FROM iso_shm;
+n
+-
+0
+(1 row)
+
+step s2i2: INSERT INTO iso_sh2 VALUES (5001, 5000);
+step s2c: COMMIT;
+step s1w: UPDATE iso_shm SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s1ix1 s2b s2i1 s2c s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1ix1: SET LOCAL enable_indexonlyscan = off; SELECT id FROM iso_sh1 WHERE k = 5000;
+id
+--
+(0 rows)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT n FROM iso_shm;
+n
+-
+0
+(1 row)
+
+step s2i1: INSERT INTO iso_sh1 VALUES (5001, 5000);
+step s2c: COMMIT;
+step s1w: UPDATE iso_shm SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s1io2 s2b s2d2 s2c s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1io2: SELECT count(k) FROM iso_sh2 WHERE k BETWEEN 5 AND 6;
+count
+-----
+    2
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT n FROM iso_shm;
+n
+-
+0
+(1 row)
+
+step s2d2: DELETE FROM iso_sh2 WHERE id = 5;
+step s2c: COMMIT;
+step s1w: UPDATE iso_shm SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s1io1 s2b s2d1 s2c s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1io1: SELECT count(k) FROM iso_sh1 WHERE k BETWEEN 5 AND 6;
+count
+-----
+    2
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT n FROM iso_shm;
+n
+-
+0
+(1 row)
+
+step s2d1: DELETE FROM iso_sh1 WHERE id = 5;
+step s2c: COMMIT;
+step s1w: UPDATE iso_shm SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
