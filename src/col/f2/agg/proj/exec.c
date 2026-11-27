@@ -158,7 +158,7 @@ key_datum(const SiftF2Store *store, const SiftV6Col *k, const SiftCell *c, bool 
 		case UUIDOID:
 			return UUIDPGetDatum((pg_uuid_t *) memcpy(palloc(UUID_LEN), c->s, UUID_LEN));
 		case BYTEAOID:
-			return PointerGetDatum(memcpy(palloc(c->slen), c->s, c->slen));
+			return store->headerless ? sift_f2_bare_datum_of(BYTEAOID, c->s, c->slen, CurrentMemoryContext) : PointerGetDatum(memcpy(palloc(c->slen), c->s, c->slen));
 		case TEXTOID:
 		case VARCHAROID:
 		case BPCHAROID:

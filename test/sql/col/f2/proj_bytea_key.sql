@@ -1,0 +1,39 @@
+-- A bytea group key of an aggregate projection of a Format 2.0 sift_table: the table keeps the bytes of the value without their header, and the group key the projection gives
+-- back is the bytea of those bytes (empty, one byte that reads as a long header, bytes that read as a huge length, 70 bytes), the groups of the scan without the projection.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+\set VERBOSITY terse
+
+CREATE TABLE pb (k bytea, v int) USING sift_table;
+SELECT sift.create_projection('pb', 'by_k', 'GROUP BY k MEASURES count(*), sum(v)');
+INSERT INTO pb SELECT (ARRAY[''::bytea, '\xff'::bytea, '\x00001000'::bytea, '\xdeadbeef'::bytea, decode(repeat('ab', 70), 'hex')])[1 + i % 5], i
+FROM generate_series(1, 20000) i;
+VACUUM pb;
+SELECT name, state FROM sift.projection_list() WHERE relation = 'pb'::regclass;
+
+CREATE FUNCTION pb_uses() RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE line text; used boolean := false;
+BEGIN
+	FOR line IN EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT k, count(*), sum(v) FROM pb GROUP BY k LOOP
+		used := used OR line LIKE '%Projection: by_k%';
+	END LOOP;
+	RETURN used;
+END $$;
+CREATE FUNCTION pb_groups(agg boolean) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE groups text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', agg::text, true);
+	SELECT string_agg(format('%s:%s:%s', md5(k), c, s), ',' ORDER BY k) INTO groups FROM (SELECT k, count(*) c, sum(v) s FROM pb GROUP BY k) g;
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	RETURN groups;
+END $$;
+
+SELECT pb_uses() AS by_projection, pb_groups(true) = pb_groups(false) AS same_groups;
+SELECT length(k), encode(substr(k, 1, 4), 'hex') AS head, count(*) FROM pb GROUP BY k ORDER BY 1, 2;
+
+DROP TABLE pb;
+DROP FUNCTION pb_uses(), pb_groups(boolean);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

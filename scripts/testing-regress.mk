@@ -323,6 +323,7 @@ TESTING_REGRESS += col/f2/partitioned_only
 TESTING_REGRESS += col/f2/point_v2
 TESTING_REGRESS += col/f2/preagg_table_par
 TESTING_REGRESS += col/f2/prepare_inval
+TESTING_REGRESS += col/f2/proj_bytea_key
 TESTING_REGRESS += col/f2/proj_ddl_acid
 TESTING_REGRESS += col/f2/proj_rebuild
 TESTING_REGRESS += col/f2/proj_tiered

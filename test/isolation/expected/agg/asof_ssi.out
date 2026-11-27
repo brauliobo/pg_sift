@@ -1,0 +1,28 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s2b s1plan s1r s2r s1i s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1plan: SELECT iso_ad_asof() AS asof;
+asof
+----
+t   
+(1 row)
+
+step s1r: SELECT count(q.px) FROM iso_af f LEFT JOIN LATERAL (SELECT px FROM iso_ad d WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) q ON true WHERE f.k = 3;
+count
+-----
+  399
+(1 row)
+
+step s2r: SELECT count(q.px) FROM iso_af f LEFT JOIN LATERAL (SELECT px FROM iso_ad d WHERE d.k = f.k AND d.ts <= f.ts ORDER BY d.ts DESC LIMIT 1) q ON true WHERE f.k = 3;
+count
+-----
+  399
+(1 row)
+
+step s1i: INSERT INTO iso_af VALUES (3, 1, -1);
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ad VALUES (3, 2, -2);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;

@@ -1,0 +1,28 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s2b s1plan s1r s2r s1i s1c s2i s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
+step s1plan: SELECT iso_ss_read() AS scope_read;
+scope_read
+----------
+join      
+(1 row)
+
+step s1r: SELECT sum(s) FROM (SELECT date_trunc('month', e.at::timestamp), sum(e.amount) s FROM iso_ss e JOIN iso_ss_pr p ON p.entity_id = e.entity_id WHERE p.parent_id = 2 GROUP BY 1) m;
+  sum
+-----
+57553
+(1 row)
+
+step s2r: SELECT sum(s) FROM (SELECT date_trunc('month', e.at::timestamp), sum(e.amount) s FROM iso_ss e JOIN iso_ss_pr p ON p.entity_id = e.entity_id WHERE p.parent_id = 2 GROUP BY 1) m;
+  sum
+-----
+57553
+(1 row)
+
+step s1i: INSERT INTO iso_ss_pr VALUES (41, 2);
+step s1c: COMMIT;
+step s2i: INSERT INTO iso_ss VALUES (6002, 1, DATE '2025-02-01', 20);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
