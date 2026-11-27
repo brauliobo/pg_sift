@@ -1,7 +1,8 @@
 /*
  * table/f2/col_delta/mapcache.c - the map of the patches of a whole part, kept from one statement to the next (f2_col_delta.h).
  *
- * A slot is made for the attributes of the first ask: the pages of the chain that patch none of them are not read, and the slot remembers the attributes of those pages. An ask whose attributes meet
+ * A part has a slot for the MVCC snapshots and one for the snapshots that take any row, which settle a writer as soon as it ends and would carry the slot past what the next MVCC snapshot
+ * can use. A slot is made for the attributes of the first ask: the pages of the chain that patch none of them are not read, and the slot remembers the attributes of those pages. An ask whose attributes meet
  * them makes the slot over, for the attributes of both; every other ask, whatever its attributes, is answered by the slot with one look at the newest page of the chain.
  *
  * A map is what a snapshot sees of the records of one part: it depends on the snapshot only through the writers whose fate the snapshot decides. A record whose writer finished before the
@@ -45,6 +46,7 @@ typedef struct MapSlot
 	uint32		relhash;
 	uint64		part_id;
 	uint64		part_gen;
+	bool		mvcc;			/* the slot of the MVCC snapshots, or of those that take any row: each settles its writers by its own rule */
 	SiftColDeltaPartMap *map;	/* the slot's reference; NULL: the part has no patch the records show */
 	SiftColDeltaWatch watch;	/* the pages of the chain the map covers, the newest as far as its copy says */
 	SiftColDeltaAnchor anchor;	/* the chain the watch covers as the manifest named it */
@@ -195,16 +197,16 @@ mapcache_init(void)
 }
 
 static MapSlot *
-slot_find(Relation rel, uint64 part_id, uint64 part_gen)
+slot_find(Relation rel, uint64 part_id, uint64 part_gen, bool mvcc)
 {
 	for (int i = 0; i < MAP_SLOTS; i++)
-		if (slots[i].cx != NULL && slots[i].part_id == part_id && slots[i].part_gen == part_gen && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
+		if (slots[i].cx != NULL && slots[i].part_id == part_id && slots[i].part_gen == part_gen && slots[i].mvcc == mvcc && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
 			return &slots[i];
 	return NULL;
 }
 
 static MapSlot *
-slot_open(Relation rel, uint64 part_id, uint64 part_gen, uint64 want)
+slot_open(Relation rel, uint64 part_id, uint64 part_gen, bool mvcc, uint64 want)
 {
 	MapSlot    *s = &slots[0];
 
@@ -225,6 +227,7 @@ slot_open(Relation rel, uint64 part_id, uint64 part_gen, uint64 want)
 	s->relhash = sift_f2_rel_hash(rel);
 	s->part_id = part_id;
 	s->part_gen = part_gen;
+	s->mvcc = mvcc;
 	s->built_bloom = want;
 	sift_col_delta_watch_init(&s->watch, s->cx);
 	return s;
@@ -439,6 +442,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	SiftColDeltaAnchor a;
 	MapSlot    *s;
 	uint64		want = attnum_bloom == 0 ? ALL_ATTRS : attnum_bloom;
+	bool		mvcc = vis->snap->snapshot_type == SNAPSHOT_MVCC;
 	uint64		appends;
 	Advance		r = ADVANCED;
 
@@ -450,7 +454,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		return false;
 	if (mapcache_cx == NULL)
 		mapcache_init();
-	s = slot_find(rel, entry->part_id, part_gen);
+	s = slot_find(rel, entry->part_id, part_gen, mvcc);
 	if (s != NULL && (s->watch.npages > a.npages || !slot_settled_for(s, vis)))
 	{
 		if (s->watch.npages > a.npages)
@@ -462,7 +466,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	if (s != NULL && (want & s->skipped_bloom) != 0)
 		slot_widen(s, want);
 	if (s == NULL)
-		s = slot_open(rel, entry->part_id, part_gen, want);
+		s = slot_open(rel, entry->part_id, part_gen, mvcc, want);
 	if (chain_unchanged(rel, entry, s, &a, vis, looks, appends))
 		*map = sift_col_delta_part_map_ref(s->map);
 	else
@@ -471,7 +475,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	{
 		want = s->built_bloom;
 		slot_drop(s);
-		s = slot_open(rel, entry->part_id, part_gen, want);
+		s = slot_open(rel, entry->part_id, part_gen, mvcc, want);
 		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
 	}
 	if (r == STALE)
