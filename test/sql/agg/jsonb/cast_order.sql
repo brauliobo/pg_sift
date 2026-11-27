@@ -50,7 +50,24 @@ SELECT 'after writes' AS stage, n, co_check(replace(q, '@', 'co')) AS outcome FR
 VACUUM co;
 SELECT 'after vacuum' AS stage, n, co_check(replace(q, '@', 'co')) AS outcome FROM shapes WHERE n <= 6 ORDER BY n;
 
-DROP TABLE shapes, co, co_ok, co_num, co_f1;
+-- a FILTER that casts a member of a map (`m.* float8`, read by its key): PostgreSQL evaluates the conjuncts of a FILTER in order and stops at the first false one, so the cast of a later
+-- conjunct, of a later arm of an OR, or of an aggregate's argument under a FILTER, never runs for a row an earlier one drops; a first conjunct casts every row, as the scan does
+CREATE TABLE cm (id int, g int, m jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO cm SELECT i, i % 5, jsonb_build_object('a', (i % 17) + 0.5, 'b', i % 3) FROM generate_series(1, 1200) i;
+UPDATE cm SET m = jsonb_set(m, '{a}', '"bad"') WHERE id = 1234 % 1200;
+CREATE INDEX cm_col ON cm USING sift_col (id, g, m) WITH (paths = 'm.* float8');
+VACUUM ANALYZE cm;
+SELECT n, co_check(q) AS outcome FROM (VALUES
+  (1, $q$SELECT count(*) FILTER (WHERE g = 3 AND (m ->> 'a')::float8 > 3) FROM cm$q$),
+  (2, $q$SELECT count(*) FILTER (WHERE g = 3 AND (m -> 'a')::float8 > 3) FROM cm$q$),
+  (3, $q$SELECT g, count(*) FILTER (WHERE g = 3 AND (m -> 'a')::int > 3) FROM cm GROUP BY 1$q$),
+  (4, $q$SELECT sum((m ->> 'a')::float8) FILTER (WHERE g = 3) FROM cm$q$),
+  (5, $q$SELECT count(*) FILTER (WHERE (m -> 'a')::float8 > 3 AND g = 3) FROM cm$q$),
+  (6, $q$SELECT count(*) FILTER (WHERE g = 3) AS three, count(*) FILTER (WHERE (m -> 'a')::float8 > 3) AS big FROM cm WHERE g <> 4$q$),
+  (7, $q$SELECT count(*) FILTER (WHERE (m -> 'a')::float8 > 3 OR g = 3) FROM cm WHERE g <> 4$q$),
+  (8, $q$SELECT count(*) FILTER (WHERE g = 3 OR (m -> 'a')::float8 > 3) FROM cm WHERE g <> 4$q$)) v(n, q) ORDER BY n;
+
+DROP TABLE shapes, co, co_ok, co_num, co_f1, cm;
 DROP FUNCTION co_check(text), co_make(text, jsonb, bool, bool);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;

@@ -17,6 +17,7 @@
 #include "agg/expr/pg.h"
 #include "agg/ext.h"
 #include "agg/star/star.h"
+#include "agg/unnest/jsonb.h"
 
 static bool
 raising_attno(int attno)
@@ -24,10 +25,16 @@ raising_attno(int attno)
 	return sift_v6_vatt_raises(attno);
 }
 
-static bool
-raising_col(const SiftV6Col *c)
+/*
+ * The read of a column whose conversion raises for some value, as the member of the bitmaps of reads (-1: none): the cast of a key of a document that raises (its leaf), or the cast of a member of a
+ * map that the scan reads by its key (agg/mapkey.c), which raises for a value that is no number
+ */
+static int
+raising_read(const SiftV6Spec *s, const SiftV6Col *c)
 {
-	return c->jleaf > 0 && !c->jtype && raising_attno(sift_v6_col_input_attno(c));
+	if (c->jleaf > 0 && !c->jtype && raising_attno(sift_v6_col_input_attno(c)))
+		return c->jleaf - 1;
+	return c->src == SV6SRC_ELEM && s->ext != NULL && s->ext->elem.fn == SV6E_KEYS ? SIFT_V6_ELEM_VATT + c->slot : -1;
 }
 
 /* the FILTER of the aggregate is the presence of the one key it reads a value of that raises: a row the FILTER drops has not the key, so no value to convert */
@@ -52,63 +59,117 @@ short_circuits(Node *n, void *context)
 	return IsA(n, CaseExpr) || IsA(n, CoalesceExpr) || IsA(n, BoolExpr) || IsA(n, MinMaxExpr) || expression_tree_walker(n, short_circuits, context);
 }
 
-static bool
-reads_raising_var(Node *n, Bitmapset **leaves)
+typedef struct Reads
 {
-	if (n == NULL)
+	const SiftV6Spec *s;
+	Bitmapset  *leaves;
+} Reads;
+
+static void
+note_col(const SiftV6Spec *s, Bitmapset **leaves, const SiftV6Col *c)
+{
+	const int	read = raising_read(s, c);
+
+	if (read >= 0)
+		*leaves = bms_add_member(*leaves, read);
+}
+
+/* a Var of the virtual attributes of the keys of a document or of the columns of the elements that reads a value that raises */
+static void
+note_var(Reads *r, const Var *v)
+{
+	if (raising_attno(v->varattno))
+		r->leaves = bms_add_member(r->leaves, sift_v6_vatt_leaf(v->varattno));
+	else if (v->varattno >= SIFT_V6_ELEM_VATT && v->varattno < SIFT_V6_ELEM_VATT + SIFT_V6_XELEM_COLS)
+		note_col(r->s, &r->leaves, &(SiftV6Col) {.typid = v->vartype,.src = SV6SRC_ELEM,.slot = v->varattno - SIFT_V6_ELEM_VATT});
+}
+
+/* the reads that raise of an expression */
+static bool
+reads_raising_var(Node *n, Reads *r)
+{
+	if (n != NULL && IsA(n, Var))
+		note_var(r, (const Var *) n);
+	return n != NULL && !IsA(n, Var) && expression_tree_walker(n, reads_raising_var, r);
+}
+
+/* the reads that raise that PostgreSQL evaluates on every row an expression meets: the first operand of an AND, OR or NOT, nothing under an expression that may skip its operands */
+static bool
+always_reads(Node *n, Reads *r)
+{
+	if (n == NULL || IsA(n, CaseExpr) || IsA(n, CoalesceExpr) || IsA(n, MinMaxExpr))
 		return false;
-	if (IsA(n, Var) && raising_attno(((const Var *) n)->varattno))
-	{
-		*leaves = bms_add_member(*leaves, sift_v6_vatt_leaf(((const Var *) n)->varattno));
-		return false;
-	}
-	return expression_tree_walker(n, reads_raising_var, leaves);
+	if (IsA(n, Var))
+		note_var(r, (const Var *) n);
+	if (IsA(n, BoolExpr))
+		return always_reads(linitial(((const BoolExpr *) n)->args), r);
+	return !IsA(n, Var) && expression_tree_walker(n, always_reads, r);
 }
 
 static Bitmapset *
-expr_leaves(const Expr *e)
+expr_leaves(const SiftV6Spec *s, const Expr *e)
+{
+	Reads		r = {s};
+
+	(void) reads_raising_var((Node *) e, &r);
+	return r.leaves;
+}
+
+/*
+ * The reads that raise of the FILTER clauses: PostgreSQL evaluates the conjuncts of a FILTER in their order and stops at the first that is false, so the scan, which converts a value on every row it
+ * keeps, raises as PostgreSQL does only for a read the first conjunct makes on every row (filtered: a clause reads another)
+ */
+static Bitmapset *
+filter_leaves(const SiftV6Spec *s, bool *filtered)
 {
 	Bitmapset  *leaves = NULL;
 
-	(void) reads_raising_var((Node *) e, &leaves);
-	return leaves;
-}
+	foreach_ptr(List, quals, s->filter)
+	{
+		Reads		always = {s};
+		Bitmapset  *reads = expr_leaves(s, (const Expr *) quals);
 
-static void
-note_col(Bitmapset **leaves, const SiftV6Col *c)
-{
-	if (raising_col(c))
-		*leaves = bms_add_member(*leaves, c->jleaf - 1);
+		if (quals != NIL)
+			(void) always_reads(linitial(quals), &always);
+		*filtered |= !bms_is_subset(reads, always.leaves);
+		leaves = bms_union(leaves, reads);
+	}
+	return leaves;
 }
 
 /* the leaves the scan converts outside its quals, for the rows it keeps: the keys, the arguments and what is computed from them */
 static Bitmapset *
 read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 {
-	Bitmapset  *leaves = NULL;
+	Bitmapset  *leaves = filter_leaves(s, filtered);
 
 	for (int i = 0; i < s->nkeys; i++)
-		note_col(&leaves, &s->key[i]);
+		note_col(s, &leaves, &s->key[i]);
 	for (int a = 0; a < s->naggs; a++)
 	{
 		Bitmapset  *own = NULL;
 
-		note_col(&own, &s->agg[a].arg);
-		note_col(&own, &s->agg[a].arg2);
+		note_col(s, &own, &s->agg[a].arg);
+		note_col(s, &own, &s->agg[a].arg2);
 		for (int c = 0; c < s->agg[a].nxcols; c++)
-			note_col(&own, &s->agg[a].xcol[c]);
+			note_col(s, &own, &s->agg[a].xcol[c]);
 		*filtered |= own != NULL && s->agg[a].fclause != 0 && !filter_is_presence(s, s->agg[a].fclause, own);
 		leaves = bms_union(leaves, own);
 	}
 	for (int d = 0; d < s->nderive; d++)
-		note_col(&leaves, &s->derive[d].src);
+		note_col(s, &leaves, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
 		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
-			if (raising_attno(list_nth_int(lsecond(item), i)))
-			{
-				leaves = bms_add_member(leaves, sift_v6_vatt_leaf(list_nth_int(lsecond(item), i)));
-				*computed |= short_circuits(linitial(item), NULL);
-			}
+		{
+			const List *ints = lsecond(item);
+			const SiftV6Col in = {.typid = (Oid) list_nth_int(ints, i + 1),.src = (SiftV6Src) list_nth_int(ints, i + 3),.slot = list_nth_int(ints, i + 4)};
+			const int	read = raising_attno(list_nth_int(ints, i)) ? sift_v6_vatt_leaf(list_nth_int(ints, i)) : raising_read(s, &in);
+
+			if (read < 0)
+				continue;
+			leaves = bms_add_member(leaves, read);
+			*computed |= short_circuits(linitial(item), NULL);
+		}
 	return leaves;
 }
 
@@ -132,10 +193,10 @@ filtered_late(const SiftV6Spec *s, const SiftV6Ext *x)
 
 /* the batch quals other than the one that casts raise no error (their functions are leakproof): the cast's error is the first PostgreSQL raises, whichever row it is */
 static bool
-others_quiet(const List *vqual)
+others_quiet(const SiftV6Spec *s)
 {
-	foreach_ptr(Node, q, vqual)
-		if (expr_leaves((const Expr *) q) == NULL && contain_leaked_vars(q))
+	foreach_ptr(Node, q, s->vqual)
+		if (expr_leaves(s, (const Expr *) q) == NULL && contain_leaked_vars(q))
 			return false;
 	return true;
 }
@@ -193,7 +254,7 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 	{
-		Bitmapset  *leaves = ri->pseudoconstant ? NULL : expr_leaves(sift_v6_plan_json_vars(p, ri->clause, true));
+		Bitmapset  *leaves = ri->pseudoconstant ? NULL : expr_leaves(s, sift_v6_plan_json_vars(p, ri->clause, true));
 
 		if (leaves == NULL)
 			continue;
@@ -206,6 +267,6 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
-	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s->vqual))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
+	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
 		bms_is_subset(other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
 }
