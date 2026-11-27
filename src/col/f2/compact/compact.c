@@ -35,7 +35,7 @@ const SiftCompactFold *sift_compact_fold = NULL;
 
 /* The rows of the inputs are written as a part when the compaction holds this share of its budget (a half), and the merged dictionaries of the string columns take at most this share of it (an eighth) */
 #define SIFT_COMPACT_FLUSH_SHARE	2
-#define SIFT_COMPACT_FIRST_SLICE	1024	/* the rows of the first slice, before a row was measured */
+#define SIFT_COMPACT_PROBE_ROWS	1024	/* the rows a row of the inputs is first measured on */
 #define SIFT_COMPACT_DICT_SHARE		8
 
 /* What the horizon lets a row's inserter be: kept as it is, frozen (it committed before the horizon) or dropped (it aborted) */
@@ -165,7 +165,7 @@ typedef struct Sink
 	const SiftPartDicts *adopt;
 	SiftMemTracker *mem;
 	Size		flush_bytes;
-	Size		row_bytes;		/* the bytes a row of the inputs takes in a row buffer, as the last slice measured it; 0 before the first */
+	Size		row_bytes;		/* the bytes a row of the inputs takes in a row buffer, as the last slice (or measure_row) measured it; 0 before the first */
 	bool		split;
 	const SiftCompactCut *cut;
 	bool		bounds_hold;
@@ -336,10 +336,24 @@ sink_take(Sink *sink, SiftRowBuf *one)
 static bool
 granule_sliced(const Sink *s, int nrows)
 {
-	return s->row_bytes != 0 && (Size) nrows * s->row_bytes > s->flush_bytes;
+	return (Size) nrows * s->row_bytes > s->flush_bytes;
 }
 
-/* The rows of the next slice of a granule of nrows rows that has left rows; before a row was measured, a first slice measures one */
+/*
+ * The bytes a row of the inputs takes in a row buffer, before the first slice: measured on the first rows of the granule in a buffer of their own, so that the first granule is read whole
+ * when it fits, as every other one, and the sink's buffer grows as it does from a whole granule
+ */
+static void
+measure_row(Sink *s, const SiftGranuleView *v, const SiftRowVer *vers, const SiftCodeMap *code_map, const SiftColRemap *remap)
+{
+	SiftRowBuf *probe = sift_rowbuf_new(s->spec);
+
+	sift_rowbuf_add_granule_mapped(probe, v, vers, s->spec, code_map, remap, 0, Min(v->hdr->nrows, SIFT_COMPACT_PROBE_ROWS));
+	s->row_bytes = Max(probe->mem_bytes / (Size) probe->n, 1);
+	sift_rowbuf_free(probe);
+}
+
+/* The rows of the next slice of a granule of nrows rows that has left rows */
 static int
 slice_rows(Sink *s, int nrows, int left)
 {
@@ -347,8 +361,6 @@ slice_rows(Sink *s, int nrows, int left)
 				held,
 				room;
 
-	if (s->row_bytes == 0)
-		return Min(left, SIFT_COMPACT_FIRST_SLICE);
 	if (!granule_sliced(s, nrows))
 		return left;
 	used = sift_mem_used(s->mem);
@@ -417,6 +429,8 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 
 		for (int r0 = 0, r1; r0 < v.hdr->nrows; r0 = r1)
 		{
+			if (sink->row_bytes == 0)
+				measure_row(sink, &v, vers, code_map, remap);
 			r1 = r0 + slice_rows(sink, v.hdr->nrows, v.hdr->nrows - r0);
 			add_slice(sink, &v, vers, r0, r1, code_map, remap, d->part_gen, fold, &gr, rel_ext, nrel);
 			least_held = granule_sliced(sink, v.hdr->nrows) ? sink->flush_bytes / 2 : 0;
