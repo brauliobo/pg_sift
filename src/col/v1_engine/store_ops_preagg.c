@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/primnodes.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
@@ -68,6 +69,8 @@ typedef struct CubeAgg
 	int			slot;			/* the measure of the histogram that holds the leaf */
 	bool		linear;			/* the sum or average of a line of the leaf */
 	SiftV6Linear lin;
+	int			nf;				/* the conjuncts of its FILTER (WHERE ..), tests of the histogram's dimension each group passes or not; 0: none */
+	Pred	   *f;
 } CubeAgg;
 
 typedef struct SiftV1Cube
@@ -84,6 +87,7 @@ typedef struct SiftV1Cube
 	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test; -1: none */
 	bool		hist_text;		/* hist_leaf is a string leaf: its groups are codes of the dictionary of the histogram */
 	bool		by_group;		/* the unit's zones leave a test of hist_leaf undecided: each group of the histogram is tested */
+	bool		filtered;		/* an aggregate has a FILTER: the units are folded from the groups of the histogram */
 	CubeAgg    *agg;
 	int			npred;
 	Pred	   *pred;
@@ -390,6 +394,16 @@ group_passes(const Pred *p, const SiftSrcHist *h, uint32 r)
 	return false;
 }
 
+/* Whether group r passes the FILTER of aggregate g */
+static bool
+filter_passes(const CubeAgg *g, const SiftSrcHist *h, uint32 r)
+{
+	for (int i = 0; i < g->nf; i++)
+		if (!group_passes(&g->f[i], h, r))
+			return false;
+	return true;
+}
+
 /* Whether group r passes every test of the histogram's dimension (SiftV1HistKeep) */
 static bool
 group_kept(const void *arg, const SiftSrcHist *h, uint32 r)
@@ -576,6 +590,8 @@ group_acc(const SiftV1Cube *c, const SiftSrcHist *h, uint32 r, V6Acc *out)
 		const int	m = g->slot;
 
 		out[j] = (V6Acc) {0};
+		if (!filter_passes(g, h, r))
+			continue;
 		if (g->a->kind == SV6_COUNT_STAR)
 			out[j].n = h->count[r];
 		else if (g->a->kind == SV6_COUNT_DISTINCT)
@@ -668,7 +684,7 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 		return false;
 	if ((v = unit_verdict(c, rd, src, &live)) == V_SOME)
 		return false;
-	done = v == V_NONE || (c->nkeys == 0 && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live));
+	done = v == V_NONE || (c->nkeys == 0 && !c->filtered && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live));
 	c->stats->grans_preagg += done;
 	c->stats->grans_preagg_delta += done && live.nrow < unit->nrow;
 	return done;
@@ -691,8 +707,38 @@ bind_dist(SiftV1Cube *c, const SiftSrcLeaf *l)
 	return true;
 }
 
+/* An attribute of the clause is no column of host (the presence of a key) or an index expression (a path of a document): no column of the heap holds it */
 static bool
-bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
+on_expression(Node *node, Relation host)
+{
+	const Var  *v = (const Var *) node;
+
+	if (node != NULL && IsA(node, Var))
+		return v->varattno < 1 || v->varattno > RelationGetNumberOfAttributes(host) ||
+			(host->rd_index != NULL && host->rd_index->indkey.values[v->varattno - 1] == 0);
+	return expression_tree_walker(node, on_expression, host);
+}
+
+/* The conjuncts of the FILTER of g as tests of one leaf each; false for a clause the groups of a histogram do not decide, or a FILTER of COUNT(DISTINCT) */
+static bool
+bind_filter(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay, CubeAgg *g)
+{
+	List	   *clause = list_nth(c->spec->filter, g->a->fclause - 1);
+	const List *quals;
+
+	if (g->a->kind == SV6_COUNT_DISTINCT || on_expression((Node *) clause, host))
+		return false;
+	quals = sift_srcfold_heap_quals(host, clause);
+	g->f = palloc0(Max(list_length(quals), 1) * sizeof(Pred));
+	foreach_ptr(Node, q, (List *) quals)
+		if (!pred_of(host, lay, q, &g->f[g->nf++]))
+			return false;
+	c->filtered = true;
+	return true;
+}
+
+static bool
+bind_aggs(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay)
 {
 	c->dist_leaf = -1;
 	for (int j = 0; j < c->spec->naggs; j++)
@@ -704,6 +750,8 @@ bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 
 		*g = (CubeAgg) {.a = a,.leaf = l == NULL ? -1 : l->id,.is_float = cls == SV6C_F64,.slot = -1};
 		g->linear = sift_v6_agg_linear(c->spec, a, &g->lin);
+		if (a->fclause > 0 && !bind_filter(c, host, lay, g))
+			return false;
 		if (a->kind != SV6_COUNT_STAR && (!leaf_measure(l, a) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE)))
 			return false;
 		if (a->kind == SV6_COUNT_DISTINCT)
@@ -758,11 +806,33 @@ bind_preds(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay, const List *q
 	return true;
 }
 
-/* The dimension a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test, whose groups pass it or not */
+static int
+first_filter_leaf(const SiftV1Cube *c)
+{
+	for (int j = 0; j < c->spec->naggs; j++)
+		if (c->agg[j].nf > 0)
+			return c->agg[j].f[0].leaf;
+	return -1;
+}
+
+/* Every FILTER tests the dimension the units are folded from, under no COUNT(DISTINCT) of a statement without a key (whose values come from the zone of the unit) */
+static bool
+filters_on_hist(const SiftV1Cube *c)
+{
+	if (c->filtered && c->nkeys == 0 && c->dist_leaf >= 0)
+		return false;
+	for (int j = 0; j < c->spec->naggs; j++)
+		for (int i = 0; i < c->agg[j].nf; i++)
+			if (c->agg[j].f[i].leaf != c->hist_leaf)
+				return false;
+	return true;
+}
+
+/* The dimension a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test, else of the first FILTER, whose groups pass it or not */
 static void
 hist_of(SiftV1Cube *c, const SiftSrcLayout *lay)
 {
-	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf >= 0 ? c->dist_leaf : c->npred > 0 ? c->pred[0].leaf : -1;
+	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf >= 0 ? c->dist_leaf : c->npred > 0 ? c->pred[0].leaf : first_filter_leaf(c);
 	c->hist_text = c->hist_leaf >= 0 && lay->leaf[c->hist_leaf].vtype == SCV_CODE;
 }
 
@@ -789,10 +859,10 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	c->kdata = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	c->kvp[0] = &c->kvec;
 	c->sink = (SiftV1UnitSink) {.offer = offer,.arg = c};
-	if ((c->nkeys > 0 && !bind_key(c, lay)) || !bind_aggs(c, lay) || !bind_preds(c, a->host, lay, a->quals))
+	if ((c->nkeys > 0 && !bind_key(c, lay)) || !bind_aggs(c, a->host, lay) || !bind_preds(c, a->host, lay, a->quals))
 		return NULL;
 	hist_of(c, lay);
-	return &c->sink;
+	return filters_on_hist(c) ? &c->sink : NULL;
 }
 
 void

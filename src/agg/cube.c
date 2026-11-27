@@ -116,7 +116,7 @@ agg_cubeable(const SiftV6Spec *spec, const SiftV6Agg *a)
 	const SiftV6Class cls = sift_v6_class(a->arg.typid);
 	SiftV6Linear lin;
 
-	if (a->fclause != 0 || a->nxcols != 0 || a->arg.src != SV6SRC_ATTR || a->arg.jleaf > 0)
+	if (a->nxcols != 0 || a->arg.src != SV6SRC_ATTR || a->arg.jleaf > 0)
 		return false;
 	if (a->arg.derive > 0)
 		return sift_v6_agg_linear(spec, a, &lin);
@@ -141,7 +141,7 @@ agg_cubeable(const SiftV6Spec *spec, const SiftV6Agg *a)
 bool
 sift_v6_spec_cubeable(const SiftV6Spec *spec)
 {
-	if (spec->nsets != 0 || spec->nbins != 0 || spec->nfilters != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL ||
+	if (spec->nsets != 0 || spec->nbins != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL ||
 		spec->vqual != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)

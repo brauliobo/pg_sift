@@ -21,8 +21,8 @@ extern bool sift_v6_linear_fits(const SiftV6Linear *lin, int64 lo, int64 hi);
 /* mul * sum + add * n, the sum of the line over n values whose sum is sum: false when it leaves 128 bits */
 extern bool sift_v6_linear_sum(const SiftV6Linear *lin, SiftI128 sum, int64 n, SiftI128 *out);
 
-/* No set, bin, derived value (but a line of a column a sum or an average reads), FILTER, function, extension, text query, document, generated expression, constant group, lock or row output; keys that are columns of an integer, boolean or text class
- * (not numeric), aggregates of a column that count, sum, average, take the least or the greatest of an integer, a float or a text, or count the distinct values of one */
+/* No set, bin, derived value (but a line of a column a sum or an average reads), function, extension, text query, document, generated expression, constant group, lock or row output; keys that are columns of an integer, boolean or text class
+ * (not numeric), aggregates of a column that count, sum, average, take the least or the greatest of an integer, a float or a text, or count the distinct values of one, under a FILTER or not (the format decides which clauses its cubes test) */
 extern bool sift_v6_spec_cubeable(const SiftV6Spec *spec);
 
 #endif							/* SIFT_AGG_V6_CUBE_H */
