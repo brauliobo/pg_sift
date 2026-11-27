@@ -2,6 +2,8 @@
 -- from the dictionary of a text leaf and the range of an integer leaf, the range, and the elements per row of a group.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the zones, dictionaries and write buffer it reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE TABLE s (id int, k int, flag bool, t text, f float8, items jsonb);

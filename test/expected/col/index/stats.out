@@ -2,6 +2,8 @@
 -- from the dictionary of a text leaf and the range of an integer leaf, the range, and the elements per row of a group.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the zones, dictionaries and write buffer it reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 CREATE TABLE s (id int, k int, flag bool, t text, f float8, items jsonb);
 INSERT INTO s SELECT i, i % 7, i % 2 = 0, 'v' || (i % 5), i / 3.0,
@@ -21,7 +23,7 @@ FROM sift.col_leaves('s_col') l JOIN sift._test_col_leaf_stats('s_col') st USING
     1 | k             |         7 |   0 |    6 |             0
     2 | flag          |         2 |   0 |    1 |             0
     3 | t             |         5 |   0 |    0 |             0
-    4 | f             |      5000 |   0 |    0 |             0
+    4 | f             |         0 |   0 |    0 |             0
     5 | items[]       |         0 |   0 |    0 |             2
     6 | items[].c     |         4 |   0 |    0 |             0
     7 | items[].q     |        12 |   0 |   11 |             0
