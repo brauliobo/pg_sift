@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from cases import KILLED, MANIFEST, LoadCase
+from cases import KILLED, MANIFEST, LoadCase, local
 from collect import AGG, BM, add, base, ctx_kb, engines, kept, ledger_writes, mem_delta, multi_kept, nxt, oracle, oracles
 from suites.common import Limits, fd_delta, fds
 from suites.workloads_olap import cancels, tiered
@@ -174,7 +174,7 @@ def olap_highcard_spill_cancel(ctx):
     def olap(w, i):
         q = H_OPS[(w.seed + i) % len(H_OPS)]
         if w.seed % 2:
-            w.do(f"BEGIN; SET LOCAL statement_timeout = '30ms'; {q}; COMMIT", KILLED)
+            w.do(local(q, statement_timeout='30ms'), KILLED)
         else:
             w.ledger += snap_oracle(w, q, 'sift.enable_agg', KILLED)
 

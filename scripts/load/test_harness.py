@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'bench',
 import collect  # noqa: E402
 import run  # noqa: E402
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
-from cases import Ceilings, LoadCase  # noqa: E402
+from cases import Ceilings, LoadCase, local  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 
@@ -239,6 +239,10 @@ class Harness(unittest.TestCase):
         self.assertIsNone(run.unexpected([('25P02', 'aborted')], ('57014',), cascade=True), 'the batch after a cancelled COMMIT')
         self.assertEqual(run.unexpected([('25P02', 'aborted'), ('XX000', 'boom')], ('57014',), cascade=True), ('XX000', 'boom'))
         self.assertEqual(re.findall(r"(?<!LOCAL )statement_timeout = '\d+ms'|RESET statement_timeout", sources()), [])
+
+    def test_a_cancel_never_leaves_a_worker_in_an_aborted_transaction(self):
+        self.assertEqual(local('SELECT 1', statement_timeout='25ms', lock_timeout='5ms'), "SET LOCAL statement_timeout = '25ms' \\; SET LOCAL lock_timeout = '5ms' \\; SELECT 1")
+        self.assertEqual(re.findall(r'BEGIN; SET LOCAL [a-z_]+ = [^;]+; [^;]+; COMMIT', sources()), [], 'a SET LOCAL around one statement is local(), not BEGIN ... COMMIT')
 
     def test_s117_l3_the_log_carries_the_sqlstate_and_an_internal_error_is_a_finding(self):
         self.assertTrue(collect.LEAKS.search('2026-11-27 [42] [XX000] ERROR:  unexpected chunk number'))

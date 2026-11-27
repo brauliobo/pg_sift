@@ -24,6 +24,12 @@ STATUS = f'FROM sift.status() WHERE relation::oid {IN_CASE}'
 DRAINED = "SELECT count(*) FILTER (WHERE kind = 'queued') + max(workers_active) FROM sift.activity()"
 
 
+def local(sql: str, **settings: str) -> str:
+    """SQL under SET LOCAL of SETTINGS, sent as one implicit transaction (psql \\;): a cancel that lands anywhere in it ends the transaction, where one that lands on
+    the COMMIT of a BEGIN ... COMMIT leaves the session in an aborted transaction block that the next statement of the harness fails in"""
+    return ''.join(f"SET LOCAL {k} = '{v}' \\; " for k, v in settings.items()) + sql
+
+
 @dataclass(frozen=True)
 class Ceilings:
     lost_rows: int | None = 0
@@ -455,9 +461,9 @@ def fault_cancel_timeout_storm(ctx):
     ws = ctx.sessions(9)
     for w in ws[4:8]:
         w.allow, w.stored = KILLED, set()
-    storm = (lambda lo: f"BEGIN; SET LOCAL statement_timeout = '30ms'; WITH i AS (INSERT INTO e_col SELECT g, g % 64, g % 1000 FROM generate_series({lo}, {lo + 49999}) g "
-                        "RETURNING 1) SELECT count(*) FROM i; COMMIT",
-             lambda lo: "BEGIN; SET LOCAL lock_timeout = '20ms'; UPDATE e_tbl SET v = v + 1 WHERE id = 1; COMMIT",
+    storm = (lambda lo: local(f'WITH i AS (INSERT INTO e_col SELECT g, g % 64, g % 1000 FROM generate_series({lo}, {lo + 49999}) g RETURNING 1) SELECT count(*) FROM i',
+                              statement_timeout='30ms'),
+             lambda lo: local('UPDATE e_tbl SET v = v + 1 WHERE id = 1', lock_timeout='20ms'),
              lambda lo: 'SELECT count(*) FROM e_col a JOIN e_col b USING (grp)',
              lambda lo: f"WITH i AS (INSERT INTO e_bm SELECT g, g % 64, 0, 'wire ' || md5(g::text) FROM generate_series({lo}, {lo + 19999}) g RETURNING 1) SELECT count(*) FROM i")
 

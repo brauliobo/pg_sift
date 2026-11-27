@@ -10,7 +10,7 @@ import time
 
 sys.dont_write_bytecode = True
 
-from cases import KILLED, PAR, LoadCase  # noqa: E402
+from cases import KILLED, PAR, LoadCase, local  # noqa: E402
 from collect import BM, N, add, base, checks, ctx_kb, engines, halves_differ, hygiene, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, snap, zipf  # noqa: E402
 from suites.common import Limits, fd_delta, fds, twin_do, twin_mismatch  # noqa: E402
 from suites.repl import CAP, CDC, SHAPE, catchup, conninfo, standby  # noqa: E402
@@ -318,7 +318,7 @@ def olap_par_star_timeout_spill(ctx):
 
     def olap(w, i):
         q = STAR[(w.seed + i) % len(STAR)]
-        w.do(f"BEGIN; SET LOCAL statement_timeout = '25ms'; {q}; COMMIT" if w.seed % 2 else q, KILLED)
+        w.do(local(q, statement_timeout='25ms') if w.seed % 2 else q, KILLED)
 
     def write(w, i):
         w.ids = getattr(w, 'ids', set())
