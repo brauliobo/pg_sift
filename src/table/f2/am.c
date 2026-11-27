@@ -21,6 +21,7 @@
 #include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
+#include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
@@ -199,31 +200,6 @@ sift_tbl_f2_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber
 }
 
 /* ---- rewrites ---- */
-
-double
-sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable)
-{
-	Snapshot	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	TableScanDesc scan = sift_table_beginscan(OldTable, snapshot, 0, NULL);
-	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
-	SiftTblF2Bulk bulk;
-	ItemPointerData tid;
-	uint8		key[SIFT_BOUND_BYTES];
-	double		rows = 0;
-
-	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
-	sift_tbl_f2_bulk_begin(&bulk, NewTable);
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-	{
-		sift_tbl_f2_bulk_add(&bulk, slot, FrozenTransactionId, 0, &tid, key);
-		rows++;
-	}
-	sift_tbl_f2_bulk_end(&bulk);
-	ExecDropSingleTupleTableSlot(slot);
-	table_endscan(scan);
-	UnregisterSnapshot(snapshot);
-	return rows;
-}
 
 /*
  * VACUUM FULL and CLUSTER keep every version of a row that a snapshot still open may read, as the heap does. The table is locked against every writer, so each writer of the old table has
@@ -450,6 +426,44 @@ rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
 		put_version(r, r->before, ins, replaced.xmin, replaced.cmin);
 		pfree(snap);
 	}
+}
+
+/*
+ * sift.upgrade_table: the versions of a table of any format that a snapshot may still read (SnapshotNonVacuumable), each with the inserter and the deleter its slot reads, as the rewrite
+ * of CLUSTER keeps them. The latest version a reader of this transaction sees has no deleter: the last tombstone of a row may be a lock or an aborted delete.
+ */
+double
+sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable, TransactionId OldestXmin)
+{
+	SnapshotData readable;
+	TableScanDesc scan;
+	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
+	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,
+	.maxdead = (int) Min(Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4) / sizeof(SiftTblDeadVersion), 64), (Size) INT_MAX)};
+	bool		isnull;
+
+	InitNonVacuumableSnapshot(readable, GlobalVisTestFor(OldTable));
+	scan = sift_table_beginscan(OldTable, &readable, 0, NULL);
+	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
+	sift_tbl_f2_bulk_begin(&r.bulk, NewTable);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+	{
+		SiftRowState ins = {.xmin = DatumGetTransactionId(slot_getsysattr(slot, MinTransactionIdAttributeNumber, &isnull)),
+		.cmin = DatumGetCommandId(slot_getsysattr(slot, MinCommandIdAttributeNumber, &isnull))};
+		bool		deleted = !table_tuple_satisfies_snapshot(OldTable, slot, SnapshotSelf);
+
+		CHECK_FOR_INTERRUPTS();
+		put_version(&r, slot, ins, deleted ? DatumGetTransactionId(slot_getsysattr(slot, MaxTransactionIdAttributeNumber, &isnull)) : InvalidTransactionId,
+					deleted ? DatumGetCommandId(slot_getsysattr(slot, MaxCommandIdAttributeNumber, &isnull)) : 0);
+	}
+	if (r.ndead > 0)
+		write_deletes(&r);
+	sift_tbl_f2_bulk_end(&r.bulk);
+	if (r.dead != NULL)
+		pfree(r.dead);
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+	return r.live + r.recently_dead;
 }
 
 void

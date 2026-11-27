@@ -532,6 +532,7 @@ sift_names_exprs(PG_FUNCTION_ARGS)
 {
 	ArrayType  *a;
 	Datum	   *elems;
+	bool	   *nulls;
 	int			n;
 	char	   *from,
 			   *to;
@@ -543,10 +544,11 @@ sift_names_exprs(PG_FUNCTION_ARGS)
 	a = PG_GETARG_ARRAYTYPE_P(0);
 	from = text_to_cstring(PG_GETARG_TEXT_PP(1));
 	to = text_to_cstring(PG_GETARG_TEXT_PP(2));
-	deconstruct_array_builtin(a, TEXTOID, &elems, NULL, &n);
+	deconstruct_array_builtin(a, TEXTOID, &elems, &nulls, &n);
 	for (int i = 0; i < n; i++)
-		elems[i] = CStringGetTextDatum(rewrite_expr(TextDatumGetCString(elems[i]), from, to));
-	PG_RETURN_ARRAYTYPE_P(construct_array_builtin(elems, n, TEXTOID));
+		if (!nulls[i])
+			elems[i] = CStringGetTextDatum(rewrite_expr(TextDatumGetCString(elems[i]), from, to));
+	PG_RETURN_ARRAYTYPE_P(construct_md_array(elems, nulls, ARR_NDIM(a), ARR_DIMS(a), ARR_LBOUND(a), TEXTOID, -1, false, TYPALIGN_INT));
 }
 
 PG_FUNCTION_INFO_V1(sift_names_option);

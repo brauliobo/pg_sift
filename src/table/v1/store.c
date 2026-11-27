@@ -47,7 +47,7 @@ cache_xact(XactEvent event, void *arg)
 	HASH_SEQ_STATUS seq;
 	CacheEnt   *e;
 
-	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
+	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT && event != XACT_EVENT_PREPARE)
 		return;
 	foreach_ptr(MemoryContextData, cxt, retired)
 		MemoryContextDelete(cxt);

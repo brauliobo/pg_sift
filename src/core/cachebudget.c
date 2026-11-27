@@ -173,7 +173,7 @@ cache_xact_event(XactEvent event, void *arg)
 {
 	bool		used;
 
-	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT)
+	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT && event != XACT_EVENT_PREPARE)
 		return;
 	used = clock_now != xact_floor;
 	xact_floor = clock_now;

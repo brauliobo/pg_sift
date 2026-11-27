@@ -127,7 +127,7 @@ row_expressions_call_user_function(Relation rel)
  * exclusion index checks the rows inserted before it, a trigger (a foreign key is one) can read the table, and so can a function of the
  * table's own expressions (a default, a generated column, a CHECK, a domain, an index expression or predicate) when the user wrote it: it runs
  * for every row, and a volatile one sees the rows inserted before it by the same command. The load of such a table keeps the write buffers.
- * A published table keeps them too: its changes are logged row by row, as they are inserted.
+ * A table that logical decoding reads (a publication names it, or a slot decodes every table) keeps them too: its changes are logged row by row, as they are inserted.
  */
 const char *
 sift_tbl_bulk_refusal(Relation rel)
@@ -136,8 +136,8 @@ sift_tbl_bulk_refusal(Relation rel)
 
 	if (rel->trigdesc != NULL)
 		return "a trigger or a foreign key can read the table";
-	if (sift_tbl_published(rel))
-		return "the table is published for logical decoding";
+	if (sift_tbl_decoded(rel))
+		return "logical decoding reads the changes of the table";
 	if (row_expressions_call_user_function(rel))
 		return "a default, a check or a domain of the table calls a function of the user";
 	foreach_oid(indexoid, RelationGetIndexList(rel))

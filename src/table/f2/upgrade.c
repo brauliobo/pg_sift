@@ -1,7 +1,7 @@
 /*
  * table/f2/upgrade.c - sift.upgrade_table(regclass) RETURNS bool: a Format 1 sift_table rewritten as Format 2.0.
  *
- * The rewrite is the one of VACUUM FULL: a new heap is made while the next relations are Format 2.0, the rows of the old one stream into it frozen under the exclusive lock,
+ * The rewrite is the one of VACUUM FULL: a new heap is made while the next relations are Format 2.0, the versions of the old one that a snapshot may still read stream into it under the exclusive lock,
  * and finish_heap_swap() swaps the files and rebuilds the indexes. The old format is read by its own scan; this file knows no other file of it. A table that is Format 2.0 already, or has
  * no block yet, is left as it is: the answer is false and a NOTICE says why, so that a script can run it over every table again. The right to run it is that of VACUUM FULL: MAINTAIN.
  */
@@ -18,6 +18,7 @@
 #endif
 #include "fmgr.h"
 #include "miscadmin.h"
+#include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -64,6 +65,7 @@ rewrite_as_format2(Relation old, double *rows)
 {
 	Oid			relid = RelationGetRelid(old);
 	char		persistence = old->rd_rel->relpersistence;
+	TransactionId oldest = GetOldestNonRemovableTransactionId(old);
 
 	sift_tbl_push_new_format(SIFT_FORMAT2_MAJOR);
 	PG_TRY();
@@ -71,10 +73,10 @@ rewrite_as_format2(Relation old, double *rows)
 		Oid			newid = make_new_heap(relid, old->rd_rel->reltablespace, old->rd_rel->relam, persistence, AccessExclusiveLock);
 		Relation	new = table_open(newid, AccessExclusiveLock);
 
-		*rows = sift_tbl_f2_rewrite_rows(old, new);
+		*rows = sift_tbl_f2_rewrite_rows(old, new, oldest);
 		table_close(new, NoLock);
 		table_close(old, NoLock);
-		finish_heap_swap(relid, newid, false, false, false, true, SIFT_HEAP_SWAP_REINDEX_ARG RecentXmin, GetOldestMultiXactId(), persistence);
+		finish_heap_swap(relid, newid, false, false, false, true, SIFT_HEAP_SWAP_REINDEX_ARG oldest, GetOldestMultiXactId(), persistence);
 	}
 	PG_FINALLY();
 	{

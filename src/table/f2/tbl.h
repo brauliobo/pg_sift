@@ -402,8 +402,8 @@ extern bool sift_tbl_f2_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANA
 
 extern void sift_tbl_f2_vacuum_dead_tids(void *vac_ctx, const uint64 *tids, uint32 ntids);
 
-/* The rows of OldTable (any format, as of now) written frozen into the empty NewTable: a rewrite under an exclusive lock (CLUSTER, VACUUM FULL, sift.upgrade_table); returns their number */
-extern double sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable);
+/* The versions of OldTable (any format) that a snapshot may still read, written into the empty NewTable under an exclusive lock (sift.upgrade_table); returns their number */
+extern double sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable, TransactionId OldestXmin);
 
 /* The first writer of a relation that has no blocks yet: the layout of Format 2.0 in block 0 (a table made with its layout is not asked) */
 extern void sift_tbl_f2_init_layout(Relation rel);

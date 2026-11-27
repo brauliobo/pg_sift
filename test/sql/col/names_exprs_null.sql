@@ -1,0 +1,23 @@
+-- sift._names_exprs keeps a NULL element of the array as it is, and the rewrites of names are the event trigger's alone: no other role runs them
+CREATE EXTENSION pg_sift;
+SELECT sift._names_exprs(ARRAY[NULL, 'a + 1', NULL], 'a', 'b') AS null_elems_kept;
+SELECT sift._names_exprs('[0:1]={"a",NULL}'::text[], 'a', 'b') AS bounds_kept;
+SELECT sift._names_exprs('{}'::text[], 'a', 'b') AS empty;
+DROP ROLE IF EXISTS nx_user;
+CREATE ROLE nx_user;
+SET ROLE nx_user;
+CREATE FUNCTION pg_temp.code(q text) RETURNS text LANGUAGE plpgsql AS $$
+BEGIN
+	EXECUTE q;
+	RETURN 'ran';
+EXCEPTION WHEN OTHERS THEN
+	RETURN SQLSTATE;
+END $$;
+SELECT q AS call, pg_temp.code(q) AS code FROM unnest(ARRAY[
+	$$SELECT sift._names_exprs(ARRAY[NULL, 'a'], 'a', 'b')$$,
+	$$SELECT sift._names_expr('a', 'a', 'b')$$,
+	$$SELECT sift._names_option('rollup_columns', 'a', 'a', 'b')$$]) q;
+DROP FUNCTION pg_temp.code(text);
+RESET ROLE;
+DROP ROLE nx_user;
+DROP EXTENSION pg_sift;

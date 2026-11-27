@@ -4,7 +4,9 @@
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "catalog/index.h"
 #include "commands/defrem.h"
+#include "storage/lmgr.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
@@ -50,14 +52,18 @@ sift_api_am_of(Relation rel, SiftApiAm *am)
 	return sift_api_am_by_oid(rel->rd_rel->relam, am);
 }
 
+/* An index is opened with its table locked first, in the order of DROP TABLE and TRUNCATE: a caller that holds the index and then asks for its table (sift.maintain) waits for them */
 SiftApiRel
 sift_api_open(Oid relid, LOCKMODE lock)
 {
 	SiftApiRel	r = {0};
+	Oid			heapoid = IndexGetRelation(relid, true);
 
 	sift_inspect_expect(relid, NULL, NULL);
 	if (!sift_may_inspect_rel(sift_rel_must_exist(relid)))
 		sift_require_acl(relid, ACL_SELECT | ACL_MAINTAIN);
+	if (OidIsValid(heapoid))
+		LockRelationOid(heapoid, lock);
 	r.rel = relation_open(relid, lock);
 	if (!sift_api_am_of(r.rel, &r.am))
 		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift index or sift_table", RelationGetRelationName(r.rel))));

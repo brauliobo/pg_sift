@@ -34,7 +34,7 @@ typedef struct JbSlot
 	JsonTypeCategory cat;
 	Oid			outf;
 	bool		raw;			/* an unknown literal, read as the C string it is: the text it would be converted to writes the same bytes */
-	bool		stable;			/* a key that is a constant or a parameter of the query: the same for every call of the site */
+	bool		stable;			/* a key that is a constant string: the same for every call of the site (a PL/pgSQL variable is a parameter that each call reads anew) */
 	char	   *pre;			/* what a call writes for the key, with the separator before and the colon after it (a stable key, from the first call) */
 	int			prelen;
 	FmgrInfo	out;
@@ -184,6 +184,20 @@ jb_value(StringInfo out, JbSlot *s, Datum v, bool isnull, bool key)
 	}
 }
 
+/* a constant whose text is its value (the output of a date, a number or an interval follows the settings of the session); a call with no expression has none */
+static bool
+const_string_arg(FmgrInfo *flinfo, int i)
+{
+	Node	   *arg;
+	Oid			type;
+
+	if (flinfo->fn_expr == NULL || !IsA(flinfo->fn_expr, FuncExpr))
+		return false;
+	arg = (Node *) list_nth(((FuncExpr *) flinfo->fn_expr)->args, i);
+	type = exprType(arg);
+	return IsA(arg, Const) && (type == TEXTOID || type == VARCHAROID || type == UNKNOWNOID || type == NAMEOID);
+}
+
 Datum
 sift_json_build_object(PG_FUNCTION_ARGS)
 {
@@ -224,7 +238,7 @@ sift_json_build_object(PG_FUNCTION_ARGS)
 		for (int i = 0; i < nargs; i++)
 		{
 			c->slot[i].raw = direct && get_fn_expr_argtype(fcinfo->flinfo, i) == UNKNOWNOID;
-			c->slot[i].stable = direct && i % 2 == 0 && get_fn_expr_arg_stable(fcinfo->flinfo, i);
+			c->slot[i].stable = direct && i % 2 == 0 && const_string_arg(fcinfo->flinfo, i);
 		}
 		c->direct = direct;
 	}

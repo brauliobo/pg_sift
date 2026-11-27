@@ -1,0 +1,101 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_rr s2_write s2_upgrade s1_read s1_end s2_read s2_vac s2_more s2_read
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_up_other;
+count
+-----
+    0
+(1 row)
+
+step s2_write: DELETE FROM iso_up WHERE id % 3 = 0; INSERT INTO iso_up SELECT g, g, 0 FROM generate_series(601, 700) g; UPDATE iso_up SET v = v + 1 WHERE id % 5 = 0;
+step s2_upgrade: SET client_min_messages = warning; SELECT sift.upgrade_table('iso_up');
+upgrade_table
+-------------
+t            
+(1 row)
+
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_up;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s1_end: COMMIT;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id), (sift.index_format('iso_up')).major FROM iso_up;
+count|   sum|sum|max|major
+-----+------+---+---+-----
+  500|185050|100|700|    2
+(1 row)
+
+step s2_vac: VACUUM iso_up;
+step s2_more: UPDATE iso_up SET v = v + 10 WHERE id % 7 = 0; DELETE FROM iso_up WHERE id % 11 = 0;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id), (sift.index_format('iso_up')).major FROM iso_up;
+count|   sum|sum|max|major
+-----+------+---+---+-----
+  455|168517|741|700|    2
+(1 row)
+
+
+starting permutation: s2_write s2_upgrade s2_read s1_rr s1_read s1_end
+step s2_write: DELETE FROM iso_up WHERE id % 3 = 0; INSERT INTO iso_up SELECT g, g, 0 FROM generate_series(601, 700) g; UPDATE iso_up SET v = v + 1 WHERE id % 5 = 0;
+step s2_upgrade: SET client_min_messages = warning; SELECT sift.upgrade_table('iso_up');
+upgrade_table
+-------------
+t            
+(1 row)
+
+step s2_read: SELECT count(*), sum(k), sum(v), max(id), (sift.index_format('iso_up')).major FROM iso_up;
+count|   sum|sum|max|major
+-----+------+---+---+-----
+  500|185050|100|700|    2
+(1 row)
+
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_up_other;
+count
+-----
+    0
+(1 row)
+
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_up;
+count|   sum|sum|max
+-----+------+---+---
+  500|185050|100|700
+(1 row)
+
+step s1_end: COMMIT;
+
+starting permutation: s1_rr s2_begin s2_own s2_upgrade s2_read s2_commit s1_read s1_end s2_read
+step s1_rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_up_other;
+count
+-----
+    0
+(1 row)
+
+step s2_begin: BEGIN;
+step s2_own: DELETE FROM iso_up WHERE id % 3 = 0; UPDATE iso_up SET v = v + 1 WHERE id % 5 = 0;
+step s2_upgrade: SET client_min_messages = warning; SELECT sift.upgrade_table('iso_up');
+upgrade_table
+-------------
+t            
+(1 row)
+
+step s2_read: SELECT count(*), sum(k), sum(v), max(id), (sift.index_format('iso_up')).major FROM iso_up;
+count|   sum|sum|max|major
+-----+------+---+---+-----
+  400|120000| 80|599|    2
+(1 row)
+
+step s2_commit: COMMIT;
+step s1_read: SELECT count(*), sum(k), sum(v), max(id) FROM iso_up;
+count|   sum|sum|max
+-----+------+---+---
+  600|180300|  0|600
+(1 row)
+
+step s1_end: COMMIT;
+step s2_read: SELECT count(*), sum(k), sum(v), max(id), (sift.index_format('iso_up')).major FROM iso_up;
+count|   sum|sum|max|major
+-----+------+---+---+-----
+  400|120000| 80|599|    2
+(1 row)
+
