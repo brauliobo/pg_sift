@@ -318,7 +318,7 @@ add_row(ParWin *w, WinSlot *s, uint32 r)
 		if (w->arg_slot[f] >= 0)
 			s->arg[f][i] = win_cell(&w->cur.col[w->arg_slot[f]], r, &s->arg_null[f][i]);
 	s->n++;
-	w->part_bytes += w->serial_row_bytes;
+	w->part_bytes += Max(w->row_bytes, w->serial_row_bytes);
 	if (w->part_bytes > w->max_part_bytes)
 		open_spill(w, s);
 }
@@ -493,7 +493,7 @@ win_open(ParWin *w, const SiftV6WindowSpec *spec, const SiftV6Input *in)
 	for (int c = 0; c < in->ncols; c++)
 		w->serial_row_bytes += elem_size(in->col[c].type) + 1;
 	w->serial_row_bytes += sizeof(uint64) + sizeof(uint32) + sizeof(int64) * win->n_ord;
-	w->max_part_bytes = (uint64) work_mem * 1024 / 4;
+	w->max_part_bytes = Min((uint64) work_mem * 1024 / 4, MaxAllocSize / 2);
 	w->row_bytes = sizeof(uint64) * 2 + 9 * (uint64) (win->n_ord + nargs) + 2 * sizeof(uint32) + 1 + sizeof(uint16) + sizeof(SiftWinVal) * win->n_funcs;
 	w->budget = (uint64) work_mem * 1024 / 2;
 	w->target = (uint32) Min(ITEM_ROWS_MAX, Max(ITEM_ROWS_MIN, w->budget / (w->nslots * w->row_bytes)));
