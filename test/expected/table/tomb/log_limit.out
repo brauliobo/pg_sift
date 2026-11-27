@@ -28,6 +28,21 @@ SELECT count(*) AS lowered_all FROM tl;
         3000
 (1 row)
 
+-- under a small work_mem the log spills while the caches are far from their limit: its runs on temp files last as long as the transaction that read it
+\c -
+SET work_mem = '64kB';
+SELECT count(*) AS small_work_mem FROM tl WHERE id % 4 <> 0;
+ small_work_mem 
+----------------
+           3000
+(1 row)
+
+SELECT count(*) AS temp_files_left FROM pg_ls_tmpdir() WHERE name LIKE 'pgsql_tmp' || pg_backend_pid() || '.%';
+ temp_files_left 
+-----------------
+               0
+(1 row)
+
 -- VACUUM consumes the log, whatever its length: the table reads the same
 VACUUM tl;
 SELECT count(*) AS after_vacuum FROM tl;

@@ -14,6 +14,11 @@ SELECT count(*) AS default_limit FROM tl;
 SET sift.backend_cache_kb = '16kB';
 SELECT count(*) AS lowered, sum(v) AS lowered_sum FROM tl WHERE id % 4 <> 0;
 SELECT count(*) AS lowered_all FROM tl;
+-- under a small work_mem the log spills while the caches are far from their limit: its runs on temp files last as long as the transaction that read it
+\c -
+SET work_mem = '64kB';
+SELECT count(*) AS small_work_mem FROM tl WHERE id % 4 <> 0;
+SELECT count(*) AS temp_files_left FROM pg_ls_tmpdir() WHERE name LIKE 'pgsql_tmp' || pg_backend_pid() || '.%';
 -- VACUUM consumes the log, whatever its length: the table reads the same
 VACUUM tl;
 SELECT count(*) AS after_vacuum FROM tl;

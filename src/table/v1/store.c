@@ -64,7 +64,10 @@ cache_xact(XactEvent event, void *arg)
 			hash_search(cache_tab, &e->relid, HASH_REMOVE, NULL);
 		}
 		else
+		{
 			sift_tbl_fetch_trim(e->st);
+			sift_tomb_xact_end(&e->st->tomb);
+		}
 }
 
 static CacheEnt *

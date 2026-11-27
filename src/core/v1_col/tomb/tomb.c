@@ -968,3 +968,10 @@ sift_tomb_forget(SiftTombLog *t)
 {
 	tomb_reset(t, NULL);
 }
+
+void
+sift_tomb_xact_end(SiftTombLog *t)
+{
+	if (t->spilled.nruns > 0 || t->hotspilled.nruns > 0)
+		tomb_reset(t, NULL);
+}

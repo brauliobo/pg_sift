@@ -132,6 +132,23 @@ log_evict_all(void)
 
 static const SiftCacheKind log_kind = {"col_tomblog", log_oldest, log_evict_one, log_evict_all};
 
+/* No log that a statement does not hold keeps runs on temp files past the transaction (sift_tomb_xact_end) */
+static void
+log_xact(XactEvent event, void *arg)
+{
+	dlist_iter	it;
+
+	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT && event != XACT_EVENT_PREPARE)
+		return;
+	dlist_foreach(it, &log_lru)
+	{
+		LogEnt	   *e = dlist_container(LogEnt, lru, it.cur);
+
+		if (e->pins == 0)
+			sift_tomb_xact_end(&e->log);
+	}
+}
+
 static void
 log_unpin(void *arg)
 {
@@ -237,6 +254,7 @@ log_ent(Relation index)
 
 		log_tab = hash_create("sift cache tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		CacheRegisterSyscacheCallback(RELOID, log_inval, (Datum) 0);
+		RegisterXactCallback(log_xact, NULL);
 		sift_cache_register(&log_kind);
 	}
 	reap_stale(relid);
