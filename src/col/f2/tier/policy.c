@@ -29,7 +29,7 @@
 #include "core/page_io.h"
 
 #define POLICY_SELECT \
-	"SELECT policy_id, uri, endpoint, (extract(epoch FROM move_after) * 1000000)::int8, cache_mb, scope_id FROM sift.tier_policies WHERE "
+	"SELECT policy_id, uri, endpoint, (extract(epoch FROM move_after) * 1000000)::int8, cache_mb, scope_id, db_oid FROM sift.tier_policies WHERE "
 
 static uint32 policies_relid_hash;	/* the hash of sift.tier_policies in the cache of pg_class */
 
@@ -86,7 +86,8 @@ read_policy(void *arg)
 			.endpoint = text_col(r->cx, 3, &isnull),
 			.move_after_us = int_col(4),
 			.cache_mb = (uint32) DatumGetInt32(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 5, &isnull)),
-			.scope_id = (uint64) int_col(6)
+			.scope_id = (uint64) int_col(6),
+			.db_oid = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 7, &isnull))
 		};
 }
 
@@ -314,7 +315,7 @@ keep_policy(Opened *o, const SiftTierPolicy *p)
 	MemoryContext cx = o->cx;
 
 	o->policy = (SiftTierPolicy) {.policy_id = p->policy_id,.uri = MemoryContextStrdup(cx, p->uri),.endpoint = p->endpoint != NULL ? MemoryContextStrdup(cx, p->endpoint) : NULL,
-	.move_after_us = p->move_after_us,.cache_mb = p->cache_mb,.scope_id = p->scope_id};
+	.move_after_us = p->move_after_us,.cache_mb = p->cache_mb,.scope_id = p->scope_id,.db_oid = p->db_oid};
 	o->loaded = true;
 }
 
@@ -480,12 +481,12 @@ write_as_owner(const char *sql, int nargs, const Oid *types, const Datum *values
 void
 sift_tier_policy_put(Relation rel, const char *uri, Interval *move_after, const char *endpoint, uint64 scope_id)
 {
-	Oid			types[] = {OIDOID, TEXTOID, INTERVALOID, TEXTOID, INT8OID};
+	Oid			types[] = {OIDOID, TEXTOID, INTERVALOID, TEXTOID, INT8OID, OIDOID};
 	Datum		values[] = {ObjectIdGetDatum(RelationGetRelid(rel)), CStringGetTextDatum(uri), IntervalPGetDatum(move_after),
-	endpoint != NULL ? CStringGetTextDatum(endpoint) : (Datum) 0, Int64GetDatum((int64) scope_id)};
+	endpoint != NULL ? CStringGetTextDatum(endpoint) : (Datum) 0, Int64GetDatum((int64) scope_id), ObjectIdGetDatum(MyDatabaseId)};
 
-	write_as_owner("INSERT INTO sift.tier_policies (relid, uri, move_after, endpoint, scope_id) VALUES ($1, $2, $3, $4, $5)", 5, types, values,
-				   endpoint != NULL ? "     " : "   n ", SPI_OK_INSERT);
+	write_as_owner("INSERT INTO sift.tier_policies (relid, uri, move_after, endpoint, scope_id, db_oid) VALUES ($1, $2, $3, $4, $5, $6)", 6, types, values,
+				   endpoint != NULL ? "      " : "   n  ", SPI_OK_INSERT);
 }
 
 void

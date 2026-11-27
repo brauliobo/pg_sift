@@ -3,8 +3,10 @@
 -- The location a relation's old parts move to, keyed by the OID of the relation so that a rename or a move to another schema keeps it. Not dumped by pg_dump: the objects belong to the physical
 -- relation (they are named by scope_id, which pg_dump would copy to a second relation that then overwrites them), so a restored relation has no parts in object storage and gets its policy again
 -- from sift.set_tier_policy. cache_mb bounds the local cache of ranges of that policy (a session reads it when it opens the cache); credentials of an S3 or R2 store are never in a table.
+-- db_oid is the database the objects belong to: CREATE DATABASE ... TEMPLATE copies the rows, the relations and their tier directories, and the copy reads those objects but never writes or deletes one.
 CREATE TABLE IF NOT EXISTS sift.tier_policies (
 	policy_id	int4 GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+	db_oid		oid NOT NULL,
 	relid		regclass NOT NULL UNIQUE,
 	uri			text NOT NULL CHECK (uri ~ '^(file:///|s3://|r2://)[^?#@]*$'),
 	move_after	interval NOT NULL CHECK (move_after > interval '0'),

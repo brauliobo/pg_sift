@@ -5,8 +5,9 @@
 
 #include "core/f2/pace.h"
 
-#define LOAD(p)			__atomic_load_n(&(p), __ATOMIC_RELAXED)
-#define STORE(p, v)		__atomic_store_n(&(p), (v), __ATOMIC_RELAXED)
+/* A reader that loads a slot a writer stored also sees the odd version the writer set before it, on a weakly ordered CPU too, and discards its copy */
+#define LOAD(p)			__atomic_load_n(&(p), __ATOMIC_ACQUIRE)
+#define STORE(p, v)		__atomic_store_n(&(p), (v), __ATOMIC_RELEASE)
 
 void
 sift_horizon_ring_init(SiftStandbyHorizon *r)
@@ -51,7 +52,6 @@ ring_copy(const SiftStandbyHorizon *r, SiftStandbyHorizon *out)
 			out->slot[i].ts = LOAD(r->slot[i].ts);
 			out->slot[i].horizon = LOAD(r->slot[i].horizon);
 		}
-		__atomic_thread_fence(__ATOMIC_ACQUIRE);
 		if (__atomic_load_n(&r->version, __ATOMIC_RELAXED) == v)
 			return true;
 	}

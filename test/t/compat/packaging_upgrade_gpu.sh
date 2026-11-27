@@ -61,7 +61,7 @@ check "the trigger function of track_changes is still there" test "$(q old "SELE
 orphans="SELECT (SELECT count(*) FROM sift.projection_defs) + (SELECT count(*) FROM sift.tier_policies) + (SELECT count(*) FROM sift.ttl_policies)"
 q fresh "SELECT sift.ddl_hooks_enable(false)" \
 	"INSERT INTO sift.projection_defs (rel, name, spec) VALUES (4294000001::oid::sift.tblref, 'p', 'x')" \
-	"INSERT INTO sift.tier_policies (relid, uri, move_after, scope_id) VALUES (4294000002::oid::regclass, 'file:///nowhere', '1 day', 4294000002)" \
+	"INSERT INTO sift.tier_policies (relid, uri, move_after, scope_id, db_oid) SELECT 4294000002::oid::regclass, 'file:///nowhere', '1 day', 4294000002, oid FROM pg_database WHERE datname = current_database()" \
 	"INSERT INTO sift.ttl_policies (relid, col, retention) VALUES (4294000003::oid::sift.tblref, 'c', '1 day')" >/dev/null || bail "the orphans cannot be made"
 check "the policy tables hold the three rows of relations that are gone" test "$(q fresh "$orphans")" == 3
 q fresh "SELECT sift.ddl_hooks_enable(true)" >/dev/null

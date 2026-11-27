@@ -22,6 +22,7 @@ typedef struct SiftTierPolicy
 	int64		move_after_us;
 	uint32		cache_mb;
 	uint64		scope_id;		/* the namespace of the objects of the relation: r<scope_id>/ */
+	Oid			db_oid;			/* the database the objects belong to: a copy of it (CREATE DATABASE ... TEMPLATE) reads them and never writes or deletes one */
 } SiftTierPolicy;
 
 typedef struct SiftTtlPolicy

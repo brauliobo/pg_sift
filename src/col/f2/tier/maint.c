@@ -14,6 +14,7 @@
 
 #include "access/transam.h"
 #include "access/xlog.h"
+#include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
@@ -436,15 +437,25 @@ sweep(const Step *s, const TierRun *t)
 							 tally.marked + tally.waiting)));
 }
 
+/* A database copied by CREATE DATABASE ... TEMPLATE has the policy and the tier directory of the original, whose objects they are: it reads them and puts, marks or deletes none */
+static bool
+policy_of_other_db(const SiftTierPolicy *pol)
+{
+	return pol->db_oid != MyDatabaseId;
+}
+
 int
 sift_f2_tier_reclaim(Relation rel, const SiftTierPolicy *pol)
 {
 	Step		s = {.rel = rel,.now = GetCurrentTimestamp()};
-	TierRun		t = {.pol = *pol,.be = sift_tier_backend(pol)};
+	TierRun		t = {.pol = *pol};
 	SiftTierSweepTally tally;
 	SiftTierErr err = {0};
 	SiftTierStatus st;
 
+	if (policy_of_other_db(pol))
+		return 0;
+	t.be = sift_tier_backend(pol);
 	if (!ConditionalLockPage(rel, SIFT_F2_MAINT_LOCK_BLKNO, ExclusiveLock))
 		return -1;
 	st = sweep_store(&s, &t, &tally, &err);
@@ -463,6 +474,13 @@ tier_step(const Step *s, const SiftTierPolicy *pol, int slot)
 	int			budget = SIFT_TIER_BATCH;
 	SiftF2Store *store = sift_f2_store_open(s->rel);
 
+	if (policy_of_other_db(pol))
+	{
+		ereport(WARNING, (errmsg("sift: \"%s\" has the tier policy of the database it was copied from: no part moves", RelationGetRelationName(s->rel)),
+						  errhint("Once no part is in object storage, sift.clear_tier_policy and set the policy again.")));
+		delete_due(s);
+		return;
+	}
 	t.be = sift_tier_backend_try(pol, &err);
 	if (t.be == NULL || sift_tier_cache_try(pol, &err) == NULL)
 	{

@@ -3,14 +3,16 @@
  * their CRC32C, named by the content hash of the object and the piece number, so a chunk is valid for every part and every relation that has those bytes. The index is in memory, least recently used
  * last; it is rebuilt from the directory (by modification time) when the cache opens. A chunk that is missing or fails its checksum is fetched again: the cache holds nothing that the object
  * does not. The directory is shared by the backends: a chunk another backend wrote is found by its file and served, and the index is made again from the directory once this backend has
- * fetched a quarter of the budget since it last did or holds more than the budget, so that the eviction keeps the bytes of the directory, not the ones of this backend, to the budget within a
- * quarter of it per backend (an eviction of a chunk another backend uses is a refetch), and a miss costs no read of the whole directory.
+ * fetched a quarter of the budget since it last did, so that the eviction keeps the bytes of the directory, not the ones of this backend, to the budget within a quarter of it per backend (an
+ * eviction of a chunk another backend uses is a refetch). One backend at a time makes it, under a lock of the directory it does not wait for: a backend that finds a peer at it, or that holds
+ * more than the budget between two, evicts from its own index, so that a miss costs no read of the whole directory and many readers do not list it at once.
  */
 #include "core/host.h"
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -187,6 +189,7 @@ evict_down_to(SiftTierCache *c, uint64 bytes)
 {
 	while (c->st.resident_bytes > bytes && c->lru != NULL)
 	{
+		CHECK_FOR_INTERRUPTS();
 		drop(c, c->lru);
 		c->st.evictions++;
 	}
@@ -226,11 +229,10 @@ found_cmp(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-/* The chunk files of the directory, oldest first; the temporary files of backends that are gone are removed */
+/* The chunk files of the directory d, oldest first; the temporary files of backends that are gone are removed */
 static void
-adopt_directory(SiftTierCache *c)
+adopt_directory(SiftTierCache *c, DIR *d)
 {
-	DIR		   *d = AllocateDir(c->dir);
 	struct dirent *de;
 	Found	   *f = NULL;
 	int			nf = 0,
@@ -245,6 +247,7 @@ adopt_directory(SiftTierCache *c)
 		unsigned	idx;
 		int			len = 0;
 
+		CHECK_FOR_INTERRUPTS();
 		snprintf(path, sizeof(path), "%s/%s", c->dir, de->d_name);
 		if (strstr(de->d_name, ".tmp.") != NULL)
 		{
@@ -289,12 +292,20 @@ forget_index(SiftTierCache *c)
 	c->st.resident_chunks = 0;
 }
 
-/* The index as the directory is now, within the budget */
+/* The index as the directory is now, within the budget; while a peer makes its own (the lock goes with the descriptor of the directory), this one evicts from the index it has */
 static void
 sync_directory(SiftTierCache *c)
 {
+	DIR		   *d = AllocateDir(c->dir);
+
+	if (d != NULL && flock(dirfd(d), LOCK_EX | LOCK_NB) != 0)
+	{
+		FreeDir(d);
+		evict_to_budget(c);
+		return;
+	}
 	forget_index(c);
-	adopt_directory(c);
+	adopt_directory(c, d);
 	c->unsynced_bytes = 0;
 }
 
@@ -302,8 +313,10 @@ static void
 fetched(SiftTierCache *c, uint64 bytes)
 {
 	c->unsynced_bytes += bytes;
-	if (c->unsynced_bytes >= c->budget / 4 || c->st.resident_bytes > c->budget)
+	if (c->unsynced_bytes >= c->budget / 4)
 		sync_directory(c);
+	else
+		evict_to_budget(c);
 }
 
 SiftTierCache *
@@ -338,7 +351,7 @@ sift_tier_cache_open(const char *dir, uint64 budget_bytes, uint32 chunk_bytes, S
 			}
 			*p = '/';
 		}
-	adopt_directory(c);
+	sync_directory(c);
 	return c;
 }
 
