@@ -288,6 +288,18 @@ tomb_mem_entries(void)
 	return tomb_mem_bytes() / SIFT_TOMB_ENTRY_BYTES;
 }
 
+/* Drops each row lock the next entry of its version by the same xact ends (FOR UPDATE then UPDATE): readers answer the same, the update decides and gives xmax */
+static uint32
+drop_spent_locks(SiftTomb *a, uint32 n)
+{
+	uint32		k = 0;
+
+	for (uint32 i = 0; i < n; i++)
+		if (a[i].kind != SIFT_TOMB_LOCK || i + 1 == n || a[i + 1].key != a[i].key || a[i + 1].xid != a[i].xid || a[i + 1].kind == SIFT_TOMB_LOCK)
+			a[k++] = a[i];
+	return k;
+}
+
 /* Adds freshly synced entries: sorted into the small recent array, which joins the main one when it grows; past the memory the log may keep they go to a run */
 static void
 tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
@@ -311,6 +323,7 @@ tomb_add(SiftTombLog *t, SiftTomb *batch, uint32 n)
 			((HotLink *) hash_search(t->hotm, &batch[i].succ, HASH_ENTER, NULL))->pred = batch[i].key;
 		}
 	tomb_sort(batch, n);
+	n = drop_spent_locks(batch, n);
 	/* the first look of a backend at a log that is long: into the main array, not through the recent one and a second copy */
 	if (t->nents == 0 && t->nrecent == 0 && n > TOMB_RECENT_MAX)
 		merge_tombs(t, &t->ents, &t->nents, &t->capents, batch, n);

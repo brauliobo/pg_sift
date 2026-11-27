@@ -136,7 +136,7 @@ rows_table_path(V6Plan *p, Oid relid, uint32 k)
 	if (!sift_v6_plan_table(p, relid) || !sift_v6_rows_compile(p, k))
 		return false;
 	in = (SiftV6CostIn) {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo, p->ops->order != NULL ? p->ops->order->lead_att(p->relid, true) : 0),.groups = k,
-	.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
+	.row_frac = sift_v6_rel_row_frac(p->relid),.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
 	sift_v6_scan_cost(&in, &open, &scan);
 	sift_v6_rows_add(p, k, scan, NIL, 0, 0);
 	return true;

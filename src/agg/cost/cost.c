@@ -56,8 +56,10 @@ sift_v6_quals_sel(PlannerInfo *root, List *quals, int var_relid)
 void
 sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total)
 {
-	const double granules = Max(1.0, ceil(in->tuples / SIFT_GRANULE_ROWS));
-	const double decoded = Min(Max(in->tuples, 1.0), Max(in->f_prune * granules, 1.0) * SIFT_GRANULE_ROWS);
+	const double rows_kept = in->tuples * in->row_frac,
+				stored = in->tuples - rows_kept,
+				granules = Max(1.0, ceil(stored / SIFT_GRANULE_ROWS)),
+				decoded = Min(Max(stored, 1.0), Max(in->f_prune * granules, 1.0) * SIFT_GRANULE_ROWS) + rows_kept;
 	const SiftCostInputs costs = {
 		.g_eff = decoded / SIFT_GRANULE_ROWS,
 		.b_dec = decoded * Max(in->ncols_read, 1) * sizeof(int64),
@@ -68,5 +70,6 @@ sift_v6_scan_cost(const SiftV6CostIn *in, Cost *startup, Cost *total)
 		.f_cold = sift_agg_cold_share(in->pages),
 	};
 
-	sift_agg_estimate_cost(&costs, Min(Max(in->rows, 1.0) / decoded, 1.0), false, false, SIFT_OPEN_OPS * cpu_operator_cost, 0, startup, total);
+	sift_agg_estimate_cost(&costs, Min(Max(in->rows, 1.0) / decoded, 1.0), false, false, (SIFT_OPEN_OPS + rows_kept * SIFT_TABLE_VET_OPS) * cpu_operator_cost, 0,
+						   startup, total);
 }

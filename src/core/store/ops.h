@@ -91,6 +91,7 @@ typedef struct SiftStoreStats
 	double		live_rows;
 	uint64		stored_bytes;	/* total on-disk bytes for b_io cost model */
 	double		allvis_frac;	/* [0.0, 1.0] fraction needing no heap vet */
+	double		row_frac;		/* [0.0, 1.0] share of the stored rows kept as rows (write buffers): a scan decodes and vets each, whatever its quals prune */
 	const struct SiftCardStatsView *card_view;	/* optional, NULL if unavailable */
 	int			(*card_leaf) (Oid relid, int col);
 } SiftStoreStats;

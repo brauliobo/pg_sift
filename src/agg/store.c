@@ -74,6 +74,15 @@ sift_v6_rel_card_leaf(Oid indexoid, int col)
 	return ops != NULL && ops->stats(indexoid, false, &st) && st.card_leaf != NULL ? st.card_leaf(indexoid, col) : -1;
 }
 
+double
+sift_v6_rel_row_frac(Oid relid)
+{
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
+	SiftStoreStats st = {0};
+
+	return ops != NULL && ops->stats(relid, true, &st) ? st.row_frac : 0.0;
+}
+
 SiftV6Source *
 sift_v6_rel_open(EState *estate, const SiftV6Input *in, const SiftV6Vexpr *quals, bool sorted)
 {

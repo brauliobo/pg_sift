@@ -17,6 +17,7 @@
 #include "agg/cost/card.h"
 #include "agg/cost/cost.h"
 #include "agg/source_rel.h"
+#include "agg/vexpr.h"
 #include "core/meta_peek.h"
 #include "core/quarantine/quarantine.h"
 #include "core/store/ops.h"
@@ -76,7 +77,8 @@ qual_cols(RelOptInfo *rel, AttrNumber key)
 static void
 table_scan_price(PlannerInfo *root, RelOptInfo *rel, const Bitmapset *cols, Cost *open, Cost *total)
 {
-	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1};
+	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1,
+	.row_frac = sift_v6_rel_row_frac(planner_rt_fetch(rel->relid, root)->relid)};
 	Cost		startup;
 
 	in.ncols_read = bms_num_members(cols);
@@ -111,7 +113,7 @@ sift_v6_table_spec_cost(PlannerInfo *root, RelOptInfo *rel, Oid relid, const Sif
 	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
 	const AttrNumber lead = ops->order != NULL ? ops->order->lead_att(relid, true) : 0;
 	const SiftV6CostIn in = {.tuples = rel->tuples,.pages = rel->pages,.rows = rel->rows,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, lead),.groups = groups,
-	.ncols_read = sift_v6_spec_ncols_read(spec)};
+	.row_frac = sift_v6_rel_row_frac(relid),.ncols_read = sift_v6_spec_ncols_read(spec)};
 
 	sift_v6_scan_cost(&in, startup, total);
 }

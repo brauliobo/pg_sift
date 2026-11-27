@@ -304,7 +304,7 @@ v1_stats(Oid relid, bool is_table, SiftStoreStats *out)
 
 	sift_v1_reader_of(is_table)->stats(r.rel, &st);
 	*out = (SiftStoreStats) {.live_rows = r.heap->rd_rel->reltuples >= 0 ? r.heap->rd_rel->reltuples : st.nrows,
-		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0),
+		.stored_bytes = is_table ? table_relation_size(r.heap, MAIN_FORKNUM) : (uint64) st.bytes,.allvis_frac = Min(Max(st.allvisible_frac, 0.0), 1.0),.row_frac = st.row_frac,
 		.card_view = priced ? sift_v1_card_view(sift_v1_reader_of(false)->layout(r.rel), &st) : NULL,
 		.card_leaf = priced ? v1_card_leaf : NULL};
 	sift_v1_rel_close(&r);

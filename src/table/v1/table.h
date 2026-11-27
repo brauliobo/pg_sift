@@ -135,6 +135,9 @@ typedef struct SiftTblRel
 	SiftTblSeg *wbuf;			/* [nwbuf], directory order = ascending vbase */
 	uint32		wbuf_version;	/* the directory version wbuf was built for (dir.version is also set by the readers of the directory that do not rebuild it) */
 	SiftTombLog tomb;			/* the log of deleted, updated and locked versions (core/v1_col/tomb/tomb.h) */
+	/* the settled prefixes of HOT chains (sift_tbl_chain_skip): a member -> the first one after it not ended by an update every snapshot sees, for the log of generation hops_gen */
+	struct HTAB *hops;
+	uint64		hops_gen;
 	/* the page this backend appends to */
 	uint64		tgt_gen;
 	BlockNumber tgt_blk;
@@ -313,7 +316,7 @@ extern void sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del
  * The first member of the HOT chain from key (key itself included) that no HOT update the snapshot sees ended: the members before it are not visible to the snapshot whatever
  * their rows say, and no row of theirs is read. *dead (when not NULL): cleared unless every member passed is dead for every snapshot
  */
-extern uint64 sift_tbl_chain_skip(Relation rel, const SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead);
+extern uint64 sift_tbl_chain_skip(Relation rel, SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead);
 
 extern TableScanDesc sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
 										 ParallelTableScanDesc pscan, uint32 flags);

@@ -10,9 +10,19 @@
 #include "access/xact.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
+#include "utils/hsearch.h"
 #include "utils/snapmgr.h"
 
 #include "table/v1/table.h"
+
+/* The chains whose settled prefix a backend keeps: one hop each (16 bytes and the hash entry), past them a walk starts from the chain's start */
+#define SIFT_TBL_HOPS_MAX	65536
+
+typedef struct TblHop
+{
+	uint64		from;			/* key */
+	uint64		to;
+} TblHop;
 
 bool
 sift_tbl_xid_aborted(TransactionId xid)
@@ -152,17 +162,52 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 	return ended_by(rel, st, snapshot, rv->key) == NULL;
 }
 
-uint64
-sift_tbl_chain_skip(Relation rel, const SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead)
+/* The hops of the log st reads now: none are kept across a rewrite of the log, which may free the versions they lead to */
+static HTAB *
+hops_of(SiftTblRel *st)
 {
+	if (st->hops != NULL && st->hops_gen != st->tomb.gen)
+	{
+		hash_destroy(st->hops);
+		st->hops = NULL;
+	}
+	if (st->hops == NULL)
+	{
+		HASHCTL		ctl = {.keysize = sizeof(uint64),.entrysize = sizeof(TblHop),.hcxt = st->cxt};
+
+		/* MEM[MEM-TBL-18]: v1 table relcache ctx (at most SIFT_TBL_HOPS_MAX entries) */
+		st->hops = hash_create("sift_table chain hops", 64, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		st->hops_gen = st->tomb.gen;
+	}
+	return st->hops;
+}
+
+/*
+ * The version of the HOT chain from key on that the snapshot sees, or the last one; *dead: every update it went past is one no snapshot can miss. An MVCC snapshot starts from where
+ * the walks before it found the chain settled: the members ended by such updates are passed by every snapshot, so the walk of a hot row costs the updates since, not its whole chain
+ */
+uint64
+sift_tbl_chain_skip(Relation rel, SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead)
+{
+	HTAB	   *hops = snapshot->snapshot_type == SNAPSHOT_MVCC ? hops_of(st) : NULL;
+	const uint64 from = key;
+	const TblHop *hop = hops != NULL ? hash_search(hops, &from, HASH_FIND, NULL) : NULL;
+	uint64		settled = hop != NULL ? hop->to : from;
 	const SiftTomb *e;
 
+	key = settled;
 	while ((e = ended_by(rel, st, snapshot, key)) != NULL && e->kind == SIFT_TOMB_UPDATE && (e->flags & SIFT_TOMB_HOT))
 	{
+		const bool	gone = sift_tbl_xid_removable(rel, e->xid);
+
 		if (dead)
-			*dead &= sift_tbl_xid_removable(rel, e->xid);
+			*dead &= gone;
 		key = e->succ;
+		if (gone && settled == e->key)
+			settled = key;
 	}
+	if (hops != NULL && settled != from && (hop != NULL || hash_get_num_entries(hops) < SIFT_TBL_HOPS_MAX))
+		((TblHop *) hash_search(hops, &from, HASH_ENTER, NULL))->to = settled;
 	return key;
 }
 

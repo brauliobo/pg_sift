@@ -134,6 +134,21 @@ exact_share(Relation rel, SiftTblRel *st, double nsb)
 	return Max(0.0, 1.0 - (wbuf + nsb * (1.0 - exp(-dead / nsb))) / nsb);
 }
 
+/* The share of the pages of the table that its write buffers hold: their rows are decoded and vetted by every scan */
+static double
+row_share(Relation rel, SiftTblRel *st)
+{
+	double		pages = 0.0;
+
+	sift_tbl_refresh(rel, st);
+	for (int i = 0; i < st->nwbuf; i++)
+	{
+		sift_tbl_seg_load(rel, &st->wbuf[i]);
+		pages += st->wbuf[i].npages;
+	}
+	return Min(1.0, pages / Max(RelationGetNumberOfBlocks(rel), 1));
+}
+
 void
 sift_v1_tbl_stats(Relation rel, SiftSrcStats *st)
 {
@@ -148,6 +163,7 @@ sift_v1_tbl_stats(Relation rel, SiftSrcStats *st)
 	st->nunits = SIFT_TBL_NEXT_VBLOCK(&tr->dir->meta) / SIFT_SB_PAGES + 1;
 	st->allvisible_frac = 1.0;
 	st->exact_frac = exact_share(rel, tr, st->nunits);
+	st->row_frac = row_share(rel, tr);
 	sift_tbl_path_stats(rel, tr, ls, wovf, wjnull);
 	sift_src_leaf_stats(cur->cols, cur->ncols - 1, ls, wovf, wjnull, st);
 	/* distinct values of a column: what ANALYZE of the table found (negative: a share of the rows), 0 until it has run */
