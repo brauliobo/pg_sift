@@ -6,12 +6,13 @@ SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
-CREATE TABLE f (id int PRIMARY KEY, k int, g text, v int, items jsonb) WITH (autovacuum_enabled = false);
+CREATE TABLE f (id int PRIMARY KEY, k int, g text, v int, items jsonb, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO f
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL WHEN i % 11 = 0 THEN 900 + i % 3 ELSE 1 + i % 20 END, 'g' || (i % 4), i % 50,
-       jsonb_build_array(jsonb_build_object('category', 'c' || (i % 5), 'qty', i % 7), jsonb_build_object('category', 'c' || (i % 3), 'qty', i % 4))
+       jsonb_build_array(jsonb_build_object('category', 'c' || (i % 5), 'qty', i % 7), jsonb_build_object('category', 'c' || (i % 3), 'qty', i % 4)),
+       CASE WHEN i % 3 > 0 THEN jsonb_build_object('a', i % 2, 't', 'j' || (i % 6)) END
 FROM generate_series(1, 3000) i;
-CREATE INDEX f_col ON f USING sift_col (id, k, g, v, items) WITH (paths = 'items[]{category text, qty int4}');
+CREATE INDEX f_col ON f USING sift_col (id, k, g, v, items, doc) WITH (paths = 'items[]{category text, qty int4}, doc->a int4, doc->t text');
 VACUUM (FREEZE, ANALYZE) f;
 -- keys that repeat, NULL keys, keys no row of f has (21 to 25, 1000) and a text key
 CREATE TABLE d (k int, t text, w int);
@@ -69,7 +70,9 @@ INSERT INTO stmts VALUES
 (25, 'SELECT f.g, count(*) FILTER (WHERE d.w > 10), sum(f.v) FILTER (WHERE d.t = ''t1'' OR f.v < 5), count(*) FILTER (WHERE coalesce(d.w, 0) + f.v > 30) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1'),
 -- keys of the rows of an unnest that the groups take by their values (a jsonb), and one a hashed sub-plan computes, which the node prepares for the scan of the unnest
 (26, 'SELECT jsonb_build_object(''g'', f.g), count(*), sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) GROUP BY 1'),
-(27, 'SELECT CASE WHEN f.v IN (SELECT w FROM d) THEN jsonb_build_object(''v'', f.v % 3) END, i.category, sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) GROUP BY 1, 2');
+(27, 'SELECT CASE WHEN f.v IN (SELECT w FROM d) THEN jsonb_build_object(''v'', f.v % 3) END, i.category, sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) GROUP BY 1, 2'),
+-- a key of the joined rows that reads a key of a document of the fact table beside a column of the dimension
+(28, 'SELECT CASE WHEN f.doc ->> ''t'' IS NOT NULL THEN f.doc ->> ''t'' ELSE d.t END, count(*), sum(f.v) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1');
 SELECT id, (same(q)).* FROM stmts ORDER BY id;
  id |  engine   | result_rows | vs_heap 
 ----+-----------+-------------+---------
@@ -100,7 +103,8 @@ SELECT id, (same(q)).* FROM stmts ORDER BY id;
  25 | SiftAggV6 |           4 |       0
  26 | SiftAggV6 |           4 |       0
  27 | SiftAggV6 |          20 |       0
-(27 rows)
+ 28 | SiftAggV6 |           9 |       0
+(28 rows)
 
 -- the arms of a statement that join the same table (the same columns and conditions, the same keys) read it once: the second node uses the first one's table
 CREATE FUNCTION arms(q text) RETURNS TABLE (nodes bigint, shared_dimensions bigint, vs_heap bigint) LANGUAGE plpgsql AS $$
