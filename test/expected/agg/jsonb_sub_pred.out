@@ -85,7 +85,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT upper(o.doc ->> 't') AS t, i.kind, count(*) FROM @T o LEFT JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) ON true GROUP BY 1, 2
  same normal SELECT o.grp, count(*), sum(i.qty) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE i.kind = 'gift' OR o.doc ->> 'k' = 'web' GROUP BY 1
  same normal SELECT i.kind, count(*), sum(((o.doc ->> 'n')::float8 * 4)::int) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE jsonb_typeof(o.doc -> 'n') = 'number' GROUP BY 1
- same normal SELECT length(o.doc ->> 'k') AS l, i.category, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS j(kind text) WHERE j.kind = 'gift') GROUP BY 1, 2
+ same node SELECT length(o.doc ->> 'k') AS l, i.category, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS j(kind text) WHERE j.kind = 'gift') GROUP BY 1, 2
 (6 rows)
 
 -- an EXISTS over the elements through a sub-select PostgreSQL pulls up: the sub-select is no relation of the sub-plan any more, the function scan is its one

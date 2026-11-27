@@ -179,7 +179,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT count(*) FROM @T o WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = 'gift')
  same normal SELECT count(*) FROM @T o WHERE o.grp = 1 OR EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = 'gift')
  same node SELECT count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.kind = 'gift') AND EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS i(category text, kind text) WHERE i.category = 'Toys')
- same normal SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE (i.kind = 'gift' AND i.qty > 2) OR i.category = 'Food' GROUP BY 1
+ same node SELECT i.kind, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int, price float8) WHERE (i.kind = 'gift' AND i.qty > 2) OR i.category = 'Food' GROUP BY 1
 (4 rows)
 
 DROP FUNCTION same(text);
