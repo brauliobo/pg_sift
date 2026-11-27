@@ -24,6 +24,7 @@
 #include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/unnest/path.h"
+#include "agg/unnest/test.h"
 
 /* the cost the scan of the table has for each row of it, in operators: the leaves of the elements are read for every granule of the index (the pull prunes none by the quals of the table) */
 #define EXISTS_ROW_OPERATORS	50
@@ -45,6 +46,7 @@ typedef struct TestBuilt
 	int			index;
 	SiftV6XTest test;
 	List	   *quals;
+	List	   *ors;			/* of each disjunction of the comparisons with the row: its other arms */
 	Expr	   *heap;
 	int			map[SIFT_V6_XELEM_COLS];
 	RelOptInfo *elem_rel;
@@ -217,6 +219,49 @@ outer_cmp(V6Plan *p, const TestBuilt *b, const OpExpr *op, SiftV6XCmp *out)
 	return true;
 }
 
+/* the quals over the columns of the element are one clause the scan evaluates (agg/filter/pg.c) */
+static bool
+elem_clause_ok(Expr *q)
+{
+	SiftClause	clause;
+	int			col[SIFT_V6_MAX_FCOLS],
+				nvec;
+
+	return sift_v6_unnest_elem_clause(CurrentMemoryContext, list_make1(q), &clause, col, &nvec);
+}
+
+/* a comparison with a column of the row of test b, a conjunct (group 0) or an arm of disjunction group */
+static bool
+add_cmp(V6Plan *p, TestBuilt *b, const Node *clause, int group)
+{
+	SiftV6XCmp	cmp = {.group = group};
+
+	if (!IsA(clause, OpExpr) || list_length(((const OpExpr *) clause)->args) != 2 || b->test.ncmps == SIFT_V6_XCMPS || !outer_cmp(p, b, (const OpExpr *) clause, &cmp))
+		return false;
+	b->test.cmp[b->test.ncmps++] = cmp;
+	return true;
+}
+
+/* an OR whose arms compare with the columns of the row: those arms are comparisons of its group, the others quals over the columns of the element */
+static bool
+add_or(V6Plan *p, TestBuilt *b, const BoolExpr *or)
+{
+	const int	group = list_length(b->ors) + 1;
+	List	   *arms = NIL;
+
+	foreach_ptr(Node, arm, or->args)
+	{
+		Expr	   *q = agg_node_has_param(arm) ? NULL : sift_v6_unnest_elem_qual(p, arm);
+
+		if (q == NULL && !add_cmp(p, b, arm, group))
+			return false;
+		if (q != NULL)
+			arms = lappend(arms, q);
+	}
+	b->ors = lappend(b->ors, arms);
+	return arms == NIL || elem_clause_ok(sift_v6_unnest_or_arms(arms));
+}
+
 /* the quals of the sub-select of an EXISTS over the columns of the elements, and its comparisons with the columns of the row */
 static bool
 exists_quals(V6Plan *p, TestBuilt *b)
@@ -229,11 +274,8 @@ exists_quals(V6Plan *p, TestBuilt *b)
 			return false;
 		if (agg_node_has_param((Node *) ri->clause))
 		{
-			SiftV6XCmp	cmp;
-
-			if (!IsA(ri->clause, OpExpr) || list_length(((OpExpr *) ri->clause)->args) != 2 || b->test.ncmps == SIFT_V6_XCMPS || !outer_cmp(p, b, (const OpExpr *) ri->clause, &cmp))
+			if (!(is_orclause(ri->clause) ? add_or(p, b, (const BoolExpr *) ri->clause) : add_cmp(p, b, (Node *) ri->clause, 0)))
 				return false;
-			b->test.cmp[b->test.ncmps++] = cmp;
 			continue;
 		}
 		if ((q = sift_v6_unnest_elem_qual(p, (Node *) ri->clause)) == NULL)
@@ -338,7 +380,7 @@ store_tests(V6Plan *p)
 	foreach_ptr(TestBuilt, b, p->tests)
 	{
 		x->test[x->ntests++] = b->test;
-		x->test_quals = lappend(x->test_quals, list_make2(b->quals, b->heap != NULL ? list_make1(b->heap) : NIL));
+		x->test_quals = lappend(x->test_quals, list_make3(b->quals, b->heap != NULL ? list_make1(b->heap) : NIL, b->ors));
 	}
 }
 

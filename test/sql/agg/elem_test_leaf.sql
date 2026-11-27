@@ -4,11 +4,13 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
-CREATE TABLE eo (id int, tenant_id int, items jsonb) WITH (autovacuum_enabled = off);
+CREATE TABLE eo (id int, tenant_id int, items jsonb, lim float8) WITH (autovacuum_enabled = off);
 INSERT INTO eo SELECT g, g % 10, (SELECT jsonb_agg(jsonb_build_object('category', (ARRAY['Electronics', 'Books', 'Toys'])[1 + (g + i) % 3],
-	'kind', (ARRAY['express', 'standard'])[1 + (g * i) % 2], 'price', (g + i) % 50)) FROM generate_series(1, 1 + g % 4) i) FROM generate_series(1, 3000) g;
+	'kind', (ARRAY['express', 'standard'])[1 + (g * i) % 2], 'price', CASE WHEN (g + i) % 11 = 0 THEN NULL ELSE (g + i) % 50 END,
+	'gift', CASE (g + i) % 5 WHEN 0 THEN NULL WHEN 1 THEN 'true'::jsonb WHEN 2 THEN '"false"'::jsonb ELSE to_jsonb(g % 2 = 0) END)) FROM generate_series(1, 1 + g % 4) i),
+	CASE WHEN g % 13 = 0 THEN NULL ELSE g % 30 END FROM generate_series(1, 3000) g;
 VACUUM (FREEZE, ANALYZE) eo;
-CREATE INDEX eo_col ON eo USING sift_col (id, tenant_id, items) WITH (paths = 'items[]{category text, kind text, price float8}');
+CREATE INDEX eo_col ON eo USING sift_col (id, tenant_id, items, lim) WITH (paths = 'items[]{category text, kind text, price float8, gift bool}');
 
 CREATE FUNCTION eo_rows(q text, agg bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, agg) $$;
 
@@ -19,6 +21,21 @@ FROM (VALUES
 	(3, 'SELECT tenant_id, count(*) FROM eo WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text, kind text) WHERE o.category = ''Toys'' AND o.kind = ''standard'') GROUP BY 1'),
 	(4, 'SELECT tenant_id, count(*) FROM eo WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text, price float8) WHERE o.category = ''Toys'' AND o.price > 20) GROUP BY 1')
 ) v(n, q) ORDER BY n;
+
+-- an element condition that ORs a comparison with a column of the row with a test of the element (a NULL on either side passes neither), NOT of an AND of them, an OR of the tests, and a boolean column of the elements
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SELECT n, eo_rows(q, true) IS NOT DISTINCT FROM eo_rows(q, false) AS same, eo_rows(q, true) <> '' AS not_empty, sift_helpers.plan_pushed(sift_helpers.plan_text(q)) AS pushed
+FROM (VALUES
+	(5, 'SELECT tenant_id, count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(price float8) WHERE o.price IS NULL OR o.price = lim)) FROM eo GROUP BY 1'),
+	(6, 'SELECT tenant_id, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text, price float8) WHERE NOT (o.price = lim AND o.category = ''Toys''))) FROM eo GROUP BY 1'),
+	(7, 'SELECT tenant_id, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text, price float8) WHERE o.price < lim OR o.category = ''Books'')) FROM eo GROUP BY 1'),
+	(8, 'SELECT tenant_id, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text) WHERE o.category = ''Books'')
+		OR NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(items) AS o(category text) WHERE o.category = ''Toys'')) FROM eo GROUP BY 1'),
+	(9, 'SELECT o.category, count(*) FILTER (WHERE o.gift), count(*) FILTER (WHERE NOT o.gift), count(o.gift), bool_or(o.gift) FROM eo CROSS JOIN LATERAL jsonb_to_recordset(items) AS o(category text, gift bool) GROUP BY 1')
+) v(n, q) ORDER BY n;
+RESET seq_page_cost;
+RESET random_page_cost;
 
 DROP TABLE eo;
 DROP FUNCTION eo_rows(text, bool);

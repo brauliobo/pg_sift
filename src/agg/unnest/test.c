@@ -4,6 +4,8 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, and the elements of one granule */
 #include "postgres.h"
 
+#include "nodes/makefuncs.h"
+
 #include "agg/kern/kern.h"
 #include "agg/filter/pg.h"
 #include "agg/gather.h"
@@ -64,12 +66,21 @@ sift_v6_elem_eval(SiftV6ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, u
 	}
 }
 
+Expr *
+sift_v6_unnest_or_arms(List *arms)
+{
+	return list_length(arms) == 1 ? linitial(arms) : makeBoolExpr(OR_EXPR, arms, -1);
+}
+
 struct SiftV6RowTests
 {
 	MemoryContext cx;
 	const SiftV6Ext *x;
 	SiftV6ElemEval *ee[SIFT_V6_XTESTS];
+	List	   *ors[SIFT_V6_XTESTS];	/* of each disjunction of test k: the evaluator of its arms over the element columns (NULL: it has none) */
 	uint64	   *keep;
+	uint64	   *any;			/* the elements a disjunction keeps */
+	uint64	   *arm;			/* those one arm of it keeps */
 	uint32	   *par;			/* the row of the batch each element of the granule belongs to */
 	uint32		cap;			/* the elements keep and par have room for */
 	uint32		zero[SIFT_VEC_LEN];
@@ -90,6 +101,8 @@ sift_v6_row_tests_open(MemoryContext cx, const SiftV6Ext *x)
 	{
 		if (linitial(tq) != NIL)
 			t->ee[k] = sift_v6_elem_eval_open(cx, linitial(tq));
+		foreach_ptr(List, arms, lthird(tq))
+			t->ors[k] = lappend(t->ors[k], arms != NIL ? sift_v6_elem_eval_open(cx, list_make1(sift_v6_unnest_or_arms(arms))) : NULL);
 		k++;
 	}
 	return t;
@@ -102,6 +115,8 @@ reserve(SiftV6RowTests *t, uint32 n)
 		return;
 	t->cap = Max(n, 2 * t->cap);
 	t->keep = t->keep == NULL ? MemoryContextAllocZero(t->cx, ((Size) t->cap / 64 + 2) * sizeof(uint64)) : repalloc(t->keep, ((Size) t->cap / 64 + 2) * sizeof(uint64));
+	t->any = t->any == NULL ? MemoryContextAllocZero(t->cx, ((Size) t->cap / 64 + 2) * sizeof(uint64)) : repalloc(t->any, ((Size) t->cap / 64 + 2) * sizeof(uint64));
+	t->arm = t->arm == NULL ? MemoryContextAllocZero(t->cx, ((Size) t->cap / 64 + 2) * sizeof(uint64)) : repalloc(t->arm, ((Size) t->cap / 64 + 2) * sizeof(uint64));
 	t->par = t->par == NULL ? MemoryContextAllocZero(t->cx, (Size) t->cap * sizeof(uint32)) : repalloc(t->par, (Size) t->cap * sizeof(uint32));
 }
 
@@ -115,9 +130,9 @@ keep_quals(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 lo, uint32 hi)
 		memset(t->keep + lo / 64, 0xff, ((hi + 63) / 64 - lo / 64) * sizeof(uint64));
 }
 
-/* keep &= the elements of [lo, hi) whose value compares as cmp says with outer, the value of its row (idx: the row of each element; NULL: the one value) */
+/* out = the elements of [lo, hi) whose value compares as cmp says with outer, the value of its row (idx: the row of each element; NULL: the one value) */
 static void
-keep_cmp(SiftV6RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftVec *outer, const uint32 *idx, uint32 lo, uint32 hi)
+cmp_rows(SiftV6RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftVec *outer, const uint32 *idx, uint32 lo, uint32 hi, uint64 *out)
 {
 	for (uint32 at = lo - lo % 64; at < hi; at += SIFT_VEC_LEN)
 	{
@@ -132,7 +147,53 @@ keep_cmp(SiftV6RowTests *t, const SiftV6XCmp *cmp, const SiftVec *e, const SiftV
 		else
 			sift_aggk6->cmp2_i64(bits, a, g.data, (uint16) cnt, (SiftCmpOp) cmp->op);
 		for (uint32 w = 0; w < (cnt + 63) / 64; w++)
-			t->keep[at / 64 + w] &= bits[w] & t->gvalid[w] & e->valid[at / 64 + w];
+			out[at / 64 + w] = bits[w] & t->gvalid[w] & e->valid[at / 64 + w];
+	}
+}
+
+static void
+and_rows(uint64 *dst, const uint64 *src, uint32 lo, uint32 hi)
+{
+	for (uint32 w = lo / 64; w < (hi + 63) / 64; w++)
+		dst[w] &= src[w];
+}
+
+static void
+or_rows(uint64 *dst, const uint64 *src, uint32 lo, uint32 hi)
+{
+	for (uint32 w = lo / 64; w < (hi + 63) / 64; w++)
+		dst[w] |= src[w];
+}
+
+/*
+ * keep &= the elements of [lo, hi) that pass the comparisons of test k with the columns of their row, outer[c] the column of comparison c (idx: the row of each element; NULL: one value): each
+ * conjunct, and of each disjunction one arm, a comparison of its group or a qual of its element
+ */
+static void
+keep_cmps(SiftV6RowTests *t, int k, const SiftVec *ev, const SiftVec *const *outer, const uint32 *idx, uint32 lo, uint32 hi)
+{
+	const SiftV6XTest *xt = &t->x->test[k];
+	int			g = 0;
+
+	for (int c = 0; c < xt->ncmps; c++)
+		if (xt->cmp[c].group == 0)
+		{
+			cmp_rows(t, &xt->cmp[c], &ev[xt->cmp[c].elem], outer[c], idx, lo, hi, t->arm);
+			and_rows(t->keep, t->arm, lo, hi);
+		}
+	foreach_ptr(SiftV6ElemEval, arms, t->ors[k])
+	{
+		g++;
+		memset(t->any + lo / 64, 0, ((hi + 63) / 64 - lo / 64) * sizeof(uint64));
+		if (arms != NULL)
+			sift_v6_elem_eval(arms, ev, lo, hi, t->any);
+		for (int c = 0; c < xt->ncmps; c++)
+			if (xt->cmp[c].group == g)
+			{
+				cmp_rows(t, &xt->cmp[c], &ev[xt->cmp[c].elem], outer[c], idx, lo, hi, t->arm);
+				or_rows(t->any, t->arm, lo, hi);
+			}
+		and_rows(t->keep, t->any, lo, hi);
 	}
 }
 
@@ -159,14 +220,15 @@ sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftArrayLayout *lay, const uint
 	{
 		const SiftV6XTest *xt = &t->x->test[k];
 
+		const SiftVec *cols[SIFT_V6_XCMPS];
+
 		keep_quals(t, k, ev, lo, hi);
+		if (xt->ncmps > 0 && !have_par)
+			parents_of(t, lay);
+		have_par |= xt->ncmps > 0;
 		for (int c = 0; c < xt->ncmps; c++)
-		{
-			if (!have_par)
-				parents_of(t, lay);
-			have_par = true;
-			keep_cmp(t, &xt->cmp[c], &ev[xt->cmp[c].elem], &col[outer[k * SIFT_V6_XCMPS + c]], t->par, lo, hi);
-		}
+			cols[c] = &col[outer[k * SIFT_V6_XCMPS + c]];
+		keep_cmps(t, k, ev, cols, t->par, lo, hi);
 		sift_unnest_any(lay, t->keep, rows, doc_valid, yes[k], known[k]);
 	}
 }
@@ -176,10 +238,13 @@ sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, co
 {
 	const SiftV6XTest *xt = &t->x->test[k];
 
+	const SiftVec *cols[SIFT_V6_XCMPS];
+
 	reserve(t, nel);
 	keep_quals(t, k, ev, 0, nel);
 	for (int c = 0; c < xt->ncmps; c++)
-		keep_cmp(t, &xt->cmp[c], &ev[xt->cmp[c].elem], &outer[c], NULL, 0, nel);
+		cols[c] = &outer[c];
+	keep_cmps(t, k, ev, cols, NULL, 0, nel);
 	for (uint32 e = 0; e < nel; e++)
 		if ((t->keep[e / 64] >> (e % 64)) & 1)
 			return true;

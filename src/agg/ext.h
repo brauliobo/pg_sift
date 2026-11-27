@@ -94,13 +94,17 @@ typedef struct SiftV6XElem
 	bool		col_kind[SIFT_V6_XELEM_COLS];	/* the column is the kind of the value the leaf has in the element (SIFT_ELEM_KIND_*, agg/vec.h), not the value */
 } SiftV6XElem;
 
-/* An element compared with a column of its row: the SiftCmpOp (agg/kern/kern.h) of the element column against the column outer of the index, both integers or both float8 */
+/*
+ * An element compared with a column of its row: the SiftCmpOp (agg/kern/kern.h) of the element column against the column outer of the index, both integers or both float8. group 0: a conjunct of the
+ * test; g: an arm of its disjunction g, whose other arms are the quals of the element of test_quals (the rows of a disjunction are the union of the rows of its arms)
+ */
 typedef struct SiftV6XCmp
 {
 	int			op;
 	int			elem;
 	int			outer;
 	Oid			outer_type;
+	int			group;
 } SiftV6XCmp;
 
 /*
@@ -135,7 +139,8 @@ typedef struct SiftV6Ext
 	List	   *elem_where;		/* unnest: the quals of the element over the virtual attributes of its columns (v6_unnest_jsonb.h), which the scan evaluates on the elements of a batch */
 	int			ntests;			/* tests of the row's elements: the scan gives each row once, with a flag for each test (the attribute SIFT_V6_XFLAG_VATT + i of a FILTER) */
 	SiftV6XTest test[SIFT_V6_XTESTS];
-	List	   *test_quals;		/* of each test: its quals over the element columns, and with them the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function) */
+	List	   *test_quals;		/* of each test: its quals over the element columns, the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function), and its
+								 * disjunctions: of each, the arms over the element columns that are no comparison with the row (SiftV6XCmp.group) */
 	List	   *elem_names;		/* recordset: the name of each column, as String nodes */
 	List	   *elem_array;		/* unnest: the array of a row as an expression of the table's columns when it is not the column of elem.attno itself (doc -> 'key', or an expression of the index), which the rows read from the heap evaluate; NIL otherwise */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */

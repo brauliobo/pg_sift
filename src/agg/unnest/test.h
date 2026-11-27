@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "nodes/pg_list.h"
+#include "nodes/primnodes.h"
 
 #include "agg/ext.h"
 #include "agg/vec.h"
@@ -19,6 +20,9 @@ typedef struct SiftV6ElemEval SiftV6ElemEval;
 extern SiftV6ElemEval *sift_v6_elem_eval_open(MemoryContext cx, const List *quals);
 /* bit e of keep, for the elements [lo, hi), is whether element e passes the quals; ev: the element columns */
 extern void sift_v6_elem_eval(SiftV6ElemEval *ee, const SiftVec *ev, uint32 lo, uint32 hi, uint64 *keep);
+
+/* the arms of a disjunction over the element columns as one qual: the arm, or their OR */
+extern Expr *sift_v6_unnest_or_arms(List *arms);
 
 typedef struct SiftV6RowTests SiftV6RowTests;
 

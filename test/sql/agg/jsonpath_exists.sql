@@ -129,9 +129,13 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE o.id > 100 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4) AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q > 4) GROUP BY 1'
 ]) q;
 
--- a comparison inside an OR, with an expression, past an OFFSET, or against a column of another type class keeps the normal plan
+-- a comparison inside an OR with a test of the element: either passes the element
 SELECT same(q) FROM unnest(ARRAY[
-	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q = o.r4 OR i.q IS NULL) GROUP BY 1',
+	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q = o.r4 OR i.q IS NULL) GROUP BY 1'
+]) q;
+
+-- a comparison with an expression, past an OFFSET, or against a column of another type class keeps the normal plan
+SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q = o.r4 + 1) GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4 OFFSET 1) GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q < o.rf) GROUP BY 1'
