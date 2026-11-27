@@ -73,14 +73,16 @@ FROM (SELECT 'cc_on' AS idx, * FROM sift._test_col_cube_damage('cc_on', 4)
 (2 rows)
 
 CREATE FUNCTION cc_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
+-- the granules the scan reads and those of them the pre-aggregates answer (NULL: not pushed down)
 CREATE FUNCTION cc_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE p text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-	END LOOP;
+	p := sift_helpers.plan_text(q, true);
+	IF sift_helpers.plan_pushed(p) THEN
+		units := sift_helpers.plan_granules_read(p);
+		pre := coalesce(sift_helpers.plan_last(p, 'preagg=(\d+)')::int, 0);
+	END IF;
 END $$;
 CREATE TABLE cc_q (n int, shape text, q text);
 INSERT INTO cc_q VALUES
@@ -106,7 +108,7 @@ BEGIN
 		FOR z IN SELECT * FROM cc_q ORDER BY cc_q.n LOOP
 			SELECT * INTO u FROM cc_units(z.q);
 			idx := o; n := z.n; shape := z.shape;
-			pre := CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END;
+			pre := CASE WHEN u.units IS NULL THEN '-' WHEN u.pre = 0 THEN 'scan' WHEN u.pre = u.units THEN 'all' ELSE 'some' END;
 			same := cc_rows(z.q, true, true) IS NOT DISTINCT FROM cc_rows(z.q, false, true) AND cc_rows(z.q, false, true) IS NOT DISTINCT FROM cc_rows(z.q, false, false);
 			RETURN NEXT;
 		END LOOP;
@@ -117,14 +119,14 @@ SELECT * FROM cc_check() ORDER BY idx, n;
     idx    | n  |      shape       | pre  | same 
 -----------+----+------------------+------+------
  all       |  1 | month            | all  | t
- all       |  2 | day              | none | t
+ all       |  2 | day              | scan | t
  all       |  3 | extract year     | all  | t
- all       |  4 | week             | none | t
- all       |  5 | isodow           | none | t
+ all       |  4 | week             | scan | t
+ all       |  5 | isodow           | scan | t
  all       |  6 | hour: refused    | scan | t
  all       |  7 | range            | all  | t
  all       |  8 | range, no key    | all  | t
- all       |  9 | date, quarter    | none | t
+ all       |  9 | date, quarter    | scan | t
  all       | 10 | date, test       | all  | t
  all       | 11 | tz at UTC        | all  | t
  all       | 12 | tz session: scan | scan | t
@@ -135,32 +137,32 @@ SELECT * FROM cc_check() ORDER BY idx, n;
  off       |  5 | isodow           | scan | t
  off       |  6 | hour: refused    | scan | t
  off       |  7 | range            | scan | t
- off       |  8 | range, no key    | none | t
+ off       |  8 | range, no key    | scan | t
  off       |  9 | date, quarter    | scan | t
  off       | 10 | date, test       | scan | t
  off       | 11 | tz at UTC        | scan | t
  off       | 12 | tz session: scan | scan | t
  ts, d     |  1 | month            | all  | t
- ts, d     |  2 | day              | none | t
+ ts, d     |  2 | day              | scan | t
  ts, d     |  3 | extract year     | all  | t
- ts, d     |  4 | week             | none | t
- ts, d     |  5 | isodow           | none | t
+ ts, d     |  4 | week             | scan | t
+ ts, d     |  5 | isodow           | scan | t
  ts, d     |  6 | hour: refused    | scan | t
  ts, d     |  7 | range            | all  | t
  ts, d     |  8 | range, no key    | all  | t
- ts, d     |  9 | date, quarter    | none | t
+ ts, d     |  9 | date, quarter    | scan | t
  ts, d     | 10 | date, test       | all  | t
  ts, d     | 11 | tz at UTC        | scan | t
  ts, d     | 12 | tz session: scan | scan | t
  ts, d, tz |  1 | month            | all  | t
- ts, d, tz |  2 | day              | none | t
+ ts, d, tz |  2 | day              | scan | t
  ts, d, tz |  3 | extract year     | all  | t
- ts, d, tz |  4 | week             | none | t
- ts, d, tz |  5 | isodow           | none | t
+ ts, d, tz |  4 | week             | scan | t
+ ts, d, tz |  5 | isodow           | scan | t
  ts, d, tz |  6 | hour: refused    | scan | t
  ts, d, tz |  7 | range            | all  | t
  ts, d, tz |  8 | range, no key    | all  | t
- ts, d, tz |  9 | date, quarter    | none | t
+ ts, d, tz |  9 | date, quarter    | scan | t
  ts, d, tz | 10 | date, test       | all  | t
  ts, d, tz | 11 | tz at UTC        | all  | t
  ts, d, tz | 12 | tz session: scan | scan | t

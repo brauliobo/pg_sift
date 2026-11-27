@@ -51,14 +51,16 @@ FROM (SELECT 'cc_on' AS idx, * FROM sift._test_col_cube_damage('cc_on', 4)
 
 CREATE FUNCTION cc_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
+-- the granules the scan reads and those of them the pre-aggregates answer (NULL: not pushed down)
 CREATE FUNCTION cc_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE p text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-	END LOOP;
+	p := sift_helpers.plan_text(q, true);
+	IF sift_helpers.plan_pushed(p) THEN
+		units := sift_helpers.plan_granules_read(p);
+		pre := coalesce(sift_helpers.plan_last(p, 'preagg=(\d+)')::int, 0);
+	END IF;
 END $$;
 
 CREATE TABLE cc_q (n int, shape text, q text);
@@ -86,7 +88,7 @@ BEGIN
 		FOR z IN SELECT * FROM cc_q ORDER BY cc_q.n LOOP
 			SELECT * INTO u FROM cc_units(z.q);
 			idx := o; n := z.n; shape := z.shape;
-			pre := CASE WHEN u.units IS NULL THEN '-' WHEN u.pre IS NULL THEN 'scan' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END;
+			pre := CASE WHEN u.units IS NULL THEN '-' WHEN u.pre = 0 THEN 'scan' WHEN u.pre = u.units THEN 'all' ELSE 'some' END;
 			same := cc_rows(z.q, true, true) IS NOT DISTINCT FROM cc_rows(z.q, false, true) AND cc_rows(z.q, false, true) IS NOT DISTINCT FROM cc_rows(z.q, false, false);
 			RETURN NEXT;
 		END LOOP;
