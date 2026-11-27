@@ -616,6 +616,13 @@ rewrite_target(const PathTarget *target)
 	return out;
 }
 
+/* the node returns the expressions of its target as written: a Gather above it finds each of its outputs by equal() */
+static bool
+outputs_as_written(const PathTarget *target)
+{
+	return equal(rewrite_target(target), target->exprs);
+}
+
 bool
 sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
@@ -723,7 +730,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	sift_v6_force_price(&cp->path);
 	serial_total = cp->path.total_cost;
 	add_path(p->out, &cp->path);
-	if (child_paths == NIL && p->spec.ext == NULL && !locked && sift_v6_spec_parallel_ok(p->root, &p->spec) && sift_v6_gen_parallel_ok(&p->spec))
+	if (child_paths == NIL && p->spec.ext == NULL && !locked && outputs_as_written(p->out->reltarget) && sift_v6_spec_parallel_ok(p->root, &p->spec) && sift_v6_gen_parallel_ok(&p->spec))
 		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total);
 }
 

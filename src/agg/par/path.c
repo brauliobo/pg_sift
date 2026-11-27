@@ -2,7 +2,7 @@
  * agg/par/path.c - the parallel path of SiftAggV6: the planner's numbers for a query go to sift_v6_par_choose_strategy (v6_par_plan.c) and, when it picks a parallel strategy, a Gather over a
  * parallel-aware SiftAggV6 is added next to the serial path, for the optimizer to compare. The node under the Gather returns finished groups that no other participant returns, so no combine
  * step is planned above it. What keeps a query serial is the settings of the session and what a worker cannot run: sift.parallel_scan, max_parallel_workers_per_gather, a relation that is not
- * parallel safe, row security, a qual or target that is not parallel safe, and the exact float sum (sift.agg_exact_float), whose order of addition a parallel run changes.
+ * parallel safe, row security, a qual or target that is not parallel safe, an output the scan computes in another form (a CASE as a FILTER), and the exact float sum (sift.agg_exact_float), whose order of addition a parallel run changes.
  */
 #include "postgres.h"
 
@@ -310,8 +310,6 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	GatherPath *gather;
 	double		total_groups;
 
-	if (!equal(sift_v6_collapse_offset_sums((Node *) output_rel->reltarget->exprs), output_rel->reltarget->exprs))
-		return;
 	set_topk(root, &spec, scan_tlist, having);
 	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
 		return;

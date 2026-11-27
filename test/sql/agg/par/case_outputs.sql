@@ -1,0 +1,45 @@
+-- An output the scan computes in another form than the statement writes it (sum(CASE WHEN c THEN x ELSE 0 END) as a FILTER) keeps the node serial: a Gather above it finds
+-- each of its outputs by equal(), and a parallel plan of it was an error. A sorted output stays as written and the outputs as written still plan workers. Every statement
+-- gives the rows of the normal plan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+CREATE TABLE pc (id int, g int, x int) WITH (autovacuum_enabled = false);
+INSERT INTO pc SELECT i, i % 5, i % 7 FROM generate_series(1, 40000) i;
+CREATE INDEX pc_col ON pc USING sift_col (id, g, x);
+VACUUM ANALYZE pc;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+CREATE FUNCTION co_rows(q text, push bool) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE r jsonb;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	EXECUTE format('SELECT jsonb_agg(to_jsonb(q) ORDER BY to_jsonb(q)::text) FROM (%s) q', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION co_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false; gather bool := false;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'true', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		scan := scan OR l LIKE '%SiftAggV6%';
+		gather := gather OR l LIKE '%Gather%';
+	END LOOP;
+	RETURN CASE WHEN NOT scan THEN 'normal' WHEN gather THEN 'parallel' ELSE 'serial' END;
+END $$;
+SELECT n, co_plan(q) AS plan, co_rows(q, true) = co_rows(q, false) AS same
+FROM (VALUES
+	('01 case else 0',         'SELECT sum(CASE WHEN g = 1 THEN x ELSE 0 END) FROM pc'),
+	('02 case else 0 groups',  'SELECT g, sum(CASE WHEN g = 1 THEN x ELSE 0 END) FROM pc GROUP BY g'),
+	('03 case no else',        'SELECT g, sum(CASE WHEN id % 3 = 0 THEN x END), count(CASE WHEN x > 2 THEN 1 END) FROM pc GROUP BY g'),
+	('04 case in an order',    'SELECT g, sum(CASE WHEN g = 1 THEN x ELSE 0 END) s FROM pc GROUP BY g ORDER BY s, g'),
+	('05 offset sum',          'SELECT g, sum(x + 1) FROM pc GROUP BY g'),
+	('06 as written',          'SELECT g, sum(x), count(*) FILTER (WHERE x > 3) FROM pc GROUP BY g')
+) v(n, q)
+ORDER BY n;
+DROP FUNCTION co_rows(text, bool), co_plan(text);
+DROP TABLE pc;
+DROP EXTENSION pg_sift;
