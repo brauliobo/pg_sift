@@ -138,11 +138,11 @@ SELECT 'update' AS churn, * FROM checks('tt');
 
 CALL apply('tt', 'UPDATE @T SET g = (g + 1) % 7 WHERE id % 400 = 9');
 SELECT 'update a key' AS churn, * FROM checks('tt');
-    churn     |   label    |  result   
---------------+------------+-----------
+    churn     |   label    |   result    
+--------------+------------+-------------
  update a key | global     | same scan
  update a key | one key    | same scan
- update a key | null key   | same scan
+ update a key | null key   | same preagg
  update a key | two keys   | same scan
  update a key | key test   | same scan
  update a key | null test  | same scan
@@ -152,11 +152,11 @@ SELECT 'update a key' AS churn, * FROM checks('tt');
 
 CALL fill('tt', 40001, 42000);
 SELECT 'insert after' AS churn, * FROM checks('tt');
-    churn     |   label    |  result   
---------------+------------+-----------
+    churn     |   label    |   result    
+--------------+------------+-------------
  insert after | global     | same scan
  insert after | one key    | same scan
- insert after | null key   | same scan
+ insert after | null key   | same preagg
  insert after | two keys   | same scan
  insert after | key test   | same scan
  insert after | null test  | same scan
@@ -175,7 +175,7 @@ SELECT 'vacuum again' AS churn, * FROM checks('tt');
  vacuum again | key test   | same preagg
  vacuum again | null test  | same preagg
  vacuum again | zone test  | same preagg
- vacuum again | value test | same preagg
+ vacuum again | value test | same scan
 (8 rows)
 
 -- a transaction sees its own changes and no other's; ABORT leaves none
@@ -186,14 +186,14 @@ CALL fill('tt', 70001, 70500);
 SELECT 'own changes' AS txn, * FROM checks('tt');
      txn     |   label    |   result    
 -------------+------------+-------------
- own changes | global     | same preagg
+ own changes | global     | same scan
  own changes | one key    | same preagg
  own changes | null key   | same preagg
  own changes | two keys   | same preagg
  own changes | key test   | same preagg
  own changes | null test  | same preagg
  own changes | zone test  | same preagg
- own changes | value test | same preagg
+ own changes | value test | same scan
 (8 rows)
 
 ROLLBACK;
@@ -207,7 +207,7 @@ SELECT 'rolled back' AS txn, * FROM checks('tt');
  rolled back | key test   | same preagg
  rolled back | null test  | same preagg
  rolled back | zone test  | same preagg
- rolled back | value test | same preagg
+ rolled back | value test | same scan
 (8 rows)
 
 BEGIN;
@@ -216,28 +216,28 @@ COMMIT;
 SELECT 'committed delete' AS txn, * FROM checks('tt');
        txn        |   label    |   result    
 ------------------+------------+-------------
- committed delete | global     | same preagg
+ committed delete | global     | same scan
  committed delete | one key    | same preagg
  committed delete | null key   | same preagg
  committed delete | two keys   | same preagg
  committed delete | key test   | same preagg
  committed delete | null test  | same preagg
  committed delete | zone test  | same preagg
- committed delete | value test | same preagg
+ committed delete | value test | same scan
 (8 rows)
 
 VACUUM tt, tth;
 SELECT 'vacuum' AS txn, * FROM checks('tt');
   txn   |   label    |   result    
 --------+------------+-------------
- vacuum | global     | same preagg
+ vacuum | global     | same scan
  vacuum | one key    | same preagg
  vacuum | null key   | same preagg
  vacuum | two keys   | same preagg
  vacuum | key test   | same preagg
  vacuum | null test  | same preagg
  vacuum | zone test  | same preagg
- vacuum | value test | same preagg
+ vacuum | value test | same scan
 (8 rows)
 
 -- the cubes a table declares: 'off' stores none, a declaration stores the cubes it names (and the measures it names: the others scan)
