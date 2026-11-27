@@ -129,20 +129,24 @@ dimension_rte(const RangeTblEntry *rte)
 	return copy;
 }
 
+/* the relation the element of the sub-select is in the statement: the function scan of the sub-select, with its size and its plan, which price the call of the function for a row */
 static RelOptInfo *
-element_rel(PlannerInfo *root, const char *alias)
+element_rel(PlannerInfo *root, const RangeTblEntry *sub_rte, const RelOptInfo *sub_rel)
 {
 	RangeTblEntry *rte = makeNode(RangeTblEntry);
 	RelOptInfo *rel = makeNode(RelOptInfo);
 
 	rte->rtekind = RTE_RESULT;
-	rte->eref = makeAlias(alias, NIL);
+	rte->eref = makeAlias(sub_rte->eref->aliasname, NIL);
 	rte->inFromCl = true;
 	rel->reloptkind = RELOPT_BASEREL;
 	rel->relid = add_rte(root, rte);
 	rel->relids = bms_make_singleton(rel->relid);
 	rel->rtekind = RTE_RESULT;
 	rel->reltarget = create_empty_pathtarget();
+	rel->rows = sub_rel->rows;
+	rel->tuples = sub_rel->tuples;
+	rel->cheapest_total_path = sub_rel->cheapest_total_path;
 	return rel;
 }
 
@@ -265,7 +269,7 @@ extend_shape(PlannerInfo *root, SiftV6JoinShape *sh, RestrictInfo *ri)
 	x.map = palloc0(x.sub->simple_rel_array_size * sizeof(Index));
 	if (!plain_sub(x.sub) || !sub_rels(x.sub, &elem, &lateral) || !elem_function(&x, elem, sh->fact, &sh->rte) || !left_joins(x.sub, left) || left[elem->relid])
 		return false;
-	x.map[elem->relid] = (sh->elem = element_rel(root, planner_rt_fetch(elem->relid, x.sub)->eref->aliasname))->relid;
+	x.map[elem->relid] = (sh->elem = element_rel(root, planner_rt_fetch(elem->relid, x.sub), elem))->relid;
 	foreach_ptr(RelOptInfo, rel, lateral)
 		x.map[rel->relid] = add_rte(root, dimension_rte(planner_rt_fetch(rel->relid, x.sub)));
 	sh->semi = true;
