@@ -56,7 +56,7 @@ COMMIT;
 SELECT * FROM scans();
       relation       | scans 
 ---------------------+-------
- st_tbl seq_scan     |     1
+ st_tbl seq_scan     |     2
  st_col_idx idx_scan |     0
 (2 rows)
 
@@ -72,7 +72,7 @@ COMMIT;
 SELECT * FROM scans();
       relation       | scans 
 ---------------------+-------
- st_tbl seq_scan     |     1
+ st_tbl seq_scan     |     2
  st_col_idx idx_scan |     1
 (2 rows)
 
@@ -90,7 +90,7 @@ COMMIT;
 SELECT * FROM scans();
       relation       | scans 
 ---------------------+-------
- st_tbl seq_scan     |     2
+ st_tbl seq_scan     |     3
  st_col_idx idx_scan |     1
 (2 rows)
 
