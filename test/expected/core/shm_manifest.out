@@ -192,23 +192,23 @@ SELECT sift._test_shm_manifest_invalidate(900201, true);
  
 (1 row)
 
-SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(910000, 912599) AS rel;
+SELECT count(*) FILTER (WHERE sift._test_shm_manifest_publish(rel::oid, 1, 2, true)) AS published FROM generate_series(930000, 940399) AS rel;
  published 
 -----------
-      2600
+     10400
 (1 row)
 
-SELECT sift._test_shm_manifest_stat('slots_valid') <= 2048 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 2048 AS snapshots_within_slots,
+SELECT sift._test_shm_manifest_stat('slots_valid') <= 8192 AS within_slots, sift._test_shm_manifest_stat('snaps_live') <= 8192 AS snapshots_within_slots,
   sift._test_shm_manifest_stat('evictions') - evictions > 0 AS evicted FROM base;
  within_slots | snapshots_within_slots | evicted 
 --------------+------------------------+---------
  t            | t                      | t
 (1 row)
 
-SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(910000, 912599) AS rel;
+SELECT count(sift._test_shm_manifest_invalidate(rel::oid, false)) AS invalidated FROM generate_series(930000, 940399) AS rel;
  invalidated 
 -------------
-        2600
+       10400
 (1 row)
 
 SELECT sift._test_shm_manifest_publish(900201, 2, 0, false) AS published_over_quarantine;
