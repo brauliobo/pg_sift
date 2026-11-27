@@ -30,6 +30,7 @@ SELECT count(*), sum(v) FROM m4_t;
 
 SELECT sum(1 / (v - 50)) FROM m4_t;
 ERROR:  division by zero
+CONTEXT:  sift table "public.m4_t"
 SET sift.backend_cache_kb = 0;
 SELECT m4_named('sift cache f2 part pin') AS pins_left_after_the_error;
  pins_left_after_the_error 

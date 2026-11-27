@@ -52,6 +52,7 @@ SELECT count(*) AS rows FROM sh WHERE grp = 7;
 
 SELECT count(*) FROM sh WHERE grp = 7 AND 1 / (id - 7) > 0;
 ERROR:  division by zero
+CONTEXT:  sift index "public.sh_idx"
 SELECT count(*) AS rows FROM sh WHERE grp = 7;
  rows 
 ------

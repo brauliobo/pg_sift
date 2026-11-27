@@ -641,6 +641,7 @@ SELECT site, wraps >= 1 AS crossed_the_wrap FROM sift._test_ring_sites() ORDER B
        site        | crossed_the_wrap 
 -------------------+------------------
  btree_memo_ring   | t
+ journal_memo_ring | t
  legs_memo_ring    | t
  made_ring         | t
  major_memo_ring   | t
@@ -650,7 +651,7 @@ SELECT site, wraps >= 1 AS crossed_the_wrap FROM sift._test_ring_sites() ORDER B
  track_memo_ring   | t
  trigger_memo_ring | t
  written_ring      | t
-(10 rows)
+(11 rows)
 
 SELECT sift._test_ring_start(0);
  _test_ring_start 
