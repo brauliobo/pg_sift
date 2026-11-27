@@ -27,10 +27,11 @@ BEGIN
 	RETURN d + f;
 END $$;
 
--- The batches: how many, how many rows each holds, and that every one but the last holds SIFT_VEC_LEN
+-- The batches: how many, how many rows each holds, and that none holds more than SIFT_VEC_LEN; a unit with a page that is not all-visible ends its batch,
+-- which leaves out the rows of it the snapshot does not see (the counts after the writes)
 CREATE FUNCTION batches(rel regclass, is_table bool, atts int4[]) RETURNS text LANGUAGE sql AS $$
 	SELECT count(*) || ' batches, ' || count(*) FILTER (WHERE n = 2048) || ' of 2048 rows, last ' || (array_agg(rows ORDER BY batch DESC))[1] || ', all rows ' || sum(rows) ||
-		CASE WHEN bool_and(rows = n) THEN ', sizes right' ELSE ', SIZES WRONG' END
+		CASE WHEN bool_and(rows BETWEEN 1 AND n AND n <= 2048) THEN ', sizes right' ELSE ', SIZES WRONG' END
 	FROM (SELECT batch, max(n) n, count(*) rows FROM sift._test_store_rows(rel, is_table, atts, NULL, NULL) GROUP BY batch) b $$;
 
 -- 1. A sift_col index of Format 1 over a heap: the planner's view of it

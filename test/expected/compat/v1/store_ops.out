@@ -25,10 +25,11 @@ BEGIN
 	EXECUTE format('SELECT count(*) FROM sift._test_store_rows(%L, %L, %L, %L, %L) WHERE fetched IS DISTINCT FROM vals', rel, is_table, atts, qual_att, qual_gt) INTO f;
 	RETURN d + f;
 END $$;
--- The batches: how many, how many rows each holds, and that every one but the last holds SIFT_VEC_LEN
+-- The batches: how many, how many rows each holds, and that none holds more than SIFT_VEC_LEN; a unit with a page that is not all-visible ends its batch,
+-- which leaves out the rows of it the snapshot does not see (the counts after the writes)
 CREATE FUNCTION batches(rel regclass, is_table bool, atts int4[]) RETURNS text LANGUAGE sql AS $$
 	SELECT count(*) || ' batches, ' || count(*) FILTER (WHERE n = 2048) || ' of 2048 rows, last ' || (array_agg(rows ORDER BY batch DESC))[1] || ', all rows ' || sum(rows) ||
-		CASE WHEN bool_and(rows = n) THEN ', sizes right' ELSE ', SIZES WRONG' END
+		CASE WHEN bool_and(rows BETWEEN 1 AND n AND n <= 2048) THEN ', sizes right' ELSE ', SIZES WRONG' END
 	FROM (SELECT batch, max(n) n, count(*) rows FROM sift._test_store_rows(rel, is_table, atts, NULL, NULL) GROUP BY batch) b $$;
 -- 1. A sift_col index of Format 1 over a heap: the planner's view of it
 SET sift.test_create_format1 = on;
@@ -89,7 +90,7 @@ DELETE FROM c1 WHERE id % 11 = 0;
 SELECT batches('c1_idx', false, '{1,2,10}');
                              batches                              
 ------------------------------------------------------------------
- 4 batches, 3 of 2048 rows, last 1221, all rows 7365, sizes right
+ 5 batches, 3 of 2048 rows, last 1007, all rows 7365, sizes right
 (1 row)
 
 SELECT diff('c1_idx', false, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_writes;
@@ -199,9 +200,9 @@ INSERT INTO t1 SELECT i, i % 10, false, i, i, i, DATE '2022-01-01', TIMESTAMPTZ 
 UPDATE t1 SET g = g + 1, s = s || '!' WHERE id % 7 = 0;
 DELETE FROM t1 WHERE id % 11 = 0;
 SELECT batches('t1', true, '{1,2,10}');
-                             batches                              
-------------------------------------------------------------------
- 4 batches, 3 of 2048 rows, last 1221, all rows 7365, sizes right
+                             batches                             
+-----------------------------------------------------------------
+ 5 batches, 4 of 2048 rows, last 406, all rows 7365, sizes right
 (1 row)
 
 SELECT diff('t1', true, '{1,2,10,9}', 'id::text, g::text, s::text, n::text', 'true') AS after_writes;
