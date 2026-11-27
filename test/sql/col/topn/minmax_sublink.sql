@@ -81,8 +81,9 @@ CREATE INDEX ev2_i ON ev2 USING sift_col (id, ent, ts) WITH (order_array_columns
 ANALYZE ev2;
 SET sift.agg_force = on;
 SELECT plan_of('SELECT e.id, (SELECT max(ts) FROM ev2 WHERE ent = e.id) FROM ents e WHERE e.dim = 3') AS refused_walk;
-SELECT plan_of('SELECT e.id, (SELECT ts FROM ev2 WHERE ent = e.id AND ts IS NOT NULL ORDER BY ts DESC LIMIT 1) FROM ents e WHERE e.dim = 3') AS written_walk;
+-- the top-1 written out is a Top-N node, which sift.agg_force takes whatever its price: the refusal is the planner's, so it is asked without it
 RESET sift.agg_force;
+SELECT plan_of('SELECT e.id, (SELECT ts FROM ev2 WHERE ent = e.id AND ts IS NOT NULL ORDER BY ts DESC LIMIT 1) FROM ents e WHERE e.dim = 3') AS written_walk;
 DROP TABLE ev2;
 
 -- a condition of another column on the heap row: at one row in 30 the order array is still walked, at one in 500 (a handful of rows in all) the plan keeps the units (no global order)

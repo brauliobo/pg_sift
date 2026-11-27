@@ -94,7 +94,7 @@ SELECT * FROM run_all('deleted and updated');
  deleted and updated | 1 | same | normal plan | kept order skips the same
  deleted and updated | 2 | same | normal plan | kept order skips the same
  deleted and updated | 3 | same | normal plan | kept order skips the same
- deleted and updated | 4 | same | granules 91 | kept order skips the same
+ deleted and updated | 4 | same | granules 89 | kept order skips the same
  deleted and updated | 5 | same | normal plan | kept order skips the same
  deleted and updated | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -112,7 +112,7 @@ SELECT * FROM run_all('vacuumed');
  vacuumed   | 1 | same | normal plan | kept order skips the same
  vacuumed   | 2 | same | normal plan | kept order skips the same
  vacuumed   | 3 | same | normal plan | kept order skips the same
- vacuumed   | 4 | same | granules 61 | kept order skips the same
+ vacuumed   | 4 | same | granules 59 | kept order skips the same
  vacuumed   | 5 | same | normal plan | kept order skips the same
  vacuumed   | 6 | same | normal plan | kept order skips the same
 (6 rows)

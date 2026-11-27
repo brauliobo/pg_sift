@@ -56,7 +56,7 @@ SELECT count(*) FROM rk2_o v LEFT JOIN LATERAL (SELECT ts FROM rk2 WHERE g = v.g
 SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v LEFT JOIN LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) x ON true') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
-    197 | f            | f
+    200 | f            | t
 (1 row)
 
 SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, (SELECT id FROM @ WHERE g = v.g ORDER BY ts DESC LIMIT 1) FROM @_o v') p;
@@ -68,7 +68,7 @@ SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('S
 SELECT p.probes, p.global_order, p.extra <= 2 AS few_buffers FROM probe_extra('SELECT v.i, x.ts FROM @_o v, LATERAL (SELECT ts FROM @ WHERE g = v.g ORDER BY ts LIMIT 3) x') p;
  probes | global_order | few_buffers 
 --------+--------------+-------------
-    197 | f            | f
+    200 | f            | t
 (1 row)
 
 RESET enable_sort; RESET enable_seqscan; RESET sift.agg_force;
