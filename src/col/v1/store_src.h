@@ -69,7 +69,7 @@ typedef struct SiftV1Src
 	SiftSrcUnit unit;
 	bool		in_unit;
 	bool		vet_unit;		/* the unit has rows on a heap page that is not all-visible: its rows end the batch, which checks the ones its quals keep (sift_v1_src_vet) */
-	int			vet_from;		/* the first row of the batch that is of the unit */
+	int			vet_from;		/* the first row of the batch that is of a unit to vet, the last unit of the batch; -1 when the batch has none */
 	uint64	   *bits;			/* the rows of the unit the tombstones leave and nothing has been taken of */
 	int			pos;
 	SiftV6Vexpr *quals;

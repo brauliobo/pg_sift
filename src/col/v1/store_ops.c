@@ -558,12 +558,12 @@ batch_fill(SiftV1Src *s)
 	int			n = 0;
 
 	batch_start(s);
+	s->vet_from = -1;
 	while (n < SIFT_VEC_LEN && (s->in_unit || (s->in_unit = unit_next(s))))
 	{
 		const int	cap = SIFT_VEC_LEN - n;
 		const int	k = unit_take(s, cap);
 
-		s->vet_from = n;
 		s->rd->tids(s->src, &s->unit, s->ords, k, s->tids);
 		for (int j = 0; j < k; j++)
 		{
@@ -582,7 +582,12 @@ batch_fill(SiftV1Src *s)
 		}
 		n += k;
 		s->in_unit = k == cap;
-		if (n > 0 && (s->elems != NULL || s->vet_unit))
+		if (k > 0 && s->vet_unit)
+		{
+			s->vet_from = n - k;
+			break;
+		}
+		if (n > 0 && s->elems != NULL)
 			break;
 	}
 	for (int i = 0; i < s->in.ncols; i++)
@@ -643,7 +648,7 @@ next_batch(SiftV1Src *s, SiftV6Batch *out)
 		}
 		if (s->tid_range && !sift_v1_src_tid_narrow(s, out))
 			continue;
-		if (s->vet_unit && !sift_v1_src_vet(s, out))
+		if (s->vet_from >= 0 && !sift_v1_src_vet(s, out))
 			continue;
 		sift_v1_src_fill_heap(s, out);
 		if (s->elems != NULL)
