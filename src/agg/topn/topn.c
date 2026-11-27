@@ -55,6 +55,17 @@ int_order_type(Oid typid)
 	}
 }
 
+/* the parameter of an initplan as the initplan that sets it: a plan that is not made yet has no ancestors to name the parameter by */
+static Node *
+initplan_mutator(Node *n, PlannerInfo *root)
+{
+	if (n != NULL && IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXEC)
+		foreach_node(SubPlan, sp, root->init_plans)
+			if (list_member_int(sp->setParam, ((const Param *) n)->paramid))
+				return copyObject((Node *) sp);
+	return expression_tree_mutator(n, initplan_mutator, root);
+}
+
 /* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name */
 static char *
 sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
@@ -63,7 +74,7 @@ sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
 
 	if (IsA(e, Var) && v->varno != rti)
 		return get_rte_attribute_name(planner_rt_fetch(v->varno, root), v->varattno);
-	e = copyObject(e);
+	e = initplan_mutator(e, root);
 	ChangeVarNodes(e, rti, 1, 0);
 	return deparse_expression(e, dcx, false, false);
 }
