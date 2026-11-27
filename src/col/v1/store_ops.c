@@ -334,7 +334,7 @@ static bool
 types_pass(SiftV1Src *s)
 {
 	for (int t = 0; t < s->ntypes; t++)
-		if (!sift_v1_src_filter_types(s, &s->lay->leaf[s->types[t].leaf], s->types[t].types, s->bits))
+		if (s->types[t].key ? !sift_v1_src_filter_key(s, &s->types[t], s->bits) : !sift_v1_src_filter_types(s, &s->lay->leaf[s->types[t].leaf], s->types[t].types, s->bits))
 			return false;
 	return true;
 }
@@ -830,8 +830,16 @@ bind_elems(SiftV1Src *s, const SiftV1ElemSpec *spec)
 static void
 bind_types(SiftV1Src *s, const SiftV1Scan *scan)
 {
+	SiftSrcStats st;
+
 	memcpy(s->types, scan->types, scan->ntypes * sizeof(SiftV1TypeTest));
 	s->ntypes = scan->ntypes;
+	for (int t = 0; t < s->ntypes; t++)
+		if (s->types[t].key)
+		{
+			s->rd->stats(s->rels.rel, &st);
+			s->types[t].rootless = st.rootless[s->types[t].leaf] > 0;
+		}
 }
 
 /* A unit whose zone of an integer column lies wholly outside the bounds the program puts on it is not read; the program still tests every row of the units that are */

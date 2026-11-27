@@ -102,6 +102,9 @@ extern void sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b);
 /* The rows of bits of the unit whose key of leaf l has one of the JSON types (SIFT_SRC_JT_*); false when none is left */
 extern bool sift_v1_src_filter_types(SiftV1Src *s, const SiftSrcLeaf *l, uint32 types, uint64 *bits);
 
+/* The rows of bits of the unit whose document holds the key of the test t (doc ? 'k', col/v1_engine/store_ops_jsonb.c); false when none is left */
+extern bool sift_v1_src_filter_key(SiftV1Src *s, const SiftV1TypeTest *t, uint64 *bits);
+
 /* The JSON type of each row of the unit the column i reads, and of the row r in slot n of the batch */
 extern void sift_v1_src_read_types(SiftV1Src *s, int i);
 extern void sift_v1_src_put_type(SiftV1Src *s, int i, uint32 r, int n);

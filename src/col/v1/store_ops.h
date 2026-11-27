@@ -73,11 +73,17 @@ typedef struct SiftV1Range
 	uint32		sb_hi;
 } SiftV1Range;
 
-/* Rows of the leaf of the document path that have none of these JSON types (SIFT_SRC_JT_*) are not given */
+/*
+ * Rows of the leaf of the document path that have none of these JSON types (SIFT_SRC_JT_*) are not given. key: the test is doc ? 'k' of the key of the leaf, which a document that is no object
+ * answers of itself: the rows the leaf has no value of are read again from the heap where the leaf cannot tell such a document from a missing key (rootless: an index with segments that do not flag
+ * the string roots, all of them; else those that overflowed)
+ */
 typedef struct SiftV1TypeTest
 {
 	int			leaf;
 	uint32		types;
+	bool		key;
+	bool		rootless;
 } SiftV1TypeTest;
 
 #define SIFT_V1_MAX_TYPE_TESTS	8

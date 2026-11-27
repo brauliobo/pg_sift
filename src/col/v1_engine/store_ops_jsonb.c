@@ -4,6 +4,8 @@
  * key_leaf, table_key_leaf: the shredded scalar leaf of a top-level key of a document whose chunks keep the JSON type of each row (a path declared with a type or as text), -1 for any other key. member_leaf: the leaf of
  * the float8 values of the map `doc.a.*` that a member `doc -> 'a' ->> 'k'` is read from (v1_store_ops_member.c), -1 for any other path.
  * path_declared: the paths option of the index declares the path of a document attribute.
+ * key_exists: the source tests doc ? 'k' on the leaf of the key; the rows whose leaf has no value and may be a document that is no object (an array holding the string, the string itself) are
+ * read again from the heap (sift_v1_src_filter_key).
  * unnest_run: the aggregate scan of a LATERAL unnest of an array or a map column, of the keys of a map and of the tests of the elements of a row (v1_store_ops_unnest.c).
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
@@ -11,9 +13,13 @@
 
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_type_d.h"
+#include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 
 #include "col/v1/store_ops.h"
+#include "col/v1/src_sel.h"
+#include "col/v1/store_src.h"
 #include "table/v1/rel.h"
 
 static bool
@@ -95,10 +101,66 @@ jsonb_path_declared(Oid relid, bool is_table, int att, const List *path)
 	return found;
 }
 
+/* the rows[0..n) of the unit whose document holds key as jsonb_exists says, set in bits from their heap rows (a row the snapshot does not see stays clear) */
+static void
+heap_exists(SiftV1Src *s, AttrNumber att, Datum key, const uint32 *rows, int n, uint64 *bits)
+{
+	ItemPointerData tids[SIFT_VEC_LEN];
+
+	s->rd->tids(s->src, &s->unit, rows, n, tids);
+	for (int j = 0; j < n; j++)
+	{
+		const uint64 tag = (uint64) ItemPointerGetBlockNumber(&tids[j]) << 16 | ItemPointerGetOffsetNumber(&tids[j]);
+		Datum		doc;
+		bool		isnull;
+
+		if (sift_v1_src_fetch(&s->base, tag, &att, 1, &doc, &isnull) && !isnull && DatumGetBool(DirectFunctionCall2(jsonb_exists, doc, key)))
+			bits[rows[j] >> 6] |= UINT64CONST(1) << (rows[j] & 63);
+	}
+}
+
+/* the rows the leaf has a value of (any JSON type, a JSON null too), and of the others those whose heap row says the key is there; all of them when the unit cannot tell the types apart */
+bool
+sift_v1_src_filter_key(SiftV1Src *s, const SiftV1TypeTest *t, uint64 *bits)
+{
+	const SiftSrcLeaf *l = &s->lay->leaf[t->leaf];
+	const AttrNumber att = sift_v1_att_heap_column(s->lay, l->attno);
+	const int	nw = SIFT_COL_NWORDS(s->unit.nrow);
+	MemoryContext old = MemoryContextSwitchTo(s->unit_cx);
+	uint64	   *given = palloc(nw * sizeof(uint64));
+	const Datum key = CStringGetTextDatum(strVal(linitial(l->path)));
+	SiftSrcVec	v = {0};
+	uint32		rows[SIFT_VEC_LEN];
+	int			n = 0;
+	bool		known;
+
+	memcpy(given, bits, nw * sizeof(uint64));
+	s->rd->filter_types(s->src, &s->unit, l->id, t->types, bits, &known);
+	if (!known)
+		memset(bits, 0, nw * sizeof(uint64));
+	else if (!t->rootless)
+		s->rd->read(s->src, &s->unit, l->id, &v);
+	for (uint32 r = 0; r < (uint32) s->unit.nrow; r++)
+	{
+		if (!sift_src_bit(given, r) || sift_src_bit(bits, r) || (known && !t->rootless && (v.ovf == NULL || !sift_src_bit(v.ovf, r))))
+			continue;
+		if (n == SIFT_VEC_LEN)
+		{
+			heap_exists(s, att, key, rows, n, bits);
+			n = 0;
+		}
+		rows[n++] = r;
+	}
+	heap_exists(s, att, key, rows, n, bits);
+	MemoryContextSwitchTo(old);
+	return sift_srcsel_rows_left(bits, s->unit.nrow);
+}
+
 const SiftJsonbOps v1_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
 	.member_leaf = jsonb_member_leaf,
 	.table_key_leaf = jsonb_table_key_leaf,
+	.key_exists = true,
 	.path_declared = jsonb_path_declared,
 	.unnest_run = sift_v1_unnest_run
 };
