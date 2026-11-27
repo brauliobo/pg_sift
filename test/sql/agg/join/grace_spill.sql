@@ -1,4 +1,5 @@
 -- The partitions of a SiftAggV6Join that spilled are joined at the first level when their build files fit the budget: four times the rows write four times the bytes, not more.
+-- The keys are 64 apart, so that no star join holds the dimension (agg/star/dense.h).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -6,9 +7,9 @@ SET work_mem = '1MB';
 
 CREATE FUNCTION gs_tables(n int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
-	EXECUTE format('CREATE TABLE gs_f%s WITH (autovacuum_enabled = off) AS SELECT g::bigint AS id, g::bigint AS k, ((g %% 29500) / 100.0)::numeric(10,2) AS amount '
+	EXECUTE format('CREATE TABLE gs_f%s WITH (autovacuum_enabled = off) AS SELECT g::bigint AS id, g * 64::bigint AS k, ((g %% 29500) / 100.0)::numeric(10,2) AS amount '
 				   'FROM generate_series(1, %s) g', n, n);
-	EXECUTE format('CREATE TABLE gs_d%s WITH (autovacuum_enabled = off) AS SELECT g::bigint AS id, g %% 7 AS cls FROM generate_series(1, %s) g', n, n);
+	EXECUTE format('CREATE TABLE gs_d%s WITH (autovacuum_enabled = off) AS SELECT g * 64::bigint AS id, g %% 7 AS cls FROM generate_series(1, %s) g', n, n);
 	EXECUTE format('CREATE INDEX ON gs_f%s USING sift_col (id, k, amount)', n);
 	EXECUTE format('ANALYZE gs_f%s, gs_d%s', n, n);
 END $$;

@@ -33,6 +33,7 @@ BEGIN
 	END LOOP;
 END $$;
 SET work_mem = '4MB';
+SET hash_mem_multiplier = 1;
 -- PostgreSQL's joins off: the star scan joins the heap of the events, a dimension read in chunks at this work_mem
 SET enable_hashjoin = off;
 SET enable_mergejoin = off;

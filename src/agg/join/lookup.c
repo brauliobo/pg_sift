@@ -247,7 +247,7 @@ shape_equal(const SiftStarShape *a, const SiftStarShape *b)
 		if (a->kcls[k] != b->kcls[k])
 			return false;
 	for (int c = 0; c < a->npay; c++)
-		if (a->pcls[c] != b->pcls[c])
+		if (a->pcls[c] != b->pcls[c] || a->pwidth[c] != b->pwidth[c])
 			return false;
 	return true;
 }

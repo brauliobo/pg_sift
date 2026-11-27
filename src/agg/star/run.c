@@ -9,6 +9,7 @@
 #include "miscadmin.h"
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
+#include "executor/nodeHash.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -54,10 +55,16 @@ struct SiftV6StarRun
 	MemoryContext rowcx;		/* one row of a plan */
 };
 
+uint64
+sift_v6_star_budget(int ndims)
+{
+	return Min(Max((uint64) get_hash_memory_limit() / 2 / Max(ndims, 1), 4096), MaxAllocSize);
+}
+
 static uint64
 star_budget(const SiftV6Ext *x)
 {
-	return Min(Max((uint64) work_mem * 1024 / 2 / Max(x->ndims, 1), 4096), MaxAllocSize);
+	return sift_v6_star_budget(x->ndims);
 }
 
 SiftV6StarRun *
@@ -172,6 +179,24 @@ put_cell(const StarCell *c, Datum v, bool isnull, int64 *i, const char **p, uint
 		*i = int_of(c->typid, v);
 }
 
+/* the bytes a value of an SSC_INT payload column of the type takes in a dense table: those int_of reads */
+static uint8
+int_width(Oid typid)
+{
+	switch (typid)
+	{
+		case BOOLOID:
+			return 1;
+		case INT2OID:
+			return 2;
+		case INT4OID:
+		case DATEOID:
+			return 4;
+		default:
+			return 8;
+	}
+}
+
 static StarCell
 cell_of(SiftStarCls cls, Oid typid)
 {
@@ -189,7 +214,10 @@ shape_of(const SiftV6Ext *x, int d, uint64 budget, SiftStarShape *sh)
 	for (int k = 0; k < xd->nkeys; k++)
 		sh->kcls[k] = xd->mode == SV6J_RANGE_SMALL ? SSC_INT : cls_of_type(xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
+	{
 		sh->pcls[c] = cls_of_type(xd->ptype[c]);
+		sh->pwidth[c] = int_width(xd->ptype[c]);
+	}
 }
 
 static void
@@ -504,6 +532,20 @@ str_bytes(const SiftStarShape *sh, double width)
 }
 
 double
+sift_v6_star_dim_bytes(SiftV6JoinMode mode, Oid ktype, const Oid *ptypes, int npay, double rows, double width, double span, uint64 budget)
+{
+	SiftStarShape sh = {.mode = mode,.nkeys = 1,.npay = npay,.budget = budget,.lo_inc = true};
+
+	sh.kcls[0] = cls_of_type(ktype);
+	for (int c = 0; c < npay; c++)
+	{
+		sh.pcls[c] = cls_of_type(ptypes[c]);
+		sh.pwidth[c] = int_width(ptypes[c]);
+	}
+	return sift_star_dense_est(&sh, rows, span, str_bytes(&sh, width));
+}
+
+double
 sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double *passes)
 {
 	const uint64 budget = star_budget(x);
@@ -514,7 +556,9 @@ sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double 
 
 	shape_of(x, d, budget, &sh);
 	strs = str_bytes(&sh, width);
-	bytes = sift_star_table_est(&sh, rows, strs);
+	bytes = x->dim[d].span > 0 ? sift_star_dense_est(&sh, rows, x->dim[d].span, strs) : -1;
+	if (bytes < 0)
+		bytes = sift_star_table_est(&sh, rows, strs);
 	*passes = 1;
 	if (bytes <= budget)
 		return 1;

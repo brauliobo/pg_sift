@@ -44,6 +44,10 @@ extern ScanKey sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, Sc
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
 /* After pass 0: every dimension fits in one pass (no class of keys or chunk is left for another) */
 extern bool sift_v6_star_one_pass(const SiftV6StarRun *r);
+/* The bytes the table of each of ndims dimensions may take: half of the memory a hash table of the statement may take (hash_mem), shared among them */
+extern uint64 sift_v6_star_budget(int ndims);
+/* What the planner expects the dense table (agg/star/dense.h) of a dimension of the mode, one unique key of ktype spanning span values and npay payload columns of ptypes, of rows rows of width bytes, to take within budget; -1 when it would not keep that form */
+extern double sift_v6_star_dim_bytes(SiftV6JoinMode mode, Oid ktype, const Oid *ptypes, int npay, double rows, double width, double span, uint64 budget);
 /* What the planner expects of dimension d of rows rows of width bytes: the times the node reads its plan, and in passes the passes of the fact table its parts or chunks make */
 extern double sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double *passes);
 /* The passes the dimensions need (known after pass 0) and the bytes the largest table took */

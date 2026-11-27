@@ -6,7 +6,7 @@
 
 #include <math.h>
 
-#include "agg/star/star.h"
+#include "agg/star/dense.h"
 #include "agg/vexpr/str.h"
 
 static uint64
@@ -70,6 +70,7 @@ sift_star_dim_init(SiftStarDim *d, const SiftStarShape *shape)
 {
 	memset(d, 0, sizeof(*d));
 	d->shape = *shape;
+	d->dense = sift_star_dense_shape(shape);
 	d->hull_min = PG_INT64_MAX;
 	d->hull_max = PG_INT64_MIN;
 }
@@ -103,6 +104,15 @@ sift_star_table_est(const SiftStarShape *sh, double nrows, double str_bytes)
 	return cap * slot_bytes(sh) + arena + nrows * INDEX_ROW_BYTES;
 }
 
+double
+sift_star_dense_est(const SiftStarShape *sh, double nrows, double span, double str_bytes)
+{
+	const double cap = Max(span * 1.5, 64.0);
+	const double dense = (double) sift_star_dense_bytes(sh, (uint64) cap, 0) + (str_bytes > 0 ? exp2(ceil(log2(Max(nrows * str_bytes, 1024.0)))) : 0);
+
+	return sift_star_dense_shape(sh) && cap <= PG_UINT32_MAX / 2 && dense <= (double) Min(sh->budget, MaxAllocSize) ? dense : -1;
+}
+
 static void
 grow(SiftStarDim *d)
 {
@@ -129,11 +139,12 @@ static uint64
 arena_put(SiftStarDim *d, const char *p, uint32 len)
 {
 	const uint64 off = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used);
+	const uint64 cap = sift_star_arena_grown(d, len);
 
-	if (off + len > d->arena_cap)
+	if (cap != d->arena_cap)
 	{
-		d->arena_cap = Max(d->arena_cap * 2, Max(off + len, 1024));
-		d->arena = d->arena == NULL ? palloc(d->arena_cap) : repalloc(d->arena, d->arena_cap);
+		d->arena = d->arena == NULL ? palloc(cap) : repalloc(d->arena, cap);
+		d->arena_cap = cap;
 	}
 	memcpy(d->arena + off, p, len);
 	d->arena_used = off + len;
@@ -153,8 +164,8 @@ put_cell(SiftStarDim *d, int c, uint32 i, int64 v, const char *p, uint32 len, bo
 		d->col[c][i] = isnull ? 0 : (uint64) v;
 }
 
-bool
-sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
+static bool
+hash_add(SiftStarDim *d, const SiftStarRow *row)
 {
 	const SiftStarShape *sh = &d->shape;
 	uint64		strs = 0;
@@ -202,9 +213,55 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 	return true;
 }
 
+/* The rows of a dense table into the hash form; false, the table left as it was, when they do not fit it */
+static bool
+leave_dense(SiftStarDim *d)
+{
+	SiftStarDim h;
+
+	sift_star_dim_init(&h, &d->shape);
+	h.dense = false;
+	for (uint32 s = 0; s < d->dcap; s++)
+	{
+		SiftStarRow row;
+
+		if (!sift_star_dense_has(d, s))
+			continue;
+		sift_star_dense_take(d, s, &row);
+		if (!hash_add(&h, &row))
+		{
+			sift_star_dim_free(&h);
+			return false;
+		}
+	}
+	sift_star_dim_free(d);
+	*d = h;
+	return true;
+}
+
+bool
+sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
+{
+	if (d->dense && sift_star_dense_reserve(d, row))
+	{
+		SiftStarRow r = *row;
+
+		for (int c = 0; c < d->shape.npay; c++)
+			if (d->shape.pcls[c] == SSC_STR && !r.pay_null[c])
+				r.pay_i[c] = (int64) arena_put(d, r.pay_p[c], r.pay_len[c]);
+		sift_star_dense_put(d, &r);
+		return true;
+	}
+	if (d->dense && !leave_dense(d))
+		return false;
+	return hash_add(d, row);
+}
+
 static bool
 row_has_null_key(const SiftStarDim *d, uint32 i)
 {
+	if (d->dense)
+		return false;
 	for (int k = 0; k < d->shape.nkeys; k++)
 		if (d->null[k][i])
 			return true;
@@ -216,6 +273,8 @@ row_hash(const SiftStarDim *d, uint32 i)
 {
 	uint64		h = 0;
 
+	if (d->dense)
+		return mix64(mix64((uint64) (d->dbase + (int64) i)));
 	for (int k = 0; k < d->shape.nkeys; k++)
 		h = mix64(h * 31 + (d->shape.kcls[k] == SSC_STR ? hash_bytes64(d->arena + d->col[k][i], d->len[k][i]) : mix64(d->col[k][i])));
 	return h;
@@ -303,6 +362,11 @@ sift_star_dim_finish(SiftStarDim *d)
 {
 	uint32		inserted = 0;
 
+	if (d->dense)
+	{
+		sift_star_dense_finish(d);
+		return;
+	}
 	if (is_range(&d->shape))
 	{
 		range_index(d);
@@ -398,6 +462,7 @@ sift_star_dim_free(SiftStarDim *d)
 		pfree(d->exact);
 	if (d->matched != NULL)
 		pfree(d->matched);
+	sift_star_dense_free(d);
 	memset(d, 0, sizeof(*d));
 }
 
@@ -462,6 +527,11 @@ hash_first(const SiftStarDim *d, const SiftStarProbe *p, uint32 r)
 	Cell		k[SIFT_STAR_MAX_KEYS];
 	uint64		h = 0;
 
+	if (d->dense)
+	{
+		k[0] = probe_cell(p->key[0], SSC_INT, r);
+		return k[0].isnull ? 0 : sift_star_dense_row(d, k[0].i);
+	}
 	for (int c = 0; c < d->shape.nkeys; c++)
 	{
 		k[c] = probe_cell(p->key[c], d->shape.kcls[c], r);
@@ -507,9 +577,18 @@ row_part(const SiftStarDim *d, uint32 i, uint32 nparts)
 bool
 sift_star_dim_splits(const SiftStarDim *d, uint32 nparts)
 {
-	for (uint32 i = 1; i < d->nrows; i++)
-		if (row_part(d, i, nparts) != row_part(d, 0, nparts))
+	const uint32 n = d->dense ? d->dcap : d->nrows;
+	int64		first = -1;
+
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (d->dense && !sift_star_dense_has(d, i))
+			continue;
+		if (first < 0)
+			first = row_part(d, i, nparts);
+		else if (row_part(d, i, nparts) != (uint32) first)
 			return true;
+	}
 	return false;
 }
 
@@ -569,15 +648,13 @@ sift_star_apply(const SiftStarDim *d, const uint32 *match, const uint64 *gate, u
 void
 sift_star_gather_bits(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out)
 {
-	const int	c = d->shape.nkeys + pay;
-
 	memset(valid_out, 0, SIFT_VEC_WORDS * sizeof(uint64));
 	for (uint16 i = 0; i < n; i++)
 	{
 		const uint32 row = dim_row[i];
-		const bool	ok = row != 0 && !d->null[c][row - 1];
+		const bool	ok = row != 0 && !sift_star_pay_null(d, pay, row - 1);
 
-		out[i] = ok ? d->col[c][row - 1] : 0;
+		out[i] = ok ? sift_star_pay_bits(d, pay, row - 1) : 0;
 		valid_out[i >> 6] |= (uint64) ok << (i & 63);
 	}
 }
@@ -585,15 +662,13 @@ sift_star_gather_bits(const SiftStarDim *d, int pay, const uint32 *dim_row, uint
 void
 sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, SiftStrView *out, uint64 *valid_out)
 {
-	const int	c = d->shape.nkeys + pay;
-
 	memset(valid_out, 0, SIFT_VEC_WORDS * sizeof(uint64));
 	for (uint16 i = 0; i < n; i++)
 	{
 		const uint32 row = dim_row[i];
-		const bool	ok = row != 0 && !d->null[c][row - 1];
+		const bool	ok = row != 0 && !sift_star_pay_null(d, pay, row - 1);
 
-		out[i] = ok ? sift_vstr_make(d->arena + d->col[c][row - 1], d->len[c][row - 1]) : (SiftStrView) {0};
+		out[i] = ok ? sift_vstr_make(d->arena + sift_star_pay_bits(d, pay, row - 1), sift_star_pay_len(d, pay, row - 1)) : (SiftStrView) {0};
 		valid_out[i >> 6] |= (uint64) ok << (i & 63);
 	}
 }
@@ -601,15 +676,13 @@ sift_star_gather_str(const SiftStarDim *d, int pay, const uint32 *dim_row, uint1
 void
 sift_star_gather_datum(const SiftStarDim *d, int pay, const uint32 *dim_row, uint16 n, uint64 *out, uint64 *valid_out)
 {
-	const int	c = d->shape.nkeys + pay;
-
 	memset(valid_out, 0, SIFT_VEC_WORDS * sizeof(uint64));
 	for (uint16 i = 0; i < n; i++)
 	{
 		const uint32 row = dim_row[i];
-		const bool	ok = row != 0 && !d->null[c][row - 1];
+		const bool	ok = row != 0 && !sift_star_pay_null(d, pay, row - 1);
 
-		out[i] = ok ? (uint64) (uintptr_t) (d->arena + d->col[c][row - 1]) : 0;
+		out[i] = ok ? (uint64) (uintptr_t) (d->arena + sift_star_pay_bits(d, pay, row - 1)) : 0;
 		valid_out[i >> 6] |= (uint64) ok << (i & 63);
 	}
 }
@@ -712,7 +785,7 @@ next_match(const SiftStarDim *d, uint32 chain, SiftStarCursor *cur)
 {
 	if (is_range(&d->shape))
 		return ++cur->hit_at < cur->nhit ? cur->hit[cur->hit_at] + 1 : 0;
-	return d->next[chain - 1];
+	return d->dense ? 0 : d->next[chain - 1];
 }
 
 uint32

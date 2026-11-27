@@ -1,5 +1,6 @@
 /*
- * agg/star/star.h - the small relations a scan of SiftAggV6 joins to its fact rows before it groups them: each (a dimension) is read whole into a table of columns and a hash index, then the
+ * agg/star/star.h - the small relations a scan of SiftAggV6 joins to its fact rows before it groups them: each (a dimension) is read whole into a table of columns and a hash index (or, one
+ * unique integer key that spans few more values than it has rows, its payload by key: agg/star/dense.h), then the
  * 2048-row batches of the fact table probe it. An inner, a left, a semi and an anti join on one to four equalities of integer, date, timestamp or text columns, and the join of a range of the
  * fact (recorded_on BETWEEN lo AND hi) with the rows of a table of at most SIFT_STAR_RANGE_MAX periods, which one fact row may match more than once.
  *
@@ -79,6 +80,7 @@ typedef struct SiftStarShape
 	SiftStarCls kcls[SIFT_STAR_MAX_KEYS];
 	int			npay;
 	SiftStarCls pcls[SIFT_STAR_MAX_PAY];
+	uint8		pwidth[SIFT_STAR_MAX_PAY];	/* the bytes of the values of an SSC_INT payload column in a dense table: 1, 2, 4 or 8 (0: 8) */
 	bool		left;			/* SV6J_RANGE_SMALL: a left join (a fact row of no period is kept); the equi joins say it by their mode */
 	bool		on;				/* a condition of the join runs on the pairs (v6_join_lookup.h): sift_star_expand gives the pairs of the keys, whether or not a fact row has one, and the caller keeps the fact rows no pair passes */
 	bool		lo_inc;			/* SV6J_RANGE_SMALL: the bounds are in the period (BETWEEN) or not (< or >) */
@@ -120,11 +122,20 @@ typedef struct SiftStarDim
 	uint64	   *matched;		/* a dimension of RIGHT or FULL join (sift_star_preserves_dim): bit i = row i (0-based) was matched by a fact row; allocated by sift_star_dim_finish */
 	int64	   *exact;			/* the distinct values of the first key, sorted: while nrows <= SIFT_STAR_EXACT_MAX and it is an integer */
 	uint32		nexact;
+	bool		dense;			/* the dense form (agg/star/dense.h): the payload of the row of key k in slot k - dbase, no key column and no index */
+	int64		dbase;
+	uint32		dcap;			/* the slots; a row is 1 + its slot */
+	uint64	   *dhas;			/* bit s: slot s holds a row */
+	void	   *dpay[SIFT_STAR_MAX_PAY];	/* the values of each payload column, pwidth bytes a slot (8: the bits of an int64 or float8, the offset of a string in arena) */
+	uint64	   *dnull[SIFT_STAR_MAX_PAY];	/* bit s: the value of slot s is NULL */
+	uint32	   *dlen[SIFT_STAR_MAX_PAY];	/* the length of each string of an SSC_STR column */
 } SiftStarDim;
 
 extern void sift_star_dim_init(SiftStarDim *d, const SiftStarShape *shape);
 /* The bytes the table takes for nrows rows of str_bytes bytes of strings each, as sift_star_dim_add counts them: what the planner expects of a dimension */
 extern double sift_star_table_est(const SiftStarShape *sh, double nrows, double str_bytes);
+/* The same for a dimension of unique integer keys spread over span values in the dense form (agg/star/dense.h); -1 when the table would not keep that form */
+extern double sift_star_dense_est(const SiftStarShape *sh, double nrows, double span, double str_bytes);
 /* false when the row would take the table past its budget, or is the SIFT_STAR_RANGE_MAX + 1st period of a range join (nothing is added) */
 extern bool sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row);
 /* the index over the rows added */

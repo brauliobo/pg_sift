@@ -10,6 +10,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_operator.h"
+#include "catalog/pg_statistic.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -17,6 +18,7 @@
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
+#include "utils/selfuncs.h"
 
 #include "agg/ht/ht.h"
 #include "agg/plan/int.h"
@@ -26,12 +28,15 @@
 #include "agg/ext.h"
 #include "agg/join/found.h"
 #include "agg/source_rel.h"
+#include "agg/star/run.h"
 
 typedef struct StarDim
 {
 	RelOptInfo *rel;
 	Path	   *path;			/* the plan the node reads it with */
 	bool		left;			/* the right side of a left join of the query */
+	bool		limited;		/* a sub-select with LIMIT or OFFSET: it must fit twice over (dim_rel_readable) */
+	double		span;			/* SiftV6XDim.span */
 	int			nkeys;
 	const Var  *fvar[SIFT_STAR_MAX_KEYS];
 	const Var  *dvar[SIFT_STAR_MAX_KEYS];
@@ -259,10 +264,9 @@ reads_volatile(PlannerInfo *root, const RelOptInfo *b, bool *limited)
  * tree under a semi or anti join). The node reads it again for each part of its keys when it does not fit the budget, so its rows must be the same at every read: nothing of it is volatile, and
  * a sub-select with LIMIT or OFFSET fits twice over, so that it is read once
  */
-bool
-sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
+static bool
+dim_rel_readable(PlannerInfo *root, RelOptInfo *rel, bool *limited)
 {
-	bool		limited = false;
 	int			r = -1;
 
 	if (rel->lateral_relids != NULL || rel->cheapest_total_path == NULL || rel->cheapest_total_path->param_info != NULL)
@@ -270,15 +274,101 @@ sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
 	if (rel->reloptkind == RELOPT_BASEREL)
 	{
 		if ((rel->rtekind != RTE_RELATION && rel->rtekind != RTE_VALUES && rel->rtekind != RTE_CTE && rel->rtekind != RTE_SUBQUERY && rel->rtekind != RTE_FUNCTION) ||
-			reads_volatile(root, rel, &limited))
+			reads_volatile(root, rel, limited))
 			return false;
 	}
 	else if (rel->reloptkind != RELOPT_JOINREL)
 		return false;
 	while (rel->reloptkind == RELOPT_JOINREL && (r = bms_next_member(rel->relids, r)) >= 0)
-		if (root->simple_rel_array[r] != NULL && reads_volatile(root, root->simple_rel_array[r], &limited))
+		if (root->simple_rel_array[r] != NULL && reads_volatile(root, root->simple_rel_array[r], limited))
 			return false;
-	return rel->rows * (rel->reltarget->width + 48.0) * (limited ? 2 : 1) <= (double) budget;
+	return true;
+}
+
+/* the bytes the hash form of the table of the relation takes */
+static double
+dim_hash_bytes(const RelOptInfo *rel)
+{
+	return rel->rows * (rel->reltarget->width + 48.0);
+}
+
+bool
+sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
+{
+	bool		limited = false;
+
+	return dim_rel_readable(root, rel, &limited) && dim_hash_bytes(rel) * (limited ? 2 : 1) <= (double) budget;
+}
+
+static int64
+key_int(Oid typid, Datum v)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(v);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(v);
+		default:
+			return DatumGetInt64(v);
+	}
+}
+
+/* the values the one integer key of the dimension spans when its statistics say the rows of the table have different keys: those of its histogram and most common values (0: not known) */
+static double
+key_span(PlannerInfo *root, const StarDim *d)
+{
+	const Var  *v = d->dvar[0];
+	const int	kinds[] = {STATISTIC_KIND_HISTOGRAM, STATISTIC_KIND_MCV};
+	VariableStatData vd;
+	bool		isdefault = false;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN;
+
+	if (d->nkeys != 1 || d->rel->reloptkind != RELOPT_BASEREL || d->rel->rtekind != RTE_RELATION || (v->vartype != INT2OID && v->vartype != INT4OID && v->vartype != INT8OID && v->vartype != DATEOID))
+		return 0;
+	examine_variable(root, (Node *) v, 0, &vd);
+	if (HeapTupleIsValid(vd.statsTuple) && vd.rel != NULL && (vd.isunique || (get_variable_numdistinct(&vd, &isdefault) >= vd.rel->tuples && !isdefault)))
+		for (int i = 0; i < lengthof(kinds); i++)
+		{
+			AttStatsSlot slot;
+
+			if (!get_attstatsslot(&slot, vd.statsTuple, kinds[i], InvalidOid, ATTSTATSSLOT_VALUES))
+				continue;
+			for (int j = 0; j < slot.nvalues; j++)
+			{
+				lo = Min(lo, key_int(v->vartype, slot.values[j]));
+				hi = Max(hi, key_int(v->vartype, slot.values[j]));
+			}
+			free_attstatsslot(&slot);
+		}
+	ReleaseVariableStats(vd);
+	return lo <= hi ? Max((double) hi - (double) lo + 1, d->rel->rows) : 0;
+}
+
+/* the table of the dimension fits the budget: in the dense form when its key allows it (agg/star/dense.h), else in the hash form */
+static bool
+dim_fits(PlannerInfo *root, StarDim *d, uint64 budget)
+{
+	Oid			ptypes[SIFT_STAR_MAX_PAY];
+	int			npay = 0;
+	double		bytes = dim_hash_bytes(d->rel);
+
+	d->span = key_span(root, d);
+	foreach_ptr(Node, n, d->rel->reltarget->exprs)
+		if (npay < SIFT_STAR_MAX_PAY && !(IsA(n, Var) && ((const Var *) n)->varattno == d->dvar[0]->varattno))
+			ptypes[npay++] = exprType(n);
+	if (d->span > 0)
+	{
+		const double dense = sift_v6_star_dim_bytes(d->left ? SV6J_LEFT_EQUI : SV6J_INNER_EQUI, d->dvar[0]->vartype, ptypes, npay, d->rel->rows, d->rel->reltarget->width, d->span, budget);
+
+		if (dense >= 0)
+			bytes = Min(bytes, dense);
+		else
+			d->span = 0;
+	}
+	return bytes * (d->limited ? 2 : 1) <= (double) budget;
 }
 
 bool
@@ -314,6 +404,7 @@ seed_dims(V6Plan *p, StarDim *dims, int nd)
 			xd->ktype[k] = dims[d].dvar[k]->vartype;
 			xd->kcol[k] = dims[d].dvar[k]->varattno;
 		}
+		xd->span = dims[d].span;
 		p->dim_rels = lappend(p->dim_rels, dims[d].rel);
 	}
 	p->xseed = x;
@@ -411,7 +502,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 {
 	StarDim		dims[SIFT_STAR_MAX_DIMS] = {0};
 	const int	nd = bms_num_members(base) - 1;
-	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / nd, 4096);
+	const uint64 budget = sift_v6_star_budget(nd);
 	const StarStmt stmt = {dims, nd, goal, input_rel->rows};
 	int			n = 0,
 				r = -1;
@@ -424,14 +515,14 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 
 		if (rel == fact)
 			continue;
-		if (!sift_v6_dim_rel_ok(root, rel, budget))
+		if (!dim_rel_readable(root, rel, &dims[n].limited))
 			return;
 		dims[n++].rel = rel;
 	}
 	if (!joins_ok(root, dims, nd) || !equivalence_keys(root, base, fact->relid, dims, nd) || !join_clause_keys(root, base, fact->relid, dims, nd))
 		return;
 	for (int d = 0; d < nd; d++)
-		if (dims[d].nkeys == 0)
+		if (dims[d].nkeys == 0 || !dim_fits(root, &dims[d], budget))
 			return;
 	plan_dims(root, fact, dims, nd);
 	sift_v6_fact_paths(root, fact, output_rel, star_compile_fn, star_add_fn, &stmt);
