@@ -846,8 +846,9 @@ typedef struct SiftColDeltaLooks
 	int			next;
 } SiftColDeltaLooks;
 
+/* *settled: the map holds no record whose writer the snapshot cannot settle yet, so it stays the map of the snapshot while the chain does not change (a map too large for the cache is answered once) */
 extern bool sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 attnum_bloom, SiftColDeltaLooks *looks,
-										SiftColDeltaPartMap **map);
+										SiftColDeltaPartMap **map, bool *settled);
 
 /*
  * What a cache of the records of a chain remembers of the chain it read (f2_col_delta_watch.c): the blocks of its pages and a copy of the newest. read visits the newest page the watch saw, from the

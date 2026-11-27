@@ -404,14 +404,16 @@ scan_load_map(SiftColDeltaScan *ds, ScanPart *sp, const SiftPartitionEntry *entr
 	}
 	sift_col_delta_part_map_unref(sp->map);
 	sp->map = NULL;
-	sp->retained = false;
-	if (sift_col_delta_mapcache_get(ds->rel, entry, pin->part_gen, pin->part->hdr.ngranules, ds->vis, ds->attnum_bloom, &ds->looks, &loaded))
+	keyed = map_key_now(ds, entry, pin, granule_id, false, &now);
+	if (sift_col_delta_mapcache_get(ds->rel, entry, pin->part_gen, pin->part->hdr.ngranules, ds->vis, ds->attnum_bloom, &ds->looks, &loaded, &settled))
 	{
 		sp->map = loaded;
-		sp->key = (MapKey) {.part_id = entry->part_id,.part_gen = pin->part_gen};
+		sp->key = keyed ? now : (MapKey) {.part_id = entry->part_id,.part_gen = pin->part_gen};
+		sp->retained = keyed && settled;
 		return;
 	}
-	keyed = map_key_now(ds, entry, pin, granule_id, !whole, &now);
+	now.one_granule = !whole;
+	now.granule = whole ? 0 : granule_id;
 	map_cx = sift_col_delta_part_map_context(ds->cx);
 	old = MemoryContextSwitchTo(map_cx);
 	loaded = load_part_map(ds->rel, entry, &prune, pin->part->hdr.ngranules, ds->vis, 0, &settled);

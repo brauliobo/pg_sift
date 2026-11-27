@@ -420,7 +420,8 @@ chain_unchanged(Relation rel, const SiftPartitionEntry *entry, const MapSlot *s,
 }
 
 bool
-sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 attnum_bloom, SiftColDeltaLooks *looks, SiftColDeltaPartMap **map)
+sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint64 part_gen, uint32 ngranules, SiftTblVis *vis, uint64 attnum_bloom, SiftColDeltaLooks *looks, SiftColDeltaPartMap **map,
+							bool *settled)
 {
 	SiftColDeltaAnchor a;
 	MapSlot    *s;
@@ -464,6 +465,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		return false;
 	}
 	s->tick = sift_cache_tick();
+	*settled = !s->cut;
 	if ((s->map != NULL && MemoryContextMemAllocated(s->map->cx, true) > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())
 		slot_drop(s);
 	return r == ADVANCED;
