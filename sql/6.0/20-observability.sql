@@ -172,26 +172,10 @@ CREATE OR REPLACE VIEW sift.indexes AS
 				WHEN l.kind = 'sift' THEN format('%s segs (%s sealed)', s.l1_parts, s.l0_parts)
 				WHEN s.format_major IS NOT NULL THEN format('%s segs, %s units (F1)', l.segments, coalesce(s.granules, 0)) END AS structure,
 		   coalesce(s.scopes, 0)::int2 AS scopes, coalesce(s.quarantined, l.state = 'quarantined') AS quarantined, s.format_note
-	FROM (SELECT c.oid::regclass AS relation, a.amname::text AS kind, i.indrelid::regclass AS "table", pg_relation_size(c.oid) AS bytes, w.segments,
-				 f.major || '.' || f.minor AS format,
-				 CASE WHEN NOT i.indisvalid OR NOT i.indisready THEN 'invalid' WHEN qs.quarantined THEN 'quarantined' WHEN w.segments IS NULL THEN 'locked'
-					  WHEN w.failures > 0 THEN 'failing' WHEN w.running THEN 'maintaining' ELSE 'ready' END AS state
-		  FROM pg_class c
-		  JOIN pg_am a ON a.oid = c.relam AND a.amname IN ('sift', 'sift_col')
-		  JOIN pg_index i ON i.indexrelid = c.oid
-		  LEFT JOIN LATERAL sift._quarantine_state(CASE WHEN i.indisvalid AND i.indisready THEN c.oid END) qs ON true
-		  LEFT JOIN LATERAL sift.worker_state(CASE WHEN i.indisvalid AND i.indisready AND NOT qs.quarantined THEN c.oid END) w ON true
-		  LEFT JOIN LATERAL sift.index_format(CASE WHEN i.indisvalid AND i.indisready AND NOT qs.quarantined THEN c.oid END) f ON true
-		  WHERE c.relkind = 'i' AND sift._may_inspect(i.indrelid)
-		  UNION ALL
-		  SELECT c.oid::regclass, a.amname::text, c.oid::regclass, pg_relation_size(c.oid), w.segments, f.major || '.' || f.minor,
-				 CASE WHEN w.segments IS NULL THEN 'locked' WHEN w.failures > 0 THEN 'failing' WHEN w.running THEN 'maintaining' ELSE 'ready' END
-		  FROM pg_class c
-		  JOIN pg_am a ON a.oid = c.relam AND a.amname = 'sift_table'
-		  CROSS JOIN LATERAL sift.worker_state(c.oid) w
-		  CROSS JOIN LATERAL sift.index_format(c.oid) f
-		  WHERE c.relkind IN ('r', 'm') AND sift._may_inspect(c.oid)) l
-	LEFT JOIN st s ON s.relation = l.relation
+	FROM st s
+	CROSS JOIN LATERAL (SELECT s.relation, s.am COLLATE "C" AS kind, s.table_name AS "table", s.format_major || '.' || s.format_minor AS format, s.state,
+							   coalesce(s.size_bytes, CASE WHEN s.state = 'invalid' THEN pg_relation_size(s.relation) END) AS bytes,
+							   CASE WHEN s.format_major >= 2 THEN s.l0_parts + s.l1_parts + s.l2_parts ELSE s.l0_slabs + s.l0_parts + s.l1_parts END AS segments) l
 	LEFT JOIN hl h ON h.relation = l.relation;
 COMMENT ON VIEW sift.indexes IS 'One row per sift object the caller can read, whatever its access method and format: relation, table, access method, format, state (invalid, locked, quarantined, failing, maintaining or ready), worst health severity, rows, dead rows, size, bytes per row, compression ratio, space utilization, parts by level, scopes and format_note. kind, table and bytes are the 5.1 columns.';
 GRANT SELECT ON sift.indexes TO PUBLIC;

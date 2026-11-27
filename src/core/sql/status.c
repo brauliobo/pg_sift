@@ -605,7 +605,7 @@ put_format(StatusRow *row, const SiftApiRel *r, int64 size)
 static bool
 is_quarantined(const SiftApiRel *r)
 {
-	return (r->peek.flags & SIFT_META_QUARANTINED) != 0 || (r->rel->rd_rel->relkind == RELKIND_INDEX && sift_index_quarantined(r->rel));
+	return (r->peek.status != SIFT_FMT_BAD && (r->peek.flags & SIFT_META_QUARANTINED) != 0) || (r->rel->rd_rel->relkind == RELKIND_INDEX && sift_index_quarantined(r->rel));
 }
 
 static void
@@ -655,7 +655,7 @@ status_one(const Candidate *c, StatusRow *row)
 	r.f2 = r.peek.status == SIFT_FMT_V2;
 	size = (int64) RelationGetNumberOfBlocks(r.rel) * BLCKSZ;
 	put_format(row, &r, size);
-	quarantined = r.peek.status != SIFT_FMT_BAD && is_quarantined(&r);
+	quarantined = is_quarantined(&r);
 	put_quarantine(row, &r, quarantined);
 	if (r.peek.status == SIFT_FMT_OTHER || r.peek.status == SIFT_FMT_BAD || quarantined)
 	{

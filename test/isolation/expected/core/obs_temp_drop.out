@@ -1,0 +1,51 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1temp s2indexes s2views s1untemp
+step s1temp: 
+	CREATE TEMP TABLE iso_tt (id int, v int) USING sift_table;
+	INSERT INTO iso_tt SELECT g, g % 7 FROM generate_series(1, 100) g;
+	CREATE TEMP TABLE iso_tc (id int, v int, body text);
+	INSERT INTO iso_tc SELECT g, g % 7, 'w' || g FROM generate_series(1, 100) g;
+	CREATE INDEX iso_tc_col ON iso_tc USING sift_col (id, v);
+	CREATE INDEX iso_tc_bm ON iso_tc USING sift (body);
+
+step s2indexes: SELECT relation::text, state FROM sift.indexes ORDER BY 1;
+relation  |state
+----------+-----
+iso_od_bm |ready
+iso_od_col|ready
+iso_ok    |ready
+(3 rows)
+
+step s2views: 
+	SELECT (SELECT count(*) FROM sift.indexes) AS indexes, (SELECT count(*) FROM sift.status()) AS status,
+		   (SELECT count(*) >= 0 FROM sift.health()) AS health, (SELECT count(*) >= 0 FROM sift.locks) AS locks, (SELECT count(*) >= 1 FROM sift.activity()) AS activity;
+
+indexes|status|health|locks|activity
+-------+------+------+-----+--------
+      3|     3|t     |t    |t       
+(1 row)
+
+step s1untemp: DROP TABLE iso_tt, iso_tc;
+
+starting permutation: s1begin s1drop s2indexes s1commit s2views
+step s1begin: BEGIN;
+step s1drop: DROP TABLE iso_od;
+step s2indexes: SELECT relation::text, state FROM sift.indexes ORDER BY 1;
+relation  |state 
+----------+------
+iso_od_bm |locked
+iso_od_col|locked
+iso_ok    |ready 
+(3 rows)
+
+step s1commit: COMMIT;
+step s2views: 
+	SELECT (SELECT count(*) FROM sift.indexes) AS indexes, (SELECT count(*) FROM sift.status()) AS status,
+		   (SELECT count(*) >= 0 FROM sift.health()) AS health, (SELECT count(*) >= 0 FROM sift.locks) AS locks, (SELECT count(*) >= 1 FROM sift.activity()) AS activity;
+
+indexes|status|health|locks|activity
+-------+------+------+-----+--------
+      1|     1|t     |t    |t       
+(1 row)
+
