@@ -91,12 +91,13 @@ typedef struct V1Morsel
 } V1Morsel;
 
 static SiftV6Source *
-open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
+open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const struct SiftV6Bq *texts)
 {
 	const V1Morsel *m = arg;
 	SiftV1Scan	scan = m->s->key_scan;
 
 	scan.range = &m->range;
+	scan.texts = texts;
 	scan = sift_v1_spec_scan(&scan, m->s->spec);
 
 	return sift_v1_source_open(m->s->cx, m->s->snap, in, quals, &scan);

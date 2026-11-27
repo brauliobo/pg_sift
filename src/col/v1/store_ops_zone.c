@@ -26,12 +26,13 @@ typedef struct V1Open
 } V1Open;
 
 static SiftV6Source *
-open_source(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
+open_source(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const struct SiftV6Bq *texts)
 {
 	const V1Open *o = arg;
 	SiftV1Scan	scan = o->scan != NULL ? *o->scan : (SiftV1Scan) {0};
 
 	scan.cube = o->cube;
+	scan.texts = texts;
 	return sift_v1_source_open(o->cx, o->snap, in, quals, &scan);
 }
 

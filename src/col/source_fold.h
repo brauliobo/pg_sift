@@ -34,8 +34,9 @@ typedef struct SiftSrcFoldArgs
 	EState	   *estate;				/* the values of the parameters the quals read, NULL for none */
 } SiftSrcFoldArgs;
 
-/* The source of the columns of in, over the rows that pass quals (NULL: all) */
-typedef SiftV6Source *(*SiftSrcOpen) (void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals);
+/* The source of the columns of in, over the rows that pass quals (NULL: all); texts: the batch quals of the fold, whose text quals a source may test on a unit's dictionary (NULL: none) */
+struct SiftV6Bq;
+typedef SiftV6Source *(*SiftSrcOpen) (void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const struct SiftV6Bq *texts);
 
 extern SiftSrcFold *sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx);
 /* Opens the source, folds every batch of it and closes it; the fold can run again (a morsel of a parallel scan) */

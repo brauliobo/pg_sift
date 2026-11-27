@@ -543,7 +543,7 @@ sift_srcfold_tags(const SiftSrcFold *f)
 void
 sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 {
-	SiftV6Source *src = f->src = open(open_arg, &f->in, f->quals);
+	SiftV6Source *src = f->src = open(open_arg, &f->in, f->quals, f->bq);
 	SiftV6Batch b;
 	SiftErrCtx	ctx;
 	SiftV6GranCounts grans = {0};

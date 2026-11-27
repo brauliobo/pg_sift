@@ -87,11 +87,13 @@ typedef struct RowsOpen
 } RowsOpen;
 
 static SiftV6Source *
-rows_open(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
+rows_open(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const struct SiftV6Bq *texts)
 {
 	const RowsOpen *o = arg;
+	SiftV1Scan	scan = o->scan;
 
-	return sift_v1_source_open(o->cx, o->snap, in, quals, &o->scan);
+	scan.texts = texts;
+	return sift_v1_source_open(o->cx, o->snap, in, quals, &scan);
 }
 
 static void

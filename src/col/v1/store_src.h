@@ -15,6 +15,17 @@
 #include "core/tidbridge.h"
 #include "table/v1/rel.h"
 
+/* A text qual of the fold over a dictionary leaf: pass holds, for the strings of dictionary dict, whether each passes it */
+typedef struct SiftV1TextTest
+{
+	int			leaf;
+	const struct SiftTextQual *q;
+	const void *dict;
+	bool	   *pass;
+} SiftV1TextTest;
+
+#define SIFT_V1_MAX_TEXT_TESTS	8
+
 typedef struct SiftV1Src
 {
 	SiftV6Source base;
@@ -69,6 +80,8 @@ typedef struct SiftV1Src
 	uint64		tid_hi;
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
+	int			ntexts;
+	SiftV1TextTest texts[SIFT_V1_MAX_TEXT_TESTS];
 	int			score_col;		/* the column of the input that holds the scores of the bridge, -1 for none */
 	uint64		kept[SIFT_VEC_WORDS];
 	float4		score[SIFT_VEC_LEN];
@@ -111,6 +124,12 @@ extern bool sift_v1_src_vet(SiftV1Src *s, SiftV6Batch *b);
 extern void sift_v1_src_fill_heap(SiftV1Src *s, SiftV6Batch *b);
 /* SiftV6Source.raise: PostgreSQL's error for a row of the raises of the last batch */
 extern void sift_v1_src_raise(SiftV6Source *base, int row);
+
+/* The type tests of scan and the text quals of its fold that a dictionary leaf decides (col/v1_engine/store_ops_text.c) */
+extern void sift_v1_src_bind_tests(SiftV1Src *s, const SiftV1Scan *scan);
+
+/* Leaves out of s->bits the rows of the unit whose string passes no text qual, testing each string of a dictionary once; false when none is left */
+extern bool sift_v1_src_text_pass(SiftV1Src *s);
 
 /* The rows of bits of the unit whose key of leaf l has one of the JSON types (SIFT_SRC_JT_*); false when none is left */
 extern bool sift_v1_src_filter_types(SiftV1Src *s, const SiftSrcLeaf *l, uint32 types, uint64 *bits);

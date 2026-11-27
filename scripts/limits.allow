@@ -247,6 +247,7 @@ SIFT_SRC_MAX_SETS	the OR conjuncts of a scan that a source takes to skip units (
 SIFT_UN_SLOTS	slots of the vectors of an unnest pairs scan (agg/unnest/pairs.c): the registers of a compiled expression (a limit of the registry) and the element columns (SIFT_UN_ELEMS_MAX)
 SIFT_V1_MAX_ELEM_COLS	columns of the elements of a shredded array a Format 1 source reads (col/v1/store_ops.h): the value of SIFT_V6_XELEM_COLS of the engine
 SIFT_V1_MAX_TYPE_TESTS	JSON type and key tests of one aggregate scan of a sift_col index of format major 1 (col/v1/store_ops.h): a SIFT_INVARIANT of the scan holds the planner to it
+SIFT_V1_MAX_TEXT_TESTS	text quals of the batch quals a Format 1 source tests on the dictionaries of a unit (col/v1/store_src.h): more are left to the batch quals, which run them all
 V6GEN_MAX_COLS	columns one aggregate of the general scan reads (agg/gen/gen.h): the columns of a COUNT(DISTINCT (a, b, ..)) of the engine (SIFT_V6_MAX_DCOLS) and one more
 SIFT_L0_HOT_SLOTS	slots of the shared table of hot L0 shard directories (col/f2/l0/shard_dir.h): an entry no backend holds goes to another partition, and a partition that finds none stays on its cold chain or is flushed without it; no count is refused
 SIFT_COMB_MAX_SLOTS	slots of all shards of the shared combiner pool (core/shm/combiner.h): a writer that finds no free slot applies its request directly under the lock; no count is refused

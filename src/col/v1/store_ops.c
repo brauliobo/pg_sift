@@ -363,7 +363,7 @@ unit_next(SiftV1Src *s)
 		s->bits = MemoryContextAllocZero(s->unit_cx, SIFT_COL_NWORDS(s->unit.nrow) * sizeof(uint64));
 		s->rd->live(s->src, &s->unit, s->bits);
 		s->vet_unit = s->rd->vet_needed(s->src, &s->unit);
-		if (!types_pass(s))
+		if (!types_pass(s) || !sift_v1_src_text_pass(s))
 			continue;
 		for (int w = 0; w < nw; w++)
 			if (s->bits[w] != 0)
@@ -862,21 +862,6 @@ bind_elems(SiftV1Src *s, const SiftV1ElemSpec *spec)
 		s->elem_child[c] = read_slot(s, &s->lay->leaf[spec->child_leaf[c]]);
 }
 
-static void
-bind_types(SiftV1Src *s, const SiftV1Scan *scan)
-{
-	SiftSrcStats st;
-
-	memcpy(s->types, scan->types, scan->ntypes * sizeof(SiftV1TypeTest));
-	s->ntypes = scan->ntypes;
-	for (int t = 0; t < s->ntypes; t++)
-		if (s->types[t].key)
-		{
-			s->rd->stats(s->rels.rel, &st);
-			s->types[t].rootless = st.rootless[s->types[t].leaf] > 0;
-		}
-}
-
 typedef struct SrcKeys
 {
 	const SiftV1Src *s;
@@ -959,7 +944,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (scan->keep != NULL)
 		s->rd->select(s->src, scan->keep);
-	bind_types(s, scan);
+	sift_v1_src_bind_tests(s, scan);
 	sift_v1_src_prune_begin(s, scan);
 	sift_errctx_pop(&ctx);
 	MemoryContextSwitchTo(old);

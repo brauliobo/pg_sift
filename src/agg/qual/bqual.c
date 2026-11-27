@@ -288,3 +288,12 @@ sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs)
 	if (bq->pgx != NULL)
 		sift_v6_pgqual_filter(bq->pgx, bs, bq->src);
 }
+
+const SiftTextQual *
+sift_v6_bq_text(const SiftV6Bq *bq, int i, AttrNumber *attno)
+{
+	if (bq == NULL || i >= bq->ntext)
+		return NULL;
+	*attno = bq->in.col[bq->text[i].slot].attno;
+	return &bq->text[i].q;
+}

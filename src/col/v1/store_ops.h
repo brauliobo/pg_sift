@@ -141,6 +141,7 @@ typedef struct SiftV1Scan
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
 	const SiftV1UnitSink *cube;	/* answers the units whose pre-aggregates stand for their rows (NULL: every unit is read) */
+	const struct SiftV6Bq *texts;	/* the batch quals of the fold: a unit no string of whose dictionary passes one of their text quals is not read (NULL: none) */
 	bool		tid_range;
 	uint64		tid_lo;
 	uint64		tid_hi;

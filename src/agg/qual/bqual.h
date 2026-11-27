@@ -34,4 +34,8 @@ extern SiftV6Bq *sift_v6_bq_open(MemoryContext cx, const List *quals, const Sift
 /* The rows of bs the clauses leave: its mask, n_active and all_active are set */
 extern void sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs);
 
+/* Text qual i of the clauses (agg/text_qual.h), of the column *attno of the input: a row it holds for in no string is left out; NULL past the last */
+struct SiftTextQual;
+extern const struct SiftTextQual *sift_v6_bq_text(const SiftV6Bq *bq, int i, AttrNumber *attno);
+
 #endif							/* SIFT_AGG_V6_BQUAL_H */
