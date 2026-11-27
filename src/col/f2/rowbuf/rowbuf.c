@@ -133,14 +133,28 @@ grow_column(SiftRowBuf *rb, int c, size_t oldn, size_t newn)
 	}
 }
 
+/* The rows and elements one allocation of each array holds: the key of a row (40 bytes) and a value or address of an element (8) are the widest */
+#define ROWBUF_MAX_ROWS		(MaxAllocSize / SIFT_BOUND_BYTES)
+#define ROWBUF_MAX_ELEMS	(MaxAllocSize / 8)
+
+static void
+over_capacity(const char *what, uint64 max)
+{
+	ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a row buffer holds at most %llu %s", (unsigned long long) max, what),
+					errhint("Lower maintenance_work_mem or work_mem, so that the rows are written in smaller parts.")));
+}
+
 static void
 reserve(SiftRowBuf *rb, int extra)
 {
+	int64		need = (int64) rb->n + extra;
 	int			newmax;
 
-	if (rb->n + extra <= rb->max)
+	if (need <= rb->max)
 		return;
-	newmax = Max(Max(64, rb->max + rb->max / 4), rb->n + extra);
+	if (need > (int64) ROWBUF_MAX_ROWS)
+		over_capacity("rows", ROWBUF_MAX_ROWS);
+	newmax = (int) Min(Max(Max(64, (int64) rb->max + rb->max / 4), need), (int64) ROWBUF_MAX_ROWS);
 	GROW(rb->tid, rb->max, newmax);
 	GROW(rb->xmin, rb->max, newmax);
 	GROW(rb->cmin, rb->max, newmax);
@@ -162,12 +176,14 @@ static void
 reserve_elems(SiftRowBuf *rb, int gi, uint32 extra)
 {
 	int			g = rb->groups[gi];
-	uint32		need = rb->nelem[g] + extra,
-				newcap;
+	uint64		need = (uint64) rb->nelem[g] + extra;
+	uint32		newcap;
 
 	if (need <= rb->ecap[g])
 		return;
-	newcap = Max(Max(64, rb->ecap[g] + rb->ecap[g] / 4), need);
+	if (need > (uint64) ROWBUF_MAX_ELEMS)
+		over_capacity("elements of a group", ROWBUF_MAX_ELEMS);
+	newcap = (uint32) Min(Max(Max(64, (uint64) rb->ecap[g] + rb->ecap[g] / 4), need), (uint64) ROWBUF_MAX_ELEMS);
 	for (int k = rb->child_off[gi]; k < rb->child_off[gi + 1]; k++)
 	{
 		int			c = rb->children[k];

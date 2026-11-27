@@ -257,6 +257,12 @@
 	X(win_regroup_groups, "RG_MAX_GROUPS", "agg/win/par.c", 33554431, "partitions", \
 	  "partitions a window of a SiftAgg scan holds while it puts its rows together by PARTITION BY (no array of their keys passes 1 GB; work_mem bounds them sooner at its default)", \
 	  "ERROR 54000 naming work_mem", "work_mem", 0) \
+	X(rowbuf_rows, "ROWBUF_MAX_ROWS", "col/f2/rowbuf/rowbuf.c", 26843545, "rows", \
+	  "rows the buffer of a Format 2 load, build or compaction holds before it writes them (no array of their keys passes 1 GB; the memory budget writes them sooner at its default)", \
+	  "ERROR 54000 naming maintenance_work_mem", "maintenance_work_mem", 0) \
+	X(rowbuf_elems, "ROWBUF_MAX_ELEMS", "col/f2/rowbuf/rowbuf.c", 134217727, "elements", \
+	  "array elements of one column of elements the buffer of a Format 2 load, build or compaction holds before it writes them (no array of them passes 1 GB)", \
+	  "ERROR 54000 naming maintenance_work_mem", "maintenance_work_mem", 0) \
 	X(num_expr_bits, "-", "agg/expr/num.c", 95, "bits", \
 	  "magnitude of the scaled integer a row of an exact numeric product takes in a SiftAgg scan (below 2^95, so that 2^32 rows add up in the 128 bits of a sum)", \
 	  "ERROR 22003, the hint names sift.enable_agg = off", "-", 0) \
