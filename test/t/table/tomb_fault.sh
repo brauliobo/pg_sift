@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
-# A statement that spills its tombstone log (sift.backend_cache_kb 16 kB) and is stopped while it writes a run and while it merges two (the gates of
+# A statement that spills the tombstone log of a Format 1 sift_table (sift.backend_cache_kb 16 kB) and is stopped while it writes a run and while it merges two (the gates of
 # sift.test_phase_gate, no sleep): by an ERROR (cancel), by the end of its backend and by an immediate shutdown. Nothing is left in pgsql_tmp (after the backend ends,
 # and after the restart), the table is as it was and verifies, and the same statement runs after. A temp_file_limit lower than the runs stops the statement with the
 # error of that setting and leaves the table as it was.
@@ -10,7 +10,8 @@ ROWS=$(knob SIFT_TF_ROWS 20000 6000)
 GATE=7000
 PH_WRITE=8
 PH_MERGE=9
-node_init primary 2 "autovacuum = off"
+node_init primary 2 "autovacuum = off
+sift.test_create_format1 = on"
 node_start primary || bail "primary start failed"
 D=$(dir primary)
 sql primary "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_sift_test CASCADE" \
