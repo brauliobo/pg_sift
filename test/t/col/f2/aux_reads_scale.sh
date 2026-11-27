@@ -2,13 +2,14 @@
 # The creation, auxiliary maintenance, verification and storage-read paths of format major 2 hold what their budget lets them, not what the table is (test/t/col/f2/aux_reads_scale.py):
 # a COPY and a CTAS of a sift_table, the pass that moves the end of the file, the build of a projection, the check of the keys and of every heap row, and the scan of a sift_table
 # are each measured in a fresh backend at 1x, 2x and 4x rows with maintenance_work_mem 2 MB, work_mem 1 MB and temp_file_limit 1 MB over parts built with 64 MB. The tables are of Format 2.0 on both runs.
+# The shared buffers hold the source and the result of the largest size (about 190 MB), so that every size reads and writes through them and none pays the kernel's page cache the others do not.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
 [[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 python3 -I "$REPO/test/t/col/f2/aux_reads_scale.py" --selftest >/dev/null || bail "the selftest of the gate failed"
 node_init as 41 "autovacuum = off
-shared_buffers = 64MB
+shared_buffers = 256MB
 max_wal_size = 1GB
 min_parallel_table_scan_size = 64kB${SIFT_TESTING:+
 sift.test_create_format1 = off}"

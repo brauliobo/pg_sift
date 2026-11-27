@@ -7,13 +7,13 @@ Every case is measured in a fresh backend at 1x, 2x and 4x rows of one synthetic
   alpha_mem    peak(4x) / peak(1x) of the resident memory of the backend, and of the memory scopes of sift when they count, each over a floor of its budget  <= 1.15
   beta_exact   bytes a row between 1x and 4x of the memory scopes of sift (when they count)                                                                  <= 2
   beta_rss     bytes a row between 1x and 4x of the resident memory                                                                                          <= 8
-  alpha_time   time(4x) / max(time(1x), 0.05 s)                                                                                                              <= 5.5
+  alpha_time   cpu(4x) / max(cpu(1x), 0.05 s), the seconds the backend ran on a CPU (/proc/self/schedstat): the jobs that share the host take none of them             <= 5.5
   temp_bytes   pg_stat_database.temp_bytes the statement added, with temp_file_limit 1 MB: 0 and no file left in pgsql_tmp (heapallindexed: sorts that spill, bounded)
   alpha_disk   bytes a row of the relation a creation wrote at 4x over 1x                                                                                    <= 1.15
 
   test/t/col/f2/aux_reads_scale.py [--rows N] [--only RE] [--selftest]       reads PGHOST, PGPORT, PGUSER, PGDATABASE like psql; needs Linux (/proc), pg_sift and pg_sift_test installed
 """
-import os, re, shutil, subprocess, sys, tempfile, time
+import os, re, shutil, subprocess, sys, tempfile
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', '..', 'bench', 'steps'))
@@ -25,6 +25,7 @@ MWM, WM = 2 * 1048576, 1048576
 FLOOR_RSS, FLOOR_EX = 2 * 1048576, 1048576
 ALPHA_MEM, BETA_EXACT, BETA_RSS, ALPHA_TIME, ALPHA_TMP, ALPHA_DISK = 1.15, 2.0, 8.0, 5.5, 5.0, 1.15
 PEAK_STOP = "select 'PEAK', sift._test_rss_peak_stop();"
+CPU = "select 'CPU', split_part(pg_read_file('/proc/self/schedstat'), ' ', 1);"
 SETTINGS = f"""set sift.async_maintenance='off'; set work_mem='{WM // 1024}kB'; set maintenance_work_mem='{MWM // 1024}kB'; set max_parallel_workers_per_gather=0;
 set max_parallel_maintenance_workers=0; set jit=off; set sift.shared_cache_kb=0; set sift.backend_cache_kb='1MB'; set sift.test_create_format1=off;"""
 BUILD = "set sift.async_maintenance='off'; set maintenance_work_mem='64MB'; set max_parallel_maintenance_workers=0; set sift.test_create_format1=off;\n"
@@ -124,19 +125,18 @@ def measure(case, n, d, temp_limit):
     script(BUILD + case.setup.format(**fmt))
     t0, _ = temp_state()
     p = psql()
-    out, err = send(p, SETTINGS + f"set temp_file_limit='{temp_limit}';\nselect sift._test_thp_disable();\nselect sift._test_malloc_stats(true);\n{PEAK_STOP}\nselect 'BASE', sift._test_rss_peak_start();", "READY")
+    out, err = send(p, SETTINGS + f"set temp_file_limit='{temp_limit}';\nselect sift._test_thp_disable();\nselect sift._test_malloc_stats(true);\n{PEAK_STOP}\nselect 'BASE', sift._test_rss_peak_start();\n{CPU}", "READY")
     if err:
         raise RuntimeError("settings: " + err)
-    base = num(out, "BASE")
-    start = time.monotonic()
+    base, cpu0 = num(out, "BASE"), num(out, "CPU")
     _, err = send(p, case.op.format(**fmt), "OPDONE")
-    seconds = time.monotonic() - start
-    out, hw_err = send(p, PEAK_STOP + "\nselect 'SCOPE', scope, peak from sift._test_mem_highwater() where parent is null;", "HWDONE")
+    out, hw_err = send(p, CPU + "\n" + PEAK_STOP + "\nselect 'SCOPE', scope, peak from sift._test_mem_highwater() where parent is null;", "HWDONE")
     p.stdin.write("\\q\n")
     p.wait()
     if err or hw_err:
         raise RuntimeError(f"{case.name} at {n} rows: {err or hw_err}")
     exact = sum(int(l.strip().split("|")[2]) for l in out if l.startswith("SCOPE|"))
+    seconds = (num(out, "CPU") - cpu0) / 1e9
     t1, files = temp_state()
     disk = int(script(f"select pg_relation_size('{case.disk.format(**fmt)}');").strip()) if case.disk else 0
     return Run((num(out, "PEAK") - base) * 1024, exact, seconds, t1 - t0, files, disk)
