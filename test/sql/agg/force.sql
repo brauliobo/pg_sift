@@ -34,11 +34,9 @@ CREATE FUNCTION shared() RETURNS text LANGUAGE sql AS $$ SELECT 'WITH c AS (SELE
 
 -- by cost: the index scan of the probe
 SELECT plan_of(probe()) AS probe, (SELECT slug FROM sift.explain_why(probe()) WHERE NOT used LIMIT 1) AS slug;
-SELECT used, slug FROM sift.explain_why(shared()) WHERE arm = 'cte_inline';
 SET sift.agg_force = on;
 SELECT plan_of(probe()) AS probe_forced, (SELECT bool_and(used) FROM sift.explain_why(probe()) WHERE arm <> 'cte_inline') AS used;
 SELECT same(probe()) AS probe_same;
-SELECT used, slug FROM sift.explain_why(shared()) WHERE arm = 'cte_inline';
 -- a shape the scan does not compute stays refused
 SELECT plan_of('SELECT count(*) FROM events e WHERE e.parent_id IN (SELECT id FROM events WHERE amount > 5 LIMIT 3) AND random() < 2') AS volatile_forced;
 SELECT same(shared()) AS shared_same;

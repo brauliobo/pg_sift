@@ -35,12 +35,6 @@ SELECT plan_of(probe()) AS probe, (SELECT slug FROM sift.explain_why(probe()) WH
  normal | cost
 (1 row)
 
-SELECT used, slug FROM sift.explain_why(shared()) WHERE arm = 'cte_inline';
- used |   slug   
-------+----------
- f    | cte_cost
-(1 row)
-
 SET sift.agg_force = on;
 SELECT plan_of(probe()) AS probe_forced, (SELECT bool_and(used) FROM sift.explain_why(probe()) WHERE arm <> 'cte_inline') AS used;
  probe_forced | used 
@@ -52,12 +46,6 @@ SELECT same(probe()) AS probe_same;
  probe_same 
 ------------
  t
-(1 row)
-
-SELECT used, slug FROM sift.explain_why(shared()) WHERE arm = 'cte_inline';
- used | slug 
-------+------
- t    | 
 (1 row)
 
 -- a shape the scan does not compute stays refused

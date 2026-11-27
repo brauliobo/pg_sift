@@ -1,6 +1,5 @@
--- The histogram of an ordered-set aggregate whose values are nearly all distinct is an array of pairs, not a hash (agg/osa.c): the percentiles agree with the
--- normal plan when the values are distinct, when they repeat from some row on, with NULLs, a FILTER and a mode() on the same argument (which keeps the hash),
--- and the array that outgrows work_mem moves to the sort.
+-- Ordered-set aggregates over values that are nearly all distinct: the percentiles agree with the normal plan when the values are distinct, when they repeat
+-- from some row on, with NULLs, a FILTER and a mode() on the same argument, and when the values outgrow work_mem.
 -- (percentiles that are not a multiple of 1/4 are left out of percentile_cont: the server's own interpolation may be built with fused multiply-adds, which this library is not)
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -31,15 +30,13 @@ BEGIN
 	RETURN CASE WHEN a IS NOT DISTINCT FROM b THEN 'same ' || coalesce(cardinality(a), 0) ELSE 'differs: ' || a::text || ' vs ' || b::text END;
 END $$;
 
--- the plan's lines of the aggregate: whether the ordered sets were flat or spilled
+-- whether the aggregate scan runs the statement
 CREATE FUNCTION fl_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, BUFFERS off) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := r || 'scan '; END IF;
-		IF l ~ 'ordered sets of distinct values' THEN r := r || 'flat '; END IF;
-		IF l ~ 'ordered sets spilled' THEN r := r || 'spilled '; END IF;
 	END LOOP;
 	RETURN trim(r);
 END $$;

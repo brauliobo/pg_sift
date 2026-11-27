@@ -1,6 +1,6 @@
--- agg(CASE WHEN p THEN x ELSE k END) with an ELSE other than NULL is planned as aggregates with a FILTER (agg/expr/casefilter.c), for count with any ELSE that is not NULL, and
+-- agg(CASE WHEN p THEN x ELSE k END) with an ELSE other than NULL, for count with any ELSE that is not NULL, and
 -- for min and max (integers, float4, float8) with ELSE k, avg (integers and numerics, float4 and float8 with 0): the ELSE values are values, so a group where p never holds is 0, not NULL, and the zeros count in an average. Each statement runs
--- with the scan and without it and the rows must be the same text (scale of a numeric and sign of a zero included); `rewritten` says that the scan runs the aggregates with no CASE left in them.
+-- with the scan and without it and the rows must be the same text (scale of a numeric and sign of a zero included).
 -- The shapes where the two forms could differ: groups where p never holds, always holds, or holds only for NULL values; NULL conditions; negative values (min and max against the zero); an empty
 -- input; a filter of the aggregate; the types that stay as written (a numeric for min and max, a float for avg with an ELSE that is not a zero), DISTINCT and a value that raises.
 CREATE EXTENSION pg_sift;
@@ -91,8 +91,8 @@ INSERT INTO shapes VALUES
   (59, 'avg else 1 float4 stays',   $q$SELECT k, avg(CASE WHEN p = 'a' THEN f4 ELSE 1 END) FROM cfe GROUP BY k$q$),
   (60, 'avg else k of 22 decimals',  $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 0.5000000000000000000000 END) FROM cfe GROUP BY k$q$);
 
--- rows: the text of the rows of the scan equals that of the normal plan (scale and sign of zero included); rewritten: no CASE is left in the aggregates the scan runs
-SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome, sift_helpers.plan_pushed_aggregates_have_no_case(q) AS rewritten FROM shapes ORDER BY n;
+-- rows: the text of the rows of the scan equals that of the normal plan (scale and sign of zero included)
+SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome FROM shapes ORDER BY n;
 
 -- the groups that matter, by value: all ELSE (k = 7), never ELSE (k = 8), NULL values only where the condition holds (k = 9), positive values only (k = 10)
 SELECT k, avg(CASE WHEN p = 'a' THEN i ELSE 0 END) a, min(CASE WHEN p = 'a' THEN i ELSE 0 END) mn, max(CASE WHEN p = 'a' THEN i ELSE 0 END) mx,

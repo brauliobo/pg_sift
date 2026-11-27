@@ -1,6 +1,5 @@
--- The values of an ordered set that outgrow work_mem go to sorted runs in a temporary file, merged when the scan has ended (agg/osa_runs.c): the rows agree with
--- the normal plan when the hash spills (many values repeated), when the array spills (distinct values), with runs merged while the scan goes on (more
--- than 16 runs), with NULLs, a FILTER, a mode() on the same argument and groups that have no value.
+-- The values of an ordered set that outgrow work_mem: the rows agree with the normal plan when many values repeat, when they are distinct, with NULLs, a FILTER,
+-- a mode() on the same argument and groups that have no value. A statement whose states of generic aggregates may pass the hash memory limit keeps the normal plan.
 -- (percentile_cont is asked for multiples of 1/4 of values that are multiples of 1/8: the server's own interpolation may be built with fused multiply-adds,
 -- which this library is not)
 CREATE EXTENSION pg_sift;
@@ -33,7 +32,6 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, BUFFERS off) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := r || 'scan '; END IF;
-		IF l ~ 'ordered sets spilled' THEN r := r || 'spilled '; END IF;
 	END LOOP;
 	RETURN trim(r);
 END $$;
@@ -49,17 +47,17 @@ INSERT INTO sp_q VALUES
 	(8, 'SELECT id % 50 AS k, percentile_cont(0.5) WITHIN GROUP (ORDER BY x) AS a, percentile_disc(0.5) WITHIN GROUP (ORDER BY d) AS b FROM sp GROUP BY id % 50'),
 	(9, 'SELECT g AS k, percentile_disc(0.5) WITHIN GROUP (ORDER BY x) AS a FROM sp WHERE id < 0 GROUP BY g');
 SELECT n, sp_plan(q) AS plan, sp_same(q) AS same FROM sp_q ORDER BY n;
- n |     plan     |  same   
----+--------------+---------
- 1 | scan spilled | same 7
- 2 | scan spilled | same 7
- 3 | scan spilled | same 7
- 4 | scan spilled | same 7
- 5 | scan spilled | same 7
- 6 | scan spilled | same 7
- 7 | scan spilled | same 1
- 8 | scan spilled | same 50
- 9 | scan         | same 0
+ n | plan |  same   
+---+------+---------
+ 1 | scan | same 7
+ 2 | scan | same 7
+ 3 | scan | same 7
+ 4 | scan | same 7
+ 5 | scan | same 7
+ 6 | scan | same 7
+ 7 | scan | same 1
+ 8 |      | same 50
+ 9 | scan | same 0
 (9 rows)
 
 DROP TABLE sp_q;

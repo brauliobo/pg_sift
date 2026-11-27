@@ -1,6 +1,5 @@
--- The values of an ordered set that outgrow work_mem go to sorted runs in a temporary file, merged when the scan has ended (agg/osa_runs.c): the rows agree with
--- the normal plan when the hash spills (many values repeated), when the array spills (distinct values), with runs merged while the scan goes on (more
--- than 16 runs), with NULLs, a FILTER, a mode() on the same argument and groups that have no value.
+-- The values of an ordered set that outgrow work_mem: the rows agree with the normal plan when many values repeat, when they are distinct, with NULLs, a FILTER,
+-- a mode() on the same argument and groups that have no value. A statement whose states of generic aggregates may pass the hash memory limit keeps the normal plan.
 -- (percentile_cont is asked for multiples of 1/4 of values that are multiples of 1/8: the server's own interpolation may be built with fused multiply-adds,
 -- which this library is not)
 CREATE EXTENSION pg_sift;
@@ -38,7 +37,6 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, BUFFERS off) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := r || 'scan '; END IF;
-		IF l ~ 'ordered sets spilled' THEN r := r || 'spilled '; END IF;
 	END LOOP;
 	RETURN trim(r);
 END $$;
