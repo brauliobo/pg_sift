@@ -14,6 +14,7 @@
 #include "access/tableam.h"
 #include "catalog/pg_type_d.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "utils/fmgroids.h"
 
 #include "col/f2/part/idx.h"
@@ -78,8 +79,10 @@ keys_add(PairSource *s, uint32 n, int64 key)
 {
 	if (n == s->capkeys)
 	{
-		s->capkeys = Max(16, s->capkeys * 2);
-		s->keys = s->keys == NULL ? MemoryContextAlloc(s->cx, sizeof(int64) * s->capkeys) : repalloc(s->keys, sizeof(int64) * s->capkeys);
+		const Size	bytes = sift_alloc_grow(sizeof(int64) * s->capkeys, sizeof(int64) * ((Size) n + 1), "the keys of a member of a scope");
+
+		s->keys = s->keys == NULL ? MemoryContextAlloc(s->cx, bytes) : repalloc(s->keys, bytes);
+		s->capkeys = bytes / sizeof(int64);
 	}
 	s->keys[n] = key;
 }
@@ -119,6 +122,7 @@ source_member_keys(void *arg, int64 member, const int64 **keys)
 			bool		isnull;
 			const Datum key = slot_getattr(s->slot, s->key, &isnull);
 
+			CHECK_FOR_INTERRUPTS();
 			if (!isnull)
 				keys_add(s, n++, sift_scope_key_code(s->ktype, s->km, key));
 		}
@@ -184,8 +188,11 @@ survey_spill(Survey *sv)
 {
 	sv->spill = sift_scope_spool_new(sv->mem);
 	for (uint32 i = 0; i <= sv->keys.mask; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		if (sv->keys.keys[i] != 0)
 			sift_scope_spool_put(sv->spill, (int64) sv->keys.keys[i], 0);
+	}
 	if (sv->keys.has_zero)
 		sift_scope_spool_put(sv->spill, 0, 0);
 	sift_u64_set_free(&sv->keys);
@@ -244,6 +251,7 @@ survey_pass(PairSource *s, Oid btree, AttrNumber member, Snapshot snap, Survey *
 		int64		kcode,
 					mcode;
 
+		CHECK_FOR_INTERRUPTS();
 		if (nm || nk)
 			continue;
 		kcode = sift_scope_key_code(s->ktype, s->km, k);
@@ -282,35 +290,50 @@ source_open(Relation rel, Oid btree, AttrNumber member, AttrNumber key, SiftKeyM
 	return s;
 }
 
+/* The distinct keys of the sorted (key, 0) rows of the spool, counted by a first read so that the array is allocated once at its size */
+static int64 *
+spilled_keys(SiftScopeSpool *spill, uint32 *n)
+{
+	int64	   *keys;
+	int64		a,
+				b,
+				prev = 0;
+
+	sift_scope_spool_sort(spill);
+	for (*n = 0; sift_scope_spool_next(spill, &a, &b); prev = a)
+	{
+		CHECK_FOR_INTERRUPTS();
+		*n += *n == 0 || a != prev;
+	}
+	/* check-memory: allow the distinct keys are the map a probe searches, one allocation at their size that sift_alloc_grow fails cleanly past 1 GB */
+	keys = palloc(sift_alloc_grow(0, sizeof(int64) * Max(*n, 1), "the keys of a scope"));
+	sift_scope_spool_rewind(spill);
+	for (uint32 k = 0; sift_scope_spool_next(spill, &a, &b);)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (k == 0 || keys[k - 1] != a)
+			keys[k++] = a;
+	}
+	sift_scope_spool_free(spill);
+	return keys;
+}
+
 /* The distinct keys ascending, in the current context */
 static int64 *
 set_keys(Survey *sv, uint32 *n)
 {
 	int64	   *keys;
 
-	*n = 0;
 	if (sv->spill != NULL)
-	{
-		uint32		cap = 1024;
-		int64		a,
-					b;
-
-		keys = palloc(sizeof(int64) * cap);
-		sift_scope_spool_sort(sv->spill);
-		while (sift_scope_spool_next(sv->spill, &a, &b))
-			if (*n == 0 || keys[*n - 1] != a)
-			{
-				if (*n == cap)
-					keys = repalloc(keys, sizeof(int64) * (cap *= 2));
-				keys[(*n)++] = a;
-			}
-		sift_scope_spool_free(sv->spill);
-		return keys;
-	}
+		return spilled_keys(sv->spill, n);
+	*n = 0;
 	keys = palloc(sizeof(int64) * Max(sv->keys.count, 1));
 	for (uint32 i = 0; i <= sv->keys.mask; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		if (sv->keys.keys[i] != 0)
 			keys[(*n)++] = (int64) sv->keys.keys[i];
+	}
 	if (sv->keys.has_zero)
 		keys[(*n)++] = 0;
 	qsort(keys, *n, sizeof(int64), sift_cmp_i64);

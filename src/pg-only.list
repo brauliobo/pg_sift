@@ -238,6 +238,8 @@ col/f2/key_sig.c
 col/f2/key_sig.h
 col/f2/meta.c
 col/f2/meta.h
+col/f2/compact/adopt.c
+col/f2/compact/adopt.h
 col/f2/compact/compact.c
 col/f2/compact/compact.h
 col/f2/compact/dict.c

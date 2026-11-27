@@ -4,6 +4,7 @@
 #include "core/host.h"
 
 #include "commands/vacuum.h"
+#include "miscadmin.h"
 #include "storage/lmgr.h"
 
 #include "col/f2/del/delete.h"
@@ -17,6 +18,13 @@
 #include "core/maint/sched.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+
+/* An array of n of width bytes, as many as the deletes of a bulk delete or of the adoption of a compaction, which are more than one allocation holds */
+static void *
+del_array(Size n, Size width, int flags)
+{
+	return palloc_extended(Max(n, 1) * width, MCXT_ALLOC_HUGE | flags);
+}
 
 /* The rows that are dead already, in the stream of the vector of the part (a bulk delete) or in the vector in memory (a compaction), either may be NULL */
 typedef struct DeadRows
@@ -68,6 +76,7 @@ locate_remapped(const SiftPart *part, const SiftCdRemapMap *rm, const SiftPendDe
 	{
 		const SiftCdRemap *m = done[i] ? NULL : sift_cd_remap_by_new(rm, recs[i].tid);
 
+		CHECK_FOR_INTERRUPTS();
 		if (m == NULL || m->part_gen != part->hdr.part_gen || row_dead(dead_rows, m->granule_id, m->row))
 			continue;
 		marks_add(mk, (SiftDvMark) {m->granule_id, m->row, recs[i].xmax, recs[i].cmax});
@@ -98,7 +107,7 @@ ord_cmp(const void *a, const void *b, void *arg)
 static DelOrder
 del_order(const SiftPendDelRec *recs, int n)
 {
-	DelOrder	o = {.recs = recs,.ord = palloc(Max(n, 1) * sizeof(uint32)),.n = n};
+	DelOrder	o = {.recs = recs,.ord = del_array(n, sizeof(uint32), 0),.n = n};
 
 	for (int i = 0; i < n; i++)
 		o.ord[i] = i;
@@ -254,7 +263,7 @@ locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, c
 {
 	uint64		len;
 	const SiftTidIndexEntry *tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
-	uint32	   *cand = palloc(Max(o->n, 1) * sizeof(uint32));
+	uint32	   *cand = del_array(o->n, sizeof(uint32), 0);
 
 	if (rm != NULL)
 		locate_remapped(part, rm, o->recs, o->n, done, mk, dead_rows);
@@ -264,6 +273,7 @@ locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, c
 	{
 		int			nc = granule_candidates(o, &tix[g], done, cand);
 
+		CHECK_FOR_INTERRUPTS();
 		if (nc > 0)
 		{
 			uint64	   *tids = sift_part_read_tids(rel, part, dir, g);
@@ -277,18 +287,15 @@ locate_ordered(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, c
 
 /* Marks the rows of the part that the unresolved TIDs name; the TIDs it marked are set in done. rm: the address changes of the partition's column delta chain, NULL when it has none */
 int
-sift_del_locate(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const SiftPendDelRec *recs, int n, bool *done, SiftDvMark *marks, const SiftDv *base, const SiftCdRemapMap *rm)
+sift_del_locate(Relation rel, const SiftPart *part, const SiftGranuleDesc *dir, const SiftPendDelRec *recs, int n, bool *done, SiftDvMark **marks, const SiftDv *base, const SiftCdRemapMap *rm)
 {
 	DelOrder	o = del_order(recs, n);
 	Marks		mk = {.cx = CurrentMemoryContext};
 	const DeadRows dead_rows = {.dv = base};
 
 	locate_ordered(rel, part, dir, &o, done, &mk, &dead_rows, rm);
-	if (mk.n > 0)
-		memcpy(marks, mk.v, mk.n * sizeof(SiftDvMark));
 	pfree(o.ord);
-	if (mk.v != NULL)
-		pfree(mk.v);
+	*marks = mk.v;
 	return mk.n;
 }
 
@@ -439,14 +446,17 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 	e.key_lo = key_lo;
 	if (fold && entry.pend_del_blk != InvalidBlockNumber)
 		pend = sift_pend_del_read_unsettled(rel, part_id, entry.pend_del_blk, &settled, &npend, &pend_pages, &npend_pages);
-	recs = palloc((n_in + npend + 1) * sizeof(SiftPendDelRec));
+	if ((int64) n_in + npend >= INT_MAX)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a bulk delete of %d rows meets %d pending deletes, more than %d", n_in, npend, INT_MAX - 1),
+						errhint("Delete the rows in smaller batches.")));
+	recs = del_array((Size) n_in + npend, sizeof(SiftPendDelRec), 0);
 	if (npend > 0)
 		memcpy(recs, pend, npend * sizeof(SiftPendDelRec));
 	memcpy(recs + npend, recs_in, n_in * sizeof(SiftPendDelRec));
 	n = sift_pend_del_unpair(recs, npend + n_in, &keep, &nkeep);
 	nsettle = fold ? nkeep : 0;
 	npin = sift_pend_del_settleable(rel, part_id, pend_pages, fold ? npend_pages : 0, &nin_recs);
-	done = palloc0(Max(n, 1) * sizeof(bool));
+	done = del_array(n, sizeof(bool), MCXT_ALLOC_ZERO);
 	if (entry.l0_slab_blk != InvalidBlockNumber)
 	{
 		int			absorbed = sift_del_slab_flush(rel, part_id, key_lo, spec, entry.l0_slab_blk, recs, n, done);

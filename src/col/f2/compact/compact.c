@@ -7,9 +7,11 @@
 
 #include "access/transam.h"
 #include "commands/vacuum.h"
+#include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
 
+#include "col/f2/compact/adopt.h"
 #include "col/f2/compact/par.h"
 #include "col/f2/part/idx.h"
 #include "core/memtrack.h"
@@ -470,26 +472,6 @@ read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts,
 	return in;
 }
 
-#ifdef SIFT_TESTING
-/* The first rows of the first input, deleted as settled deletes through the bulk path */
-static void
-test_delete_meanwhile(Relation rel, uint64 part_id, const uint8 *key_lo, const CompactIn *in, const SiftPartSpec *spec)
-{
-	MemoryContext icx;
-	SiftPart   *part = sift_compact_open_input(rel, &in->d, (uint32) part_id, &icx);
-	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
-	uint64	   *tids = sift_part_read_tids(rel, part, dir, 0);
-	int			n = Min(sift_test_compact_delete, dir[0].nrows);
-	SiftPendDelRec *recs = palloc(Max(n, 1) * sizeof(SiftPendDelRec));
-
-	MemoryContextDelete(icx);
-	for (int i = 0; i < n; i++)
-		recs[i] = (SiftPendDelRec) {.tid = tids[i],.xmax = InvalidTransactionId,.cmax = 0};
-	sift_test_compact_delete = 0;
-	(void) sift_del_bulk(rel, part_id, key_lo, recs, n, false, spec);
-}
-#endif
-
 static bool
 folds_any(void *fold, const SiftPartDesc **at, int n)
 {
@@ -663,14 +645,30 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 	return read;
 }
 
+/* The rows of now that are not dead in dead */
+static int64
+new_dead(const DeadBits dead, const SiftDv *now)
+{
+	int64		n = 0;
+
+	for (int i = 0; i < now->ndirty; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		for (int k = 0; k < now->gran[i].ndead; k++)
+			n += !bits_dead(dead, now->gran[i].granule_id, now->gran[i].rows[k]);
+	}
+	return n;
+}
+
 /* The rows an input holds dead now that were not dead in the vector the compaction read it with: the addresses they have in the outputs and their deleters */
 static void
-dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, void *fold, SiftPendDelRec **recs, int *n, int *cap)
+dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, void *fold, SiftCompactDeletes *del)
 {
 	MemoryContext icx = NULL;
 	SiftPart   *part = NULL;
 	SiftGranuleDesc *dir = NULL;
 
+	sift_compact_deletes_reserve(del, new_dead(in->dead, now));
 	for (int i = 0; i < now->ndirty; i++)
 	{
 		const SiftDvGran *dg = &now->gran[i];
@@ -678,6 +676,7 @@ dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, v
 
 		for (int k = 0; k < dg->ndead; k++)
 		{
+			CHECK_FOR_INTERRUPTS();
 			if (bits_dead(in->dead, dg->granule_id, dg->rows[k]))
 				continue;
 			if (part == NULL)
@@ -691,80 +690,13 @@ dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, v
 				if (fold != NULL)
 					sift_compact_fold->row_tids(fold, in->d.part_gen, dg->granule_id, tids, dir[dg->granule_id].nrows);
 			}
-			if (*n == *cap)
-			{
-				*cap = Max(16, *cap * 2);
-				*recs = *recs ? repalloc(*recs, *cap * sizeof(SiftPendDelRec)) : palloc(*cap * sizeof(SiftPendDelRec));
-			}
-			(*recs)[(*n)++] = (SiftPendDelRec) {.tid = tids[dg->rows[k]],.xmax = dg->xmax ? dg->xmax[k].xmax : InvalidTransactionId,.cmax = dg->xmax ? dg->xmax[k].cmax : 0};
+			del->recs[del->n++] = (SiftPendDelRec) {.tid = tids[dg->rows[k]],.xmax = dg->xmax ? dg->xmax[k].xmax : InvalidTransactionId,.cmax = dg->xmax ? dg->xmax[k].cmax : 0};
 		}
 		if (tids != NULL)
 			pfree(tids);
 	}
 	if (icx != NULL)
 		MemoryContextDelete(icx);
-}
-
-/* Where the deletes that reached the inputs land in the outputs: marked in their deletion vectors when write, only found otherwise */
-static void
-place_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout, bool *done, bool write)
-{
-	MemoryContext scratch = sift_mem_allocset_create(CurrentMemoryContext, "sift compact adopt");
-
-	for (int k = 0; k < nout; k++)
-	{
-		MemoryContext old = MemoryContextSwitchTo(scratch);
-		SiftPart   *part = sift_part_open(rel, out[k].header_blk, out[k].part_gen, (uint32) part_id);
-		SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
-		SiftDvMark *marks = palloc(n * sizeof(SiftDvMark));
-		uint16	   *grows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
-		SiftDv	   *base;
-		int			nm;
-
-		for (uint32 g = 0; g < part->hdr.ngranules; g++)
-			grows[g] = dir[g].nrows;
-		base = out[k].dv_blk != InvalidBlockNumber ? sift_dv_read(rel, &out[k], (uint32) part_id, grows) : NULL;
-		nm = sift_del_locate(rel, part, dir, recs, n, done, marks, base, NULL);
-		if (write && nm > 0)
-		{
-			sift_compact_release_outputs_dv(rel, &out[k]);
-			(void) sift_dv_write(rel, sift_dv_merge(base, marks, nm, out[k].part_gen, sift_manifest_new_gen(rel, 1), part->hdr.ngranules, grows), (uint32) part_id, &out[k]);
-		}
-		MemoryContextSwitchTo(old);
-		MemoryContextReset(scratch);
-	}
-	MemoryContextDelete(scratch);
-}
-
-/*
- * Whether a delete that reached the inputs while the outputs were written names an address that more rows of the outputs have than there are deletes for it: the heap gave the address to
- * another row, and which of them the delete is for is not known. Every delete is asked for twice: the second of a pair finds a row when the address has one more.
- */
-static bool
-adoption_ambiguous(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout)
-{
-	SiftPendDelRec *twice = palloc(2 * n * sizeof(SiftPendDelRec));
-	bool	   *done = palloc0(2 * n * sizeof(bool));
-	bool		ambiguous = false;
-
-	memcpy(twice, recs, n * sizeof(SiftPendDelRec));
-	memcpy(twice + n, recs, n * sizeof(SiftPendDelRec));
-	place_deletes(rel, part_id, twice, 2 * n, out, nout, done, false);
-	for (int i = n; i < 2 * n; i++)
-		ambiguous |= done[i];
-	pfree(done);
-	pfree(twice);
-	return ambiguous;
-}
-
-/* The deletes that reached the inputs while the outputs were written, put into the deletion vectors of the outputs, which the commit makes the vectors of the parts that replace the inputs */
-static void
-adopt_deletes(Relation rel, uint64 part_id, const SiftPendDelRec *recs, int n, SiftPartDesc *out, int nout)
-{
-	bool	   *done = palloc0(n * sizeof(bool));
-
-	place_deletes(rel, part_id, recs, n, out, nout, done, true);
-	pfree(done);
 }
 
 /* The compaction gives up under its locks: the outputs go back, nothing was committed */
@@ -854,13 +786,11 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	CompactIn  *in;
 	int			nparts,
 				nrel = 0,
-				nout = 0,
-				ndelta = 0,
-				capdelta = 0;
+				nout = 0;
 	SiftExtent *rel_ext = palloc(sizeof(SiftExtent));
 	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.drop_gens = gens,.ndrop = ngens,.key_sig = sift_f2_spec_key_sig(spec)};
 	SiftPartDesc *out = NULL;
-	SiftPendDelRec *delta = NULL;
+	SiftCompactDeletes delta = {0};
 	SiftXidHorizonCache hc;
 	SiftPartGenIndex by_gen = {0};
 	void	   *fold;
@@ -891,7 +821,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	SIFT_F2_GATE(SIFT_F2_GATE_COMPACT);
 #ifdef SIFT_TESTING
 	if (sift_test_compact_delete > 0)
-		test_delete_meanwhile(rel, part_id, key_lo, &in[0], spec);
+		sift_compact_test_delete_meanwhile(rel, part_id, key_lo, &in[0].d, spec);
 #endif
 	packed = any_packed_slot(in, ngens);
 	SIFT_TEST_GATE(sift_test_release_gate, 6);
@@ -918,7 +848,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			SiftDv	   *now = sift_dv_read(rel, now_d, (uint32) part_id, in[i].grows);
 
 			MemoryContextSwitchTo(keep);
-			dv_delta(rel, (uint32) part_id, &in[i], now, fold, &delta, &ndelta, &capdelta);
+			dv_delta(rel, (uint32) part_id, &in[i], now, fold, &delta);
 			MemoryContextDelete(vector_cx);
 			in[i].d = *now_d;
 		}
@@ -926,10 +856,10 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			in[i].d = *now_d;
 	}
 	sift_part_gen_idx_free(&by_gen);
-	if (parts == NULL || (ndelta > 0 && adoption_ambiguous(rel, part_id, delta, ndelta, out, nout)))
+	if (parts == NULL || (delta.n > 0 && sift_compact_adoption_ambiguous(rel, part_id, &delta, out, nout)))
 		return abandon(rel, part_id, out, nout, packed);
-	if (ndelta > 0)
-		adopt_deletes(rel, part_id, delta, ndelta, out, nout);
+	if (delta.n > 0)
+		sift_compact_adopt_deletes(rel, part_id, &delta, out, nout);
 	rel_ext = repalloc(rel_ext, (nrel + 2 * ngens + 1) * sizeof(SiftExtent));
 	for (int i = 0; i < ngens; i++)
 		if (in[i].d.dv_blk != InvalidBlockNumber)
