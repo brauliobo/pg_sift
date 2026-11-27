@@ -170,7 +170,7 @@ sift_v6_unnest_where(V6Plan *p)
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)
 		return true;
-	if (!sift_v6_clause_make_params(CurrentMemoryContext, p->spec.indexqual, &p->spec, &clause))
+	if (!sift_v6_clause_make_params(CurrentMemoryContext, p->spec.indexqual, &p->spec, &clause, NULL))
 		return false;
 	p->spec.ext->where = p->spec.indexqual;
 	p->spec.indexqual = NIL;

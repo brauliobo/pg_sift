@@ -18,7 +18,7 @@
 
 extern bool sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon);
 /* the same for the quals of a statement whose node binds the values of its $n as constants before it binds the clause (sift_v6_bind_params): $n stands for a constant of its type */
-extern bool sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out);
+extern bool sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon);
 /* the same for the clause of the elements of an unnest, whose conjuncts may be ORs of such tests (their rows are the union of the rows of the arms) */
 extern bool sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out);
 /* The aggregate with the FILTER of a, that the executor evaluates, as CASE WHEN filter THEN arg END of the same aggregate: NULL for an aggregate it does not fold (DISTINCT, ORDER BY, several arguments, a filter of native clauses) */

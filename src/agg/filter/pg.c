@@ -179,11 +179,20 @@ set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
 	return true;
 }
 
-/* $n of a statement whose node binds its values as constants before it binds the clause (sift_v6_clause_make_params): only its type is known when the plan is made */
+/*
+ * $n of a statement whose node binds its values as constants before it binds the clause (sift_v6_clause_make_params): only its type is known when the plan is made, and its number
+ * tells the clause from those of other parameters or of constants
+ */
 static bool
-param_operand(const Build *b, const Node *n)
+param_operand(Build *b, const Node *n)
 {
-	return b->params && IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN;
+	const uint8 tag = 0xFF;
+
+	if (!b->params || !IsA(n, Param) || ((const Param *) n)->paramkind != PARAM_EXTERN)
+		return false;
+	canon_put(b, &tag, sizeof(tag));
+	canon_put(b, &((const Param *) n)->paramid, sizeof(int));
+	return true;
 }
 
 /* the comparison of a column with NULL, which holds for no row: the empty IN list */
@@ -428,9 +437,9 @@ sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftC
 }
 
 bool
-sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out)
+sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon)
 {
-	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.params = true};
+	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.params = true,.canon = canon};
 
 	return build(&b, quals, out);
 }

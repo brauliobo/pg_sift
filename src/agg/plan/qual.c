@@ -35,12 +35,15 @@ stable_operand(const Node *n)
 		!expression_returns_set((Node *) n) && !agg_node_has_extern_param((Node *) n);
 }
 
-/* a constant, a parameter, or a stable expression the scan reads when it starts (and again when it is rescanned) */
+/*
+ * a constant, a parameter, or a stable expression the scan reads when it starts (and again when it is rescanned); in a FILTER clause a constant or $n, which the node binds as a constant
+ * before it binds the clause (sift_v6_bind_params)
+ */
 static bool
 operand_usable(const V6Plan *p, const Node *n)
 {
 	if (IsA(n, Param))
-		return !p->in_filter && (((const Param *) n)->paramkind == PARAM_EXTERN || ((const Param *) n)->paramkind == PARAM_EXEC);
+		return ((const Param *) n)->paramkind == PARAM_EXTERN || (!p->in_filter && ((const Param *) n)->paramkind == PARAM_EXEC);
 	if (stable_operand(n))
 		return !p->in_filter;
 	return IsA(n, Const) && !((const Const *) n)->constisnull;

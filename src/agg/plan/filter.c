@@ -101,11 +101,11 @@ sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 	int			id;
 
 	sift_bytes_init(&canon, CurrentMemoryContext);
-	if (quals == NIL || !sift_v6_clause_make(CurrentMemoryContext, quals, &p->spec, clause, &canon))
+	if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))
 	{
 		sift_bytes_init(&canon, CurrentMemoryContext);
 		quals = derived_filter_quals(p, filter);
-		if (quals == NIL || !sift_v6_clause_make(CurrentMemoryContext, quals, &p->spec, clause, &canon))
+		if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))
 			return false;
 	}
 	if ((id = sift_freg_add(p->freg, canon.buf, canon.len)) < 0)

@@ -64,6 +64,7 @@ void
 sift_v6_bind_params(SiftV6Spec *spec, ParamListInfo params)
 {
 	spec->vqual = (List *) bind_param((Node *) spec->vqual, params);
+	spec->filter = (List *) bind_param((Node *) spec->filter, params);
 	if (spec->ext == NULL)
 		return;
 	spec->ext->where = (List *) bind_param((Node *) spec->ext->where, params);
