@@ -254,7 +254,7 @@ typedef struct SiftTblF2Bulk
 } SiftTblF2Bulk;
 
 extern void sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel);
-extern void sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, ItemPointer tid, uint8 *key);
+extern void sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, CommandId cmin, ItemPointer tid, uint8 *key);
 extern void sift_tbl_f2_bulk_end(SiftTblF2Bulk *b);
 
 /* ---- extents ---- */

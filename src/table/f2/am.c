@@ -214,7 +214,7 @@ sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable)
 	sift_tbl_f2_bulk_begin(&bulk, NewTable);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
-		sift_tbl_f2_bulk_add(&bulk, slot, FrozenTransactionId, &tid, key);
+		sift_tbl_f2_bulk_add(&bulk, slot, FrozenTransactionId, 0, &tid, key);
 		rows++;
 	}
 	sift_tbl_f2_bulk_end(&bulk);
@@ -344,13 +344,21 @@ write_deletes(SiftTblRewrite *r)
 	pfree(mr.entries);
 }
 
+/* The command of a write of this transaction, which its later snapshots tell apart; 0 for any other's */
+static CommandId
+own_cid(TransactionId xid, CommandId cid)
+{
+	return TransactionIdIsCurrentTransactionId(xid) ? cid : 0;
+}
+
 static void
-put_version(SiftTblRewrite *r, TupleTableSlot *slot, TransactionId xmin, TransactionId xmax)
+put_version(SiftTblRewrite *r, TupleTableSlot *slot, SiftRowState ins, TransactionId xmax, CommandId cmax)
 {
 	ItemPointerData tid;
 	uint8		key[SIFT_BOUND_BYTES];
+	bool		frozen = seen_by_all(r, ins.xmin);
 
-	sift_tbl_f2_bulk_add(&r->bulk, slot, seen_by_all(r, xmin) ? FrozenTransactionId : xmin, &tid, key);
+	sift_tbl_f2_bulk_add(&r->bulk, slot, frozen ? FrozenTransactionId : ins.xmin, frozen ? 0 : own_cid(ins.xmin, ins.cmin), &tid, key);
 	if (!TransactionIdIsValid(xmax))
 	{
 		r->live++;
@@ -364,7 +372,7 @@ put_version(SiftTblRewrite *r, TupleTableSlot *slot, TransactionId xmin, Transac
 		r->dead = r->dead != NULL ? repalloc(r->dead, sizeof(SiftTblDeadVersion) * r->capdead) : palloc(sizeof(SiftTblDeadVersion) * r->capdead);
 	}
 	memcpy(r->dead[r->ndead].key, key, SIFT_BOUND_BYTES);
-	r->dead[r->ndead++].rec = (SiftPendDelRec) {.tid = sift_tbl_tid_pack(&tid),.xmax = xmax,.cmax = 0};
+	r->dead[r->ndead++].rec = (SiftPendDelRec) {.tid = sift_tbl_tid_pack(&tid),.xmax = xmax,.cmax = own_cid(xmax, cmax)};
 }
 
 static bool
@@ -389,7 +397,7 @@ same_values(TupleTableSlot *a, TupleTableSlot *b)
  * The inserter of the version before a delta of this transaction, which hides none of its own writes from a reader of the row: the version every snapshot sees, as no other delta newer than
  * the horizon changed it. A row that such a delta changed too keeps versions this transaction cannot tell apart, and the rewrite is refused.
  */
-static TransactionId
+static SiftRowState
 before_own_delta(SiftTblRewrite *r, ItemPointer at, const SiftRowState *rs)
 {
 	SiftTblRewrite all = {.oldest = r->oldest};
@@ -403,7 +411,7 @@ before_own_delta(SiftTblRewrite *r, ItemPointer at, const SiftRowState *rs)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("cannot rewrite \"%s\" in this transaction: it updated a row that another transaction changed after a snapshot that is still open", RelationGetRelationName(r->old)),
 						errhint("Run CLUSTER outside the transaction that changed the rows, or once the older snapshots have ended.")));
-	return rs->xmin;
+	return *rs;
 }
 
 /* The row the scan read, as the newest delta that committed made it, and the versions before it that a snapshot may still read */
@@ -414,31 +422,31 @@ rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
 	uint64		tid = sift_tbl_tid_pack(&at);
 	SiftRowState rs = sift_row_state_read(r->old, tid);
 	TransactionId xmax = TransactionIdIsValid(rs.xmax) && (TransactionIdIsCurrentTransactionId(rs.xmax) || TransactionIdDidCommit(rs.xmax)) ? rs.xmax : InvalidTransactionId;
-	TransactionId xmin;
+	SiftRowState ins;
 
 	if (!rs.found || (TransactionIdIsValid(xmax) && seen_by_all(r, xmax)))
 	{
 		r->vacuumed++;
 		return;
 	}
-	xmin = sift_row_sysattr_read(r->old, tid, SnapshotAny).xmin;
-	put_version(r, slot, xmin, xmax);
+	ins = sift_row_sysattr_read(r->old, tid, SnapshotAny);
+	put_version(r, slot, ins, xmax, rs.cmax);
 	r->nhide = 0;
 	if (TransactionIdIsValid(xmax))
 		hide_writer(r, xmax);
-	while (xmin != rs.xmin && !seen_by_all(r, xmin))
+	while (ins.xmin != rs.xmin && !seen_by_all(r, ins.xmin))
 	{
-		TransactionId replaced = xmin;
+		SiftRowState replaced = ins;
 		Snapshot	snap;
 		bool		found;
 
-		hide_writer(r, replaced);
+		hide_writer(r, replaced.xmin);
 		snap = snapshot_before(r);
 		found = table_tuple_fetch_row_version(r->old, &at, snap, r->before);
 		SIFT_INVARIANT(found, "the version of (%u,%u) of \"%s\" before its delta of xid %u is gone",
-					   ItemPointerGetBlockNumber(&at), ItemPointerGetOffsetNumber(&at), RelationGetRelationName(r->old), replaced);
-		xmin = TransactionIdIsCurrentTransactionId(replaced) ? before_own_delta(r, &at, &rs) : sift_row_sysattr_read(r->old, tid, snap).xmin;
-		put_version(r, r->before, xmin, replaced);
+					   ItemPointerGetBlockNumber(&at), ItemPointerGetOffsetNumber(&at), RelationGetRelationName(r->old), replaced.xmin);
+		ins = TransactionIdIsCurrentTransactionId(replaced.xmin) ? before_own_delta(r, &at, &rs) : sift_row_sysattr_read(r->old, tid, snap);
+		put_version(r, r->before, ins, replaced.xmin, replaced.cmin);
 		pfree(snap);
 	}
 }

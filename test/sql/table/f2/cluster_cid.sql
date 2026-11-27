@@ -1,0 +1,36 @@
+-- CLUSTER of a sift_table inside a transaction keeps the command ids of the versions that transaction wrote: a snapshot taken before an insert and a delete of the
+-- transaction (a cursor, and the STABLE function it calls) sees neither after the rewrite, as with the heap twin.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+
+CREATE TABLE cc_t (id int PRIMARY KEY, v int) USING sift_table;
+CREATE TABLE cc_h (id int PRIMARY KEY, v int);
+CREATE FUNCTION cc_ids(r regclass) RETURNS text LANGUAGE plpgsql STABLE AS $$
+DECLARE
+	s text;
+BEGIN
+	EXECUTE format('SELECT string_agg(id::text, '','' ORDER BY id) FROM %s', r) INTO s;
+	RETURN s;
+END $$;
+INSERT INTO cc_t VALUES (1, 1);
+INSERT INTO cc_h VALUES (1, 1);
+BEGIN;
+INSERT INTO cc_t VALUES (2, 2);
+INSERT INTO cc_h VALUES (2, 2);
+DECLARE c CURSOR FOR SELECT g, cc_ids('cc_t') AS sift, cc_ids('cc_h') AS heap FROM generate_series(1, 3) g;
+FETCH 1 FROM c;
+INSERT INTO cc_t VALUES (3, 3);
+INSERT INTO cc_h VALUES (3, 3);
+DELETE FROM cc_t WHERE id = 1;
+DELETE FROM cc_h WHERE id = 1;
+CLUSTER cc_t USING cc_t_pkey;
+CLUSTER cc_h USING cc_h_pkey;
+FETCH 1 FROM c;
+SELECT cc_ids('cc_t') AS sift_now, cc_ids('cc_h') AS heap_now;
+COMMIT;
+SELECT cc_ids('cc_t') AS sift_after, cc_ids('cc_h') AS heap_after;
+
+DROP TABLE cc_t, cc_h;
+DROP FUNCTION cc_ids(regclass);
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

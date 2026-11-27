@@ -548,9 +548,9 @@ sift_tbl_f2_bulk_begin(SiftTblF2Bulk *b, Relation rel)
 }
 
 void
-sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, ItemPointer tid, uint8 *key)
+sift_tbl_f2_bulk_add(SiftTblF2Bulk *b, TupleTableSlot *slot, TransactionId xmin, CommandId cmin, ItemPointer tid, uint8 *key)
 {
-	stage_version(b->rel, b->store, slot, xmin, 0, key);
+	stage_version(b->rel, b->store, slot, xmin, cmin, key);
 	*tid = slot->tts_tid;
 	b->nrows++;
 	CHECK_FOR_INTERRUPTS();

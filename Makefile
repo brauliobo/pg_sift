@@ -708,6 +708,7 @@ TESTING_REGRESS += table/defrag_order
 TESTING_REGRESS += table/detoast_insert_memory
 TESTING_REGRESS += table/empty_format1
 TESTING_REGRESS += table/f2/autottl_rekey
+TESTING_REGRESS += table/f2/cluster_cid
 TESTING_REGRESS += table/f2/col_delta
 TESTING_REGRESS += table/f2/col_delta_dir
 TESTING_REGRESS += table/f2/col_delta_hot
