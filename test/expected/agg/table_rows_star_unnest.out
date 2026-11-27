@@ -118,7 +118,8 @@ SELECT parity('SELECT count(*), sum(f.k) FROM @T f JOIN @D d ON d.k = f.k') AS s
  t
 (1 row)
 
--- the elements of an array column
+-- the elements of an array column: the table keeps no leaves of a text[] column, so the scan reads each row again and costs more than the normal plan; it is forced to show it serves the statement
+DO $$ BEGIN IF current_setting('sift.agg_force', true) IS NOT NULL THEN PERFORM set_config('sift.agg_force', 'on', false); END IF; END $$;
 SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Unnest: lateral columnar') AS unnest_served_by_agg_v6;
  unnest_served_by_agg_v6 
 -------------------------
@@ -131,6 +132,7 @@ SELECT plan_has('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e', 'Table:
  t
 (1 row)
 
+DO $$ BEGIN IF current_setting('sift.agg_force', true) IS NOT NULL THEN PERFORM set_config('sift.agg_force', 'off', false); END IF; END $$;
 SELECT parity('SELECT e, count(*) FROM @T, unnest(tags) e GROUP BY e') AS unnest_text_elements;
  unnest_text_elements 
 ----------------------

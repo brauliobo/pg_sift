@@ -100,6 +100,12 @@ INSERT INTO tj SELECT id + 10000, qty, doc FROM tj WHERE id <= 500;
 ROLLBACK;
 SELECT n, same(sql), pushed(sql) AS scan FROM q WHERE n IN (1, 3, 7, 11) ORDER BY n;
 
+-- at the default page costs the scan of a list the table declares costs less than the normal plan, and one that reads every row again by its address (a member no path declares) does not
+RESET seq_page_cost;
+RESET random_page_cost;
+SELECT pushed($$SELECT i.kind, count(*), sum(i.qty) FROM ti t CROSS JOIN LATERAL jsonb_to_recordset(t.items) i(kind text, qty int) GROUP BY 1$$) AS declared,
+	pushed($$SELECT i.kind, count(*), max(i.note) FROM ti t CROSS JOIN LATERAL jsonb_to_recordset(t.items) i(kind text, note text) GROUP BY 1$$) AS undeclared;
+
 DROP TABLE q, tj, tx, ti, kinds;
 DROP FUNCTION used(text), reread(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
 DROP EXTENSION pg_sift;

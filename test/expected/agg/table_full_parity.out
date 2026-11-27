@@ -91,9 +91,13 @@ ANALYZE ft; ANALYZE fh; ANALYZE dt; ANALYZE dh; ANALYZE pp; ANALYZE ph; ANALYZE 
 CREATE FUNCTION tw(q text, twin boolean) RETURNS text LANGUAGE sql IMMUTABLE AS
 $$ SELECT CASE WHEN twin THEN replace(replace(replace(replace(q, '@T', 'fh'), '@D', 'dh'), '@P', 'ph'), '@M', 'pmh')
 	ELSE replace(replace(replace(replace(q, '@T', 'ft'), '@D', 'dt'), '@P', 'pp'), '@M', 'pm') END $$;
+-- the unnest of a text[] column, which a table keeps no leaves of, reads each row again by its address and costs what the stock plan does and more: its cells force the scan
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; plan text := '';
 BEGIN
+	IF current_setting('sift.agg_force', true) IS NOT NULL THEN
+		PERFORM set_config('sift.agg_force', (q LIKE '%unnest(%')::text, true);
+	END IF;
 	FOR r IN EXECUTE 'EXPLAIN (COSTS off) ' || tw(q, false) LOOP plan := plan || r || E'\n'; END LOOP;
 	RETURN plan;
 END $$;

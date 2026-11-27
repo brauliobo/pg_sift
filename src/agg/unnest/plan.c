@@ -19,6 +19,7 @@
 #include "agg/bytes.h"
 #include "agg/filter/pg.h"
 #include "agg/plan/int.h"
+#include "agg/cost/card.h"
 #include "agg/cost/card_est.h"
 #include "agg/vexpr.h"
 #include "agg/expr/pg.h"
@@ -282,6 +283,25 @@ sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel)
 	return clamp_row_est(input_rel->rows / p->elem_rel->tuples * mean * (1.0 - (double) cs->null_rows / cs->total_rows));
 }
 
+/* the tuples an element of a row read again costs beyond the one its function makes: read back and deformed, then its columns made the cells of the vectors of the pairs (measured: at 1,500 and
+ * 20,000 rows of 1.6 elements, jsonb_to_recordset read so runs at 1.0 to 1.4 times the normal plan) */
+#define REREAD_ELEM_TUPLES	2
+
+/*
+ * the rows of a sift_table whose arrays no leaves hold, read again by their address: each is fetched and its array taken apart by the function of the statement, priced as the normal plan prices a
+ * call of the function and the tuples of its rows; a qual only the row decides is decided after the fetch, so every row of the table is read again for it
+ */
+static Cost
+reread_cost(const V6Plan *p)
+{
+	const double rows = p->heap_rows ? p->rel->tuples : p->rel->rows;
+	const Path *fn = p->elem_rel->cheapest_total_path;
+
+	if (p->xseed->elem.group_leaf >= 0)
+		return 0;
+	return rows * (sift_v6_fetch_cost(p->is_table) + fn->total_cost + p->elem_rel->rows * cpu_tuple_cost * REREAD_ELEM_TUPLES);
+}
+
 /* the pairs of the whole table: the scan skips only the granules the zones of the quals of the table rule out, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
@@ -291,7 +311,7 @@ sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 
 	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)
 		heavy += sift_v6_kind_distinct(p->spec.agg[j].kind) || p->spec.agg[j].kind == SV6_PCT_CONT;
-	return input_rel->rows / sel * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy);
+	return input_rel->rows / sel * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy) + reread_cost(p);
 }
 
 static void
