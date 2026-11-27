@@ -227,9 +227,10 @@ def pool_prepared_ddl_inval(ctx):
            "SELECT busy FROM sift.maintain('e_tbl')", 'ALTER TABLE e_tbl ADD COLUMN c{i} int')
 
     def churn(w, i):
-        w.do(ddl[i % len(ddl)].format(i=i))
+        k = nxt(w)
+        w.do(ddl[k % len(ddl)].format(i=k))
 
-    ctx.phase({'w': (ws[:4], pooled)}, 0.3)
+    ctx.phase({'w': (ws[:4], pooled), 'd': (ws[4:], churn)}, 0.3)
     k0 = [ctx_kb(w) for w in ws[:4]]
     busy = ctx.phase({'w': (ws[:4], pooled), 'd': (ws[4:], churn)}, 1.5)
     total = int(ctx.db.val('SELECT sum(v) FROM e_tbl')) - int(ctx.db.val('SELECT sum(v) FROM load_base_fact'))
