@@ -31,6 +31,7 @@
 #include "agg/cost/card.h"
 #include "agg/gpu.h"
 #include "agg/explain.h"
+#include "agg/refuse.h"
 #include "agg/topn/topn.h"
 #include "agg/settings.h"
 #include "core/memtrack.h"
@@ -381,12 +382,30 @@ rows_total(const TopNPlan *p, double k)
 		cpu_operator_cost * (p->rel->tuples * list_length(p->quals) + p->rel->rows * p->spec.nkeys);
 }
 
+/* the cheapest ordered path of the normal plan once the LIMIT stops it after k rows, as PostgreSQL prices the Limit above it (-1: none) */
+static double
+normal_total(const RelOptInfo *out, double k)
+{
+	double		c = -1;
+
+	foreach_ptr(Path, path, out->pathlist)
+	{
+		const double at_k = path->startup_cost + (path->total_cost - path->startup_cost) * Min(1.0, k / Max(path->rows, 1.0));
+
+		if (c < 0 || at_k < c)
+			c = at_k;
+	}
+	return c;
+}
+
 static void
 topn_add_path(TopNPlan *p)
 {
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
 	const double total = tournament_keys_ok(&p->spec) ? index_total(p, k) : rows_total(p, k);
 
+	sift_agg_arm_priced("topn", total, normal_total(p->out, k));
+	sift_agg_arm_refused_by("topn", AGG_REFUSE_COST, "the normal plan with the LIMIT reads fewer rows");
 	sift_v6_add_path(p->out, &topn_path_methods, sift_v6_forced(total - cpu_tuple_cost * k), sift_v6_forced(total), Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
 }
@@ -425,6 +444,7 @@ sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best,
 {
 	const SiftV6TopNSpec *spec = sift_v6_topn_spec_unpack(linitial(best->custom_private));
 
+	sift_agg_arm_used("topn");
 	return sift_v6_plan_scan(root, best, tlist, &sift_agg_v6_topn_plan_methods, spec->indexoid, (Node *) list_make3(spec->limit, spec->offset, lthird(best->custom_private)));
 }
 
