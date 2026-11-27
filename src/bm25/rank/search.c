@@ -717,6 +717,7 @@ rank_units_shared(SiftRanker *r, SiftTopK *tk)
 			rank_zero(r, tk);
 		else
 			rank_wbuf(r, tk);
+		sift_par_raise_theta(r->par, sift_kern_topk_theta(tk));
 	}
 	while (reachable && sift_par_next_units(r->par, r->nunit, &lo, &hi))
 		for (int64 u = lo; u < hi && reachable; u++)

@@ -75,13 +75,16 @@ sift_par_get_bind(const SiftPar *par, Size *len)
 	return DsaPointerIsValid(par->sh->bind) ? dsa_get_address(par->area, par->sh->bind) : NULL;
 }
 
+/* A participant that attaches once the emitter took the result is late: it gets no slot, and nattached stays what the emitter collects */
+#define LATE	(-1)
+
 void
 sift_par_attach(SiftPar *par)
 {
 	SiftParShared *sh = par->sh;
 
 	SpinLockAcquire(&sh->mutex);
-	par->slot = sh->nattached++;
+	par->slot = sh->emitter_taken ? LATE : sh->nattached++;
 	SpinLockRelease(&sh->mutex);
 	SIFT_INVARIANT(par->slot < sh->nslots, "sift: more parallel participants than planned");
 }
@@ -122,8 +125,11 @@ sift_par_next_units(SiftPar *par, int64 nunit, int64 *lo, int64 *hi)
 {
 	SiftParShared *sh = par->sh;
 	uint32		size = morsel_size(nunit, sh->nplanned);
-	uint64		m = pg_atomic_fetch_add_u64(&sh->next, 1);
+	uint64		m;
 
+	if (par->slot == LATE)
+		return false;
+	m = pg_atomic_fetch_add_u64(&sh->next, 1);
 	if (m * size >= nunit)
 		return false;
 	*lo = m * size;
@@ -229,8 +235,11 @@ sift_par_raise_theta(SiftPar *par, float4 theta)
 void
 sift_par_publish(SiftPar *par, const SiftParHit *hits, int64 n)
 {
-	SiftParSlot *slot = &par->sh->slot[par->slot];
+	SiftParSlot *slot;
 
+	if (par->slot == LATE)
+		return;
+	slot = &par->sh->slot[par->slot];
 	if (n > 0)
 	{
 		slot->hits = dsa_allocate_extended(par->area, n * sizeof(SiftParHit), DSA_ALLOC_HUGE);
@@ -239,17 +248,15 @@ sift_par_publish(SiftPar *par, const SiftParHit *hits, int64 n)
 	slot->nhits = n;
 }
 
-/*
- * The finishing participant that finds all attached ones finished emits. A
- * late worker attaches after the work is gone and finishes empty-handed:
- * emitter_taken keeps it from emitting.
- */
+/* The finishing participant that finds all attached ones finished emits; a late one never does */
 bool
 sift_par_finish(SiftPar *par)
 {
 	SiftParShared *sh = par->sh;
 	bool		last;
 
+	if (par->slot == LATE)
+		return false;
 	SpinLockAcquire(&sh->mutex);
 	sh->nfinished++;
 	last = sh->nfinished == sh->nattached && !sh->emitter_taken;
@@ -264,12 +271,13 @@ sift_par_collect(SiftPar *par, int64 *n)
 	SiftParShared *sh = par->sh;
 	SiftParHit *all;
 	int64		total = 0;
+	int			natt = sh->nattached;
 
-	for (int i = 0; i < sh->nattached; i++)
+	for (int i = 0; i < natt; i++)
 		total += sh->slot[i].nhits;
 	all = palloc_extended(Max(total, 1) * sizeof(SiftParHit), MCXT_ALLOC_HUGE);
 	total = 0;
-	for (int i = 0; i < sh->nattached; i++)
+	for (int i = 0; i < natt; i++)
 		if (sh->slot[i].nhits > 0)
 		{
 			memcpy(all + total, dsa_get_address(par->area, sh->slot[i].hits), sh->slot[i].nhits * sizeof(SiftParHit));
