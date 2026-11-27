@@ -285,10 +285,19 @@ single_role(const SiftV6JoinShape *sh, Node *e)
 	return role;
 }
 
+/* the member equivalence_keys took as the probe of the class (its plain column, or the expression itself) */
+static bool
+is_probe(const EquivalenceMember *em, const Node *probe)
+{
+	const Var  *v = sift_v6_plain_var((Node *) em->em_expr);
+
+	return equal(v != NULL ? (const Node *) v : (const Node *) em->em_expr, probe);
+}
+
 /* every member of the class is the probe, a key of its dimension, or of a part the probe or a key reads already (the planner applies the equality of the members of one relation in its scan):
  * a member of several parts that is no key (coalesce(f.a, d.b)) would drop the equality */
 static bool
-class_keyed(PlannerInfo *root, Relids base, const SiftV6JoinShape *sh, const EquivalenceClass *ec, int probe_role)
+class_keyed(PlannerInfo *root, Relids base, const SiftV6JoinShape *sh, const EquivalenceClass *ec, const Node *probe, int probe_role)
 {
 	Bitmapset  *keyed = bms_make_singleton(probe_role - ROLE_NONE),
 			   *rest = NULL;
@@ -299,7 +308,7 @@ class_keyed(PlannerInfo *root, Relids base, const SiftV6JoinShape *sh, const Equ
 		const Node *kexpr;
 		int			d;
 
-		if (em->em_is_child || !bms_overlap(pull_varnos(root, (Node *) em->em_expr), base))
+		if (em->em_is_child || !bms_overlap(pull_varnos(root, (Node *) em->em_expr), base) || is_probe(em, probe))
 			continue;
 		d = dim_key_of(sh, (Node *) em->em_expr, &key, &kexpr);
 		if (d >= 0 && d != probe_role)
@@ -346,7 +355,7 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
 		if (probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))) ||
-			!class_keyed(root, base, sh, ec, probe_role))
+			!class_keyed(root, base, sh, ec, probe, probe_role))
 		{
 			if (!computed_class_ok(sh, rels))
 				return false;
