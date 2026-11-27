@@ -145,18 +145,29 @@ sift_pacer_delay_ms(const SiftPaceDecision *d, SiftPacerTier tier, int base_dela
 }
 
 int
-sift_pacer_running_backends(Oid db)
+sift_backends_visit(SiftBackendVisit visit, void *arg)
 {
 	int			n = 0;
 
 	pgstat_clear_backend_activity_snapshot();
 	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
-	{
-		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
-
-		n += s->st_backendType == B_BACKEND && (!OidIsValid(db) || s->st_databaseid == db) && s->st_state == STATE_RUNNING;
-	}
+		n += visit(&pgstat_get_local_beentry_by_index(i)->backendStatus, arg);
+	pgstat_clear_backend_activity_snapshot();
 	return n;
+}
+
+static bool
+running_in(const PgBackendStatus *s, void *arg)
+{
+	Oid			db = *(const Oid *) arg;
+
+	return s->st_backendType == B_BACKEND && (!OidIsValid(db) || s->st_databaseid == db) && s->st_state == STATE_RUNNING;
+}
+
+int
+sift_pacer_running_backends(Oid db)
+{
+	return sift_backends_visit(running_in, &db);
 }
 
 /*

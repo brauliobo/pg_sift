@@ -25,6 +25,7 @@
 #include "col/dsmreg.h"
 #include "core/compat.h"
 #include "core/f2/pace.h"
+#include "core/maint/pacer.h"
 #include "core/waits.h"
 #include "core/worker.h"
 
@@ -181,21 +182,19 @@ host_other_workers(void)
 }
 
 /* The bgworkers that are running, but the launcher of the queue: it is ours, and the cap on workers counts the ones that are not */
+static bool
+bgworker_but(const PgBackendStatus *s, void *arg)
+{
+	return s->st_backendType == B_BG_WORKER && s->st_procpid != *(const int *) arg;
+}
+
 static int
 host_bgworkers_in_use(void)
 {
 	uint32		launcher = pg_atomic_read_u32(&table->launcher);
 	int			launcher_pid = launcher != 0 ? GetPGProcByNumber(launcher - 1)->pid : 0;
-	int			n = 0;
 
-	pgstat_clear_backend_activity_snapshot();
-	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
-	{
-		const PgBackendStatus *s = &pgstat_get_local_beentry_by_index(i)->backendStatus;
-
-		n += s->st_backendType == B_BG_WORKER && s->st_procpid != launcher_pid;
-	}
-	return n;
+	return sift_backends_visit(bgworker_but, &launcher_pid);
 }
 
 static int server_effective_max(SiftMaintShmem *m);

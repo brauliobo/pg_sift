@@ -40,28 +40,42 @@ ratio() { [[ $2 != 0 ]] || { echo "$NOT_MEASURED"; return; }; awk "BEGIN { print
 # the KB the worker keeps at 4x more than at 1x, per row more (not measured when no worker was seen at 1x)
 bytes_per_row() { [[ $1 != 0 ]] || { echo "$NOT_MEASURED"; return; }; awk "BEGIN { printf \"%.2f\", ($2 - $1) * 1024 / (65536 - 16384) }"; }
 le() { [[ $1 != "$NOT_MEASURED" && $2 != "$NOT_MEASURED" ]] && awk "BEGIN { exit !($1 <= $2) }"; }
-# anon_kb PIDS: the private anonymous memory of the busiest of the processes, in kB (RssAnon: palloc and malloc, not the shared buffers the process maps)
-anon_kb() { local p kb m=0; for p in ${1//,/ }; do kb=$(awk '/^RssAnon:/ { print $2 }' "/proc/$p/status" 2>/dev/null); (( ${kb:-0} <= m )) || m=$kb; done; echo "$m"; }
+# anon_peak FLAG OUT: while FLAG exists, the highest private anonymous memory of a sift worker of the node, in kB (RssAnon: palloc and malloc, not the shared buffers it maps), into OUT.
+# A merge holds its peak for a few ms, less than a psql round trip: /proc is read every 2 ms without a fork
+anon_peak() {
+	local pm c title k v m=0 kids nap
+	pm=$(head -1 "$(dir ae)/data/postmaster.pid")
+	exec {nap}<> <(:)
+	while [[ -e $1 ]]; do
+		read -r -a kids < "/proc/$pm/task/$pm/children"
+		for c in "${kids[@]}"; do
+			IFS= read -r -d '' title 2>/dev/null < "/proc/$c/cmdline"
+			[[ $title == *': sift '* ]] || continue
+			while read -r k v _; do [[ $k != RssAnon: ]] || { (( v <= m )) || m=$v; break; }; done 2>/dev/null < "/proc/$c/status"
+		done
+		read -r -t 0.002 -u "$nap" _
+	done
+	echo "$m" > "$2"
+}
 
 sql ae "CREATE EXTENSION pg_sift" "CREATE EXTENSION pg_walinspect" "CREATE TABLE pairs (member int4 NOT NULL, scope_key int4 NOT NULL)" "INSERT INTO pairs SELECT m, m % 3 + 1 FROM generate_series(1, 4) m" \
 	"CREATE UNIQUE INDEX pairs_pk ON pairs (member, scope_key)" >/dev/null || bail "setup failed"
 
 # settle REL... -- COND: waits until the queue holds no job of the relations and the SQL condition COND holds, at most CAP_MS; sets CONV_OK, CONV_MS and RSS_KB (the highest private peak of a sift worker seen)
 settle() {
-	local rels=() cond t0 out seen
+	local rels=() cond t0 flag=$(dir ae)/peak.on peak=$(dir ae)/peak.kb sampler
 	while [[ $1 != -- ]]; do rels+=("'$1'::regclass"); shift; done
 	shift
 	cond="NOT EXISTS (SELECT 1 FROM sift_internal.maint_queue() WHERE relation IN ($(IFS=,; echo "${rels[*]}"))) AND ($*)"
-	t0=$(now_ms) RSS_KB=0 CONV_OK=0
+	t0=$(now_ms) CONV_OK=0
+	touch "$flag"; anon_peak "$flag" "$peak" & sampler=$!
 	while :; do
-		out=$(sql ae "SELECT ($cond) || '|' || coalesce((SELECT string_agg(pid::text, ',') FROM pg_stat_activity WHERE backend_type LIKE 'sift %'), '')")
-		seen=$(anon_kb "${out#*|}")
-		(( seen <= RSS_KB )) || RSS_KB=$seen
-		[[ ${out%%|*} != true ]] || { CONV_OK=1; break; }
+		[[ $(sql ae "SELECT $cond") != t ]] || { CONV_OK=1; break; }
 		(( $(now_ms) - t0 < CAP_MS )) || break
 		sleep 0.05
 	done
 	CONV_MS=$(( $(now_ms) - t0 ))
+	rm "$flag"; wait "$sampler"; RSS_KB=$(<"$peak")
 }
 
 # the work of the workers after the churn (a ratio of a merge that did not end is not measured): the WAL since LSN0 over the bytes the churn left (DIRTY) and over the bytes left after the merge (AFTER),
@@ -194,8 +208,11 @@ gate bm25_delete_25.dead_pct le 24.99 "dead documents < 25%"
 # everything has settled: a reader that holds AccessShareLock on the tables for 3 s sees the workers do nothing (the WAL of the standby snapshots and checkpoints is not theirs)
 idle() { [[ $(sql ae "SELECT NOT EXISTS (SELECT 1 FROM sift_internal.maint_queue()) AND NOT EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type LIKE 'sift %')") == t ]]; }
 check "the maintenance of all relations is idle" wait_for idle 3
+# reader SECONDS: the reader of the window; it runs once before the window, so that a catalog page its lookups prune is not counted as the workers' WAL
+reader() { sql ae "BEGIN" "SELECT count(*) FROM t_del_4x" "SELECT count(*) FROM t_cd_4x" "SELECT pg_sleep($1)" "COMMIT" >/dev/null; }
+reader 0
 since=$(sql ae "SELECT clock_timestamp()"); lsn0=$(sql ae "SELECT pg_current_wal_insert_lsn()")
-sql ae "BEGIN" "SELECT count(*) FROM t_del_4x" "SELECT count(*) FROM t_cd_4x" "SELECT pg_sleep(3)" "COMMIT" >/dev/null
+reader 3
 V[idle_3s_gate.idle_wal_b.4x]=$(wal_since "$lsn0")
 V[idle_3s_gate.idle_merges.4x]=$(sql ae "SELECT count(*) FROM sift.status() WHERE last_maint_at > '$since'")
 V[idle_3s_gate.idle_queue.4x]=$(sql ae "SELECT count(*) FROM sift_internal.maint_queue()")

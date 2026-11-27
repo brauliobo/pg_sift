@@ -27,6 +27,7 @@
 #include "utils/backend_status.h"
 #include "utils/timestamp.h"
 
+#include "core/maint/pacer.h"
 #include "core/shm/manifest.h"
 #include "core/waits.h"
 
@@ -108,23 +109,21 @@ ends_database_jobs(Node *stmt)
 }
 
 /* The workers of sift that are attached to db now: each gets SIGTERM */
+static bool
+terminate_worker(const PgBackendStatus *be, void *arg)
+{
+	const char *type;
+
+	if (be->st_backendType != B_BG_WORKER || be->st_databaseid != *(const Oid *) arg || (type = GetBackgroundWorkerTypeByPid(be->st_procpid)) == NULL || strncmp(type, "sift ", 5) != 0)
+		return false;
+	(void) kill(be->st_procpid, SIGTERM);
+	return true;
+}
+
 static int
 terminate_workers(Oid db)
 {
-	int			n = 0;
-
-	pgstat_clear_backend_activity_snapshot();
-	for (int i = 1, max = pgstat_fetch_stat_numbackends(); i <= max; i++)
-	{
-		const PgBackendStatus *be = &pgstat_get_local_beentry_by_index(i)->backendStatus;
-		const char *type;
-
-		if (be->st_backendType != B_BG_WORKER || be->st_databaseid != db || (type = GetBackgroundWorkerTypeByPid(be->st_procpid)) == NULL || strncmp(type, "sift ", 5) != 0)
-			continue;
-		(void) kill(be->st_procpid, SIGTERM);
-		n++;
-	}
-	return n;
+	return sift_backends_visit(terminate_worker, &db);
 }
 
 static void

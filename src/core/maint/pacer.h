@@ -109,6 +109,11 @@ extern void sift_wt_pace_worker(SiftWriteTarget *wt);
 /* The client backends that run a statement, in the database db or in all of them (InvalidOid) */
 extern int	sift_pacer_running_backends(Oid db);
 
+/* The backends visit counts, called with the status of each: the copy of the status of every backend it reads is freed before it returns, so that a worker step keeps none of it */
+struct PgBackendStatus;
+typedef bool (*SiftBackendVisit) (const struct PgBackendStatus *s, void *arg);
+extern int	sift_backends_visit(SiftBackendVisit visit, void *arg);
+
 /* What a maintenance worker last saw (sift_internal.maint_pacer): the running backends it counted, the mode it decided and the delay of a P1 step under it; FULL, 0 and 0 before the first look */
 typedef struct SiftPacerSnapshot
 {
