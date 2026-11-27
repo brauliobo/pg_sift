@@ -94,7 +94,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 	if (c.derive > 0)
 		c = f->a.spec->derive[c.derive - 1].src;
 	cls = sift_v6_col_class(&c);
-	attno = c.jleaf > 0 ? (c.jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + c.jleaf - 1 : c.attno;
+	attno = sift_v6_col_batch_attno(&c);
 	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
 		if (f->col[i].attno == attno && f->col[i].jmember == c.jmember && f->col[i].cls == cls)

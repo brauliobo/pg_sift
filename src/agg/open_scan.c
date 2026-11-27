@@ -67,7 +67,7 @@ batch_col(BatchCols *bc, const SiftV6Spec *s, SiftV6Col c)
 			return;
 		c = s->derive[c.derive - 1].src;
 	}
-	attno = c.jleaf > 0 ? (c.jtype ? SIFT_V6_JTYPE_VATT : SIFT_V6_JLEAF_VATT) + c.jleaf - 1 : c.attno;
+	attno = sift_v6_col_batch_attno(&c);
 	cls = sift_v6_col_class(&c);
 	for (int i = 0; i < bc->n; i++)
 		if (bc->id[i].attno == attno && bc->id[i].jmember == c.jmember && bc->id[i].cls == cls)

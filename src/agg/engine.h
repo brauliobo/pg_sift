@@ -403,6 +403,15 @@ sift_v6_col_input_attno(const SiftV6Col *c)
 	return sift_v6_jvatt_base(c->jtype, c->typid) + c->jleaf - 1;
 }
 
+/* The attribute a batch of the scan holds the column in: a value of a key of a document is the leaf of the key (SIFT_V6_JLEAF_VATT), its type or presence the virtual one of it */
+static inline int
+sift_v6_col_batch_attno(const SiftV6Col *c)
+{
+	if (c->jleaf == 0)
+		return c->attno;
+	return c->jtype ? sift_v6_col_input_attno(c) : SIFT_V6_JLEAF_VATT + c->jleaf - 1;
+}
+
 /* The column of the scan a virtual attribute of a key of document attribute att is: the type or the presence, the text or a cast of it, of the key whose leaf is in the attribute */
 static inline SiftV6Col
 sift_v6_vatt_col(int attno, int att, Oid typid, int scale)

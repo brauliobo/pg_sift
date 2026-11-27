@@ -31,12 +31,13 @@ typedef struct SiftV1Src
 	int			col_read[SIFT_V6_MAX_COLS];		/* of each column and boolean of the input, the entry of read_vec that holds its leaf */
 	SiftV1Member *col_mem[SIFT_V6_MAX_COLS];	/* of each column of the input that is the float8 of a member of a map of a document, its reader: the heap row gives the rows the leaves cannot hold */
 	AttrNumber	mem_att[SIFT_V6_MAX_COLS];
-	uint8		jkind[SIFT_V6_MAX_COLS];	/* of a column that is the leaf of a key of a document: SIFT_V1_JSON_VALUE, whose rows the leaf cannot hold are read from the heap row if the batch keeps them, or SIFT_V1_JSON_TYPE, its JSON type */
+	uint8		jkind[SIFT_V6_MAX_COLS];	/* of a column that is the leaf of a key of a document: SIFT_V1_JSON_VALUE, whose rows the leaf cannot hold are read from the heap row if the batch keeps them, SIFT_V1_JSON_TYPE, its JSON type, or SIFT_V1_JSON_PRESENT, doc ? 'k' */
 	const SiftSrcLeaf *jleaf[SIFT_V6_MAX_COLS];
 	AttrNumber	jatt[SIFT_V6_MAX_COLS];	/* the column of the heap row of the document of a JSON column */
 	uint64	   *jexc[SIFT_V6_MAX_COLS];	/* the rows of the batch whose leaf could not hold the value */
 	bool		has_jexc[SIFT_V6_MAX_COLS];
-	uint8	   *jtag[SIFT_V6_MAX_COLS];	/* the JSON type of each row of the unit: the index of json_types */
+	uint8	   *jtag[SIFT_V6_MAX_COLS];	/* the JSON type of each row of the unit (the index of json_types), or of a presence column 1 where the document has the key */
+	bool		jrootless[SIFT_V6_MAX_COLS];	/* SiftV1TypeTest.rootless of a presence column */
 	int			ndocs;			/* the columns of the input that are a jsonb document, read from the heap row of each row the batch keeps */
 	int			doc_col[SIFT_V6_MAX_COLS];
 	AttrNumber	doc_att[SIFT_V6_MAX_COLS];
@@ -86,6 +87,7 @@ typedef struct SiftV1Src
 
 #define SIFT_V1_JSON_VALUE	1
 #define SIFT_V1_JSON_TYPE	2
+#define SIFT_V1_JSON_PRESENT	3
 
 /* The heap row of a tag the source gave: false when the snapshot does not see it */
 extern bool sift_v1_src_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
@@ -108,5 +110,9 @@ extern bool sift_v1_src_filter_key(SiftV1Src *s, const SiftV1TypeTest *t, uint64
 /* The JSON type of each row of the unit the column i reads, and of the row r in slot n of the batch */
 extern void sift_v1_src_read_types(SiftV1Src *s, int i);
 extern void sift_v1_src_put_type(SiftV1Src *s, int i, uint32 r, int n);
+
+/* doc ? 'k' of each row of the unit the presence column i reads (col/v1_engine/store_ops_jsonb.c), and of the row r in slot n of the batch */
+extern void sift_v1_src_read_presence(SiftV1Src *s, int i);
+extern void sift_v1_src_put_presence(SiftV1Src *s, int i, uint32 r, int n);
 
 #endif							/* SIFT_COL_V1_STORE_SRC_H */

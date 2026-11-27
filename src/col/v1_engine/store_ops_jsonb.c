@@ -5,7 +5,7 @@
  * the float8 values of the map `doc.a.*` that a member `doc -> 'a' ->> 'k'` is read from (v1_store_ops_member.c), -1 for any other path.
  * path_declared: the paths option of the index declares the path of a document attribute.
  * key_exists: the source tests doc ? 'k' on the leaf of the key; the rows whose leaf has no value and may be a document that is no object (an array holding the string, the string itself) are
- * read again from the heap (sift_v1_src_filter_key).
+ * read again from the heap (sift_v1_src_filter_key), which also gives the presence column of the key (sift_v1_src_read_presence).
  * unnest_run: the aggregate scan of a LATERAL unnest of an array or a map column, of the keys of a map and of the tests of the elements of a row (v1_store_ops_unnest.c).
  */
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
@@ -154,6 +154,28 @@ sift_v1_src_filter_key(SiftV1Src *s, const SiftV1TypeTest *t, uint64 *bits)
 	heap_exists(s, att, key, rows, n, bits);
 	MemoryContextSwitchTo(old);
 	return sift_srcsel_rows_left(bits, s->unit.nrow);
+}
+
+/* a SQL NULL document has not the key: its heap row clears it as jsonb_exists of no document would */
+void
+sift_v1_src_read_presence(SiftV1Src *s, int i)
+{
+	const int	nw = SIFT_COL_NWORDS(s->unit.nrow);
+	const SiftV1TypeTest t = {.leaf = s->jleaf[i] - s->lay->leaf,.types = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE,.key = true,.rootless = s->jrootless[i]};
+	uint64	   *has = MemoryContextAlloc(s->unit_cx, nw * sizeof(uint64));
+
+	memcpy(has, s->bits, nw * sizeof(uint64));
+	sift_v1_src_filter_key(s, &t, has);
+	s->jtag[i] = MemoryContextAlloc(s->unit_cx, Max(s->unit.nrow, 1));
+	for (uint32 r = 0; r < (uint32) s->unit.nrow; r++)
+		s->jtag[i][r] = sift_src_bit(has, r);
+}
+
+void
+sift_v1_src_put_presence(SiftV1Src *s, int i, uint32 r, int n)
+{
+	s->valid[i][n >> 6] |= UINT64CONST(1) << (n & 63);
+	((int64 *) s->data[i])[n] = s->jtag[i][r];
 }
 
 const SiftJsonbOps v1_jsonb_ops = {

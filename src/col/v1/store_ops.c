@@ -371,6 +371,8 @@ unit_next(SiftV1Src *s)
 				for (int i = 0; i < s->in.ncols; i++)
 					if (s->jkind[i] == SIFT_V1_JSON_TYPE)
 						sift_v1_src_read_types(s, i);
+					else if (s->jkind[i] == SIFT_V1_JSON_PRESENT)
+						sift_v1_src_read_presence(s, i);
 				for (int k = 0; k < s->nread; k++)
 					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
 				for (int i = 0; i < s->in.ncols; i++)
@@ -567,6 +569,8 @@ batch_fill(SiftV1Src *s)
 					sift_v1_member_put(s->col_mem[i], s->ords[j], n + j, s->data[i], s->valid[i]);
 				else if (s->jkind[i] == SIFT_V1_JSON_TYPE)
 					sift_v1_src_put_type(s, i, s->ords[j], n + j);
+				else if (s->jkind[i] == SIFT_V1_JSON_PRESENT)
+					sift_v1_src_put_presence(s, i, s->ords[j], n + j);
 				else if (i != s->score_col && s->col_leaf[i] != NULL)
 					put_col(s, i, s->ords[j], n + j);
 			for (int m = 0; m < s->in.nmasks; m++)
@@ -731,14 +735,23 @@ bind_doc(SiftV1Src *s, int i)
 	alloc_column(s, i, sizeof(Datum));
 }
 
-/* the JSON type of a key of a document is its own column of the input, SIFT_V6_JTYPE_VATT + the leaf of the key */
+/* the JSON type of a key of a document (SIFT_V6_JTYPE_VATT + the leaf of the key) and whether a document has the key (SIFT_V6_JPRES_VATT + the leaf) are columns of the input of their own */
 static void
 bind_type(SiftV1Src *s, int i)
 {
-	SIFT_INVARIANT(sift_v6_vatt_is_type(s->in.col[i].attno) && s->in.col[i].type == SVEC_STRVIEW, "attribute %d of relation %u is not the JSON type of a key of a document", s->in.col[i].attno, s->in.indexoid);
-	s->jkind[i] = SIFT_V1_JSON_TYPE;
+	const bool	present = sift_v6_vatt_is_presence(s->in.col[i].attno);
+	SiftSrcStats st;
+
+	SIFT_INVARIANT(sift_v6_vatt_is_type(s->in.col[i].attno) && s->in.col[i].type == (present ? SVEC_I64 : SVEC_STRVIEW), "attribute %d of relation %u is not the JSON type of a key of a document",
+				   s->in.col[i].attno, s->in.indexoid);
+	s->jkind[i] = present ? SIFT_V1_JSON_PRESENT : SIFT_V1_JSON_TYPE;
 	s->jleaf[i] = &s->lay->leaf[sift_v6_vatt_leaf(s->in.col[i].attno)];
-	alloc_column(s, i, sizeof(SiftStrView));
+	if (present)
+	{
+		s->rd->stats(s->rels.rel, &st);
+		s->jrootless[i] = st.rootless[s->jleaf[i]->id] > 0;
+	}
+	alloc_column(s, i, present ? sizeof(int64) : sizeof(SiftStrView));
 }
 
 static void
