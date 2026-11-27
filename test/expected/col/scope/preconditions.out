@@ -42,7 +42,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
-NOTICE:  sift_col "unjournaled_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "unjournaled_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.unjournaled_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_track_off FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
@@ -69,7 +69,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "pairs_unjournaled_m_s_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pairs_unjournaled_m_s_sift_journal');
-NOTICE:  sift_col "unjournaled_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "unjournaled_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.unjournaled_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS journal_beside_member_second FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'unjournaled_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
@@ -92,7 +92,7 @@ CREATE INDEX rls_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope
 NOTICE:  scope "tenant_id": "pairs_rls" has row-level security enabled
 DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
 NOTICE:  scope "tenant_id": the pairs of "pairs_rls" are the rows of its unique btree "pairs_rls_pkey"
-NOTICE:  sift_col "rls_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "rls_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.rls_col');
 DROP INDEX rls_col;
@@ -125,7 +125,7 @@ HINT:  To build it without blocking the writers, name it, place it or keep it, m
 NOTICE:  sift_col index "memberships_dim_a_id_group_id_sift_journal": 2 automatic choices
 DETAIL:  key_columns = dim_a_id, group_id; track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('memberships_dim_a_id_group_id_sift_journal');
-NOTICE:  sift_col "two_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "two_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.two_col');
 SELECT string_agg(refobjid::regclass::text, ' ' ORDER BY refobjid::regclass::text) AS two_paths_journals FROM pg_depend WHERE classid = 'pg_class'::regclass AND objid = 'two_col'::regclass AND refclassid = 'pg_class'::regclass AND deptype = 'n' AND (SELECT relkind FROM pg_class WHERE oid = refobjid) = 'i';
@@ -142,14 +142,14 @@ CREATE INDEX part_col ON part_events USING sift_col (id, dim_a_id, amount) WITH 
 NOTICE:  scope: "part_events_1" is a partition: a statement over the partitioned table reads no scope
 DETAIL:  A statement on this partition reads the scope units of its index; the scope index of each partition is declared on that partition.
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  sift_col "part_events_1_id_dim_a_id_amount_idx": built 0 rows (88.0 KB, 0 parts, 0 granules)
+NOTICE:  sift_col "part_events_1_id_dim_a_id_amount_idx": built 0 rows (80.0 KB, 0 parts, 0 granules)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.part_events_1_id_dim_a_id_amount_idx');
 DROP TABLE part_events;
 -- ALTER INDEX .. RESET (scope) would leave segments that hold a scope the index no longer declares: it is refused, and the statements over the table run on the scope
 CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  sift_col "altered_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "altered_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.altered_col');
 ALTER INDEX altered_col RESET (scope);
@@ -182,7 +182,7 @@ NOTICE:  sift_col index "tenant_scope_journal": track_changes = ctid queues abou
 HINT:  Before a huge UPDATE or DELETE: ALTER INDEX tenant_scope_journal SET (track_changes = 'off'), then 'ctid' again.
 CREATE INDEX altered_col ON events USING sift_col (id, dim_a_id, amount) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
 NOTICE:  scope "tenant_id": the pairs of "tenant_scope" are the rows of its unique btree "tenant_scope_pkey"
-NOTICE:  sift_col "altered_col": built 2,000 rows (136.0 KB, 69.6 B/row, 0.6x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "altered_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.altered_col');
 SELECT try('ALTER INDEX tenant_scope_journal SET (track_changes = ''off'')') AS journal_off_of_a_scope;

@@ -37,7 +37,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "soft_pairs_dim_a_id_tenant_id_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('soft_pairs_dim_a_id_tenant_id_sift_journal');
-NOTICE:  sift_col "events_col": built 6,000 rows (104.0 KB, 17.7 B/row, 8.9x vs heap, 1 parts, 1 granules, codecs: 4 delta, 1 coded)
+NOTICE:  sift_col "events_col": built 6,000 rows (96.0 KB, 16.4 B/row, 9.7x vs heap, 1 parts, 1 granules, codecs: 4 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.events_col');
 SET client_min_messages = warning;

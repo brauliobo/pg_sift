@@ -45,7 +45,7 @@ INSERT INTO facts SELECT i, 1 + i % 450, timestamptz '2026-01-01' + (i % 100) * 
 SET client_min_messages = notice;
 CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount) WITH (scope = 'group_id: dim_a_id -> pairs(dim_a_id, group_id)');
 NOTICE:  scope "group_id": the pairs of "pairs" are the rows of its unique btree "pairs_a"
-NOTICE:  sift_col "facts_col": built 20,000 rows (152.0 KB, 7.8 B/row, 6.7x vs heap, 1 parts, 3 granules, codecs: 4 delta, 1 coded)
+NOTICE:  sift_col "facts_col": built 20,000 rows (144.0 KB, 7.4 B/row, 7.1x vs heap, 1 parts, 3 granules, codecs: 4 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;
@@ -103,7 +103,7 @@ SELECT * FROM group_read(7);
 SET client_min_messages = notice;
 REINDEX INDEX facts_col;
 NOTICE:  scope "group_id": the pairs of "pairs" are the rows of its unique btree "pairs_a"
-NOTICE:  sift_col "facts_col": built 20,000 rows (152.0 KB, 7.8 B/row, 6.7x vs heap, 1 parts, 3 granules, codecs: 4 delta, 1 coded)
+NOTICE:  sift_col "facts_col": built 20,000 rows (144.0 KB, 7.4 B/row, 7.1x vs heap, 1 parts, 3 granules, codecs: 4 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;

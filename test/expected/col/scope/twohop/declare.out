@@ -164,7 +164,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_group" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  sift_col "facts_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.8x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
+NOTICE:  sift_col "facts_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.9x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;
@@ -275,7 +275,7 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, created_at, amount
 NOTICE:  scope "tenant_id": the direct pairs of "grants" (dim_a_id, tenant_id) are the rows of its unique btree "grants_direct" that satisfy (deleted_at IS NULL)
 NOTICE:  scope "tenant_id": the joined pairs of "grants" (group_id, tenant_id) are the rows of its unique btree "grants_other" that satisfy (id > 0)
 NOTICE:  scope "tenant_id": the via relation of "memberships" (group_id, dim_a_id) are the rows of its unique btree "memberships_active" that satisfy (deleted_at IS NULL)
-NOTICE:  sift_col "facts_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.8x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
+NOTICE:  sift_col "facts_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.9x vs heap, 1 parts, 1 granules, codecs: 1 const, 2 delta, 2 packed, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.facts_col');
 SET client_min_messages = warning;

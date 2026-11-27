@@ -469,7 +469,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "decl_pairs_dim_a_id_tenant_id_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_pairs_dim_a_id_tenant_id_sift_journal');
-NOTICE:  sift_col "decl_facts_col": built 300 rows (112.0 KB, 382.3 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "decl_facts_col": built 300 rows (104.0 KB, 355.0 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.decl_facts_col');
 SET client_min_messages = warning;
@@ -498,7 +498,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "decl_unique_dim_a_id_tenant_id_sift_journal": 1 automatic choice (track_changes)
 DETAIL:  track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_unique_dim_a_id_tenant_id_sift_journal');
-NOTICE:  sift_col "decl_facts_col": built 300 rows (112.0 KB, 382.3 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "decl_facts_col": built 300 rows (104.0 KB, 355.0 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.decl_facts_col');
 SET client_min_messages = warning;
@@ -523,7 +523,7 @@ HINT:  One index over the union of their columns is smaller at the same read cos
 NOTICE:  sift_col index "decl_soft_dim_a_id_tenant_id_sift_journal": 2 automatic choices
 DETAIL:  key_columns = dim_a_id, tenant_id; track_changes = ctid
 HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('decl_soft_dim_a_id_tenant_id_sift_journal');
-NOTICE:  sift_col "decl_facts_col": built 300 rows (112.0 KB, 382.3 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "decl_facts_col": built 300 rows (104.0 KB, 355.0 B/row, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.decl_facts_col');
 SET client_min_messages = warning;

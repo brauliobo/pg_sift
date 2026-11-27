@@ -98,7 +98,7 @@ GRANT SELECT (s) ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_pairs(m, s)'')') AS both_columns;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  sift_col "sp_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "sp_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_col');
  both_columns 
@@ -121,7 +121,7 @@ GRANT SELECT ON sp_pairs TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('REINDEX INDEX sp_col') AS reindex_with_select;
 NOTICE:  scope "s": the pairs of "sp_pairs" are the rows of its unique btree "sp_pairs_pkey"
-NOTICE:  sift_col "sp_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "sp_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_col');
  reindex_with_select 
@@ -184,7 +184,7 @@ GRANT SELECT (deleted) ON sp_soft TO sp_owner;
 SET ROLE sp_owner;
 SELECT try('CREATE INDEX sp_soft_col ON sp_events USING sift_col (id, m, v) WITH (scope = ''s: m -> sp_soft(m, s)'')') AS predicate_column_granted;
 NOTICE:  scope "s": the pairs of "sp_soft" are the rows of its unique btree "sp_soft_live" that satisfy (NOT deleted)
-NOTICE:  sift_col "sp_soft_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "sp_soft_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_soft_col');
  predicate_column_granted 
@@ -210,7 +210,7 @@ SELECT try('CREATE INDEX sp_rls_col ON sp_events USING sift_col (id, m, v) WITH 
 NOTICE:  scope "s": "sp_rls" has row-level security enabled
 DETAIL:  A statement of a role the policies apply to reads its join to the relation as written.
 NOTICE:  scope "s": the pairs of "sp_rls" are the rows of its unique btree "sp_rls_pkey"
-NOTICE:  sift_col "sp_rls_col": built 2,000 rows (128.0 KB, 65.5 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
+NOTICE:  sift_col "sp_rls_col": built 2,000 rows (120.0 KB, 61.4 B/row, 0.7x vs heap, 1 parts, 1 granules, codecs: 3 delta, 1 coded)
 DETAIL:  Chosen from the data: scope.
 HINT:  Inspect layout with SELECT * FROM sift.status('public.sp_rls_col');
  rls_bypassed 
