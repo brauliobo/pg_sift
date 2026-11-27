@@ -320,6 +320,16 @@ SELECT table_error($$ SELECT count(*) FROM cw WHERE id < 50 $$) AS bitmap_scan;
  sift_table write buffer page holds a record at a misaligned offset | sift table "public.cw" | lines: 1
 (1 row)
 
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+SELECT table_error($$ SELECT count(*) FROM cw WHERE id < 50 $$) AS agg_scan;
+                                                agg_scan                                                
+--------------------------------------------------------------------------------------------------------
+ sift_table write buffer page holds a record at a misaligned offset | sift table "public.cw" | lines: 1
+(1 row)
+
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
 RESET enable_indexscan;
 RESET enable_seqscan;
 SELECT table_error($$ ANALYZE cw $$) AS analyze_scan;

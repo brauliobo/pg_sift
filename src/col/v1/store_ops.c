@@ -650,7 +650,7 @@ next_batch(SiftV1Src *s, SiftV6Batch *out)
 	return false;
 }
 
-/* the decoders of the units report damage against the relation of the scope (core/damage.h): the one the source reads */
+/* the decoders of the units report damage against the relation of the scope (core/damage.h): the one the source reads, as its open does */
 static bool
 v1_next(SiftV6Source *base, SiftV6Batch *out)
 {
@@ -925,7 +925,9 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	MemoryContext cx = sift_mem_allocset_create(parent, "sift v1 source");
 	SiftV1Src	   *s = MemoryContextAllocZero(cx, sizeof(SiftV1Src));
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftErrCtx	ctx;
 
+	sift_errctx_push(&ctx, in->indexoid);
 	scan = scan != NULL ? scan : &none;
 	range = scan->range;
 	s->cx = cx;
@@ -955,6 +957,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 		s->rd->select(s->src, scan->keep);
 	bind_types(s, scan);
 	sift_v1_src_prune_begin(s, scan);
+	sift_errctx_pop(&ctx);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules};
 	return &s->base;
