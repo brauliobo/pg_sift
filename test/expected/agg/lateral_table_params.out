@@ -80,15 +80,15 @@ FROM stmts, (VALUES ('f1'), ('f2')) f(fmt), LATERAL same(format(stmts.q, f.fmt))
 ORDER BY id, f.fmt;
  id | fmt |     engine     | result_rows | vs_heap 
 ----+-----+----------------+-------------+---------
-  1 | f1  | SiftAggV6TopN  |           4 |       0
-  1 | f2  | SiftAggV6TopN  |           4 |       0
-  2 | f1  | SiftAggV6TopN  |           4 |       0
-  2 | f2  | SiftAggV6TopN  |           4 |       0
-  3 | f1  | SiftAggV6TopN  |           4 |       0
-  3 | f2  | SiftAggV6TopN  |           4 |       0
-  4 | f1  | SiftAggV6TopN  |           4 |       0
-  4 | f2  | SiftAggV6TopN  |           4 |       0
-  5 | f1  | SiftAggV6TopN  |           4 |       0
+  1 | f1  | SiftAggV6      |           4 |       0
+  1 | f2  | SiftAggV6      |           4 |       0
+  2 | f1  | SiftAggV6      |           4 |       0
+  2 | f2  | SiftAggV6      |           4 |       0
+  3 | f1  | SiftAggV6      |           4 |       0
+  3 | f2  | SiftAggV6      |           4 |       0
+  4 | f1  | SiftAggV6      |           4 |       0
+  4 | f2  | SiftAggV6      |           4 |       0
+  5 | f1  | SiftAggV6First |           4 |       0
   5 | f2  | SiftAggV6First |           4 |       0
 (10 rows)
 

@@ -114,7 +114,7 @@ SELECT parity('SELECT f.id FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''no
 (1 row)
 
 -- the best rows of a table by their keys
-SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Custom Scan (SiftAggV6TopN)') AS topn_served_by_agg_v6;
+SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Top-N: amount DESC, id (limit 10)') AS topn_served_by_agg_v6;
  topn_served_by_agg_v6 
 -----------------------
  t

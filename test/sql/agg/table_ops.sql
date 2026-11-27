@@ -68,7 +68,7 @@ SELECT parity('SELECT d.label, count(*), sum(f.grp) FROM @T f JOIN @D d ON d.k =
 SELECT parity('SELECT f.id FROM @T f JOIN @D d ON d.k = f.k WHERE d.label = ''nothing''') AS sip_no_dimension_row;
 
 -- the best rows of a table by their keys
-SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Custom Scan (SiftAggV6TopN)') AS topn_served_by_agg_v6;
+SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Top-N: amount DESC, id (limit 10)') AS topn_served_by_agg_v6;
 SELECT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Table: ot') AS topn_reads_the_table;
 SELECT NOT plan_has('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10', 'Index:') AS topn_reads_no_index;
 SELECT parity_ordered('SELECT id, amount FROM @T WHERE grp = 3 ORDER BY amount DESC, id LIMIT 10') AS topn_desc;
