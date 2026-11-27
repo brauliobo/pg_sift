@@ -28,6 +28,7 @@
 #include "agg/unnest/unnest.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/unnest/pairs.h"
+#include "core/memtrack.h"
 #include "col/f2/agg/unnest/run.h"
 #include "agg/vet.h"
 #include "agg/vexpr/str.h"
@@ -142,7 +143,9 @@ typedef struct UnRun
 	Datum		month_unit;
 	uint32	   *pidx;
 	uint32	   *eidx;
-	MemoryContext bcx;			/* the arrays read from the heap for a batch */
+	MemoryContext bcx;			/* the columns of the rows of a batch */
+	SiftMemTracker rmt;			/* a row read from the heap, taken apart (agg_unnest_heap_row): its array or document and the rows of its function, reset after each row */
+	MemoryContext ccx;			/* a chunk of the elements of that row, at most SIFT_VEC_LEN, reset after each */
 	int			(*attr_slot) (void *arg, const SiftV6Col *c);	/* a table: the vector of the scan that holds a column of the rows, which the pairs gather from */
 	void	   *attr_arg;
 	SiftVecType ftype[SIFT_F2_PULL_MAX_COLS];	/* a table: the type of each vector of the rows of its batch */

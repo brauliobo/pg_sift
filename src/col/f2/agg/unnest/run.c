@@ -720,7 +720,9 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
 	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
 		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
-	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest heap rows");
+	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest batch");
+	sift_mem_init(&u->rmt, "agg_unnest_heap_row", CurrentMemoryContext, true, SIFT_BUDGET_WORK_MEM, 1, 1);
+	u->ccx = sift_mem_allocset_create(u->rmt.root_cx, "sift agg v6 unnest heap chunk");
 	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0)
 	{
 		MemoryContext old = CurrentMemoryContext;
@@ -778,6 +780,7 @@ unrun_end(UnRun *u)
 	if (u->rec != NULL)
 		sift_v6_recfn_free(u->rec);
 	MemoryContextDelete(u->bcx);
+	sift_mem_end(&u->rmt);
 }
 
 /* a qual of the table on a column of the index (a comparison, an IN list or a null test with constants) as the key an index scan has of it; false for a virtual column */

@@ -820,12 +820,10 @@ put_cell(MemoryContext cx, SiftVec *v, Oid type, uint32 k, Datum d, bool isnull)
 	}
 }
 
-uint32
-sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
+void
+sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx)
 {
 	LOCAL_FCINFO(fcinfo, 1);
-	Tuplestorestate *ts;
-	uint32		n;
 
 	f->rsinfo.setResult = NULL;
 	f->econtext->ecxt_per_query_memory = cx;
@@ -833,22 +831,29 @@ sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
 	fcinfo->args[0].value = doc;
 	fcinfo->args[0].isnull = false;
 	FunctionCallInvoke(fcinfo);
-	ts = f->rsinfo.setResult;
-	n = ts == NULL ? 0 : (uint32) tuplestore_tuple_count(ts);
+}
+
+uint32
+sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max)
+{
+	Tuplestorestate *ts = f->rsinfo.setResult;
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	uint32		k = 0;
+
+	CHECK_FOR_INTERRUPTS();
 	for (int c = 0; c < f->ncols; c++)
 	{
 		ev[c].type = sift_v6_class(f->type[c]) == SV6C_F64 ? SVEC_F64 : sift_v6_class(f->type[c]) == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
-		ev[c].data = MemoryContextAllocAligned(cx, (Size) Max(n, 1) * sift_gather_width(ev[c].type) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-		ev[c].valid = MemoryContextAllocZero(cx, ((n + 63) / 64 + 1) * sizeof(uint64));
+		ev[c].data = MemoryContextAllocAligned(cx, (Size) Max(max, 1) * sift_gather_width(ev[c].type) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+		ev[c].valid = MemoryContextAllocZero(cx, ((max + 63) / 64 + 1) * sizeof(uint64));
 		ev[c].all_valid = false;
-		ev[c].len = (uint16) Min(n, UINT16_MAX);
 	}
 	if (f->fn >= SV6E_MEMBERS)
 	{
-		f->val = MemoryContextAlloc(cx, Max(n, 1) * sizeof(Datum));
-		f->val_null = MemoryContextAlloc(cx, Max(n, 1) * sizeof(bool));
+		f->val = MemoryContextAlloc(cx, Max(max, 1) * sizeof(Datum));
+		f->val_null = MemoryContextAlloc(cx, Max(max, 1) * sizeof(bool));
 	}
-	for (uint32 k = 0; ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)
+	for (; k < max && ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)
 	{
 		slot_getallattrs(f->slot);
 		if (f->fn == SV6E_MEMBERS)
@@ -874,10 +879,24 @@ sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
 		for (int c = 0; c < f->ncols; c++)
 			put_cell(cx, &ev[c], f->type[c], k, f->slot->tts_values[c], f->slot->tts_isnull[c]);
 	}
-	if (ts != NULL)
-		tuplestore_end(ts);
-	ResetExprContext(f->econtext);
-	return n;
+	for (int c = 0; c < f->ncols; c++)
+		ev[c].len = (uint16) Min(k, UINT16_MAX);
+	if (k < max)
+	{
+		if (ts != NULL)
+			tuplestore_end(ts);
+		f->rsinfo.setResult = NULL;
+		ResetExprContext(f->econtext);
+	}
+	MemoryContextSwitchTo(old);
+	return k;
+}
+
+uint32
+sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
+{
+	sift_v6_recfn_open(f, doc, cx);
+	return sift_v6_recfn_next(f, cx, ev, f->rsinfo.setResult == NULL ? 0 : (uint32) tuplestore_tuple_count(f->rsinfo.setResult) + 1);
 }
 
 void
@@ -954,6 +973,8 @@ sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftV
 			}
 			PG_CATCH();
 			{
+				if (ERRCODE_TO_CATEGORY(geterrcode()) != ERRCODE_DATA_EXCEPTION)
+					PG_RE_THROW();
 				MemoryContextSwitchTo(cx);
 				late[k] = CopyErrorData();
 				FlushErrorState();

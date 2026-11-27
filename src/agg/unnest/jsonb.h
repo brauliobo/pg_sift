@@ -113,10 +113,13 @@ typedef struct SiftV6RecFn SiftV6RecFn;
 extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x);
 /* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many */
 extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev);
+/* The same a chunk at a time: open calls the function on doc, its rows in a tuplestore of cx (spilled past work_mem); next gives the following max of them as ev in cx, fewer at the end */
+extern void sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx);
+extern uint32 sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max);
 /*
- * jsonb_each and jsonb_each_text: the value column of the n members of the last call, for the members of keep (NULL: all), which are those that reach the statement's expressions. The cast of a
+ * jsonb_each and jsonb_each_text: the value column of the n members of the last call or chunk, for the members of keep (NULL: all), which are those that reach the statement's expressions. The cast of a
  * member that raises is the error of the pair of that member, which a join may drop: it is not raised here but left in late[k] (n entries, zeroed by the caller; the member has no value), for the
- * caller to raise when the pair reaches the groups.
+ * caller to raise when the pair reaches the groups. Any other error (a cancel, out of memory) is raised.
  */
 extern void sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n, ErrorData **late);
 extern void sift_v6_recfn_free(SiftV6RecFn *f);
