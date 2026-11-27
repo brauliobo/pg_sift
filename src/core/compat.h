@@ -64,32 +64,6 @@ sift_index_ready(Relation index)
 #endif
 
 /*
- * A path that loses to every path that is not disabled, as the path of a node whose enable_ setting is off: 18 counts the disabled nodes of a path
- * (nodes: at least that many), 17 adds disable_cost to its cost, once.
- */
-#if PG_VERSION_NUM >= 180000
-#define sift_disabled_nodes(p)	((p)->disabled_nodes)
-
-static inline void
-sift_path_disable(Path *p, int nodes)
-{
-	p->disabled_nodes = Max(p->disabled_nodes, nodes);
-}
-#else
-#define sift_disabled_nodes(p)	0
-
-static inline void
-sift_path_disable(Path *p, int nodes)
-{
-	if (p->total_cost < disable_cost)
-	{
-		p->startup_cost += disable_cost;
-		p->total_cost += disable_cost;
-	}
-}
-#endif
-
-/*
  * The nodes of a plan that an enable_ setting disabled, and its cost, so that plans are ranked alike on every major: 18 counts the nodes apart from the cost. 17 has
  * disable_cost in the cost of each, which a nested loop multiplies by the rows of its outer side, so the nodes are counted in the tree: a leaf that carries the penalty in
  * its startup cost (a scan whose enable_ is off, or a path made to lose), a bitmap heap scan (it has the index scan below), a join or a sort whose enable_ is off. The cost of 17 is the plan's own, as PostgreSQL ranks it.
