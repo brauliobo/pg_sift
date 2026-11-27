@@ -72,7 +72,7 @@ sift_win_carry_create(MemoryContext cx, const SiftWinCarrySpec *spec)
 
 	c->cx = cx;
 	c->spec = *spec;
-	while ((max_slots << 1) * slot_bytes(spec->nvars) <= spec->max_bytes)
+	while ((max_slots << 1) * slot_bytes(spec->nvars) <= spec->max_bytes && (max_slots << 1) * spec->nvars * sizeof(Datum) <= MaxAllocSize)
 		max_slots <<= 1;
 	c->max_slots = max_slots;
 	table_alloc(c, CARRY_FIRST_SLOTS);

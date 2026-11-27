@@ -1,5 +1,5 @@
 -- A peer group of more rows than work_mem holds no longer ends a V6 RANGE window with ERROR 54000: the rows past max_pending go to a temp file and come back, in order, when the peer group
--- closes. The plan is made at the default work_mem and the statement runs at 64kB (max_pending = 2048), with a peer group of 10000 tied rows over integer, numeric, float8 and text columns: it answers
+-- closes. The plan is made at the default work_mem and the statement runs at 64kB (a few hundred pending rows), with a peer group of 10000 tied rows over integer, numeric, float8 and text columns: it answers
 -- as the heap does. A LIMIT over the window and an error raised while the spill is open leave no temp file behind. Every check prints t.
 -- requires: build col
 SET client_min_messages = warning;
@@ -117,6 +117,37 @@ SELECT rows_text('SELECT grp, count(*), min(rn), max(rn), sum(rn), count(lg), su
  t
 (1 row)
 
+-- a pending row holds a cell of each LAG: a peer group of 999 rows with four of them (fewer rows than 64kB holds at one word a row) is past the quarter of 64kB and its rows
+-- go to the temp file, on top of what the same window writes over peer groups of 10 rows
+CREATE TABLE sl (id int PRIMARY KEY, p int NOT NULL, grp int NOT NULL, n numeric(12,2)) WITH (autovacuum_enabled = false);
+INSERT INTO sl SELECT i, 1, i / 1000, i / 8.0 FROM generate_series(1, 1999) i;
+CREATE TABLE su (id int PRIMARY KEY, p int NOT NULL, grp int NOT NULL, n numeric(12,2)) WITH (autovacuum_enabled = false);
+INSERT INTO su SELECT id, p, id / 10, n FROM sl;
+CREATE INDEX sl_sift ON sl USING sift_col (p, grp, id, n);
+CREATE INDEX su_sift ON su USING sift_col (p, grp, id, n);
+VACUUM (FREEZE, ANALYZE) sl, su;
+CREATE FUNCTION spill_blocks(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE plan json;
+BEGIN
+	DEALLOCATE ALL;
+	PERFORM set_config('plan_cache_mode', 'force_generic_plan', true);
+	PERFORM set_config('work_mem', '4MB', true);
+	EXECUTE format('PREPARE spill_q AS %s', q);
+	EXECUTE 'EXPLAIN (COSTS off) EXECUTE spill_q';
+	PERFORM set_config('work_mem', '64kB', true);
+	EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS off, TIMING off, SUMMARY off, FORMAT json) EXECUTE spill_q' INTO plan;
+	DEALLOCATE spill_q;
+	RETURN CASE WHEN plan -> 0 -> 'Plan' ->> 'Custom Plan Provider' = 'SiftAggV6Window' THEN (plan -> 0 -> 'Plan' ->> 'Temp Written Blocks')::bigint END;
+END $$;
+SELECT spill_blocks(replace(q, '@T', 'sl')) > spill_blocks(replace(q, '@T', 'su')) AS lag_cells_spill
+FROM (VALUES ('SELECT id, lag(n) OVER w, lag(n, 2) OVER w, lag(n, 3) OVER w, lag(n, 4) OVER w, sum(n) OVER w FROM @T WINDOW w AS (PARTITION BY p ORDER BY grp)')) v(q);
+ lag_cells_spill 
+-----------------
+ t
+(1 row)
+
+DROP FUNCTION spill_blocks(text);
+DROP TABLE sl, su;
 -- LIMIT ends the read of the window early; the spill is gone with the window
 SELECT count(*) AS limit_rows FROM (SELECT id, sum(n) OVER (PARTITION BY p ORDER BY grp) FROM sr LIMIT 10) l;
  limit_rows 

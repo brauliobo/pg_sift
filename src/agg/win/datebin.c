@@ -295,25 +295,43 @@ winx_is_state(SiftWinxKind k)
 	return k >= SWX_COUNT_STAR && !winx_has_cell(k);
 }
 
+static int
+winx_ncells(const SiftWinxSpec *spec)
+{
+	int			ncells = 0;
+
+	for (int f = 0; f < spec->nfuncs; f++)
+		ncells += winx_has_cell(spec->func[f].kind);
+	return ncells;
+}
+
+/* a pending row: its tag, its row number and its cells */
+static uint64
+winx_row_bytes(const SiftWinxSpec *spec)
+{
+	return 2 * sizeof(uint64) + sizeof(WinxCell) * Max(winx_ncells(spec), 1);
+}
+
 uint64
-sift_winx_lead_bytes(const SiftWinxSpec *spec)
+sift_winx_max_pending(const SiftWinxSpec *spec, uint64 max_bytes)
+{
+	return max_bytes / winx_row_bytes(spec);
+}
+
+bool
+sift_winx_lead_fits(const SiftWinxSpec *spec)
 {
 	uint32		max_lead = 0;
-	int			ncells = 0;
 	bool		any = false;
 
 	for (int f = 0; f < spec->nfuncs; f++)
-	{
-		const SiftWinxFunc *fn = &spec->func[f];
-
-		ncells += winx_has_cell(fn->kind);
-		if (fn->kind == SWX_LEAD)
+		if (spec->func[f].kind == SWX_LEAD)
 		{
 			any = true;
-			max_lead = Max(max_lead, fn->offset);
+			max_lead = Max(max_lead, spec->func[f].offset);
 		}
-	}
-	return !any ? 0 : (uint64) (max_lead + 1) * (sizeof(uint64) + sizeof(SiftWinxVal) * spec->nfuncs + sizeof(WinxCell) * ncells);
+	return !any || (uint64) (max_lead + 1) * (sizeof(uint64) + sizeof(SiftWinxVal) * spec->nfuncs + sizeof(WinxCell) * winx_ncells(spec)) <=
+		spec->max_pending * winx_row_bytes(spec);
 }
 
 SiftWinx *
@@ -343,9 +361,10 @@ sift_winx_create(MemoryContext cx, const SiftWinxSpec *spec, SiftWinxNext next, 
 			w->max_lead = Max(w->max_lead, fn->offset);
 		}
 	}
+	w->spec.max_pending = Min(spec->max_pending, MaxAllocSize / (sizeof(WinxCell) * Max(w->ncells, 1)));
 	if (w->has_lead)
 	{
-		if (sift_winx_lead_bytes(spec) > spec->max_pending * sizeof(uint64))
+		if (!sift_winx_lead_fits(spec))
 			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("window: LEAD looks %u rows ahead, more than work_mem holds", w->max_lead),
 							errhint("Raise work_mem or use a smaller LEAD offset.")));
 		w->lcap = w->max_lead + 1;
@@ -787,6 +806,8 @@ winx_unspill(SiftWinx *w)
 		BufFileReadExact(w->pspill, head, sizeof(head));
 		BufFileReadExact(w->pspill, cells, sizeof(WinxCell) * w->ncells);
 		winx_emit_row(w, head[0], head[1], cells);
+		if ((i & 1023) == 0)
+			CHECK_FOR_INTERRUPTS();
 	}
 	BufFileClose(w->pspill);
 	w->pspill = NULL;
@@ -797,7 +818,11 @@ static void
 winx_flush(SiftWinx *w)
 {
 	for (uint64 i = 0; i < w->npend; i++)
+	{
 		winx_emit_row(w, w->ptag[i], w->pnum[i], &w->pcells[i * w->ncells]);
+		if ((i & 1023) == 0)
+			CHECK_FOR_INTERRUPTS();
+	}
 	w->npend = 0;
 	if (w->nspilled > 0)
 		winx_unspill(w);
@@ -813,10 +838,11 @@ winx_pend(SiftWinx *w, uint64 tag, uint64 row_number, const WinxCell *cells)
 	}
 	if (w->npend == w->pcap)
 	{
-		w->pcap = Max(w->pcap * 2, 1024);
+		w->pcap = Min(Max(w->pcap * 2, 1024), w->spec.max_pending);
 		w->ptag = w->ptag ? repalloc(w->ptag, sizeof(uint64) * w->pcap) : MemoryContextAlloc(w->cx, sizeof(uint64) * w->pcap);
 		w->pnum = w->pnum ? repalloc(w->pnum, sizeof(uint64) * w->pcap) : MemoryContextAlloc(w->cx, sizeof(uint64) * w->pcap);
-		w->pcells = w->pcells ? repalloc(w->pcells, sizeof(WinxCell) * w->ncells * w->pcap) : MemoryContextAlloc(w->cx, sizeof(WinxCell) * Max(w->ncells, 1) * w->pcap);
+		w->pcells = w->pcells ? repalloc(w->pcells, sizeof(WinxCell) * Max(w->ncells, 1) * w->pcap) :
+			MemoryContextAlloc(w->cx, sizeof(WinxCell) * Max(w->ncells, 1) * w->pcap);
 	}
 	w->ptag[w->npend] = tag;
 	w->pnum[w->npend] = row_number;

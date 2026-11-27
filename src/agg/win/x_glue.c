@@ -240,7 +240,6 @@ sift_v6_winx_spec(const List *funcs, bool range, SiftV6Input *in, SiftV6Winx *ou
 		return false;
 	out->spec.nfuncs = s.nfuncs;
 	out->spec.range_frame = range;
-	out->spec.max_pending = (uint64) work_mem * 1024 / 4 / sizeof(uint64);
 	foreach_node(WindowFunc, wf, (List *) funcs)
 	{
 		if (wf->runCondition != NIL)
@@ -249,7 +248,8 @@ sift_v6_winx_spec(const List *funcs, bool range, SiftV6Input *in, SiftV6Winx *ou
 			return false;
 		f++;
 	}
-	return sift_shape_winx(&s) == SSV_OK && sift_winx_lead_bytes(&out->spec) <= out->spec.max_pending * sizeof(uint64);
+	out->spec.max_pending = sift_winx_max_pending(&out->spec, (uint64) work_mem * 1024 / 4);
+	return sift_shape_winx(&s) == SSV_OK && sift_winx_lead_fits(&out->spec);
 }
 
 bool

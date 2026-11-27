@@ -274,6 +274,8 @@ spill_ring(SiftWindowExec *w)
 
 		resolve_lead(w, r, i);
 		BufFileWrite(w->spill, r, sizeof(SiftWinRow));
+		if ((i & 1023) == 0)
+			CHECK_FOR_INTERRUPTS();
 	}
 	w->n_spilled += upto - w->pend_first;
 	w->pend_first = upto;
@@ -282,10 +284,10 @@ spill_ring(SiftWindowExec *w)
 static void
 grow_ring(SiftWindowExec *w)
 {
-	const uint32 ncap = w->cap * 2;
+	const uint64 ncap = (uint64) w->cap * 2;
 	SiftWinRow *nr;
 
-	if (w->fixed_bytes + (uint64) ncap * sizeof(SiftWinRow) > w->max_bytes)
+	if (w->fixed_bytes + ncap * sizeof(SiftWinRow) > w->max_bytes || ncap * sizeof(SiftWinRow) > MaxAllocSize)
 	{
 		spill_ring(w);
 		return;
@@ -489,6 +491,8 @@ drain(SiftWindowExec *w, bool closing)
 
 		resolve_lead(w, r, w->pend_first);
 		emit_row(w, r);
+		if ((w->pend_first & 1023) == 0)
+			CHECK_FOR_INTERRUPTS();
 	}
 }
 

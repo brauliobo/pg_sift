@@ -172,8 +172,10 @@ typedef struct SiftWinxStats
 
 typedef struct SiftWinx SiftWinx;
 
-/* The bytes the rows that wait for a LEAD take (0 without one): the planner leaves the window to PostgreSQL when they exceed max_pending words */
-extern uint64 sift_winx_lead_bytes(const SiftWinxSpec *spec);
+/* The pending rows of the functions of the spec that max_bytes holds */
+extern uint64 sift_winx_max_pending(const SiftWinxSpec *spec, uint64 max_bytes);
+/* The rows that wait for a LEAD fit the bytes of max_pending rows: the planner leaves the window to PostgreSQL when they do not */
+extern bool sift_winx_lead_fits(const SiftWinxSpec *spec);
 extern SiftWinx *sift_winx_create(MemoryContext cx, const SiftWinxSpec *spec, SiftWinxNext next, void *src, SiftWinxEmit emit, void *emit_arg);
 extern void sift_winx_run(SiftWinx *w);
 extern const SiftWinxStats *sift_winx_stats(const SiftWinx *w);

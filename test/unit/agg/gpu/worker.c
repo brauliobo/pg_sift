@@ -2,7 +2,8 @@
  * test/unit/agg/gpu/worker.c - the slots of the GPU worker that a backend claims (agg/gpu/worker.c): a backend that finds every slot busy gives the job back to the CPU after a short wait, not
  * after the 30 s of a statement held up, and a result the backend cannot copy (an allocation that fails) leaves the slot free for the other backends. A backend that left acts only on
  * the generation of the slot it claimed (agg/gpu/slot.c): it frees no other backend's answer, and no backend takes a live slot for the pid of the owner before it. A worker that ends
- * finishes only the jobs it took or would have taken, and leaves the state, the pid and the jobs of a worker that replaced it alone.
+ * finishes only the jobs it took or would have taken, and leaves the state, the pid and the jobs of a worker that replaced it alone. The worker wakes the backend whose job it
+ * finished, even when that backend frees the slot and another claims it as soon as the answer is out.
  */
 #include "postgres.h"
 
@@ -11,7 +12,10 @@
 int			test_kill(pid_t pid, int sig);
 #define kill test_kill
 #include "agg/gpu/worker.c"
+static bool test_cas_u64(volatile pg_atomic_uint64 *ptr, uint64 *expected, uint64 newval);
+#define pg_atomic_compare_exchange_u64 test_cas_u64
 #include "agg/gpu/slot.c"
+#undef pg_atomic_compare_exchange_u64
 #undef kill
 
 #include "test/common/check.h"
@@ -24,7 +28,7 @@ int			MyProcPid;
 ProcNumber	MyProcNumber = 0;
 static Latch latch;
 struct Latch *MyLatch = &latch;
-static PGPROC procs[1];
+static PGPROC procs[2];
 static PROC_HDR proc_hdr = {.allProcs = procs};
 PROC_HDR   *ProcGlobal = &proc_hdr;
 int			sift_gpu_mode;
@@ -35,6 +39,8 @@ static SiftGpuShm *shm;
 static uint64 waited_ms;
 static int	answer_slot = -1;
 static void (*kill_hook) (void);
+static void (*done_hook) (void);
+static Latch *woken;
 
 /* The other backends and the worker run at the next probe of a pid: the window between a read of the slot and what is done with it */
 int
@@ -46,6 +52,21 @@ test_kill(pid_t pid, int sig)
 	if (hook != NULL)
 		hook();
 	return kill(pid, sig);
+}
+
+/* The backends run right after a slot is moved to DONE: the window between the answer out and the wake of its owner */
+static bool
+test_cas_u64(volatile pg_atomic_uint64 *ptr, uint64 *expected, uint64 newval)
+{
+	void		(*hook) (void) = done_hook;
+	const bool	moved = pg_atomic_compare_exchange_u64(ptr, expected, newval);
+
+	if (moved && sift_gpu_slot_state(newval) == SIFT_GPU_S_DONE && hook != NULL)
+	{
+		done_hook = NULL;
+		hook();
+	}
+	return moved;
 }
 
 static pid_t
@@ -99,6 +120,7 @@ ResetLatch(Latch *l)
 void
 SetLatch(Latch *l)
 {
+	woken = l;
 }
 
 void
@@ -232,6 +254,34 @@ test_claim_theft(void)
 	SIFT_CHECK(slot_state(0) == SIFT_GPU_S_CLAIMED);
 }
 
+/* B0 takes its answer and frees the slot, B1 (proc number 1) claims it */
+static void
+b0_done_b1_claims(void)
+{
+	uint32		gen;
+
+	sift_gpu_slot_set(&shm->slot[0], slot_gen(0), SIFT_GPU_S_FREE);
+	MyProcNumber = 1;
+	SIFT_CHECK(sift_gpu_slot_claim(shm, &gen) == 0);
+	MyProcNumber = 0;
+}
+
+static void
+test_finish_wakes_owner(void)
+{
+	uint32		gen;
+
+	fresh_shm();
+	SIFT_CHECK(sift_gpu_slot_claim(shm, &gen) == 0);
+	sift_gpu_slot_set(&shm->slot[0], gen, SIFT_GPU_S_SUBMITTED);
+	worker_take(0);
+	woken = NULL;
+	done_hook = b0_done_b1_claims;
+	sift_gpu_slot_finish(&shm->slot[0], gen, SIFT_GPU_S_RUNNING);
+	SIFT_CHECK(done_hook == NULL && shm->slot[0].owner_procno == 1);
+	SIFT_CHECK(woken == &procs[0].procLatch);
+}
+
 /* The owner of a slot exited without leaving it: once its own pid is the one of the slot, the slot is taken back */
 static void
 test_claim_dead_owner(void)
@@ -310,6 +360,8 @@ main(void)
 		test_exit_superseded();
 	if (unit_wants("gpu_exit_drains_own"))
 		test_exit_drains_own();
+	if (unit_wants("gpu_finish_wakes_owner"))
+		test_finish_wakes_owner();
 	free(shm);
 	puts("gpu_worker: ok");
 	return 0;

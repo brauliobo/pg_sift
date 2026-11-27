@@ -50,7 +50,6 @@ extern bool sift_gpu_slot_move(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState from
 extern void sift_gpu_slot_set(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState st);
 
 /* ---- the worker ---- */
-extern void sift_gpu_slot_wake(const SiftGpuSlot *s);
 /* The job of (gen, from) is over, its answer in the slot: the owner is woken, and the slot freed when the owner left */
 extern void sift_gpu_slot_finish(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState from);
 

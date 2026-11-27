@@ -47,18 +47,15 @@ sift_gpu_slot_set(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState st)
 	pg_atomic_write_u64(&s->word, sift_gpu_slot_word(gen, st));
 }
 
-void
-sift_gpu_slot_wake(const SiftGpuSlot *s)
-{
-	SetLatch(&GetPGProcByNumber(s->owner_procno)->procLatch);
-}
-
+/* The owner is read while the slot is still the worker's: once DONE is out, the owner may free the slot and another backend claim it and write its own */
 void
 sift_gpu_slot_finish(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState from)
 {
+	const ProcNumber owner = s->owner_procno;
+
 	if (!sift_gpu_slot_move(s, gen, from, SIFT_GPU_S_DONE))
 		return;
-	sift_gpu_slot_wake(s);
+	SetLatch(&GetPGProcByNumber(owner)->procLatch);
 	if (sift_gpu_slot_cancelled(s, gen))
 		(void) sift_gpu_slot_move(s, gen, SIFT_GPU_S_DONE, SIFT_GPU_S_FREE);
 }
