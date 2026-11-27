@@ -30,6 +30,7 @@ import canaries  # noqa: E402
 REPO = HERE.parent.parent
 DB = 'sift_perf'
 KEEP_TEMPLATES = 2
+TPL_TTL = int(os.environ.get('SIFT_PERF_TPL_TTL', 7200))
 SEED = 1
 JITTER_FLOOR = 250_000
 MIN_WORKER_SHARE, MAX_WORKER_SKEW = 0.50, 0.60
@@ -282,6 +283,16 @@ def pid_alive(pid):
         return True
     except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+
+
+def pid_in(path):
+    """The first number of the file (a lock's pid, a postmaster.pid), 0 when there is none."""
+    try:
+        return int(next(iter(path.read_text().split()), 0))
+    except (OSError, ValueError):
+        return 0
 
 
 def acquire(path, ready):
@@ -293,7 +304,7 @@ def acquire(path, ready):
             (path / 'pid').write_text(str(os.getpid()))
             return True
         except FileExistsError:
-            holder = int(next(iter((path / 'pid').read_text().split()), 0)) if (path / 'pid').exists() else 0
+            holder = pid_in(path / 'pid')
             if holder and not pid_alive(holder):
                 shutil.rmtree(path, ignore_errors=True)
             elif time.time() > deadline:
@@ -334,9 +345,24 @@ def cache_root():
     return base
 
 
-def clean_stale_runs(cache):
+def live(d):
+    """A run of a gate that runs, a lock that is held, or a postmaster still up in it."""
+    pids = [pid_in(d / 'pid'), pid_in(d / 'data' / 'postmaster.pid')] + ([int(d.name.split('-')[1])] if d.name.startswith('run-') else [])
+    return any(p and pid_alive(p) for p in pids)
+
+
+def clean_stale(cache, tpl_ttl=TPL_TTL):
+    """The runs of the gates that died; the templates (built or half built) unused for tpl_ttl seconds, while no gate runs: a run reads its template."""
+    busy = False
     for d in cache.glob('run-*'):
-        if not pid_alive(int(d.name.split('-')[1])):
+        if live(d):
+            busy = True
+        else:
+            shutil.rmtree(d, ignore_errors=True)
+    busy = busy or any(live(d) for d in cache.glob('tpl-*'))
+    cutoff = time.time() - tpl_ttl
+    for d in cache.glob('tpl-*'):
+        if not busy and d.stat().st_mtime < cutoff:
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -527,7 +553,7 @@ def main(argv):
     t0 = time.time()
     install = Install(a.root)
     cache = cache_root()
-    clean_stale_runs(cache)
+    clean_stale(cache)
     tpl, built = ensure_template(install, cache, a.port, a.rebuild_template)
     t_tpl = time.time()
     home = cache / f'run-{os.getpid()}'

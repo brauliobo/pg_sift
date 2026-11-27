@@ -205,6 +205,26 @@ class Lock(unittest.TestCase):
             self.assertTrue(gate.acquire(lock, lambda: False))
             self.assertEqual((lock / 'pid').read_text(), str(os.getpid()))
 
+    def test_clean_stale(self):
+        dead = subprocess.Popen(['true'])
+        dead.wait()
+        with tempfile.TemporaryDirectory(dir=SCRATCH) as d:
+            cache = Path(d)
+            for name in (f'run-{dead.pid}', f'run-{os.getpid()}', 'tpl-old', 'tpl-new', 'tpl-x.tmp'):
+                (cache / name).mkdir()
+            for name in ('tpl-old', 'tpl-x.tmp'):
+                os.utime(cache / name, (0, 0))
+            gate.clean_stale(cache, 3600)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), [f'run-{os.getpid()}', 'tpl-new', 'tpl-old', 'tpl-x.tmp'])
+            (cache / f'run-{os.getpid()}').rename(cache / f'run-{dead.pid}')
+            (cache / 'tpl-new' / 'data').mkdir()
+            (cache / 'tpl-new' / 'data' / 'postmaster.pid').write_text(f'{os.getpid()}\n')
+            gate.clean_stale(cache, 3600)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), ['tpl-new', 'tpl-old', 'tpl-x.tmp'])
+            (cache / 'tpl-new' / 'data' / 'postmaster.pid').write_text(f'{dead.pid}\n')
+            gate.clean_stale(cache, 3600)
+            self.assertEqual(sorted(p.name for p in cache.iterdir()), ['tpl-new'])
+
     def test_template_built_by_the_holder(self):
         with tempfile.TemporaryDirectory(dir=SCRATCH) as d:
             lock = Path(d) / 'tpl.lock'
