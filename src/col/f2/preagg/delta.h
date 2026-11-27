@@ -71,4 +71,11 @@ extern void sift_preagg_v2_subtract_cols(const SiftPreaggCubeDesc *cd, const Sif
 
 extern bool sift_preagg_v2_subtract(const SiftPreaggCubeDesc *cd, SiftPreaggGran *gran, const SiftGranuleView *v, const uint16 *rows, uint16 nrows, const SiftPreaggReads *reads);
 
+/*
+ * The groups of a cube of a granule after a column delta gave the rows of an ascending list new values of the integer measure m: each row leaves the sum and the count of the values that are
+ * not NULL of its group with the value the granule stores (read at the rows, with the dimensions that find the group) and enters them with values[i], or none when isnull[i]. The caller
+ * reads neither the minimum nor the maximum of m. False, with the cells untouched, when m is not an integer measure or the group of a row is not in the cube.
+ */
+extern bool sift_preagg_v2_repatch(const SiftPreaggCubeDesc *cd, SiftPreaggGran *gran, const SiftGranuleView *v, int m, const uint16 *rows, const int64 *values, const bool *isnull, uint16 nrows);
+
 #endif							/* SIFT_PREAGG_DELTA_H */

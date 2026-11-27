@@ -80,7 +80,8 @@ typedef struct SiftF2GranOffer
 	const SiftZone *const *zones;
 	const bool *exceptions;
 	bool		pend_hit;		/* a pending delete may be in the granule */
-	bool		patched;		/* a column delta changes cells of the granule */
+	const struct SiftColDeltaGranMap *patch;	/* the column deltas of the granule the snapshot sees, NULL: none */
+	const int16 *patch_attno;	/* the attribute a patch names for each leaf of the scan; NULL: any patch may change any leaf */
 	const struct SiftPendDelIndex *px;	/* the addresses the pending deletes and the deletes of the transaction take from the snapshot; NULL: none */
 	SiftF2GranVis vis;
 	const int16 *phys;			/* the column of the part that holds each leaf the scan names, -1: none that holds its cells as they are; NULL: the part has the leaves of the scan */

@@ -8,6 +8,7 @@
 #include "col/f2/part/format.h"
 #include "col/f2/del/pend.h"
 #include "col/f2/preagg/delta.h"
+#include "core/hash.h"
 
 uint16
 sift_excl_union_u16(const uint16 *a, uint16 na, const uint16 *b, uint16 nb, uint16 *out, uint16 cap)
@@ -218,6 +219,119 @@ sift_preagg_v2_subtract(const SiftPreaggCubeDesc *cd, SiftPreaggGran *gran, cons
 			if (!(cd->meas_kind[m] >= SIFT_PMEAS_F4 ? take_float(pm, rv.fval[m][i], (reads->float_sum >> m) & 1, minmax) : take_int(pm, rv.ival[m][i], minmax)))
 				return false;
 		}
+	}
+	memcpy(gran->cells, work, (uint64) gran->ncells * size);
+	return true;
+}
+
+/* The cells of a granule by the hash of their integer dimensions and of which dimensions are NULL: the cell of a row is one probe and a check of its dimensions, not a walk of every cell */
+typedef struct CellIndex
+{
+	uint32		mask;
+	int32	   *slot;			/* a cell, -1: empty */
+} CellIndex;
+
+static uint64
+dims_hash(const SiftPreaggCubeDesc *cd, uint32 null_mask, const int64 *const *keys, int i)
+{
+	uint64		h = sift_fmix64(null_mask);
+
+	for (int d = 0; d < cd->ndims; d++)
+		if (cd->dim_kind[d] != SIFT_PDIM_DICT32 && !((null_mask >> d) & 1))
+			h = sift_fmix64(h ^ (uint64) keys[d][i]);
+	return h;
+}
+
+static uint64
+group_hash(const SiftPreaggCubeDesc *cd, const SiftPreaggGroupHdr *grp)
+{
+	const int64 *keys[SIFT_PREAGG_MAX_DIMS];
+
+	for (int d = 0; d < cd->ndims; d++)
+		keys[d] = &grp->keys[d];
+	return dims_hash(cd, grp->dim_null_mask, keys, 0);
+}
+
+static uint64
+row_hash(const SiftPreaggCubeDesc *cd, const RowVals *rv, int i)
+{
+	uint32		null_mask = 0;
+
+	for (int d = 0; d < cd->ndims; d++)
+		null_mask |= (uint32) (cd->dim_kind[d] != SIFT_PDIM_DICT32 ? rv->dnull[d][i] : rv->dstr[d][i].isnull) << d;
+	return dims_hash(cd, null_mask, (const int64 *const *) rv->dim, i);
+}
+
+static void
+index_cells(const SiftPreaggCubeDesc *cd, const void *cells, uint32 ncells, CellIndex *ix)
+{
+	ix->mask = 7;
+	while (ix->mask < 2 * ncells)
+		ix->mask = ix->mask * 2 + 1;
+	ix->slot = palloc((ix->mask + 1) * sizeof(int32));
+	memset(ix->slot, -1, (ix->mask + 1) * sizeof(int32));
+	for (uint32 c = 0; c < ncells; c++)
+	{
+		uint32		h = (uint32) group_hash(cd, sift_pag_group(cd, cells, c)) & ix->mask;
+
+		while (ix->slot[h] >= 0)
+			h = (h + 1) & ix->mask;
+		ix->slot[h] = (int32) c;
+	}
+}
+
+static SiftPreaggGroupHdr *
+indexed_group(const SiftPreaggCubeDesc *cd, void *cells, const CellIndex *ix, const SiftGranuleView *v, const RowVals *rv, int i)
+{
+	for (uint32 h = (uint32) row_hash(cd, rv, i) & ix->mask; ix->slot[h] >= 0; h = (h + 1) & ix->mask)
+	{
+		SiftPreaggGroupHdr *grp = (SiftPreaggGroupHdr *) sift_pag_group(cd, cells, (uint32) ix->slot[h]);
+		bool		same = true;
+
+		for (int d = 0; same && d < cd->ndims; d++)
+			same = dim_is(cd, v, grp, rv, d, i);
+		if (same)
+			return grp;
+	}
+	return NULL;
+}
+
+static void
+add_int(SiftPreaggMeasure *pm, int64 x, int sign)
+{
+	__int128	sum = ((__int128) pm->u.i.sum_hi << 64) | (uint64) pm->u.i.sum_lo;
+
+	sum += sign * (__int128) x;
+	pm->u.i.sum_lo = (int64) (uint64) sum;
+	pm->u.i.sum_hi = (int64) (sum >> 64);
+	pm->count_nonnull += sign;
+}
+
+bool
+sift_preagg_v2_repatch(const SiftPreaggCubeDesc *cd, SiftPreaggGran *gran, const SiftGranuleView *v, int m, const uint16 *rows, const int64 *values, const bool *isnull, uint16 nrows)
+{
+	const uint32 size = sift_pag_cell_size(cd);
+	RowVals		rv = {0};
+	CellIndex	ix;
+	char	   *work = palloc(Max(gran->ncells, 1) * (uint64) size);
+
+	if (cd->meas_kind[m] != SIFT_PMEAS_INT64)
+		return false;
+	read_rows(cd, v, rows, nrows, UINT32_C(1) << m, &rv);
+	memcpy(work, gran->cells, (uint64) gran->ncells * size);
+	index_cells(cd, work, gran->ncells, &ix);
+	for (int i = 0; i < nrows; i++)
+	{
+		SiftPreaggGroupHdr *grp = indexed_group(cd, work, &ix, v, &rv, i);
+		SiftPreaggMeasure *pm;
+
+		if (grp == NULL || grp->row_count == 0)
+			return false;
+		pm = (SiftPreaggMeasure *) sift_pag_measure(cd, grp, m);
+		if (!rv.mnull[m][i])
+			add_int(pm, rv.ival[m][i], -1);
+		if (!isnull[i])
+			add_int(pm, values[i], 1);
 	}
 	memcpy(gran->cells, work, (uint64) gran->ncells * size);
 	return true;

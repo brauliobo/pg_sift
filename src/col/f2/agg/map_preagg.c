@@ -287,7 +287,7 @@ sift_v6_map_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 	SiftPreaggGran gran;
 	bool		done = false;
 
-	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || !(o->gd->flags & SIFT_GDESC_HAS_PREAGG) || o->patched || !sift_v6_group_takes_cells(m->group))
+	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || !(o->gd->flags & SIFT_GDESC_HAS_PREAGG) || o->patch != NULL || !sift_v6_group_takes_cells(m->group))
 		return false;
 	if (!pb->bound || pb->gen != o->desc->part_gen)
 		bind_part(m, o);

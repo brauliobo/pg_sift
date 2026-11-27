@@ -18,6 +18,7 @@
 #include "col/f2/pred/pred.h"
 #include "col/f2/preagg/delta.h"
 #include "core/memtrack.h"
+#include "table/f2/col_delta/col_delta.h"
 
 #define PA_VM_SPAN_MAX	4096
 
@@ -814,6 +815,107 @@ correct_cells(const SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer 
 	return sift_preagg_v2_subtract(&pb->pp->cube[pb->cube], gran, &v, dead, (uint16) ndead, &pb->reads);
 }
 
+/* Whether a column delta of the granule may change leaf of the scan (-1: none, as count(*) reads) */
+static bool
+leaf_patched(const SiftF2GranOffer *o, int leaf)
+{
+	return o->patch != NULL && leaf >= 0 && (o->patch_attno == NULL || (o->patch->attnum_bloom & sift_cd_att_bit(o->patch_attno[leaf])) != 0);
+}
+
+/* An aggregate of a patched leaf the cube still answers: the sum or the count of an integer measure whose least and greatest it does not read */
+static bool
+repatchable(const PartBind *pb, int j)
+{
+	const AggBind *b = &pb->agg[j];
+
+	return b->src == ASRC_MEAS && pb->pp->cube[pb->cube].meas_kind[b->idx] == SIFT_PMEAS_INT64 && !((pb->reads.minmax >> b->idx) & 1);
+}
+
+/* The cube answers a granule its column deltas patched when they leave every key and predicate as stored, and every aggregate of a patched leaf is one it corrects */
+static bool
+patch_answerable(const SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer *o)
+{
+	if (o->patch == NULL)
+		return true;
+	if (o->patch_attno == NULL)
+		return false;
+	for (int i = 0; i < pa->spec->nkeys; i++)
+		if (leaf_patched(o, pa->key_leaf[i]))
+			return false;
+	for (int k = 0; k < o->npreds; k++)
+		if (leaf_patched(o, o->preds[k].col))
+			return false;
+	for (int j = 0; j < pa->spec->naggs; j++)
+		if (leaf_patched(o, pa->agg_leaf[j]) && !repatchable(pb, j))
+			return false;
+	return true;
+}
+
+/* The patches of measure m (attribute attno) at the rows the snapshot still sees, as the rows and their new values; false when a value is not an integer */
+static bool
+measure_patches(const SiftF2GranOffer *o, int16 attno, const uint16 *dead, int ndead, uint16 *rows, int64 *values, bool *isnull, uint16 *n)
+{
+	uint32		lo,
+				hi;
+	int			d = 0;
+
+	sift_col_delta_patch_slice(o->patch, attno, &lo, &hi);
+	*n = 0;
+	for (uint32 i = lo; i < hi; i++)
+	{
+		const SiftColDeltaPatch *p = &o->patch->patches[i];
+
+		while (d < ndead && dead[d] < p->row_ordinal)
+			d++;
+		if (d < ndead && dead[d] == p->row_ordinal)
+			continue;
+		if (!(p->flags & SIFT_CDCOL_IS_NULL) && SIFT_CDCOL_KIND(p->flags) != SIFT_CELL_INT)
+			return false;
+		rows[*n] = p->row_ordinal;
+		values[*n] = p->val.i;
+		isnull[(*n)++] = (p->flags & SIFT_CDCOL_IS_NULL) != 0;
+	}
+	return true;
+}
+
+/* The sums of the measures the column deltas of the granule patched, moved from the values the granule stores to the patched ones */
+static bool
+repatch_cells(const SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOffer *o, SiftPreaggGran *gran, const uint16 *dead, int ndead)
+{
+	const SiftPreaggCubeDesc *cd = &pb->pp->cube[pb->cube];
+	uint32		done = 0;
+	uint16	   *rows = palloc(o->gd->nrows * sizeof(uint16));
+	int64	   *values = palloc(o->gd->nrows * sizeof(int64));
+	bool	   *isnull = palloc(o->gd->nrows);
+
+	for (int j = 0; j < pa->spec->naggs; j++)
+	{
+		const int	m = pb->agg[j].idx;
+		bool	   *want;
+		SiftGranuleDesc gd;
+		SiftGranuleView v;
+		char	   *rec;
+		uint16		n;
+
+		if (!leaf_patched(o, pa->agg_leaf[j]) || ((done >> m) & 1))
+			continue;
+		done |= UINT32_C(1) << m;
+		if (!measure_patches(o, o->patch_attno[pa->agg_leaf[j]], dead, ndead, rows, values, isnull, &n))
+			return false;
+		if (n == 0)
+			continue;
+		want = palloc0(o->part->hdr.ncols);
+		for (int d = 0; d < cd->ndims; d++)
+			want[cd->dim_leaf[d]] = true;
+		want[cd->meas_leaf[m]] = true;
+		rec = sift_part_read_granule_cols(o->rel, o->part, o->g, want, &gd);
+		v = sift_granule_open_part(o->rel, o->part, rec, gd.data_len, &gd);
+		if (!sift_preagg_v2_repatch(cd, gran, &v, m, rows, values, isnull, n))
+			return false;
+	}
+	return true;
+}
+
 bool
 sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 {
@@ -825,18 +927,18 @@ sift_v6_preagg_try_granule(void *arg, const SiftF2GranOffer *o)
 	int			ndead;
 	bool		done = false;
 
-	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || o->patched || !sift_v6_group_takes_cells(pa->group))
+	if (!(o->desc->ext_flags & SIFT_PART_EXT_PREAGG) || !sift_v6_group_takes_cells(pa->group))
 		return false;
 	if ((!pb->bound || pb->gen != o->desc->part_gen) && !bind_part(pa, o))
 		return false;
-	if (!pb->usable || !preds_answerable(pb, o) || !sift_v6_preagg_rows_known(pa->vet, o) || (ndead = sift_preagg_dead_rows(o, dead)) < 0)
+	if (!pb->usable || !preds_answerable(pb, o) || !patch_answerable(pa, pb, o) || !sift_v6_preagg_rows_known(pa->vet, o) || (ndead = sift_preagg_dead_rows(o, dead)) < 0)
 		return false;
 	if (ndead > 0 && (pb->has_dist || pb->reads.float_sum != 0))
 		return false;
 	MemoryContextReset(pa->gcx);
 	old = MemoryContextSwitchTo(pa->gcx);
 	sift_preagg_gran_read(o->rel, pb->pp, pb->cube, o->g, &gran);
-	if (gran.ncells > 0 && (ndead == 0 || correct_cells(pa, pb, o, &gran, dead, ndead)))
+	if (gran.ncells > 0 && (ndead == 0 || correct_cells(pa, pb, o, &gran, dead, ndead)) && (o->patch == NULL || repatch_cells(pa, pb, o, &gran, dead, ndead)))
 		done = fold_cells(pa, pb, o, &gran);
 	MemoryContextSwitchTo(old);
 	if (done)

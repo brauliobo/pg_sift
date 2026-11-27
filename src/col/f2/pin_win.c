@@ -272,7 +272,7 @@ sift_pin_win_take(SiftPinWin *w, Relation rel, F2Scan *s, const SiftColSchema *s
 		return false;
 	}
 	w->refused++;
-	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > PIN_WIN_PREDS_MAX || sift_cdi_scan_granule_patched(s, g) ||
+	if (px != NULL || s->cands != NULL || s->bridge != NULL || s->sink == NULL || s->sink_maybe || s->heap_decide || s->survey || s->npreds > PIN_WIN_PREDS_MAX || sift_cdi_scan_granule_map(s, g) != NULL ||
 		!w->part_ok(w->part_arg, &pin->desc))
 		return false;
 	for (int k = 0; k < s->npreds; k++)

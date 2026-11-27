@@ -179,7 +179,7 @@ SELECT * FROM pa_check('tp');
  n  |      shape       | pre  | same 
 ----+------------------+------+------
   1 | key int, nulls   | none | t
-  2 | key int, numeric | none | t
+  2 | key int, numeric | all  | t
   3 | key text         | none | t
   4 | key date         | none | t
   5 | whole table      | none | t

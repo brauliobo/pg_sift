@@ -142,8 +142,8 @@ extern bool sift_cdi_scan_patch(struct F2Scan *s, const struct SiftColSchema *sc
 /* The addresses of granule g as the snapshot sees them, for a decision taken before any column is decoded; whether the chain moved a row of g, so that the range of addresses of g is not the range of its rows */
 extern void sift_cdi_scan_remap_tids(const struct F2Scan *s, uint32 g, uint64 *tids, int n);
 extern bool sift_cdi_scan_remaps(const struct F2Scan *s, uint32 g);
-/* Whether a column delta changes a value of granule g of the part being scanned */
-extern bool sift_cdi_scan_granule_patched(const struct F2Scan *s, uint32 g);
+/* The column deltas of granule g of the part being scanned, NULL when none changes a value of it */
+extern const SiftColDeltaGranMap *sift_cdi_scan_granule_map(const struct F2Scan *s, uint32 g);
 /* The map the scan patches its granules with (NULL: none), and the one it had: a granule of another part read again later is read with the map of that part */
 extern const SiftColDeltaPartMap *sift_cdi_scan_swap_map(struct F2Scan *s, const SiftColDeltaPartMap *map);
 

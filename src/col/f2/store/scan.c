@@ -290,7 +290,7 @@ granule_answered(const SiftStorePart *p, uint32 g)
 	return o->gran_sink(o->gran_arg, &(SiftF2GranOffer) {.rel = o->rel,.part = pin->part,.desc = p->d,.schema = s->store->schema,.g = g,.gd = &pin->gdir[g],
 						 .dead = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL,.snap = o->snap,.preds = o->preds,.npreds = o->npreds,.decided = s->offer_decided,
 						 .zones = s->offer_zones,.exceptions = s->offer_exceptions,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &pin->tidx[g]),
-						 .patched = sift_col_delta_scan_granule(s->delta, p->e, pin, g) != NULL,.px = p->px,.vis = granule_vis(p, g),.phys = p->r->phys});
+						 .patch = sift_col_delta_scan_granule(s->delta, p->e, pin, g),.patch_attno = s->store->leaf_attno,.px = p->px,.vis = granule_vis(p, g),.phys = p->r->phys});
 }
 
 static void

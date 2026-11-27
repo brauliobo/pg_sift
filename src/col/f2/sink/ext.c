@@ -648,7 +648,7 @@ granule_answered(const SiftF2Pull *p)
 
 	return p->spec.gran_sink != NULL &&
 		p->spec.gran_sink(p->spec.gran_arg, &(SiftF2GranOffer) {.rel = p->index,.part = p->part,.desc = p->pd,.schema = sift_col_rel(p->index)->schema,.g = p->g,.gd = &p->dir[p->g],.dead = dg,.snap = p->snap,
-							.patched = p->cd != NULL && sift_col_delta_gran_map(p->cd, p->g) != NULL,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
+							.patch = p->cd != NULL ? sift_col_delta_gran_map(p->cd, p->g) : NULL,.pend_hit = p->px != NULL && sift_pdel_idx_may_hit_granule(p->px, &p->tix[p->g]),.px = p->px,.vis = SIFT_GVIS_HEAP});
 }
 
 /* the next granule, slab or part; false at the end of the index */

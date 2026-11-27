@@ -196,8 +196,8 @@ sift_cdi_slot_exceptions(F2Scan *s, SiftCdiMapSlot *slot, Relation rel, const Si
 	return out;
 }
 
-static const SiftColDeltaGranMap *
-scan_granule_map(const F2Scan *s, uint32 g)
+const SiftColDeltaGranMap *
+sift_cdi_scan_granule_map(const F2Scan *s, uint32 g)
 {
 	return s->cd != NULL && s->cd->map != NULL ? sift_col_delta_gran_map(s->cd->map, g) : NULL;
 }
@@ -206,7 +206,7 @@ scan_granule_map(const F2Scan *s, uint32 g)
 bool
 sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *views, uint64 *tids, int n, MemoryContext cx)
 {
-	const SiftColDeltaGranMap *gm = scan_granule_map(s, g);
+	const SiftColDeltaGranMap *gm = sift_cdi_scan_granule_map(s, g);
 
 	if (gm == NULL)
 		return false;
@@ -217,22 +217,16 @@ sift_cdi_scan_patch(F2Scan *s, const SiftColSchema *schema, uint32 g, ColView *v
 void
 sift_cdi_scan_remap_tids(const F2Scan *s, uint32 g, uint64 *tids, int n)
 {
-	const SiftColDeltaGranMap *gm = scan_granule_map(s, g);
+	const SiftColDeltaGranMap *gm = sift_cdi_scan_granule_map(s, g);
 
 	if (gm != NULL)
 		sift_cdi_remap_tids(gm, tids, n);
 }
 
 bool
-sift_cdi_scan_granule_patched(const F2Scan *s, uint32 g)
-{
-	return scan_granule_map(s, g) != NULL;
-}
-
-bool
 sift_cdi_scan_remaps(const F2Scan *s, uint32 g)
 {
-	return sift_cdi_gran_remaps(scan_granule_map(s, g));
+	return sift_cdi_gran_remaps(sift_cdi_scan_granule_map(s, g));
 }
 
 const SiftColDeltaPartMap *
