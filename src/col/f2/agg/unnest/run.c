@@ -4,6 +4,7 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 
 #include "agg/qual/qual.h"
@@ -17,13 +18,27 @@ vec_type(SiftV6Class cls)
 	return cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : SVEC_I64;
 }
 
-/* the leaf a column of the scan is: the one of a key of a jsonb document a qual or an expression names, the one jleaf names, or the first one of the attribute */
+/* the "<doc>#present" leaf of a shredded document, whose NULL slots are the SQL NULL documents an IS [NOT] NULL of the document tests (agg/plan/qual.c checks it exists) */
+static int
+present_leaf(const SiftColRel *r, int attno)
+{
+	int			i = r->first[attno];
+
+	while (i < r->schema->ncols && r->schema->cols[i].attno == attno && !sift_col_def_is_present(&r->schema->cols[i]))
+		i++;
+	SIFT_INVARIANT(i < r->schema->ncols && r->schema->cols[i].attno == attno, "sift_col: the jsonb column %d of an unnest scan has a presence leaf", attno);
+	return i;
+}
+
+/* the leaf a column of the scan is: the one of a key of a jsonb document a qual or an expression names, the one jleaf names, the presence of a document read whole, or the first one of the attribute */
 static int
 leaf_of(const SiftColRel *r, const SiftV6Col *c)
 {
 	if (sift_v6_vatt_is_json(c->attno))
 		return sift_v6_vatt_leaf(c->attno);
-	return c->jleaf > 0 ? c->jleaf - 1 : r->first[c->attno];
+	if (c->jleaf > 0)
+		return c->jleaf - 1;
+	return c->typid == JSONBOID && r->json[c->attno] ? present_leaf(r, c->attno) : r->first[c->attno];
 }
 
 static int col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);

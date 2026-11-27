@@ -80,7 +80,20 @@ SELECT 'after writes' AS stage, n, cv_check(replace(q, '$T', 'cv')) AS outcome F
 VACUUM cv;
 SELECT 'after vacuum' AS stage, n, cv_check(replace(q, '$T', 'cv')) AS outcome FROM shapes WHERE n <= 19 ORDER BY n;
 
-DROP TABLE shapes, cv, cv_nn, cv_f1;
+-- an unnest of an array of the document beside IS [NOT] NULL of the document: the test reads the presence leaf, not the first leaf of the document (a text leaf of a dictionary)
+SET sift.test_create_format1 = off;
+CREATE TABLE cvu (id int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO cvu SELECT i, CASE WHEN i % 9 = 0 THEN NULL ELSE jsonb_build_object('c', 'c' || i % 3, 'items', jsonb_build_array(jsonb_build_object('kind', 'k' || i % 4, 'score', i % 10),
+	jsonb_build_object('kind', 'k' || (i + 1) % 4, 'score', i * 7 % 10))) END FROM generate_series(1, 3000) i;
+CREATE INDEX cvu_col ON cvu USING sift_col (id, doc) WITH (paths = 'doc.c text, doc.items[]{kind text, score float8}');
+RESET sift.test_create_format1;
+VACUUM ANALYZE cvu;
+SELECT n, cv_check(q) AS outcome FROM (VALUES
+  (1, $q$SELECT e ->> 'kind', count(*), sum((e ->> 'score')::float8) FROM cvu, jsonb_array_elements(doc -> 'items') e WHERE doc IS NOT NULL GROUP BY 1$q$),
+  (2, $q$SELECT count(*) FROM cvu, jsonb_array_elements(doc -> 'items') e WHERE doc IS NULL$q$),
+  (3, $q$SELECT e ->> 'kind', count(*) FILTER (WHERE doc IS NOT NULL) AS docs, count(*) AS n FROM cvu LEFT JOIN LATERAL jsonb_array_elements(doc -> 'items') e ON true GROUP BY 1$q$)) t(n, q) ORDER BY n;
+
+DROP TABLE shapes, cv, cv_nn, cv_f1, cvu;
 DROP FUNCTION cv_check(text), cv_make(text, bool, bool), cv_doc(int);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
