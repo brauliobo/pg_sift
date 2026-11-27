@@ -68,7 +68,7 @@ SELECT * FROM kchk('built');
  built      | customer range     | same Granules: scanned=0 pruned_zone=7 pruned_skip=0 preagg=1
  built      | customer list      | same Granules: scanned=0 pruned_zone=5 pruned_skip=0 preagg=3
  built      | other column       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
- built      | top-N by key       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
+ built      | top-N by key       | same Granules: scanned=1 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 -- the same customer in the index with superblock units: the random heap puts its rows in every unit
@@ -88,7 +88,7 @@ SELECT * FROM kchk('write buffer');
  write buffer | customer range     | same Granules: scanned=2 pruned_zone=7 pruned_skip=0
  write buffer | customer list      | same Granules: scanned=3 pruned_zone=5 pruned_skip=0 preagg=1
  write buffer | other column       | same Granules: scanned=9 pruned_zone=0 pruned_skip=0
- write buffer | top-N by key       | same Granules: scanned=9 pruned_zone=0 pruned_skip=0
+ write buffer | top-N by key       | same Granules: scanned=2 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SELECT sift.col_promote('kc_idx') > 0 AS promoted;
@@ -105,7 +105,7 @@ SELECT * FROM kchk('promoted');
  promoted   | customer range     | same Granules: scanned=1 pruned_zone=8 pruned_skip=0
  promoted   | customer list      | same Granules: scanned=2 pruned_zone=6 pruned_skip=0 preagg=1
  promoted   | other column       | same Granules: scanned=8 pruned_zone=1 pruned_skip=0
- promoted   | top-N by key       | same Granules: scanned=9 pruned_zone=0 pruned_skip=0
+ promoted   | top-N by key       | same Granules: scanned=1 pruned_zone=8 pruned_skip=0
 (6 rows)
 
 DELETE FROM kc WHERE id % 7 = 0;
@@ -118,7 +118,7 @@ SELECT * FROM kchk('deleted and updated');
  deleted and updated | customer range     | same Granules: scanned=9 pruned_zone=8 pruned_skip=0
  deleted and updated | customer list      | same Granules: scanned=11 pruned_zone=6 pruned_skip=0
  deleted and updated | other column       | same Granules: scanned=16 pruned_zone=1 pruned_skip=0
- deleted and updated | top-N by key       | same Granules: scanned=17 pruned_zone=0 pruned_skip=0
+ deleted and updated | top-N by key       | same Granules: scanned=9 pruned_zone=8 pruned_skip=0
 (6 rows)
 
 VACUUM kc;
@@ -130,7 +130,7 @@ SELECT * FROM kchk('vacuumed');
  vacuumed   | customer range     | same Granules: scanned=8 pruned_zone=7 pruned_skip=0 preagg=1
  vacuumed   | customer list      | same Granules: scanned=8 pruned_zone=5 pruned_skip=0 preagg=3
  vacuumed   | other column       | same Granules: scanned=15 pruned_zone=1 pruned_skip=0
- vacuumed   | top-N by key       | same Granules: scanned=16 pruned_zone=0 pruned_skip=0
+ vacuumed   | top-N by key       | same Granules: scanned=9 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SELECT sift.col_merge('kc_idx', true) >= 0 AS merged;
@@ -147,7 +147,7 @@ SELECT * FROM kchk('merged');
  merged     | customer range     | same Granules: scanned=0 pruned_zone=7 pruned_skip=0 preagg=1
  merged     | customer list      | same Granules: scanned=0 pruned_zone=5 pruned_skip=0 preagg=3
  merged     | other column       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
- merged     | top-N by key       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
+ merged     | top-N by key       | same Granules: scanned=1 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SELECT count(*) >= 0 AS refreshed FROM sift.col_refresh('kc_idx');
@@ -164,7 +164,7 @@ SELECT * FROM kchk('refreshed');
  refreshed  | customer range     | same Granules: scanned=0 pruned_zone=7 pruned_skip=0 preagg=1
  refreshed  | customer list      | same Granules: scanned=0 pruned_zone=5 pruned_skip=0 preagg=3
  refreshed  | other column       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
- refreshed  | top-N by key       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
+ refreshed  | top-N by key       | same Granules: scanned=1 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 REINDEX INDEX kc_idx;
@@ -176,7 +176,7 @@ SELECT * FROM kchk('reindexed');
  reindexed  | customer range     | same Granules: scanned=0 pruned_zone=7 pruned_skip=0 preagg=1
  reindexed  | customer list      | same Granules: scanned=0 pruned_zone=5 pruned_skip=0 preagg=3
  reindexed  | other column       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
- reindexed  | top-N by key       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
+ reindexed  | top-N by key       | same Granules: scanned=1 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);
@@ -240,7 +240,7 @@ SELECT * FROM kchk('runs');
  runs       | customer range     | same Granules: scanned=8 pruned_zone=7 pruned_skip=0
  runs       | customer list      | same Granules: scanned=8 pruned_zone=0 pruned_skip=0 preagg=7
  runs       | other column       | same Granules: scanned=8 pruned_zone=7 pruned_skip=0
- runs       | top-N by key       | same Granules: scanned=15 pruned_zone=0 pruned_skip=0
+ runs       | top-N by key       | same Granules: scanned=8 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SET maintenance_work_mem = '4MB';
@@ -265,7 +265,7 @@ SELECT * FROM kchk('runs merged');
  runs merged | customer range     | same Granules: scanned=0 pruned_zone=7 pruned_skip=0 preagg=1
  runs merged | customer list      | same Granules: scanned=0 pruned_zone=5 pruned_skip=0 preagg=3
  runs merged | other column       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
- runs merged | top-N by key       | same Granules: scanned=8 pruned_zone=0 pruned_skip=0
+ runs merged | top-N by key       | same Granules: scanned=1 pruned_zone=7 pruned_skip=0
 (6 rows)
 
 SELECT sift.col_verify('kc_idx', true);
