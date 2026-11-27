@@ -18,6 +18,7 @@
 #include "agg/cost/cost.h"
 #include "agg/source_rel.h"
 #include "agg/vexpr.h"
+#include "col/am.h"
 #include "core/meta_peek.h"
 #include "core/quarantine/quarantine.h"
 #include "core/store/ops.h"
@@ -195,7 +196,10 @@ sift_v6_source_enter(Relation source, bool is_table, Snapshot snap)
 	Relation	heap = source;
 
 	if (is_table)
+	{
 		pgstat_count_heap_scan(source);
+		SIFT_COL_OPEN_GATE();
+	}
 	else
 	{
 		sift_quarantine_net(source, sift_meta_peek_format(source).flags);

@@ -1,7 +1,7 @@
 # The participants of a parallel aggregate over a sift_table scan what the snapshot of the leader sees, whenever each of them opened the table: the leader
 # opens and holds on the test gate, the table is maintained and vacuumed (write buffers promoted, tombstones and liveness rewritten), then the workers open and
-# take the items. The aggregate (a join of the table to a dimension through a lookup) is the heap's at the snapshot. With the item gate every participant has
-# opened before the table changes.
+# take the items. The aggregate (a grouping of the table, by Parallel Custom Scan (SiftAggV6)) is the heap's at the snapshot. With the item gate every
+# participant has opened before the table changes.
 # requires: tam gates
 
 setup
@@ -14,16 +14,11 @@ setup
 	INSERT INTO iso_pt SELECT g, (g * 7919) % 1000, g % 100, repeat('x', 200) FROM generate_series(20001, 26000) g;
 	UPDATE iso_pt SET v = v + 1, k = k + 2 WHERE id % 3 = 0;
 	DELETE FROM iso_pt WHERE id % 11 = 0;
-
-	CREATE TABLE iso_pd (id int PRIMARY KEY, g int NOT NULL);
-	INSERT INTO iso_pd SELECT g, g % 7 FROM generate_series(0, 1100) g;
-	CREATE INDEX iso_pd_col ON iso_pd USING sift_col (id, g);
 	ANALYZE iso_pt;
-	ANALYZE iso_pd;
 
 	CREATE FUNCTION iso_pt_q(gate int, igate int, OUT agree bool, OUT parallel bool) LANGUAGE plpgsql AS $$
 	DECLARE
-		q text := 'SELECT d.g, count(*), sum(p.v) FROM iso_pt p JOIN iso_pd d ON d.id = p.k GROUP BY 1 ORDER BY 1';
+		q text := 'SELECT k % 7, count(*), sum(v) FROM iso_pt GROUP BY 1 ORDER BY 1';
 		a text;
 		b text;
 		l text;
@@ -33,9 +28,10 @@ setup
 		PERFORM set_config('parallel_tuple_cost', '0', true);
 		PERFORM set_config('min_parallel_table_scan_size', '0', true);
 		PERFORM set_config('sift.test_agg_par_min_rows', '0', true);
+		PERFORM set_config('sift.agg_force', 'on', true);
 		parallel := false;
 		FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-			parallel := parallel OR l ~ 'Workers Planned: ';
+			parallel := parallel OR l ~ 'Parallel Custom Scan \(SiftAggV6\)';
 		END LOOP;
 		PERFORM set_config('sift.test_col_open_gate', gate::text, true);
 		PERFORM set_config('sift.test_item_gate', igate::text, true);
@@ -51,7 +47,7 @@ setup
 
 teardown
 {
-	DROP TABLE iso_pt, iso_pd;
+	DROP TABLE iso_pt;
 	DROP FUNCTION iso_pt_q(int, int);
 }
 
