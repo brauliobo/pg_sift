@@ -24,10 +24,12 @@ BEGIN
 	RETURN a || CASE WHEN a = b THEN '' ELSE ' MISMATCH ' || b END;
 END $$;
 SELECT vb_agree('express'), vb_agree('standard'), vb_agree('shipping');
--- the rows come back through the scan that returns tuples, with prefetching on
+-- the rows come back through the scan that returns tuples, with prefetching on (the aggregate scan, which would take this top-N, is off)
 SET sift.prefetch = on;
+SET sift.enable_agg = off;
 EXPLAIN (COSTS OFF) SELECT id, body FROM vb WHERE body @@> 'express' ORDER BY id LIMIT 3;
 SELECT id, body FROM vb WHERE body @@> 'express' ORDER BY id LIMIT 3;
+RESET sift.enable_agg;
 VACUUM vb;
 SELECT vb_agree('express');
 -- sift.table_space tells the virtual blocks left: the floor of 140000 and the table's write buffers are taken from 2^32 - 2

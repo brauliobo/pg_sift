@@ -56,16 +56,16 @@ SELECT name, ha_node(q) FROM ha_q ORDER BY name;
     name     |         ha_node          
 -------------+--------------------------
  bool_cmp    | none
- by_day      | none
- by_null     | none
+ by_day      | SiftHybridAgg sift_table
+ by_null     | SiftHybridAgg sift_table
  count_all   | SiftHybridAgg sift_table
  facet_small | SiftHybridAgg sift_table
- facet_wide  | none
+ facet_wide  | SiftHybridAgg sift_table
  having      | SiftHybridAgg sift_table
  is_null     | SiftHybridAgg sift_table
  no_match    | none
  no_qual     | SiftHybridAgg sift_table
- phrase_or   | none
+ phrase_or   | SiftHybridAgg sift_table
  plain_aggs  | SiftHybridAgg sift_table
  rare        | SiftHybridAgg sift_table
  ts_range    | SiftHybridAgg sift_table

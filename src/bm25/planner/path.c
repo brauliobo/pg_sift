@@ -24,12 +24,14 @@
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
+#include "agg/cost/card.h"
 #include "bm25/am.h"
 #include "bm25/estimate.h"
 #include "bm25/eval/eval.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
 #include "bm25/pushdown.h"
+#include "core/catalog.h"
 #include "core/quarantine/quarantine.h"
 
 /* Dictionary pages a term lookup reads: root array hit, DICTIDX, DICT block */
@@ -214,7 +216,7 @@ sift_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
  */
 #define UNKNOWN_QUERY_SEL		0.1
 
-/* What fetching docs matches costs per heap tuple; docs is clamped to the rows the rel keeps and has */
+/* What fetching docs matches costs per row: of a sift_table its locate and decode, of a heap the tuple, and the pages either reads; docs is clamped to the rows the rel keeps and has */
 static void
 scan_cost_docs(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, double docs, ScanCost *sc)
 {
@@ -229,7 +231,7 @@ scan_cost_docs(PlannerInfo *root, RelOptInfo *rel, ScanCand *c, double docs, Sca
 	fetched = Min(index_pages_fetched(sc->docs, (BlockNumber) Min((double) rel->pages, Max(root->total_table_pages + c->index->pages, 1.0)), c->index->pages, root), pages);
 	sc->page = random_cost - (random_cost - seq_cost) * sqrt(fetched / pages);
 	sc->docs = Max(sc->docs, 1);
-	sc->tuple = cpu_tuple_cost + sc->qual + fetched / sc->docs * sc->page;
+	sc->tuple = sift_v6_fetch_cost(sift_relid_is_sift_table(planner_rt_fetch(rel->relid, root)->relid)) + sc->qual + fetched / sc->docs * sc->page;
 }
 
 static void
