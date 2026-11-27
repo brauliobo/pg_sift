@@ -5,6 +5,9 @@
  * predicate of the index, which has none or a weaker one) and either keeps no other row (the predicate implies the filter) or holds the columns the filter reads, so that the
  * scan tests it on the rows the index keeps. The filter is parsed against the table as a CREATE INDEX .. WHERE would, and the implications are the planner's own
  * (predicate_implied_by, the proof the aggregate scan makes for a query against a partial index).
+ *
+ * sift._projection_index_sql(index, source, leaves, options, filter, concurrently): the CREATE INDEX of projections. Each column is one index element and the filter one expression, and the
+ * statement they make is one CREATE INDEX of the table: the definitions are text a role stored, and a superuser runs the statement.
  */
 #include "postgres.h"
 
@@ -23,30 +26,43 @@
 #include "parser/parse_relation.h"
 #include "parser/parser.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "core/catalog.h"
 #include "core/catname.h"
 #include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_col_projection_filter_served);
+PG_FUNCTION_INFO_V1(sift_col_projection_index_sql);
+
+/* The text is one CREATE INDEX statement of nleaves index elements, with options and a predicate only as said, and nothing else */
+static IndexStmt *
+index_statement(const char *sql, int nleaves, bool with, bool filtered)
+{
+	List	   *raw = raw_parser(sql, RAW_PARSE_DEFAULT);
+	IndexStmt  *stmt = list_length(raw) == 1 ? (IndexStmt *) ((RawStmt *) linitial(raw))->stmt : NULL;
+
+	if (stmt == NULL || !IsA(stmt, IndexStmt) || list_length(stmt->indexParams) != nleaves || (stmt->options != NIL) != with || (stmt->whereClause != NULL) != filtered ||
+		stmt->indexIncludingParams != NIL || stmt->tableSpace != NULL)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("a projection is not one CREATE INDEX statement: %s", sql),
+						errdetail("Each column of a projection is one index element and its filter one expression.")));
+	return stmt;
+}
 
 /* The filter as the implicit-AND list of its simplified conjuncts, in terms of the columns of heap (range table entry 1) */
 static List *
 filter_conjuncts(Relation heap, const char *filter)
 {
-	StringInfoData sql;
-	SelectStmt *select;
+	char	   *sql = psprintf("CREATE INDEX ON t USING sift_col (x) WHERE %s", filter);
 	ParseState *pstate = make_parsestate(NULL);
 	Node	   *expr;
 
-	initStringInfo(&sql);
-	appendStringInfo(&sql, "SELECT FROM t WHERE %s", filter);
-	select = (SelectStmt *) ((RawStmt *) linitial(raw_parser(sql.data, RAW_PARSE_DEFAULT)))->stmt;
-	pstate->p_sourcetext = sql.data;
+	pstate->p_sourcetext = sql;
 	addNSItemToQuery(pstate, addRangeTableEntryForRelation(pstate, heap, AccessShareLock, NULL, false, true), true, true, true);
-	expr = transformWhereClause(pstate, select->whereClause, EXPR_KIND_INDEX_PREDICATE, "WHERE");
+	expr = transformWhereClause(pstate, index_statement(sql, 1, false, true)->whereClause, EXPR_KIND_INDEX_PREDICATE, "WHERE");
 	assign_expr_collations(pstate, expr);
 	expr = eval_const_expressions(NULL, expr);
 	expr = (Node *) canonicalize_qual((Expr *) expr, true);
@@ -122,4 +138,34 @@ sift_col_projection_filter_served(PG_FUNCTION_ARGS)
 	relation_close(index, AccessShareLock);
 	relation_close(heap, AccessShareLock);
 	PG_RETURN_BOOL(result);
+}
+
+Datum
+sift_col_projection_index_sql(PG_FUNCTION_ARGS)
+{
+	Oid			source = PG_GETARG_OID(1);
+	char	   *filter = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
+	Datum	   *leaves;
+	bool	   *nulls;
+	int			n;
+	StringInfoData sql;
+
+	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(2), TEXTOID, &leaves, &nulls, &n);
+	initStringInfo(&sql);
+	appendStringInfo(&sql, "CREATE INDEX %s%s ON %s USING sift_col (", PG_GETARG_BOOL(5) ? "CONCURRENTLY " : "", quote_identifier(text_to_cstring(PG_GETARG_TEXT_PP(0))),
+					 quote_qualified_identifier(sift_namespace_name(get_rel_namespace(source)), sift_rel_name(source)));
+	for (int i = 0; i < n; i++)
+	{
+		char	   *leaf = nulls[i] ? "" : TextDatumGetCString(leaves[i]);
+
+		index_statement(psprintf("CREATE INDEX ON t USING sift_col (%s)", leaf), 1, false, false);
+		appendStringInfo(&sql, "%s%s", i > 0 ? ", " : "", leaf);
+	}
+	appendStringInfoChar(&sql, ')');
+	if (!PG_ARGISNULL(3))
+		appendStringInfo(&sql, " WITH (%s)", text_to_cstring(PG_GETARG_TEXT_PP(3)));
+	if (filter != NULL)
+		appendStringInfo(&sql, " WHERE %s", filter);
+	index_statement(sql.data, n, !PG_ARGISNULL(3), filter != NULL);
+	PG_RETURN_TEXT_P(cstring_to_text(sql.data));
 }

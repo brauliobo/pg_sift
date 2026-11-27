@@ -34,7 +34,7 @@ SELECT sift.projection_filter_served('s114_t'::regclass, 'kind = 1', 's114_ix'::
 
 CREATE FUNCTION public.s114_true() RETURNS boolean LANGUAGE sql IMMUTABLE RETURN true;
 SELECT sift.projection_filter_served('s114_t'::regclass, 's114_true()', 's114_ix'::regclass) AS unqualified;
-ERROR:  function s114_true() does not exist at character 21
+ERROR:  function s114_true() does not exist at character 44
 SELECT sift.projection_filter_served('s114_t'::regclass, 'public.s114_true()', 's114_ix'::regclass) AS qualified;
  qualified 
 -----------

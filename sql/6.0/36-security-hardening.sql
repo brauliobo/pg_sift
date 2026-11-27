@@ -215,6 +215,42 @@ BEGIN
 	RETURN NULL;
 END $$;
 
+-- The CREATE INDEX of projections is made of the text of their definitions, which a role stored and a superuser may run: each column is one index element, the filter one expression and
+-- the statement one CREATE INDEX of the table. The probe of a definition and the definitions a role writes are held to the same statement.
+CREATE OR REPLACE FUNCTION sift._projection_index_sql(index text, source regclass, leaves text[], options text, filter text, conc boolean) RETURNS text
+	AS 'MODULE_PATHNAME', 'sift_col_projection_index_sql' LANGUAGE C STABLE;
+COMMENT ON FUNCTION sift._projection_index_sql(text, regclass, text[], text, text, boolean) IS 'Internal: the CREATE INDEX of projections, refused unless each column is one index element, the filter one expression and the statement one CREATE INDEX';
+
+CREATE OR REPLACE FUNCTION sift.projection_probe(source text, leaves text[], rollups text, filter text, options jsonb, OUT canonical text[], OUT canonical_filter text)
+	LANGUAGE plpgsql SET client_min_messages = warning SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+	idx oid;
+BEGIN
+	EXECUTE format('CREATE TEMPORARY TABLE sift_projection_probe (LIKE %s)', source::regclass);
+	EXECUTE sift._projection_index_sql('sift_projection_probe_i', 'pg_temp.sift_projection_probe'::regclass, leaves, sift.projection_with(ARRAY[]::text[], rollups, options, '{}'), filter, false);
+	idx := 'pg_temp.sift_projection_probe_i'::regclass;
+	canonical := ARRAY(SELECT pg_get_indexdef(idx, k, true) FROM generate_series(1, (SELECT indnatts FROM pg_index WHERE indexrelid = idx)) k ORDER BY k);
+	canonical_filter := pg_get_expr((SELECT indpred FROM pg_index WHERE indexrelid = idx), (SELECT indrelid FROM pg_index WHERE indexrelid = idx), true);
+	DROP TABLE pg_temp.sift_projection_probe;
+END $$;
+
+-- A definition written as the owner of the extension names its table by its qualified name, as projection_create does, and is one CREATE INDEX: a role that calls the helper itself
+-- stores no other text
+CREATE OR REPLACE FUNCTION sift._projection_put(p sift.projections, replace boolean) RETURNS void
+	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+	IF p.source IS DISTINCT FROM sift.scope_qualified(to_regclass(p.source)) OR (SELECT relpersistence FROM pg_class WHERE oid = to_regclass(p.source)) = 't' THEN
+		RAISE EXCEPTION 'a projection names a table by its qualified name, not "%"', p.source USING ERRCODE = 'invalid_parameter_value';
+	END IF;
+	PERFORM sift._projection_index_sql(p.name, to_regclass(p.source), p.leaves, NULL, p.filter, false);
+	IF replace THEN
+		UPDATE sift.projections x SET leaves = p.leaves, rollups = p.rollups, filter = p.filter, options = p.options, canonical = p.canonical, canonical_filter = p.canonical_filter
+			WHERE x.name = p.name;
+	ELSE
+		INSERT INTO sift.projections SELECT p.*;
+	END IF;
+END $$;
+
 CREATE OR REPLACE FUNCTION sift.projection_plan(index text, projections text[], layout jsonb, conc boolean, OUT serving oid, OUT statement text) LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
 	d      sift.projections[];
@@ -262,8 +298,7 @@ BEGIN
 			END IF;
 		END LOOP;
 	END LOOP;
-	statement := format('CREATE INDEX %s%I ON %s USING sift_col (%s) WITH (%s)%s', CASE WHEN conc THEN 'CONCURRENTLY ' ELSE '' END, index, d[1].source,
-						array_to_string(cols, ', '), sift.projection_with(projections, d[1].rollups, d[1].options, layout), COALESCE(' WHERE ' || d[1].filter, ''));
+	statement := sift._projection_index_sql(index, to_regclass(d[1].source), cols, sift.projection_with(projections, d[1].rollups, d[1].options, layout), d[1].filter, conc);
 END $$;
 
 ALTER VIEW sift.projection_status SET (security_barrier = true);
