@@ -35,6 +35,7 @@
 #include "agg/join/shape.h"
 #include "agg/lateral_plan.h"
 #include "agg/expr/pg.h"
+#include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
 
 bool
@@ -148,7 +149,7 @@ make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	memmove(&sh->dim[ni], &sh->dim[0], sh->nd * sizeof(SiftV6JoinDim));
 	memcpy(&sh->dim[0], inner, ni * sizeof(SiftV6JoinDim));
 	sh->nd += ni;
-	return sh->nd > 0;
+	return sh->nd > 0 || sh->elem != NULL;
 }
 
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
@@ -377,7 +378,7 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		int			ncolumns = 0,
 					nmembers = 0;
 
-		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken)
+		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken || !sift_v6_ec_equates(ec))
 			continue;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{
@@ -627,7 +628,7 @@ pairs_ok(const SiftV6JoinShape *sh)
 	{
 		const SiftV6JoinDim *d = &sh->dim[i];
 
-		if ((d->nkeys == 0 || d->on != NIL) && (sh->elem != NULL || d->mode == SV6J_SEMI_EQUI || d->mode == SV6J_ANTI_EQUI || d->mode == SV6J_RANGE_SMALL))
+		if ((d->nkeys == 0 || d->on != NIL) && ((sh->elem != NULL && d->nkeys == 0) || d->mode == SV6J_SEMI_EQUI || d->mode == SV6J_ANTI_EQUI || d->mode == SV6J_RANGE_SMALL))
 			return false;
 	}
 	return true;
@@ -687,20 +688,22 @@ seed_key_expr(V6Plan *p, const SiftV6JoinShape *sh, int dim, const Node *probe, 
 	return true;
 }
 
-/* the unnest of the join: the pairs of a sift_table's rows go through a pipe of their own (agg/unnest/jsonb.h), which no dimension is probed in */
+/* the unnest of the join, or the tests of the elements of the arrays of its rows, and its dimensions */
 static bool
-seed_dims(V6Plan *p, const SiftV6JoinShape *sh)
+seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 {
 	SiftV6Ext  *x;
 
 	if (sh->elem != NULL)
 	{
-		if (p->is_table || !sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
+		if (!sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
 			return false;
 		x = p->xseed;
 		x->elem.semi = sh->semi;
 	}
-	else
+	else if (extra != NULL && !sift_v6_unnest_tests_seed(p, extra))
+		return false;
+	else if ((x = p->xseed) == NULL)
 		p->xseed = x = sift_v6_ext_new();
 	p->spec.ext = x;
 	for (int d = 0; d < sh->nd; d++)
@@ -843,7 +846,8 @@ join_compile(V6Plan *p, const void *arg)
 	const JoinStmt *js = arg;
 
 	p->sub_qual = js->sh->sub_qual;
-	return seed_dims(p, js->sh) && sift_v6_compile_on(p, js->extra, js->group_exprs) && (js->sh->elem == NULL || sift_v6_unnest_ready(p)) && seed_resid(p, js->sh);
+	return seed_dims(p, js->sh, js->extra) && sift_v6_compile_on(p, js->extra, js->group_exprs) &&
+		(!p->xseed->unnest || sift_v6_unnest_ready(p)) && seed_resid(p, js->sh);
 }
 
 static void

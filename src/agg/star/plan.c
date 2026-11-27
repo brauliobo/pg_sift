@@ -109,8 +109,8 @@ add_key(StarDim *d, const Var *f, const Var *v, Oid inputcollid)
 }
 
 /* the class equates expressions of the query: a sort key (GROUP BY, ORDER BY) is a class of its one expression, which joins nothing */
-static bool
-equates(const EquivalenceClass *ec)
+bool
+sift_v6_ec_equates(const EquivalenceClass *ec)
 {
 	int			n = 0;
 
@@ -129,7 +129,7 @@ equivalence_keys(PlannerInfo *root, Relids base, Index fact, StarDim *dims, int 
 		Relids		rels = NULL;
 		bool		computed = false;
 
-		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken || !equates(ec))
+		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken || !sift_v6_ec_equates(ec))
 			continue;
 		foreach_node(EquivalenceMember, em, ec->ec_members)
 		{

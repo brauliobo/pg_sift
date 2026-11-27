@@ -182,6 +182,8 @@ extern void sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, Li
 /* The columns the planners of joins and unnests answer for plan.c: false when the expression is not one of theirs */
 extern bool sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 extern bool sift_v6_star_joined_col(V6Plan *p, Expr *e, bool key, SiftV6Col *out);
+/* the class equates expressions of the query: a sort key (GROUP BY, ORDER BY) is a class of its one expression, which joins nothing */
+extern bool sift_v6_ec_equates(const EquivalenceClass *ec);
 extern bool sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 /* The pieces of the planner of a star join that the planner of the other joins (v6_join_plan.h) reuses */
 extern const Var *sift_v6_plain_var(const Node *n);

@@ -531,22 +531,28 @@ exists_cost(const RelOptInfo *rel)
 	return rel->tuples * cpu_operator_cost * EXISTS_ROW_OPERATORS;
 }
 
+bool
+sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra)
+{
+	SiftV6TestStreams st = {0};
+	const List *cands = collect_cands(p->root, p->rel, p->out, extra, where_flags(p));
+
+	if (cands == NIL)
+		return true;
+	if (!build_tests(p, cands, &st) || !sift_v6_unnest_seed(p, NULL, &st.rte[0], false) || !seed_streams(p, &st) || !build_exists_quals(p))
+		return false;
+	p->xseed->row_tests = true;
+	return store_tests(p);
+}
+
 static void
 try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, const SiftV6RelSource *src)
 {
 	V6Plan		p = {.root = root,.rel = rel,.out = out};
 	Relation	source = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
-	SiftV6TestStreams st = {0};
-	const List *cands;
 	bool		ok;
 
-	ok = sift_v6_plan_bind(&p, src, source) && (cands = collect_cands(root, rel, out, extra, where_flags(&p))) != NIL && build_tests(&p, cands, &st) && sift_v6_unnest_seed(&p, NULL, &st.rte[0], false) && seed_streams(&p, &st) && build_exists_quals(&p);
-	if (ok)
-	{
-		p.xseed->row_tests = true;
-		ok = store_tests(&p);
-		ok = ok && sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
-	}
+	ok = sift_v6_plan_bind(&p, src, source) && sift_v6_unnest_tests_seed(&p, extra) && p.xseed != NULL && sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
 	if (ok)
 		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, exists_cost(rel), rel->rows);
 	sift_v6_source_close(source, src->is_table, NoLock);
