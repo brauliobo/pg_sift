@@ -4,7 +4,8 @@
  * reader holds do not keep the newer ones from being freed; a database that is dropped gives back the slots and the snapshots of its indexes. A writer that holds only the build_lock of a slot
  * and commits a newer version between the claim of a slot and its write is not undone; a meta of the version a slot has the snapshot of keeps that snapshot; a builder, a reader beyond the
  * epoch slots and a backend that installs a list give back what they hold when they fail (ERROR) or exit (FATAL); a builder whose area has no room for the snapshot, or that exits while it
- * builds it, gives back the claim of the build, so that the next reader of the version makes it.
+ * builds it, gives back the claim of the build, so that the next reader of the version makes it. A writer that has not attached the area takes no snapshot out of a slot: another backend that
+ * publishes one between its claim and its write, and leaves, does not tear the area down under its retire.
  */
 #include "postgres.h"
 
@@ -192,6 +193,7 @@ dsa_free(dsa_area *a, dsa_pointer dp)
 void *
 dsa_get_address(dsa_area *a, dsa_pointer dp)
 {
+	SIFT_CHECKF(a != NULL, "a snapshot is read outside an area this backend has attached");
 	addresses++;
 	return (void *) (uintptr_t) dp;
 }
@@ -520,10 +522,79 @@ test_build_exit_released(void)
 				"a builder that exited keeps the next reader of the version from making its snapshot");
 }
 
+/* Backend B, which makes the area: the snapshot of version 2 it publishes, and its exit once claim_lock is free (area_leave takes it) */
+static SiftShmIndexMeta other_meta;
+static dsa_pointer other_dp;
+static dsa_area *const other_area = (dsa_area *) &allocs;
+
+static bool
+claim_held(void)
+{
+	for (int i = 0; i < stub_nheld; i++)
+		if (stub_held[i] == &table->claim_lock)
+			return true;
+	return false;
+}
+
+static void
+other_leaves(void)
+{
+	if (claim_held())
+	{
+		stub_hook_lock = &table->area_lock;
+		stub_hook = other_leaves;
+		return;
+	}
+	if (--table->area_users == 0)
+		table->area_handle = DSA_HANDLE_INVALID;
+}
+
+static void
+other_publishes(void)
+{
+	char	   *fail = sift_test_dsm_fail;
+	SiftShmSnapSpec spec = spec_of(2);
+
+	table->area_handle = dsa_get_handle(other_area);
+	table->area_users++;
+	other_meta = meta_of(21, 20800, 2);
+	other_meta.state_flags |= SIFT_SHM_SLOT_HAS_SNAP;
+	other_dp = sift_shm_snap_build(table, other_area, &other_meta.locator, &spec);
+	sift_test_dsm_fail = NULL;
+	SIFT_CHECK(write_steady(table, other_area, &other_meta, true, other_dp) == STEADY_WRITTEN);
+	sift_test_dsm_fail = fail;
+	stub_hook_lock = &table->area_lock;
+	stub_hook = other_leaves;
+}
+
+/* A writer that has no area (a meta with no snapshot) claims the slot; B publishes a snapshot before the write and leaves after claim_lock is let go: the writer that takes B's snapshot out of the slot retires it in an area it holds */
+static void
+test_unattached_writer_retires_in_area(void)
+{
+	SiftShmIndexMeta m = meta_of(21, 20800, 1);
+	SiftShmIndexMeta out;
+
+	SIFT_CHECK(area == NULL && table->area_handle == DSA_HANDLE_INVALID && sift_shm_manifest_publish(&m, NULL));
+	stub_hook_lock = &slot_probe(table, &m.locator)->build_lock;
+	stub_hook = other_publishes;
+	sift_test_dsm_fail = "none";
+	m.manifest_version = 3;
+	(void) sift_shm_manifest_publish(&m, NULL);
+	sift_test_dsm_fail = NULL;
+	SIFT_CHECKF(stub_hook_lock == &table->area_lock, "B published between the claim and the write");
+	stub_hook = NULL;
+	SIFT_CHECKF(sift_shm_manifest_peek(&m.locator, &out) && out.manifest_version == 3 && snap_of(&m.locator) == InvalidDsaPointer, "the meta of version 3 replaced B's snapshot");
+	SIFT_CHECKF(area != NULL, "the writer took a snapshot out of the slot without the area attached");
+	if (table->area_handle != DSA_HANDLE_INVALID)
+		table->area_users--;
+}
+
 int
 main(void)
 {
-	SIFT_CHECK(sift_shm_registry() != NULL && sift_shm_area_attach(table, true) != NULL);
+	SIFT_CHECK(sift_shm_registry() != NULL);
+	test_unattached_writer_retires_in_area();
+	SIFT_CHECK(sift_shm_area_attach(table, true) != NULL);
 	test_one_snapshot_per_version();
 	test_slot_refuses_same_version();
 	test_retire_is_fifo();

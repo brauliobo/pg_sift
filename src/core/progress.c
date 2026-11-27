@@ -2,7 +2,7 @@
  * core/progress.c - see progress.h
  *
  * The slots are a table of the directory of the shared memory (col/dsmreg.c), made by the first job that reports, so a server that never runs a maintenance job has none.
- * A backend owns at most one slot, and clears it when its job ends, when its transaction aborts and when it exits; the layout is in the name of the table.
+ * A backend owns at most one slot, and clears it when its job ends, when the subtransaction that began the job (or the one it went to on commit) aborts and when it exits; the layout is in the name of the table.
  */
 #include "postgres.h"
 
@@ -51,6 +51,7 @@ typedef struct Progress
 static Progress *shared;
 static bool unavailable;
 static ProgressSlot *mine;
+static SubTransactionId mine_subid;	/* the subtransaction the job of mine belongs to */
 static bool hooked;
 
 #ifdef SIFT_TESTING
@@ -101,6 +102,17 @@ progress_xact(XactEvent event, void *arg)
 		release();
 }
 
+static void
+progress_subxact(SubXactEvent event, SubTransactionId sub, SubTransactionId parent, void *arg)
+{
+	if (mine == NULL || sub != mine_subid)
+		return;
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		release();
+	else if (event == SUBXACT_EVENT_COMMIT_SUB)
+		mine_subid = parent;
+}
+
 /* The parts of an index of format major 2: what each phase of its maintenance walks */
 static int64
 parts_total(Relation index)
@@ -137,26 +149,30 @@ bool
 sift_progress_begin(Relation index, SiftJob job)
 {
 	Progress   *p;
+	TimestampTz now;
 
 	if (mine != NULL || (p = table()) == NULL)
 		return false;
+	if (!hooked)
+	{
+		before_shmem_exit(progress_exit, (Datum) 0);
+		RegisterXactCallback(progress_xact, NULL);
+		RegisterSubXactCallback(progress_subxact, NULL);
+		hooked = true;
+	}
+	now = GetCurrentTimestamp();
 	SpinLockAcquire(&p->mutex);
 	for (int i = 0; i < PROGRESS_SLOTS && mine == NULL; i++)
 		if (p->slot[i].pid == 0)
 		{
 			mine = &p->slot[i];
-			*mine = (ProgressSlot) {.pid = MyProcPid,.db = MyDatabaseId,.index = RelationGetRelid(index),.job = job,.started = GetCurrentTimestamp()};
+			*mine = (ProgressSlot) {.pid = MyProcPid,.db = MyDatabaseId,.index = RelationGetRelid(index),.job = job,.started = now};
 		}
 	SpinLockRelease(&p->mutex);
+	mine_subid = GetCurrentSubTransactionId();
 #ifdef SIFT_TESTING
 	phases_entered = 0;
 #endif
-	if (mine != NULL && !hooked)
-	{
-		before_shmem_exit(progress_exit, (Datum) 0);
-		RegisterXactCallback(progress_xact, NULL);
-		hooked = true;
-	}
 	return mine != NULL;
 }
 

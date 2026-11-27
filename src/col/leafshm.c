@@ -486,7 +486,7 @@ lshm_fly(Lshm *s, Size off, Size len)
 /*
  * enters rec (its header not yet filled in) into the ring as the record of the index under the stamp; it replaces the older record of the same kind and those it overlaps.
  * A writer that entered the directory while this one copied its record took the place this one chose or holds a record of the index as well: the directory is looked at again before the entry
- * goes in, and a record of a newer stamp stays in place of this one
+ * goes in, and a record of a newer stamp stays in place of this one. Nothing that can fail runs while the flight is held (the copy is a memcpy): a backend that errors or exits gives back no place
  */
 static void
 lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmHdr h)
@@ -517,7 +517,6 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 	evicted = lshm_evict_range(s, off, len);
 	evicted += s->dir[lshm_place(s, rel)].used;
 	LWLockRelease(&s->write_lock.lock);
-	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 	memcpy(s->data + off, rec, len);
 	LWLockAcquire(&s->write_lock.lock, LW_EXCLUSIVE);
 	s->flight[flight].len = 0;
@@ -530,6 +529,7 @@ lshm_put(RelFileNumber rel, bool scope, uint64 stamp, char *rec, Size len, LshmH
 		lshm_enter(s, slot, &(LshmEnt) {.rel = rel, .db = MyDatabaseId, .scope = scope, .kind = h.kind, .stamp = stamp, .off = off, .len = len});
 	}
 	LWLockRelease(&s->write_lock.lock);
+	sift_shm_note_eviction(SIFT_SHM_COL_LEAF, evicted);
 }
 
 void

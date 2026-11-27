@@ -87,11 +87,13 @@ area_for_drop(Table *t, SiftShmIndexSlot *s)
 	return a;
 }
 
+/* A snapshot a writer took out of a slot is retired in the area the writer held attached when it took it: the last backend to leave the area frees only the snapshots the slots still hold */
 static void
 retire_if_any(Table *t, dsa_area *a, dsa_pointer dp)
 {
+	Assert(dp == InvalidDsaPointer || a != NULL);
 	if (dp != InvalidDsaPointer)
-		sift_shm_snap_retire(t, a != NULL ? a : sift_shm_area_attach(t, false), dp);
+		sift_shm_snap_retire(t, a, dp);
 }
 
 /* A snapshot of the version the slot already holds one of: the readers that load a version at once would replace each other's, and drop the lists the first one installed */
@@ -239,7 +241,7 @@ publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp
 {
 	SiftShmIndexSlot *s;
 	dsa_pointer old;
-	dsa_area   *drop_area = NULL;
+	dsa_area   *drop_area;
 	Steady		steady;
 
 	LWLockAcquire(&t->claim_lock, LW_EXCLUSIVE);
@@ -249,9 +251,18 @@ publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp
 		LWLockRelease(&t->claim_lock);
 		return STEADY_REFUSED;
 	}
+	/* the build_lock is taken with the area attached wherever the slot has a snapshot to drop: a writer that holds only a build_lock may publish one after area_for_drop looked */
 	PG_TRY();
 	{
 		drop_area = area_for_drop(t, s);
+		for (;;)
+		{
+			LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
+			if (drop_area != NULL || a != NULL || pg_atomic_read_u64(&s->current_snap_dp) == InvalidDsaPointer)
+				break;
+			LWLockRelease(&s->build_lock);
+			drop_area = area_for_drop(t, s);
+		}
 	}
 	PG_CATCH();
 	{
@@ -260,7 +271,6 @@ publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	LWLockAcquire(&s->build_lock, LW_EXCLUSIVE);
 	steady = slot_put(t, s, m, true, dp, &old);
 	LWLockRelease(&s->build_lock);
 	LWLockRelease(&t->claim_lock);

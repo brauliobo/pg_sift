@@ -103,7 +103,7 @@ sift_dsm_why(void)
 
 /*
  * The segment of a table, NULL where the system cannot make it (why says it). The attempt has a resource owner of its own: the descriptor that a failed creation leaves is released here, and
- * a transaction that commits does not report it as a leak. Any error that is not a shortage goes on.
+ * a transaction that commits does not report it as a leak. Any error that is not a shortage goes on, the owner of the caller current again and the attempt's given back.
  */
 static dsm_segment *
 create_segment(const char *name, Size size)
@@ -130,6 +130,9 @@ create_segment(const char *name, Size size)
 
 		MemoryContextSwitchTo(cx);
 		e = CopyErrorData();
+		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
+		CurrentResourceOwner = owner;
+		ResourceOwnerDelete(attempt);
 		if (ERRCODE_TO_CATEGORY(e->sqlerrcode) != ERRCODE_INSUFFICIENT_RESOURCES)
 		{
 			FreeErrorData(e);
@@ -137,12 +140,11 @@ create_segment(const char *name, Size size)
 		}
 		FlushErrorState();
 		InterruptHoldoffCount = holdoff;	/* errfinish zeroed it, and a caller may hold an lwlock (sift_dsm_try holds AddinShmemInitLock) */
-		ResourceOwnerRelease(attempt, RESOURCE_RELEASE_BEFORE_LOCKS, false, false);
 		strlcpy(why_text, e->message, sizeof(why_text));
 		why = why_text;
 		why_hint = "Make room for dynamic shared memory (dynamic_shared_memory_type, the size of /dev/shm).";
 		FreeErrorData(e);
-		seg = NULL;
+		return NULL;
 	}
 	PG_END_TRY();
 	CurrentResourceOwner = owner;

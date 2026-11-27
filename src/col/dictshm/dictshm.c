@@ -350,9 +350,17 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 
 	if (s == NULL)
 		return NULL;
+	/* what can fail comes before the pin: the hook that gives the pins back at exit, and the ring (attached once a record is kept: a record the ring of this backend does not show is a miss) */
+	if (!exit_hooked)
+	{
+		before_shmem_exit(unpin_all, 0);
+		exit_hooked = true;
+	}
+	if (s->ring_ready)
+		(void) ring_get(s);
 	b = bucket(s, k);
 	LWLockAcquire(bucket_lock_of(s, (int) (b - s->dir)), LW_SHARED);
-	for (int i = 0; i < DSHM_WAYS; i++)
+	for (int i = 0; i < DSHM_WAYS && ring != NULL; i++)
 		if (b[i].state == E_LIVE && memcmp(&b[i].key, k, sizeof(*k)) == 0)
 		{
 			pg_atomic_fetch_add_u32(&b[i].pins, 1);
@@ -369,7 +377,7 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 	if (at < 0)
 		return NULL;
 	/* the record cannot change while it is pinned: what is checked here is that it is inside the ring, that it is one, and the one asked for (a stale entry is a miss) */
-	if (ring_get(s) && off + len <= s->size && len >= sizeof(h))
+	if (off + len <= s->size && len >= sizeof(h))
 	{
 		rec = ring + off;
 		memcpy(&h, rec, sizeof(h));
@@ -390,11 +398,6 @@ sift_dictshm_read(const DictKey *k, MemoryContext parent)
 #endif
 		d = dict_in_place(parent, rec, &h, &l, asks, orows);
 		p = MemoryContextAlloc(d->mcxt, sizeof(ShmPin));
-		if (!exit_hooked)
-		{
-			before_shmem_exit(unpin_all, 0);
-			exit_hooked = true;
-		}
 	}
 	PG_CATCH();
 	{
