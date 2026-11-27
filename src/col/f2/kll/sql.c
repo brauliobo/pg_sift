@@ -370,7 +370,7 @@ approx_quantile(FunctionCallInfo fcinfo, bool scalar)
 
 		if (ARR_NDIM(a) > 1 || array_contains_nulls(a))
 			ereport(ERROR, (errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED), errmsg("%s: ps must be a one-dimensional array without NULL", fn)));
-		deconstruct_array_builtin(a, FLOAT8OID, &elems, NULL, &n);
+		sift_deconstruct_float8_array(a, &elems, &n);
 		np = (uint32) n;
 		ps = palloc(Max(np, 1) * sizeof(double));
 		for (uint32 i = 0; i < np; i++)

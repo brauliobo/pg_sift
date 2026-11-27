@@ -644,11 +644,13 @@ sift_collation_deterministic(Oid collid)
  */
 #define SIFT_BITMAP_EXECUTOR_PREFETCH	(PG_VERSION_NUM < 180000)
 
-/* construct_array_builtin knows float8 from 18 on */
+/* construct_array_builtin and deconstruct_array_builtin know float8 from 18 on */
 #if PG_VERSION_NUM >= 180000
 #define sift_construct_float8_array(elems, n)	construct_array_builtin((elems), (n), FLOAT8OID)
+#define sift_deconstruct_float8_array(a, elems, n)	deconstruct_array_builtin((a), FLOAT8OID, (elems), NULL, (n))
 #else
 #define sift_construct_float8_array(elems, n)	construct_array((elems), (n), FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE)
+#define sift_deconstruct_float8_array(a, elems, n)	deconstruct_array((a), FLOAT8OID, sizeof(float8), FLOAT8PASSBYVAL, TYPALIGN_DOUBLE, (elems), NULL, (n))
 #endif
 
 #endif							/* SIFT_COMPAT_H */
