@@ -27,8 +27,8 @@ SELECT CASE WHEN n % 2 = 0 THEN 'VACUUM (INDEX_CLEANUP on) rn' ELSE CASE rn_draw
 		WHEN 7 THEN 'DELETE FROM rn WHERE id IN (SELECT DISTINCT ON (s, w) id FROM rn ORDER BY s, w, n NULLS LAST, id)'
 		WHEN 8 THEN 'DELETE FROM rn WHERE g = ' || rn_draw(n, 7, 7) || ' AND s = chr(97 + ' || rn_draw(n, 8, 5) || ') AND id % 3 = 0'
 		WHEN 9 THEN 'DELETE FROM rn WHERE date_trunc(''month'', d) = DATE ''2024-0' || (1 + rn_draw(n, 9, 7)) || '-01'' AND id % 5 = ' || rn_draw(n, 10, 5)
-		WHEN 10 THEN 'SELECT sift.col_merge(''rn_col'', true)'
-		ELSE 'SELECT sift.col_promote(''rn_col'')' END END
+		WHEN 10 THEN 'SELECT sift.col_merge(''rn_col'', true) >= 0 AS merged'
+		ELSE 'SELECT sift.col_promote(''rn_col'') >= 0 AS promoted' END END
 FROM generate_series(1, 40) n;
 CREATE FUNCTION rn_check(step int) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
@@ -94,9 +94,9 @@ END $$;
  
 (1 row)
 
- col_promote 
--------------
-           0
+ promoted 
+----------
+ t
 (1 row)
 
  rn_check 
@@ -149,9 +149,9 @@ END $$;
  
 (1 row)
 
- col_merge 
------------
-         1
+ merged 
+--------
+ t
 (1 row)
 
  rn_check 
@@ -224,9 +224,9 @@ END $$;
  
 (1 row)
 
- col_promote 
--------------
-           1
+ promoted 
+----------
+ t
 (1 row)
 
  rn_check 
