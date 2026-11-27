@@ -78,8 +78,8 @@ ROLLBACK;
 SELECT name, (ha_same(q)).* FROM ha_q WHERE name IN ('facet_wide', 'plain_aggs', 'no_qual') ORDER BY name;
 
 \echo -- a text column of a sift_table is a group key of the hybrid node, with the answers of the query the node refuses
-SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body') AS node;
-SELECT (ha_same('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body')).*;
+SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 100 AND body @@> ''common'' GROUP BY body') AS node;
+SELECT (ha_same('SELECT body, count(*) FROM ha_docs WHERE tenant < 100 AND body @@> ''common'' GROUP BY body')).*;
 
 DROP FUNCTION ha_same(text), ha_cmp(text, text), ha_node(text);
 DROP TABLE ha_q;

@@ -21,6 +21,7 @@
 #define HYB_POINT_TID		0.01		/* a TID read directly (bridge of at most SIFT_TIDB_POINT_MAX) */
 #define HYB_TIX_GRANULE		0.00002		/* the TID index test of a granule */
 #define HYB_TID_DECODE		0.00005		/* the _tid of a row of a surviving granule */
+#define HYB_TABLE_BATCH_ROW	0.005		/* ... of a sift_table, vetted and probed against the bridge one by one: two operators of its own costs (agg/cost/model.h), 70 ns measured */
 #define HYB_B_HIT			0.008		/* a hit of the bridge of direction B, from the page record to the fold (measured: 0.45 us a hit, with the match scored) */
 #define HYB_B_PASSES		2			/* passes over the store of a ranked scan that stops after a LIMIT: the first chunk of hits seldom holds the rows */
 #define HYB_SORT_CMP		0.0025		/* one comparison of the sort of the rows of a chunk */
@@ -45,7 +46,7 @@ bm25_doc(const SiftHybridEst *e)
 	return e->agg_mode && !e->reads_score ? HYB_BM25_DOC * HYB_BM25_UNSCORED : HYB_BM25_DOC;
 }
 
-/* The rows of the pages that are not all visible, vetted one by one (the fold of an aggregate over a sift_table vets every row it folds) */
+/* The rows of the heap's pages that are not all visible, vetted one by one (a sift_table vets each row of a granule it reads: HYB_TABLE_BATCH_ROW) */
 static double
 vet_cost(const SiftHybridEst *e, double rows)
 {
@@ -59,6 +60,17 @@ gives_rows(const SiftHybridEst *e)
 	return e->host == SIFT_HYB_HOST_TABLE && !e->agg_mode;
 }
 
+/* A pass of the store over a bridge of hits: each hit into the bridge and to its fold, the TID index test of each granule, and every row of the granules that hold a hit (granule_batch) */
+static double
+bridge_pass(const SiftHybridEst *e, double hits, double passes)
+{
+	const double rpg = e->rows / Max(e->granules, 1.0),
+				read = e->granules * sift_hybrid_granule_hit(hits / Max(e->rows, 1.0), rpg) * rpg;
+
+	return hits * (HYB_BRIDGE_ADD + HYB_B_HIT) + passes * (e->granules * HYB_TIX_GRANULE + read * (e->host == SIFT_HYB_HOST_TABLE ? HYB_TABLE_BATCH_ROW : HYB_TID_DECODE));
+}
+
+/* An aggregate of this direction over a sift_table folds its rows by a second pass of the store over the hits the bridge of the quals keeps (agg/hybrid/core.c, sift_hybrid_agg_a) */
 static double
 cost_col_to_bm25(const SiftHybridEst *e)
 {
@@ -68,7 +80,7 @@ cost_col_to_bm25(const SiftHybridEst *e)
 				wanted = e->limit > 0 ? Min(matched, e->limit) : matched,
 				scan = e->col_granules * rpg * HYB_F2_ROW,
 				rank = kept <= SIFT_TIDB_POINT_MAX ? kept * HYB_POINT_TID : matched * bm25_doc(e),
-				verify = !e->agg_mode ? wanted * e->row_fetch : e->host == SIFT_HYB_HOST_TABLE ? vet_cost(e, wanted) : 0.0;
+				verify = !e->agg_mode ? wanted * e->row_fetch : e->host == SIFT_HYB_HOST_TABLE ? bridge_pass(e, matched, 1) + matched * HYB_PAYLOAD_ROW : 0.0;
 
 	return e->bm25_dict_cost + scan + kept * HYB_BRIDGE_ADD + rank + verify;
 }
@@ -77,20 +89,17 @@ cost_col_to_bm25(const SiftHybridEst *e)
 static double
 cost_bm25_to_col(const SiftHybridEst *e)
 {
-	double		rpg = e->rows / Max(e->granules, 1.0),
-				matched = e->rows * e->sel_bm25,
+	double		matched = e->rows * e->sel_bm25,
 				hits = e->ranked && e->limit > 0 ? Min(matched, 2.0 * e->limit / Max(e->sel_col, 1e-6)) : matched,
-				surviving = e->granules * sift_hybrid_granule_hit(hits / Max(e->rows, 1.0), rpg),
 				kept = hits * e->sel_col,
 				fetch = !e->covered || e->has_residual || gives_rows(e) ? (e->limit > 0 ? Min(kept, e->limit) : kept) * e->row_fetch : 0.0,
-				vis = fetch > 0 ? 0.0 : vet_cost(e, kept),
+				vis = fetch > 0 || e->host == SIFT_HYB_HOST_TABLE ? 0.0 : vet_cost(e, kept),
 				passes = e->ranked && e->limit > 0 ? HYB_B_PASSES : 1,
 				sort = e->ranked && !e->agg_mode ? kept * log2(Max(kept, 2.0)) * HYB_SORT_CMP : 0.0;
 
 	if (matched <= SIFT_TIDB_POINT_MAX)
 		return e->bm25_dict_cost + matched * (bm25_doc(e) + HYB_POINT_TID) + fetch;
-	return e->bm25_dict_cost + hits * (bm25_doc(e) + HYB_BRIDGE_ADD + HYB_B_HIT) + passes * (e->granules * HYB_TIX_GRANULE + surviving * rpg * HYB_TID_DECODE) + kept * HYB_PAYLOAD_ROW +
-		fetch + vis + sort;
+	return e->bm25_dict_cost + hits * bm25_doc(e) + bridge_pass(e, hits, passes) + kept * HYB_PAYLOAD_ROW + fetch + vis + sort;
 }
 
 /* The standard plan reads the rows of the match (the text index first), or those of the key set the tenant's EXISTS gives, whichever are fewer where an index reaches them */

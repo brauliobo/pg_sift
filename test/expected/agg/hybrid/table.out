@@ -56,16 +56,16 @@ SELECT name, ha_node(q) FROM ha_q ORDER BY name;
     name     |         ha_node          
 -------------+--------------------------
  bool_cmp    | none
- by_day      | SiftHybridAgg sift_table
- by_null     | SiftHybridAgg sift_table
+ by_day      | none
+ by_null     | none
  count_all   | SiftHybridAgg sift_table
  facet_small | SiftHybridAgg sift_table
- facet_wide  | SiftHybridAgg sift_table
+ facet_wide  | none
  having      | SiftHybridAgg sift_table
  is_null     | SiftHybridAgg sift_table
  no_match    | none
  no_qual     | SiftHybridAgg sift_table
- phrase_or   | SiftHybridAgg sift_table
+ phrase_or   | none
  plain_aggs  | SiftHybridAgg sift_table
  rare        | SiftHybridAgg sift_table
  ts_range    | SiftHybridAgg sift_table
@@ -161,16 +161,16 @@ SELECT name, (ha_same(q)).* FROM ha_q WHERE name IN ('facet_wide', 'plain_aggs',
 
 \echo -- a text column of a sift_table is a group key of the hybrid node, with the answers of the query the node refuses
 -- a text column of a sift_table is a group key of the hybrid node, with the answers of the query the node refuses
-SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body') AS node;
+SELECT ha_node('SELECT body, count(*) FROM ha_docs WHERE tenant < 100 AND body @@> ''common'' GROUP BY body') AS node;
            node           
 --------------------------
  SiftHybridAgg sift_table
 (1 row)
 
-SELECT (ha_same('SELECT body, count(*) FROM ha_docs WHERE tenant < 3 AND body @@> ''mid'' GROUP BY body')).*;
+SELECT (ha_same('SELECT body, count(*) FROM ha_docs WHERE tenant < 100 AND body @@> ''common'' GROUP BY body')).*;
  rows | diff 
 ------+------
-   19 |    0
+   32 |    0
 (1 row)
 
 DROP FUNCTION ha_same(text), ha_cmp(text, text), ha_node(text);

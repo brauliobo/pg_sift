@@ -801,7 +801,7 @@ table	search_group	scan	0.26	1.1
 table	search_hybrid_facet	normal	-	-
 table	search_join	scan	0.50	2.0
 table	search_latest_rows	scan	0.50	2.0
-table	search_one_parent	either	0.35	1.4
+table	search_one_parent	either	-	-
 table	search_or_by_month	scan	0.39	1.5
 table	search_topk_ranked	scan	0.50	2.0
 table	select_distinct	scan	0.45	1.8
@@ -1132,11 +1132,11 @@ tabletuned	scope_expression_filter	either	0.13	0.53
 tabletuned	scope_path_filter_in	either	0.13	0.50
 tabletuned	scope_path_filter_join	either	0.13	0.50
 tabletuned	search_count	scan	0.014	0.054
-tabletuned	search_group	scan	0.0042	0.017
-tabletuned	search_hybrid_facet	scan	0.23	0.90
+tabletuned	search_group	scan	0.039	0.15
+tabletuned	search_hybrid_facet	normal	-	-
 tabletuned	search_join	scan	0.020	0.080
 tabletuned	search_latest_rows	scan	0.026	0.11
-tabletuned	search_one_parent	either	0.35	1.4
+tabletuned	search_one_parent	either	-	-
 tabletuned	search_or_by_month	scan	0.018	0.073
 tabletuned	search_topk_ranked	scan	0.50	2.0
 tabletuned	select_distinct	scan	0.032	0.13
