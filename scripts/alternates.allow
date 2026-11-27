@@ -42,6 +42,8 @@ test/expected/agg/jsonb_map_keyread_1.out	f8a4f310c1d62b3ecd31a5447fae91dd16cd99
 test/expected/agg/lateral_flatten_f2_1.out	6f540c46750276a381d5c0b16ae5a727f774094b	17	cast of an excluded row | t    | t    | [{"n": 1, "day": "2026-02-01", "total":
 test/expected/agg/lateral_flatten_f2_1.out	7c04f665678c062b18861951cfda5e346f850c1c	17	mapping below an outer join | t    | t    | [{"day": "2026-01-01", "score": 2,
 test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874d9d	17	cast out of range | t    | t    | 22003 integer out of range
+test/expected/agg/matrix_join_parity_1.out	739fe00e0cd47b533ec99b08c5e8f34891517d84	19	32 | SiftAggV6 |           2 |       0
+test/expected/agg/matrix_join_parity_1.out	94c8419784ad5e0be51a841d71c5b87544879197	19	32 | SiftAggV6 |           3 |       0
 test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	json map key     | v6 same
 test/expected/agg/plan/tables_1.out	1003fd94fbe2001151019b9a1ddbe67dddc08361	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
