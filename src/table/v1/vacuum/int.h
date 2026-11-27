@@ -49,7 +49,7 @@
 #include "table/v1/seg_int.h"
 #include "core/cmp.h"
 
-/* The cost delay of the pass (autovacuum's, or a worker's sift.table_auto_defrag_delay): a point where the page accesses so far may make it sleep */
+/* The cost delay of the pass (autovacuum's, or a worker's sift.maintenance_cost_delay): a point where the page accesses so far may make it sleep */
 #define COST_DELAY()	sift_vacuum_delay_point()
 
 /* A growable array of TIDs: the dead rows of a batch of VACUUM, the index entries CREATE INDEX CONCURRENTLY already has (sorted to look up); max: the entries it may grow to (0: no limit) */
@@ -92,9 +92,6 @@ typedef struct VacState
 #define DEFRAG_RELOCATE_BYTES	((uint64) 32 << 20)
 
 extern int pass_max_active;
-extern uint64 pass_wal_rate;
-extern TimestampTz pass_start;
-extern uint64 pass_wal_start;
 extern bool maintaining;
 extern uint64 space_cap;
 extern uint64 merge_cap;

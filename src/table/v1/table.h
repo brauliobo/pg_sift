@@ -656,10 +656,8 @@ extern bool sift_tbl_settle_async(Relation rel, SiftTblRel *st);
 extern PGDLLIMPORT bool sift_tbl_async_promote;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_free_pct;
-extern PGDLLIMPORT int sift_tbl_auto_defrag_delay;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_budget;
 extern PGDLLIMPORT int sift_tbl_auto_defrag_max_active;
-extern PGDLLIMPORT int sift_tbl_auto_defrag_wal_rate;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_coalesce;
 extern PGDLLIMPORT bool sift_tbl_auto_defrag_indexes;
 

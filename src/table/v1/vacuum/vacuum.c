@@ -7,11 +7,8 @@
 #include "core/maint/vacuum.h"
 #include "core/memtrack.h"
 
-/* A worker's limits, from sift.table_auto_defrag_max_active and sift.table_auto_defrag_wal_rate (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop, and the WAL bytes per second it may average since the worker started */
+/* A worker's limit, from sift.table_auto_defrag_max_active (a VACUUM of a session has none): clients running a statement above which the merges of a pass stop */
 int	pass_max_active = 0;
-uint64 pass_wal_rate = 0;
-TimestampTz pass_start;
-uint64 pass_wal_start;
 
 /* A VACUUM or a pass is at work in this backend: closing the write buffer it takes must not ask for a worker */
 bool maintaining = false;
@@ -21,22 +18,6 @@ uint64 space_cap = PG_UINT64_MAX;
 uint64 merge_cap = PG_UINT64_MAX;
 bool merge_capped = false;
 static uint64 merge_bytes;
-
-/* The cost delay, then the sleep that brings the WAL the worker wrote back to its rate */
-static void
-pass_delay(void)
-{
-	COST_DELAY();
-	while (pass_wal_rate > 0)
-	{
-		int64		ahead = (int64) ((pgWalUsage.wal_bytes - pass_wal_start) * 1000 / pass_wal_rate);
-
-		ahead -= TimestampDifferenceMilliseconds(pass_start, GetCurrentTimestamp());
-		if (ahead <= 0)
-			break;
-		sift_nap(Min(ahead, 1000));
-	}
-}
 
 /* The next free slot */
 ItemPointer
@@ -385,7 +366,7 @@ vacuum_rows(Relation rel, SiftTblRel *st, VacState *v)
 			CHECK_FOR_INTERRUPTS();
 			batch_drain_full(rel, st, v);
 			vacuum_page(rel, st, &seg, p, v);
-			pass_delay();
+			COST_DELAY();
 		}
 	}
 	group_dead(rel, st, v);
@@ -475,7 +456,7 @@ merge_steps(Relation rel, SiftTblRel *st, TransactionId oldest, uint64 cap)
 		bytes += done;
 		steps++;
 		sift_mem_trim_os();
-		pass_delay();
+		COST_DELAY();
 	}
 	merge_capped = bytes >= cap;
 	merge_bytes = bytes;
@@ -573,10 +554,8 @@ sift_tbl_relation_vacuum(Relation rel, SIFT_TAM_VACUUM_PARAMS, BufferAccessStrat
 
 bool		sift_tbl_auto_defrag = true;
 int			sift_tbl_auto_defrag_free_pct = 25;
-int			sift_tbl_auto_defrag_delay = 10;
 int			sift_tbl_auto_defrag_budget = 128;
 int			sift_tbl_auto_defrag_max_active = 0;
-int			sift_tbl_auto_defrag_wal_rate = 0;
 bool		sift_tbl_auto_defrag_coalesce = true;
 bool		sift_tbl_auto_defrag_indexes = true;
 

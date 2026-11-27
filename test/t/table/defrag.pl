@@ -41,16 +41,20 @@ sub digest
 
 sub defrag { return "SELECT sift.table_set_option('$_[0]', 'auto_defrag', '$_[1]')" }
 
+# one write to table NAME: TBL in SQL names it
+sub write_to
+{
+	my ($name, $sql) = @_;
+	(my $stmt = $sql) =~ s/\bTBL\b/$name/g;
+	$primary->safe_psql('postgres', $stmt);
+}
+
 # one write to the table and to its twin; the session never asks for a pass itself (the reads that follow do, once there are enough of them)
 sub both
 {
 	my ($t, $sql) = @_;
-	for my $name ($t, "${t}_h")
-	{
-		(my $stmt = $sql) =~ s/\bTBL\b/$name/g;
-		$stmt = defrag($t, 'off') . "; $stmt" if $name eq $t;
-		$primary->safe_psql('postgres', $stmt);
-	}
+	write_to($t, defrag($t, 'off') . "; $sql");
+	write_to("${t}_h", $sql);
 }
 
 # the reads that make a pass pay (50 scans of the table from one session, whose statistics reach the others when it ends); the read after them asks for it
@@ -119,22 +123,21 @@ subtest 'a worker killed in the middle of a pass' => sub {
 	both('k', 'DELETE FROM TBL WHERE id % 10 < 5');
 	both('k', 'UPDATE TBL SET v = v + 1 WHERE id % 10 = 7');
 	same('k', 'before the pass');
-	my $before = digest($primary, 'k');
 	readers('k');
 	my $offset = -s $primary->logfile;
 	$primary->safe_psql('postgres', 'SELECT count(*) FROM k');
 	ok($primary->poll_query_until('postgres', "SELECT count(*) > 0 FROM pg_stat_activity WHERE backend_type LIKE 'sift %' AND wait_event = 'VacuumDelay'"),
 		'a worker is in its pass, waiting for the cost delay');
 	my $pid = $primary->safe_psql('postgres', "SELECT pid FROM pg_stat_activity WHERE backend_type LIKE 'sift %' AND wait_event = 'VacuumDelay' LIMIT 1");
-	# a write appends a tombstone and the pass holds the table's worker lock for its whole length: the two must not wait for each other
-	both('k', "SET lock_timeout = '1s'; UPDATE TBL SET v = v + 5 WHERE id = 3; DELETE FROM TBL WHERE id = 5");  # timeout-ok: a write must not wait for the pass: the lock_timeout makes a wait an error
-	$before = digest($primary, 'k');
-	same('k', 'with the writes made during the pass');
+	# a write appends a tombstone and the pass holds the table's worker lock for its whole length: the two must not wait for each other (an option
+	# change does wait for the pass, as ALTER TABLE does for VACUUM: the write leaves the option as it is)
+	my $write = "SET lock_timeout = '1s'; UPDATE TBL SET v = v + 5 WHERE id = 3; DELETE FROM TBL WHERE id = 5";  # timeout-ok: a write must not wait for the pass: the lock_timeout makes a wait an error
+	write_to('k', $write);
 	kill_expected($pid);
 	ok($primary->wait_for_log(qr/database system is ready to accept connections/, $offset), 'the server recovered');
+	write_to('k_h', $write);
 	$primary->safe_psql('postgres', "ALTER SYSTEM RESET sift.maintenance_cost_delay; ALTER SYSTEM RESET vacuum_cost_limit; SELECT pg_reload_conf()");
-	is(digest($primary, 'k'), $before, 'the rows are those of before the pass');
-	same('k', 'after the crash');
+	same('k', 'after the crash: the rows of before the pass and the write made during it');
 	is($primary->safe_psql('postgres', "SELECT sift._test_check('k') >= 0"), 't', 'every extent has one owner');
 	$primary->safe_psql('postgres', defrag('k', 'off') . "; SELECT * FROM sift.table_maintain('k')");
 	same('k', 'after the next pass');

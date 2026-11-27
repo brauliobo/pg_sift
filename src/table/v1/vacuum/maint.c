@@ -336,21 +336,15 @@ maint_worker(Datum main_arg, WorkerPass first)
 	int			idle;
 
 	/* the page accesses of every pass are charged as autovacuum's are (vacuum_cost_limit), and the steps sleep for them */
-	SetConfigOption("vacuum_cost_delay", psprintf("%d", sift_tbl_auto_defrag_delay), PGC_SUSET, PGC_S_OVERRIDE);
+	SetConfigOption("vacuum_cost_delay", psprintf("%d", sift_maintenance_cost_delay), PGC_SUSET, PGC_S_OVERRIDE);
 	VacuumUpdateCosts();
 	/* the settling of write buffers is what keeps the directory from filling: only the pass for dead rows and space gives way to the load */
 	if (first != PASS_SETTLE)
-	{
 		pass_max_active = sift_tbl_auto_defrag_max_active;
-		pass_wal_rate = (uint64) sift_tbl_auto_defrag_wal_rate << 10;
-	}
 
 	/* a busy server: the worker ends and the next write asks again, it does not hold its connection until it is quiet */
 	if (sift_maint_busy(pass_max_active))
 		return;
-	/* the rate counts from here: the time spent waiting for a quiet moment is no credit */
-	pass_start = GetCurrentTimestamp();
-	pass_wal_start = pgWalUsage.wal_bytes;
 	if (!worker_pass(relid, first, &r))
 		return;
 	/* a pass that found nothing leaves at once: the writer that asked is not waited for (only the settling of write buffers stays for the rows still coming) */
