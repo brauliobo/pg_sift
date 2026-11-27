@@ -594,8 +594,8 @@ judge_entry(SiftRowLockEntry *e, LockTupleMode mode, SiftRowLockResult *r, const
 			r->result = TM_BeingModified;
 		else
 		{
-			resolve_updater(e, sift_ask_committed(a, updater));
-			r->result = (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) != 0 && (e->flags & SIFT_ROWLOCK_UPDATE_CHAIN) != 0 ? TM_Updated : TM_Ok;
+			r->result = !sift_ask_committed(a, updater) ? TM_Ok : (e->flags & SIFT_ROWLOCK_UPDATE_CHAIN) != 0 ? TM_Updated : TM_Deleted;
+			resolve_updater(e, r->result != TM_Ok);
 		}
 	}
 	if (r->result == TM_Ok)
@@ -670,8 +670,8 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	return r;
 }
 
-/* The entry of a row the current (sub)transaction holds, locked, or NULL: a row held by a partition or the relation has none to change, and a row still in the stage of its inserter keeps the
- * inserter in updater_fxid (table/f2/spec.h), its stage records the change; a holder past the room of the entry is a member of its MultiXactId, read with no lock held */
+/* The entry of a row the current (sub)transaction holds, locked, or NULL: a row held by a partition or the relation has none to change, a row still in the stage of this transaction keeps it in
+ * updater_fxid (table/f2/spec.h) and its stage records the change, and the staged mark of an inserter that ended goes (the row is in a part); a holder past the room of the entry is a member of its MultiXactId */
 static SiftRowLockEntry *
 held_entry(const SiftRowLockKey *k, int *si)
 {
@@ -687,9 +687,12 @@ held_entry(const SiftRowLockKey *k, int *si)
 
 		sift_rowlock_stripe_acquire(rows, *si, LW_EXCLUSIVE);
 		e = sift_rowlock_find(rows, *si, k);
-		if (e != NULL && (e->flags & SIFT_ROWLOCK_STAGED_INSERT) == 0 &&
+		if (e != NULL && ((e->flags & SIFT_ROWLOCK_STAGED_INSERT) == 0 || !TransactionIdIsCurrentTransactionId(XidFromFullTransactionId(e->updater_fxid))) &&
 			(sift_hold_held_mode(e) >= 0 || (sift_mx_has(&seen, e->overflow_mxid) && sift_mx_held_mode(&seen) >= 0)))
+		{
+			sift_spec_flushed(e);
 			break;
+		}
 		if (e != NULL && MultiXactIdIsValid(e->overflow_mxid) && !sift_mx_has(&seen, e->overflow_mxid))
 			unread = e->overflow_mxid;
 		stripe_unlock(*si);

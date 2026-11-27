@@ -3,10 +3,11 @@
 # A row another transaction staged and has not written, or deleted since a statement read it, is what its writer left:
 #   1 the cleanup of a full btree page by another writer keeps the entry of a row that a running update staged: after its commit the index finds the row
 #   2 the check of a unique index that missed a staged row on disk and finds its inserter gone looks on disk again: the row the inserter wrote is a duplicate
-# 2 stops a backend at an injection point (PostgreSQL built with them only).
+#   3 a lock taken after the row was read reads it again: a foreign key check and an update do not take a row whose delete committed in between
+# 2-3 stop a backend at an injection point (PostgreSQL built with them only).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 4
+plan 6
 node_init sr 2 "autovacuum = off
 sift.async_maintenance = off
 sift.test_create_format1 = off"
@@ -49,9 +50,23 @@ if pg_config --configure | grep -q -- --enable-injection-points; then
 	out=$(sql sr "SELECT count(*) FROM u WHERE id = 1")
 	check "a unique check whose inserter wrote its row and ended before the probe refuses the duplicate" test "$out" == 1
 	check "with a unique violation" grep -q 'duplicate key value violates unique constraint "u_pkey"' "$D/b.out"
+
+	arm b sift-lock-row-read
+	sess_say b "INSERT INTO c VALUES (7); UPDATE p SET n = n + 1 WHERE id = 8; SELECT injection_points_detach('sift-lock-row-read'); \\echo locked"
+	waits sift-lock-row-read || bail "the foreign key check did not stop before its lock"
+	sql sr "DELETE FROM p WHERE id = 7" >/dev/null || bail "the delete of the parent failed"
+	wake sift-lock-row-read
+	waits sift-lock-row-read || bail "the update did not stop before its lock"
+	sql sr "DELETE FROM p WHERE id = 8" >/dev/null || bail "the delete of the row failed"
+	wake sift-lock-row-read
+	said b locked
+	out=$(sql sr "SELECT count(*) FROM c WHERE NOT EXISTS (SELECT 1 FROM p WHERE p.id = c.pid)")
+	check "a foreign key check that locks a parent deleted since it read it leaves no orphan" test "$out" == 0
+	out=$(sql sr "SELECT count(*) FROM p WHERE id IN (7, 8)")
+	check "an update that locks a row deleted since it read it does not bring it back" test "$out" == 0
 	sess_close b
 else
-	skip 2 "PostgreSQL without injection points (scripts/pg-assert.sh --inject)"
+	skip 4 "PostgreSQL without injection points (scripts/pg-assert.sh --inject)"
 fi
 sess_close a
 finish

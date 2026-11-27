@@ -9,6 +9,7 @@
 #include "storage/lmgr.h"
 #include "utils/snapmgr.h"
 
+#include "core/compat.h"
 #include "table/f2/lock/2pc.h"
 #include "table/f2/lock/esc.h"
 #include "table/f2/row/state.h"
@@ -16,11 +17,11 @@
 #include "table/f2/tbl.h"
 
 static TM_Result
-tier1_result(const SiftRowLockResult *lr, TM_FailureData *tmfd)
+tier1_result(const SiftRowLockResult *lr, uint64 tid, TM_FailureData *tmfd)
 {
-	if (lr->result == TM_Updated)
+	if (lr->result == TM_Updated || lr->result == TM_Deleted)
 	{
-		sift_tbl_tid_unpack(&tmfd->ctid, lr->updated_tid);
+		sift_tbl_tid_unpack(&tmfd->ctid, lr->result == TM_Updated ? lr->updated_tid : tid);
 		tmfd->xmax = lr->xid;
 	}
 	else if (lr->result == TM_BeingModified || lr->result == TM_SelfModified)
@@ -47,7 +48,7 @@ lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode 
 		lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
 		*added = lr.added;
 		if (!lr.stripe_full)
-			return tier1_result(&lr, tmfd);
+			return tier1_result(&lr, tid, tmfd);
 	}
 	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, lr.stripe_full, sift_rowlock_release_tier1, &escalated, reread, tmfd);
 	if (res != TM_Ok || *reread)
@@ -55,7 +56,7 @@ lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode 
 	lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
 	*added = lr.added;
 	if (!lr.stripe_full)
-		return tier1_result(&lr, tmfd);
+		return tier1_result(&lr, tid, tmfd);
 	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, true, sift_rowlock_release_tier1, &escalated, reread, tmfd);
 	SIFT_INVARIANT(res != TM_Ok || *reread, "a request for a coarse lock that must be taken is granted, or it is refused");
 	return res;
@@ -77,6 +78,18 @@ lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, 
 	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread, added);
 }
 
+/* The row an entry was just taken for is read again: a writer that ended between the first read and the entry left its change on disk, and its entry may be gone with it */
+static TM_Result
+reread_locked(Relation rel, uint64 tid, uint64 part_id, CommandId cid, TM_FailureData *tmfd)
+{
+	SiftRowState rs = sift_row_state_read(rel, tid);
+	TM_Result	res = sift_row_state_result(&rs, cid, tmfd, tid);
+
+	if (res != TM_Ok)
+		sift_rowlock_release_new(rel, tid, part_id);
+	return res;
+}
+
 /* The lock is held before the deltas are read: no one else can add one while the row is ours */
 static TM_Result
 lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, Snapshot snap, CommandId cid, TM_FailureData *tmfd, bool judge_delta, bool *waited)
@@ -96,6 +109,7 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 		CHECK_FOR_INTERRUPTS();
 		rs = sift_row_state_read(rel, tid);
 		res = sift_row_state_result(&rs, cid, tmfd, tid);
+		SIFT_POINT("sift-lock-row-read");
 		if (res == TM_Ok)
 			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread, &added);
 		if (res == TM_Ok && reread)
@@ -103,6 +117,8 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 			*waited = true;
 			continue;
 		}
+		if (res == TM_Ok && added)
+			res = reread_locked(rel, tid, rs.part_id, cid, tmfd);
 		if (res == TM_Ok && judge_delta && mode != LockTupleKeyShare)
 		{
 			res = sift_row_delta_result(rel, tid, cid, snap, tmfd);
