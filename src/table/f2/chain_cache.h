@@ -18,8 +18,11 @@
 typedef struct SiftPendDelLog SiftPendDelLog;
 typedef struct SiftColDeltaLog SiftColDeltaLog;
 
-/* The pending deletes of the partition of the entry as they are now, NULL when it has none */
-extern const SiftPendDelLog *sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry);
+/*
+ * The pending deletes of the partition of the entry as they are now, NULL when it has none. epoch: one MVCC snapshot's reads (sift_tbl_f2_vis_begin), 0 for none; a log checked in the epoch
+ * is not checked again in it, since a record appended after the check is of a transaction that snapshot cannot see (running then, or this one at a later command)
+ */
+extern const SiftPendDelLog *sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry, uint64 epoch);
 
 /* The newest record of the row at tid (its pair's second slot not counted) and, from a record, the one before it for the same row; -1 for none */
 extern int	sift_pend_del_log_newest(const SiftPendDelLog *l, uint64 tid);

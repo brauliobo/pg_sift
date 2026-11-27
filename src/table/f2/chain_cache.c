@@ -68,6 +68,7 @@ typedef struct Slot
 	BlockNumber head_blk;
 	uint64		manifest_gen;
 	PageStamp	stamp;
+	uint64		checked_epoch;	/* the snapshot epoch the stamp was last checked in (sift_pend_del_log) */
 	uint64		tick;
 	union
 	{
@@ -332,7 +333,7 @@ pd_load(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 }
 
 const SiftPendDelLog *
-sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
+sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry, uint64 epoch)
 {
 	Slot	   *s;
 	MemoryContext old;
@@ -342,12 +343,18 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
 	if (chain_cx == NULL)
 		chain_init();
 	s = slot_find_head(rel, entry->part_id, entry->pend_del_blk);
+	if (s != NULL && epoch != 0 && s->checked_epoch == epoch)
+	{
+		s->tick = sift_cache_tick();
+		return &s->log.pd;
+	}
 	if (s != NULL)
 	{
 		PageStamp now = stamp_read(rel, s->stamp.blk);
 
 		if (stamp_same(&now, &s->stamp))
 		{
+			s->checked_epoch = epoch;
 			s->tick = sift_cache_tick();
 			return &s->log.pd;
 		}
@@ -357,6 +364,7 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
 	old = MemoryContextSwitchTo(s->cx);
 	s->head_blk = pd_load(rel, entry, s) ? entry->pend_del_blk : InvalidBlockNumber;
 	MemoryContextSwitchTo(old);
+	s->checked_epoch = epoch;
 	s->tick = sift_cache_tick();
 	(void) sift_cache_commit();
 	return &s->log.pd;

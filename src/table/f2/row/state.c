@@ -30,7 +30,7 @@ newer_deleter(TransactionId xmax)
 static void
 pending_state(Relation rel, const SiftPartitionEntry *entry, uint64 tid, SiftRowState *rs)
 {
-	const SiftPendDelLog *log = sift_pend_del_log(rel, entry);
+	const SiftPendDelLog *log = sift_pend_del_log(rel, entry, 0);
 
 	for (int i = log == NULL ? -1 : sift_pend_del_log_newest(log, tid); i >= 0; i = sift_pend_del_log_prev(log, i))
 	{

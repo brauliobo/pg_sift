@@ -17,6 +17,8 @@
 #include "table/f2/tbl.h"
 #include "core/compat.h"
 
+static uint64 pd_epochs = 0;
+
 void
 sift_tbl_f2_vis_begin(SiftTblVis *v, Relation rel, Snapshot snap)
 {
@@ -25,6 +27,8 @@ sift_tbl_f2_vis_begin(SiftTblVis *v, Relation rel, Snapshot snap)
 	sift_xid_cache_init(&v->xc, snap);
 	v->snap_xmin = sift_vis_snap_xmin(snap);
 	v->serializable = IsolationIsSerializable() && CheckForSerializableConflictOutNeeded(rel, snap);
+	v->pd_epoch = snap->snapshot_type == SNAPSHOT_MVCC ? ++pd_epochs : 0;
+	v->pd_cid = snap->curcid;
 }
 
 static bool
@@ -163,7 +167,7 @@ sift_tbl_f2_pending_dead(SiftTblVis *v, const SiftPartitionEntry *entry, uint64 
 		return false;
 	if (sift_stage_find_delete(v->rel, tid, &xmax, &cmax, &has_succ, &succ) && deleted(v, xmax, cmax))
 		return true;
-	log = sift_pend_del_log(v->rel, entry);
+	log = sift_pend_del_log(v->rel, entry, v->snap->curcid == v->pd_cid ? v->pd_epoch : 0);
 	for (int i = log != NULL ? sift_pend_del_log_newest(log, tid) : -1; i >= 0; i = sift_pend_del_log_prev(log, i))
 	{
 		const SiftPendDelRec *r = sift_pend_del_log_rec(log, i);

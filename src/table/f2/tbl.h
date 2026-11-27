@@ -289,6 +289,8 @@ typedef struct SiftTblVis
 	SiftXidCache xc;
 	FullTransactionId snap_xmin;
 	bool		serializable;	/* a row the snapshot cannot see may be a conflict out */
+	uint64		pd_epoch;		/* of an MVCC snapshot: the epoch of its reads of the pending deletes (sift_pend_del_log), 0 for another kind */
+	CommandId	pd_cid;			/* the command the epoch sees to: a snapshot moved to a later one checks again */
 } SiftTblVis;
 
 extern void sift_tbl_f2_vis_begin(SiftTblVis *v, Relation rel, Snapshot snap);
