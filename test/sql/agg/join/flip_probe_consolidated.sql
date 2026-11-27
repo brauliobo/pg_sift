@@ -321,9 +321,11 @@ SET sift.test_create_format1 = on;
 -- A table left-joined to a join of two small tables (every kind and region with its count, zero for the pairs of no event) cannot be one preserved lookup, so the join read every row of
 -- the table. The scan makes the groups of the rows by the columns the join equates and the query joins them to the pairs: a count is the group's (0 for a pair of none), a sum, min or max
 -- the group's (NULL for none), count(*) counts the row of a pair of none once. `partial` says the plan reads the groups in the scan, `rows_same` that the rows are those of sift off.
--- What the groups cannot give (a float sum, avg, count(DISTINCT), a column of the table outside the aggregates, a WHERE on it) keeps the join.
+-- What the groups cannot give (a float sum, avg, count(DISTINCT), a column of the table outside the aggregates, a WHERE on it) keeps the join. The rows are compared to the last bit
+-- of a float sum, which a scan adds in the order of the rows only with sift.agg_exact_float.
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_exact_float = on;
 CREATE TABLE lp_kinds (id int PRIMARY KEY, name text NOT NULL);
 CREATE TABLE lp_regions (region text PRIMARY KEY);
 CREATE TABLE lp_events (id int PRIMARY KEY, kind_id int, region text, status text NOT NULL, qty int, amount numeric, ratio float8) WITH (autovacuum_enabled = false);

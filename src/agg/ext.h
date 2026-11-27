@@ -38,6 +38,7 @@ typedef struct SiftV6XDim
 	AttrNumber	pcol[SIFT_STAR_MAX_PAY];
 	Oid			ptype[SIFT_STAR_MAX_PAY];
 	double		span;			/* the planner's: the values the statistics say the one integer key of a dimension of unique keys spans, which the table of its dense form is as wide as (0: none) */
+	Index		pvarno[SIFT_STAR_MAX_PAY];	/* as kvarno, of each payload column */
 } SiftV6XDim;
 
 /* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_array_elements_text, jsonb_array_elements of objects read by their members (SV6E_MEMBERS), jsonb_each or

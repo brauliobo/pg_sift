@@ -232,7 +232,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 		}
 		ints = lappend_int(ints, xd->npay);
 		for (int c = 0; c < xd->npay; c++)
-			ints = lappend_int(lappend_int(ints, xd->pcol[c]), (int) xd->ptype[c]);
+			ints = lappend_int(lappend_int(lappend_int(ints, xd->pcol[c]), (int) xd->ptype[c]), (int) xd->pvarno[c]);
 	}
 	ints = lappend_int(ints, x->nrcol);
 	for (int c = 0; c < x->nrcol; c++)
@@ -291,10 +291,11 @@ sift_v6_ext_unpack(const List *l)
 			xd->kres[k] = list_nth_int(ints, at + 9);
 		}
 		xd->npay = list_nth_int(ints, at++);
-		for (int c = 0; c < xd->npay; c++, at += 2)
+		for (int c = 0; c < xd->npay; c++, at += 3)
 		{
 			xd->pcol[c] = (AttrNumber) list_nth_int(ints, at);
 			xd->ptype[c] = (Oid) list_nth_int(ints, at + 1);
+			xd->pvarno[c] = (Index) list_nth_int(ints, at + 2);
 		}
 	}
 	x->nrcol = list_nth_int(ints, at++);
@@ -368,6 +369,6 @@ sift_v6_ext_resolve(SiftV6Ext *x, const List *custom_plans)
 		for (int k = 0; k < xd->nkeys; k++)
 			xd->kcol[k] = xd->kres[k] > 0 ? (AttrNumber) xd->kres[k] : column_position(plan, xd->kvarno[k], xd->kcol[k]);
 		for (int c = 0; c < xd->npay; c++)
-			xd->pcol[c] = column_position(plan, 0, xd->pcol[c]);
+			xd->pcol[c] = column_position(plan, xd->pvarno[c], xd->pcol[c]);
 	}
 }

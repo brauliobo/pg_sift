@@ -53,6 +53,13 @@ single_in(Relids r, Relids rest)
 	return bms_membership(r) == BMS_SINGLETON && bms_is_subset(r, rest);
 }
 
+/* the relations a RIGHT or FULL join keeps for the fact table: one of them, or all of them (a join of them is then the dimension) */
+static bool
+kept_in(Relids l, Relids rest)
+{
+	return single_in(l, rest) || bms_equal(l, rest);
+}
+
 /* the special join of the statement as a dimension: a left join to a relation, the relation a RIGHT or FULL join keeps, the relations under a semi or anti join; false for any other */
 static bool
 special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
@@ -67,7 +74,7 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 		case JOIN_LEFT:
 			if (single_in(r, rest))
 				return sift_v6_join_add_dim(sh, r, SV6J_LEFT_EQUI);
-			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
+			return bms_equal(r, fact) && kept_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
 		case JOIN_FULL:
 			if (single_in(r, rest) && bms_equal(bms_intersect(sj->syn_lefthand, before), bms_del_members(bms_copy(before), r)))
 			{
@@ -76,7 +83,7 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 				sh->dim[sh->nd - 1].closing = true;
 				return true;
 			}
-			return bms_equal(r, fact) && single_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
+			return bms_equal(r, fact) && kept_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
 		case JOIN_SEMI:
 		case JOIN_ANTI:
 			return bms_is_subset(r, rest) && sift_v6_join_add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);

@@ -372,10 +372,10 @@ dim_fits(PlannerInfo *root, StarDim *d, uint64 budget)
 }
 
 bool
-sift_v6_in_target(const RelOptInfo *rel, AttrNumber attno)
+sift_v6_in_target(const RelOptInfo *rel, const Var *v)
 {
 	foreach_ptr(Node, n, rel->reltarget->exprs)
-		if (IsA(n, Var) && ((Var *) n)->varattno == attno)
+		if (IsA(n, Var) && ((Var *) n)->varattno == v->varattno && ((Var *) n)->varno == v->varno)
 			return true;
 	return false;
 }
@@ -397,7 +397,7 @@ seed_dims(V6Plan *p, StarDim *dims, int nd)
 			SiftV6Col	col;
 
 			if (!sift_v6_plan_column(p, (const Expr *) dims[d].fvar[k], false, &col) || !sift_v6_key_type_ok(col.typid) ||
-				!sift_v6_in_target(dims[d].rel, dims[d].dvar[k]->varattno))
+				!sift_v6_in_target(dims[d].rel, dims[d].dvar[k]))
 				return false;
 			xd->fatt[k] = col.attno;
 			xd->ftype[k] = col.typid;
@@ -566,18 +566,18 @@ sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	int			d = -1,
 				c;
 	SiftV6XDim *xd;
+	Index		varno;
 
 	if (x == NULL || x->ndims == 0 || v == NULL || get_typlen(v->vartype) == -2)
 		return false;
 	for (int i = 0; i < x->ndims; i++)
-		if (((RelOptInfo *) list_nth(p->dim_rels, i))->relid == v->varno)
+		if (bms_is_member(v->varno, ((RelOptInfo *) list_nth(p->dim_rels, i))->relids))
 			d = i;
-	if (d < 0)
+	if (d < 0 || !sift_v6_in_target(list_nth(p->dim_rels, d), v))
 		return false;
 	xd = &x->dim[d];
-	if (!sift_v6_in_target(list_nth(p->dim_rels, d), v->varattno))
-		return false;
-	for (c = 0; c < xd->npay && xd->pcol[c] != v->varattno; c++)
+	varno = ((RelOptInfo *) list_nth(p->dim_rels, d))->relid == 0 ? v->varno : 0;
+	for (c = 0; c < xd->npay && (xd->pcol[c] != v->varattno || xd->pvarno[c] != varno); c++)
 		;
 	if (c == xd->npay)
 	{
@@ -585,6 +585,7 @@ sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 			return false;
 		xd->pcol[c] = v->varattno;
 		xd->ptype[c] = v->vartype;
+		xd->pvarno[c] = varno;
 		xd->npay++;
 	}
 	*out = (SiftV6Col) {.typid = v->vartype,.scale = sift_v6_type_native(v->vartype) ? 0 : SIFT_V6_SCALE_DATUM,.src = SV6SRC_DIM,.dim = d,.slot = c};
