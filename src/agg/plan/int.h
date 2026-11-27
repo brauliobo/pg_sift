@@ -184,10 +184,9 @@ typedef void (*SiftV6AddFn) (V6Plan *p, const void *stmt);
 extern bool sift_v6_join_fact_ok(PlannerInfo *root, RelOptInfo *fact);
 /* The paths of the fact of a join: for each source of a plain table, the one plan over the partitions of a partitioned table */
 extern void sift_v6_fact_paths(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, SiftV6CompileFn compile, SiftV6AddFn add, const void *stmt);
-/* The plan of the statement over the partitions of parent that pruning left, and the source of the first partition it was compiled against; rows: the best rows of the statement */
+/* The plan of the statement over the partitions of parent that pruning left, and the source of the first partition it was compiled against */
 struct SiftV6RelSource;
-extern bool sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, bool rows, V6Plan *first,
-									   struct SiftV6RelSource *like);
+extern bool sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, V6Plan *first, struct SiftV6RelSource *like);
 
 /* The paths for a partitioned table: one SiftAggV6 over the live partitions, whose indexes all lay the statement out alike */
 extern void sift_agg_v6_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);

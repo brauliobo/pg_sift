@@ -15,8 +15,11 @@
 
 #include "core/store/ops.h"
 
+struct SiftV6Spec;
+
 typedef struct SiftV6ScanSrc
 {
+	const struct SiftV6Spec *spec;	/* the plan as this relation reads it: a partition's batch quals name its own attributes */
 	Relation	heap;
 	Relation	index;			/* a sift_col index; NULL for a sift_table, which heap is */
 	ScanKey		keys;

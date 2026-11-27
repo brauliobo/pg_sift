@@ -221,7 +221,7 @@ open_scan(ParEnv *e, uint32 child)
 	const uint64 *staged = sift_v6_par_staged_dead(e->hdr, child, &nstaged);
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->scan[child] = src->ops->par->begin(e->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, batch_to_local, e);
+	e->scan[child] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, batch_to_local, e);
 	src->ops->par->morsel_begin(e->scan[child], staged, nstaged);
 	MemoryContextSwitchTo(old);
 	return e->scan[child];

@@ -68,6 +68,8 @@ SELECT n, s.result_rows, s.vs_normal_plan FROM pt_q, LATERAL same(q) s WHERE n =
 -- ONLY the partitioned table has no rows of its own; a statement on a partition is the plain table's
 SELECT * FROM same('SELECT count(*) AS n FROM ONLY pt');
 SELECT * FROM same('SELECT g, count(*) AS n FROM pt_b GROUP BY g');
+-- an OR is a batch qual over the attributes of the parent, which pt_b numbers otherwise
+SELECT * FROM same('SELECT g, count(*) AS n FROM pt WHERE v = 3 OR id = 3 GROUP BY g');
 
 -- the partitions a parameter or a stable function prunes when the statement runs are dropped when the scan starts: their units are not read.
 -- A prepared statement with a generic plan against the literal query: the same rows, and as many partitions read as the normal plan scans

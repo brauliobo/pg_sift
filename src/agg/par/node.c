@@ -118,7 +118,7 @@ list_units(SiftV6ParNode *pn)
 	{
 		const SiftV6ScanSrc *src = &pn->sources[k];
 
-		scan[k] = src->ops->par->begin(pn->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
+		scan[k] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
 		src->ops->par->plan(scan[k], &each[k]);
 		nrefs += each[k].nrefs;
 		nstaged += each[k].nstaged;

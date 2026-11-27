@@ -46,15 +46,17 @@ top_attno_of(PlannerInfo *root, const RelOptInfo *leaf, Index top, AttrNumber at
 	return attno == InvalidAttrNumber || app->parent_relid == top ? attno : top_attno_of(root, find_base_rel(root, app->parent_relid), top, attno);
 }
 
-/* The attribute of a partition for an attribute of the top partitioned table */
+/* The attribute of a partition for an attribute of the top partitioned table, 0 for a dropped column of the table */
 static AttrNumber
 leaf_attno_of(PlannerInfo *root, const RelOptInfo *leaf, Index top, AttrNumber attno)
 {
 	const AppendRelInfo *app = root->append_rel_array[leaf->relid];
+	const Var  *v;
 
 	if (app->parent_relid != top)
 		attno = leaf_attno_of(root, find_base_rel(root, app->parent_relid), top, attno);
-	return castNode(Var, list_nth(app->translated_vars, attno - 1))->varattno;
+	v = attno == InvalidAttrNumber ? NULL : list_nth_node(Var, app->translated_vars, attno - 1);
+	return v == NULL ? InvalidAttrNumber : v->varattno;
 }
 
 typedef struct ToTop
@@ -197,19 +199,17 @@ part_compile(V6Plan *p, const void *arg)
 	return stmt->topk > 0 ? sift_v6_rows_compile(p, stmt->topk) : sift_v6_compile_on(p, stmt->extra, stmt->group_exprs);
 }
 
-/* The attribute of each partition for each column the node fetches: the partitions number their columns as they were made, the plan names those of the parent */
+/* The attribute of each partition for each attribute of the parent: the partitions number their columns as they were made, the plan names those of the parent */
 static void
-leaf_attnos(PlannerInfo *root, V6Plan *first, Index top, List *leaves)
+leaf_attnos(PlannerInfo *root, V6Plan *first, const RelOptInfo *parent, List *leaves)
 {
 	int			at = 0;
 
-	first->spec.part_ncols = list_length(first->scan_tlist);
+	first->spec.part_ncols = parent->max_attr;
 	first->spec.part_attno = palloc(sizeof(AttrNumber) * first->spec.part_ncols * list_length(leaves));
 	foreach_ptr(RelOptInfo, leaf, leaves)
-	{
-		foreach_node(TargetEntry, te, first->scan_tlist)
-			first->spec.part_attno[at++] = leaf_attno_of(root, leaf, top, ((Var *) te->expr)->varattno);
-	}
+		for (AttrNumber attno = 1; attno <= parent->max_attr; attno++)
+			first->spec.part_attno[at++] = leaf_attno_of(root, leaf, parent->relid, attno);
 }
 
 typedef struct PartPlan
@@ -219,7 +219,6 @@ typedef struct PartPlan
 	RelOptInfo *out;
 	SiftV6CompileFn compile;
 	const void *stmt;
-	bool		rows;			/* the best rows: the node fetches the columns of the heap rows, whose attributes each partition numbers as it was made */
 	List	   *leaves;
 	bool		pg_derive;		/* the keys and arguments PostgreSQL's evaluator computes are not computed natively by the partitions that could (V6Plan.pg_derive) */
 	MemoryContext attempt;		/* the plan of a template: kept when every leaf compiles like it, reset for the next template */
@@ -317,8 +316,7 @@ compile_alike(PartPlan *pp, const LeafSources *leaves, int nleaves, const SiftV6
 	first->spec.nparts = nleaves;
 	first->spec.part_index = rels;
 	first->spec.part_is_table = is_table;
-	if (pp->rows)
-		leaf_attnos(pp->root, first, pp->parent->relid, pp->leaves);
+	leaf_attnos(pp->root, first, pp->parent, pp->leaves);
 	return true;
 }
 
@@ -343,9 +341,9 @@ compile_templates(PartPlan *pp, const LeafSources *ls, int n, V6Plan *first)
 }
 
 bool
-sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, bool rows, V6Plan *first, SiftV6RelSource *like)
+sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *out, SiftV6CompileFn compile, const void *stmt, V6Plan *first, SiftV6RelSource *like)
 {
-	PartPlan	pp = {root, parent, out, compile, stmt, rows, live_leaves(root, parent)};
+	PartPlan	pp = {root, parent, out, compile, stmt, live_leaves(root, parent)};
 	LeafSources *ls;
 	int			n = 0;
 	const SiftV6RelSource *template;
@@ -379,7 +377,7 @@ sift_agg_v6_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	SiftV6RelSource like;
 	V6Plan		first;
 
-	if (sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, false, &first, &like))
+	if (sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, &first, &like))
 		sift_v6_add_group_path(&first, output_rel, group_exprs, sift_v6_having(extra));
 }
 
@@ -409,7 +407,7 @@ sift_v6_fact_paths(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *out, SiftV6C
 		SiftV6RelSource like;
 		V6Plan		first;
 
-		if (sift_v6_compile_partitions(root, fact, out, compile, stmt, false, &first, &like))
+		if (sift_v6_compile_partitions(root, fact, out, compile, stmt, &first, &like))
 			add(&first, stmt);
 		return;
 	}
@@ -434,7 +432,7 @@ sift_v6_add_rows_partition_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOp
 	Cost		open,
 				scan;
 
-	if (!sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, true, &first, &like))
+	if (!sift_v6_compile_partitions(root, input_rel, output_rel, part_compile, &stmt, &first, &like))
 		return;
 	sift_v6_source_scan_price(root, input_rel, &like, 0, &open, &scan);
 	sift_v6_rows_add(&first, k, scan, NIL, 0, 0);

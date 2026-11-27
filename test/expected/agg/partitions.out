@@ -102,6 +102,13 @@ SELECT * FROM same('SELECT g, count(*) AS n FROM pt_b GROUP BY g');
  SiftAgg |          11 |              0
 (1 row)
 
+-- an OR is a batch qual over the attributes of the parent, which pt_b numbers otherwise
+SELECT * FROM same('SELECT g, count(*) AS n FROM pt WHERE v = 3 OR id = 3 GROUP BY g');
+   plan    | result_rows | vs_normal_plan 
+-----------+-------------+----------------
+ SiftAgg 6 |           5 |              0
+(1 row)
+
 -- the partitions a parameter or a stable function prunes when the statement runs are dropped when the scan starts: their units are not read.
 -- A prepared statement with a generic plan against the literal query: the same rows, and as many partitions read as the normal plan scans
 -- (a condition that no row can meet is planned as an empty result, which PostgreSQL 19 shows with a scan: no count for those)
@@ -134,9 +141,9 @@ PREPARE pt_in (date[]) AS SELECT g, count(*) AS n FROM pt WHERE d = ANY ($1) GRO
 PREPARE pt_hash (int) AS SELECT g, count(*) AS n FROM pt WHERE id = $1 GROUP BY g;
 SELECT plan_of('EXECUTE pt_pruned(DATE ''2024-05-01'')') AS pruned, plan_of('EXECUTE pt_param(3)') AS other,
        plan_of('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])') AS in_list, plan_of('EXECUTE pt_hash(7)') AS hash_key;
-  pruned   |   other   | in_list | hash_key  
------------+-----------+---------+-----------
- SiftAgg 3 | SiftAgg 6 | normal  | SiftAgg 6
+  pruned   |   other   |  in_list  | hash_key  
+-----------+-----------+-----------+-----------
+ SiftAgg 3 | SiftAgg 6 | SiftAgg 6 | SiftAgg 6
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
@@ -164,21 +171,21 @@ SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUT
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |          11 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |          11 |              0
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2023-02-01''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2023-02-01'']) GROUP BY g');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            1 |           0 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            1 |           0 |              0
 (1 row)
 
 SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE pt_in(''{}'')', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (''{}''::date[]) GROUP BY g');
-  scan  | partitions_read | result_rows | vs_normal_plan 
---------+-----------------+-------------+----------------
- normal |                 |           0 |              0
+  scan   | partitions_read | result_rows | vs_normal_plan 
+---------+-----------------+-------------+----------------
+ SiftAgg |               1 |           0 |              0
 (1 row)
 
 -- the bounds the pruning of a plan read are not kept when a partition moves to another one: k = 11 was out of the first partition
@@ -360,9 +367,9 @@ SET plan_cache_mode = force_generic_plan;
 PREPARE pt_pruned_par (date) AS SELECT g, count(*) AS n FROM pt WHERE d >= $1 AND d < DATE '2024-07-01' GROUP BY g;
 PREPARE pt_in_par (date[]) AS SELECT g, count(*) AS n FROM pt WHERE d = ANY ($1) GROUP BY g;
 SELECT plan_of('EXECUTE pt_pruned_par(DATE ''2024-05-01'')'), plan_of('EXECUTE pt_in_par(ARRAY[DATE ''2024-02-02''])');
-  plan_of  | plan_of 
------------+---------
- SiftAgg 3 | normal
+  plan_of  |  plan_of  
+-----------+-----------
+ SiftAgg 3 | SiftAgg 6
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_pruned_par(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
@@ -372,9 +379,9 @@ SELECT * FROM same_exec('EXECUTE pt_pruned_par(DATE ''2024-05-01'')', 'SELECT g,
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_in_par(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |          11 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |          11 |              0
 (1 row)
 
 RESET plan_cache_mode;
@@ -514,9 +521,9 @@ SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, cou
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])', 'SELECT g, count(*) AS n FROM pt WHERE d = ANY (ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08'']) GROUP BY g');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |          11 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |          11 |              0
 (1 row)
 
 RESET plan_cache_mode;
@@ -628,9 +635,9 @@ SELECT * FROM same_exec('EXECUTE pl_k(''cat_z'')', 'SELECT k, count(*) AS n, sum
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pl_ks(ARRAY[''cat_a'', ''cat_d''])', 'SELECT k, count(*) AS n, sum(v) AS s FROM pl WHERE k = ANY (ARRAY[''cat_a'', ''cat_d'']) GROUP BY k');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           2 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           2 |              0
 (1 row)
 
 -- a partition attached after the plan was made: the plan is made again with it
@@ -698,9 +705,9 @@ PREPARE phx_k (int) AS SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k = $1;
 PREPARE phx_e (int) AS SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k + 1 = $1;
 SELECT plan_of('EXECUTE ph_k(7)') AS equality, plan_of('EXECUTE ph_ks(ARRAY[7, 8])') AS any_list, plan_of('EXECUTE ph_big(7)') AS other_type,
        plan_of('EXECUTE ph_gt(7)') AS range_test, plan_of('EXECUTE ph_and(7, 50)') AS with_filter, plan_of('EXECUTE phx_e(8)') AS expression_key;
- equality  | any_list | other_type | range_test | with_filter | expression_key 
------------+----------+------------+------------+-------------+----------------
- SiftAgg 8 | normal   | SiftAgg 8  | SiftAgg 8  | SiftAgg 8   | normal
+ equality  | any_list  | other_type | range_test | with_filter | expression_key 
+-----------+-----------+------------+------------+-------------+----------------
+ SiftAgg 8 | SiftAgg 8 | SiftAgg 8  | SiftAgg 8  | SiftAgg 8   | SiftAgg 4
 (1 row)
 
 -- a value, a list (duplicates, a NULL element, none, a NULL array), a NULL value, a value no row has, the rows whose key is NULL
@@ -729,33 +736,33 @@ SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUT
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8, 7])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8, 7])');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           1 |              0
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, NULL, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, NULL, 12])');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           1 |              0
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_ks(''{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}'')', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (''{1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20}''::int[])');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            8 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            8 |           1 |              0
 (1 row)
 
 SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_ks(''{}'')', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (''{}''::int[])');
-  scan  | partitions_read | result_rows | vs_normal_plan 
---------+-----------------+-------------+----------------
- normal |                 |           1 |              0
+  scan   | partitions_read | result_rows | vs_normal_plan 
+---------+-----------------+-------------+----------------
+ SiftAgg |               1 |           1 |              0
 (1 row)
 
 SELECT scan, partitions_read, result_rows, vs_normal_plan FROM same_exec('EXECUTE ph_ks(NULL)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (NULL::int[])');
-  scan  | partitions_read | result_rows | vs_normal_plan 
---------+-----------------+-------------+----------------
- normal |                 |           1 |              0
+  scan   | partitions_read | result_rows | vs_normal_plan 
+---------+-----------------+-------------+----------------
+ SiftAgg |               1 |           1 |              0
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_and(7, 50)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7 AND v < 50');
@@ -787,7 +794,7 @@ SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7
 SELECT plan_of('EXECUTE phm_ab(3, ''cat_b'')') AS both, plan_of('EXECUTE phm_a(3)') AS one, plan_of('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')') AS list_and_value;
    both    |    one    | list_and_value 
 -----------+-----------+----------------
- SiftAgg 4 | SiftAgg 4 | normal
+ SiftAgg 4 | SiftAgg 4 | SiftAgg 4
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE phm_ab(3, ''cat_b'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = 3 AND b = ''cat_b''');
@@ -809,9 +816,9 @@ SELECT * FROM same_exec('EXECUTE phm_a(3)', 'SELECT count(*) AS n, sum(v) AS s F
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = ANY (ARRAY[3, 4, 5]) AND b = ''cat_b''');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            4 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            4 |           1 |              0
 (1 row)
 
 -- a key that is an expression is PostgreSQL's to prune; a condition on the plain column reads every partition
@@ -822,9 +829,9 @@ SELECT * FROM same_exec('EXECUTE phx_k(7)', 'SELECT count(*) AS n, sum(v) AS s F
 (1 row)
 
 SELECT scan, result_rows, vs_normal_plan FROM same_exec('EXECUTE phx_e(8)', 'SELECT count(*) AS n, sum(v) AS s FROM phx WHERE k + 1 = 8');
-  scan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           1 |              0
+  scan   | result_rows | vs_normal_plan 
+---------+-------------+----------------
+ SiftAgg |           1 |              0
 (1 row)
 
 -- another operator or another type of the operand keeps the normal plan (which prunes as PostgreSQL does)
@@ -864,15 +871,15 @@ SELECT * FROM same_exec('EXECUTE pt_dh(DATE ''2024-07-02'', 32)', 'SELECT g, cou
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT plan_of('EXECUTE ph_ks(ARRAY[7, 8])');
- plan_of 
----------
- normal
+  plan_of  
+-----------
+ SiftAgg 8
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8])');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           1 |              0
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_k(7)', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = 7');
@@ -886,9 +893,9 @@ SET max_parallel_workers_per_gather = 0;
 UPDATE ph SET k = k + 1 WHERE id % 5 = 0;
 DELETE FROM ph WHERE id % 11 = 0;
 SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8])');
-  scan  | partitions_read | normal_scans | result_rows | vs_normal_plan 
---------+-----------------+--------------+-------------+----------------
- normal |                 |            2 |           1 |              0
+  scan   | partitions_read | normal_scans | result_rows | vs_normal_plan 
+---------+-----------------+--------------+-------------+----------------
+ SiftAgg |               1 |            2 |           1 |              0
 (1 row)
 
 RESET plan_cache_mode;
