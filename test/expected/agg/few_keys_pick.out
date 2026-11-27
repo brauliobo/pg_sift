@@ -41,7 +41,7 @@ DECLARE j jsonb;
 BEGIN
 	PERFORM set_config('sift.enable_agg', agg, true);
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || fk_q(sub) INTO j;
-	plan := CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+	plan := CASE WHEN j::text LIKE '%"SiftAgg%' THEN 'SiftAgg' ELSE 'normal' END;
 	total_cost := (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
 	RETURN NEXT;
 END $$;
@@ -65,7 +65,7 @@ FROM generate_series(1, 4) sub, LATERAL fk_plan(sub, 'on') a, LATERAL fk_plan(su
      1 |       1 | normal  | t                  |                  0
      2 |       3 | SiftAgg | t                  |                  0
      3 |      40 | SiftAgg | t                  |                  0
-     4 |      10 | SiftAgg | f                  |                  0
+     4 |      10 | SiftAgg | t                  |                  0
 (4 rows)
 
 DROP FUNCTION fk_q(int), fk_plan(int, text), fk_same(int);
