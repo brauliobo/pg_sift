@@ -1,6 +1,7 @@
 -- A scan of a sift_table that counts the distinct values of a wide column (bytea, here) sorts the values the rows of a group hold, so that no dictionary of the rows of one unit
 -- is held and wide_dict_bytes (1 GB, lowered to 64 kB by sift.test_limits) is no limit of it: 3000 values of 80 bytes and 7 values of 16 bytes count the same at any limit.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

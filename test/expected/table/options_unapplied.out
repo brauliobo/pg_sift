@@ -2,6 +2,7 @@
 -- the options apply to new writes at once and to the parts as they are rewritten. VACUUM FULL writes them again, and the report goes.
 -- requires: build col
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
