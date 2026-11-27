@@ -477,10 +477,12 @@ local_flush(SiftRadixLocal *l)
 	l->dist_elems = 0;
 }
 
+/* The table is emptied into the partitions before a group of key_len more bytes would take it past its slots, its distinct values, or its key bytes past those of its slots */
 static inline void
-local_make_room(SiftRadixLocal *l)
+local_make_room(SiftRadixLocal *l, uint32 key_len)
 {
-	if (l->ht.count >= l->ht.grow_at || l->dist_elems >= SIFT_PAR_LOCAL_DIST_MAX)
+	if (l->ht.count >= l->ht.grow_at || l->dist_elems >= SIFT_PAR_LOCAL_DIST_MAX ||
+		(l->ht.arena_used > 0 && (Size) l->ht.arena_used + key_len > (Size) l->coord->local_cap * sizeof(SiftAggSlot64)))
 		local_flush(l);
 }
 
@@ -497,7 +499,7 @@ sift_radix_local_upsert(SiftRadixLocal *l, uint64 hash, const SiftInlineKey16 *k
 {
 	SiftAggSlot64 *s;
 
-	local_make_room(l);
+	local_make_room(l, 0);
 	s = sift_ht_upsert(&l->ht, hash, key, found);
 	return local_new_group(l, s, *found);
 }
@@ -507,7 +509,7 @@ sift_radix_local_upsert_wide(SiftRadixLocal *l, uint64 hash, const void *key, ui
 {
 	SiftAggSlot64 *s;
 
-	local_make_room(l);
+	local_make_room(l, len);
 	s = sift_ht_upsert_wide(&l->ht, hash, key, len, nulls, found);
 	return local_new_group(l, s, *found);
 }
@@ -585,6 +587,7 @@ sift_radix_scan_part(SiftParCoord *c, uint32 part, SiftRadixBlockFn fn, void *ar
 	{
 		SiftRadixChunk *ch = chunk_at(c, i);
 
+		CHECK_FOR_INTERRUPTS();
 		fn(arg, (const uint8 *) (ch + 1), SIFT_RADIX_COMMITTED(pg_atomic_read_u64(&ch->commit)));
 		i = ch->next_chunk;
 	}
@@ -723,6 +726,7 @@ sift_radix_drain(shm_mq_handle **mqh, int n, SiftRadixConsume consume, void *arg
 	{
 		bool		progressed = false;
 
+		CHECK_FOR_INTERRUPTS();
 		for (int w = 0; w < n; w++)
 		{
 			Size		nbytes;
@@ -747,7 +751,6 @@ sift_radix_drain(shm_mq_handle **mqh, int n, SiftRadixConsume consume, void *arg
 		{
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0, drain_event());
 			ResetLatch(MyLatch);
-			CHECK_FOR_INTERRUPTS();
 		}
 	}
 	pfree(done);

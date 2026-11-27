@@ -104,7 +104,8 @@ sift_dictseen_create(MemoryContext cx, uint64 cap_bytes)
 	SiftDictSeen *d = MemoryContextAllocZero(cx, sizeof(SiftDictSeen));
 
 	d->cx = cx;
-	d->cap = Max(cap_bytes, DICTSEEN_MIN_CAP);
+	/* a part adds up to SIFT_DICTSEEN_MAX_BYTES and SIFT_DICTSEEN_MAX_CODES past the cap before the set emits: under a quarter of one allocation, the arena and the table stay one each */
+	d->cap = Min(Max(cap_bytes, DICTSEEN_MIN_CAP), MaxAllocSize / 4);
 	return d;
 }
 
@@ -182,8 +183,12 @@ seen_emit(SiftDictSeen *d, SiftDictSeenEmit emit, void *arg)
 {
 	d->emitted = true;
 	for (uint32 i = 0; i < d->ht_cap; i++)
+	{
+		if ((i & 4095) == 0)
+			CHECK_FOR_INTERRUPTS();
 		if (d->ht[i].hash != 0)
 			emit(arg, d->arena + d->ht[i].off, d->ht[i].len);
+	}
 	if (d->ht != NULL)
 		pfree(d->ht);
 	if (d->arena != NULL)

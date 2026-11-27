@@ -47,3 +47,8 @@ TESTS    += agg/distinct/u64 agg/distinct/set
 AUTOSTUB += agg/distinct/u64 agg/distinct/set
 XFLAGS_agg/distinct/u64      = -Wno-unused-function
 XFLAGS_agg/distinct/set      = -Wno-unused-function
+
+TESTS    += agg/star/exec agg/ht/rec agg/group/fast agg/dictseen agg/par/scan
+AUTOSTUB += agg/star/exec agg/ht/rec agg/group/fast agg/dictseen agg/par/scan
+LIB_agg/star/exec = agg/star/exec.c
+FX_agg/par/scan   = $(HOST)

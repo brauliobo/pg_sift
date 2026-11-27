@@ -7,6 +7,7 @@
 
 #include "agg/ht/rec.h"
 #include "agg/vec.h"
+#include "core/memtrack.h"
 
 enum
 {
@@ -39,11 +40,11 @@ slot_key_bytes(const SiftSaltedHT *ht, const SiftAggSlot64 *s, uint32 *len)
 }
 
 static void
-buf_reserve(SiftRecBuf *b, uint32 len)
+buf_reserve(SiftRecBuf *b, Size len)
 {
 	if (len > b->cap)
 	{
-		b->cap = Max(len, Max(b->cap * 2, 1024));
+		b->cap = sift_alloc_grow(Max(b->cap, 512), len, "the record of a group of an aggregate");
 		b->p = b->p ? repalloc(b->p, b->cap) : palloc(b->cap);
 	}
 }
@@ -53,7 +54,7 @@ build_state(SiftRecBuf *b, const SiftSaltedHT *ht, const SiftRadixShape *sh, con
 {
 	uint32		klen;
 	const uint8 *kb = slot_key_bytes(ht, s, &klen);
-	const uint32 len = TYPEALIGN(8, REC_STATE_FIXED + ht->ext_stride + klen);
+	const Size	len = TYPEALIGN(8, REC_STATE_FIXED + ht->ext_stride + (Size) klen);
 	const RecHdr h = {len, REC_STATE};
 	uint8	   *at;
 
@@ -80,7 +81,7 @@ build_distinct(SiftRecBuf *b, const SiftSaltedHT *ht, const SiftAggSlot64 *s, ui
 {
 	uint32		klen;
 	const uint8 *kb = slot_key_bytes(ht, s, &klen);
-	const uint32 len = TYPEALIGN(8, REC_DIST_FIXED + klen + vlen);
+	const Size	len = TYPEALIGN(8, REC_DIST_FIXED + (Size) klen + vlen);
 	const RecHdr h = {len, kind};
 	uint8	   *at;
 
@@ -102,10 +103,20 @@ build_distinct(SiftRecBuf *b, const SiftSaltedHT *ht, const SiftAggSlot64 *s, ui
 	return len;
 }
 
+/* A record to put, the statement cancellable every 1024 of them */
+static inline void
+put_tick(SiftRecPut put, void *arg, uint64 hash, const uint8 *rec, uint32 len, uint32 *recs)
+{
+	if ((++*recs & 1023) == 0)
+		CHECK_FOR_INTERRUPTS();
+	put(arg, hash, rec, len);
+}
+
 void
 sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *buf, SiftRecPut put, void *arg)
 {
 	SiftAggSlot64 *s;
+	uint32		recs = 0;
 
 	if (sh->flush != NULL)
 	{
@@ -116,7 +127,7 @@ sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *
 	{
 		uint32		len = build_state(buf, ht, sh, s);
 
-		put(arg, s->hash64, buf->p, len);
+		put_tick(put, arg, s->hash64, buf->p, len, &recs);
 		if (sh->ext_dist_off != SIFT_HT_NO_EXT)
 		{
 			const SiftDistSet *set = *(SiftDistSet **) (sift_ht_ext(ht, s) + sh->ext_dist_off);
@@ -129,13 +140,13 @@ sift_rec_flush_ht(const SiftSaltedHT *ht, const SiftRadixShape *sh, SiftRecBuf *
 				while (sift_dist_next_bytes(set, &pos, &vbytes, &vlen))
 				{
 					len = build_distinct(buf, ht, s, REC_DISTINCT_BYTES, vlen, vbytes, vlen);
-					put(arg, s->hash64, buf->p, len);
+					put_tick(put, arg, s->hash64, buf->p, len, &recs);
 				}
 			else
 				while (set && sift_dist_next(set, &pos, &v))
 				{
 					len = build_distinct(buf, ht, s, REC_DISTINCT, v, NULL, 0);
-					put(arg, s->hash64, buf->p, len);
+					put_tick(put, arg, s->hash64, buf->p, len, &recs);
 				}
 		}
 	}

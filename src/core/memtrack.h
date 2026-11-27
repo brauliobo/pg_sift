@@ -106,6 +106,17 @@ sift_budget_check(Size bytes, int budget_kb, const char *what, const char *setti
 						errhint("Raise %s%s%s.", setting, hint ? ", or " : "", hint ? hint : "")));
 }
 
+/* The bytes a buffer of cap grows to so that it holds need: doubled, at most one allocation (MaxAllocSize); the statement fails naming what needs more */
+static inline Size
+sift_alloc_grow(Size cap, Size need, const char *what)
+{
+	if (need > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("%s needs %zu kB, more than one allocation holds (%zu kB)", what, (size_t) (need / 1024), (size_t) (MaxAllocSize / 1024)),
+						errhint("Use shorter or fewer key and value columns.")));
+	return Min(Max(need, cap > MaxAllocSize / 2 ? MaxAllocSize : cap * 2), MaxAllocSize);
+}
+
 #ifdef SIFT_TESTING
 extern void sift_mem_assert_within(SiftMemTracker *t);
 extern void sift_memtrack_define_test_gucs(void);

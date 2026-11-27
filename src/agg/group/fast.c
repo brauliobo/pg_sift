@@ -6,6 +6,7 @@
 
 #include "agg/kern/kern.h"
 #include "agg/group/fast.h"
+#include "core/memtrack.h"
 
 /* ---- packed keys ---- */
 
@@ -129,8 +130,7 @@ batch_room(SiftWideBatch *wb, size_t need)
 {
 	if (need > wb->cap)
 	{
-		while (need > wb->cap)
-			wb->cap *= 2;
+		wb->cap = sift_alloc_grow(wb->cap, need, "the keys of a batch of groups");
 		wb->buf = repalloc(wb->buf, wb->cap);
 	}
 }

@@ -51,7 +51,7 @@ struct SiftV6StarRun
 static uint64
 star_budget(const SiftV6Ext *x)
 {
-	return Max((uint64) work_mem * 1024 / 2 / Max(x->ndims, 1), 4096);
+	return Min(Max((uint64) work_mem * 1024 / 2 / Max(x->ndims, 1), 4096), MaxAllocSize);
 }
 
 SiftV6StarRun *

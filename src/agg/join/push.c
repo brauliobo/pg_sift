@@ -42,7 +42,6 @@
 #include "core/memtrack.h"
 #include "table/dispatch.h"
 #include "core/cmp.h"
-#include "core/memtrack.h"
 
 /* A small side of more rows than this stays with the join: the array is a key of the scan */
 #define PUSH_ROWS_MAX	50000
@@ -436,9 +435,9 @@ static int64 *
 small_side(PushState *st, int *n)
 {
 	PlanState  *child = linitial(st->css.custom_ps);
-	int64	   *v = palloc(256 * sizeof(int64));
-	int			cap = 256,
-				u = 0;
+	Size		cap = 256 * sizeof(int64);
+	int64	   *v = palloc(cap);
+	int			u = 0;
 
 	*n = 0;
 	for (;;)
@@ -452,10 +451,11 @@ small_side(PushState *st, int *n)
 		x = slot_getattr(slot, st->resno, &isnull);
 		if (isnull)
 			continue;
-		if (*n == cap)
+		if ((Size) (*n + 1) * sizeof(int64) > cap)
 		{
-			sift_budget_check((Size) cap * 2 * sizeof(int64), work_mem, "the join keys of the small side of a push", "work_mem", NULL);
-			v = repalloc(v, (cap *= 2) * sizeof(int64));
+			cap = sift_alloc_grow(cap, (Size) (*n + 1) * sizeof(int64), "the join keys of the small side of a push");
+			sift_budget_check(cap, work_mem, "the join keys of the small side of a push", "work_mem", NULL);
+			v = repalloc(v, cap);
 		}
 		v[(*n)++] = value_of(st->elemtype, x);
 	}
@@ -501,7 +501,7 @@ scope_router(PushState *st, EState *estate)
 
 /* One scan of the fact for the values of ids: each value is in one batch only, so the rows of the batches are the rows of the join */
 static void
-push_scan(PushState *st, EState *estate, ArrayType *ids)
+push_scan(PushState *st, EState *estate, MemoryContext cx, ArrayType *ids)
 {
 	ScalarArrayOpExpr *q = copyObject(st->key);
 	List	   *quals = list_copy(st->spec->indexqual);
@@ -514,7 +514,7 @@ push_scan(PushState *st, EState *estate, ArrayType *ids)
 	quals = lappend(quals, q);
 	if (st->spec->is_table)
 	{
-		struct SiftStoreQuals *sq = st->ops->zone->compile_quals(st->heap, quals, estate->es_query_cxt);
+		struct SiftStoreQuals *sq = st->ops->zone->compile_quals(st->heap, quals, cx);
 
 		st->ops->zone->bind_quals(st->heap, sq, st->css.ss.ps.ps_ExprContext);
 		st->ops->zone->scan_table(st->spec, st->group, st->heap, sq, estate->es_snapshot, NULL, 0, &st->stats, NULL, NULL, NULL);
@@ -533,6 +533,7 @@ push_run(PushState *st, EState *estate)
 {
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+	MemoryContext chunk_cx;
 	int64	   *v;
 	int			n;
 
@@ -542,8 +543,15 @@ push_run(PushState *st, EState *estate)
 	v = small_side(st, &n);
 	st->nvalues = n;
 	st->group = sift_v6_group_new(st->spec, st->gcx, desc);
+	chunk_cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 push chunk");
+	MemoryContextSwitchTo(chunk_cx);
 	for (int from = 0; from < n; from += PUSH_RUNTIME_CHUNK)
-		push_scan(st, estate, values_array(st, v + from, Min(PUSH_RUNTIME_CHUNK, n - from)));
+	{
+		MemoryContextReset(chunk_cx);
+		push_scan(st, estate, chunk_cx, values_array(st, v + from, Min(PUSH_RUNTIME_CHUNK, n - from)));
+	}
+	MemoryContextSwitchTo(estate->es_query_cxt);
+	MemoryContextDelete(chunk_cx);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }

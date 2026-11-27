@@ -1,7 +1,7 @@
 /*
  * agg/star/exec.c - the tables of the small relations of a star join and their probes by the batches of the fact table (agg/star/star.h).
  */
-/* check-memory: allow-allocs every array here follows the rows of one small relation, which sift_star_dim_add stops at the budget of its shape */
+/* check-memory: allow-allocs every array here follows the rows of one small relation, which sift_star_dim_add stops at the budget of its shape and at one allocation */
 #include "core/host.h"
 
 #include <math.h>
@@ -170,7 +170,7 @@ sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row)
 		const uint64 need = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used) + strs + (uint64) ncols_of(sh) * MAXIMUM_ALIGNOF;
 		const uint64 arena = need <= d->arena_cap ? d->arena_cap : Max(d->arena_cap * 2, Max(need, 1024));
 
-		if (table_bytes(sh, cap, d->nrows + 1, arena) > sh->budget)
+		if (table_bytes(sh, cap, d->nrows + 1, arena) > Min(sh->budget, MaxAllocSize))
 			return false;
 	}
 	if (d->nrows == d->cap)
@@ -320,6 +320,8 @@ sift_star_dim_finish(SiftStarDim *d)
 	{
 		uint32		slot;
 
+		if ((i & 1023) == 0)
+			CHECK_FOR_INTERRUPTS();
 		if (row_has_null_key(d, i))
 			continue;
 		inserted++;

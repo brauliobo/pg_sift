@@ -77,14 +77,21 @@ sift_v6_par_leave(SiftV6ParRun *r)
 	BarrierDetach(&r->hdr->phase_barrier);
 }
 
-static SiftV6ParRun *guarded_run;
+/* A guarded run on the stack of the process, and the run it is inside of */
+typedef struct Guarded
+{
+	SiftV6ParRun *run;
+	struct Guarded *outer;
+} Guarded;
 
-/* The exit of the process in a guarded run: the barrier of the others is not left waiting for it */
+static Guarded *guarded;
+
+/* The exit of the process in guarded runs: the barrier of the others is not left waiting for it, in any run it is inside of */
 static void
 guarded_exit(int code, Datum arg)
 {
-	if (guarded_run != NULL)
-		sift_v6_par_leave(guarded_run);
+	for (Guarded *g = guarded; g != NULL; g = g->outer)
+		sift_v6_par_leave(g->run);
 }
 
 /* The hook is made once and never cancelled: a callback another part of the process registers inside the run (the first pin of a shared dictionary) cannot get between it and its cancel */
@@ -92,26 +99,26 @@ void
 sift_v6_par_guarded(SiftV6ParRun *r, void (*body) (SiftV6ParRun *r))
 {
 	static bool hooked;
-	SiftV6ParRun *outer = guarded_run;
+	Guarded		g = {r, guarded};
 
 	if (!hooked)
 	{
 		before_shmem_exit(guarded_exit, 0);
 		hooked = true;
 	}
-	guarded_run = r;
+	guarded = &g;
 	PG_TRY();
 	{
 		body(r);
 	}
 	PG_CATCH();
 	{
-		guarded_run = outer;
+		guarded = g.outer;
 		sift_v6_par_leave(r);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	guarded_run = outer;
+	guarded = g.outer;
 }
 
 void
