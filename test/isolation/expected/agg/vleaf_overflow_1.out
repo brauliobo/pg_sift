@@ -14,7 +14,8 @@ Sort
         Index: iso_vl_col                                                   
         Group Keys: grp                                                     
         Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
-(6 rows)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 QUERY PLAN                                                                   
 -----------------------------------------------------------------------------
@@ -45,7 +46,8 @@ Sort
         Index: iso_vl_col                                                   
         Group Keys: grp                                                     
         Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
-(6 rows)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 QUERY PLAN                                                                   
 -----------------------------------------------------------------------------
@@ -76,7 +78,8 @@ Sort
         Index: iso_vl_col                                                   
         Group Keys: grp                                                     
         Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
-(6 rows)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 QUERY PLAN                                                                   
 -----------------------------------------------------------------------------
@@ -114,7 +117,8 @@ Sort
         Index: iso_vl_col                                                   
         Group Keys: grp                                                     
         Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
-(6 rows)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 step s1drop: DEALLOCATE ALL;
 
@@ -132,7 +136,8 @@ Sort
         Index: iso_vl_col                                                   
         Group Keys: grp                                                     
         Pushed Aggregates: sum(((iso_vl.m ->> 'a'::text))::double precision)
-(6 rows)
+        Map Keys: m['a'] double precision                                   
+(7 rows)
 
 QUERY PLAN                                                                   
 -----------------------------------------------------------------------------

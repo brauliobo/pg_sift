@@ -18,7 +18,7 @@ step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp 
                            'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -95,7 +95,7 @@ step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp 
                            'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -112,7 +112,7 @@ step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp 
                            'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2commit: COMMIT;
@@ -126,7 +126,7 @@ step s1win: SELECT iso_pp_run('SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp 
                            'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -175,21 +175,21 @@ step s1prep: SET plan_cache_mode = force_generic_plan;
 step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2attach: ALTER TABLE iso_pp ATTACH PARTITION iso_pp_n FOR VALUES FROM ('2024-07-01') TO ('2024-10-01');
 step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 3 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2detach: ALTER TABLE iso_pp DETACH PARTITION iso_pp_n;
 step s1gen: SELECT iso_pp_run('EXECUTE iso_pp_p(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n, sum(v) AS s FROM iso_pp WHERE d >= DATE ''2024-05-01'' GROUP BY g');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -199,21 +199,21 @@ step s1hprep: SET plan_cache_mode = force_generic_plan;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2hdetach: ALTER TABLE iso_ph DETACH PARTITION iso_ph_3;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2hattach: ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -228,7 +228,7 @@ step s2hdetach: ALTER TABLE iso_ph DETACH PARTITION iso_ph_3; <waiting ...>
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s1end: COMMIT;
@@ -236,14 +236,14 @@ step s2hdetach: <... completed>
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2hattach: ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -258,7 +258,7 @@ step s2hdetachc: ALTER TABLE iso_ph DETACH PARTITION iso_ph_3 CONCURRENTLY; <wai
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s1end: COMMIT;
@@ -266,14 +266,14 @@ step s2hdetachc: <... completed>
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 1 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2hattach: ALTER TABLE iso_ph ATTACH PARTITION iso_ph_3 FOR VALUES WITH (MODULUS 4, REMAINDER 3);
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -283,14 +283,14 @@ step s2hmove: UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2commit: COMMIT;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -300,14 +300,14 @@ step s2hmove: UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s2abort: ROLLBACK;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
@@ -322,14 +322,14 @@ step s2hmove: UPDATE iso_ph SET k = k + 1 WHERE id % 7 = 0;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 step s1end: COMMIT;
 step s1hgen: SELECT iso_pp_run('EXECUTE iso_ph_p(ARRAY[7, 12])', 'SELECT count(*) AS n, sum(v) AS s FROM iso_ph WHERE k = ANY (ARRAY[7, 12])');
 iso_pp_run                                                            
 ----------------------------------------------------------------------
-0 SiftAgg nodes, 0 partitions read, 0 differences from the normal plan
+1 SiftAgg nodes, 2 partitions read, 0 differences from the normal plan
 (1 row)
 
 
