@@ -4,6 +4,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
+-- Format 1: return_columns, count_columns and write_buffer_limit are Format 1.
+SET sift.test_create_format1 = on;
 
 CREATE TABLE io (id int, a int, n numeric(12,2), s text, u uuid, d date, pad text DEFAULT repeat('x', 300));
 ALTER TABLE io ALTER COLUMN pad SET STORAGE PLAIN;

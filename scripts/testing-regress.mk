@@ -732,6 +732,7 @@ TESTING_REGRESS += table/page_corrupt
 TESTING_REGRESS += table/paths_notice
 TESTING_REGRESS += table/preagg/calendar
 TESTING_REGRESS += table/promote
+TESTING_REGRESS += table/rewrite
 TESTING_REGRESS += table/scroll
 TESTING_REGRESS += table/space
 TESTING_REGRESS += table/tomb/legacy_header

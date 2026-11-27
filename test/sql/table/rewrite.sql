@@ -2,6 +2,8 @@
 -- of another index by an index scan; VACUUM FULL over column segments of two layouts; and in the transaction that deleted or updated
 -- rows, which stay deleted.
 CREATE EXTENSION pg_sift;
+-- Format 1: the rewrites write column segments of Format 1.
+SET sift.test_create_format1 = on;
 -- a rewrite in the transaction that deleted and updated rows: they stay deleted, with or without the commit
 CREATE TABLE c (id int PRIMARY KEY, v text) USING sift_table;
 INSERT INTO c SELECT g, 'v' || g FROM generate_series(1, 10) g;

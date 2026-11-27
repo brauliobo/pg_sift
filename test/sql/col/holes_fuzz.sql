@@ -5,6 +5,8 @@
 CREATE EXTENSION pg_sift;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.async_maintenance = off;	-- a worker that merges or promotes between a VACUUM and its check moves the blocks the check counts
+-- Format 1: key_cut and order_array_columns are Format 1, and Format 2.0 keeps released blocks in its quarantine until the horizon passes.
+SET sift.test_create_format1 = on;
 CREATE TABLE fz_ref (id int, grp int, v bigint, note text) WITH (autovacuum_enabled = off);
 CREATE TABLE fz_col (LIKE fz_ref) WITH (autovacuum_enabled = off);
 CREATE INDEX fz_col_idx ON fz_col USING sift_col (grp, v, note) WITH (key_cut = grp, order_array_columns = 'note');
