@@ -261,13 +261,13 @@ sink_held(const Sink *s)
 }
 
 /*
- * The side that holds more is written while the compaction holds flush_bytes or more and its rows half of it: what the rows of the inputs are in memory is never more than that and
- * what a slice adds, and what else the compaction holds (dictionaries, folds) does not cut the outputs into parts of a few rows
+ * The side that holds more is written while the compaction holds flush_bytes or more and its rows least_held: what the rows of the inputs are in memory is never more than that and what a
+ * granule (or a slice of one) adds; the rows of a sliced granule wait for half the share, so that what else the compaction holds (dictionaries, folds) does not cut them into parts of a few rows
  */
 static void
-sink_flush_due(Sink *s)
+sink_flush_due(Sink *s, Size least_held)
 {
-	while (sift_mem_used(s->mem) >= s->flush_bytes && sink_held(s) >= s->flush_bytes / 2)
+	while (sift_mem_used(s->mem) >= s->flush_bytes && sink_held(s) >= least_held)
 	{
 		int			side = s->split && s->rb[1]->mem_bytes > s->rb[0]->mem_bytes ? 1 : 0;
 
@@ -330,18 +330,31 @@ sink_take(Sink *sink, SiftRowBuf *one)
 }
 
 /*
- * The rows of the next slice of a granule that has left rows: the ones that fill the room sink_flush_due leaves before it writes, so that a granule whose rows take more than the budget
- * is never in memory whole, and a slice read into an empty buffer is written as it is, as large as the budget lets it be
+ * A granule whose rows take no more than the flush share (as the last slice measured a row) is read whole, so that the parts are written in whole granules of the inputs; a larger one is
+ * read in slices that each fill the room sink_flush_due leaves before it writes, so that it is never in memory whole
  */
-static int
-slice_rows(Sink *s, int left)
+static bool
+granule_sliced(const Sink *s, int nrows)
 {
-	Size		used = sift_mem_used(s->mem),
-				held = sink_held(s);
-	Size		room = Max(used < s->flush_bytes ? s->flush_bytes - used : 0, held < s->flush_bytes / 2 ? s->flush_bytes / 2 - held : 0);
-	Size		rows = s->row_bytes == 0 ? SIFT_COMPACT_FIRST_SLICE : room / s->row_bytes;
+	return s->row_bytes != 0 && (Size) nrows * s->row_bytes > s->flush_bytes;
+}
 
-	return (int) Min((Size) left, Max(rows, 1));
+/* The rows of the next slice of a granule of nrows rows that has left rows; before a row was measured, a first slice measures one */
+static int
+slice_rows(Sink *s, int nrows, int left)
+{
+	Size		used,
+				held,
+				room;
+
+	if (s->row_bytes == 0)
+		return Min(left, SIFT_COMPACT_FIRST_SLICE);
+	if (!granule_sliced(s, nrows))
+		return left;
+	used = sift_mem_used(s->mem);
+	held = sink_held(s);
+	room = Max(used < s->flush_bytes ? s->flush_bytes - used : 0, held < s->flush_bytes / 2 ? s->flush_bytes / 2 - held : 0);
+	return (int) Min((Size) left, Max(room / s->row_bytes, 1));
 }
 
 static void
@@ -359,8 +372,6 @@ add_slice(Sink *sink, const SiftGranuleView *v, const SiftRowVer *vers, int r0, 
 	gr->row0 = (uint32) r0;
 	(void) sift_rowbuf_drop_if(one, row_goes, gr);
 	sink_take(sink, one);
-	(void) sift_mem_used(sink->mem);
-	sink_flush_due(sink);
 }
 
 static bool
@@ -396,6 +407,7 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		MemoryContext old = MemoryContextSwitchTo(granule_cx);
 		SiftGranuleDesc gd;
 		GranuleRows gr = {.dead = dead,.granule = g,.hc = hc,.res = res};
+		Size		least_held = 0;
 
 		sift_vacuum_delay_point();
 		sift_f2_pace_pay();
@@ -405,11 +417,15 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 
 		for (int r0 = 0, r1; r0 < v.hdr->nrows; r0 = r1)
 		{
-			r1 = r0 + slice_rows(sink, v.hdr->nrows - r0);
+			r1 = r0 + slice_rows(sink, v.hdr->nrows, v.hdr->nrows - r0);
 			add_slice(sink, &v, vers, r0, r1, code_map, remap, d->part_gen, fold, &gr, rel_ext, nrel);
+			least_held = granule_sliced(sink, v.hdr->nrows) ? sink->flush_bytes / 2 : 0;
+			if (r1 < v.hdr->nrows && least_held > 0)
+				sink_flush_due(sink, least_held);
 		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(granule_cx);
+		sink_flush_due(sink, least_held);
 	}
 	MemoryContextDelete(granule_cx);
 	sift_compact_release_part(part, rel_ext, nrel);
