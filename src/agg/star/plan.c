@@ -22,6 +22,7 @@
 
 #include "agg/ht/ht.h"
 #include "agg/plan/int.h"
+#include "agg/refuse.h"
 #include "agg/cost/card.h"
 #include "agg/datum.h"
 #include "agg/dim_keys.h"
@@ -560,9 +561,13 @@ void
 sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
 {
 	const StarGoal goal = {.extra = extra,.group_exprs = group_exprs};
+	const int	nrels = bms_num_members(sift_v6_plan_base_relids(root, input_rel));
 
-	if (sift_v6_plan_query_ok(root, output_rel))
-		try_facts(root, input_rel, output_rel, &goal);
+	if (!sift_v6_plan_query_ok(root, output_rel))
+		return;
+	if (nrels > 1 + SIFT_STAR_MAX_DIMS + root->hasLateralRTEs)
+		sift_agg_arm_refused_by("single", AGG_REFUSE_JOIN, psprintf("%d tables, the fact table and up to %d it looks up", nrels, SIFT_STAR_MAX_DIMS));
+	try_facts(root, input_rel, output_rel, &goal);
 }
 
 void

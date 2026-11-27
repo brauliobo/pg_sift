@@ -78,6 +78,7 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | `format` | semantic | the format of the index or sift_table lacks a capability the statement needs | Rebuild the index or sift_table in the current format (REINDEX, VACUUM FULL), or compute the part the detail names in an outer query. |
 | `scope` | semantic | a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written | Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
+| `join` | semantic | the statement joins more tables than the scan looks up, or joins them in a way it does not | Join the fact table to at most 16 small tables, each on equalities of its keys, or aggregate the rest of the join in an outer query. |
 <!-- refusals:end -->
 
 ### `EXPLAIN` Labels

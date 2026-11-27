@@ -293,28 +293,51 @@ is_agg_scan(const CustomScan *cs)
 	return strncmp(name, "SiftAggV6", strlen("SiftAggV6")) == 0 || strcmp(name, "SiftHybridAgg") == 0;
 }
 
-/* does the plan read a sift_col index (an index, index-only or bitmap scan of the access method, or a node that aggregates from one) anywhere, in a child, a subquery or an initplan? */
+typedef bool (*PlanTest) (const Plan *p, Oid amoid);
+
+/* an index, index-only or bitmap scan of the access method, or a node that aggregates from one */
 static bool
-plan_reads_sift_index(const Plan *p, const List *subplans, Oid amoid)
+reads_index(const Plan *p, Oid amoid)
+{
+	switch (nodeTag(p))
+	{
+		case T_IndexScan:
+			return get_rel_relam(((const IndexScan *) p)->indexid) == amoid;
+		case T_IndexOnlyScan:
+			return get_rel_relam(((const IndexOnlyScan *) p)->indexid) == amoid;
+		case T_BitmapIndexScan:
+			return get_rel_relam(((const BitmapIndexScan *) p)->indexid) == amoid;
+		case T_CustomScan:
+			return is_agg_scan((const CustomScan *) p);
+		default:
+			return false;
+	}
+}
+
+static bool
+agg_scan(const Plan *p, Oid amoid)
+{
+	return IsA(p, CustomScan) && is_agg_scan((const CustomScan *) p);
+}
+
+static bool
+aggregates(const Plan *p, Oid amoid)
+{
+	return IsA(p, Agg) || IsA(p, Group) || agg_scan(p, amoid);
+}
+
+/* does a node of the plan pass test anywhere, in a child, a subquery or an initplan? */
+static bool
+plan_has(const Plan *p, const List *subplans, PlanTest test, Oid amoid)
 {
 	List	   *kids = NIL;
 
 	if (p == NULL)
 		return false;
+	if (test(p, amoid))
+		return true;
 	switch (nodeTag(p))
 	{
-		case T_IndexScan:
-			if (get_rel_relam(((const IndexScan *) p)->indexid) == amoid)
-				return true;
-			break;
-		case T_IndexOnlyScan:
-			if (get_rel_relam(((const IndexOnlyScan *) p)->indexid) == amoid)
-				return true;
-			break;
-		case T_BitmapIndexScan:
-			if (get_rel_relam(((const BitmapIndexScan *) p)->indexid) == amoid)
-				return true;
-			break;
 		case T_Append:
 			kids = ((const Append *) p)->appendplans;
 			break;
@@ -328,30 +351,27 @@ plan_reads_sift_index(const Plan *p, const List *subplans, Oid amoid)
 			kids = ((const BitmapOr *) p)->bitmapplans;
 			break;
 		case T_SubqueryScan:
-			if (plan_reads_sift_index(((const SubqueryScan *) p)->subplan, subplans, amoid))
-				return true;
+			kids = list_make1(((const SubqueryScan *) p)->subplan);
 			break;
 		case T_CustomScan:
-			if (is_agg_scan((const CustomScan *) p))
-				return true;
 			kids = ((const CustomScan *) p)->custom_plans;
 			break;
 		default:
 			break;
 	}
 	foreach_ptr(Plan, k, kids)
-		if (plan_reads_sift_index(k, subplans, amoid))
+		if (plan_has(k, subplans, test, amoid))
 			return true;
 	foreach_node(SubPlan, sp, p->initPlan)
-		if (plan_reads_sift_index(list_nth(subplans, sp->plan_id - 1), subplans, amoid))
+		if (plan_has(list_nth(subplans, sp->plan_id - 1), subplans, test, amoid))
 			return true;
-	return plan_reads_sift_index(p->lefttree, subplans, amoid) || plan_reads_sift_index(p->righttree, subplans, amoid);
+	return plan_has(p->lefttree, subplans, test, amoid) || plan_has(p->righttree, subplans, test, amoid);
 }
 
 static bool
 plan_stmt_reads_sift_index(const PlannedStmt *ps, Oid amoid)
 {
-	return plan_reads_sift_index(ps->planTree, ps->subplans, amoid);
+	return plan_has(ps->planTree, ps->subplans, reads_index, amoid);
 }
 
 /* is a table of the statement a sift_table, or has it a sift_col index? */
@@ -377,9 +397,10 @@ tables_have_source(const PlannedStmt *ps, Oid amoid)
 }
 
 /*
- * The statement has no aggregate, so no arm of the pushdown looked at it: the row "index" says whether the plan reads a sift_col index, and if not why. The statement is
- * planned again with the sequential scan off: a plan with a sift_col index then is the one the normal plan was estimated cheaper than (cost, with both costs);
- * none means no table is a sift_table or has such an index (no_source), or no condition of the statement is one the index answers (where).
+ * No arm of the pushdown noted the statement. One that aggregates over a table with a source was given up by a planner of the pushdown before it priced a path or named
+ * a reason: the row "single" says so (other), as no cost was compared. One that does not aggregate: the row "index" says whether the plan reads a sift_col index, and if
+ * not why. The statement is planned again with the sequential scan off: a plan with a sift_col index then is the one the normal plan was estimated cheaper than (cost, with
+ * both costs); none means no table is a sift_table or has such an index (no_source), or no condition of the statement is one the index answers (where).
  */
 static void
 why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *ptypes, int nparams, ParamListInfo params)
@@ -390,7 +411,7 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *p
 
 	if (!OidIsValid(amoid) || ps->commandType != CMD_SELECT)
 		return;
-	if (plan_stmt_reads_sift_index(ps, amoid))
+	if (plan_has(ps->planTree, ps->subplans, aggregates, amoid) ? plan_has(ps->planTree, ps->subplans, agg_scan, amoid) : plan_stmt_reads_sift_index(ps, amoid))
 	{
 		agg_report("index", AGG_REFUSE_NONE, NULL, true, ps->planTree->total_cost, -1);
 		return;
@@ -398,6 +419,11 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *p
 	if (!tables_have_source(ps, amoid))
 	{
 		agg_report("index", AGG_REFUSE_NO_SOURCE, NULL, false, 0, -1);
+		return;
+	}
+	if (plan_has(ps->planTree, ps->subplans, aggregates, amoid))
+	{
+		agg_report("single", AGG_REFUSE_OTHER, NULL, false, 0, -1);
 		return;
 	}
 	nest = NewGUCNestLevel();
