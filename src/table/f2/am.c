@@ -189,6 +189,9 @@ sift_tbl_f2_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber
 
 			rows = meta.total_rows - meta.total_dead;
 		}
+		/* rows that only the slabs of the partitions hold are in no part: the rows ANALYZE counted stand for them */
+		if (rows == 0 && rel->rd_rel->reltuples > 0)
+			rows = (uint64) rel->rd_rel->reltuples;
 	}
 	(void) get_rel_data_width(rel, attr_widths);
 	*tuples = (double) rows;
