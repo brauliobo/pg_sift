@@ -1,9 +1,7 @@
--- The integer filters of a statement are applied by the table source on the encoded chunks, as the sift_col index does (Filters In Source), and give the
--- rows of the normal plan: comparisons, ranges (two bounds are one filter), IN and NOT IN lists, NULL tests, on a table with write buffer rows,
--- tombstones, a numeric column holding NaN, and a column added after the first groups were written (a filter on it stays with the executor).
+-- The filters of a statement are applied by the table source on the encoded chunks, as the sift_col index does (the Filters of SiftAggV6), and give the
+-- rows of the normal plan: comparisons, ranges, IN and NOT IN lists, NULL tests, on a table with write buffer rows, tombstones, a numeric column
+-- holding NaN, and a column added after the first groups were written (those groups read it as NULL, or as the default of ADD COLUMN .. DEFAULT).
 CREATE EXTENSION pg_sift;
--- Format 1: the count of filters in source is told by the EXPLAIN of SiftAgg over Format 1 segments
-SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
@@ -13,12 +11,15 @@ UPDATE tf SET n = 'NaN' WHERE id % 1001 = 0;
 VACUUM (FREEZE, ANALYZE) tf;
 
 \ir test/common/sql/agg/rows.sql
+-- the conditions the table source applies: the conjuncts of the Filters of SiftAggV6 (forced: a top-N of a few rows is cheaper read by the normal plan), 'normal' for the normal plan
 CREATE FUNCTION in_source(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(\d+) filters in source' THEN r := substring(l from '(\d+) filters in source'); END IF;
+		IF l ~ 'SiftAggV6' THEN r := '0'; END IF;
+		IF l ~ '^\s*Filters: ' THEN r := (SELECT count(*) + 1 FROM regexp_matches(l, '\) AND \(', 'g'))::text; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
