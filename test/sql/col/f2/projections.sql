@@ -94,8 +94,8 @@ SELECT count(*) FROM sift.secondary_projections;
 SELECT p_uses('SELECT tenant, count(*) FROM p GROUP BY tenant', 'by_tenant');
 SELECT count(*) FROM sift.check('p_idx', false, 100);
 
--- A pre-aggregate answers predicates on text (an equality and an IN list) and integer columns from its cells for the sealed parts and from the relation for the rest; the aggregate plan takes
--- no boolean or uuid qual yet, so those statements run on the relation and p_uses is false for them
+-- A pre-aggregate answers predicates on text (an equality and an IN list) and integer columns from its cells for the sealed parts and from the relation for the rest; a boolean qual is read
+-- from the cells too; the aggregate plan takes no uuid qual yet, so those statements run on the relation and p_uses is false for them
 -- rows of 68 bytes: 3960 of them fill 33 heap pages exactly, as the 5966 rows of p do
 CREATE TABLE w (id bigint, flag boolean, ref uuid, label text, qty int);
 CREATE INDEX w_idx ON w USING sift_col (id, flag, ref, label, qty) WITH (key_order = 'id');

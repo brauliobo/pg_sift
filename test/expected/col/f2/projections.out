@@ -221,8 +221,8 @@ SELECT count(*) FROM sift.check('p_idx', false, 100);
      0
 (1 row)
 
--- A pre-aggregate answers predicates on text (an equality and an IN list) and integer columns from its cells for the sealed parts and from the relation for the rest; the aggregate plan takes
--- no boolean or uuid qual yet, so those statements run on the relation and p_uses is false for them
+-- A pre-aggregate answers predicates on text (an equality and an IN list) and integer columns from its cells for the sealed parts and from the relation for the rest; a boolean qual is read
+-- from the cells too; the aggregate plan takes no uuid qual yet, so those statements run on the relation and p_uses is false for them
 -- rows of 68 bytes: 3960 of them fill 33 heap pages exactly, as the 5966 rows of p do
 CREATE TABLE w (id bigint, flag boolean, ref uuid, label text, qty int);
 CREATE INDEX w_idx ON w USING sift_col (id, flag, ref, label, qty) WITH (key_order = 'id');
@@ -237,7 +237,7 @@ VACUUM w;
 SELECT p_uses('SELECT label, count(*), sum(qty) FROM w WHERE flag GROUP BY label', 'by_kind');
  p_uses 
 --------
- f
+ t
 (1 row)
 
 SELECT p_uses('SELECT flag, count(*) FROM w WHERE label = ''red'' GROUP BY flag', 'by_kind');
@@ -267,7 +267,7 @@ SELECT p_uses('SELECT label, count(*) FROM w WHERE ref IN (''00000000-0000-0000-
 SELECT p_uses('SELECT label, count(*) FROM w WHERE qty >= 3 AND qty < 6 AND NOT flag GROUP BY label', 'by_kind');
  p_uses 
 --------
- f
+ t
 (1 row)
 
 SELECT p_same('SELECT label, count(*), sum(qty) FROM w WHERE flag GROUP BY label');
@@ -311,7 +311,7 @@ INSERT INTO w SELECT i, i % 5 = 0, ('00000000-0000-0000-0000-00000000000' || (i 
 SELECT p_uses('SELECT label, count(*), sum(qty) FROM w WHERE flag GROUP BY label', 'by_kind');
  p_uses 
 --------
- f
+ t
 (1 row)
 
 SELECT p_uses('SELECT flag, count(*) FROM w WHERE label = ''red'' GROUP BY flag', 'by_kind');
@@ -341,7 +341,7 @@ SELECT p_uses('SELECT label, count(*) FROM w WHERE ref IN (''00000000-0000-0000-
 SELECT p_uses('SELECT label, count(*) FROM w WHERE qty >= 3 AND qty < 6 AND NOT flag GROUP BY label', 'by_kind');
  p_uses 
 --------
- f
+ t
 (1 row)
 
 DELETE FROM w WHERE id <= 150;
