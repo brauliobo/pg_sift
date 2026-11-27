@@ -243,7 +243,7 @@ SELECT arms_shared(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label
        reread(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') = reread(:'periods' || :'lines_both') AS periods_lines_once;
  periods_lines_shared | periods_lines_same | periods_lines_reread | periods_lines_once 
 ----------------------+--------------------+----------------------+--------------------
-                    0 | t                  | f                    | t
+                    0 | t                  | t                    | t
 (1 row)
 
 -- an arm inside the plan of another (the dimension of a star join reads the same index) is not one of its cohort: the outer pass needs the inner rows first.
