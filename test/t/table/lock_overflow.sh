@@ -95,17 +95,23 @@ out=$(sums)
 check "the prepared transaction changes its rows" test "$out" == "14600 14600 5600"
 
 # A writer holds 18,000 rows, the stripes overflow into chunks: a backend that locks rows of those stripes maps the area once, not once a transaction, and 32 writers of disjoint rows keep the rate
-# they have while a writer of 100 rows holds them
-sql lo "CREATE TABLE d (k int PRIMARY KEY, v int) USING sift_table" "INSERT INTO d SELECT g, 0 FROM generate_series(1, 12000) g" >/dev/null || bail "d failed"
-for t in c d; do
-	printf '\\set k 6001 + :client_id * 187 + random(0, 186)\nUPDATE %s SET v = v + 1 WHERE k = :k;\n' "$t" >"$D/disjoint_$t.pgb"
-done
-rate() { pgbench -n -c 32 -j 4 -T 3 -f "$D/disjoint_$1.pgb" -h "$D/sock" -p "$(port lo)" -U postgres -d postgres 2>&1 | sed -n 's/^tps = \([0-9.]*\) .*/\1/p'; }
+# they have while a writer of 100 rows holds them. The rates are the medians of three windows of each, taken in turns on the same rows (a rollback to the savepoint gives the chunks back)
+printf '\\set k 6001 + :client_id * 187 + random(0, 186)\nUPDATE c SET v = v + 1 WHERE k = :k;\n' >"$D/disjoint.pgb"
+rate() { pgbench -n -c 32 -j 4 -T 3 -f "$D/disjoint.pgb" -h "$D/sock" -p "$(port lo)" -U postgres -d postgres 2>&1 | sed -n 's/^tps = \([0-9.]*\) .*/\1/p'; }
+median() { printf '%s\n' "$@" | sort -g | sed -n 2p; }
 sess_open lo ho
 sess_say ho "BEGIN; $(bump a 1 100); \\echo small"
 wait_for "grep -q '^small\$' $D/ho.out" 60 || bail "the holder of 100 rows did not take them"
-base_tps=$(rate d)
-sess_say ho "$(bump a 101 12000); $(bump b 1 6000); \\echo held"
+base=() ovf=()
+for i in 1 2 3; do
+	base+=("$(rate)")
+	sess_say ho "SAVEPOINT big; $(bump a 101 12000); $(bump b 1 6000); \\echo held$i"
+	wait_for "grep -q '^held$i\$' $D/ho.out" 60 || bail "the holder of 18,000 rows did not take them"
+	ovf+=("$(rate)")
+	sess_say ho "ROLLBACK TO SAVEPOINT big; \\echo small$i"
+	wait_for "grep -q '^small$i\$' $D/ho.out" 60 || bail "the holder did not give back the 17,900 rows"
+done
+sess_say ho "SAVEPOINT big; $(bump a 101 12000); $(bump b 1 6000); \\echo held"
 wait_for "grep -q '^held\$' $D/ho.out" 60 || bail "the holder of 18,000 rows did not take them"
 sess_open lo wr
 sess_say wr "SELECT pg_backend_pid(); BEGIN; $(bump c 1 200); \\echo in"
@@ -117,8 +123,8 @@ sess_say wr "COMMIT; \\echo out"
 wait_for "grep -q '^out\$' $D/wr.out" 60 || bail "the second writer did not commit"
 out="$mapped_in segments mapped in the transaction, $(maps) after it"
 check "a backend keeps the area of the chunks mapped from one transaction to the next" test "$(maps)" -ge "$mapped_in"
-ovf_tps=$(rate c)
-out="32 writers: $base_tps tps while a writer holds 100 rows, $ovf_tps tps while it holds 18,000 in chunks"
+base_tps=$(median "${base[@]}") ovf_tps=$(median "${ovf[@]}")
+out="32 writers: $base_tps tps (of ${base[*]}) while a writer holds 100 rows, $ovf_tps tps (of ${ovf[*]}) while it holds 18,000 in chunks"
 diag "$out"
 check "32 writers of disjoint rows keep 60% of their rate while the stripes have chunks" awk -v a="$base_tps" -v b="$ovf_tps" 'BEGIN { exit !(b >= 0.6 * a) }'
 sess_say ho "ROLLBACK;"
