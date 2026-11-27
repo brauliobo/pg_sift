@@ -476,7 +476,7 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 		expand_on(p, d, b, &pr);
 		return;
 	}
-	if (!dim->unique_keys && dim->shape.mode != SV6J_SEMI_EQUI && dim->shape.mode != SV6J_ANTI_EQUI)
+	if (!dim->unique_keys && !sift_star_filters(dim->shape.mode))
 	{
 		expand(p, d, b, &pr);
 		return;

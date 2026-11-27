@@ -213,7 +213,7 @@ shape_of(const SiftV6Ext *x, int d, uint64 budget, SiftStarShape *sh)
 
 	*sh = (SiftStarShape) {.mode = xd->mode,.nkeys = xd->nkeys,.npay = xd->npay,.budget = budget,.lo_inc = true,.on = x->on[d] != NIL};
 	for (int k = 0; k < xd->nkeys; k++)
-		sh->kcls[k] = xd->mode == SV6J_RANGE_SMALL ? SSC_INT : cls_of_type(xd->ktype[k]);
+		sh->kcls[k] = sift_star_period(xd->mode) ? SSC_INT : cls_of_type(xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
 	{
 		sh->pcls[c] = cls_of_type(xd->ptype[c]);
@@ -231,7 +231,7 @@ read_of(const SiftV6Ext *x, int d, uint64 budget, StarRead *rd)
 		rd->key[k] = cell_of(rd->shape.kcls[k], xd->ktype[k]);
 	for (int c = 0; c < xd->npay; c++)
 		rd->pay[c] = cell_of(rd->shape.pcls[c], xd->ptype[c]);
-	rd->range_tc = xd->mode == SV6J_RANGE_SMALL ? lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO) : NULL;
+	rd->range_tc = sift_star_period(xd->mode) ? lookup_type_cache(xd->ktype[0], TYPECACHE_RANGE_INFO) : NULL;
 }
 
 /* The period a range column holds, as the int64 bounds [lo, hi) of its elements (a date or an int4): the row of an empty or NULL range is no period, and its first key is its lower bound (the one key a period dimension has) */
@@ -265,7 +265,7 @@ take_row(SiftV6StarRun *r, int d, const StarRead *rd, TupleTableSlot *slot, uint
 		bool		isnull;
 		const Datum v = slot_getattr(slot, xd->kcol[k], &isnull);
 
-		if (xd->mode == SV6J_RANGE_SMALL)
+		if (sift_star_period(xd->mode))
 			take_period(xd, rd->range_tc, v, isnull, row);
 		else
 			put_cell(&rd->key[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
@@ -704,7 +704,7 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->found[d] == NULL && r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI))))
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
 }

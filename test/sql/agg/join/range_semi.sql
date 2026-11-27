@@ -1,0 +1,47 @@
+-- EXISTS and NOT EXISTS of a period that holds a column of the fact table (fact.col <@ dim.range): the periods are a dimension of the scan, which keeps a row once when one of
+-- them holds its value (semi) or when none does (anti). A NULL value is held by no period, a NULL period holds no value, and an empty set of periods keeps no row (semi) or every row (anti).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 1000;
+SET random_page_cost = 1000;
+
+CREATE TABLE f (id int, d date, v int) WITH (autovacuum_enabled = false);
+INSERT INTO f SELECT g, CASE WHEN g % 10 = 0 THEN NULL ELSE date '2024-01-01' + g % 50 END, g % 7 FROM generate_series(1, 3000) g;
+CREATE INDEX f_col ON f USING sift_col (id, d, v);
+CREATE TABLE p (label text, r daterange);
+INSERT INTO p VALUES ('a', '[2024-01-05,2024-01-10)'), ('a', '[2024-01-08,2024-01-20)'), ('b', '[2024-01-15,2024-01-25]'), ('c', NULL);
+VACUUM (FREEZE, ANALYZE) f;
+ANALYZE p;
+
+-- the rows of the query with the extension on and off, how many differ, and whether the scan answered it
+CREATE FUNCTION check_query(q text) RETURNS TABLE (n bigint, diff bigint, sift bool) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	EXECUTE 'CREATE TEMP TABLE r_on ON COMMIT DROP AS ' || q;
+	sift := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		sift := sift OR l LIKE '%SiftAggV6%';
+	END LOOP;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off ON COMMIT DROP AS ' || q;
+	SELECT count(*) INTO n FROM r_on;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN NEXT;
+END $$;
+
+BEGIN;
+SELECT * FROM check_query($$SELECT v, count(*), sum(id) FROM f WHERE EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'a') GROUP BY v$$);
+SELECT * FROM check_query($$SELECT v, count(*), sum(id) FROM f WHERE NOT EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'a') GROUP BY v$$);
+SELECT * FROM check_query($$SELECT v, count(*) FROM f WHERE EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'none') GROUP BY v$$);
+SELECT * FROM check_query($$SELECT v, count(*) FROM f WHERE NOT EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'none') GROUP BY v$$);
+SELECT * FROM check_query($$SELECT v, count(*) FROM f WHERE EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r) AND NOT EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'b') GROUP BY v$$);
+COMMIT;
+
+EXPLAIN (COSTS OFF) SELECT v, count(*) FROM f WHERE EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r) AND NOT EXISTS (SELECT 1 FROM p WHERE f.d <@ p.r AND p.label = 'b') GROUP BY v;
+
+DROP FUNCTION check_query(text);
+DROP TABLE f, p;
+DROP EXTENSION pg_sift;

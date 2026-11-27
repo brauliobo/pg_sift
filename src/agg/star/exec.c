@@ -49,7 +49,7 @@ cls_of(const SiftStarShape *sh, int c)
 static inline bool
 is_range(const SiftStarShape *sh)
 {
-	return sh->mode == SV6J_RANGE_SMALL;
+	return sift_star_period(sh->mode);
 }
 
 static inline bool
@@ -668,19 +668,6 @@ sift_star_probe_part(const SiftStarShape *sh, const SiftStarProbe *p, uint32 r, 
 	return part_of_hash(h, nparts);
 }
 
-uint32
-sift_star_probe(const SiftStarDim *d, const SiftStarProbe *p, uint32 *match)
-{
-	uint32		hits = 0;
-
-	for (uint32 r = 0; r < p->n; r++)
-	{
-		match[r] = bit_at(p->active, r) ? hash_first(d, p, r) : 0;
-		hits += match[r] != 0;
-	}
-	return hits;
-}
-
 uint16
 sift_star_apply(const SiftStarDim *d, const uint32 *match, const uint64 *gate, uint16 n, uint64 *mask)
 {
@@ -695,7 +682,7 @@ sift_star_apply(const SiftStarDim *d, const uint32 *match, const uint64 *gate, u
 		{
 			const bool	matched = match[r] != 0 && bit_at(gate, r);
 
-			if (matched == (mode == SV6J_ANTI_EQUI))
+			if (matched == sift_star_anti(mode))
 				mask[r >> 6] &= ~(UINT64CONST(1) << (r & 63));
 		}
 		left += (mask[r >> 6] >> (r & 63)) & 1;
@@ -847,6 +834,20 @@ next_match(const SiftStarDim *d, uint32 chain, SiftStarCursor *cur)
 }
 
 uint32
+sift_star_probe(const SiftStarDim *d, const SiftStarProbe *p, uint32 *match)
+{
+	uint32		hits = 0;
+	SiftStarCursor cur;
+
+	for (uint32 r = 0; r < p->n; r++)
+	{
+		match[r] = first_match(d, p, p->active, r, &cur);
+		hits += match[r] != 0;
+	}
+	return hits;
+}
+
+uint32
 sift_star_expand(const SiftStarDim *d, const SiftStarProbe *p, const uint64 *gate, SiftStarCursor *cur, uint16 *fact_idx, uint32 *dim_row, uint32 cap)
 {
 	uint32		out = 0;
@@ -903,7 +904,7 @@ sift_star_push(const SiftStarDim *d)
 	SiftStarPush push = {.kind = SSP_NONE};
 	bool		any;
 
-	if (keeps_fact(sh) || sh->mode == SV6J_ANTI_EQUI || sh->nkeys == 0)
+	if (keeps_fact(sh) || sift_star_anti(sh->mode) || sh->nkeys == 0)
 		return push;
 	if (is_range(sh))
 	{

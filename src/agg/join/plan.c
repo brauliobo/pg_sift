@@ -324,8 +324,8 @@ period_types(Oid elem, Oid range)
 	return (elem == DATEOID && range == DATERANGEOID) || (elem == INT4OID && range == INT4RANGEOID);
 }
 
-/* fact.col <@ dim.range of an inner join: the dimension is the periods, probed by the column (SV6J_RANGE_SMALL), which multiplies a row by the periods that hold it before its elements are taken
- * apart; a LEFT or semi join of it is the normal plan's */
+/* fact.col <@ dim.range: the dimension is the periods, probed by the column; an inner join multiplies a row by the periods that hold it before its elements are taken apart (SV6J_RANGE_SMALL),
+ * a semi or anti join keeps it by whether one does; a LEFT join of it is the normal plan's */
 static bool
 place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 {
@@ -334,16 +334,16 @@ place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 			   *range;
 	SiftV6JoinDim    *d;
 
-	if (!IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP || !ri->is_pushed_down)
+	if (!IsA(ri->clause, OpExpr) || op->opno != OID_RANGE_ELEM_CONTAINED_OP)
 		return false;
 	col = sift_v6_plain_var(linitial(op->args));
 	range = sift_v6_plain_var(lsecond(op->args));
 	if (col == NULL || range == NULL || sift_v6_join_role(sh, col) != ROLE_FACT || sift_v6_join_role(sh, range) < 0 || !period_types(col->vartype, range->vartype))
 		return false;
 	d = &sh->dim[sift_v6_join_role(sh, range)];
-	if (d->mode != SV6J_INNER_EQUI || d->nkeys != 0)
+	if ((d->mode != SV6J_INNER_EQUI && d->mode != SV6J_SEMI_EQUI && d->mode != SV6J_ANTI_EQUI) || d->nkeys != 0 || !clause_level_ok(ri, d->mode))
 		return false;
-	d->mode = SV6J_RANGE_SMALL;
+	d->mode = d->mode == SV6J_INNER_EQUI ? SV6J_RANGE_SMALL : d->mode == SV6J_SEMI_EQUI ? SV6J_RANGE_SEMI : SV6J_RANGE_ANTI;
 	d->probe[0] = (const Node *) col;
 	d->key[0] = range;
 	d->nkeys = 1;
@@ -370,7 +370,7 @@ static bool
 matches_once(const SiftV6JoinShape *sh, Relids rels)
 {
 	for (int i = 0; i < sh->nd; i++)
-		if ((sh->dim[i].mode == SV6J_SEMI_EQUI || sh->dim[i].mode == SV6J_ANTI_EQUI) && bms_overlap(sh->dim[i].rels, rels))
+		if (sift_star_filters(sh->dim[i].mode) && bms_overlap(sh->dim[i].rels, rels))
 			return true;
 	return false;
 }
@@ -533,7 +533,7 @@ pairs_ok(const SiftV6JoinShape *sh)
 	{
 		const SiftV6JoinDim *d = &sh->dim[i];
 
-		if ((d->nkeys == 0 || d->on != NIL) && ((sh->elem != NULL && d->nkeys == 0) || d->mode == SV6J_SEMI_EQUI || d->mode == SV6J_ANTI_EQUI || d->mode == SV6J_RANGE_SMALL))
+		if ((d->nkeys == 0 || d->on != NIL) && ((sh->elem != NULL && d->nkeys == 0) || sift_star_filters(d->mode) || sift_star_period(d->mode)))
 			return false;
 	}
 	return true;
@@ -622,7 +622,7 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 		{
 			SiftV6Col	col;
 
-			if (!(jd->mode == SV6J_RANGE_SMALL ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : sift_v6_key_type_ok(jd->key[k]->vartype)) || (jd->kexpr[k] == NULL && !rel_outputs(jd->rel, jd->key[k])))
+			if (!(sift_star_period(jd->mode) ? jd->rel->rows <= SIFT_STAR_RANGE_MAX : sift_v6_key_type_ok(jd->key[k]->vartype)) || (jd->kexpr[k] == NULL && !rel_outputs(jd->rel, jd->key[k])))
 				return false;
 			if (!IsA(jd->probe[k], Var))
 			{

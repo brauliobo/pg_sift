@@ -32,8 +32,30 @@ typedef enum SiftV6JoinMode
 	SV6J_ANTI_EQUI,
 	SV6J_RANGE_SMALL,
 	SV6J_RIGHT_EQUI,			/* the dimension is the preserved side: its rows no fact row matched come out once, with a NULL fact side */
-	SV6J_FULL_EQUI				/* both sides are preserved */
+	SV6J_FULL_EQUI,				/* both sides are preserved */
+	SV6J_RANGE_SEMI,			/* a semi join of fact.col <@ dim.range: a fact row stays, once, when a period holds it */
+	SV6J_RANGE_ANTI				/* its anti join: a fact row stays when no period holds it */
 } SiftV6JoinMode;
+
+/* The dimension is periods a point of the fact row is probed in (fact.col <@ dim.range) */
+static inline bool
+sift_star_period(SiftV6JoinMode mode)
+{
+	return mode == SV6J_RANGE_SMALL || mode == SV6J_RANGE_SEMI || mode == SV6J_RANGE_ANTI;
+}
+
+/* The dimension only filters the fact rows by whether one of its rows matches: a semi or anti join */
+static inline bool
+sift_star_filters(SiftV6JoinMode mode)
+{
+	return mode == SV6J_SEMI_EQUI || mode == SV6J_ANTI_EQUI || mode == SV6J_RANGE_SEMI || mode == SV6J_RANGE_ANTI;
+}
+
+static inline bool
+sift_star_anti(SiftV6JoinMode mode)
+{
+	return mode == SV6J_ANTI_EQUI || mode == SV6J_RANGE_ANTI;
+}
 
 /* The rows of the dimension are kept whether or not a fact row matches them: they are marked as the scan matches them and the ones left come out when it ends (v6_join_lookup.h) */
 static inline bool
@@ -160,7 +182,7 @@ typedef struct SiftStarProbe
 static inline bool
 sift_star_parts_split(const SiftStarShape *sh)
 {
-	return sh->mode != SV6J_RANGE_SMALL && sh->nkeys > 0;
+	return !sift_star_period(sh->mode) && sh->nkeys > 0;
 }
 extern uint32 sift_star_row_part(const SiftStarShape *sh, const SiftStarRow *row, uint32 nparts);
 /* whether the rows of the table fall in more than one of nparts parts: when not (one key, or NULL keys), more parts never make the part of the table smaller */

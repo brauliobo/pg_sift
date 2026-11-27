@@ -298,7 +298,7 @@ sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh)
 		int			atts[SIFT_STAR_MAX_KEYS];
 		const RangeTblEntry *rte;
 
-		if (jd->lateral || jd->mode == SV6J_SEMI_EQUI || jd->mode == SV6J_ANTI_EQUI)
+		if (jd->lateral || sift_star_filters(jd->mode))
 			continue;
 		if ((jd->mode != SV6J_INNER_EQUI && jd->mode != SV6J_LEFT_EQUI) || bms_membership(jd->rels) != BMS_SINGLETON)
 			return false;

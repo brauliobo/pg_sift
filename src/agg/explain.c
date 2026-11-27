@@ -137,8 +137,10 @@ join_tag(SiftV6JoinMode mode)
 		case SV6J_LEFT_EQUI:
 			return " (left)";
 		case SV6J_SEMI_EQUI:
+		case SV6J_RANGE_SEMI:
 			return " (semi)";
 		case SV6J_ANTI_EQUI:
+		case SV6J_RANGE_ANTI:
 			return " (anti)";
 		case SV6J_RIGHT_EQUI:
 			return " (preserved)";

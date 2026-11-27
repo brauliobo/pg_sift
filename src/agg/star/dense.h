@@ -12,7 +12,7 @@
 static inline bool
 sift_star_dense_shape(const SiftStarShape *sh)
 {
-	return sh->mode != SV6J_RANGE_SMALL && !sift_star_preserves_dim(sh->mode) && sh->nkeys == 1 && sh->kcls[0] == SSC_INT;
+	return !sift_star_period(sh->mode) && !sift_star_preserves_dim(sh->mode) && sh->nkeys == 1 && sh->kcls[0] == SSC_INT;
 }
 
 static inline uint32
