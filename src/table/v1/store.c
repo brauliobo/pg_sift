@@ -135,7 +135,10 @@ sift_tbl_rel(Relation rel)
 	Oid			relid = RelationGetRelid(rel);
 	bool		found;
 	CacheEnt   *e;
-	const SiftTableFormatOps *ops = sift_tbl_ops(rel);
+	const SiftTableFormatOps *ops;
+
+	sift_tbl_require(rel);
+	ops = sift_tbl_ops(rel);
 
 	/* a function of Format 1 asked about a table of another format: its relcache entry must keep that format's state */
 	if (ops != &sift_tbl_v1_ops)

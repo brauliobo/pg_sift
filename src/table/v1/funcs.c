@@ -35,7 +35,6 @@ sift_table_segments(PG_FUNCTION_ARGS)
 	SiftTblRel *st = sift_tbl_rel(rel);
 	Snapshot	snap = RegisterSnapshot(GetTransactionSnapshot());
 
-	sift_tbl_require(rel);
 	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	sift_tbl_refresh(rel, st);
@@ -114,7 +113,6 @@ sift_table_layouts(PG_FUNCTION_ARGS)
 	const char *order;
 	bool		keyed;
 
-	sift_tbl_require(rel);
 	sift_check_inspect(rel);
 	InitMaterializedSRF(fcinfo, 0);
 	order = sift_tbl_opt_str(st, SIFT_TBLOPT_KEY_ORDER);
@@ -153,7 +151,6 @@ sift_table_space(PG_FUNCTION_ARGS)
 	Datum		v[6];
 	bool		nulls[6] = {0};
 
-	sift_tbl_require(rel);
 	sift_check_inspect(rel);
 	sift_tbl_refresh_full(rel, st);
 	fs = RelationGetNumberOfBlocks(rel) > 0 ? sift_store_free_stats(rel) : (SiftFreeStats) {0};	/* nothing written yet: no metapage */

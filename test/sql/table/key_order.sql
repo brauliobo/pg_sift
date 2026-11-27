@@ -48,6 +48,9 @@ SELECT sift.table_get_option('ko', 'key_order') = '' AS none_after_reset, (SELEC
 -- key_order is a per-table option: there is no setting of that name
 SELECT count(*) AS settings_named_key_order FROM pg_settings WHERE name = 'sift.table_key_order';
 SELECT sift.table_set_option('ko_heap', 'key_order', 'id');
+INSERT INTO ko_heap VALUES (1);
+SELECT * FROM sift.table_layouts('ko_heap');
+SELECT * FROM sift_internal.v1_table_segments('ko_heap');
 
 -- the status view: a table with no key, with one set on an empty table, with its rows scattered, sorted again
 SELECT layout, kind, key_order, rows, units_per_key, restore FROM sift.table_layouts('ko');

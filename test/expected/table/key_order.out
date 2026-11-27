@@ -170,6 +170,11 @@ SELECT count(*) AS settings_named_key_order FROM pg_settings WHERE name = 'sift.
 
 SELECT sift.table_set_option('ko_heap', 'key_order', 'id');
 ERROR:  "ko_heap" is not a sift_table
+INSERT INTO ko_heap VALUES (1);
+SELECT * FROM sift.table_layouts('ko_heap');
+ERROR:  "ko_heap" is not a sift_table
+SELECT * FROM sift_internal.v1_table_segments('ko_heap');
+ERROR:  "ko_heap" is not a sift_table
 -- the status view: a table with no key, with one set on an empty table, with its rows scattered, sorted again
 SELECT layout, kind, key_order, rows, units_per_key, restore FROM sift.table_layouts('ko');
  layout |  kind   | key_order  | rows | units_per_key | restore 

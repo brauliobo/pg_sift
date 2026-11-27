@@ -66,7 +66,6 @@ sift_test_tbl_promote_held(PG_FUNCTION_ARGS)
 	Relation	rel = table_open(sift_rel_must_exist(PG_GETARG_OID(0)), AccessShareLock);
 	SiftTblRel *st = sift_tbl_rel(rel);
 
-	sift_tbl_require(rel);
 	sift_tbl_close_wbuf(rel, st, 1);
 	(void) sift_tbl_promote(rel, st, GetOldestNonRemovableTransactionId(rel), true);
 	table_close(rel, AccessShareLock);
@@ -88,7 +87,6 @@ sift_test_tbl_cube_damage(PG_FUNCTION_ARGS)
 	Datum		v[8];
 	bool		nulls[8] = {false};
 
-	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb && r.blobs < maxunits; u++)
@@ -125,7 +123,6 @@ sift_test_tbl_cal_grains(PG_FUNCTION_ARGS)
 	Datum		v[4];
 	bool		nulls[4] = {false};
 
-	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		for (uint32 u = 0; u < seg->nsb; u++)
@@ -163,7 +160,6 @@ sift_test_tbl_preagg_bytes(PG_FUNCTION_ARGS)
 	SiftColSegment *seg;
 	int64		bytes = 0;
 
-	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; (seg = next_column_segment(rel, st, &i)) != NULL; sift_cseg_close(seg))
 		bytes += sift_cseg_preagg_bytes(seg);
@@ -181,7 +177,6 @@ sift_test_tbl_tagged(PG_FUNCTION_ARGS)
 	SiftTblRel *st = sift_tbl_rel(rel);
 	int32		n = 0;
 
-	sift_tbl_require(rel);
 	sift_tbl_refresh(rel, st);
 	for (int i = 0; i < st->dir->nsegs; i++)
 		n += sift_tbl_seg_unfrozen(&st->dir->segs[i]);
