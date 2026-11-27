@@ -152,6 +152,7 @@ TESTING_REGRESS += agg/spill/tight_work_mem
 TESTING_REGRESS += agg/spill_context
 TESTING_REGRESS += agg/star_jsonb_unnest
 TESTING_REGRESS += agg/star_text
+TESTING_REGRESS += agg/subplan_lut
 TESTING_REGRESS += agg/table_jsonb
 TESTING_REGRESS += agg/text_absent_cost
 TESTING_REGRESS += agg/text_collation

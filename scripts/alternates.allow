@@ -79,12 +79,12 @@ test/expected/agg/semi_same_table_1.out	acd646fad5b5064d8b12e1fac7cc927ed7357775
 test/expected/agg/spill_context_1.out	b5baa3c8ff9473ed7d1774d9f629ee41e3d38c5f	17	spill_over_the_li
 test/expected/agg/spill/contexts_1.out	a1a88f183c421b68450005b5a927dbb44c767626	17	kind     | select_ | insert_ | volatile_
 test/expected/agg/subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/subplan_lut_1.out	0325ecb9d89bcdc3f1c778018c4afc131bc4260d	19	SubPlan 1
 test/expected/agg/subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
 test/expected/agg/subplan_lut_1.out	18f010d562e7cd0f6b312fc1d9d10bde0b3d257f	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	3d127528743883af12be144cfe49756f8b13c0e5	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	40a73829da2d83ee401199cd1b06b56c85683b01	19	not_hashed
 test/expected/agg/subplan_lut_1.out	4f429bbd87b4ee25b0ff6e32eae269f0232d9ff0	19	in_or
-test/expected/agg/subplan_lut_1.out	544909052b9e5fc43b40e2e645313adf1aa1890c	19	QUERY PLAN
 test/expected/agg/subplan_lut_1.out	5cd6066ffd60200085ba9119f05da55669486653	19	correlated
 test/expected/agg/subplan_lut_1.out	61ee54aac571645e1a24a555eff003c8b9344bb2	19	int8_leaf
 test/expected/agg/subplan_lut_1.out	64620189b8edcb78876437b8d343e065138d9a84	19	plan                  | result_rows | vs_normal_plan
@@ -97,7 +97,6 @@ test/expected/agg/subplan_lut_1.out	8e4b2bd006cc4460a1b913e49ad1e815bab49a2d	19	
 test/expected/agg/subplan_lut_1.out	9f091d125d7ac4247abc29e8c3cdc12d9051624b	19	locking
 test/expected/agg/subplan_lut_1.out	aa6cc9989b11c764e71a69b687989ef2877582d2	19	after_drop
 test/expected/agg/subplan_lut_1.out	ba3c14d64ad8882d64f444bd73ccdb376ea36be5	19	with_subplan
-test/expected/agg/subplan_lut_1.out	d5ee762d3573a3bcaa0db2f6b1c6a3f90e6adc63	19	Filters: dim_a_id: (NOT (ANY (ev.dim_a_id = (hashed SubPlan 1).col1)))
 test/expected/agg/subplan_lut_1.out	e67128f7a4ef0d9e5e220f22a7c13547981b6f19	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	e7248545797ed2149f35d80e5693d6b0b9f4be4c	19	pushdown_off
 test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	row_valued_in

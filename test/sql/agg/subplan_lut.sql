@@ -35,14 +35,14 @@ ANALYZE tenants; ANALYZE blocked; ANALYZE blocked_null; ANALYZE nothing; ANALYZE
 -- the shape of the plan: SiftAgg with the sub-plan under it, or the normal plan; with the workers the plan launched
 -- run = false: the plan only (a statement that would take minutes to run, as a SubPlan that is evaluated for each row does)
 CREATE FUNCTION plan_of(q text, run bool DEFAULT true) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal';
+DECLARE l text; r text := 'normal'; workers bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (' || CASE WHEN run THEN 'ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF, ' ELSE '' END || 'COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
 		IF trim(l) LIKE 'SubPlan %' THEN r := r || ' with ' || trim(l); END IF;
-		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
+		workers := workers OR (l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%');
 	END LOOP;
-	RETURN r;
+	RETURN CASE WHEN workers THEN regexp_replace(r, '^(\w+)', '\1 with workers') ELSE r END;
 END $$;
 
 -- the plan chosen, without running the query (a statement that raises when run)
@@ -140,18 +140,18 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (S
 SELECT * FROM same($$WITH s AS MATERIALIZED (SELECT id FROM tenants WHERE id < 20) SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT id FROM s) GROUP BY kind$$);
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE big_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
 
--- parallel workers: each worker starts the sub-plan in an executor state of the statement
-SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0;
+-- parallel workers: each worker starts the sub-plan in an executor state of the statement (the table is one granule: workers forced)
+SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET sift.test_agg_par_min_rows = 0;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$) AS with_subplan;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (1, 2, 3, 4, 5, 6) GROUP BY kind$$) AS constants;
 SELECT * FROM same($$SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL) GROUP BY kind$$);
-RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size;
+RESET max_parallel_workers_per_gather; RESET parallel_setup_cost; RESET parallel_tuple_cost; RESET min_parallel_table_scan_size; RESET sift.test_agg_par_min_rows;
 
 -- a worker runs the sub-plan with the snapshot of the statement active: a stable SQL function in it reads a row this transaction wrote, under REPEATABLE READ
 CREATE FUNCTION blocked_count() RETURNS bigint LANGUAGE sql STABLE PARALLEL SAFE AS $$ SELECT count(*) FROM blocked $$;
 BEGIN ISOLATION LEVEL REPEATABLE READ;
 INSERT INTO blocked VALUES (1), (2), (3);
-SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_table_scan_size = 0;
+SET LOCAL max_parallel_workers_per_gather = 2; SET LOCAL parallel_setup_cost = 0; SET LOCAL parallel_tuple_cost = 0; SET LOCAL min_parallel_table_scan_size = 0; SET LOCAL sift.test_agg_par_min_rows = 0;
 SELECT plan_of($$SELECT kind, count(*) FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$) AS with_subplan;
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE dim_a_id NOT IN (SELECT dim_a_id FROM blocked WHERE dim_a_id IS NOT NULL AND blocked_count() > 0) GROUP BY kind$$);
 ROLLBACK;
