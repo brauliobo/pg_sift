@@ -19,15 +19,8 @@ CREATE TABLE tcy (LIKE tcd) USING sift_table;
 
 CREATE FUNCTION pm_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
-CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-	END LOOP;
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
+CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE sql AS $$ SELECT units, pre FROM pa_units(q) $$;
 
 -- the rows of a table in a window of days from a day: a timestamp, a date and a timestamptz of the same instants, NULLs in every column
 CREATE FUNCTION pm_fill(tbl regclass, base timestamp, span int, lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
@@ -197,7 +190,7 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP BY 1');
 
 DROP TABLE tcd, tcm, tcy, tci;
-DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
+DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pa_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
 DROP TABLE pm_q;

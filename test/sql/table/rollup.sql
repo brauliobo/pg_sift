@@ -18,13 +18,8 @@ FROM generate_series(1, 40000) i;
 VACUUM (FULL, ANALYZE) tr;
 
 -- the units of a query that were answered from their rollups
-CREATE FUNCTION trr_units(q text, OUT units int, OUT preagg int) LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, FORMAT JSON) ' || q INTO j;
-	units := coalesce(jsonb_path_query_first(j, '$.**."Units"')::int, 0);
-	preagg := coalesce(jsonb_path_query_first(j, '$.**."Units From Pre-aggregates"')::int, 0);
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
+CREATE FUNCTION trr_units(q text, OUT units int, OUT preagg int) LANGUAGE sql AS $$ SELECT units, pre FROM pa_units(q) $$;
 
 CREATE FUNCTION trr_most_units(q text) RETURNS bool LANGUAGE sql AS $$ SELECT preagg * 100 >= units * 80 AND units > 0 FROM trr_units(q) $$;
 
@@ -77,6 +72,6 @@ SELECT * FROM trr_compare();
 SELECT trr_most_units('SELECT e.k, count(*) FROM tr, jsonb_to_recordset(doc->''items'') AS e(k int) GROUP BY 1') AS most_units_after_rewrite;
 
 DROP TABLE tr, trr_q;
-DROP FUNCTION trr_units(text), trr_most_units(text), trr_compare();
+DROP FUNCTION trr_units(text), pa_units(text), trr_most_units(text), trr_compare();
 DROP FUNCTION check_query(text);
 DROP EXTENSION pg_sift;

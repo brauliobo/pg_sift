@@ -56,9 +56,11 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
+		IF l ~ '^\s*Granules: ' THEN
+			scanned := substring(l from 'scanned=(\d+)')::int;
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := scanned + pre;
+		END IF;
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; scanned := NULL;
@@ -100,7 +102,7 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 END $$;
--- from_table: the scan of the table read no row for the shapes of the table
+-- from_table: the scan of the table read no granule for the shapes of the table
 SELECT n, shape, same, from_table FROM tk_check('tk', 'tk_b');
 -- without the key tables: the same answers, read from the units
 SELECT n, shape, same FROM tk_check('tk_off', 'tk_b') WHERE NOT same;
@@ -119,8 +121,9 @@ RESET min_parallel_table_scan_size;
 SET max_parallel_workers_per_gather = 0;
 
 -- a table over the budget keeps fewer measures, or none: the sums of mid_id (3,000 keys) are not in it, and many_id (20,000) has none (a range of it scans; an equality is skipped by the filter of the units)
-SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE mid_id = 17')) > 100000 AS mid_id_sums_scan,
-       (SELECT scanned FROM tk_units('SELECT count(*) FROM tk WHERE many_id BETWEEN 17 AND 40')) > 100000 AS many_id_scans;
+SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE mid_id = 17')) * 2 > all_units AS mid_id_sums_scan,
+       (SELECT scanned FROM tk_units('SELECT count(*) FROM tk WHERE many_id BETWEEN 17 AND 40')) * 2 > all_units AS many_id_scans
+FROM (SELECT scanned AS all_units FROM tk_units('SELECT count(*), sum(amt) FROM tk_off')) a;
 
 -- rows in the write buffer are read whatever the table says; a delete or an update makes a segment not exact, and it is read from its units; VACUUM and the
 -- maintenance compute the table again

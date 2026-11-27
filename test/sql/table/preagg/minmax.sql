@@ -25,13 +25,8 @@ FROM (SELECT 'tm' AS t, format FROM sift.table_segments('tm') WHERE kind = 'colu
 GROUP BY t ORDER BY t;
 
 -- the units of a query that were answered from their pre-aggregates
-CREATE FUNCTION tmm_units(q text, OUT units int, OUT preagg int) LANGUAGE plpgsql AS $$
-DECLARE j jsonb;
-BEGIN
-	EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF, FORMAT JSON) ' || q INTO j;
-	units := coalesce(jsonb_path_query_first(j, '$.**."Units"')::int, 0);
-	preagg := coalesce(jsonb_path_query_first(j, '$.**."Units From Pre-aggregates"')::int, 0);
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
+CREATE FUNCTION tmm_units(q text, OUT units int, OUT preagg int) LANGUAGE sql AS $$ SELECT units, pre FROM pa_units(q) $$;
 
 -- whether most units of the query were answered from their pre-aggregates
 CREATE FUNCTION tmm_most_units(q text) RETURNS bool LANGUAGE sql AS $$ SELECT preagg * 100 >= units * 80 AND units > 0 FROM tmm_units(q) $$;
@@ -78,6 +73,6 @@ SELECT * FROM tmm_compare('tm');
 SELECT tmm_most_units('SELECT kind, min(val), max(val) FROM tm GROUP BY kind') AS from_cube_again;
 
 DROP TABLE tm, tm_six, tm_src, tmm_q;
-DROP FUNCTION tmm_units(text), tmm_most_units(text), tmm_compare(text);
+DROP FUNCTION tmm_units(text), pa_units(text), tmm_most_units(text), tmm_compare(text);
 DROP FUNCTION check_query(text);
 DROP EXTENSION pg_sift;

@@ -13,16 +13,7 @@ CREATE TABLE tp (id int, g int, k text, cat int, d date, amt numeric(10,2), qty 
 
 CREATE FUNCTION pa_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
--- units of the SiftAgg node, and those it answered from the pre-aggregates (NULL: the plan has no SiftAgg)
-CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-	END LOOP;
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
 
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
