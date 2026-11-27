@@ -43,6 +43,9 @@ END $$;
 SELECT parity('SELECT g, string_agg(t, '','' ORDER BY id), array_agg(a ORDER BY id) FROM @T GROUP BY g', false) AS string_array_ordered;
 SELECT parity('SELECT g, string_agg(DISTINCT t, '','' ORDER BY t DESC), array_agg(DISTINCT a ORDER BY a) FROM @T GROUP BY g', false) AS distinct_ordered;
 SELECT parity('SELECT g, jsonb_agg(d ORDER BY id), json_agg(b ORDER BY id) FROM @T WHERE id < 300 GROUP BY g') AS json_agg;
+-- arguments that read no column: the function folds the constant once for each row of the group
+SELECT parity('SELECT g, string_agg(DISTINCT ''x'', '',''), array_agg(1), count(''y''::text), json_agg(2 ORDER BY 2) FROM @T GROUP BY ROLLUP (g)') AS constant_arguments;
+SELECT plan_ok('SELECT g, string_agg(DISTINCT ''x'', '',''), array_agg(1) FROM @T GROUP BY g') AS constant_arguments_plan;
 SELECT parity('SELECT g, json_object_agg(id, b ORDER BY id), jsonb_object_agg(id, d) FROM @T WHERE id < 200 GROUP BY g') AS object_agg;
 SELECT plan_ok('SELECT g, string_agg(t, '','' ORDER BY id), array_agg(a ORDER BY id) FROM @T GROUP BY g', false) AS string_array_plan;
 SELECT plan_ok('SELECT g, jsonb_agg(d ORDER BY id), json_agg(b ORDER BY id) FROM @T WHERE id < 300 GROUP BY g', false) AS json_plan;

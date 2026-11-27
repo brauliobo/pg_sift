@@ -119,7 +119,7 @@ const SiftV6Col *
 sift_v6_vec_col(const SiftV6Spec *spec, int v)
 {
 	if (v < spec->naggs)
-		return sift_v6_kind_reads_column(spec->agg[v].kind) ? &spec->agg[v].arg : NULL;
+		return sift_v6_kind_reads_column(spec->agg[v].kind) && (!v6g_is_gen(&spec->agg[v]) || OidIsValid(spec->agg[v].arg.typid)) ? &spec->agg[v].arg : NULL;
 	if (v < 2 * spec->naggs)
 		return spec->agg[v - spec->naggs].kind == SV6_ARG_MAX || spec->agg[v - spec->naggs].kind == SV6_ARG_MIN || (v6g_is_gen(&spec->agg[v - spec->naggs]) && OidIsValid(spec->agg[v - spec->naggs].arg2.typid)) ? &spec->agg[v - spec->naggs].arg2 : NULL;
 	if (v >= sift_v6_spec_fvec(spec))

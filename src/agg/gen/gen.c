@@ -962,8 +962,6 @@ sift_v6_gen_compile(V6Plan *p, Aggref *a, SiftV6Agg *out)
 			return NULL;
 		col++;
 	}
-	if (col == 0)
-		return NULL;
 	out->nxcols = Max(col - 2, 0);
 	foreach_node(TargetEntry, te, ref->args)
 		te->expr = (Expr *) attribute_of((Node *) te->expr, &p->gen_vars);

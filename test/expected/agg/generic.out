@@ -58,6 +58,19 @@ SELECT parity('SELECT g, jsonb_agg(d ORDER BY id), json_agg(b ORDER BY id) FROM 
  t
 (1 row)
 
+-- arguments that read no column: the function folds the constant once for each row of the group
+SELECT parity('SELECT g, string_agg(DISTINCT ''x'', '',''), array_agg(1), count(''y''::text), json_agg(2 ORDER BY 2) FROM @T GROUP BY ROLLUP (g)') AS constant_arguments;
+ constant_arguments 
+--------------------
+ t
+(1 row)
+
+SELECT plan_ok('SELECT g, string_agg(DISTINCT ''x'', '',''), array_agg(1) FROM @T GROUP BY g') AS constant_arguments_plan;
+ constant_arguments_plan 
+-------------------------
+ t
+(1 row)
+
 SELECT parity('SELECT g, json_object_agg(id, b ORDER BY id), jsonb_object_agg(id, d) FROM @T WHERE id < 200 GROUP BY g') AS object_agg;
  object_agg 
 ------------
