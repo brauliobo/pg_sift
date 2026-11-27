@@ -37,7 +37,7 @@ tier1_result(const SiftRowLockResult *lr, uint64 tid, TM_FailureData *tmfd)
  * for, so the row on disk is read again. A NOWAIT or SKIP LOCKED request that was refused the partition goes on with entries; one that finds no slot either is in someone's way.
  */
 static TM_Result
-lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, bool *added)
+lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, SiftRowLockResult *took)
 {
 	SiftRowLockResult lr = {.result = TM_Ok};
 	bool		escalated;
@@ -45,16 +45,14 @@ lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode 
 
 	if (!sift_esc_should_escalate(&rel->rd_locator, part_id, mode, false))
 	{
-		lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
-		*added = lr.added;
+		lr = *took = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
 		if (!lr.stripe_full)
 			return tier1_result(&lr, tid, tmfd);
 	}
 	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, lr.stripe_full, sift_rowlock_release_tier1, &escalated, reread, tmfd);
 	if (res != TM_Ok || *reread)
 		return res;
-	lr = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
-	*added = lr.added;
+	lr = *took = sift_tbl_rowlock_acquire(rel, tid, part_id, mode);
 	if (!lr.stripe_full)
 		return tier1_result(&lr, tid, tmfd);
 	res = sift_esc_promote(rel, part_id, sift_row_part_count(rel), mode, wait_policy, true, sift_rowlock_release_tier1, &escalated, reread, tmfd);
@@ -64,7 +62,7 @@ lock_entry_or_partition(Relation rel, uint64 tid, uint64 part_id, LockTupleMode 
 
 /* A prepared transaction that crashed with the server holds its rows in the lock manager only (f2_lock_2pc.h): asked first, so that a request it refuses takes no entry and no intention lock */
 static TM_Result
-lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, bool *added)
+lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_policy, TM_FailureData *tmfd, bool *reread, SiftRowLockResult *took)
 {
 	bool		covered = false;
 	TM_Result	res = TM_Ok;
@@ -75,19 +73,26 @@ lock_held(Relation rel, const SiftRowState *rs, uint64 tid, LockTupleMode mode, 
 		res = sift_esc_before_row_lock(rel, rs->part_id, mode, wait_policy, &covered, reread, tmfd);
 	if (res != TM_Ok || *reread || covered)
 		return res;
-	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread, added);
+	return lock_entry_or_partition(rel, tid, rs->part_id, mode, wait_policy, tmfd, reread, took);
 }
 
-/* The row an entry was just taken for is read again: a writer that ended between the first read and the entry left its change on disk, and its entry may be gone with it */
+/* The row a lock was just taken or raised for is read again: a writer that ended between the first read and the lock left its change on disk, and its entry may be gone with it */
 static TM_Result
-reread_locked(Relation rel, uint64 tid, uint64 part_id, CommandId cid, TM_FailureData *tmfd)
+reread_raised(Relation rel, uint64 tid, CommandId cid, TM_FailureData *tmfd)
 {
 	SiftRowState rs = sift_row_state_read(rel, tid);
-	TM_Result	res = sift_row_state_result(&rs, cid, tmfd, tid);
 
-	if (res != TM_Ok)
+	return sift_row_state_result(&rs, cid, tmfd, tid);
+}
+
+/* A request that is not granted after all holds no more than before it: a new entry goes, a raised holder goes back to its mode */
+static void
+undo_raise(Relation rel, uint64 tid, uint64 part_id, const SiftRowLockResult *took)
+{
+	if (took->added)
 		sift_rowlock_release_new(rel, tid, part_id);
-	return res;
+	else
+		sift_tbl_rowlock_lower(rel, tid, took->prev_mode);
 }
 
 /* The lock is held before the deltas are read: no one else can add one while the row is ours */
@@ -104,27 +109,27 @@ lock_row(Relation rel, uint64 tid, LockTupleMode mode, LockWaitPolicy wait_polic
 		SiftRowState rs;
 		TM_Result	res;
 		bool		reread = false,
-					added = false;
+					raised;
+		SiftRowLockResult took = {.prev_mode = (int) mode};
 
 		CHECK_FOR_INTERRUPTS();
 		rs = sift_row_state_read(rel, tid);
 		res = sift_row_state_result(&rs, cid, tmfd, tid);
 		SIFT_POINT("sift-lock-row-read");
 		if (res == TM_Ok)
-			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread, &added);
+			res = lock_held(rel, &rs, tid, mode, wait_policy, tmfd, &reread, &took);
 		if (res == TM_Ok && reread)
 		{
 			*waited = true;
 			continue;
 		}
-		if (res == TM_Ok && added)
-			res = reread_locked(rel, tid, rs.part_id, cid, tmfd);
+		raised = took.added || (int) mode > took.prev_mode;
+		if (res == TM_Ok && raised)
+			res = reread_raised(rel, tid, cid, tmfd);
 		if (res == TM_Ok && judge_delta && mode != LockTupleKeyShare)
-		{
 			res = sift_row_delta_result(rel, tid, cid, snap, tmfd);
-			if (res == TM_BeingModified && added)
-				sift_rowlock_release_new(rel, tid, rs.part_id);
-		}
+		if (res != TM_Ok && raised)
+			undo_raise(rel, tid, rs.part_id, &took);
 		if (res != TM_BeingModified || wait_policy != LockWaitBlock)
 			return res;
 		*waited = true;

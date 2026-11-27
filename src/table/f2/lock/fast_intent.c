@@ -111,14 +111,16 @@ sift_fast_intent_init(SiftRowLockShmLayout *s)
 		}
 }
 
-/* The key and the top transaction of a free slot of this process, between the two raises of its seq */
+/* The key and the top transaction of a free slot of this process, between the two raises of its seq: the xid is assigned before, as its assignment may fail */
 static void
 slot_own(SiftFastIntent *i, const RelFileLocator *loc, uint64 part_id)
 {
+	TransactionId xid = GetTopTransactionId();
+
 	pg_atomic_fetch_add_u32(&i->seq, 1);
 	i->locator = *loc;
 	i->part_id = part_id;
-	i->xid = GetTopTransactionId();
+	i->xid = xid;
 	pg_atomic_fetch_add_u32(&i->seq, 1);
 }
 

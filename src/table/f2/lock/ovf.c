@@ -144,6 +144,12 @@ sift_rowlock_area_map(SiftRowLockTable *t)
 		(void) area_of(t, true);
 }
 
+bool
+sift_rowlock_area_mapped(void)
+{
+	return area != NULL;
+}
+
 /*
  * The stripe locked, with the area of its chunks mapped before: an attach takes the lock of the dynamic shared memory of the server and maps a segment, never under a stripe lock. The end
  * of a transaction (commit, abort, prepare) attaches nothing: an error there is a PANIC of the server, and the area it needs is one this backend mapped already when an entry of it is in a

@@ -93,10 +93,14 @@ typedef struct SiftRowLockResult
 	uint64		updated_tid;
 	bool		stripe_full;
 	bool		added;			/* the (sub)transaction did not hold the row before: the request made it a holder */
+	int			prev_mode;		/* the mode its holder had before the request, -1 for none: below the mode asked for, the request raised it */
 } SiftRowLockResult;
 
 /* Takes the lock of the mode on the row of the partition for the current (sub)transaction unless it conflicts: the caller waits for the xid of a TM_BeingModified result and asks again */
 extern SiftRowLockResult sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode mode);
+
+/* The holder of the current (sub)transaction of the row goes back to the mode it had before a request that raised it (-1: it goes) */
+extern void sift_tbl_rowlock_lower(Relation rel, uint64 tid, int prev_mode);
 
 /* The row is updated to new_tid (or deleted, or moved to another partition) by the current transaction: the entry keeps it until the transaction ends */
 extern void sift_tbl_rowlock_mark_updated(Relation rel, uint64 old_tid, uint64 new_tid, CommandId cid, bool deleted, bool moved_partition);
@@ -122,6 +126,9 @@ extern uint32 sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid);
 /* The speculative insert of the row ended (table/f2/spec.h): true when a probe asked for the stage that holds it to be written; the stage was written; what a dirty probe of an address no part holds learns */
 extern bool sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded);
 extern void sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid);
+
+/* The marks of the rows of the relation that this transaction staged and the stage wrote since go: a unique check finds those rows in their parts */
+extern void sift_tbl_rowlock_staged_written(Relation rel);
 
 /* The transaction holds a partition or the relation, not row by row (f2_lock_esc.h) */
 extern bool sift_tbl_rowlock_is_escalated(Relation rel);

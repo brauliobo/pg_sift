@@ -216,6 +216,27 @@ has_row_triggers(Relation rel)
 	return t != NULL && (t->trig_insert_before_row || t->trig_insert_after_row || t->trig_insert_instead_row);
 }
 
+/* The rows of a bulk insert that the stage holds are announced; those it wrote are in a part already, and so are the rows announced before that it wrote since */
+static void
+publish_batch(Relation rel, SiftF2Store *store, TupleTableSlot **slots, int nslots, uint64 staged_before)
+{
+	/* check-memory: allow nslots is one batch of the executor's multi insert (at most MAX_BUFFERED_TUPLES rows of COPY) */
+	uint64	   *tids = palloc(sizeof(uint64) * nslots);
+	/* check-memory: allow the same batch, one flag for each of its rows */
+	bool	   *held = palloc0(sizeof(bool) * nslots);
+
+	if (sift_stage_rows(rel) < staged_before + nslots)
+		sift_tbl_rowlock_staged_written(rel);
+	for (int i = 0; i < nslots; i++)
+		tids[i] = sift_tbl_tid_pack(&slots[i]->tts_tid);
+	sift_stage_rows_among(rel, tids, nslots, held);
+	for (int i = 0; i < nslots; i++)
+		if (held[i])
+			publish_staged(rel, store, tids[i], 0);
+	pfree(held);
+	pfree(tids);
+}
+
 void
 sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, SiftTamOptions options, struct BulkInsertStateData *bistate pg_attribute_unused())
 {
@@ -226,9 +247,11 @@ sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, Comma
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	if (sift_batch_route(nslots, published, has_row_triggers(rel)) == SIFT_BATCH_DIRECT)
 	{
+		uint64		staged = sift_stage_rows(rel);
+
 		sift_tbl_f2_bulk_insert(rel, store, slots, nslots, cid, frozen);
-		for (int i = 0; i < nslots; i++)
-			publish_staged(rel, store, sift_tbl_tid_pack(&slots[i]->tts_tid), 0);
+		if (sift_tbl_extra(store)->has_unique)
+			publish_batch(rel, store, slots, nslots, staged);
 	}
 	else
 		for (int i = 0; i < nslots; i++)
@@ -253,6 +276,8 @@ void
 sift_tbl_f2_finish_bulk_insert(Relation rel, SiftTamOptions options pg_attribute_unused())
 {
 	write_and_drop_stage(rel);
+	if (sift_tbl_extra(sift_f2_store_open(rel))->has_unique)
+		sift_tbl_rowlock_staged_written(rel);
 }
 
 void

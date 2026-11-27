@@ -45,4 +45,11 @@ extern void sift_touched_sub_close(SubTransactionId sub);
 
 extern void sift_touched_reset(void);
 
+/* The entry of the row with its stripe locked in the mode, or NULL with nothing locked; sift_tbl_rowlock_unlock lets the stripe go */
+extern SiftRowLockEntry *sift_tbl_rowlock_find_locked(Relation rel, uint64 tid, LWLockMode mode, int *si);
+extern void sift_tbl_rowlock_unlock(int si);
+
+/* The entry goes where it holds nothing (the stripe locked), and the row is no longer one this transaction touched */
+extern void sift_tbl_rowlock_drop_idle(int si, SiftRowLockEntry *e);
+
 #endif

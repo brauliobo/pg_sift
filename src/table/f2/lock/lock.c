@@ -277,20 +277,22 @@ entry_for_write(int si, const SiftRowLockKey *k, Outside *o)
 
 /* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
 
-/* The stripes with chunks whose oldest committed update no snapshot can wait on any more, whichever transaction ended: what is past the horizon goes, and the chunks it empties go with it */
+/*
+ * The stripes with chunks whose oldest committed update no snapshot can wait on any more, whichever transaction ended: what is past the horizon goes, and the chunks it
+ * empties go with it. A backend that does not map the chunks frees none, and a stripe another backend holds is left to a later end: the ends of transactions do not queue on the stripes.
+ */
 static void
 reclaim_kept(void)
 {
 	Outside		o = OUTSIDE_INIT(NULL);
 
-	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
+	for (int si = 0; sift_rowlock_area_mapped() && si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
 		FullTransactionId kept = sift_rowlock_kept(rows, si);
 
 		o.horizon = FullTransactionIdIsValid(o.horizon) || !FullTransactionIdIsValid(kept) ? o.horizon : oldest_needed();
-		if (!FullTransactionIdIsValid(kept) || !FullTransactionIdPrecedes(kept, o.horizon))
+		if (!FullTransactionIdIsValid(kept) || !FullTransactionIdPrecedes(kept, o.horizon) || !LWLockConditionalAcquire(stripe_lock(si), LW_EXCLUSIVE))
 			continue;
-		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
 		sift_rowlock_sweep(rows, si, reclaimable_keeping_lockers, &o);
 		stripe_unlock(si);
 	}
@@ -606,11 +608,23 @@ judge_entry(SiftRowLockEntry *e, LockTupleMode mode, SiftRowLockResult *r, const
 	}
 }
 
+/* The mode the current (sub)transaction holds the row in, -1 for none: its holder in the entry, or its member of the overflow that was read */
+static int
+own_mode(const SiftRowLockEntry *e, const SiftMxMembers *seen)
+{
+	TransactionId xid = GetCurrentTransactionId();
+
+	for (int i = 0; i < e->nholders; i++)
+		if (e->holders[i].xid == xid)
+			return sift_hold_mode(e, i);
+	return MultiXactIdIsValid(e->overflow_mxid) && sift_mx_has(seen, e->overflow_mxid) ? sift_mx_held_mode(seen) : -1;
+}
+
 /* One try of an acquire under the stripe lock: o asks what must be done outside it (the members of the MultiXactId of the entry, a MultiXactId for the holder) before the try is made again, and so does out */
 static SiftRowLockResult
 try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockTupleMode mode, SiftHoldOutside *o, Outside *out)
 {
-	SiftRowLockResult r = {.result = TM_Ok};
+	SiftRowLockResult r = {.result = TM_Ok,.prev_mode = (int) mode};
 	SiftRowLockEntry *e = sift_rowlock_find(rows, si, k);
 
 	if (e != NULL && MultiXactIdIsValid(e->overflow_mxid) && !sift_mx_has(&o->seen, e->overflow_mxid))
@@ -634,6 +648,8 @@ try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockT
 	if (r.result == TM_Ok && e == NULL)
 		e = entry_for_write(si, k, out);
 	r.stripe_full = r.result == TM_Ok && e == NULL;
+	if (r.result == TM_Ok && e != NULL)
+		r.prev_mode = own_mode(e, &o->seen);
 	if (r.result == TM_Ok && e != NULL && sift_hold_add(e, mode, o))
 	{
 		r.added = sift_touched_add(k, part_id);
@@ -668,6 +684,24 @@ sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode
 	sift_rowlock_chunks_release();
 	sift_hold_done(&o);
 	return r;
+}
+
+void
+sift_tbl_rowlock_lower(Relation rel, uint64 tid, int prev_mode)
+{
+	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
+	int			si = stripe_of(&k);
+	TransactionId xid = GetCurrentTransactionId();
+	SiftRowLockEntry *e;
+
+	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
+	e = sift_rowlock_find(rows, si, &k);
+	for (int i = 0; e != NULL && i < e->nholders; i++)
+		if (e->holders[i].xid == xid && prev_mode < 0)
+			sift_hold_drop(e, i);
+		else if (e->holders[i].xid == xid)
+			sift_hold_set_mode(e, i, (LockTupleMode) prev_mode);
+	stripe_unlock(si);
 }
 
 /* The entry of a row the current (sub)transaction holds, locked, or NULL: a row held by a partition or the relation has none to change, a row still in the stage of this transaction keeps it in
@@ -769,47 +803,37 @@ sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 	return e != NULL;
 }
 
-bool
-sift_tbl_rowlock_spec_done(Relation rel, uint64 tid, bool succeeded)
+SiftRowLockEntry *
+sift_tbl_rowlock_find_locked(Relation rel, uint64 tid, LWLockMode mode, int *si)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
 	SiftRowLockEntry *e;
-	bool		need_flush = false;
 
-	if (!tier1_ready())
-		return false;
-	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
-	e = sift_rowlock_find(rows, si, &k);
-	if (e != NULL && succeeded)
-		need_flush = sift_spec_succeeded(e);
-	else if (e != NULL)
-	{
-		sift_spec_aborted(e);
-		if (idle(e))
-		{
-			sift_rowlock_remove(rows, si, e);
-			sift_touched_forget(&k);
-		}
-	}
-	stripe_unlock(si);
-	return need_flush;
+	*si = stripe_of(&k);
+	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, *si))
+		return NULL;
+	sift_rowlock_stripe_acquire(rows, *si, mode);
+	e = sift_rowlock_find(rows, *si, &k);
+	if (e == NULL)
+		stripe_unlock(*si);
+	return e;
 }
 
 void
-sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid)
+sift_tbl_rowlock_unlock(int si)
 {
-	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
-	SiftRowLockEntry *e;
-
-	if (!tier1_ready())
-		return;
-	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
-	e = sift_rowlock_find(rows, si, &k);
-	if (e != NULL)
-		sift_spec_flushed(e);
 	stripe_unlock(si);
+}
+
+void
+sift_tbl_rowlock_drop_idle(int si, SiftRowLockEntry *e)
+{
+	SiftRowLockKey k = e->key;
+
+	if (!idle(e))
+		return;
+	sift_rowlock_remove(rows, si, e);
+	sift_touched_forget(&k);
 }
 
 SiftSpecProbe
@@ -841,46 +865,6 @@ sift_tbl_rowlock_probe_staged(Relation rel, uint64 tid, TransactionId *xmin, uin
 		r = sift_spec_probe(e, running, xmin, token);
 	stripe_unlock(si);
 	return r;
-}
-
-uint32
-sift_tbl_rowlock_speculative_token(Relation rel, uint64 tid)
-{
-	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
-	SiftRowLockEntry *e;
-	uint32		token = 0;
-
-	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, si))
-		return 0;
-	sift_rowlock_stripe_acquire(rows, si, LW_SHARED);
-	e = sift_rowlock_find(rows, si, &k);
-	if (e != NULL && (e->flags & SIFT_ROWLOCK_SPECULATIVE) != 0)
-		token = e->spec_token;
-	stripe_unlock(si);
-	return token;
-}
-
-SiftRowLockPeek
-sift_tbl_rowlock_peek(Relation rel, uint64 tid)
-{
-	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
-	SiftRowLockEntry *e;
-	SiftRowLockPeek p = {0};
-
-	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, si))
-		return p;
-	sift_rowlock_stripe_acquire(rows, si, LW_SHARED);
-	e = sift_rowlock_find(rows, si, &k);
-	if (e != NULL && (e->flags & SIFT_ROWLOCK_COL_DELTA) != 0 && (e->flags & SIFT_ROWLOCK_COMMITTED_UPD) == 0)
-		p = (SiftRowLockPeek) {.delta_xid = XidFromFullTransactionId(e->updater_fxid),.delta_cid = e->updater_cid};
-	else if (e != NULL && (e->flags & SIFT_ROWLOCK_COL_DELTA) == 0 && e->nholders > 0)
-		p.locker = e->holders[0].xid;
-	else if (e != NULL && (e->flags & SIFT_ROWLOCK_LAST_LOCKER) != 0)
-		p.locker = XidFromFullTransactionId(e->updater_fxid);
-	stripe_unlock(si);
-	return p;
 }
 
 static bool
