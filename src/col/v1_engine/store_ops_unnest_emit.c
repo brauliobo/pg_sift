@@ -234,6 +234,7 @@ sift_v1_unnest_heap_open(UnRun *u, Relation heap)
 	u->econtext = CreateExprContext(u->estate);
 	MemoryContextSwitchTo(old);
 	u->heap_slot = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsVirtual);
+	u->heap_slot->tts_tableOid = RelationGetRelid(heap);
 }
 
 void
@@ -243,10 +244,12 @@ sift_v1_unnest_heap_close(UnRun *u)
 	FreeExecutorState(u->estate);
 }
 
+/* a column of the table the virtual row holds; a system column (ctid, tableoid) is the address of the row and its table, which the virtual row has without a read */
 void
 sift_v1_unnest_heap_att(UnRun *u, AttrNumber att)
 {
-	u->heap_atts = list_append_unique_int(u->heap_atts, att);
+	if (att > 0)
+		u->heap_atts = list_append_unique_int(u->heap_atts, att);
 }
 
 /* the expression over the columns of the heap row, prepared for the virtual row sift_v1_unnest_heap_load makes */
@@ -295,6 +298,7 @@ sift_v1_unnest_heap_load(UnRun *u, uint64 tag)
 		slot->tts_isnull[u->hatt[i] - 1] = u->hnull[i];
 	}
 	ExecStoreVirtualTuple(slot);
+	ItemPointerSet(&slot->tts_tid, (BlockNumber) (tag >> 16), (OffsetNumber) (tag & 0xFFFF));
 	u->econtext->ecxt_scantuple = slot;
 	ResetExprContext(u->econtext);
 	return u->hqual == NULL || ExecQual(u->hqual, u->econtext);
