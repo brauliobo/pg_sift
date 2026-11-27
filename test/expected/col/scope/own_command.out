@@ -114,7 +114,7 @@ SELECT * FROM own_probe('events inserted (buffered)');
            state            | n | verdict |                      route                       | moved 
 ----------------------------+---+---------+--------------------------------------------------+-------
  events inserted (buffered) | 1 | same    | join (the summary is not exact for the snapshot) | t
- events inserted (buffered) | 2 | same    | join (the summary is not exact for the snapshot) | t
+ events inserted (buffered) | 2 | same    | summary                                          | t
  events inserted (buffered) | 3 | same    | no scope read                                    | t
  events inserted (buffered) | 4 | same    | summary                                          | t
 (4 rows)
@@ -172,7 +172,7 @@ SELECT * FROM own_probe('a change after ROLLBACK TO, and a nested savepoint');
                        state                        | n | verdict |                      route                       | moved 
 ----------------------------------------------------+---+---------+--------------------------------------------------+-------
  a change after ROLLBACK TO, and a nested savepoint | 1 | same    | join (the summary is not exact for the snapshot) | t
- a change after ROLLBACK TO, and a nested savepoint | 2 | same    | join (the summary is not exact for the snapshot) | t
+ a change after ROLLBACK TO, and a nested savepoint | 2 | same    | summary                                          | t
  a change after ROLLBACK TO, and a nested savepoint | 3 | same    | no scope read                                    | t
  a change after ROLLBACK TO, and a nested savepoint | 4 | same    | summary                                          | t
 (4 rows)

@@ -136,7 +136,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name COL
  IN, a list                              | normal plan | t
  IN, one key                             | normal plan | t
  IN, the tenant of the empty account     | normal plan | t
- every fact with a pair                  | normal plan | t
+ every fact with a pair                  | SiftAgg     | t
  group by the key and a column           | SiftAgg     | t
  group by the key, every key             | scope read  | t
  join, a list, a row for each pair       | normal plan | t
