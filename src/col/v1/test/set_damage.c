@@ -277,7 +277,7 @@ Datum
 sift_test_col_super_damage(PG_FUNCTION_ARGS)
 {
 	static const uint8 masks[] = {0x01, 0x80};
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap;
 	int64		supers = 0,
 				damaged = 0,
@@ -327,7 +327,7 @@ static Datum
 section_file_damage(PG_FUNCTION_ARGS, bool (*span) (SiftColSegment *, uint64 *, uint64 *, uint8 **))
 {
 	static const uint8 masks[] = {0x01, 0x80};
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	int32		stride = Max(PG_GETARG_INT32(1), 1);
 	SiftDirSnapshot *snap;
 	int64		runs = 0,

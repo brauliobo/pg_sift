@@ -299,7 +299,7 @@ Datum
 sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	const SiftColPreStats *pre = sift_col_pre_stats(index, false);
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -319,7 +319,7 @@ sift_test_col_pre_stats(PG_FUNCTION_ARGS)
 Datum
 sift_test_leaf_fold(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	int			inc,
 				full;
 	bool		same = sift_col_leaf_fold_check(index, &inc, &full);

@@ -32,6 +32,10 @@ INSERT INTO h2 SELECT g, g % 10, g FROM generate_series(1, 1000) g;
 CREATE INDEX hc2 ON h2 USING sift_col (id, g, v);
 SELECT 'f2 sift_col' AS what, major, minor FROM sift.index_format('hc2');
 SELECT 'f2 col_segments' AS what, count(*) > 0 AS listed FROM sift.col_segments('hc2');
+-- a hook that reads the storage of Format 1 refuses an index of Format 2.0, which stays in service (a write is indexed, a read answers)
+SELECT sift._test_col_fold_marks('hc2');
+INSERT INTO h2 VALUES (1001, 1, 1001);
+SELECT 'f2 sift_col after a hook of Format 1' AS what, count(*), sum(v) FROM h2 WHERE g = 1;
 RESET ALL;
 DROP TABLE d, t1, h1, t2, h2 CASCADE;
 DROP EXTENSION pg_sift_test;

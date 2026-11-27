@@ -68,6 +68,22 @@ PG_FUNCTION_INFO_V1(sift_test_col_dict_tsig);
 
 PG_FUNCTION_INFO_V1(sift_test_col_zone_flags);
 
+/* A sift_col index opened for a hook that reads the storage of Format 1 (its directory, tombstone log, units and dictionaries): one of another format is refused, which its
+ * pages would read as damage and quarantine */
+Relation
+sift_test_open_col_v1(Oid relid, LOCKMODE mode)
+{
+	Relation	index = sift_test_open_index_am(relid, mode, "sift_col");
+	uint16		major = sift_col_format_major(index);
+
+	if (major != SIFT_FORMAT_MAJOR)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("sift_col index \"%s\" is an index of Format %u.0, which this function does not read", RelationGetRelationName(index), major),
+						errdetail("The function reads the storage of a sift_col index of Format 1."),
+						errhint("SET sift.test_create_format1 = on before the build makes an index of Format 1.")));
+	return index;
+}
+
 /* sift._test_col_formats(index): the column format minor of every immutable segment, by generation, whether it holds the leaf statistics block, and whether its string roots are flagged (SIFT_SEG_ROOTS);
  * an index of another format has no such segment */
 Datum
@@ -102,7 +118,7 @@ Datum
 sift_test_col_segment_keys(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -144,7 +160,7 @@ sift_test_col_segment_keys(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_adopt(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), RowExclusiveLock);
 	bool		recorded;
 
 	sift_maint_lock(index, true);
@@ -176,7 +192,7 @@ damage_switch(SiftMetaPageData *meta, SiftDirectoryData *dir, Page extra, void *
 Datum
 sift_test_col_part_damage(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), RowExclusiveLock);
 	int			k = PG_GETARG_INT32(1);
 	char	   *how = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	SiftDirSnapshot *snap = sift_dir_read(index);
@@ -240,7 +256,7 @@ sift_test_col_cut_near(PG_FUNCTION_ARGS)
 Datum
 sift_test_col_part_shift(PG_FUNCTION_ARGS)
 {
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), RowExclusiveLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), RowExclusiveLock);
 	int			k = PG_GETARG_INT32(1);
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftDirPart *part;
@@ -269,7 +285,7 @@ Datum
 sift_test_col_part_bounds(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap = sift_dir_read(index);
 	SiftDirPart *part;
 	SiftSegEntry *segs;
@@ -327,7 +343,7 @@ Datum
 sift_test_col_cuts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -393,7 +409,7 @@ Datum
 sift_test_col_mirror(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	SiftDirSnapshot *snap;
 
 	InitMaterializedSRF(fcinfo, 0);
@@ -437,7 +453,7 @@ Datum
 sift_test_col_dict_tsig(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	int			leaf = PG_GETARG_INT32(1);
 	text	   *needle = PG_GETARG_TEXT_PP(2);
 	SiftDirSnapshot *snap;
@@ -473,7 +489,7 @@ Datum
 sift_test_col_dict_count(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	int			leaf = PG_GETARG_INT32(1);
 	char	   *opname = text_to_cstring(PG_GETARG_TEXT_PP(2));
 	text	   *val = PG_GETARG_TEXT_PP(3);
@@ -547,7 +563,7 @@ Datum
 sift_test_col_unit_of_block(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	BlockNumber blk = (BlockNumber) PG_GETARG_INT64(1);
 	SiftDirSnapshot *snap;
 
@@ -581,7 +597,7 @@ Datum
 sift_test_col_gorder(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	Relation	index = sift_test_open_index_am(PG_GETARG_OID(0), AccessShareLock, "sift_col");
+	Relation	index = sift_test_open_col_v1(PG_GETARG_OID(0), AccessShareLock);
 	int			leaf = PG_GETARG_INT32(1);
 	SiftDirSnapshot *snap;
 	int64		kv[SIFT_CGORD_CAP];

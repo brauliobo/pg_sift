@@ -46,6 +46,8 @@ fn(PG_FUNCTION_ARGS) \
 #endif							/* SIFT_TESTING */
 
 #ifdef SIFT_TESTING
+extern Relation sift_test_open_col_v1(Oid relid, LOCKMODE mode);
+
 extern void	ctest_scan_open(TestScan *ts, Oid indexoid, const char *preds, int flags);
 
 extern void	ctest_scan_close(TestScan *ts);
