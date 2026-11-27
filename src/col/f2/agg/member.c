@@ -1,10 +1,15 @@
 /*
  * col/f2/agg/member.c - a member of a document that a column of the scan reads by a path (SiftV6Col.jmember) and converts as the statement does: of a map (`doc.* float8`, `doc.a.* float8`), found
  * by its key, where the group leaf of the map gives each row the number of its members, which follow those of the rows before it in the leaves of the keys and of the values; of a path the index
- * declares, its leaf. A value the leaf could not hold is the payload of its exception, and so is a map the leaves could not hold (more members than the index keeps, or no object, which has none).
+ * declares, its leaf. A value the leaf could not hold is the payload of its exception, and so is a map the leaves could not hold (more members than the index keeps, or no object, which has none);
+ * a row whose leaves cannot answer (a key the index could not keep) is read again by its address, and its member is the one of its document.
  */
 /* check-memory: allow-allocs the member of a column follows the columns of one statement, the payloads of a batch live in its batch context */
 #include "postgres.h"
+
+#include "access/htup_details.h"
+#include "executor/tuptable.h"
+#include "utils/jsonb.h"
 
 #include "agg/vexpr/str.h"
 #include "col/f2/agg/scan_int.h"
@@ -29,10 +34,12 @@ V6Member *
 sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c)
 {
 	const SiftColSchema *sch = s->is_table ? sift_f2_store_open(s->host)->schema : sift_col_rel(s->host)->schema;
-	const char *name = strVal(llast(sift_v6_member_path(s->spec, c->jmember)));
+	List	   *path = sift_v6_member_path(s->spec, c->jmember);
+	const char *name = strVal(llast(path));
 	V6Member   *m = palloc(sizeof(V6Member));
 
-	*m = (V6Member) {.group = sch->cols[c->jleaf - 1].parent,.key = -1,.name = name,.len = strlen(name)};
+	*m = (V6Member) {.group = sch->cols[c->jleaf - 1].parent,.key = -1,.name = name,.len = strlen(name),.path = path,
+	.doc_att = s->is_table ? c->attno : s->host->rd_index->indkey.values[c->attno - 1]};
 	for (int l = 0; l < sch->ncols; l++)
 		if (sch->cols[l].parent == m->group && strstr(sch->cols[l].path, "#key") != NULL)
 			m->key = l;
@@ -40,7 +47,13 @@ sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c)
 	return m;
 }
 
-/* the members of row r of a map (of a path the index declares: none) */
+void
+sift_f2_v6_member_end(V6Scan *s)
+{
+	if (s->reread.heap != NULL)
+		sift_v6_vet_end(&s->reread);
+}
+
 static uint32
 row_members(const V6Col *c, const ColView *views, int r)
 {
@@ -55,15 +68,39 @@ jsonb_cell(V6Scan *s, const char *payload, uint32 len, const char *name)
 	return sift_v6_json_payload_member(payload, len, list_make1(makeString((char *) name)), s->batch_cx, &c.pay, &c.plen) ? c : (Cell) {.kind = MC_NULL};
 }
 
+/* the member from the document of the row, read again by its address: a row whose leaves cannot answer (a key the index could not keep, a map it cut with no payload) */
+static Cell
+row_cell(V6Scan *s, const V6Col *c, uint64 tid)
+{
+	MemoryContext old;
+	Cell		m = {.kind = MC_JSONB};
+	bool		found,
+				isnull;
+	Datum		doc;
+	Jsonb	   *jb;
+
+	if (s->reread.heap == NULL)
+		sift_v6_vet_begin(&s->reread, s->rows_rel, s->rows_snap, s->stats);
+	found = sift_v6_vet_fetch(&s->reread, tid);
+	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its member is read");
+	s->stats->heap_reread_rows++;
+	doc = slot_getattr(s->reread.slot, c->member->doc_att, &isnull);
+	if (isnull)
+		return (Cell) {.kind = MC_NULL};
+	old = MemoryContextSwitchTo(s->batch_cx);
+	jb = DatumGetJsonbP(doc);
+	MemoryContextSwitchTo(old);
+	return sift_v6_json_payload_member((const char *) jb, VARSIZE(jb), c->member->path, s->batch_cx, &m.pay, &m.plen) ? m : (Cell) {.kind = MC_NULL};
+}
+
 /* a row whose leaves hold no map: no document or no value at the map (no member), a value that is no object (no member either), or a map the index cut, whose payload holds it whole */
 static Cell
-cut_cell(V6Scan *s, const V6Col *c, const ColView *g, int r)
+cut_cell(V6Scan *s, const V6Col *c, const ColView *g, int r, uint64 tid)
 {
 	if (g->tag == NULL || g->tag[r] != SIFT_COLTAG_OBJECT)
 		return (Cell) {.kind = MC_NULL};
 	if (g->xpay == NULL || g->xpay[r] == NULL)
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a map whose member the aggregate reads is not kept whole by the index"),
-						errhint("Run the statement with sift.enable_agg = off.")));
+		return row_cell(s, c, tid);
 	return jsonb_cell(s, g->xpay[r], g->xplen[r], c->member->name);
 }
 
@@ -78,30 +115,28 @@ leaf_cell(const ColView *v, uint32 i)
 
 /* the member of row r, whose elements are [first, first + n) of the leaves of the keys and the values of its map; of a path the index declares, its leaf */
 static Cell
-member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n)
+member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n, uint64 tid)
 {
 	const ColView *g,
 			   *k,
 			   *v = &views[c->leaf];
+	bool		lost = false;
 
 	if (c->member == NULL)
 		return leaf_cell(v, (uint32) r);
 	g = &views[c->member->group];
 	k = &views[c->member->key];
 	if (g->isnull[r])
-		return cut_cell(s, c, g, r);
+		return cut_cell(s, c, g, r, tid);
 	for (uint32 e = first; e < first + n; e++)
 	{
-		SiftStrView key;
+		SiftStrView key = sift_f2_v6_text_view(k, (int) e, false);
 
-		if (k->isnull[e])
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a map whose member the aggregate reads has a key the index could not keep"),
-							errhint("Run the statement with sift.enable_agg = off.")));
-		key = sift_f2_v6_text_view(k, (int) e, false);
-		if (key.len == c->member->len && memcmp(sift_vstr_bytes(&key), c->member->name, key.len) == 0)
+		lost |= k->isnull[e];
+		if (!k->isnull[e] && key.len == c->member->len && memcmp(sift_vstr_bytes(&key), c->member->name, key.len) == 0)
 			return leaf_cell(v, e);
 	}
-	return (Cell) {.kind = MC_NULL};
+	return lost ? row_cell(s, c, tid) : (Cell) {.kind = MC_NULL};
 }
 
 /* the cell as the value of the column at i: false when its cast raises */
@@ -141,7 +176,7 @@ members_before(const V6Col *c, const ColView *views, int r)
 }
 
 uint64 *
-sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, int off, int n)
+sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, const uint64 *tid, int off, int n)
 {
 	SiftVec    *v = &c->vec;
 	uint64	   *raises = NULL;
@@ -154,7 +189,7 @@ sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, int off, int n
 
 		if (!((s->bs.mask[i >> 6] >> (i & 63)) & 1))
 			continue;
-		m = member_cell(s, c, views, off + i, e, row_members(c, views, off + i));
+		m = member_cell(s, c, views, off + i, e, row_members(c, views, off + i), tid != NULL ? tid[off + i] : 0);
 		if (put_cell(s, c, i, &m))
 			continue;
 		raises = raises != NULL ? raises : MemoryContextAllocZero(s->batch_cx, SIFT_VEC_WORDS * sizeof(uint64));
@@ -165,9 +200,9 @@ sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, int off, int n
 }
 
 void
-sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, int r)
+sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, const uint64 *tid, int r)
 {
-	const Cell	m = member_cell(s, c, views, r, members_before(c, views, r), row_members(c, views, r));
+	const Cell	m = member_cell(s, c, views, r, members_before(c, views, r), row_members(c, views, r), tid != NULL ? tid[r] : 0);
 
 	if (m.kind == MC_FLOAT)
 		sift_v6_json_float_int_raise(c->typid, m.f);

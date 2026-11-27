@@ -40,7 +40,7 @@ static uint64 **
 arms_fill(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
 {
 	arms_select(a, s, mask, n_active);
-	return sift_f2_v6_fill_cols(s, a->b->views, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
+	return sift_f2_v6_fill_cols(s, a->b->views, a->b->tid, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
 }
 
 /* the arm takes every live row of the pass: no gate of its own quals and no quals that no scan key says (its batch quals) */
@@ -74,7 +74,7 @@ arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 	for (int w = 0; w < SIFT_VEC_WORDS; w++)
 		n += pg_popcount64(out[w] = s->gate != NULL ? live[w] & allowed[w] : live[w]);
 	arms_select(a, s, out, n);
-	sift_f2_v6_raise_kept(s, a->b->views, raises, a->off, a->n);
+	sift_f2_v6_raise_kept(s, a->b->views, a->b->tid, raises, a->off, a->n);
 	if (s->bq == NULL)
 		return n;
 	sift_v6_bq_filter(s->bq, &s->bs);
@@ -89,7 +89,7 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	V6Scan	   *s = &a->s[arm];
 
 	if (takes_all(s))
-		sift_f2_v6_raise_kept(s, a->b->views, arms_fill(a, s, mask, n_active), a->off, a->n);
+		sift_f2_v6_raise_kept(s, a->b->views, a->b->tid, arms_fill(a, s, mask, n_active), a->off, a->n);
 	else
 		arms_select(a, s, mask, n_active);
 	sift_f2_v6_refuse_nans(s);
@@ -134,7 +134,7 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	a.s = sift_palloc0_aligned(V6Scan, cohort->narms);
 	for (int i = 0; i < cohort->narms; i++)
 	{
-		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate,.host = index};
+		a.s[i] = (V6Scan) {.spec = arms[i].spec,.group = arms[i].group,.stats = arms[i].stats,.gate = arms[i].gate,.host = index,.rows_rel = heap,.rows_snap = snap};
 		sift_f2_v6_scan_setup(&a.s[i], sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, arms[i].star);
 		nleaves += a.s[i].ncols;
 	}
@@ -155,6 +155,9 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 		if (a.s[i].pipe != NULL)
 			sift_v6_star_scan_end(arms[i].star, a.s[i].pipe);
 	for (int i = 0; i < cohort->narms; i++)
+	{
+		sift_f2_v6_member_end(&a.s[i]);
 		if (a.s[i].batch_cx != NULL)
 			MemoryContextDelete(a.s[i].batch_cx);
+	}
 }

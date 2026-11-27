@@ -98,8 +98,8 @@ ALTER TABLE hq RENAME COLUMN doc TO body;
 SELECT attname, spec FROM sift.table_paths WHERE relid = 'tq'::regclass;
 SELECT same(replace(q, 'doc', 'body'), 'tq', 'hq') FROM queries WHERE q NOT LIKE '%''a''%' ORDER BY q;
 
--- a member of a map (`m.* float8`) found by its key in each row: the float8 of its text in a key, an aggregate, a condition and a FILTER, beside the elements of an unnest; a value no number
--- raises the cast's error for the rows that reach it
+-- a member of a map (`m.* float8`) found by its key in each row: the float8 of its text in a key, an aggregate, a condition and a FILTER, beside the elements of an unnest; a row with a key
+-- longer than the table keeps (255 bytes) is read again and answered from its document; a value no number raises the cast's error for the rows that reach it
 CREATE TABLE tm (id int, grp int NOT NULL, m jsonb, items jsonb) USING sift_table;
 SELECT sift.table_set_paths('tm', 'm', 'm.* float8');
 SELECT sift.table_set_paths('tm', 'items', 'items[]{kind text}');
@@ -113,6 +113,9 @@ INSERT INTO members VALUES
 	('SELECT (m->>''a'')::float8 AS a, count(*) FROM @T WHERE grp < 3 GROUP BY 1'),
 	('SELECT grp, count(*) FILTER (WHERE (m->>''b'')::float8 >= 2), avg((m->>''a'')::float8) FROM @T WHERE (m->>''a'')::float8 IS NOT NULL GROUP BY 1'),
 	('SELECT i.kind, count(*), avg((t.m->>''a'')::float8) FROM @T t CROSS JOIN LATERAL jsonb_to_recordset(t.items) AS i(kind text) GROUP BY 1');
+SELECT same(q, 'tm', 'hm') FROM members ORDER BY q;
+INSERT INTO tm SELECT 3000 + i, i % 5, jsonb_build_object(repeat('k', 300), i, 'b', 1), '[]' FROM generate_series(1, 30) i;
+INSERT INTO hm SELECT 3000 + i, i % 5, jsonb_build_object(repeat('k', 300), i, 'b', 1), '[]' FROM generate_series(1, 30) i;
 SELECT same(q, 'tm', 'hm') FROM members ORDER BY q;
 UPDATE tm SET m = '{"a": "str"}' WHERE id = 7;
 UPDATE hm SET m = '{"a": "str"}' WHERE id = 7;

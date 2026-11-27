@@ -30,6 +30,8 @@ typedef struct V6Member
 	int			key;
 	const char *name;
 	uint32		len;
+	List	   *path;			/* the keys from the document to the member, name the last */
+	AttrNumber	doc_att;		/* the attribute of the row read again (V6Scan.reread) that holds the document */
 } V6Member;
 
 typedef struct V6Col
@@ -94,6 +96,10 @@ struct SiftV6Scan
 	void	   *emit_arg;
 	SiftV6ScanStats *stats;
 	SiftV6Vet	vet;
+	Relation	rows_rel;		/* where a row whose member the leaves cannot answer is read again by its address: the heap of an index, or the sift_table */
+	Snapshot	rows_snap;
+	SiftV6Vet	reread;			/* the fetch of those rows, begun at the first (sift_f2_v6_member_end ends it) */
+	bool		members;		/* a column reads a member of a map: the batches keep the addresses of their rows */
 	SiftV6Preagg *preagg;		/* the cubes of the granules a part keeps (v6_preagg.h) */
 	int			ncols;
 	V6Col	   *cols;
@@ -162,8 +168,8 @@ extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQu
 /* The view of the text of row of the column: the bytes stay where the view of the store holds them */
 extern SiftStrView sift_f2_v6_text_view(const ColView *cv, int row, bool table);
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
-extern uint64 **sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n);
-extern void sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, int off, int n);
+extern uint64 **sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const float4 *score, uint64 part_gen, int off, int n);
+extern void sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n);
 extern void sift_f2_v6_refuse_nans(const V6Scan *s);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
 extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
@@ -174,8 +180,10 @@ extern void sift_f2_v6_fill_type(V6Col *c, const ColView *cv, int off, int n);
 extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);
 /* f2_v6_member.c: the member a column reads by a path, of a map found by its key in the elements of each row; the rows the batch keeps whose cast raises, NULL: none */
 extern V6Member *sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c);
-extern uint64 *sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, int off, int n);
+extern uint64 *sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, const uint64 *tid, int off, int n);
 /* PostgreSQL's error for the cast of the member of row r of the batch */
-extern void sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, int r);
+extern void sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, const uint64 *tid, int r);
+/* the end of the rows the scan read again for their members */
+extern void sift_f2_v6_member_end(V6Scan *s);
 
 #endif							/* SIFT_COL_F2_V6_SCAN_INT_H */

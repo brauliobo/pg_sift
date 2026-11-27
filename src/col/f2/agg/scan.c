@@ -90,6 +90,7 @@ member_cols(V6Scan *s, V6Col *n, const SiftV6Col *c)
 	V6Member   *m = sift_f2_v6_member_new(s, c);
 
 	n->member = m;
+	s->members = true;
 	col_init(s, m->group, &(SiftV6Col) {.attno = c->attno,.typid = INT8OID}, false, false);
 	s->cols[s->ncols - 1].lane = true;
 	col_init(s, m->key, &(SiftV6Col) {.attno = c->attno,.typid = TEXTOID}, false, false);
@@ -543,7 +544,7 @@ part_offer(void *arg, const SiftPartDesc *d, bool countable, bool *tids_unneeded
 		s->stats->rows += d->nrows;
 		return true;
 	}
-	*tids_unneeded = s->rows == NULL;
+	*tids_unneeded = s->rows == NULL && !s->members;
 	return false;
 }
 
@@ -585,7 +586,7 @@ zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
-	sift_f2_v6_raise_kept(s, views, sift_f2_v6_fill_cols(s, views, score, part_gen, off, n), off, n);
+	sift_f2_v6_raise_kept(s, views, tid, sift_f2_v6_fill_cols(s, views, tid, score, part_gen, off, n), off, n);
 	if (s->bq != NULL)
 	{
 		sift_v6_bq_filter(s->bq, &s->bs);
@@ -788,6 +789,8 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
+	s->rows_rel = heap;
+	s->rows_snap = snap;
 	sift_v6_vis_ask_index(&s->vet, index);
 	sift_v6_vis_init(&s->vis, CurrentMemoryContext);
 	if (s->rows == NULL && s->pipe == NULL && s->emit == NULL && nkeys == 0 && !s->spec->tid_range)
@@ -816,6 +819,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_v6_vet_end(&s->vet);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
+	sift_f2_v6_member_end(s);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }
@@ -844,6 +848,8 @@ sift_v6_fold_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	sift_f2_v6_scan_setup(s, index != NULL ? sift_col_rel(index)->schema->cols : sift_f2_store_open(heap)->schema->cols,
 			   index != NULL ? sift_col_rel(index)->first : sift_f2_store_open(heap)->att_first, NULL);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
+	s->rows_rel = heap;
+	s->rows_snap = snap;
 	s->pub = palloc(Max(s->ncols, 1) * sizeof(SiftV6FoldCol));
 	for (int i = 0; i < s->ncols; i++)
 		if (s->cols[i].attno != SIFT_V6_SCORE_ATTNO)
@@ -884,6 +890,7 @@ void
 sift_v6_fold_end(SiftV6Fold *s)
 {
 	sift_v6_vet_end(&s->vet);
+	sift_f2_v6_member_end(s);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }
@@ -910,6 +917,8 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
+	s->rows_rel = heap;
+	s->rows_snap = snap;
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
@@ -970,6 +979,7 @@ sift_v6_scan_end(SiftV6Scan *s)
 		index_endscan(s->scan);
 		sift_v6_vet_end(&s->vet);
 	}
+	sift_f2_v6_member_end(s);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 	pfree(s->leaves);

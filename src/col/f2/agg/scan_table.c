@@ -23,6 +23,8 @@ sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *qua
 
 	s->host = rel;
 	s->is_table = true;
+	s->rows_rel = rel;
+	s->rows_snap = snap;
 	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, NULL);
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
@@ -90,6 +92,8 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 
 	s->host = rel;
 	s->is_table = true;
+	s->rows_rel = rel;
+	s->rows_snap = snap;
 	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, star);
 	if (s->spec->ext != NULL && s->spec->ext->unnest)
 		unnest_begin(s, rel, snap);
@@ -121,6 +125,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 		sift_v6_preagg_end(s->preagg);
 	if (s->unnest != NULL)
 		sift_v6_unnest_rows_end(s->unnest);
+	sift_f2_v6_member_end(s);
 	if (s->batch_cx != NULL)
 		MemoryContextDelete(s->batch_cx);
 }

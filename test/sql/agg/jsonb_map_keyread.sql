@@ -246,6 +246,32 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node')
 ) t(q, w);
 
-DROP FUNCTION same(text, text), answer(text), plan_of(text);
-DROP TABLE mk, mn, md, mx, ms, mb;
+-- Q-12. A key longer than the index keeps of a map (255 bytes) has no leaf: a row whose member the other keys do not name is read again from the table and answered from its
+-- document, before and after the rows change (the slab and the parts)
+CREATE TABLE ml (id int PRIMARY KEY, g int, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ml SELECT i, i % 4, CASE i % 5 WHEN 0 THEN jsonb_build_object(repeat('k', 300), 1, 'm_total', i % 7 + 0.5) WHEN 1 THEN jsonb_build_object(repeat('z', 300), 2)
+	WHEN 2 THEN jsonb_build_object(repeat('y', 300), 'm_total') ELSE jsonb_build_object('m_total', i % 3, 'quality', 1) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX ml_col ON ml USING sift_col (id, g, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE ml;
+CREATE FUNCTION reread(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Read Again%' THEN RETURN btrim(l); END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT same(q, w), reread(q) FROM (VALUES
+	('SELECT g, count((metrics ->> ''m_total'')::float8), sum((metrics ->> ''m_total'')::float8) FROM ml GROUP BY 1', 'node'),
+	('SELECT (metrics ->> ''m_total'')::float8 AS t, count(*) FROM ml WHERE g < 2 GROUP BY 1', 'node')
+) t(q, w);
+INSERT INTO ml SELECT 3000 + i, i % 4, jsonb_build_object(repeat('w', 300), i, 'quality', 2) FROM generate_series(1, 40) i;
+SELECT same(q, w) FROM (VALUES
+	('SELECT g, count((metrics ->> ''m_total'')::float8), sum((metrics ->> ''m_total'')::float8) FROM ml GROUP BY 1', 'node')
+) t(q, w);
+
+DROP FUNCTION same(text, text), answer(text), plan_of(text), reread(text);
+DROP TABLE mk, mn, md, mx, ms, mb, ml;
 DROP EXTENSION pg_sift;

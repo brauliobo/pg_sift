@@ -256,16 +256,16 @@ quals_read(const V6Scan *s, const V6Col *c)
 
 /* PostgreSQL's error for the conversion of row r of the column */
 static void
-raise_row(V6Scan *s, const V6Col *c, const ColView *views, int r)
+raise_row(V6Scan *s, const V6Col *c, const ColView *views, const uint64 *tid, int r)
 {
 	if (c->jmember > 0)
-		sift_f2_v6_member_raise(s, c, views, r);
+		sift_f2_v6_member_raise(s, c, views, tid, r);
 	sift_v6_json_exception_raise(c->typid, c->jsonb_cast, views[c->leaf].xpay[r], views[c->leaf].xplen[r], s->batch_cx);
 }
 
 /* PostgreSQL's error for the first row whose cast raises that PostgreSQL casts: one the batch quals keep, or any row of a column they read themselves */
 void
-sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, int off, int n)
+sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n)
 {
 	SiftBatchSel kept = s->bs,
 				uncast = s->bs;
@@ -283,7 +283,7 @@ sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, in
 
 		for (int w = 0; raises[k] != NULL && w < (n + 63) / 64; w++)
 			if ((raises[k][w] & cast[w]) != 0)
-				raise_row(s, c, views, off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]));
+				raise_row(s, c, views, tid, off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]));
 	}
 }
 
@@ -365,7 +365,7 @@ fill_value(V6Scan *s, V6Col *c, const ColView *cv, uint64 part_gen, int off, int
 /* The vectors of the columns of the n rows from off of a batch: the rows of the selection s->bs are the ones that matter. The rows whose cast raises, for sift_f2_v6_raise_kept once the rows
  * that reach the cast are known (NULL: none) */
 uint64 **
-sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n)
+sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const float4 *score, uint64 part_gen, int off, int n)
 {
 	uint64	  **raises = NULL;
 
@@ -386,7 +386,7 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint6
 			sift_f2_v6_fill_datum(c, views, off, n, s->batch_cx, s->bs.mask);
 		else
 		{
-			uint64	   *rows = c->jmember > 0 ? sift_f2_v6_fill_member(s, c, views, off, n) : fill_value(s, c, cv, part_gen, off, n);
+			uint64	   *rows = c->jmember > 0 ? sift_f2_v6_fill_member(s, c, views, tid, off, n) : fill_value(s, c, cv, part_gen, off, n);
 
 			if (rows == NULL)
 				continue;
