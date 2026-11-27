@@ -1,5 +1,7 @@
 -- paths = auto for the array columns: a sample of the table says whether the arrays differ (their elements stand in place of the whole-array image) or repeat (the image stays)
 CREATE EXTENSION pg_sift;
+-- Format 1: the array lanes and elements this test writes are a Format 1 layout (col/v1); a Format 2.0 index ignores array_lengths and keeps no elements of a text[]
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = notice;
 CREATE TABLE aa (id int, uniq text[], rep text[], mid text[], ids int4[]) WITH (autovacuum_enabled = false);
@@ -86,11 +88,11 @@ SELECT rep, count(*) FROM aa GROUP BY 1 ORDER BY 1 LIMIT 3;
 -- an array that repeats (rep: 15 different arrays in 12,000 rows, mid: 1,100) gets its elements beside the image too: an element test over the image costs the same
 -- instructions a row whatever the number of different arrays, the elements about a fiftieth of that. Element tests run on the elements and give the rows of the normal plan
 EXPLAIN (COSTS OFF) SELECT count(*) FROM aa WHERE rep @> ARRAY['r2'];
-               QUERY PLAN                
------------------------------------------
- Custom Scan (SiftAgg)
+             QUERY PLAN             
+------------------------------------
+ Custom Scan (SiftAggV6)
    Index: aa_col
-   Filters: EXISTS rep[] (rep[]. = 'r2')
+   Filters: (rep @> '{r2}'::text[])
    Pushed Aggregates: count(*)
 (4 rows)
 

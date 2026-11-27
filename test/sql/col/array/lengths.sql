@@ -3,6 +3,8 @@
 -- 'scan' read the lanes. The index with array_lengths = off is the index of a release before the option: the same answers from the images.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the array lanes and elements this test writes are a Format 1 layout (col/v1); a Format 2.0 index ignores array_lengths and keeps no elements of a text[]
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

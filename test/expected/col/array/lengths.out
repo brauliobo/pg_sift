@@ -3,6 +3,8 @@
 -- 'scan' read the lanes. The index with array_lengths = off is the index of a release before the option: the same answers from the images.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the array lanes and elements this test writes are a Format 1 layout (col/v1); a Format 2.0 index ignores array_lengths and keeps no elements of a text[]
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
@@ -115,21 +117,21 @@ SELECT * FROM shapes('lanes');
 
 -- the lanes are what the scan reads: the filter names cardinality, not the array
 EXPLAIN (COSTS OFF) SELECT count(*) FROM al WHERE ia IS NOT NULL AND cardinality(ia) > 0;
-                           QUERY PLAN                           
-----------------------------------------------------------------
- Custom Scan (SiftAgg)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: al_col
-   Filters: cardinality(ia) IS NOT NULL AND cardinality(ia) > 0
+   Filters: (ia IS NOT NULL) AND (cardinality(ia) > 0)
    Pushed Aggregates: count(*)
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, avg(cardinality(ta)), max(array_length(ma, 1)) FROM al GROUP BY grp;
-                             QUERY PLAN                              
----------------------------------------------------------------------
- Custom Scan (SiftAgg)
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: al_col
    Group Keys: grp
-   Pushed Aggregates: avg(cardinality(ta)), max(array_length(ma, 1))
+   Pushed Aggregates: avg(cardinality(al.ta)), max(array_length(al.ma, 1))
 (4 rows)
 
 -- a generic plan reads the dimension and the bound from parameters
@@ -330,11 +332,11 @@ SELECT sift.col_verify('al_col', true);
 (1 row)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM al WHERE ia IS NOT NULL AND cardinality(ia) > 0;
-                         QUERY PLAN                         
-------------------------------------------------------------
- Custom Scan (SiftAgg)
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: al_col
-   Filters: ia IS NOT NULL AND ia: (cardinality(al.ia) > 0)
+   Filters: (ia IS NOT NULL) AND (cardinality(ia) > 0)
    Pushed Aggregates: count(*)
    Workers Planned: 2
 (5 rows)

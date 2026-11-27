@@ -1,5 +1,7 @@
 -- paths = auto for the array columns: a sample of the table says whether the arrays differ (their elements stand in place of the whole-array image) or repeat (the image stays)
 CREATE EXTENSION pg_sift;
+-- Format 1: the array lanes and elements this test writes are a Format 1 layout (col/v1); a Format 2.0 index ignores array_lengths and keeps no elements of a text[]
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = notice;
 
