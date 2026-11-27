@@ -49,5 +49,7 @@ extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);
 /* Adds the Gather of a parallel node next to the serial path of add_group_path, when sift_v6_par_choose_strategy picks a parallel strategy; the spec of the path carries it */
 extern void sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having,
 								 double groups, Cost serial_total);
+/* Prices the serial path by the compute threads of the backend that run its scan, when the spec is one they take (agg/par/run.h, agg/par/pinrun.h) */
+extern void sift_v6_threads_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups, Path *path);
 
 #endif							/* SIFT_AGG_V6_PAR_PG_H */

@@ -28,6 +28,7 @@
 #include "agg/test_gucs.h"
 #include "agg/plan/rewrite.h"
 #include "agg/settings.h"
+#include "core/par/pool.h"
 #include "core/sift.h"
 
 #define GRANULE_ROWS	8192.0
@@ -229,6 +230,21 @@ pick_workers(void *arg, int max_by_granules)
 		return 0;
 	c->startup = c->total = c->serial_total * par / Max(c->serial_ms, 1e-6);
 	return max_by_granules;
+}
+
+/* The threads split the scan as the participants of a Gather do, with no launch; the waits for memory of a large table stay the backend's */
+void
+sift_v6_threads_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups, Path *path)
+{
+	const double scan = scan_ms(spec, rel->tuples, rel->rows, groups);
+	const double serial = scan + (groups >= PAR_COLD_GROUPS ? rel->rows * cold_ns(root, rel, spec) / 1e6 : 0.0);
+	double		share;
+
+	if (!sift_v6_par_wanted(spec) && !sift_v6_pin_wanted(spec))
+		return;
+	share = (scan / (1.0 + SIFT_PAR_EFFICIENCY * (sift_par_pool_threads() - 1)) + serial - scan) / Max(serial, 1e-6);
+	path->startup_cost *= share;
+	path->total_cost *= share;
 }
 
 /* The share of the rows each participant takes, as PostgreSQL divides the rows of a partial path: the leader's share shrinks with the workers it has to serve */
