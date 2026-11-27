@@ -34,11 +34,17 @@ sift_v6_type_native(Oid typid)
 }
 
 bool
-sift_v6_key_generic(Oid typid)
+sift_v6_type_generic(Oid typid)
 {
 	const SiftV6Class cls = sift_v6_class(getBaseType(typid));
 
 	return cls == SV6C_NONE || cls == SV6C_F64 || getBaseType(typid) == NUMERICOID;
+}
+
+bool
+sift_v6_key_generic(const SiftV6Spec *s, const SiftV6Col *c)
+{
+	return sift_v6_type_generic(c->typid) && !(c->derive > 0 && s->derive[c->derive - 1].kind == SVD_EXTRACT);
 }
 
 static inline int64
@@ -273,7 +279,7 @@ sift_v6_genkeys_new(MemoryContext cx, const SiftV6Spec *spec)
 
 	for (int i = 0; i < spec->nkeys; i++)
 	{
-		if (!sift_v6_key_generic(spec->key[i].typid))
+		if (!sift_v6_key_generic(spec, &spec->key[i]))
 			continue;
 		if (g == NULL)
 		{

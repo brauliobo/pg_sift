@@ -591,7 +591,7 @@ sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
 				break;
 			pos++;
 		}
-		if (!found || (pos < s->nkeys && sift_v6_key_generic(s->key[pos].typid)))
+		if (!found || (pos < s->nkeys && sift_v6_key_generic(s, &s->key[pos])))
 			return false;
 		s->topk_item[s->ntopk++] = (SiftV6TopKItem) {.pos = pos,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}

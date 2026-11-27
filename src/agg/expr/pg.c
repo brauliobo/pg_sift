@@ -267,7 +267,7 @@ sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
 		if (s->agg[j].kind == SV6_PCT_CONT)
 			return false;
 	for (int i = 0; i < s->nkeys; i++)
-		if (sift_v6_key_generic(s->key[i].typid))
+		if (sift_v6_key_generic(s, &s->key[i]))
 			return false;
 	foreach_ptr(List, item, s->pgexpr)
 		if (sift_v6_pgexpr_exec(linitial(item)) || !is_parallel_safe(root, linitial(item)))

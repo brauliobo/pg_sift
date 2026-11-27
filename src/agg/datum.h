@@ -29,8 +29,10 @@ extern void sift_datum_out_init(SiftDatumOut *o, MemoryContext cx, Oid typid);
 
 /* The type is one of the native vectors: its values are not Datums in a batch (the base type of a domain counts) */
 extern bool sift_v6_type_native(Oid typid);
-/* A key column of this type is grouped by the interner of agg/ht/generic.h: every type but those of the integer, boolean and text classes the table groups by their bytes */
-extern bool sift_v6_key_generic(Oid typid);
+/* A key of this type is grouped by the interner of agg/ht/generic.h: every type but those of the integer, boolean and text classes the table groups by their bytes */
+extern bool sift_v6_type_generic(Oid typid);
+/* Key c of s is grouped by the interner: a key of a generic type, but an extract, a numeric of whole numbers the scan derives as integers */
+extern bool sift_v6_key_generic(const SiftV6Spec *s, const SiftV6Col *c);
 
 /*
  * The Datum of row r of a native vector, as a value of the base type typid (scale: the digits after the point of a numeric the vector holds as scaled integers); a value passed by reference is made in the
