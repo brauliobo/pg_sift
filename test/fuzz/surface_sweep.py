@@ -323,6 +323,8 @@ def classify(lines):
     return res
 
 
+ROLE_GRANTS = ("GRANT USAGE ON SCHEMA fx, fx2, sift TO ps_nobody; GRANT SELECT ON ALL TABLES IN SCHEMA fx TO ps_nobody; "
+               "GRANT INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER ON fx.trg TO ps_nobody;")
 INIT = "SET client_min_messages = notice; SET statement_timeout = '15s'; SET lock_timeout = '2s'; SET track_functions = 'all';"
 MODES = ('super', 'rollback', 'role')
 ALLOW = os.path.join(REPO, 'scripts', 'surface.allow')
@@ -403,6 +405,7 @@ def _sweep(a):
         subprocess.run(['psql', '-X', '-q', '-d', db, '-c', f'CREATE EXTENSION IF NOT EXISTS {ext}'], env=ENV, capture_output=True)
     sess = Session(db)
     sess.run(INIT)
+    sess.run('DROP ROLE IF EXISTS ps_nobody; CREATE ROLE ps_nobody;')
     other = Session(db)
     other.run('CREATE TEMP TABLE fx_other_temp (id int, g int);')
     OIDS['regclass'].append("%s::oid::regclass" % other.run("SELECT 'fx_other_temp'::regclass::oid;")[0].strip())
@@ -427,10 +430,16 @@ def _sweep(a):
     def reset_fixture():
         nonlocal sess
         try:
-            sess.run(FIXTURE)
+            sess.run(FIXTURE + ROLE_GRANTS)
         except Crash as e:
             reconnect()
-            sess.run(FIXTURE)
+            sess.run(FIXTURE + ROLE_GRANTS)
+
+    def fresh_session():
+        """a backend and a fixture for each function: an assert build checks every memory context after each command, the plans of all the functions before included;
+        the rolled-back calls leave the fixture as it was and the unprivileged ones can write fx.trg alone, so the calls as the superuser come last"""
+        reconnect()
+        reset_fixture()
 
     def in_stack(ob, ctx):
         return bool(re.search(r'function "?(?:\w+\.)?' + re.escape(ob['name']) + r'"?[( ]', ctx))
@@ -542,7 +551,7 @@ def _sweep(a):
             run_batch(ob, name, calls, label, prelude, after, mode)
 
     if not a.no_calls:
-        reset_fixture()
+        denied = set(sess.run("SELECT oid FROM pg_proc WHERE NOT has_function_privilege('ps_nobody', oid, 'EXECUTE');"))
         for k, ob in enumerate(obs):
             if a.budget and time.time() - t0 > a.budget:
                 stats['skipped'] += 1
@@ -557,24 +566,12 @@ def _sweep(a):
             if a.list:
                 print(f'{ob["sig"]} kind={ob["kind"]} ret={ob["ret"]} strict={ob["strict"]} calls={len(calls)}')
                 continue
-            batch(ob, name, calls, '', 'super')
-            reset_fixture()
+            ob['role_denied'] = ob['oid'] in denied
+            role_calls = text_calls()[:12] if text_driven(ob) else call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60, int_limit(allow, ob))
+            fresh_session()
             batch(ob, name, subsample(calls, max(len(calls) // 7, 8)), 'after-rollback ', 'rollback', prelude="BEGIN; SAVEPOINT s0; SELECT 1/0; ROLLBACK TO s0;\n", after='\nROLLBACK;')
-        if not a.list:
-            reset_fixture()
-            sess.run("DROP ROLE IF EXISTS ps_nobody; CREATE ROLE ps_nobody; GRANT USAGE ON SCHEMA fx, fx2, sift TO ps_nobody; GRANT SELECT ON ALL TABLES IN SCHEMA fx TO ps_nobody; "
-                     "GRANT INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER ON fx.trg TO ps_nobody;")
-            denied = set(sess.run("SELECT oid FROM pg_proc WHERE NOT has_function_privilege('ps_nobody', oid, 'EXECUTE');"))
-            for ob in obs:
-                ob['role_denied'] = ob['oid'] in denied
-            for ob in obs:
-                if a.budget and time.time() - t0 > a.budget:
-                    break
-                name = ob.get('display')
-                if not name:
-                    continue
-                calls = text_calls()[:12] if text_driven(ob) else call_sets(ob, ob['args'], 12 if a.tier == 'quick' else 60, int_limit(allow, ob))
-                batch(ob, name, calls, 'as-unprivileged ', 'role', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
+            batch(ob, name, role_calls, 'as-unprivileged ', 'role', prelude='SET ROLE ps_nobody;\n', after='\nRESET ROLE;')
+            batch(ob, name, calls, '', 'super')
     if not a.no_ddl and not a.list:
         ddl_sweep(sess, a, stats, fails, reconnect, reset_fixture, states)
     other.close()
