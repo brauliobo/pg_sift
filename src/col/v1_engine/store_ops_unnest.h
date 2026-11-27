@@ -28,6 +28,7 @@
 #include "agg/pipe.h"
 #include "agg/plan/rewrite.h"
 #include "agg/star/run.h"
+#include "agg/unnest/late.h"
 #include "agg/unnest/unnest.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/unnest/test.h"
@@ -104,6 +105,7 @@ typedef struct UnRun
 	Datum		hval[MaxHeapAttributeNumber];
 	bool		hnull[MaxHeapAttributeNumber];
 	ExprState  *arr;			/* the array of a row of the heap when it is an expression of its columns (SiftV6Ext.elem_array), else NULL: the column heap_att */
+	SiftV6LateProbe *probe;		/* the expressions that read a member whose cast raised (SiftV6Ext.late_probe) */
 	SiftClause	where;
 	bool		has_where;
 	SiftVec   **wvecs;

@@ -65,6 +65,13 @@ SELECT pushed('SELECT e.key, avg(CAST(e.value AS float8)) FROM m_t t JOIN m_src 
 SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only;
 SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
 SELECT same(mq('sum(CASE WHEN e.key = $$m_total$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;
+-- the same rows kept by a list; a row with one dirty member read by the FILTER that keeps it, by an aggregate of no FILTER and by a key: the cast raises as in the normal plan
+SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id IN (100, 5990)', 't.src')) AS filter_only_list,
+       pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id IN (100, 5990)', 't.src')) AS filter_only_list_pushed;
+SELECT label, same(q), left(runq(q, true), 70) AS scan_answer FROM (VALUES
+	('filter reads it', mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$catg_i$$)', 'id IN (100, 101)', 't.src')),
+	('no filter', mq('count(*) FILTER (WHERE e.key = $$m_total$$), max(CAST(e.value AS float8))', 'id IN (100, 101)', 't.src')),
+	('key', mq('CAST(e.value AS float8), count(*)', 'id IN (100, 101)', 'CAST(e.value AS float8)'))) v(label, q);
 -- reads of the member the row read again cannot answer for keep the normal plan: the `->` and `->>` forms, an EXISTS over the members (alone and under
 -- an OR), a materialized CTE that reads them where no walk of the query sees, and a filter on the member of a key
 SELECT label, CASE WHEN pushed(q) THEN 'PUSHED' ELSE same(q) END AS refused

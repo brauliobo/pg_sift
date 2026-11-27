@@ -147,6 +147,7 @@ typedef struct SiftV6Ext
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */
 	List	   *pair_where;		/* SV6E_KEYS: the quals over the values of the keys (the virtual attributes of v6_unnest_jsonb.h), which the scan evaluates on the rows it gives to the groups */
 	List	   *col_expr;		/* SV6E_KEYS: the expression of the statement each column is, which a row read from the heap is given the value of */
+	List	   *late_probe;		/* unnest: the keys and aggregates that read a column of the element computed late, for a member whose cast raised (agg/unnest/late.h) */
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);

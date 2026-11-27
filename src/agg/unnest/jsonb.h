@@ -9,6 +9,8 @@
 
 #include "postgres.h"
 
+#include "fmgr.h"
+#include "nodes/execnodes.h"
 #include "nodes/pathnodes.h"
 
 #include "agg/plan/int.h"
@@ -115,7 +117,25 @@ extern bool sift_v6_json_text_unambiguous(const char *s);
 extern bool sift_v6_unnest_elem_clause(MemoryContext cx, const List *quals, SiftClause *out, int *col, int *nvec);
 
 /* The evaluation of jsonb_to_recordset on the document of a row, for the rows the leaves cannot hold */
-typedef struct SiftV6RecFn SiftV6RecFn;
+typedef struct SiftV6RecFn
+{
+	FmgrInfo	flinfo;
+	ReturnSetInfo rsinfo;
+	ExprContext *econtext;
+	TupleDesc	desc;
+	TupleTableSlot *slot;
+	int			ncols;
+	Oid			type[SIFT_V6_XELEM_COLS];
+	SiftV6ElemFn fn;
+	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: the members come with the value as the function gives it, which values() reads as the statement does */
+	FmgrInfo	vfn;			/* the cast of jsonb_each's jsonb to the type of the value, or its #>> '{}' */
+	FmgrInfo	vin[SIFT_V6_XELEM_COLS];	/* the input function of the type of a column computed late: the value of jsonb_each, the cast of a member of SV6E_MEMBERS */
+	Oid			vio[SIFT_V6_XELEM_COLS];
+	text	   *member[SIFT_V6_XELEM_COLS];	/* SV6E_MEMBERS: the key each column reads of an element */
+	Datum	   *val;			/* the value of jsonb_each, the element of SV6E_MEMBERS */
+	bool	   *val_null;
+	Datum	   *key;			/* the key of jsonb_each */
+} SiftV6RecFn;
 
 extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x);
 /* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many */
@@ -126,7 +146,7 @@ extern uint32 sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, 
 /*
  * jsonb_each and jsonb_each_text: the value column of the n members of the last call or chunk, for the members of keep (NULL: all), which are those that reach the statement's expressions. The cast of a
  * member that raises is the error of the pair of that member, which a join may drop: it is not raised here but left in late[k] (n entries, zeroed by the caller; the member has no value), for the
- * caller to raise when the pair reaches the groups. Any other error (a cancel, out of memory) is raised.
+ * caller to raise when the pair reaches an expression of the statement that reads the value (agg/unnest/late.h). Any other error (a cancel, out of memory) is raised.
  */
 extern void sift_v6_recfn_values(SiftV6RecFn *f, const uint64 *keep, MemoryContext cx, SiftVec *ev, uint32 n, ErrorData **late);
 extern void sift_v6_recfn_free(SiftV6RecFn *f);

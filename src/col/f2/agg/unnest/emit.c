@@ -213,20 +213,40 @@ array_elems(UnRun *u, ArrayIterator it, SiftVec *ev, MemoryContext cx)
 	return k;
 }
 
-/*
- * the pair of a member whose cast raised: the error is the pair's, raised when it reaches an aggregate that reads the element (the columns of the element and those derived) and gone with it
- * when a join or the FILTER of every such aggregate drops it; a qual over the members casts it before the join
- */
+typedef struct LatePair
+{
+	UnRun	   *u;
+	uint32		member;
+	ErrorData  *err;
+} LatePair;
+
+/* the pair reached the groups: the error is the statement's when a key or an aggregate whose FILTER passes reads the member; otherwise the pair goes to the groups without its value */
+static void
+reach_late(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	const LatePair *lp = arg;
+
+	if (bs->n_active == 0)
+		return;
+	sift_v6_late_probe_check(lp->u->probe, lp->u->econtext, lp->member, lp->err);
+	sift_v6_group_update(lp->u->pipe->group, bs, keyvec, argvec);
+}
+
+/* the pair of a member whose cast raised: decided when it reaches the groups, gone with it when a join drops it; a qual over the members casts it before the join */
 static void
 emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uint32 k, ErrorData *err)
 {
+	LatePair	lp = {u, k, err};
+
 	if (u->has_pwhere)
 		ReThrowError(err);
 	u->pidx[0] = row;
 	u->eidx[0] = k;
-	sift_v6_pipe_late(u->pipe, err, u->ncols, u->ncols + u->nel + u->spec->nderive);
+	u->pipe->sink = reach_late;
+	u->pipe->sink_arg = &lp;
 	sift_f2_unnest_emit_pairs(u, fact, ev, 1);
-	sift_v6_pipe_late_end(u->pipe);
+	u->pipe->sink = NULL;
+	u->pipe->sink_arg = NULL;
 }
 
 /* the pairs of the elements of a chunk of a row in ev: those the bitmap keeps (NULL: all); late[k]: the error of the cast of member k (NULL: none); returns how many it keeps */

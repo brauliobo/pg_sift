@@ -27,6 +27,7 @@
 #include "agg/safety.h"
 #include "agg/source_rel.h"
 #include "agg/unnest/jsonb.h"
+#include "agg/unnest/late.h"
 
 /* the join is inner or a left one of the unnest with no condition; any other special join is not ours */
 static bool
@@ -169,6 +170,7 @@ sift_v6_unnest_where(V6Plan *p)
 	foreach_node(RestrictInfo, ri, sift_v6_quals_in_order(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
+	p->spec.ext->late_probe = sift_v6_late_probe_plan(p);
 	if (p->spec.indexqual == NIL)
 		return true;
 	if (!sift_v6_clause_make_params(CurrentMemoryContext, p->spec.indexqual, &p->spec, &clause, NULL))
@@ -199,7 +201,7 @@ sift_v6_unnest_ready(V6Plan *p)
 	return unnest_computes(p) && !any_col(&p->spec, is_type_tag) && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
-/* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
+/* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, a cast of one that raises is the statement's error only where an expression reads it (agg/unnest/late.h), and its filter is a clause of the pairs */
 Aggref *
 sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 {

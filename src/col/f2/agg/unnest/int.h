@@ -24,6 +24,7 @@
 #include "agg/expr/pg.h"
 #include "agg/plan/rewrite.h"
 #include "agg/pipe.h"
+#include "agg/unnest/late.h"
 #include "agg/star/run.h"
 #include "agg/unnest/unnest.h"
 #include "agg/unnest/jsonb.h"
@@ -105,6 +106,7 @@ typedef struct UnRun
 	EState	   *estate;			/* the quals of the table as a row of the heap is tested with them */
 	ExprContext *econtext;
 	ExprState  *hqual;
+	SiftV6LateProbe *probe;		/* the expressions that read a member whose cast raised (SiftV6Ext.late_probe) */
 	ExprState  *arr;			/* the array of a row of the heap when it is an expression (SiftV6Ext.elem_array), else NULL: the column heap_att */
 	SiftClause	where;
 	bool		has_where;

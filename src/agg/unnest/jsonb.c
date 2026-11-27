@@ -604,25 +604,6 @@ sift_v6_elem_vatt_col(int attno, Oid typid)
 
 /* ---- the document of a row the leaves cannot hold ---- */
 
-struct SiftV6RecFn
-{
-	FmgrInfo	flinfo;
-	ReturnSetInfo rsinfo;
-	ExprContext *econtext;
-	TupleDesc	desc;
-	TupleTableSlot *slot;
-	int			ncols;
-	Oid			type[SIFT_V6_XELEM_COLS];
-	SiftV6ElemFn fn;
-	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: the members come with the value as the function gives it, which values() reads as the statement does */
-	FmgrInfo	vfn;			/* the cast of jsonb_each's jsonb to the type of the value, or its #>> '{}' */
-	FmgrInfo	vin[SIFT_V6_XELEM_COLS];	/* the input function of the type of a column computed late: the value of jsonb_each, the cast of a member of SV6E_MEMBERS */
-	Oid			vio[SIFT_V6_XELEM_COLS];
-	text	   *member[SIFT_V6_XELEM_COLS];	/* SV6E_MEMBERS: the key each column reads of an element */
-	Datum	   *val;			/* the value of jsonb_each, the element of SV6E_MEMBERS */
-	bool	   *val_null;
-};
-
 static Oid
 jsonb_cast_fn(Oid type)
 {
@@ -754,7 +735,8 @@ sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max)
 	if (f->fn >= SV6E_MEMBERS)
 	{
 		f->val = MemoryContextAlloc(cx, Max(max, 1) * sizeof(Datum));
-		f->val_null = MemoryContextAlloc(cx, Max(max, 1) * sizeof(bool));
+		f->val_null = MemoryContextAllocZero(cx, Max(max, 1) * sizeof(bool));
+		f->key = MemoryContextAlloc(cx, Max(max, 1) * sizeof(Datum));
 	}
 	for (; k < max && ts != NULL && tuplestore_gettupleslot(ts, true, false, f->slot); k++)
 	{
@@ -775,6 +757,7 @@ sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max)
 		if (f->fn >= SV6E_EACH)
 		{
 			put_cell(cx, &ev[0], TEXTOID, k, f->slot->tts_values[0], f->slot->tts_isnull[0]);
+			f->key[k] = datumCopy(f->slot->tts_values[0], false, -1);
 			f->val_null[k] = f->slot->tts_isnull[1];
 			f->val[k] = f->val_null[k] ? (Datum) 0 : datumCopy(f->slot->tts_values[1], false, -1);
 			continue;

@@ -67,43 +67,6 @@ v6g_filter_take(const SiftV6Group *g, const SiftV6Agg *a, const SiftBatchSel *bs
 	return bits;
 }
 
-static bool
-agg_reads(const SiftV6Spec *s, int j, const Bitmapset *vecs)
-{
-	bool		reads = bms_is_member(j, vecs) || bms_is_member(s->naggs + j, vecs);
-
-	for (int x = 0; x < s->agg[j].nxcols; x++)
-		reads |= bms_is_member(sift_v6_agg_xvec(s, j) + x, vecs);
-	return reads;
-}
-
-static bool
-takes_any(const SiftV6Group *g, const SiftV6Agg *a, const SiftBatchSel *bs)
-{
-	uint16		n;
-	const uint64 *bits = v6g_filter_take(g, a, bs, &n);
-
-	for (uint32 w = 0; w < (uint32) ((bs->n_raw + 63) / 64); w++)
-		if ((bits[w] & bs->mask[w]) != 0)
-			return true;
-	return false;
-}
-
-bool
-sift_v6_group_reads_any(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *argvec, const Bitmapset *vecs)
-{
-	const SiftV6Spec *s = g->spec;
-
-	for (int v = sift_v6_spec_fvec(s); v < sift_v6_spec_nvec(s); v++)
-		if (bms_is_member(v, vecs))
-			return true;
-	v6g_filter_eval(g, bs, argvec);
-	for (int j = 0; j < s->naggs; j++)
-		if (agg_reads(s, j, vecs) && takes_any(g, &s->agg[j], bs))
-			return true;
-	return false;
-}
-
 void
 v6g_filter_free(SiftV6Group *g)
 {

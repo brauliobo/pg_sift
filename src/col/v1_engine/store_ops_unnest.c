@@ -484,6 +484,10 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 		u->arr = sift_v1_unnest_heap_expr(u, linitial(u->x->elem_array));
 	else if (!u->keyed)
 		sift_v1_unnest_heap_att(u, u->heap_att);
+	u->probe = u->rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->rec) : NULL;
+	foreach_ptr(Var, v, pull_var_clause((Node *) u->x->late_probe, 0))
+		if (v->varno != INNER_VAR)
+			sift_v1_unnest_heap_att(u, v->varattno);
 	for (int c = 0; u->keyed && c < u->nel; c++)
 	{
 		u->cexpr[c] = sift_v1_unnest_heap_expr(u, list_nth(u->x->col_expr, c));

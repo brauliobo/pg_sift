@@ -765,7 +765,7 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest batch");
 	sift_mem_init(&u->rmt, "agg_unnest_heap_row", CurrentMemoryContext, true, SIFT_BUDGET_WORK_MEM, 1, 1);
 	u->ccx = sift_mem_allocset_create(u->rmt.root_cx, "sift agg v6 unnest heap chunk");
-	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0)
+	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0 || u->rec != NULL)
 	{
 		MemoryContext old = CurrentMemoryContext;
 
@@ -773,6 +773,7 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 		MemoryContextSwitchTo(u->estate->es_query_cxt);
 		u->hqual = u->x->heap_where != NIL ? ExecPrepareQual(u->x->heap_where, u->estate) : NULL;
 		u->arr = u->x->elem_array != NIL ? ExecPrepareExpr(linitial(u->x->elem_array), u->estate) : NULL;
+		u->probe = u->rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->rec) : NULL;
 		for (int c = 0; u->keyed && c < u->nel; c++)
 			u->cexpr[c] = ExecPrepareExpr(list_nth(u->x->col_expr, c), u->estate);
 		u->econtext = CreateExprContext(u->estate);
