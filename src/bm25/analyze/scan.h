@@ -12,7 +12,7 @@ grow(SiftAnalyzer *a, void **p, size_t *cap, size_t need, size_t sz)
 {
 	size_t		n = Max(*cap * 2, Max(need, 64));
 
-	*p = *p ? repalloc(*p, n * sz)
+	*p = *p ? repalloc_huge(*p, n * sz)
 		: MemoryContextAllocExtended(a->mcxt, n * sz, MCXT_ALLOC_HUGE);
 	*cap = n;
 }
