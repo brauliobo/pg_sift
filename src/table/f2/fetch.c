@@ -64,6 +64,7 @@ typedef struct SiftTblF2Fetch
 	MemoryContext cx;
 	MemoryContext rowcx;
 	SiftF2GranuleBuf *gb;
+	bool		held;			/* gb is held across the calls of an index scan (sift_f2_gbuf_hold); the fetch of a transaction gives it back at its end itself */
 	SiftPartitionEntry entry;
 	SnapKey		vis_key;
 	SiftTblVis	vis;
@@ -115,11 +116,12 @@ snap_key_set(SnapKey *k, Snapshot snap, MemoryContext cx)
 }
 
 static SiftTblF2Fetch *
-fetch_new(Relation rel, MemoryContext parent)
+fetch_new(Relation rel, MemoryContext parent, bool held)
 {
 	SiftTblF2Fetch *f = MemoryContextAllocZero(parent, sizeof(SiftTblF2Fetch));
 
 	f->base.rel = rel;
+	f->held = held;
 	f->ops = &sift_tbl_v2_ops;
 	f->store = sift_f2_store_open(rel);
 	f->cx = parent;
@@ -132,13 +134,17 @@ fetch_new(Relation rel, MemoryContext parent)
 struct IndexFetchTableData *
 sift_tbl_f2_index_fetch_begin(Relation rel SIFT_TAM_FLAGS_PARAM)
 {
-	return &fetch_new(rel, AllocSetContextCreate(CurrentMemoryContext, "sift f2 fetch", ALLOCSET_SMALL_SIZES))->base;
+	return &fetch_new(rel, AllocSetContextCreate(CurrentMemoryContext, "sift f2 fetch", ALLOCSET_SMALL_SIZES), true)->base;
 }
 
 static void
 fetch_drop_granule(SiftTblF2Fetch *f)
 {
-	if (f->gb != NULL)
+	if (f->gb == NULL)
+		return;
+	if (f->held)
+		sift_f2_gbuf_unhold(f->gb);
+	else
 		sift_f2_gbuf_unref(f->gb);
 	f->gb = NULL;
 }
@@ -284,7 +290,7 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 				sift_tbl_f2_staged_stub(slot, tid);
 			return waiting;
 		}
-		f->gb = loc.gb;
+		f->gb = f->held ? sift_f2_gbuf_hold(loc.gb) : loc.gb;
 		f->entry = loc.entry;
 		row = loc.row;
 	}
@@ -348,7 +354,7 @@ tx_fetch_for(Relation rel)
 			fetch_drop_granule(f);
 			MemoryContextDelete(f->cx);
 		}
-		f = tx_fetch = fetch_new(rel, AllocSetContextCreate(TopTransactionContext, "sift f2 transaction fetch", ALLOCSET_SMALL_SIZES));
+		f = tx_fetch = fetch_new(rel, AllocSetContextCreate(TopTransactionContext, "sift f2 transaction fetch", ALLOCSET_SMALL_SIZES), false);
 		tx_relid = RelationGetRelid(rel);
 		tx_manifest_version = version;
 		if (!tx_callback_registered)

@@ -112,6 +112,16 @@ extern SiftF2PartPin *sift_f2_pin_open_header(Relation rel, SiftF2Store *store, 
 extern SiftF2PartPin *sift_f2_pin_open_uncached(Relation rel, SiftF2Store *store, const SiftPartDesc *d, uint32 part_id);
 extern void sift_f2_pin_release(SiftF2PartPin *pin);
 
+/*
+ * A reference a scan, a fetch or a slot keeps across the calls of its executor node, a resource of the current owner (as the buffer pins of a heap scan
+ * are): a (sub)transaction that aborts deletes the memory of its nodes without ending them, and its owner gives the reference back. hold takes over a
+ * reference the caller has, unhold releases it.
+ */
+extern SiftF2PartPin *sift_f2_pin_hold(SiftF2PartPin *pin);
+extern void sift_f2_pin_unhold(SiftF2PartPin *pin);
+extern SiftF2GranuleBuf *sift_f2_gbuf_hold(SiftF2GranuleBuf *gb);
+extern void sift_f2_gbuf_unhold(SiftF2GranuleBuf *gb);
+
 /* The addresses of the rows of granule g of the pin's part, ascending as the granule keeps them, in out (at most SIFT_GRANULE_ROWS of them); reads the address chunk only, in the current memory context */
 extern void sift_f2_pin_granule_tids(Relation rel, SiftF2PartPin *pin, uint32 g, uint64 *out);
 

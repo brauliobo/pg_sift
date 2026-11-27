@@ -398,7 +398,7 @@ static void
 drop_pin(SiftTblF2Scan *s)
 {
 	if (s->pin != NULL)
-		sift_f2_pin_release(s->pin);
+		sift_f2_pin_unhold(s->pin);
 	s->pin = NULL;
 }
 
@@ -409,7 +409,7 @@ part_pin(SiftTblF2Scan *s, const ScanUnit *u)
 	{
 		drop_pin(s);
 		s->pin_part_id = u->entry.part_id;
-		s->pin = sift_f2_pin_open_scan(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id);
+		s->pin = sift_f2_pin_hold(sift_f2_pin_open_scan(s->base.rs_rd, s->store, &u->desc, (uint32) u->entry.part_id));
 	}
 	return s->pin;
 }
@@ -418,7 +418,7 @@ static void
 drop_granule(SiftTblF2Scan *s)
 {
 	if (s->gb != NULL)
-		sift_f2_gbuf_unref(s->gb);
+		sift_f2_gbuf_unhold(s->gb);
 	s->gb = NULL;
 	s->loaded = false;
 }
@@ -520,7 +520,7 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	pin = part_pin(s, u);
 	if (s->has_range && (pin->tidx[g].tid_max < s->mintid || pin->tidx[g].tid_min > s->maxtid))
 		return false;
-	s->gb = sift_f2_gbuf_load(s->base.rs_rd, s->store, pin, g);
+	s->gb = sift_f2_gbuf_hold(sift_f2_gbuf_load(s->base.rs_rd, s->store, pin, g));
 	sift_col_delta_scan_attach(s->delta, &u->entry, s->gb);
 	select_pending(s, &u->entry);
 	n = sift_tbl_f2_vis_granule(&s->vis, s->gb, s->pdel, s->sel);
@@ -736,7 +736,7 @@ static void
 page_drop(SiftTblF2Page *pg)
 {
 	for (uint16 i = 0; i < pg->n; i++)
-		sift_f2_gbuf_unref(pg->gb[i]);
+		sift_f2_gbuf_unhold(pg->gb[i]);
 	pg->n = pg->pos = 0;
 	MemoryContextReset(pg->cx);
 }
@@ -788,7 +788,7 @@ page_cb(SiftF2GranuleBuf *gb, const SiftPartitionEntry *entry, void *arg)
 		if (!sift_tbl_f2_vis_row(&pl->s->vis, gb, r, pl->s->pdel))
 			continue;
 		pg->off[pg->n] = off;
-		pg->gb[pg->n] = sift_f2_gbuf_ref(gb);
+		pg->gb[pg->n] = sift_f2_gbuf_hold(sift_f2_gbuf_ref(gb));
 		pg->pm[pg->n] = pm;
 		pg->gm[pg->n] = gm;
 		pg->row[pg->n++] = r;

@@ -47,6 +47,7 @@ typedef struct SiftF2Slot
 typedef struct CellSource
 {
 	SiftF2GranuleBuf **gb;
+	bool		held;			/* a granule read for it is the slot's, held across the calls of its node (sift_f2_gbuf_hold) */
 	SiftF2PartPin *pin;
 	uint32		granule_id;
 	uint16		row;			/* in the granule */
@@ -132,7 +133,11 @@ read_cell(Relation rel, SiftF2Store *store, const CellSource *src, int phys, Sif
 	if (src->rp != NULL && sift_row_pack_cell(src->rp, phys, cell) != SIFT_RPACK_EXTERNAL)
 		return false;
 	if (*src->gb == NULL)
+	{
 		*src->gb = sift_f2_gcache_get(rel, store, src->pin, src->granule_id);
+		if (src->held)
+			(void) sift_f2_gbuf_hold(*src->gb);
+	}
 	if (frame_cell(rel, *src->gb, phys, kind, src->row, cell))
 		return false;
 	return sift_f2_gbuf_cell(rel, *src->gb, phys, kind, src->row, wide, cell);
@@ -220,9 +225,9 @@ static void
 lazy_drop(SiftF2Slot *ss)
 {
 	if (ss->gb != NULL)
-		sift_f2_gbuf_unref(ss->gb);
+		sift_f2_gbuf_unhold(ss->gb);
 	if (ss->pin != NULL)
-		sift_f2_pin_release(ss->pin);
+		sift_f2_pin_unhold(ss->pin);
 	ss->gb = NULL;
 	ss->pin = NULL;
 	ss->rp = NULL;
@@ -263,7 +268,7 @@ slot_clear(TupleTableSlot *slot)
 static CellSource
 slot_source(SiftF2Slot *ss)
 {
-	return (CellSource) {&ss->gb, ss->pin != NULL ? ss->pin : ss->gb->pin, ss->granule_id, ss->row, ss->rp};
+	return (CellSource) {&ss->gb, true, ss->pin != NULL ? ss->pin : ss->gb->pin, ss->granule_id, ss->row, ss->rp};
 }
 
 static inline bool
@@ -434,7 +439,7 @@ store_source(TupleTableSlot *slot, Relation rel, SiftF2PartPin *pin, uint32 gran
 	{
 		SiftF2Store *store = sift_f2_store_open(rel);
 		SiftF2GranuleBuf *loaded = gb;
-		const CellSource src = {&loaded, pin, granule_id, row, blk != NULL ? pack_row(blk, blk_row, rowcx) : NULL};
+		const CellSource src = {&loaded, false, pin, granule_id, row, blk != NULL ? pack_row(blk, blk_row, rowcx) : NULL};
 
 		for (int a = 1; a <= slot->tts_tupleDescriptor->natts; a++)
 			(void) fill_att(rel, store, &src, gm, slot, a, rowcx);
@@ -447,11 +452,11 @@ store_source(TupleTableSlot *slot, Relation rel, SiftF2PartPin *pin, uint32 gran
 		SiftF2Slot *ss = (SiftF2Slot *) slot;
 
 		ss->rel = rel;
-		ss->gb = gb != NULL ? sift_f2_gbuf_ref(gb) : NULL;
+		ss->gb = gb != NULL ? sift_f2_gbuf_hold(sift_f2_gbuf_ref(gb)) : NULL;
 		ss->rp = blk != NULL ? pack_row(blk, blk_row, ss->rowcx) : NULL;
 		if (blk != NULL)
 			pin->refcnt++;
-		ss->pin = blk != NULL ? pin : NULL;
+		ss->pin = blk != NULL ? sift_f2_pin_hold(pin) : NULL;
 		ss->granule_id = granule_id;
 		ss->row = row;
 		ss->gm = gm;

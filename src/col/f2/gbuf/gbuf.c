@@ -10,6 +10,7 @@
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/resowner.h"
 
 #include "col/f2/del/delvec_delta.h"
 #include "col/f2/cache.h"
@@ -431,6 +432,34 @@ sift_f2_pin_release(SiftF2PartPin *pin)
 	}
 }
 
+static void
+pin_hold_gone(Datum res)
+{
+	sift_f2_pin_release((SiftF2PartPin *) DatumGetPointer(res));
+}
+
+static const ResourceOwnerDesc pin_hold_desc = {
+	.name = "sift f2 part pin reference",
+	.release_phase = RESOURCE_RELEASE_AFTER_LOCKS,
+	.release_priority = RELEASE_PRIO_FIRST,
+	.ReleaseResource = pin_hold_gone
+};
+
+SiftF2PartPin *
+sift_f2_pin_hold(SiftF2PartPin *pin)
+{
+	ResourceOwnerEnlarge(CurrentResourceOwner);
+	ResourceOwnerRemember(CurrentResourceOwner, PointerGetDatum(pin), &pin_hold_desc);
+	return pin;
+}
+
+void
+sift_f2_pin_unhold(SiftF2PartPin *pin)
+{
+	ResourceOwnerForget(CurrentResourceOwner, PointerGetDatum(pin), &pin_hold_desc);
+	sift_f2_pin_release(pin);
+}
+
 /* ---- decoded granules ---- */
 
 static void
@@ -532,6 +561,34 @@ sift_f2_gbuf_unref(SiftF2GranuleBuf *gb)
 	if (--gb->refcnt > 0)
 		return;
 	MemoryContextDelete(gb->cx);
+}
+
+static void
+gbuf_hold_gone(Datum res)
+{
+	sift_f2_gbuf_unref((SiftF2GranuleBuf *) DatumGetPointer(res));
+}
+
+static const ResourceOwnerDesc gbuf_hold_desc = {
+	.name = "sift f2 granule reference",
+	.release_phase = RESOURCE_RELEASE_AFTER_LOCKS,
+	.release_priority = RELEASE_PRIO_FIRST,
+	.ReleaseResource = gbuf_hold_gone
+};
+
+SiftF2GranuleBuf *
+sift_f2_gbuf_hold(SiftF2GranuleBuf *gb)
+{
+	ResourceOwnerEnlarge(CurrentResourceOwner);
+	ResourceOwnerRemember(CurrentResourceOwner, PointerGetDatum(gb), &gbuf_hold_desc);
+	return gb;
+}
+
+void
+sift_f2_gbuf_unhold(SiftF2GranuleBuf *gb)
+{
+	ResourceOwnerForget(CurrentResourceOwner, PointerGetDatum(gb), &gbuf_hold_desc);
+	sift_f2_gbuf_unref(gb);
 }
 
 const uint64 *
