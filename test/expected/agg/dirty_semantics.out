@@ -440,7 +440,7 @@ SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CASE WHEN t.id < 1000 THEN CAST(r.value AS float8) END)'), false) AS conditional_member;
  conditional_member 
 --------------------
- same
+ PUSHED: same
 (1 row)
 
 SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) > 2', 'count(*)'), false) AS filtered_on_member;
