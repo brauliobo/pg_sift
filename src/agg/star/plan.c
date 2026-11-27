@@ -383,7 +383,7 @@ star_add_fn(V6Plan *p, const void *arg)
 	for (int d = 0; d < s->nd; d++)
 	{
 		Path	   *child = s->dims[d].path;
-		const bool	found = sift_v6_found_planned(p->root, p->ops, p->relid, p->spec.ext, d, child);
+		const bool	found = !p->is_table && sift_v6_found_planned(p->root, p->ops, p->relid, p->spec.ext, d, child);
 
 		children = lappend(children, child);
 		xs += found ? 0 : sift_v6_dim_cost(child);
