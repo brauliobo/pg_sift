@@ -3,7 +3,7 @@
 # The writers of ONE partition scale. (1) 16 sessions that insert one row at a time into the single partition of a sift_table and of a sift_col index, with a reader beside them, do at least
 # 4 times the work of one session, lose no row to a crash that follows at once, and the table and the index check clean. (2) 16 sessions that update a column no index holds (the per-column
 # update pages of the partition) while 2 sessions delete rows of the same partition in blocks that fold the pending deletes do at least 5 times the work of one, none of them waits
-# longer than 50 ms for the fold, and the sums are exact.
+# longer than 50 ms for the fold, and the sums are exact. The table and the index are of Format 2.0 on both runs.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 plan 12
@@ -12,7 +12,8 @@ UROWS=20000
 DROWS=40000
 node_init sc 1 "autovacuum = off
 shared_preload_libraries = 'pg_sift'
-max_connections = 80"
+max_connections = 80${SIFT_TESTING:+
+sift.test_create_format1 = off}"
 node_start sc || bail "start failed"
 D=$(dir sc)
 sql sc "CREATE EXTENSION pg_sift" \

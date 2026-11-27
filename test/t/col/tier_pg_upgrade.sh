@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pg_upgrade of a sift_col index with parts in object storage: the files of the index name the policy of its parts, so sift.tier_policies must come through with them. The upgrade runs
-# within this major, from a copy of its binaries on each side (lib/upgrade.bash), and the index answers as the heap does afterwards.
+# within this major, from a copy of its binaries on each side (lib/upgrade.bash), and the index answers as the heap does afterwards. Tiering is of Format 2.0: the index is one on both runs.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
 REPO=${SIFT_REPO:?}
@@ -19,8 +19,10 @@ plan 4
 initdb_node old 2 "$BIN"
 initdb_node new 3 "$BIN"
 NODES+=(new)
-node_conf old "$("$REPO/scripts/pgtest.sh" conf | grep -E '^(pg_)?sift\.')"
-node_conf new "$("$REPO/scripts/pgtest.sh" conf | grep -E '^(pg_)?sift\.')"
+CONF="$("$REPO/scripts/pgtest.sh" conf | grep -E '^(pg_)?sift\.')${SIFT_TESTING:+
+sift.test_create_format1 = off}"
+node_conf old "$CONF"
+node_conf new "$CONF"
 "$BIN/pg_ctl" -D "$(dir old)/data" -l "$(dir old)/postgres.log" -w -t 60 start >/dev/null 2>&1 || { start_failed old; bail "the old cluster does not start"; }
 EXT=pg_sift
 [[ -z ${SIFT_TESTING:-} ]] || EXT="pg_sift_test CASCADE"

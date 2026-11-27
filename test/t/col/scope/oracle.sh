@@ -7,7 +7,7 @@
 # CONCURRENTLY inside, REINDEX (also CONCURRENTLY), and sift.col_scope_verify on the primary, the standby and the restore. Odd seeds are the walk profile: wide rows, rows dated by member, units cut by member, the latest-N reads walk the superblocks by their zones, and one session alternates sift.agg_scope off and on (a latest-N read of a
 # scope index after a join read of the same keys returned older rows before the fix that stamps the walk with the source of its zones). Quick tier: seed 1 of 3 steps on 8,000 rows; full: seeds 1-6 of 8 steps on 60,000.
 # SIFT_ORACLE_SEEDS / SIFT_ORACLE_ROWS / SIFT_ORACLE_STEPS / SIFT_ORACLE_WINDOWS override; SIFT_ORACLE_MUTANT=on|off|only (default on) picks the seeds, the mutant check or both (scripts/stability.sh runs the seeds of a round in shards and the mutant once); SIFT_ORACLE_OFFSET moves the four nodes (ports SIFT_PORT + offset .. + 3). Not covered: crash recovery
-# (col_scope_crash.sh), cross-major pg_upgrade (col_scope_upgrade.sh).
+# (col_scope_crash.sh), cross-major pg_upgrade (col_scope_upgrade.sh). The scope index is of Format 2.0 on both runs (--format f2): a Format 1 index has no scope read of its own, so a mutant of its tracking answers as the heap does.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 REPO=${SIFT_REPO:?}
 
@@ -52,7 +52,7 @@ check "the stock node runs without pg_sift (no preload, no extension)" test "$(s
 
 S() { echo "$(dir "$1")/sock:$(port "$1")"; }
 if [[ -n $SEEDS ]]; then
-	out=$(python3 -I "$REPO/test/fuzz/scope_oracle.py" --primary "$(S ora_a)" --standby "$(S ora_s)" --stock "$(S ora_b)" --restore "$(S ora_r)" \
+	out=$(python3 -I "$REPO/test/fuzz/scope_oracle.py" ${SIFT_TESTING:+--format f2} --primary "$(S ora_a)" --standby "$(S ora_s)" --stock "$(S ora_b)" --restore "$(S ora_r)" \
 		--out "$(dir ora_a)/oracle" --seeds "$SEEDS" --rows "$ROWS" --steps "$STEPS" --windows "$WINDOWS" --toggle-every "${SIFT_ORACLE_TOGGLE:-1}" 2>&1)
 	rc=$?
 	diag "$(grep -E '^(FAIL|ok:|seed |stats|scope reads)' <<<"$out" | cut -c1-6000)"
@@ -60,7 +60,7 @@ if [[ -n $SEEDS ]]; then
 fi
 if [[ $MUTANT != off ]]; then
 	# the gate must catch a mutant of the tracking: a pair deleted while its journal writes nothing leaves the stored entries behind
-	out=$(SIFT_ORACLE_SET="SET sift.test_no_track = on;" python3 -I "$REPO/test/fuzz/scope_oracle.py" --primary "$(S ora_a)" --standby "$(S ora_s)" --stock "$(S ora_b)" --restore "$(S ora_r)" \
+	out=$(SIFT_ORACLE_SET="SET sift.test_no_track = on;" python3 -I "$REPO/test/fuzz/scope_oracle.py" ${SIFT_TESTING:+--format f2} --primary "$(S ora_a)" --standby "$(S ora_s)" --stock "$(S ora_b)" --restore "$(S ora_r)" \
 		--out "$(dir ora_a)/oracle-mutant" --seeds 13 --rows "$MUTANT_ROWS" --steps "$MUTANT_STEPS" 2>&1)
 	diag "$(grep -E '^FAIL' <<<"$out" | cut -c1-300)"
 	check "the gate catches the mutant sift.test_no_track (a wrong answer, a key sift.col_scope_verify reports, or the integrity error of a stored row the heap no longer has)" test "$(grep -cE 'FAIL.*(WRONG ANSWER|col_scope_verify|is not in the heap)' <<<"$out")" -ge 1
