@@ -1,6 +1,6 @@
 /*
  * col/f2/store/ops_ext.c - SiftOrderOps, SiftPreaggOps, SiftDictOps and SiftJsonbOps of format major 2: the order of the parts and the row Top-N scan, the integer cube the parts keep
- * (SEC_PREAGG), the leaves a scan reads as the codes of a dictionary, and the shredded keys of a jsonb document and the scan of an array column (UNNEST).
+ * (SEC_PREAGG), the leaves a scan reads as the codes of a dictionary, and the shredded keys and paths of a jsonb document (jsonb_member.c) and the scan of an array column (UNNEST).
  */
 #include "postgres.h"
 
@@ -80,8 +80,11 @@ jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
 
 const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
+	.member_leaf = sift_f2_jsonb_member_leaf,
 	.table_key_leaf = jsonb_table_key_leaf,
+	.path_declared = sift_f2_jsonb_path_declared,
 	.key_exists = true,
 	.exact_values = true,
+	.raise_after_quals = true,
 	.unnest_run = sift_v6_unnest_run
 };

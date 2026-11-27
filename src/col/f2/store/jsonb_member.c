@@ -1,0 +1,70 @@
+/*
+ * col/f2/store/jsonb_member.c - the paths below the top-level keys of a jsonb document of an index of format major 2 (SiftJsonbOps.member_leaf, path_declared): `doc -> 'a' ->> 'k'` reads the leaf
+ * the paths option declares at `doc.a.k`, one value a row as a top-level key has. A member of a map `doc.a.*` is one of the elements of its group, which the scan of the columns does not read.
+ */
+#include "postgres.h"
+
+#include "lib/stringinfo.h"
+#include "nodes/value.h"
+
+#include "col/f2/store/ops_int.h"
+#include "col/f2/store/store.h"
+
+/* the path text the shredder gives a leaf of the keys of path below the attribute named name: name.k1.k2 */
+static char *
+path_text(const char *name, const List *path)
+{
+	StringInfoData b;
+
+	initStringInfo(&b);
+	appendStringInfoString(&b, name);
+	foreach_node(String, k, path)
+	{
+		if (strpbrk(strVal(k), ".[]*#") != NULL)
+			return NULL;
+		appendStringInfo(&b, ".%s", strVal(k));
+	}
+	return b.data;
+}
+
+/* the leaf of attribute att whose path text is path followed by suffix, a top-level leaf of one value a row when scalar; -1: none */
+static int
+leaf_at(const SiftF2Store *st, int att, const List *path, const char *suffix, bool scalar)
+{
+	const SiftColSchema *sch = st->schema;
+	const int	first = att >= 1 && att <= st->natts ? st->att_first[att] : -1;
+	char	   *text = first >= 0 && sch->cols[first].name != NULL ? path_text(sch->cols[first].name, path) : NULL;
+	const size_t len = text != NULL ? strlen(text) : 0;
+
+	for (int c = first; text != NULL && c < sch->ncols && sch->cols[c].attno == att; c++)
+	{
+		const SiftColDef *d = &sch->cols[c];
+
+		if (d->path != NULL && strncmp(d->path, text, len) == 0 && strcmp(d->path + len, suffix) == 0 && d->lane == 0 &&
+			(!scalar || (d->kind == SIFT_COLK_SCALAR && d->parent < 0)))
+			return c;
+	}
+	return -1;
+}
+
+int
+sift_f2_jsonb_member_leaf(Oid indexoid, int att, const List *path)
+{
+	const SiftF2Store *st = sift_f2_store_from_oid(indexoid);
+	const int	leaf = leaf_at(st, att, path, "", true);
+
+	return leaf >= 0 && st->schema->cols[leaf].store == SIFT_COLS_F8 && st->schema->cols[leaf].type == SIFT_COLT_FLOAT8 ? leaf : -1;
+}
+
+/* the paths option declares the leaf at the path, its array, or the map whose member the path is */
+bool
+sift_f2_jsonb_path_declared(Oid relid, bool is_table, int att, const List *path)
+{
+	const SiftF2Store *st;
+
+	if (is_table)
+		return true;
+	st = sift_f2_store_from_oid(relid);
+	return leaf_at(st, att, path, "", false) >= 0 || leaf_at(st, att, path, "[]", false) >= 0 ||
+		(list_length(path) > 1 && leaf_at(st, att, list_copy_head(path, list_length(path) - 1), ".*", false) >= 0);
+}

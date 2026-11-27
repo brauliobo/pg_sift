@@ -1,0 +1,98 @@
+-- `(doc -> 'metrics' ->> 'm_a')::float8` of a path the paths option of an index of format major 2 declares below a top-level key (`doc.metrics.m_a float8`): the leaf holds one value a row, so
+-- SiftAggV6 reads it as it reads a top-level key, a value the leaf cannot hold from the exception of its row. A member of a map (`doc.mm.* float8`) is one element of its group, which the scan of
+-- the columns does not read: it keeps the normal plan on Format 2, and Format 1 reads it from its map. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows
+-- (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+SET sift.test_create_format1 = off;
+-- the member of a row of group 5 is the text `bad` when bad: the others hold a number, a number as a string, null, no member, or a metrics that is no object
+CREATE FUNCTION mm_make(tbl text, bad bool, f1 bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_create_format1', f1::text, true);
+	EXECUTE format('CREATE TABLE %I (id int, kind text, doc jsonb) WITH (autovacuum_enabled = false)', tbl);
+	EXECUTE format($i$INSERT INTO %I SELECT i, 'k' || i %% 4, CASE WHEN i %% 31 = 0 THEN NULL ELSE jsonb_build_object(
+		'metrics', CASE i %% 9 WHEN 1 THEN '[1, 2]'::jsonb WHEN 2 THEN '"m_a"'::jsonb WHEN 3 THEN '{}'::jsonb
+			ELSE jsonb_build_object('m_a', CASE i %% 9 WHEN 4 THEN 'null'::jsonb WHEN 5 THEN CASE WHEN %L THEN '"bad"'::jsonb ELSE to_jsonb('7.5'::text) END
+				WHEN 6 THEN to_jsonb((i %% 5)::text) ELSE to_jsonb((i %% 13) * 0.25) END, 'm_b', i %% 7) END,
+		'mm', jsonb_build_object('x', (i %% 11) * 0.5, 'y', i %% 3)) END FROM generate_series(1, 1200) i$i$, tbl, bad);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, kind, doc) WITH (paths = ''doc.metrics.m_a float8, doc.metrics.m_b float8, doc.mm.* float8'')', tbl || '_col', tbl);
+END $$;
+SELECT mm_make('mm', false, false), mm_make('mm_bad', true, false), mm_make('mm_f1', false, true);
+ mm_make | mm_make | mm_make 
+---------+---------+---------
+         |         | 
+(1 row)
+
+VACUUM ANALYZE mm, mm_bad, mm_f1;
+SELECT sift._test_index_format('mm_col') AS f2, sift._test_index_format('mm_f1_col') AS f1;
+ f2 | f1 
+----+----
+  2 |  1
+(1 row)
+
+CREATE FUNCTION mm_check(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT sift_helpers.agg_check_outcome(q) || CASE WHEN EXISTS (SELECT 1 FROM sift.explain_why(q) WHERE used) THEN ' why' ELSE '' END
+$$;
+CREATE TABLE shapes (n int, label text, q text);
+INSERT INTO shapes VALUES
+  (1, 'sum and avg',        $q$SELECT kind, sum((doc -> 'metrics' ->> 'm_a')::float8) AS total, avg((doc -> 'metrics' ->> 'm_a')::float8) AS mean FROM @ GROUP BY 1$q$),
+  (2, 'rounded',            $q$SELECT kind, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3) AS mean, count(*) AS n FROM @ WHERE id > 100 GROUP BY 1$q$),
+  (3, 'two members',        $q$SELECT max((doc -> 'metrics' ->> 'm_a')::float8), min((doc -> 'metrics' ->> 'm_b')::float8), count((doc -> 'metrics' ->> 'm_b')::float8) FROM @$q$),
+  (4, 'member as key',      $q$SELECT (doc -> 'metrics' ->> 'm_b')::float8 AS b, count(*) FROM @ GROUP BY 1$q$),
+  (5, 'undeclared member',  $q$SELECT sum((doc -> 'metrics' ->> 'm_z')::float8) FROM @$q$),
+  (6, 'member of a map',    $q$SELECT kind, sum((doc -> 'mm' ->> 'x')::float8) AS x FROM @ GROUP BY 1$q$);
+SELECT tbl, n, label, mm_check(replace(q, '@', tbl)) AS outcome
+FROM (VALUES (1, 'mm'), (2, 'mm_bad'), (3, 'mm_f1')) t(ord, tbl), shapes ORDER BY ord, n;
+  tbl   | n |       label       |                             outcome                              
+--------+---+-------------------+------------------------------------------------------------------
+ mm     | 1 | sum and avg       | scan same why
+ mm     | 2 | rounded           | scan same why
+ mm     | 3 | two members       | scan same why
+ mm     | 4 | member as key     | scan same why
+ mm     | 5 | undeclared member | plain same
+ mm     | 6 | member of a map   | plain same
+ mm_bad | 1 | sum and avg       | error: invalid input syntax for type double precision: "bad" why
+ mm_bad | 2 | rounded           | error: invalid input syntax for type double precision: "bad" why
+ mm_bad | 3 | two members       | error: invalid input syntax for type double precision: "bad" why
+ mm_bad | 4 | member as key     | scan same why
+ mm_bad | 5 | undeclared member | plain same
+ mm_bad | 6 | member of a map   | plain same
+ mm_f1  | 1 | sum and avg       | scan same why
+ mm_f1  | 2 | rounded           | scan same why
+ mm_f1  | 3 | two members       | scan same why
+ mm_f1  | 4 | member as key     | scan same why
+ mm_f1  | 5 | undeclared member | plain same
+ mm_f1  | 6 | member of a map   | scan same why
+(18 rows)
+
+-- after writes and after the vacuum that rewrites the segments
+INSERT INTO mm SELECT 3000 + i, 'k' || i % 4, jsonb_build_object('metrics', jsonb_build_object('m_a', i * 0.5, 'm_b', 'n' || i)) FROM generate_series(1, 200) i;
+UPDATE mm SET doc = doc - 'metrics' WHERE id % 13 = 0;
+SELECT 'after writes' AS stage, n, mm_check(replace(q, '@', 'mm')) AS outcome FROM shapes WHERE n <= 4 ORDER BY n;
+    stage     | n |                             outcome                             
+--------------+---+-----------------------------------------------------------------
+ after writes | 1 | scan same why
+ after writes | 2 | scan same why
+ after writes | 3 | error: invalid input syntax for type double precision: "n1" why
+ after writes | 4 | error: invalid input syntax for type double precision: "n1" why
+(4 rows)
+
+VACUUM mm;
+SELECT 'after vacuum' AS stage, n, mm_check(replace(q, '@', 'mm')) AS outcome FROM shapes WHERE n <= 4 ORDER BY n;
+    stage     | n |                             outcome                             
+--------------+---+-----------------------------------------------------------------
+ after vacuum | 1 | scan same why
+ after vacuum | 2 | scan same why
+ after vacuum | 3 | error: invalid input syntax for type double precision: "n1" why
+ after vacuum | 4 | error: invalid input syntax for type double precision: "n1" why
+(4 rows)
+
+DROP TABLE shapes, mm, mm_bad, mm_f1;
+DROP FUNCTION mm_check(text), mm_make(text, bool, bool);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

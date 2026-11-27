@@ -1,0 +1,160 @@
+-- An aggregate FILTER (WHERE doc ? 'k') over a key whose leaf an index of format major 2 keeps: SiftAggV6 reads the presence of the key from the tags of its leaf (a document that is no
+-- object has the key when it holds it as a string, as jsonb_exists finds it), and a value of that key beside it is converted for the rows that have it only. A SQL NULL document has not the
+-- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+SET sift.test_create_format1 = off;
+CREATE FUNCTION ke_doc(i int, bad jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 12
+		WHEN 0 THEN jsonb_build_object('a', i % 977, 'b', i % 5)
+		WHEN 1 THEN jsonb_build_object('b', i % 7)
+		WHEN 2 THEN '{"a": null, "b": 1}'::jsonb
+		WHEN 3 THEN '["a", "b"]'::jsonb
+		WHEN 4 THEN '["x"]'::jsonb
+		WHEN 5 THEN '"a"'::jsonb
+		WHEN 6 THEN 'null'::jsonb
+		WHEN 7 THEN to_jsonb(i)
+		WHEN 8 THEN CASE WHEN bad IS NULL THEN jsonb_build_object('a', i % 3 + 0.5) ELSE jsonb_build_object('a', bad) END
+		WHEN 9 THEN '{}'::jsonb
+		WHEN 10 THEN jsonb_build_object('a', (i % 11)::text)
+		ELSE jsonb_build_object('a', i % 4 - 1.5, 'b', 'x')
+	END
+$$;
+-- the rows that hold a value of the bad kind are those of g = 8 (i % 12 = 8), a SQL NULL document is one in 37
+CREATE FUNCTION ke_make(tbl text, bad jsonb, f1 bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_create_format1', f1::text, true);
+	EXECUTE format('CREATE TABLE %I (id int, g int, attrs jsonb) WITH (autovacuum_enabled = false)', tbl);
+	EXECUTE format('INSERT INTO %I SELECT i, i %% 12, CASE WHEN i %% 37 = 0 THEN NULL ELSE ke_doc(i, %L) END FROM generate_series(1, 1200) i', tbl, bad);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, g, attrs) WITH (paths = ''attrs.a float8, attrs.b float8'')', tbl || '_col', tbl);
+END $$;
+SELECT ke_make('ke', NULL, false), ke_make('ke_text', '"abc"', false), ke_make('ke_obj', '{"z": 1}', false), ke_make('ke_f1', NULL, true);
+ ke_make | ke_make | ke_make | ke_make 
+---------+---------+---------+---------
+         |         |         | 
+(1 row)
+
+VACUUM ANALYZE ke, ke_text, ke_obj, ke_f1;
+SELECT sift._test_index_format('ke_col') AS f2, sift._test_index_format('ke_f1_col') AS f1;
+ f2 | f1 
+----+----
+  2 |  1
+(1 row)
+
+CREATE FUNCTION ke_check(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT sift_helpers.agg_check_outcome(q) || CASE WHEN EXISTS (SELECT 1 FROM sift.explain_why(q) WHERE used) THEN ' why' ELSE '' END
+$$;
+CREATE TABLE shapes (n int, label text, q text);
+INSERT INTO shapes VALUES
+  (1,  'headline',            $q$SELECT sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'a'), count(*) FILTER (WHERE attrs ? 'a') FROM @$q$),
+  (2,  'count',               $q$SELECT count(*) FILTER (WHERE attrs ? 'a') FROM @$q$),
+  (3,  'grouped',             $q$SELECT g, count(*) FILTER (WHERE attrs ? 'b'), sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'a') FROM @ GROUP BY g$q$),
+  (4,  'two keys',            $q$SELECT count(*) FILTER (WHERE attrs ? 'a' AND attrs ? 'b') AS ab, count(*) FILTER (WHERE jsonb_exists(attrs, 'b')) AS b FROM @$q$),
+  (5,  'and another test',    $q$SELECT count(*) FILTER (WHERE attrs ? 'a' AND g <> 8) AS c, sum(id) FILTER (WHERE g > 3 AND attrs ? 'b') AS s FROM @$q$),
+  (6,  'is true',             $q$SELECT count(*) FILTER (WHERE (attrs ? 'a') IS TRUE) FROM @$q$),
+  (7,  'is not true',         $q$SELECT count(*) FILTER (WHERE (attrs ? 'a') IS NOT TRUE), sum(id) FILTER (WHERE (attrs ? 'b') IS NOT TRUE) FROM @$q$),
+  (8,  'with a where',        $q$SELECT sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'a'), count(*) FROM @ WHERE g IN (0, 3, 5, 8, 11)$q$),
+  (9,  'undeclared key',      $q$SELECT count(*) FILTER (WHERE attrs ? 'zz') FROM @$q$),
+  (10, 'not',                 $q$SELECT count(*) FILTER (WHERE NOT (attrs ? 'a')) FROM @$q$),
+  (11, 'or',                  $q$SELECT count(*) FILTER (WHERE attrs ? 'a' OR g = 0) FROM @$q$),
+  (12, 'read of another key', $q$SELECT sum((attrs ->> 'a')::float8) FILTER (WHERE attrs ? 'b') FROM @$q$),
+  (13, 'read under is not true', $q$SELECT sum((attrs ->> 'a')::float8) FILTER (WHERE (attrs ? 'a') IS NOT TRUE) FROM @$q$);
+SELECT tbl, n, label, ke_check(replace(q, '@', tbl)) AS outcome
+FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl), shapes ORDER BY ord, n;
+   tbl   | n  |         label          |                                outcome                                
+---------+----+------------------------+-----------------------------------------------------------------------
+ ke      |  1 | headline               | scan same why
+ ke      |  2 | count                  | scan same why
+ ke      |  3 | grouped                | scan same why
+ ke      |  4 | two keys               | scan same why
+ ke      |  5 | and another test       | scan same why
+ ke      |  6 | is true                | scan same why
+ ke      |  7 | is not true            | scan same why
+ ke      |  8 | with a where           | scan same why
+ ke      |  9 | undeclared key         | plain same
+ ke      | 10 | not                    | plain same
+ ke      | 11 | or                     | plain same
+ ke      | 12 | read of another key    | plain same
+ ke      | 13 | read under is not true | plain same
+ ke_text |  1 | headline               | error: invalid input syntax for type double precision: "abc" why
+ ke_text |  2 | count                  | scan same why
+ ke_text |  3 | grouped                | error: invalid input syntax for type double precision: "abc" why
+ ke_text |  4 | two keys               | scan same why
+ ke_text |  5 | and another test       | scan same why
+ ke_text |  6 | is true                | scan same why
+ ke_text |  7 | is not true            | scan same why
+ ke_text |  8 | with a where           | error: invalid input syntax for type double precision: "abc" why
+ ke_text |  9 | undeclared key         | plain same
+ ke_text | 10 | not                    | plain same
+ ke_text | 11 | or                     | plain same
+ ke_text | 12 | read of another key    | plain same
+ ke_text | 13 | read under is not true | plain same
+ ke_obj  |  1 | headline               | error: invalid input syntax for type double precision: "{"z": 1}" why
+ ke_obj  |  2 | count                  | scan same why
+ ke_obj  |  3 | grouped                | error: invalid input syntax for type double precision: "{"z": 1}" why
+ ke_obj  |  4 | two keys               | scan same why
+ ke_obj  |  5 | and another test       | scan same why
+ ke_obj  |  6 | is true                | scan same why
+ ke_obj  |  7 | is not true            | scan same why
+ ke_obj  |  8 | with a where           | error: invalid input syntax for type double precision: "{"z": 1}" why
+ ke_obj  |  9 | undeclared key         | plain same
+ ke_obj  | 10 | not                    | plain same
+ ke_obj  | 11 | or                     | plain same
+ ke_obj  | 12 | read of another key    | plain same
+ ke_obj  | 13 | read under is not true | plain same
+ ke_f1   |  1 | headline               | plain same
+ ke_f1   |  2 | count                  | plain same
+ ke_f1   |  3 | grouped                | plain same
+ ke_f1   |  4 | two keys               | plain same
+ ke_f1   |  5 | and another test       | plain same
+ ke_f1   |  6 | is true                | plain same
+ ke_f1   |  7 | is not true            | plain same
+ ke_f1   |  8 | with a where           | plain same
+ ke_f1   |  9 | undeclared key         | plain same
+ ke_f1   | 10 | not                    | plain same
+ ke_f1   | 11 | or                     | plain same
+ ke_f1   | 12 | read of another key    | plain same
+ ke_f1   | 13 | read under is not true | plain same
+(52 rows)
+
+-- after writes of every shape, an update that changes the shape and a delete, and after the vacuum that rewrites the segments
+INSERT INTO ke SELECT 2000 + i, i % 12, ke_doc(i + 5, NULL) FROM generate_series(1, 300) i;
+UPDATE ke SET attrs = ke_doc(id + 1, NULL) WHERE id % 7 = 0;
+DELETE FROM ke WHERE id % 11 = 0;
+SELECT 'after writes' AS stage, n, ke_check(replace(q, '@', 'ke')) AS outcome FROM shapes WHERE n <= 8 ORDER BY n;
+    stage     | n |    outcome    
+--------------+---+---------------
+ after writes | 1 | scan same why
+ after writes | 2 | scan same why
+ after writes | 3 | scan same why
+ after writes | 4 | scan same why
+ after writes | 5 | scan same why
+ after writes | 6 | scan same why
+ after writes | 7 | scan same why
+ after writes | 8 | scan same why
+(8 rows)
+
+VACUUM ke;
+SELECT 'after vacuum' AS stage, n, ke_check(replace(q, '@', 'ke')) AS outcome FROM shapes WHERE n <= 8 ORDER BY n;
+    stage     | n |    outcome    
+--------------+---+---------------
+ after vacuum | 1 | scan same why
+ after vacuum | 2 | scan same why
+ after vacuum | 3 | scan same why
+ after vacuum | 4 | scan same why
+ after vacuum | 5 | scan same why
+ after vacuum | 6 | scan same why
+ after vacuum | 7 | scan same why
+ after vacuum | 8 | scan same why
+(8 rows)
+
+DROP TABLE shapes, ke, ke_text, ke_obj, ke_f1;
+DROP FUNCTION ke_check(text), ke_make(text, jsonb, bool), ke_doc(int, jsonb);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

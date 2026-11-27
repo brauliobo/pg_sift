@@ -7,6 +7,7 @@
 
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
+#include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
@@ -292,6 +293,19 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	return NIL;
 }
 
+int
+sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause)
+{
+	const char *key;
+	int			att;
+
+	clause = strip(clause);
+	if (rel->table != NULL || func_of(clause) != F_JSONB_EXISTS || list_length(args_of(clause)) != 2 || (key = text_const(lsecond(args_of(clause)))) == NULL ||
+		!doc_of(rel, linitial(args_of(clause)), &att) || !exists_leaf(rel, att, key))
+		return InvalidAttrNumber;
+	return SIFT_V6_JPRES_VATT + key_leaf(rel, att, key);
+}
+
 /* the format reads the values of the keys of a document as the heap does, or the scan runs alone, where a value no leaf holds is refused */
 bool
 sift_v6_values_exact(const SiftV6Rel *rel)
@@ -309,6 +323,27 @@ jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
 	return PG_VERSION_NUM >= 180000 && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
 }
 
+/*
+ * The leaf holds what the column reads: the strings of a text key, the numbers of a float8 key, the booleans of a bool key; the `->>` text of a boolean and its bool cast are read from a bool
+ * leaf only by a format whose scan reads the other values from the exceptions of their rows (a value of another JSON type is one), as `->>` gives them
+ */
+static bool
+leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
+{
+	const SiftColDef *d = &leaves_of(rel)->cols[leaf];
+	const bool	bool_leaf = d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL && rel->ops->jsonb->exact_values;
+
+	switch (typid)
+	{
+		case FLOAT8OID:
+			return d->store == SIFT_COLS_F8;
+		case BOOLOID:
+			return bool_leaf;
+		default:
+			return d->store == SIFT_COLS_STR || bool_leaf;
+	}
+}
+
 bool
 sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
@@ -318,16 +353,14 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	int			att,
 				leaf;
 	Oid			typid = TEXTOID;
-	uint8		store = SIFT_COLS_STR;
 
-	if (cast || (text != NULL && IsA(text, CoerceViaIO) && ((const CoerceViaIO *) text)->resulttype == FLOAT8OID))
+	if (cast || (text != NULL && IsA(text, CoerceViaIO) && (((const CoerceViaIO *) text)->resulttype == FLOAT8OID || ((const CoerceViaIO *) text)->resulttype == BOOLOID)))
 	{
+		typid = cast ? FLOAT8OID : ((const CoerceViaIO *) text)->resulttype;
 		text = strip(cast ? linitial(args_of(text)) : (void *) ((const CoerceViaIO *) text)->arg);
-		typid = FLOAT8OID;
-		store = SIFT_COLS_F8;
 	}
 	leaf = field_leaf(rel, text, !cast, &att, &key);
-	if (!scalar_leaf(rel, leaf) || leaves_of(rel)->cols[leaf].store != store || !sift_v6_values_exact(rel))
+	if (!scalar_leaf(rel, leaf) || !sift_v6_values_exact(rel) || !leaf_reads(rel, leaf, typid))
 		return false;
 	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = cast};
 	return true;
@@ -431,10 +464,11 @@ typedef struct JsonLeaves
 	Bitmapset  *type;			/* the leaves it reads the JSON type of, anywhere but in a scan key */
 } JsonLeaves;
 
+/* the presence of a key is no test of a type: a row that has not the key has no value to read either */
 static void
 note_col(JsonLeaves *j, const SiftV6Col *c)
 {
-	if (c->jleaf > 0)
+	if (c->jleaf > 0 && !(c->jtype && c->typid == BOOLOID))
 	{
 		Bitmapset **set = c->jtype ? &j->type : &j->value;
 
@@ -447,7 +481,8 @@ note_vatt(JsonLeaves *j, int attno)
 {
 	Bitmapset **set = sift_v6_vatt_is_type(attno) ? &j->type : &j->value;
 
-	*set = bms_add_member(*set, sift_v6_vatt_leaf(attno));
+	if (!sift_v6_vatt_is_presence(attno))
+		*set = bms_add_member(*set, sift_v6_vatt_leaf(attno));
 }
 
 static bool
@@ -563,22 +598,34 @@ sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int
 	*keys = all;
 }
 
+/* the `->>` text of the value of an exception, NULL for a JSON null */
+static char *
+exception_text(const char *payload, uint32 len)
+{
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+	JsonbValue	jv;
+
+	if (!JsonbExtractScalar(&jb->root, &jv))
+		return JsonbToCString(NULL, &jb->root, (int) len);
+	switch (jv.type)
+	{
+		case jbvString:
+			return pnstrdup(jv.val.string.val, jv.val.string.len);
+		case jbvNumeric:
+			return DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(jv.val.numeric)));
+		case jbvBool:
+			return pstrdup(jv.val.boolean ? "true" : "false");
+		default:
+			return NULL;
+	}
+}
+
 bool
 sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
-	Jsonb	   *jb = memcpy(palloc(len), payload, len);
-	JsonbValue	jv;
-	char	   *s = NULL;
+	char	   *s = exception_text(payload, len);
 
-	if (!JsonbExtractScalar(&jb->root, &jv))
-		s = JsonbToCString(NULL, &jb->root, (int) len);
-	else if (jv.type == jbvString)
-		s = pnstrdup(jv.val.string.val, jv.val.string.len);
-	else if (jv.type == jbvNumeric)
-		s = DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(jv.val.numeric)));
-	else if (jv.type == jbvBool)
-		s = pstrdup(jv.val.boolean ? "true" : "false");
 	if (s != NULL && cls == SV6C_F64)
 		*f = DatumGetFloat8(DirectFunctionCall1(float8in, CStringGetDatum(s)));
 	else if (s != NULL)
@@ -599,4 +646,47 @@ sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx)
 
 	MemoryContextSwitchTo(old);
 	return f;
+}
+
+/* the number of the jsonb of a (doc -> 'k')::float8, as its text; NULL: a JSON null (NULL from PostgreSQL 18 on, the only version the cast is read in) or a value the cast raises for (*raises) */
+static char *
+cast_number_text(const char *payload, uint32 len, bool *raises)
+{
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+	JsonbValue	jv;
+	const bool	scalar = JsonbExtractScalar(&jb->root, &jv);
+
+	*raises = !scalar || (jv.type != jbvNumeric && jv.type != jbvNull);
+	return scalar && jv.type == jbvNumeric ? DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(jv.val.numeric))) : NULL;
+}
+
+SiftV6JsonExc
+sift_v6_json_exception_read(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	ErrorSaveContext escontext = {T_ErrorSaveContext};
+	bool		raises = false;
+	char	   *s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
+	SiftV6JsonExc res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
+
+	if (res == SV6JX_VALUE && cls == SV6C_TEXT)
+		*out = (SiftV6JsonValue) {.text = s,.tlen = strlen(s)};
+	else if (res == SV6JX_VALUE && !DirectInputFunctionCallSafe(cls == SV6C_F64 ? float8in : boolin, s, InvalidOid, -1, (Node *) &escontext, &out->value))
+		res = SV6JX_RAISES;
+	MemoryContextSwitchTo(old);
+	return res;
+}
+
+void
+sift_v6_json_exception_raise(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	char	   *s;
+
+	if (jsonb_cast)
+		(void) sift_v6_json_cast_exception(payload, len, cx);
+	else if ((s = exception_text(payload, len)) != NULL)
+		(void) DirectFunctionCall1(cls == SV6C_F64 ? float8in : boolin, CStringGetDatum(s));
+	MemoryContextSwitchTo(old);
+	SIFT_INVARIANT(false, "the conversion of a value of a key that does not convert raises");
 }

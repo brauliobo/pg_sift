@@ -953,6 +953,7 @@ col/f2/gpu/plan.c
 col/f2/scope/probe.c
 col/f2/store/ops.c
 col/f2/store/ops_ext.c
+col/f2/store/jsonb_member.c
 col/f2/store/ops_gpu.c
 col/f2/store/ops_hybrid.c
 col/f2/store/ops_int.h

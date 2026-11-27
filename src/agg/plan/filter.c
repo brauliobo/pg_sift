@@ -4,6 +4,7 @@
 /* check-memory: allow-allocs every list here follows the clauses of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "catalog/pg_operator_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -13,6 +14,24 @@
 #include "agg/qual/qual.h"
 #include "agg/unnest/jsonb.h"
 
+/*
+ * `doc ? 'k'`, or IS TRUE or IS NOT TRUE of it, of a key whose presence the scan reads: the test of the presence. A SQL NULL document has not the key, where `?` is NULL: the same to a FILTER, which
+ * keeps neither, but not to NOT, which stays the query's
+ */
+static Expr *
+presence_qual(V6Plan *p, Expr *c)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	const BooleanTest *bt = IsA(c, BooleanTest) ? (const BooleanTest *) c : NULL;
+	const bool	has = bt == NULL || bt->booltesttype == IS_TRUE;
+	const int	attno = p->xseed == NULL && (has || bt->booltesttype == IS_NOT_TRUE) ? sift_v6_json_presence(&rel, bt != NULL ? bt->arg : c) : InvalidAttrNumber;
+	Var		   *v = makeVar(p->rel->relid, attno, BOOLOID, -1, InvalidOid, 0);
+
+	if (attno == InvalidAttrNumber)
+		return NULL;
+	return sift_v6_index_qual(p, make_opclause(BooleanEqualOperator, BOOLOID, false, (Expr *) v, (Expr *) makeBoolConst(has, false), InvalidOid, InvalidOid));
+}
+
 /* a conjunct of a FILTER: over the columns of the element, or the members the statement reads by key, as a qual of the rows of the scan; any other over the columns of the index */
 static Expr *
 filter_qual(V6Plan *p, Expr *c)
@@ -20,7 +39,9 @@ filter_qual(V6Plan *p, Expr *c)
 	const bool	on_elem = p->elem_rel != NULL && bms_is_member(p->elem_rel->relid, pull_varnos(p->root, (Node *) c));
 	Expr	   *q = on_elem || sift_v6_mapkey_on(p) ? sift_v6_unnest_elem_qual(p, (Node *) c) : NULL;
 
-	return q != NULL || on_elem ? q : sift_v6_index_qual(p, sift_v6_plan_json_vars(p, c, false));
+	if (q != NULL || on_elem)
+		return q;
+	return (q = presence_qual(p, c)) != NULL ? q : sift_v6_index_qual(p, sift_v6_plan_json_vars(p, c, false));
 }
 
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */

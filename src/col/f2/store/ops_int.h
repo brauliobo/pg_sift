@@ -28,6 +28,9 @@ extern struct SiftV6Source *sift_f2_ops_open(EState *estate, const struct SiftV6
 extern int	sift_f2_ops_card_leaf(Oid relid, int col);
 extern bool sift_f2_ops_sorted_by(Oid relid, bool is_table, const int *atts, int n);
 extern bool sift_f2_ops_leaf_holds(Oid relid, bool is_table, int att, int cls);
+/* jsonb_member.c: SiftJsonbOps.member_leaf and path_declared */
+extern int	sift_f2_jsonb_member_leaf(Oid indexoid, int att, const List *path);
+extern bool sift_f2_jsonb_path_declared(Oid relid, bool is_table, int att, const List *path);
 
 /* The device plan (f2_gpu_plan.c) */
 extern SiftGpuPlan *sift_gpu_f2_plan(const SiftGpuQuery *q, MemoryContext mcxt);

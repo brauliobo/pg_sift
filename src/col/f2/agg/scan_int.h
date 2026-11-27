@@ -148,7 +148,8 @@ extern void sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *
 extern void sift_f2_v6_refuse_nans(const V6Scan *s);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
 extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
-extern void sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);
+/* the values of the exceptions of the rows the batch keeps; the rows whose cast raises, NULL: none */
+extern uint64 *sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int n);
 /* jsonb_typeof of the key of a leaf: the name of the type each row's chunk keeps (a value of the leaf's own type, an exception's tag, a JSON null), NULL for a row with no value for the key */
 extern void sift_f2_v6_fill_type(V6Col *c, const ColView *cv, int off, int n);
 extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);

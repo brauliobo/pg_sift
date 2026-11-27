@@ -1,8 +1,8 @@
 /*
- * agg/jsonb_order.c - where the scan may raise the error of `(doc ->> 'key')::float8` for a row whose key holds a text that is no number or a container (the leaf of the key cannot hold it: the scan
- * reads it from the exception of its chunk and converts it as PostgreSQL does). PostgreSQL raises only for a row that reaches the cast: one that the conditions of the WHERE it tests before, which its
- * own plan orders by cost and then by position, keep. The scan decides its scan keys on every row first and converts the others on the rows they keep, so it raises for the same rows only when
- * no other condition of the statement can drop a row after the cast has run.
+ * agg/jsonb_order.c - where the scan may raise the error of `(doc ->> 'key')::float8` (or `::bool`) for a row whose key holds a text that is no number (no boolean) or a container (the leaf of the key cannot
+ * hold it: the scan reads it from the exception of its chunk and converts it as PostgreSQL does). PostgreSQL raises only for a row that reaches the cast: one that the conditions of the WHERE it tests
+ * before, which its own plan orders by cost and then by position, keep. The scan decides its scan keys on every row first and converts the others on the rows they keep, so it raises for the same rows
+ * only when no other condition of the statement can drop a row after the cast has run; a format that raises only for the rows its batch quals keep (SiftJsonbOps.raise_after_quals) lets those run too.
  */
 /* check-memory: allow-allocs every list here follows the quals of one statement, not the rows of the table */
 #include "postgres.h"
@@ -17,13 +17,26 @@
 static bool
 raising_attno(int attno)
 {
-	return attno >= SIFT_V6_JF8_VATT && attno < SIFT_V6_JF8_VATT + SIFT_V6_JVIRT_SPAN;
+	return sift_v6_vatt_raises(attno);
 }
 
 static bool
 raising_col(const SiftV6Col *c)
 {
-	return c->jleaf > 0 && !c->jtype && c->typid == FLOAT8OID;
+	return c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID);
+}
+
+/* the FILTER of the aggregate is the presence of the one key it reads a value of that raises: a row the FILTER drops has not the key, so no value to convert */
+static bool
+filter_is_presence(const SiftV6Spec *s, int fclause, const Bitmapset *own)
+{
+	const List *quals = list_nth(s->filter, fclause - 1);
+	const OpExpr *op = list_length(quals) == 1 ? linitial(quals) : NULL;
+	const Var  *v = op != NULL && IsA(op, OpExpr) ? linitial(op->args) : NULL;
+	const Const *c = v != NULL ? lsecond(op->args) : NULL;
+
+	return v != NULL && IsA(v, Var) && sift_v6_vatt_is_presence(v->varattno) && IsA(c, Const) && DatumGetBool(c->constvalue) && bms_num_members(own) == 1 &&
+		bms_is_member(sift_v6_vatt_leaf(v->varattno), own);
 }
 
 /* an expression that evaluates its operands in an order, or not at all, so that a cast under it runs for fewer rows than the scan converts */
@@ -80,7 +93,7 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 		note_col(&own, &s->agg[a].arg2);
 		for (int c = 0; c < s->agg[a].nxcols; c++)
 			note_col(&own, &s->agg[a].xcol[c]);
-		*filtered |= own != NULL && s->agg[a].fclause != 0;
+		*filtered |= own != NULL && s->agg[a].fclause != 0 && !filter_is_presence(s, s->agg[a].fclause, own);
 		leaves = bms_union(leaves, own);
 	}
 	for (int d = 0; d < s->nderive; d++)
@@ -147,7 +160,7 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		cast_leaves = leaves;
 	}
 	if (cast == NULL)
-		return other == NULL || (!filtered && !computed && s->vqual == NIL);
+		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
 	return list_length(s->vqual) == 1 && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
 		bms_is_subset(other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
 }

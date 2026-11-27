@@ -400,10 +400,10 @@ sift_v6_col_input_attno(const SiftV6Col *c)
 {
 	if (c->jleaf == 0)
 		return c->attno;
-	return (c->jtype ? SIFT_V6_JTYPE_VATT : c->typid == FLOAT8OID ? SIFT_V6_JF8_VATT : SIFT_V6_JTEXT_VATT) + c->jleaf - 1;
+	return sift_v6_jvatt_base(c->jtype, c->typid) + c->jleaf - 1;
 }
 
-/* The column of the scan a virtual attribute of a key of document attribute att is: the type, the text or the float8 cast of the key whose leaf is in the attribute */
+/* The column of the scan a virtual attribute of a key of document attribute att is: the type or the presence, the text or a cast of it, of the key whose leaf is in the attribute */
 static inline SiftV6Col
 sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
 {
@@ -419,6 +419,26 @@ extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKe
 extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
 /* The (doc -> 'key')::float8 of the payload of an exception: the error PostgreSQL raises for a value that is no number */
 extern double sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx);
+
+typedef enum SiftV6JsonExc
+{
+	SV6JX_NULL,					/* a JSON null, or a value whose cast is NULL */
+	SV6JX_VALUE,
+	SV6JX_RAISES				/* PostgreSQL's cast of the value raises: sift_v6_json_exception_raise raises its error */
+} SiftV6JsonExc;
+
+typedef struct SiftV6JsonValue
+{
+	const char *text;			/* SV6C_TEXT */
+	uint32		tlen;
+	Datum		value;			/* the float8 or the bool of the cast */
+} SiftV6JsonValue;
+
+/* The value of an exception as a column of class cls reads it (the `->>` text, its float8 or bool cast, or the float8 cast of the jsonb), without raising: the scan raises only for the rows it keeps */
+extern SiftV6JsonExc sift_v6_json_exception_read(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out);
+extern void sift_v6_json_exception_raise(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx);
+/* `doc ? 'k'` of a key whose leaf the scan reads the presence of: the virtual attribute of the presence (InvalidAttrNumber: none) */
+extern int	sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
 
