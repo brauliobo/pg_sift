@@ -169,9 +169,10 @@ END $do$;
 
 PREPARE s52_pany(int[], int[], bigint) AS SELECT id FROM records WHERE deleted_at IS NULL AND dim_a_id = ANY ($1) AND dim_b_id = ANY ($2)
   ORDER BY recorded_on DESC, id DESC LIMIT $3;
-SELECT s52_ok('Q-A16 = ANY ($n): top-N with granules pruned by the array',
-              position('SiftAggV6TopN' IN p) > 0 AND p ~ 'Granules Pruned: [1-9]')
-  FROM (SELECT s52_plan($$EXECUTE s52_pany('{1,2,3,9,10}', '{1,2,3,4,5,6,7}', 20)$$) p) x;
+SELECT s52_ok('Q-A16 = ANY ($n): the top-N reads the granules of the values of the array only', one ~ 'Custom Scan \(SiftAggV6' AND read_one < read_all)
+  FROM (SELECT s52_plan($$EXECUTE s52_pany('{3}', '{1,2,3,4,5,6,7}', 20)$$) one) a,
+       LATERAL (SELECT substring(one FROM '(?:scanned=|Granules Scanned: )(\d+)')::int AS read_one) b,
+       LATERAL (SELECT substring(s52_plan($$EXECUTE s52_pany('{1,2,3,4,5,6,7,8,9,10,11,12}', '{1,2,3,4,5,6,7}', 20)$$) FROM '(?:scanned=|Granules Scanned: )(\d+)')::int AS read_all) c;
 
 SELECT s52_check('Q-A16 offset 0', $q$SELECT id FROM records WHERE deleted_at IS NULL ORDER BY recorded_on DESC, id DESC LIMIT 50 OFFSET 0$q$, 'SiftAggV6TopN');
 SELECT s52_check('Q-A16 limit 0', $q$SELECT id FROM records ORDER BY recorded_on DESC, id DESC LIMIT 0$q$);

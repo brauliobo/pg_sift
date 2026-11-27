@@ -261,9 +261,10 @@ BEGIN
 END $do$;
 PREPARE s52_pany(int[], int[], bigint) AS SELECT id FROM records WHERE deleted_at IS NULL AND dim_a_id = ANY ($1) AND dim_b_id = ANY ($2)
   ORDER BY recorded_on DESC, id DESC LIMIT $3;
-SELECT s52_ok('Q-A16 = ANY ($n): top-N with granules pruned by the array',
-              position('SiftAggV6TopN' IN p) > 0 AND p ~ 'Granules Pruned: [1-9]')
-  FROM (SELECT s52_plan($$EXECUTE s52_pany('{1,2,3,9,10}', '{1,2,3,4,5,6,7}', 20)$$) p) x;
+SELECT s52_ok('Q-A16 = ANY ($n): the top-N reads the granules of the values of the array only', one ~ 'Custom Scan \(SiftAggV6' AND read_one < read_all)
+  FROM (SELECT s52_plan($$EXECUTE s52_pany('{3}', '{1,2,3,4,5,6,7}', 20)$$) one) a,
+       LATERAL (SELECT substring(one FROM '(?:scanned=|Granules Scanned: )(\d+)')::int AS read_one) b,
+       LATERAL (SELECT substring(s52_plan($$EXECUTE s52_pany('{1,2,3,4,5,6,7,8,9,10,11,12}', '{1,2,3,4,5,6,7}', 20)$$) FROM '(?:scanned=|Granules Scanned: )(\d+)')::int AS read_all) c;
  s52_ok 
 --------
  
@@ -481,54 +482,54 @@ SELECT s52_ok('scroll cursor backward', true);
 CLOSE s52_c;
 COMMIT;
 SELECT name, ok FROM checks ORDER BY name COLLATE "C";
-                           name                            | ok 
------------------------------------------------------------+----
- Q-A11 DISTINCT ON: same rows                              | t
- Q-A11 float windows: same rows                            | t
- Q-A11 inner aggregate under a window: same rows           | t
- Q-A11 numeric windows: SiftAggV6Window                    | t
- Q-A11 numeric windows: same rows                          | t
- Q-A13 lateral summary is not fused: same rows             | t
- Q-A13 literal: SiftAggV6Window                            | t
- Q-A13 literal: same rows                                  | t
- Q-A13 parameterized run condition: same rows              | t
- Q-A16 = ANY ($n) empty and NULL arrays: no rows           | t
- Q-A16 = ANY ($n) parameter arrays: same rows              | t
- Q-A16 = ANY ($n): top-N with granules pruned by the array | t
- Q-A16 beyond the tournament bound: same rows              | t
- Q-A16 limit 0: same rows                                  | t
- Q-A16 literal feed: same rows                             | t
- Q-A16 offset 0: SiftAggV6TopN                             | t
- Q-A16 offset 0: same rows                                 | t
- Q-A16 seven generic-plan pages: same rows                 | t
- Q-A16 text key: same rows                                 | t
- Q-A16 with ties: SiftAggV6TopN                            | t
- Q-A16 with ties: same rows                                | t
- Q-A6 materialized base: Fused Arms: 2                     | t
- Q-A6 materialized base: Fused Keys: union                 | t
- Q-A6 materialized base: same rows                         | t
- Q-A9 base against peers: Fused Arms: 2                    | t
- Q-A9 base against peers: Fused Keys: union                | t
- Q-A9 base against peers: same rows                        | t
- outer LIMIT over fused arms: same rows                    | t
- read only transaction: SiftAggV6TopN                      | t
- read only transaction: same rows                          | t
- rescan of a stream: same rows                             | t
- rescan of a top-N: SiftAggV6TopN                          | t
- rescan of a top-N: loops=3                                | t
- rescan of a top-N: same rows                              | t
- rescan of a window: SiftAggV6Window                       | t
- rescan of a window: loops=3                               | t
- rescan of a window: same rows                             | t
- row level security: no custom scan                        | t
- scroll cursor backward                                    | t
- stream date_bin hour: SiftAggV6Stream                     | t
- stream date_bin hour: same rows                           | t
- stream date_trunc week: SiftAggV6Stream                   | t
- stream date_trunc week: same rows                         | t
- stream four keys: same rows                               | t
- time zone: day buckets of a timestamptz: same rows        | t
- time zone: same query in UTC: same rows                   | t
+                                      name                                      | ok 
+--------------------------------------------------------------------------------+----
+ Q-A11 DISTINCT ON: same rows                                                   | t
+ Q-A11 float windows: same rows                                                 | t
+ Q-A11 inner aggregate under a window: same rows                                | t
+ Q-A11 numeric windows: SiftAggV6Window                                         | t
+ Q-A11 numeric windows: same rows                                               | t
+ Q-A13 lateral summary is not fused: same rows                                  | t
+ Q-A13 literal: SiftAggV6Window                                                 | t
+ Q-A13 literal: same rows                                                       | t
+ Q-A13 parameterized run condition: same rows                                   | t
+ Q-A16 = ANY ($n) empty and NULL arrays: no rows                                | t
+ Q-A16 = ANY ($n) parameter arrays: same rows                                   | t
+ Q-A16 = ANY ($n): the top-N reads the granules of the values of the array only | t
+ Q-A16 beyond the tournament bound: same rows                                   | t
+ Q-A16 limit 0: same rows                                                       | t
+ Q-A16 literal feed: same rows                                                  | t
+ Q-A16 offset 0: SiftAggV6TopN                                                  | t
+ Q-A16 offset 0: same rows                                                      | t
+ Q-A16 seven generic-plan pages: same rows                                      | t
+ Q-A16 text key: same rows                                                      | t
+ Q-A16 with ties: SiftAggV6TopN                                                 | t
+ Q-A16 with ties: same rows                                                     | t
+ Q-A6 materialized base: Fused Arms: 2                                          | t
+ Q-A6 materialized base: Fused Keys: union                                      | t
+ Q-A6 materialized base: same rows                                              | t
+ Q-A9 base against peers: Fused Arms: 2                                         | t
+ Q-A9 base against peers: Fused Keys: union                                     | t
+ Q-A9 base against peers: same rows                                             | t
+ outer LIMIT over fused arms: same rows                                         | t
+ read only transaction: SiftAggV6TopN                                           | t
+ read only transaction: same rows                                               | t
+ rescan of a stream: same rows                                                  | t
+ rescan of a top-N: SiftAggV6TopN                                               | t
+ rescan of a top-N: loops=3                                                     | t
+ rescan of a top-N: same rows                                                   | t
+ rescan of a window: SiftAggV6Window                                            | t
+ rescan of a window: loops=3                                                    | t
+ rescan of a window: same rows                                                  | t
+ row level security: no custom scan                                             | t
+ scroll cursor backward                                                         | t
+ stream date_bin hour: SiftAggV6Stream                                          | t
+ stream date_bin hour: same rows                                                | t
+ stream date_trunc week: SiftAggV6Stream                                        | t
+ stream date_trunc week: same rows                                              | t
+ stream four keys: same rows                                                    | t
+ time zone: day buckets of a timestamptz: same rows                             | t
+ time zone: same query in UTC: same rows                                        | t
 (46 rows)
 
 DROP TABLE records, snapshots, strata, ticks, bins, ticks4;

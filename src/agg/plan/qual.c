@@ -164,13 +164,20 @@ qual_compare(V6Plan *p, OpExpr *op)
 	return (Expr *) q;
 }
 
-/* the array of an IN list: a constant, or $n of the WHERE of an unnest, which the node binds to the value of its execution before it reads (sift_v6_bind_params) */
+/*
+ * the array of an IN list: a constant; $n of the WHERE of an unnest, which the node binds to the value of its execution before it reads (sift_v6_bind_params); or on an index any other
+ * parameter or stable expression, which the scan binds when it starts, as a runtime array key of an index scan
+ */
 static bool
 in_array_usable(const V6Plan *p, const Node *arr)
 {
-	if (IsA(arr, Param))
-		return ((const Param *) arr)->paramkind == PARAM_EXTERN && !p->in_filter && p->xseed != NULL && p->xseed->unnest && !p->is_table;
-	return IsA(arr, Const) && !((const Const *) arr)->constisnull;
+	if (IsA(arr, Const))
+		return !((const Const *) arr)->constisnull;
+	if (p->is_table)
+		return false;
+	if (IsA(arr, Param) && p->xseed != NULL && p->xseed->unnest)
+		return ((const Param *) arr)->paramkind == PARAM_EXTERN && !p->in_filter;
+	return operand_usable(p, arr);
 }
 
 static Expr *
