@@ -1,0 +1,40 @@
+-- sift_table: a TRUNCATE rolled back with its savepoint gives back the rows as the transaction left them before it: a DELETE before the savepoint stays deleted, an UPDATE before it keeps
+-- the new version only, a DELETE inside the savepoint is undone with it. Heap twins say what the rows are.
+CREATE EXTENSION pg_sift;
+CREATE TABLE ts_t (id int PRIMARY KEY, v text) USING sift_table;
+CREATE TABLE ts_h (id int PRIMARY KEY, v text);
+INSERT INTO ts_t SELECT g, 'p' FROM generate_series(1, 10) g;
+INSERT INTO ts_h SELECT g, 'p' FROM generate_series(1, 10) g;
+BEGIN;
+DELETE FROM ts_t WHERE id = 1;
+DELETE FROM ts_h WHERE id = 1;
+UPDATE ts_t SET id = 20, v = 'u' WHERE id = 2;
+UPDATE ts_h SET id = 20, v = 'u' WHERE id = 2;
+SAVEPOINT s;
+DELETE FROM ts_t WHERE id = 3;
+DELETE FROM ts_h WHERE id = 3;
+TRUNCATE ts_t, ts_h;
+ROLLBACK TO s;
+SELECT (SELECT count(*) FROM ts_t) AS after_rollback_sift, (SELECT count(*) FROM ts_h) AS after_rollback_heap;
+ after_rollback_sift | after_rollback_heap 
+---------------------+---------------------
+                   9 |                   9
+(1 row)
+
+COMMIT;
+SELECT id, v, count(*) FROM ts_t WHERE id <= 3 OR id = 20 GROUP BY id, v ORDER BY id, v;
+ id | v | count 
+----+---+-------
+  3 | p |     1
+ 20 | u |     1
+(2 rows)
+
+SELECT (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM ts_t x) = (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM ts_h x) AS same_rows,
+	   (SELECT count(*) FROM ts_t) AS rows_sift, (SELECT count(*) FROM ts_h) AS rows_heap;
+ same_rows | rows_sift | rows_heap 
+-----------+-----------+-----------
+ t         |         9 |         9
+(1 row)
+
+DROP TABLE ts_t, ts_h;
+DROP EXTENSION pg_sift;

@@ -92,7 +92,7 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 		log_smgrcreate(newrlocator, INIT_FORKNUM);
 	}
 	smgrclose(srel);
-	sift_stage_flush(rel);
+	sift_stage_flush_with_deletes(rel);
 	sift_stage_discard(rel);
 	sift_fsm_cache_discard_rel(rel);
 	sift_shm_manifest_invalidate(&rel->rd_locator, false);
