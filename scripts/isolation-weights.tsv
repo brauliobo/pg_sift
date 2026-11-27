@@ -1,5 +1,5 @@
 # Seconds of each isolation spec, the mean of 5 runs on F2 and 5 on F1 with 4 jobs (scripts/isolation.sh packs --slice and --jobs by them, longest first; a spec not listed counts 1 s).
-# quiet: the spec reads a horizon of the whole cluster (the xmin of a snapshot) and fails while the specs of the other databases hold transactions open; it runs alone.
+# quiet: the spec reads a state of the whole cluster (the xmin of a snapshot, the coarse row locks and prepared transactions of the sift_table row lock table) and fails while the specs of the other databases hold transactions open; it runs alone.
 agg/correlated_snapshot	0.1
 agg/dimmap	0.5
 agg/dimmap_conn	0.7
@@ -90,6 +90,7 @@ table/f2/lock_esc_col_delta_epq	1.9
 table/f2/lock_esc_held_max	0.5
 table/f2/lock_esc_savepoint_2pc	3.9
 table/f2/lock_esc_shared	1.5
+table/f2/lock_many_rels	0.4	quiet
 table/f2/mvcc_snapshot_aba	0.0
 table/f2/onconflict_dirty	0.1
 table/f2/pk_concurrent	0.1

@@ -24,7 +24,7 @@
 
 /* ---- the table in shared memory ---- */
 
-/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2169088 B packed; 256x64x128 B ABI entries, one cache line of header and a grow lock for each stripe, and 1088 B of fast intention slots and their used mask for each process of the server) */
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2169088 B packed; 256x64x128 B ABI entries, one cache line of header and a grow lock for each stripe, and 2112 B of fast intention slots and their used mask for each process of the server) */
 static Size
 table_bytes(void)
 {
@@ -373,9 +373,9 @@ sift_esc_prepared_locks_possible(Relation rel)
 	if (max_prepared_xacts == 0)
 		return false;
 	rl = lock_of(rel, SIFT_ESC_PART_ALL);
-	if (rl->prepared_probe == 0 || (rl->prepared_probe == 1 && shm != NULL && pg_atomic_read_u32(&shm->prepared_epoch) != rl->probe_epoch))
+	if (rl->prepared_probe == 0 || (rl->prepared_probe == 1 && sift_lock_shm_attach() != NULL && pg_atomic_read_u32(&shm->prepared_epoch) != rl->probe_epoch))
 	{
-		rl->probe_epoch = shm != NULL ? pg_atomic_read_u32(&shm->prepared_epoch) : 0;
+		rl->probe_epoch = sift_lock_shm_attach() != NULL ? pg_atomic_read_u32(&shm->prepared_epoch) : 0;
 		pg_read_barrier();
 		rl->prepared_probe = sift_lock_2pc_present(rl->dbid, rl->relid) ? 2 : 1;
 	}

@@ -1,0 +1,109 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1ks s1pl s2o s1c s2v
+step s1ks: BEGIN; SELECT iso_mr_lock('FOR KEY SHARE') AS locked;
+locked
+------
+    32
+(1 row)
+
+step s1pl: SELECT iso_mr_page_locks(pg_backend_pid()) AS page_locks;
+page_locks
+----------
+         0
+(1 row)
+
+step s2o: SELECT iso_mr_others();
+iso_mr_others                                       
+----------------------------------------------------
+others locked and updated: 32, held rows refused: 32
+(1 row)
+
+step s1c: COMMIT;
+step s2v: SELECT sum(val) AS updated FROM (SELECT val FROM iso_mr_1 WHERE id = 2 UNION ALL SELECT val FROM iso_mr_32 WHERE id = 2) v;
+updated
+-------
+      2
+(1 row)
+
+
+starting permutation: s1sh s1pl s2o s1c s2v
+step s1sh: BEGIN; SELECT iso_mr_lock('FOR SHARE') AS locked;
+locked
+------
+    32
+(1 row)
+
+step s1pl: SELECT iso_mr_page_locks(pg_backend_pid()) AS page_locks;
+page_locks
+----------
+         0
+(1 row)
+
+step s2o: SELECT iso_mr_others();
+iso_mr_others                                       
+----------------------------------------------------
+others locked and updated: 32, held rows refused: 32
+(1 row)
+
+step s1c: COMMIT;
+step s2v: SELECT sum(val) AS updated FROM (SELECT val FROM iso_mr_1 WHERE id = 2 UNION ALL SELECT val FROM iso_mr_32 WHERE id = 2) v;
+updated
+-------
+      2
+(1 row)
+
+
+starting permutation: s1nk s1pl s2o s1c s2v
+step s1nk: BEGIN; SELECT iso_mr_lock('FOR NO KEY UPDATE') AS locked;
+locked
+------
+    32
+(1 row)
+
+step s1pl: SELECT iso_mr_page_locks(pg_backend_pid()) AS page_locks;
+page_locks
+----------
+         0
+(1 row)
+
+step s2o: SELECT iso_mr_others();
+iso_mr_others                                       
+----------------------------------------------------
+others locked and updated: 32, held rows refused: 32
+(1 row)
+
+step s1c: COMMIT;
+step s2v: SELECT sum(val) AS updated FROM (SELECT val FROM iso_mr_1 WHERE id = 2 UNION ALL SELECT val FROM iso_mr_32 WHERE id = 2) v;
+updated
+-------
+      2
+(1 row)
+
+
+starting permutation: s1up s1pl s2o s1c s2v
+step s1up: BEGIN; SELECT iso_mr_lock('FOR UPDATE') AS locked;
+locked
+------
+    32
+(1 row)
+
+step s1pl: SELECT iso_mr_page_locks(pg_backend_pid()) AS page_locks;
+page_locks
+----------
+         0
+(1 row)
+
+step s2o: SELECT iso_mr_others();
+iso_mr_others                                       
+----------------------------------------------------
+others locked and updated: 32, held rows refused: 32
+(1 row)
+
+step s1c: COMMIT;
+step s2v: SELECT sum(val) AS updated FROM (SELECT val FROM iso_mr_1 WHERE id = 2 UNION ALL SELECT val FROM iso_mr_32 WHERE id = 2) v;
+updated
+-------
+      2
+(1 row)
+

@@ -24,7 +24,7 @@
 
 #include "table/f2/lock/esc.h"
 
-#define FAST_PER_PROC	32		/* a relation and a partition of each of 16 partitioned sift_tables */
+#define FAST_PER_PROC	64		/* a relation and a partition of each of 32 sift_tables, the fast-path relation locks of a backend at the default max_locks_per_transaction */
 
 typedef struct SiftFastIntent
 {
@@ -47,10 +47,11 @@ typedef struct SiftFastSeen
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftFastProc
 {
 	SiftFastIntent slot[FAST_PER_PROC];
-	pg_atomic_uint32 used;		/* a bit for each slot whose mode is not 0, written by its process alone: the barriers of the mode order it */
+	pg_atomic_uint64 used;		/* a bit for each slot whose mode is not 0, written by its process alone: the barriers of the mode order it */
 } SiftFastProc;
 
 StaticAssertDecl(sizeof(SiftFastIntent) == 32, "a slot of a fast intention is 32 bytes");
+StaticAssertDecl(FAST_PER_PROC <= 64, "the used mask of a process has a bit for each of its slots");
 
 static int
 nprocs(void)
@@ -80,12 +81,12 @@ slot_write(SiftRowLockShmLayout *s, SiftFastProc *p, int j, uint32 mode)
 	if (before == 0 && mode != 0)
 	{
 		pg_atomic_fetch_add_u32(fast_active(s, &i->locator, i->part_id), 1);
-		pg_atomic_write_u32(&p->used, pg_atomic_read_u32(&p->used) | (UINT32_C(1) << j));
+		pg_atomic_write_u64(&p->used, pg_atomic_read_u64(&p->used) | (UINT64_C(1) << j));
 	}
 	pg_atomic_write_membarrier_u32(&i->mode, mode);
 	if (before != 0 && mode == 0)
 	{
-		pg_atomic_write_u32(&p->used, pg_atomic_read_u32(&p->used) & ~(UINT32_C(1) << j));
+		pg_atomic_write_u64(&p->used, pg_atomic_read_u64(&p->used) & ~(UINT64_C(1) << j));
 		pg_atomic_fetch_sub_u32(fast_active(s, &i->locator, i->part_id), 1);
 	}
 }
@@ -116,7 +117,7 @@ sift_fast_intent_init(SiftRowLockShmLayout *s)
 {
 	for (int pn = 0; pn < nprocs(); pn++)
 	{
-		pg_atomic_init_u32(&procs_of(s)[pn].used, 0);
+		pg_atomic_init_u64(&procs_of(s)[pn].used, 0);
 		for (int j = 0; j < FAST_PER_PROC; j++)
 		{
 			pg_atomic_init_u32(&procs_of(s)[pn].slot[j].mode, 0);
@@ -195,9 +196,9 @@ sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, ui
 	for (int pn = 0; pn < nprocs(); pn++)
 	{
 		CHECK_FOR_INTERRUPTS();
-		for (uint32 used = pg_atomic_read_u32(&procs[pn].used); used != 0; used &= used - 1)
+		for (uint64 used = pg_atomic_read_u64(&procs[pn].used); used != 0; used &= used - 1)
 		{
-			SiftFastSeen i = slot_read(&procs[pn].slot[pg_rightmost_one_pos32(used)]);
+			SiftFastSeen i = slot_read(&procs[pn].slot[pg_rightmost_one_pos64(used)]);
 
 			if (i.mode != 0 && i.part_id == part_id && RelFileLocatorEquals(i.locator, *loc) && !TransactionIdIsCurrentTransactionId(i.xid) &&
 				sift_esc_modes_conflict(want, sift_esc_intent_modes((LockTupleMode) (i.mode - 1))) && TransactionIdIsInProgress(i.xid))

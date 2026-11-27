@@ -2,6 +2,7 @@
  * test/unit/table/f2/lock/fast_intent.c - a coarse lock reads the slot of a fast intention of another process as one whole: while its owner moves the slot from a transaction of one
  * relation to a transaction of another, sift_fast_intent_conflict for the first relation never returns the xid of the second (a wait on a transaction that holds nothing of the key).
  * A coarse lock among many processes reads the slots that are held, not the free ones of every process, and takes a cancel while it scans them.
+ * A process records the relation and partition intentions of 32 sift_tables (S119-28: a transaction that locked a row in each of 17 took page locks), and a coarse lock reads each of them.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -28,7 +29,7 @@ enum { ROUNDS = 200000 };
 #else
 enum { ROUNDS = 2000000 };
 #endif
-enum { XID_T1 = 100, XID_T2 = 200, MANY = 256, HOLDERS = 64 };
+enum { XID_T1 = 100, XID_T2 = 200, MANY = 256, HOLDERS = 64, TABLES = 32 };
 
 static const RelFileLocator t1 = {.spcOid = 1663,.dbOid = 5,.relNumber = 16384};
 static const RelFileLocator t2 = {.spcOid = 1663,.dbOid = 5,.relNumber = 16385};
@@ -133,9 +134,36 @@ test_scan_reads_held_slots(void)
 	free(shm);
 }
 
+/* One process locks a row in each of TABLES relations: both intentions of each are records, the last slot's is seen by a coarse lock, and a slot past them is refused */
+static void
+test_slots_of_many_tables(void)
+{
+	SiftEscModes want = sift_esc_coarse_modes(LockTupleExclusive);
+	RelFileLocator loc = t1;
+
+	MaxBackends = 2;
+	MyProcNumber = 0;
+	top_xid = XID_T1;
+	shm = calloc(1, sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE);
+	sift_fast_intent_init(shm);
+	for (int t = 0; t < TABLES; t++)
+	{
+		loc.relNumber = t1.relNumber + t;
+		SIFT_CHECKF(sift_fast_intent_set(shm, &loc, SIFT_ESC_PART_ALL, -1, LockTupleKeyShare, 0) == 2 * t, "the relation intention of table %d is a record", t + 1);
+		SIFT_CHECKF(sift_fast_intent_set(shm, &loc, 1, -1, LockTupleKeyShare, 0) == 2 * t + 1, "the partition intention of table %d is a record", t + 1);
+	}
+	SIFT_CHECK(sift_fast_intent_conflict(shm, &loc, 1, want) == XID_T1);
+	loc.relNumber++;
+	SIFT_CHECK(sift_fast_intent_set(shm, &loc, SIFT_ESC_PART_ALL, -1, LockTupleKeyShare, 0) == -1);
+	sift_fast_intent_release_all(shm);
+	SIFT_CHECK(sift_fast_intent_conflict(shm, &t1, SIFT_ESC_PART_ALL, want) == InvalidTransactionId);
+	free(shm);
+}
+
 int
 main(void)
 {
+	test_slots_of_many_tables();
 	shm = calloc(1, sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE);
 	sift_fast_intent_init(shm);
 	MyProcNumber = 0;

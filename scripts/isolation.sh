@@ -10,8 +10,8 @@
 # their choreography and the expected output before the features land.
 # --slice K/N runs the Kth of N slices of the specs, of about the same time each: the longest spec first, each into the slice that has the least so far, by the
 # seconds of scripts/isolation-weights.tsv (1 for a spec it does not list). --jobs J (SIFT_ISO_JOBS, default 4) runs the slice as J pg_isolation_regress at once,
-# each in a database of its own of the cluster, packed the same way. A spec the weights mark quiet reads a horizon of the whole cluster (the xmin of a snapshot), which the
-# transactions the specs of the other databases keep open hold back: those run one after the other once the jobs are done. Results in $SIFT_TMP/isolation/<mode>/<job>. Exit 1 on any failure.
+# each in a database of its own of the cluster, packed the same way. A spec the weights mark quiet reads a state of the whole cluster (the xmin of a snapshot, the shared row locks), which the
+# transactions the specs of the other databases keep open change: those run one after the other once the jobs are done. Results in $SIFT_TMP/isolation/<mode>/<job>. Exit 1 on any failure.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -euo pipefail
 
