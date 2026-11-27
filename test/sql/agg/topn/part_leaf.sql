@@ -163,6 +163,16 @@ SELECT gp_used(t) AS read, count(*) AS tenants, array_agg(t ORDER BY t) FILTER (
 SELECT count(*) AS executions, count(*) FILTER (WHERE gp_sift(t) IS NOT DISTINCT FROM gp_norm(t)) AS same FROM generate_series(0, 45) t;
 RESET plan_cache_mode;
 
+-- the best rows of a join of the partitioned table to a dimension keyed on its tenant (a join, and the IN that PostgreSQL makes one): every partition, hp_3 with its columns at other
+-- attribute numbers too, with the dimension looked up in the scan
+CREATE TABLE dimk (id int PRIMARY KEY, kind text);
+INSERT INTO dimk SELECT n, CASE WHEN n % 3 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 45) n;
+ANALYZE dimk;
+SELECT n, pl_chk(q) FROM (VALUES
+	(1, 'SELECT h.id, h.ts, h.pad FROM hp h JOIN dimk d ON d.id = h.tenant WHERE d.kind = ''a'' ORDER BY h.ts DESC, h.id LIMIT 7'),
+	(2, 'SELECT id, ts, v FROM hp WHERE tenant IN (SELECT id FROM dimk WHERE kind = ''b'') ORDER BY ts, id LIMIT 9')
+) v(n, q) ORDER BY n;
+
 DROP FUNCTION pl_chk(text), gp_used(int), gp_sift(int), gp_norm(int);
-DROP TABLE pq, lq, xq, bq, tn, hp, lp, rp, h2, hs, hn, gu, gv;
+DROP TABLE pq, lq, xq, bq, tn, hp, lp, rp, h2, hs, hn, gu, gv, dimk;
 DROP EXTENSION pg_sift CASCADE;

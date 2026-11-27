@@ -526,7 +526,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	int			n = 0,
 				r = -1;
 
-	if (!(goal->topk > 0 ? sift_v6_plan_fact_ok(root, fact) : sift_v6_join_fact_ok(root, fact)))
+	if (!sift_v6_join_fact_ok(root, fact))
 		return;
 	while ((r = bms_next_member(base, r)) >= 0)
 	{

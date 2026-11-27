@@ -72,17 +72,16 @@ INSERT INTO pq SELECT n, q FROM (VALUES
 SELECT n, result, count(*) FROM pq, LATERAL (SELECT pl_chk(format(pq.q, t)) AS result FROM generate_series(0, 45) t) r GROUP BY n, result ORDER BY n, result;
  n | result | count 
 ---+--------+-------
- 1 | array  |    46
- 2 | array  |    46
- 3 | array  |    46
- 4 | array  |    46
- 5 | array  |    46
- 6 | array  |    46
- 7 | array  |     3
- 7 | units  |    43
+ 1 | units  |    46
+ 2 | units  |    46
+ 3 | units  |    46
+ 4 | units  |    46
+ 5 | units  |    46
+ 6 | units  |    46
+ 7 | units  |    46
  8 | units  |    46
  9 | units  |    46
-(10 rows)
+(9 rows)
 
 -- the probes of a LATERAL join: the partition the value belongs to changes at each (the first, the last, one no row holds, and NULL, the first probe: the plan shows the last) and the rows are the same as the normal plan's
 CREATE TABLE lq (n int, q text);
@@ -95,10 +94,10 @@ INSERT INTO lq VALUES
 SELECT n, pl_chk(q) FROM lq ORDER BY n;
  n | pl_chk 
 ---+--------
- 1 | array
- 2 | array
- 3 | array
- 4 | array
+ 1 | units
+ 2 | units
+ 3 | units
+ 4 | units
  5 | units
 (5 rows)
 
@@ -140,7 +139,7 @@ SELECT n, pl_chk(q) FROM xq ORDER BY n;
  3 | units
  4 | units
  5 | units
- 6 | array
+ 6 | units
  7 | units
 (7 rows)
 
@@ -148,9 +147,8 @@ SELECT n, pl_chk(q) FROM xq ORDER BY n;
 SELECT result, count(*) FROM (SELECT pl_chk(format('SELECT id, ts FROM h2 WHERE a = %s AND b = %s ORDER BY ts DESC, id LIMIT 4', a, b)) AS result FROM generate_series(0, 7) a, generate_series(0, 5) b) r GROUP BY 1 ORDER BY 1;
  result | count 
 --------+-------
- array  |    42
- units  |     6
-(2 rows)
+ units  |    48
+(1 row)
 
 -- by one column only: every partition is read
 SELECT pl_chk('SELECT id, ts FROM h2 WHERE a = 2 ORDER BY ts DESC, id LIMIT 4');
@@ -183,13 +181,13 @@ INSERT INTO bq SELECT n, q FROM (VALUES
 SELECT n, t, pl_chk(format(q, t)) FROM bq, unnest(ARRAY['gu', 'gv']) t ORDER BY n, t;
  n | t  | pl_chk 
 ---+----+--------
- 1 | gu | array
+ 1 | gu | units
  1 | gv | units
- 2 | gu | array
+ 2 | gu | units
  2 | gv | units
- 3 | gu | array
+ 3 | gu | units
  3 | gv | units
- 4 | gu | array
+ 4 | gu | units
  4 | gv | units
 (8 rows)
 
@@ -207,11 +205,10 @@ $$ DECLARE pl text; used bool := false; BEGIN
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) EXECUTE gp(' || t || ')' LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
 	RETURN CASE WHEN used THEN 'array' ELSE 'units' END; END $$;
 SELECT gp_used(t) AS read, count(*) AS tenants, array_agg(t ORDER BY t) FILTER (WHERE t < 12) AS first FROM generate_series(0, 45) t GROUP BY 1 ORDER BY 1;
- read  | tenants |       first        
--------+---------+--------------------
- array |      36 | {0,1,2,3,5,8,9,11}
- units |      10 | {4,6,7,10}
-(2 rows)
+ read  | tenants |            first            
+-------+---------+-----------------------------
+ units |      46 | {0,1,2,3,4,5,6,7,8,9,10,11}
+(1 row)
 
 SELECT count(*) AS executions, count(*) FILTER (WHERE gp_sift(t) IS NOT DISTINCT FROM gp_norm(t)) AS same FROM generate_series(0, 45) t;
  executions | same 
@@ -220,6 +217,21 @@ SELECT count(*) AS executions, count(*) FILTER (WHERE gp_sift(t) IS NOT DISTINCT
 (1 row)
 
 RESET plan_cache_mode;
+-- the best rows of a join of the partitioned table to a dimension keyed on its tenant (a join, and the IN that PostgreSQL makes one): every partition, hp_3 with its columns at other
+-- attribute numbers too, with the dimension looked up in the scan
+CREATE TABLE dimk (id int PRIMARY KEY, kind text);
+INSERT INTO dimk SELECT n, CASE WHEN n % 3 = 0 THEN 'a' ELSE 'b' END FROM generate_series(0, 45) n;
+ANALYZE dimk;
+SELECT n, pl_chk(q) FROM (VALUES
+	(1, 'SELECT h.id, h.ts, h.pad FROM hp h JOIN dimk d ON d.id = h.tenant WHERE d.kind = ''a'' ORDER BY h.ts DESC, h.id LIMIT 7'),
+	(2, 'SELECT id, ts, v FROM hp WHERE tenant IN (SELECT id FROM dimk WHERE kind = ''b'') ORDER BY ts, id LIMIT 9')
+) v(n, q) ORDER BY n;
+ n | pl_chk 
+---+--------
+ 1 | units
+ 2 | units
+(2 rows)
+
 DROP FUNCTION pl_chk(text), gp_used(int), gp_sift(int), gp_norm(int);
-DROP TABLE pq, lq, xq, bq, tn, hp, lp, rp, h2, hs, hn, gu, gv;
+DROP TABLE pq, lq, xq, bq, tn, hp, lp, rp, h2, hs, hn, gu, gv, dimk;
 DROP EXTENSION pg_sift CASCADE;
