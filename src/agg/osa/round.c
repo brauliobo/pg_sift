@@ -122,7 +122,7 @@ osa_accum_fused(void)
 	if (known < 0)
 	{
 		Datum		state[3] = {Float8GetDatum(ACCUM_N), Float8GetDatum(ACCUM_SX), Float8GetDatum(0.0)};
-		ArrayType  *out = DatumGetArrayTypeP(DirectFunctionCall2(float8_accum, PointerGetDatum(construct_array_builtin(state, 3, FLOAT8OID)), Float8GetDatum(ACCUM_X)));
+		ArrayType  *out = DatumGetArrayTypeP(DirectFunctionCall2(float8_accum, PointerGetDatum(sift_construct_float8_array(state, 3)), Float8GetDatum(ACCUM_X)));
 		const double sxx = ((const double *) ARR_DATA_PTR(out))[2],
 					fused = sift_mom_tmp(ACCUM_X, ACCUM_N + 1.0, ACCUM_SX + ACCUM_X, true),
 					plain = sift_mom_tmp(ACCUM_X, ACCUM_N + 1.0, ACCUM_SX + ACCUM_X, false);
