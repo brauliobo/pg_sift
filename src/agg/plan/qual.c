@@ -362,7 +362,8 @@ compile_lowered(V6Plan *p, const List *tests)
 static bool
 heap_decides(const V6Plan *p, const Expr *clause)
 {
-	return p->is_table && p->xseed != NULL && p->xseed->unnest && !contain_subplans((Node *) clause) && !agg_node_has_param((const Node *) clause);
+	return p->is_table && p->xseed != NULL && p->xseed->unnest && p->ops->jsonb != NULL && p->ops->jsonb->table_heap_rows && !contain_subplans((Node *) clause) &&
+		!agg_node_has_param((const Node *) clause);
 }
 
 /* a clause of the WHERE that is none of the special ones: a scan key, a key of the JSON leaves, a batch qual, tests of the leaves of a document, or one the heap decides */

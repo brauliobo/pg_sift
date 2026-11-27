@@ -311,6 +311,7 @@ typedef struct SiftJsonbOps
 	bool		row_quals;		/* its unnest narrows the rows of the table by the quals no scan key says (SiftV6Spec.vqual, agg/qual/bqual.h) */
 	bool		raise_after_quals;	/* the scan raises the error of the cast of a value of an exception (to float8, to bool) only for the rows its batch quals keep, as PostgreSQL's WHERE does */
 	bool		streams;		/* its unnest reads the elements of several arrays of a row (SiftV6Ext.nstreams), and the clauses of the table read the flags of the tests */
+	bool		table_heap_rows;	/* its unnest of a sift_table takes every row it keeps apart from the heap row, which the quals of the statement decide */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;
