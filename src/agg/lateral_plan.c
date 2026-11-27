@@ -238,24 +238,120 @@ visible_outputs(const RelOptInfo *lateral, Query *q, List **junk)
 	return visible;
 }
 
-/* the rows of a key that the table repeats are cut to the first one: DISTINCT ON the keys, in the order of the sub-select, then of the table (the row a scan with no ORDER BY meets first) */
+/*
+ * an output the statement reads takes a value of the row: without an ORDER BY of the sub-select, the row LIMIT 1 keeps of a key the table repeats is then the answer, the one
+ * PostgreSQL's own plan of the sub-select meets first
+ */
+static bool
+reads_row_value(const RelOptInfo *lateral, const Query *q)
+{
+	foreach_node(TargetEntry, te, q->targetList)
+		if (!te->resjunk && needed_column(lateral, te->resno) && contain_var_clause((Node *) te->expr))
+			return true;
+	return false;
+}
+
+/* the scan under a path of the plan of a sub-select, through its LIMIT and its projections */
+static const Path *
+scan_of(const Path *p)
+{
+	while (IsA(p, LimitPath) || IsA(p, ProjectionPath))
+		p = IsA(p, LimitPath) ? ((const LimitPath *) p)->subpath : ((const ProjectionPath *) p)->subpath;
+	return p;
+}
+
+/* the cheapest path of the plan of the sub-select: the one PostgreSQL runs for each row of the outer side */
+static const Path *
+native_path(const RelOptInfo *lateral)
+{
+	const Path *best = NULL;
+
+	foreach_ptr(Path, p, fetch_upper_rel(lateral->subroot, UPPERREL_FINAL, NULL)->pathlist)
+		if (best == NULL || p->total_cost < best->total_cost)
+			best = p;
+	return best;
+}
+
+/*
+ * The order in which PostgreSQL's plan of the sub-select meets the rows of a key: the heap's (a sequential scan: heap is set), or that of an ordered index, ascending on each
+ * column, whose leading columns are the keys (an index scan meets the versions of a key in the order of their entries, which updates leave apart from the order of the heap).
+ * NULL with heap unset for any other scan: a bitmap or an unordered index
+ */
+static const IndexOptInfo *
+native_order(const RelOptInfo *lateral, const Ties *t, bool *heap)
+{
+	const Path *scan = scan_of(native_path(lateral));
+	const IndexOptInfo *ix = IsA(scan, IndexPath) ? ((const IndexPath *) scan)->indexinfo : NULL;
+	const int	nkeys = list_length(t->keys);
+
+	*heap = scan->pathtype == T_SeqScan;
+	if (ix == NULL || ix->sortopfamily == NULL || ((const IndexPath *) scan)->indexscandir != ForwardScanDirection || ix->nkeycolumns < nkeys)
+		return NULL;
+	for (int c = 0; c < ix->nkeycolumns; c++)
+	{
+		bool		tie = false;
+
+		foreach_node(Var, key, t->keys)
+			tie |= key->varattno == ix->indexkeys[c];
+		if (ix->indexkeys[c] == 0 || ix->reverse_sort[c] || ix->nulls_first[c] || tie != (c < nkeys))
+			return NULL;
+	}
+	return ix;
+}
+
+/* the entry of the column of the table among the outputs, or a junk one for it */
+static TargetEntry *
+column_entry(Query *q, AttrNumber attno)
+{
+	Oid			type,
+				coll;
+	int32		typmod;
+
+	foreach_node(TargetEntry, o, q->targetList)
+		if (IsA(o->expr, Var) && ((Var *) o->expr)->varattno == attno && ((Var *) o->expr)->varlevelsup == 0)
+			return o;
+	get_atttypetypmodcoll(rt_fetch(1, q->rtable)->relid, attno, &type, &typmod, &coll);
+	return makeTargetEntry((Expr *) makeVar(1, attno, type, typmod, coll, 0), 0, "sift_order", true);
+}
+
+/*
+ * the rows of a key that the table repeats are cut to the first one, DISTINCT ON the keys: in the order of the sub-select, then of the table (the row a sequential scan meets first),
+ * or in the order of the columns of ix, which a scan of ix gives with the versions of a key in the order of their entries (the planner of the dimension is given that scan)
+ */
 static void
-first_row_of_a_key(Query *q, List *keys, List *junk)
+first_row_of_a_key(Query *q, List *keys, List *junk, const IndexOptInfo *ix)
 {
 	TargetEntry *tid = makeTargetEntry((Expr *) makeVar(1, SelfItemPointerAttributeNumber, TIDOID, -1, InvalidOid, 0), 0, "sift_tid", true);
 	List	   *order = NIL;
 
-	q->targetList = list_concat(q->targetList, lappend(junk, tid));
-	foreach_ptr(TargetEntry, te, keys)
-		order = lappend(order, sort_clause(q, te));
-	q->distinctClause = list_copy(order);
+	q->targetList = list_concat(q->targetList, junk);
+	if (ix == NULL)
+	{
+		q->targetList = lappend(q->targetList, tid);
+		foreach_ptr(TargetEntry, te, keys)
+			order = lappend(order, sort_clause(q, te));
+		q->distinctClause = list_copy(order);
+		q->sortClause = lappend(list_concat(order, q->sortClause), sort_clause(q, tid));
+	}
+	else
+	{
+		for (int c = 0; c < ix->nkeycolumns; c++)
+		{
+			TargetEntry *te = column_entry(q, ix->indexkeys[c]);
+
+			if (!list_member_ptr(q->targetList, te))
+				q->targetList = lappend(q->targetList, te);
+			order = lappend(order, sort_clause(q, te));
+		}
+		q->distinctClause = list_copy_head(order, list_length(keys));
+		q->sortClause = order;
+	}
 	q->hasDistinctOn = true;
-	q->sortClause = lappend(list_concat(order, q->sortClause), sort_clause(q, tid));
 }
 
-/* the sub-select without the equalities and the LIMIT: its outputs, then a column for each key */
+/* the sub-select without the equalities and the LIMIT: its outputs, then a column for each key (the first row of a key in the order of ix when it is given) */
 static Query *
-dimension_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, bool unique)
+dimension_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, bool unique, const IndexOptInfo *ix)
 {
 	Query	   *q = (Query *) copyObject(sub);
 	List	   *junk = NIL;
@@ -276,23 +372,38 @@ dimension_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, bool
 	if (unique)
 		q->sortClause = NIL;
 	else
-		first_row_of_a_key(q, keys, junk);
+		first_row_of_a_key(q, keys, junk, ix);
 	foreach_node(TargetEntry, te, q->targetList)
 		te->resno = ++resno;
 	return q;
 }
 
+/* the path of the planned dimension: its cheapest, or with ix the scan of ix (under the projection of the relation) that meets the rows of a key in the order of its entries, cut to the first row of each key (NULL: none) */
 static Path *
-dimension_path(RelOptInfo *dim, PlannerInfo *sub)
+first_rows_path(PlannerInfo *sub, const IndexOptInfo *ix, int nkeys)
 {
 	RelOptInfo *final = fetch_upper_rel(sub, UPPERREL_FINAL, NULL);
-	SubqueryScanPath *p = makeNode(SubqueryScanPath);
 
 	set_cheapest(final);
+	if (ix == NULL)
+		return final->cheapest_total_path;
+	foreach_ptr(Path, p, find_base_rel(sub, 1)->pathlist)
+		if (IsA(scan_of(p), IndexPath) && ((const IndexPath *) scan_of(p))->indexinfo->indexoid == ix->indexoid && p->param_info == NULL &&
+			((const IndexPath *) scan_of(p))->indexscandir == ForwardScanDirection && list_length(p->pathkeys) >= nkeys)
+			return (Path *) create_projection_path(sub, final, (Path *) sift_create_sorted_unique_path(sub, final, p, nkeys, final->cheapest_total_path->rows),
+												   sub->upper_targets[UPPERREL_FINAL]);
+	return NULL;
+}
+
+static Path *
+dimension_path(RelOptInfo *dim, Path *subpath)
+{
+	SubqueryScanPath *p = makeNode(SubqueryScanPath);
+
 	p->path.pathtype = T_SubqueryScan;
 	p->path.parent = dim;
 	p->path.pathtarget = dim->reltarget;
-	p->subpath = final->cheapest_total_path;
+	p->subpath = subpath;
 	p->path.rows = p->subpath->rows;
 	p->path.startup_cost = p->subpath->startup_cost;
 	p->path.total_cost = p->subpath->total_cost + cpu_tuple_cost * p->path.rows;
@@ -403,10 +514,18 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 	Query	   *dq;
 	PlannerInfo *sub;
 	Path	   *path;
+	const IndexOptInfo *ix = NULL;
+	bool		unique,
+				heap = true;
 
 	if (lateral->rtekind != RTE_SUBQUERY || lateral->lateral_relids == NULL || (rte = one_row_table(lrte->subquery)) == NULL || !split_ties(lrte->subquery, &t))
 		return false;
-	dq = dimension_query(lateral, lrte->subquery, &t, unique_key(rte, &t));
+	unique = unique_key(rte, &t);
+	if (!unique && lrte->subquery->sortClause == NIL && reads_row_value(lateral, lrte->subquery))
+		ix = native_order(lateral, &t, &heap);
+	if (ix == NULL && !heap)
+		return false;
+	dq = dimension_query(lateral, lrte->subquery, &t, unique, ix);
 	query_tree_walker(dq, levels_walker, &r, 0);
 	if (r.up1 || r.up2 || r.deeper)
 		return false;
@@ -415,7 +534,9 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 	out->rel = dimension_rel(root, lateral, relid, sub, &t, out);
 	if (out->rel == NULL || !dimension_quals(out->rel, lateral, map))
 		return false;
-	path = dimension_path(out->rel, sub);
+	if ((path = first_rows_path(sub, ix, out->nkeys)) == NULL)
+		return false;
+	path = dimension_path(out->rel, path);
 	out->rel->rows = path->rows;
 	out->rel->pathlist = list_make1(path);
 	out->rel->cheapest_startup_path = out->rel->cheapest_total_path = path;

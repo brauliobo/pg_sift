@@ -245,9 +245,11 @@ typedef int SiftTamOptions;
 #if PG_VERSION_NUM >= 190000
 typedef UniquePath SiftSortedUniquePath;
 #define sift_is_sorted_unique_path(p)	IsA(p, UniquePath)
+#define sift_create_sorted_unique_path(root, rel, subpath, ncols, ngroups)	create_unique_path((root), (rel), (subpath), (ncols), (ngroups))
 #else
 typedef UpperUniquePath SiftSortedUniquePath;
 #define sift_is_sorted_unique_path(p)	IsA(p, UpperUniquePath)
+#define sift_create_sorted_unique_path(root, rel, subpath, ncols, ngroups)	create_upper_unique_path((root), (rel), (subpath), (ncols), (ngroups))
 #endif
 
 /* A virtual generated column (18) stores nothing: the planner replaces each reference to it by its expression, so only a read of the tuples themselves finds its NULL */
