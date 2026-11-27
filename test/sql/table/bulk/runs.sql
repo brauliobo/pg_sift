@@ -1,6 +1,8 @@
 -- A bulk load writes a run of superblocks as one segment: each segment repeats the dictionaries of its columns, so the table is smaller the fewer
 -- segments a load leaves. Rows of about 330 bytes are 6500 to a write buffer of 2 MB: 40000 rows are one run, one segment; 100000 rows need more.
 CREATE EXTENSION pg_sift;
+-- Format 1: the runs of superblocks a bulk load writes are Format 1
+SET sift.test_create_format1 = on;
 
 CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 300, '0') AS pad FROM generate_series(1, 100000) g;
 CREATE FUNCTION same_rows(a regclass, b regclass) RETURNS boolean LANGUAGE plpgsql AS $$

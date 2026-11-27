@@ -3,6 +3,8 @@
 -- others keep the layout of earlier versions. The rows survive an update, a delete, a rollback and the promotion into columns.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: sift.table_wide_rows and the tail pages of the write buffer are Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 

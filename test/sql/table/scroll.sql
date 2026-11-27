@@ -1,6 +1,8 @@
 -- Backward scans: a SCROLL cursor on a sift_table walks forward and backward over the write buffer pages and the column groups (several
 -- superblocks and layouts), with dead rows, changes of direction, both ends and a TID range. The model is the rows in forward order.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer pages and the column groups the cursor walks are Format 1
+SET sift.test_create_format1 = on;
 
 CREATE TABLE sc (id int, v text) USING sift_table;
 

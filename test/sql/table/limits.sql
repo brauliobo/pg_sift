@@ -1,6 +1,8 @@
 -- A sift_table holds at most 127 columns: the limit is refused when the table is created and when a column is added to it or the leaves of
 -- declared paths come back, with the same message, so that it is not the next write that fails.
 CREATE EXTENSION pg_sift;
+-- Format 1: the 127 columns of a sift_table are the Format 1 limit; col/f2/limits covers Format 2.0
+SET sift.test_create_format1 = on;
 \set VERBOSITY terse
 CREATE FUNCTION make_wide(n int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN

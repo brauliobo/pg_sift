@@ -1,6 +1,8 @@
 -- sift.table_bulk_groups: COPY, CREATE TABLE AS and REFRESH MATERIALIZED VIEW write the rows of a sift_table straight into column groups
 -- (no write buffer, nothing to promote). Every load is compared with a heap twin, and the segments say which path wrote it.
 CREATE EXTENSION pg_sift;
+-- Format 1: sift.table_bulk_groups and its write buffer bypass are Format 1
+SET sift.test_create_format1 = on;
 SET sift.table_max_segments = 24;
 
 CREATE FUNCTION digest(tbl regclass) RETURNS text LANGUAGE plpgsql AS $$

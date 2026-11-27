@@ -3,6 +3,8 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the row count of a write buffer page is Format 1
+SET sift.test_create_format1 = on;
 CREATE TABLE pr (id int) USING sift_table;
 INSERT INTO pr SELECT generate_series(1, 20);
 DELETE FROM pr WHERE id % 2 = 0;

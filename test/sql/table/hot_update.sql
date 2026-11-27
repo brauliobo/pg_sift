@@ -124,7 +124,10 @@ SELECT same_all() AS after_reindex;
 SELECT same('SELECT * FROM @ WHERE v BETWEEN 1000 AND 1100') AS reindexed_v;
 
 -- a bitmap that goes lossy (rows of 1,500 bytes: a vblock holds a few, a small work_mem cannot hold an entry for each) reaches the members from their roots
+-- Format 1: a vblock of Format 2.0 holds some 290 rows whatever their width, so that no bitmap of these 8,000 rows goes lossy
+SET sift.test_create_format1 = on;
 CREATE TABLE t2 (id int PRIMARY KEY, grp int, v int, pad text) USING sift_table WITH (autovacuum_enabled = false);
+RESET sift.test_create_format1;
 CREATE TABLE h2 (id int PRIMARY KEY, grp int, v int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO t2 SELECT g, g % 10, g, repeat('x', 1500) FROM generate_series(1, 8000) g;
 INSERT INTO h2 SELECT * FROM t2;

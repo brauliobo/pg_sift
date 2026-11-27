@@ -2,6 +2,8 @@
 -- freed the most it could for the bytes it copied. A rewrite makes a new segment with the next generation, so the order of the generations of
 -- the rewritten segments is the order of the rewrites; each is told by the rows it keeps.
 CREATE EXTENSION pg_sift;
+-- Format 1: the generations of the segments a rewrite makes are Format 1
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 CREATE TABLE od (id int, grp int, pad text) USING sift_table WITH (autovacuum_enabled = false);
 SELECT sift.table_set_option('od', 'dead_rewrite_pct', '30');

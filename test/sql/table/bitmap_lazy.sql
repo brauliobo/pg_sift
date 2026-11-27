@@ -1,6 +1,8 @@
 -- A bitmap heap scan of a sift_table hands its slot the rows of the column groups undecoded, as the fetch by TID does: the columns the plan reads are decoded when it reads them. The rows
 -- are the heap's: the same ones through updates (HOT and not), deletes not yet vacuumed, a write buffer and units of several superblocks, and a mutant that skips the snapshot test is not.
 CREATE EXTENSION pg_sift;
+-- Format 1: the undecoded rows of the column groups, the mutants of sift.test_bitmap_no_visible and a vblock of a few wide rows are Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, k int, v int, note text, tag text) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE h (id int PRIMARY KEY, k int, v int, note text, tag text) WITH (autovacuum_enabled = false);

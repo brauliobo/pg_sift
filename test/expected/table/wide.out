@@ -2,6 +2,8 @@
 -- of a row (the bytes used to land in the next segment and the read failed with a generation error).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the overflow pages of the write buffer are Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 CREATE TABLE wide (id int, v text) USING sift_table;

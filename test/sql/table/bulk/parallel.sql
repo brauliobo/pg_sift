@@ -1,6 +1,8 @@
 -- The groups of a bulk load are written by the workers of a parallel context when the load has more than one: a group is 8 units of 2 MB write
 -- buffers (6500 rows of about 330 bytes each), the backend and its workers take a group each, and the rows and the TIDs are those of a load alone (which keeps one segment writer for all its units, so it leaves no more segments)
 CREATE EXTENSION pg_sift;
+-- Format 1: the bulk groups the workers write are Format 1
+SET sift.test_create_format1 = on;
 
 CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 300, '0') AS pad FROM generate_series(1, 150000) g;
 CREATE FUNCTION same_rows(a regclass, b regclass) RETURNS boolean LANGUAGE plpgsql AS $$

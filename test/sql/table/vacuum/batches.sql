@@ -5,6 +5,8 @@
 -- The dead rows come from every source: the log of the column groups, a write buffer, HOT updates and a load that was rolled back (rows of a group whose writer aborted).
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pageinspect;
+-- Format 1: the dead-row batches and the segments of a VACUUM are Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 
 -- a, b, c: the same rows, vacuumed with the budget of 64 MB (one batch), of 64 kB and of 96 bytes (test); d, e: only the loads, with a batch of one run of 16 bytes and the budget of 64 MB

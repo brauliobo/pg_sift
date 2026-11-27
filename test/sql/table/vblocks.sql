@@ -2,6 +2,8 @@
 -- second file segment) is read by the BM25 scan without any read of a block past the real end of the file (the scan prefetched the heap
 -- block of each match, and the file has no such segment). A testing setting moves the virtual blocks there without writing a gigabyte.
 CREATE EXTENSION pg_sift;
+-- Format 1: the virtual block numbering past 1 GiB of the write buffers and segments is Format 1
+SET sift.test_create_format1 = on;
 SET sift.table_vblock_floor = 140000;
 CREATE TABLE vb (id int, body text) USING sift_table;
 INSERT INTO vb SELECT g, 'order ' || g || CASE WHEN g % 2 = 0 THEN ' express shipping' ELSE ' standard shipping' END FROM generate_series(1, 3000) g;

@@ -2,6 +2,8 @@
 -- maintained keeps every row and answer, drops the dead rows from its segments and gives the space back like the table that is vacuumed,
 -- less the tombstone log, which only a VACUUM that has been through the indexes can shorten; a VACUUM after it ends at the same size.
 CREATE EXTENSION pg_sift;
+-- Format 1: the tombstone and column segments sift.table_maintain works on are Format 1
+SET sift.test_create_format1 = on;
 \set SHOW_CONTEXT never
 -- the shipped default is on (the test clusters run with it off, as without autovacuum: a pass changes the layouts the tests count)
 SELECT boot_val AS shipped_default FROM pg_settings WHERE name = 'sift.async_maintenance';

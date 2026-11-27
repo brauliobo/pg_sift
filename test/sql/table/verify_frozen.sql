@@ -2,6 +2,8 @@
 -- stays in the file). sift._test_tbl_verify then has no versions to check, and the scans read the group as frozen: the answers are the heap's.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the xid of the version section of a group is Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE twin AS SELECT g AS id, g % 7 AS grp, 'row ' || g AS v, lpad(g::text, 100, '0') AS pad FROM generate_series(1, 20000) g;

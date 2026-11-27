@@ -3,6 +3,8 @@
 -- its deleted rows, and the log VACUUM writes in its place has a header of the new length with an empty record.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the header page of the tombstone log is Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 CREATE TABLE t (id int PRIMARY KEY, v int) USING sift_table WITH (autovacuum_enabled = false);
 CREATE TABLE h (id int PRIMARY KEY, v int) WITH (autovacuum_enabled = false);

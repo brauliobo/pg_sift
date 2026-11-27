@@ -1,6 +1,8 @@
 -- SiftAgg over a sift_table: the column groups through the engine, the write buffer rows as batches, the visibility of the table.
 -- Every query runs with and without the pushdown; the results must be the same.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffer rows the engine reads as batches are Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 

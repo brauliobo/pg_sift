@@ -4,6 +4,8 @@
 -- An emptied and refilled table stays the size it had, an update-heavy table returns to about its live size, and VACUUM FULL does not
 -- grow it. vacuum_truncate = false keeps the file as it was.
 CREATE EXTENSION pg_sift;
+-- Format 1: the write buffers that VACUUM converts to column segments are Format 1
+SET sift.test_create_format1 = on;
 CREATE TABLE sp (id int, v bigint, t text) USING sift_table WITH (autovacuum_enabled = false);
 -- a table nothing was written to has no metapage yet: no blocks, no sections
 SELECT relation_blocks, high_water, free_blocks, reusable_blocks, free_extents FROM sift.table_space('sp');
