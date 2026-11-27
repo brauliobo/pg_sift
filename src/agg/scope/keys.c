@@ -55,17 +55,27 @@ key_equality(Oid key_type, Oid opno, Oid inputcollid)
 	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
 }
 
-/* key = rhs or key = ANY(rhs) by the equality of the key, on the pairs relation (inner: in the sub-select that is the pairs), rhs a constant or a parameter whose values the summary codes */
+/* key = rhs (or rhs = key) or key = ANY(rhs) by the equality of the key, on the pairs relation (inner: in the sub-select that is the pairs), rhs a constant or a parameter whose values the summary codes */
 static bool
 key_args(const ScopePlan *p, List *args, Oid opno, Oid inputcollid, bool inner, bool array, Expr **rhs)
 {
 	Node	   *l,
 			   *r;
 
-	if (list_length(args) != 2 || !key_equality(p->spec.key_type, opno, inputcollid))
+	if (list_length(args) != 2)
 		return false;
 	l = sift_v6_strip_relabel(linitial(args));
 	r = sift_v6_strip_relabel(lsecond(args));
+	if (!array && !IsA(l, Var) && IsA(r, Var))
+	{
+		Node	   *t = l;
+
+		l = r;
+		r = t;
+		opno = get_commutator(opno);
+	}
+	if (!OidIsValid(opno) || !key_equality(p->spec.key_type, opno, inputcollid))
+		return false;
 	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : sift_v6_scope_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
 		!p->scope->key_codes(p->spec.key_type, array ? get_element_type(exprType(r)) : exprType(r)))
 		return false;
@@ -99,7 +109,8 @@ bool
 sift_v6_scope_key_filter(ScopePlan *p)
 {
 	List	   *outer = p->pairs->baserestrictinfo;
-	List	   *inner = p->pairs_query != NULL && p->pairs_query->jointree->quals != NULL ? make_ands_implicit((Expr *) p->pairs_query->jointree->quals) : NIL;
+	Node	   *quals = p->pairs_query != NULL ? p->pairs_query->jointree->quals : NULL;
+	List	   *inner = quals == NULL ? NIL : IsA(quals, List) ? (List *) quals : make_ands_implicit((Expr *) quals);
 	List	   *rest_outer = NIL,
 			   *rest_inner = NIL;
 	Expr	   *rhs = NULL;

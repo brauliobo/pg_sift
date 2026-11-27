@@ -32,6 +32,7 @@
 
 #include "agg/agg.h"
 #include "agg/cost/card.h"
+#include "agg/cost/model.h"
 #include "agg/safety.h"
 #include "agg/scope/scope.h"
 #include "agg/settings.h"
@@ -356,9 +357,10 @@ reset_spec(ScopePlan *p, int ord)
 static bool
 compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!sift_v6_scope_key_filter(p) || !p->spec.key_given || p->spec.key_array)
+	if (!sift_v6_scope_key_filter(p) || !p->spec.key_given)
 		return false;
-	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.scan = true,.member_col = p->layout.member_col};
+	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.key_array = p->spec.key_array,.scan = true,
+	.member_col = p->layout.member_col};
 	return sift_v6_compile_fact(p->root, p->fact, out, p->index, extra, &p->v6, &p->v6_tlist);
 }
 
@@ -371,7 +373,8 @@ compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	for (int ord = 0; ord < p->scope->nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
-		ok = sift_v6_scope_matches(p, ord) && (compile_target(p, extra, out) || (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)))) && sift_v6_scope_semi_ok(p);
+		ok = sift_v6_scope_matches(p, ord) && ((compile_target(p, extra, out) && sift_v6_scope_semi_ok(p)) ||
+											   (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)) && sift_v6_scope_semi_ok(p)));
 	}
 	relation_close(p->irel, NoLock);
 	return ok;
@@ -424,6 +427,14 @@ scope_exprs(const ScopePlan *p)
 }
 
 #define SCOPE_TOPK_MAX	1000
+
+/* A read of the summary reads two pages of the relation, as cold as a scan of it finds them (agg/cost/model.h), and a record for each of the rows it leaves (a cube of a key or a month, a row of a ring) */
+static void
+summary_price(const ScopePlan *p, double rows, Path *path)
+{
+	path->startup_cost = 0;
+	path->total_cost = 2 * random_page_cost * sift_agg_cold_share(p->index != NULL ? p->index->pages : p->fact->pages) + cpu_tuple_cost * rows;
+}
 
 static bool
 topk_shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
@@ -570,11 +581,10 @@ sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInf
 			cp->path.parent = out;
 			cp->path.pathtarget = target;
 			cp->path.rows = root->limit_tuples;
-			cp->path.startup_cost = 0;
-			cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * root->limit_tuples;
+			summary_price(&p, root->limit_tuples, &cp->path);
 			cp->path.pathkeys = root->sort_pathkeys;
 			cp->methods = &scope_path_methods;
-			p.spec.once = p.semi;
+			p.spec.once = p.once;
 			cp->custom_paths = list_make1(join);
 			cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p.spec), p.v6_tlist, NIL, scope_exprs(&p), sift_v6_spec_pack(&p.v6));
 			sift_v6_force_price(&cp->path);
@@ -683,8 +693,6 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	cp->path.parent = out;
 	cp->path.pathtarget = out->reltarget;
 	cp->path.rows = groups;
-	cp->path.startup_cost = 0;
-	cp->path.total_cost = 2 * random_page_cost + cpu_tuple_cost * groups;
 	if (p->spec.scan)
 	{
 		const double kept = scan_kept(p, input_rel);
@@ -694,8 +702,10 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 		cp->path.startup_cost = open;
 		cp->path.total_cost = open + kept * (cp->path.total_cost - open + cpu_operator_cost * p->fact->rows) + cpu_tuple_cost * groups;
 	}
+	else
+		summary_price(p, groups, &cp->path);
 	cp->methods = &scope_path_methods;
-	p->spec.once = p->semi;
+	p->spec.once = p->once;
 	if (p->spec.scan)
 		cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p->spec), p->v6_tlist, extra->havingQual, scope_exprs(p), sift_v6_spec_pack(&p->v6));
 	else

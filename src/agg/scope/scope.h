@@ -80,6 +80,7 @@ typedef struct ScopePlan
 	List	   *v6_tlist;
 	int			cap_aggs;
 	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
+	bool		once;			/* the statement wrote IN or EXISTS over the pairs (a semi join, or the inner join PostgreSQL made of it): a fact counts once */
 } ScopePlan;
 
 /* keys.c: the key the statement binds the pairs to, and the attribute of the pairs relation a Var of the pairs side is */

@@ -21,6 +21,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/prep.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
@@ -445,6 +446,13 @@ sift_v6_scope_plain_relation(PlannerInfo *root, RelOptInfo *rel)
 	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL && rel->joininfo == NIL;
 }
 
+/* An output of a planned sub-select that the statement does not read: PostgreSQL computes NULL in its place */
+static bool
+unread_output(const Expr *e)
+{
+	return IsA(e, Const) && ((const Const *) e)->constisnull;
+}
+
 /* One table, its rows by one condition, its columns as they are: no row it says is another's (a security qual, a limit, a grouping, a second relation) */
 static bool
 single_table_query(const Query *q)
@@ -454,12 +462,13 @@ single_table_query(const Query *q)
 		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || !sift_v6_plain_table(linitial(q->rtable)) || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
 		return false;
 	foreach_node(TargetEntry, te, q->targetList)
-		if (te->resjunk || !IsA(te->expr, Var) || ((Var *) te->expr)->varno != 1)
+		if (te->resjunk || !(IsA(te->expr, Var) ? ((Var *) te->expr)->varno == 1 : unread_output(te->expr)))
 			return false;
 	return true;
 }
 
-/* The pairs side that is a sub-select or a materialized CTE over one table: the query it computes */
+/* The pairs side that is a sub-select or a materialized CTE over one table: the query it computes; a sub-select as it was planned, with the conditions PostgreSQL pushed into it (those of a security
+ * barrier view stay there) */
 static Query *
 pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 {
@@ -467,7 +476,7 @@ pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 	Query	   *q = NULL;
 
 	if (rte->rtekind == RTE_SUBQUERY)
-		q = rte->subquery;
+		q = rel->subroot != NULL ? rel->subroot->parse : rte->subquery;
 	else if (rte->rtekind == RTE_CTE && !rte->self_reference && rte->ctelevelsup == 0)
 		foreach_node(CommonTableExpr, cte, root->parse->cteList)
 			if (strcmp(cte->ctename, rte->ctename) == 0)
@@ -475,19 +484,59 @@ pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 	return q;
 }
 
+/* Did the statement write the pairs as the right side of IN or EXISTS: PostgreSQL makes an inner join of a semi join whose right side is unique, which counts a fact once all the same */
+static bool
+written_semi(Node *n, Index pairs_relid)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, FromExpr))
+	{
+		foreach_ptr(Node, item, ((FromExpr *) n)->fromlist)
+			if (written_semi(item, pairs_relid))
+				return true;
+		return false;
+	}
+	if (!IsA(n, JoinExpr))
+		return false;
+	if (((JoinExpr *) n)->jointype == JOIN_SEMI && bms_is_member(pairs_relid, get_relids_in_jointree(((JoinExpr *) n)->rarg, false, false)))
+		return true;
+	return written_semi(((JoinExpr *) n)->larg, pairs_relid) || written_semi(((JoinExpr *) n)->rarg, pairs_relid);
+}
+
 /* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does */
 bool
 sift_v6_scope_pairs_joined(ScopePlan *p)
 {
 	p->semi = p->root->join_info_list != NIL;
+	p->once = p->semi || written_semi((Node *) p->root->parse->jointree, p->pairs->relid);
 	return !p->semi || semi_joins(p->root, p->pairs->relid);
 }
 
-/* A semi join names no key of the pairs and counts a member once: one key and not an array of them */
+/* A semi join names no key of the pairs and counts a member once: one key, or the keys of an array that the scan of their members reads once (the cubes of the keys add up) */
 bool
 sift_v6_scope_semi_ok(const ScopePlan *p)
 {
-	return !p->semi || (p->spec.key_given && !p->spec.key_array && !p->spec.by_key);
+	return !p->semi || (p->spec.key_given && (!p->spec.key_array || p->spec.scan) && !p->spec.by_key);
+}
+
+/*
+ * A security barrier view over the pairs relation without row-level security: the scope read evaluates no function of the statement over its rows, since its own conditions must be the
+ * predicate of the pairs (sift_v6_scope_key_filter) and the statement may bind its key only
+ */
+static bool
+barrier_view_ok(PlannerInfo *root, const RelOptInfo *rel)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
+	const Query *q = rte->rtekind == RTE_SUBQUERY ? rte->subquery : NULL;
+
+	if (q == NULL || !rte->security_barrier || rte->securityQuals != NIL || q->hasRowSecurity || list_length(q->rtable) != 1 || root->qual_security_level > 0 ||
+		agg_query_rte_has_rls(q, linitial(q->rtable)))
+		return false;
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (ri->security_level > 0)
+			return false;
+	return true;
 }
 
 bool
@@ -495,7 +544,7 @@ sift_v6_scope_pairs_ok(ScopePlan *p)
 {
 	RelOptInfo *rel = p->pairs;
 
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !agg_rel_security_ok(p->root, rel))
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !(agg_rel_security_ok(p->root, rel) || barrier_view_ok(p->root, rel)))
 		return false;
 	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
 		return true;

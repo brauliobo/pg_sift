@@ -83,13 +83,13 @@ END $$;
 \echo clean
 clean
 SELECT * FROM probe();
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | clean
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | clean
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | clean
+ 2 | IN list of keys                   | same    | not a scope read                           | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | clean
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
@@ -100,13 +100,13 @@ SELECT apply(1) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | not a scope read                           | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(2) AS state
@@ -116,13 +116,13 @@ SELECT apply(2) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(3) AS state
@@ -132,13 +132,13 @@ SELECT apply(3) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(4) AS state
@@ -148,13 +148,13 @@ SELECT apply(4) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(5) AS state
@@ -164,13 +164,13 @@ SELECT apply(5) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(6) AS state
@@ -180,13 +180,13 @@ SELECT apply(6) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(7) AS state
@@ -196,13 +196,13 @@ SELECT apply(7) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(8) AS state
@@ -212,13 +212,13 @@ SELECT apply(8) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT apply(9) AS state
@@ -228,13 +228,13 @@ SELECT apply(9) AS state
 (1 row)
 
 SELECT * FROM probe()
- n |               label               | verdict |      route       | cube  
----+-----------------------------------+---------+------------------+-------
- 1 | one key, count and sum            | same    | summary          | delta
- 2 | IN list of keys                   | same    | not a scope read | 
- 3 | EXISTS, dim_b in several keys     | same    | not a scope read | 
- 4 | a row for each pair of three keys | same    | summary          | delta
- 5 | listing of one key                | same    | not a scope read | 
+ n |               label               | verdict |                   route                    | cube  
+---+-----------------------------------+---------+--------------------------------------------+-------
+ 1 | one key, count and sum            | same    | summary                                    | delta
+ 2 | IN list of keys                   | same    | scan of the facts (the members of the key) | 
+ 3 | EXISTS, dim_b in several keys     | same    | scan of the facts (the members of the key) | 
+ 4 | a row for each pair of three keys | same    | summary                                    | delta
+ 5 | listing of one key                | same    | not a scope read                           | 
 (5 rows)
 
 SELECT sift.col_verify('facts_col', true);

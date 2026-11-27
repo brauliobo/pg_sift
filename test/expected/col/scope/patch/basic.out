@@ -52,12 +52,12 @@ CREATE FUNCTION probe() RETURNS TABLE (n int, verdict text, route text) LANGUAGE
 $$;
 -- built: nothing changed, the summary alone answers
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
   3 | same    | not a scope read
-  4 | same    | not a scope read
+  4 | same    | scan of the facts (the members of the key)
   5 | same    | not a scope read
   6 | same    | not a scope read
   7 | same    | summary
@@ -71,12 +71,12 @@ SELECT * FROM probe();
 -- pairs inserted (members in several keys get one more; a member with facts and no pair gets its first)
 INSERT INTO membership VALUES (1, 12), (2, 12), (7, 12), (301, 12), (302, 3), (303, 5), (303, 3) ON CONFLICT DO NOTHING;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
   3 | same    | not a scope read
-  4 | same    | not a scope read
+  4 | same    | scan of the facts (the members of the key)
   5 | same    | not a scope read
   6 | same    | not a scope read
   7 | same    | summary
@@ -90,12 +90,12 @@ SELECT * FROM probe();
 -- pairs deleted
 DELETE FROM membership WHERE group_id = 3 AND dim_a_id % 5 = 0;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
   3 | same    | not a scope read
-  4 | same    | not a scope read
+  4 | same    | scan of the facts (the members of the key)
   5 | same    | not a scope read
   6 | same    | not a scope read
   7 | same    | summary
@@ -110,13 +110,13 @@ SELECT * FROM probe();
 WITH d AS (DELETE FROM membership WHERE dim_a_id % 7 = 0 RETURNING dim_a_id, group_id)
 INSERT INTO membership SELECT dim_a_id, 1 + group_id % 12 FROM d ON CONFLICT DO NOTHING;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -129,13 +129,13 @@ SELECT * FROM probe();
 -- facts inserted (write buffer rows are not in the summary), for members of any number of keys, of none, and of no member
 INSERT INTO facts SELECT 20000 + i, CASE WHEN i % 50 = 0 THEN NULL ELSE 1 + (i * 37) % 320 END, timestamptz '2026-02-01', 1, 'y' FROM generate_series(1, 400) i;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -149,13 +149,13 @@ SELECT * FROM probe();
 UPDATE facts SET v = v + 100 WHERE id % 9 = 0 AND id <= 20000;
 DELETE FROM facts WHERE id % 11 = 0 AND id <= 20000;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -172,13 +172,13 @@ DELETE FROM membership WHERE dim_a_id IN (8, 9, 10);
 INSERT INTO facts SELECT 30000 + i, 1 + i % 320, timestamptz '2026-02-01', 1, 'z' FROM generate_series(1, 50) i;
 ROLLBACK;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -194,13 +194,13 @@ DELETE FROM membership WHERE dim_a_id IN (11, 12, 13);
 INSERT INTO membership VALUES (11, 1), (305, 2), (306, 1), (306, 2) ON CONFLICT DO NOTHING;
 INSERT INTO facts SELECT 40000 + i, CASE i % 4 WHEN 0 THEN 11 WHEN 1 THEN 305 WHEN 2 THEN 306 ELSE 12 END, timestamptz '2026-02-01', 2, 'w' FROM generate_series(1, 40) i;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -212,13 +212,13 @@ SELECT * FROM probe();
 
 ROLLBACK;
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
   1 | same    | not a scope read
   2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary
@@ -288,13 +288,13 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM probe();
- n  | verdict |      route       
-----+---------+------------------
-  1 | same    | not a scope read
-  2 | same    | not a scope read
-  3 | same    | not a scope read
-  4 | same    | not a scope read
-  5 | same    | not a scope read
+ n  | verdict |                   route                    
+----+---------+--------------------------------------------
+  1 | same    | scan of the facts (the members of the key)
+  2 | same    | scan of the facts (the members of the key)
+  3 | same    | scan of the facts (the members of the key)
+  4 | same    | scan of the facts (the members of the key)
+  5 | same    | scan of the facts (the members of the key)
   6 | same    | not a scope read
   7 | same    | summary
   8 | same    | summary

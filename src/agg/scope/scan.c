@@ -15,6 +15,8 @@
 #include "nodes/extensible.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 #include "agg/agg.h"
@@ -58,32 +60,97 @@ scan_begin(CustomScanState *node, EState *estate, int eflags)
 	st->rel = index_open(st->spec->relid, AccessShareLock);
 	st->heap = table_open(st->rel->rd_index->indrelid, AccessShareLock);
 	st->key = ExecInitExpr(linitial(cs->custom_exprs), &node->ss.ps);
-	st->key_type = exprType(linitial(cs->custom_exprs));
+	st->key_type = st->spec->key_array ? get_element_type(exprType(linitial(cs->custom_exprs))) : exprType(linitial(cs->custom_exprs));
 	sift_v6_qual_scankeys(&node->ss.ps, st->v6->jsonqual, st->rel, st->v6->indexqual, &st->keys, &st->nkeys, &st->rtkeys, &st->nrt);
 }
 
-/* The members of the key, as the snapshot sees the pairs: the array the scan takes as the list of the member column (none for a NULL key) */
-static ArrayType *
-key_members(ScopeScanState *st, EState *estate)
+/* The keys of the run: the one key, or the distinct elements of the array that are not NULL (none for a NULL key) */
+static Datum *
+run_keys(ScopeScanState *st, int *n)
 {
-	const Oid	member_type = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1)->atttypid;
-	bool		no_key;
-	const Datum key = ExecEvalExprSwitchContext(st->key, st->css.ss.ps.ps_ExprContext, &no_key);
-	uint32		n = 0;
-	ArrayType  *members = no_key ? construct_empty_array(member_type) :
-		st->ops->scope->key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->key_type, key, member_type, st->gcx, &n, &st->router);
+	bool		isnull;
+	const Datum d = ExecEvalExprSwitchContext(st->key, st->css.ss.ps.ps_ExprContext, &isnull);
+	Datum	   *vals;
+	bool	   *nulls;
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+	int			m = 0;
 
-	sift_budget_check((Size) n * sizeof(Datum), work_mem, "the members of a scope key", "work_mem", NULL);
-	st->nscope_keys = !no_key;
-	st->members = n;
-	return members;
+	*n = 0;
+	if (isnull)
+		return NULL;
+	if (!st->spec->key_array)
+	{
+		vals = palloc(sizeof(Datum));
+		vals[(*n)++] = d;
+		return vals;
+	}
+	get_typlenbyvalalign(st->key_type, &typlen, &typbyval, &typalign);
+	deconstruct_array(DatumGetArrayTypeP(d), st->key_type, typlen, typbyval, typalign, &vals, &nulls, &m);
+	for (int i = 0; i < m; i++)
+	{
+		bool		seen = nulls[i];
+
+		for (int j = 0; j < *n && !seen; j++)
+			seen = datumIsEqual(vals[i], vals[j], typbyval, typlen);
+		if (!seen)
+			vals[(*n)++] = vals[i];
+	}
+	return vals;
 }
 
+/* The members of the keys, as the snapshot sees the pairs: the array the scan takes as the list of the member column. A member of several keys is listed once for each, which the list of
+ * the scan holds as one; the granules of a single key are the router's */
+static ArrayType *
+key_members(ScopeScanState *st, EState *estate, const Datum *keys, int nkeys, const struct SiftScopeRouter **router)
+{
+	const Form_pg_attribute att = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1);
+	ArrayBuildState *acc = initArrayResult(att->atttypid, CurrentMemoryContext, false);
+	Size		total = 0;
+
+	*router = NULL;
+	for (int k = 0; k < nkeys; k++)
+	{
+		const struct SiftScopeRouter *r;
+		uint32		n = 0;
+		ArrayType  *m = st->ops->scope->key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->key_type, keys[k], att->atttypid, st->gcx, &n, &r);
+		Datum	   *vals;
+		bool	   *nulls;
+		int			nv;
+
+		total += n;
+		sift_budget_check(total * sizeof(Datum), work_mem, "the members of the scope keys", "work_mem", NULL);
+		if (nkeys == 1)
+			*router = r;
+		deconstruct_array(m, att->atttypid, att->attlen, att->attbyval, att->attalign, &vals, &nulls, &nv);
+		for (int i = 0; i < nv; i++)
+			accumArrayResult(acc, vals[i], nulls[i], att->atttypid, CurrentMemoryContext);
+	}
+	st->members += total;
+	return DatumGetArrayTypeP(makeArrayResult(acc, CurrentMemoryContext));
+}
+
+/* The facts of the members of the keys folded into the groups: one scan for a key, or for a semi join that counts a fact once whichever keys its member has */
+static void
+scan_keys(ScopeScanState *st, EState *estate, ScanKey keys, const Datum *scope_keys, int nscope_keys)
+{
+	const struct SiftScopeRouter *router;
+
+	keys[st->nkeys] = (ScanKeyData) {.sk_flags = SK_SEARCHARRAY,.sk_attno = st->spec->member_col,.sk_strategy = BTEqualStrategyNumber,
+	.sk_argument = PointerGetDatum(key_members(st, estate, scope_keys, nscope_keys, &router))};
+	st->router = st->nscope_keys == 1 ? router : NULL;
+	st->ops->zone->scan_run(st->v6, st->group, st->heap, st->rel, keys, st->nkeys + 1, estate->es_snapshot, NULL, 0, router, &st->stats, NULL, NULL, NULL);
+}
+
+/* A join counts a fact once for each pair of its member with the keys: the facts of each key are folded into the same groups */
 static void
 scan_run(ScopeScanState *st, EState *estate)
 {
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	ScanKey		keys = palloc((st->nkeys + 1) * sizeof(ScanKeyData));
+	Datum	   *scope_keys;
+	int			n;
 
 	st->started = true;
 	sift_v6_source_enter(st->rel, false, estate->es_snapshot);
@@ -91,10 +158,14 @@ scan_run(ScopeScanState *st, EState *estate)
 		ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, st->rtkeys, st->nrt);
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 scope groups");
 	memcpy(keys, st->keys, st->nkeys * sizeof(ScanKeyData));
-	keys[st->nkeys] = (ScanKeyData) {.sk_flags = SK_SEARCHARRAY,.sk_attno = st->spec->member_col,.sk_strategy = BTEqualStrategyNumber,
-	.sk_argument = PointerGetDatum(key_members(st, estate))};
 	st->group = sift_v6_group_new(st->v6, st->gcx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor);
-	st->ops->zone->scan_run(st->v6, st->group, st->heap, st->rel, keys, st->nkeys + 1, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL, NULL);
+	scope_keys = run_keys(st, &n);
+	st->nscope_keys = n;
+	if (n <= 1 || st->spec->once)
+		scan_keys(st, estate, keys, scope_keys, n);
+	else
+		for (int k = 0; k < n; k++)
+			scan_keys(st, estate, keys, &scope_keys[k], 1);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }
@@ -141,6 +212,7 @@ scan_reset(ScopeScanState *st)
 	st->group = NULL;
 	st->router = NULL;
 	st->stats = (SiftV6ScanStats) {0};
+	st->members = st->nscope_keys = 0;
 	st->started = false;
 }
 
