@@ -1,5 +1,5 @@
 -- A statement past a fixed limit of SiftAggV6 (docs/LIMITS.md) keeps the normal plan with the rows of the normal plan, and sift.explain_why names a slug of the
--- registry for it: the 9 expression keys of a statement are past the 8 expressions the scan computes (SIFT_V6_MAX_DERIVE). Every slug of the registry has its
+-- registry for it: the 65 FILTER clauses PostgreSQL evaluates of a statement are past the 64 expressions the scan computes (SIFT_V6_MAX_DERIVE). Every slug of the registry has its
 -- action and its sift.help.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -13,16 +13,16 @@ CREATE TABLE events (id int PRIMARY KEY, kind text, ts date);
 INSERT INTO events SELECT i, 'k' || i % 5, date '2025-01-01' + i % 6 FROM generate_series(1, 12000) i;
 CREATE INDEX events_col ON events USING sift_col (id, kind, ts);
 VACUUM (FREEZE, ANALYZE) events;
--- 8 keys of expressions of id and 9: the scan groups by the first, the normal plan keeps the second
+-- 64 FILTER clauses of expressions of id and 65: the scan computes the first, the normal plan keeps the second
 CREATE FUNCTION keys_q(n int) RETURNS text LANGUAGE sql AS $$
-	SELECT format('SELECT %s, count(*) FROM events GROUP BY %s', string_agg(format('id %% %s', k + 1), ', '), string_agg(k::text, ', '))
+	SELECT format('SELECT kind, %s FROM events GROUP BY kind', string_agg(format('count(*) FILTER (WHERE id %% %s = 0)', k + 1), ', '))
 	FROM generate_series(1, n) k
 $$;
-SELECT n, w.used, w.slug FROM unnest(ARRAY[8, 9]) n, LATERAL sift.explain_why(keys_q(n)) w ORDER BY n;
- n | used | slug 
----+------+------
- 8 | t    | 
- 9 | f    | key
+SELECT n, w.used, w.slug FROM unnest(ARRAY[64, 65]) n, LATERAL sift.explain_why(keys_q(n)) w ORDER BY n;
+ n  | used |   slug    
+----+------+-----------
+ 64 | t    | 
+ 65 | f    | aggregate
 (2 rows)
 
 -- the rows of the scan and of the normal plan
@@ -33,11 +33,11 @@ BEGIN
 	EXECUTE format('SELECT md5(string_agg(t::text, E''\n'' ORDER BY t::text)) FROM (%s) t', q) INTO r;
 	RETURN r;
 END $$;
-SELECT n, answer(keys_q(n), true) = answer(keys_q(n), false) AS same_rows FROM unnest(ARRAY[8, 9]) n ORDER BY n;
- n | same_rows 
----+-----------
- 8 | t
- 9 | t
+SELECT n, answer(keys_q(n), true) = answer(keys_q(n), false) AS same_rows FROM unnest(ARRAY[64, 65]) n ORDER BY n;
+ n  | same_rows 
+----+-----------
+ 64 | t
+ 65 | t
 (2 rows)
 
 -- the registry names the class of every slug and what to change: every slug has a line, and the refusal of explain_why joins to it on the slug
@@ -62,10 +62,10 @@ SELECT count(*) = count(*) FILTER (WHERE a.action <> '' AND a.action IS NOT NULL
  t
 (1 row)
 
-SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(keys_q(9)) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug;
- slug |  class   | has_action 
-------+----------+------------
- key  | semantic | t
+SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(keys_q(65)) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug;
+   slug    |  class   | has_action 
+-----------+----------+------------
+ aggregate | semantic | t
 (1 row)
 
 -- sift.help(slug) answers a refusal slug too: the reason and the action of the registry; the list of sift.help() stays the messages

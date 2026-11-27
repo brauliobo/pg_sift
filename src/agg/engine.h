@@ -205,7 +205,7 @@ typedef enum SiftV6DeriveKind
 	SVD_PG_EXPR					/* arbitrary PostgreSQL Expr evaluated over active rows via ExecEvalExpr with per-batch ResetExprContext */
 } SiftV6DeriveKind;
 
-#define SIFT_V6_MAX_DERIVE	8
+#define SIFT_V6_MAX_DERIVE	64
 #define SIFT_V6_MAX_CASE	4
 #define SIFT_V6_ELSE_BYTES	12
 

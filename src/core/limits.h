@@ -269,8 +269,8 @@
 	X(num_factors, "SIFT_VN_MAX_FACTORS", "agg/expr/num.h", 3, "factors", \
 	  "factors of an exact numeric product (a * b * c) of a SiftAgg scan, each a numeric column with a constant added and a constant multiplied", \
 	  "normal plan", "-", 0) \
-	X(v6_derived, "SIFT_V6_MAX_DERIVE", "agg/engine.h", 8, "expressions", \
-	  "different computed keys and arguments (length, extract, CASE, arithmetic, exact numeric products) of one SiftAgg scan", \
+	X(v6_derived, "SIFT_V6_MAX_DERIVE", "agg/engine.h", 64, "expressions", \
+	  "different computed keys, arguments and FILTER clauses (length, extract, CASE, arithmetic, exact numeric products, expressions PostgreSQL evaluates) of one SiftAgg scan", \
 	  "normal plan", "-", 0) \
 	X(v6_case_conds, "SIFT_V6_MAX_CASE", "agg/engine.h", 4, "conditions", \
 	  "equalities ANDed in the WHEN of the CASE of a computed text key or argument of a SiftAgg scan (the columns of an arithmetic expression of an unnest are one more)", \

@@ -111,7 +111,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  unit_bytes          | SIFT_COL_UNIT_MAX_BYTES         |          1073741823 | t         | t
  unit_rows           | SIFT_COL_UNIT_MAX_ROWS          |               74496 | t         | f
  v6_case_conds       | SIFT_V6_MAX_CASE                |                   4 | t         | f
- v6_derived          | SIFT_V6_MAX_DERIVE              |                   8 | t         | f
+ v6_derived          | SIFT_V6_MAX_DERIVE              |                  64 | t         | f
  v6_join_keys        | JOIN_MAX_KEYS                   |                   8 | t         | f
  v6_lock_k           | SIFT_LOCK_MAX_K                 |                4096 | t         | f
  v6_topk_items       | SIFT_V6_MAX_TOPK_ITEMS          |                  12 | t         | f
