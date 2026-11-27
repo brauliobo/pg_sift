@@ -420,9 +420,9 @@ patch_as_now(Fold *f, uint64 part_gen, const SiftRowBuf *rows, int leaf, SiftCol
 	return p;
 }
 
-/* The folds of the granule, the newest of each cell, laid over its rows */
+/* The folds of the granule, the newest of each cell, laid over its rows from row0 on */
 static void
-fold_apply(void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, SiftExtent **release, int *nrelease)
+fold_apply(void *fold, uint64 part_gen, uint32 granule_id, uint32 row0, SiftRowBuf *rows, SiftExtent **release, int *nrelease)
 {
 	Fold	   *f = fold;
 	const SiftColDeltaGranMap *gm;
@@ -437,6 +437,9 @@ fold_apply(void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, Sif
 		const char *old;
 		uint32		oldlen;
 
+		if (pt.row_ordinal < row0 || pt.row_ordinal - row0 >= (uint32) rows->n)
+			continue;
+		pt.row_ordinal -= row0;
 		if (pt.attnum == SIFT_CD_ATT_TID_REMAP)
 			sift_rowbuf_set_tid(rows, pt.row_ordinal, (uint64) pt.val.i);
 		else if (leaf >= 0 && sift_col_delta_fold_apply(rows, leaf, patch_as_now(f, part_gen, rows, leaf, &pt), &old, &oldlen))

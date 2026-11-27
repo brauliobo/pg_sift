@@ -35,6 +35,7 @@ const SiftCompactFold *sift_compact_fold = NULL;
 
 /* The rows of the inputs are written as a part when the compaction holds this share of its budget (a half), and the merged dictionaries of the string columns take at most this share of it (an eighth) */
 #define SIFT_COMPACT_FLUSH_SHARE	2
+#define SIFT_COMPACT_FIRST_SLICE	1024	/* the rows of the first slice, before a row was measured */
 #define SIFT_COMPACT_DICT_SHARE		8
 
 /* What the horizon lets a row's inserter be: kept as it is, frozen (it committed before the horizon) or dropped (it aborted) */
@@ -164,6 +165,7 @@ typedef struct Sink
 	const SiftPartDicts *adopt;
 	SiftMemTracker *mem;
 	Size		flush_bytes;
+	Size		row_bytes;		/* the bytes a row of the inputs takes in a row buffer, as the last slice measured it; 0 before the first */
 	bool		split;
 	const SiftCompactCut *cut;
 	bool		bounds_hold;
@@ -251,11 +253,21 @@ sink_flush(Sink *s, int side, bool whole)
 	sift_mem_release_os(freed);
 }
 
-/* The side that holds more is written while the compaction holds flush_bytes or more: what the rows of the inputs are in memory is never more than that and what a granule adds */
+/* The bytes of the rows the sink holds */
+static Size
+sink_held(const Sink *s)
+{
+	return s->rb[0]->mem_bytes + (s->split ? s->rb[1]->mem_bytes : 0);
+}
+
+/*
+ * The side that holds more is written while the compaction holds flush_bytes or more and its rows half of it: what the rows of the inputs are in memory is never more than that and
+ * what a slice adds, and what else the compaction holds (dictionaries, folds) does not cut the outputs into parts of a few rows
+ */
 static void
 sink_flush_due(Sink *s)
 {
-	while (sift_mem_used(s->mem) >= s->flush_bytes)
+	while (sift_mem_used(s->mem) >= s->flush_bytes && sink_held(s) >= s->flush_bytes / 2)
 	{
 		int			side = s->split && s->rb[1]->mem_bytes > s->rb[0]->mem_bytes ? 1 : 0;
 
@@ -270,6 +282,7 @@ typedef struct GranuleRows
 {
 	DeadBits	dead;
 	uint32		granule;
+	uint32		row0;			/* the row of the granule the first row of the slice is */
 	SiftXidHorizonCache *hc;
 	SiftCompactResult *res;
 } GranuleRows;
@@ -281,7 +294,7 @@ row_goes(SiftRowBuf *one, int r, void *arg)
 	Inserter	ins = inserter_of(one->xmin[r], gr->hc, &gr->res->stripped);
 
 	gr->res->rows_in++;
-	if (bits_dead(gr->dead, gr->granule, (uint16) r))
+	if (bits_dead(gr->dead, gr->granule, (uint16) (gr->row0 + r)))
 	{
 		gr->res->dead_dropped++;
 		return true;
@@ -301,7 +314,7 @@ row_goes(SiftRowBuf *one, int r, void *arg)
 	return false;
 }
 
-/* The rows of a granule go to the sink: an empty buffer of the one side takes the granule's buffer as it is, the others copy its rows */
+/* The rows of a slice go to the sink: an empty buffer of the one side takes the slice's buffer as it is, the others copy its rows */
 static void
 sink_take(Sink *sink, SiftRowBuf *one)
 {
@@ -316,8 +329,42 @@ sink_take(Sink *sink, SiftRowBuf *one)
 	sift_rowbuf_free(one);
 }
 
+/*
+ * The rows of the next slice of a granule that has left rows: the ones that fill the room sink_flush_due leaves before it writes, so that a granule whose rows take more than the budget
+ * is never in memory whole, and a slice read into an empty buffer is written as it is, as large as the budget lets it be
+ */
+static int
+slice_rows(Sink *s, int left)
+{
+	Size		used = sift_mem_used(s->mem),
+				held = sink_held(s);
+	Size		room = Max(used < s->flush_bytes ? s->flush_bytes - used : 0, held < s->flush_bytes / 2 ? s->flush_bytes / 2 - held : 0);
+	Size		rows = s->row_bytes == 0 ? SIFT_COMPACT_FIRST_SLICE : room / s->row_bytes;
+
+	return (int) Min((Size) left, Max(rows, 1));
+}
+
+static void
+add_slice(Sink *sink, const SiftGranuleView *v, const SiftRowVer *vers, int r0, int r1, const SiftCodeMap *code_map, const SiftColRemap *remap, uint64 part_gen, void *fold,
+		  GranuleRows *gr, SiftExtent **rel_ext, int *nrel)
+{
+	MemoryContext old = MemoryContextSwitchTo(sink->cx);
+	SiftRowBuf *one = sift_rowbuf_new(sink->spec);
+
+	MemoryContextSwitchTo(old);
+	sift_rowbuf_add_granule_mapped(one, v, vers, sink->spec, code_map, remap, r0, r1);
+	if (fold != NULL)
+		sift_compact_fold->apply(fold, part_gen, gr->granule, (uint32) r0, one, rel_ext, nrel);
+	sink->row_bytes = Max(one->mem_bytes / (Size) Max(one->n, 1), 1);
+	gr->row0 = (uint32) r0;
+	(void) sift_rowbuf_drop_if(one, row_goes, gr);
+	sink_take(sink, one);
+	(void) sift_mem_used(sink->mem);
+	sink_flush_due(sink);
+}
+
 static bool
-add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 g_lo, uint32 g_hi, Sink *sink, const SiftPartSpec *spec, const SiftCodeMap *code_map,
+add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 g_lo, uint32 g_hi, Sink *sink, const SiftCodeMap *code_map,
 			  const SiftColRemap *remap, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel)
 {
 	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
@@ -355,20 +402,14 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 		SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
 		SiftRowVer *vers = sift_part_read_vers(rel, part, dir, g);
-		SiftRowBuf *one;
 
-		MemoryContextSwitchTo(sink->cx);
-		one = sift_rowbuf_new(spec);
-		MemoryContextSwitchTo(granule_cx);
-		sift_rowbuf_add_granule_mapped(one, &v, vers, spec, code_map, remap);
-		if (fold != NULL)
-			sift_compact_fold->apply(fold, d->part_gen, g, one, rel_ext, nrel);
-		(void) sift_rowbuf_drop_if(one, row_goes, &gr);
-		sink_take(sink, one);
-		(void) sift_mem_used(sink->mem);
+		for (int r0 = 0, r1; r0 < v.hdr->nrows; r0 = r1)
+		{
+			r1 = r0 + slice_rows(sink, v.hdr->nrows - r0);
+			add_slice(sink, &v, vers, r0, r1, code_map, remap, d->part_gen, fold, &gr, rel_ext, nrel);
+		}
 		MemoryContextSwitchTo(old);
 		MemoryContextReset(granule_cx);
-		sink_flush_due(sink);
 	}
 	MemoryContextDelete(granule_cx);
 	sift_compact_release_part(part, rel_ext, nrel);
@@ -581,7 +622,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		MemoryContext icx = NULL;
 		SiftPart   *part = i == dominant ? dominant_part : sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
 
-		read = add_part_rows(rel, part, at[i], (uint32) part_id, in[i].g_lo, in[i].g_hi, &sink, &mspec, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
+		read = add_part_rows(rel, part, at[i], (uint32) part_id, in[i].g_lo, in[i].g_hi, &sink, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
 		if (icx != NULL)
 			MemoryContextDelete(icx);
 	}

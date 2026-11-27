@@ -215,7 +215,7 @@ SELECT dict_cols_remapped, rows_in = rows_out AS all_rows
 FROM sift._test_f2_compact('dr4_idx', 1, NULL, (SELECT array_agg(part_gen)::int8[] FROM sift._test_f2_parts('dr4_idx', 1, NULL) WHERE level = 1), false, true);
  dict_cols_remapped | all_rows 
 --------------------+----------
-                 16 | t
+                 62 | t
 (1 row)
 
 RESET maintenance_work_mem;

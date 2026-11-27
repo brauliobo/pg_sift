@@ -160,8 +160,9 @@ typedef struct SiftColRemap
 	bool		incomplete;
 } SiftColRemap;
 
-/* The same through a remap (NULL: the part has the columns of the spec); code_map is indexed by the current column */
-extern void sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap);
+/* Rows [r0, r1) of the granule through a remap (NULL: the part has the columns of the spec); code_map is indexed by the current column */
+extern void sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap,
+										   int r0, int r1);
 
 /* Rows [r0, r1) of a decoded granule (frozen, the columns of the spec); a column whose want is false (want: NULL for all) is not decoded and its cells are NULL */
 extern void sift_rowbuf_add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftPartSpec *spec, int r0, int r1, const bool *want);

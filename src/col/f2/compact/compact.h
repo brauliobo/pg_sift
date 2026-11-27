@@ -163,8 +163,8 @@ typedef struct SiftCompactFold
 	const bool *(*folded_leaves) (void *fold);
 	/* The part has values to fold in: its granules are read, not copied as they are */
 	bool		(*folds_part) (void *fold, uint64 part_gen);
-	/* The rows of a granule of the part, as stored, with the folds written over them; the extents of the wide values they replace are added to *release */
-	void		(*apply) (void *fold, uint64 part_gen, uint32 granule_id, SiftRowBuf *rows, SiftExtent **release, int *nrelease);
+	/* Rows of a granule of the part from row0 on, as stored, with the folds written over them; the extents of the wide values they replace are added to *release */
+	void		(*apply) (void *fold, uint64 part_gen, uint32 granule_id, uint32 row0, SiftRowBuf *rows, SiftExtent **release, int *nrelease);
 	/* The addresses the n rows of a granule of the part have in the outputs: the address changes that apply folds, laid over the stored ones in tids */
 	void		(*row_tids) (void *fold, uint64 part_gen, uint32 granule_id, uint64 *tids, uint32 n);
 	/*

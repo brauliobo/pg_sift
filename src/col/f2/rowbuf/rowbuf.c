@@ -425,7 +425,7 @@ sift_rowbuf_set_tid(SiftRowBuf *rb, int r, uint64 tid)
 void
 sift_rowbuf_add_granule(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map)
 {
-	sift_rowbuf_add_granule_mapped(rb, v, vers, spec, code_map, NULL);
+	sift_rowbuf_add_granule_mapped(rb, v, vers, spec, code_map, NULL, 0, v->hdr->nrows);
 }
 
 /* The numerics of chunk pc of n rows written as scaled integers, for a column that now keeps numeric values: a NaN keeps its datum in the payload of its exception */
@@ -633,9 +633,10 @@ add_granule_rows(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *ver
 }
 
 void
-sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap)
+sift_rowbuf_add_granule_mapped(SiftRowBuf *rb, const SiftGranuleView *v, const SiftRowVer *vers, const SiftPartSpec *spec, const SiftCodeMap *code_map, const SiftColRemap *remap,
+							   int r0, int r1)
 {
-	add_granule_rows(rb, v, vers, spec, code_map, remap, 0, v->hdr->nrows, NULL);
+	add_granule_rows(rb, v, vers, spec, code_map, remap, r0, r1, NULL);
 }
 
 void
