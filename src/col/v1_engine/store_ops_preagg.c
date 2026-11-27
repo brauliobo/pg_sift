@@ -141,11 +141,12 @@ cmp_op(Oid opno)
 	return 0;
 }
 
+/* The leaf of a column of the heap a clause tests; NULL for a virtual attribute (a leaf of a document, SIFT_V6_JLEAF_VATT and up), which no cube has as a dimension */
 static const SiftSrcLeaf *
 qual_leaf(Relation host, const SiftSrcLayout *lay, int heap_att)
 {
 	if (host->rd_index == NULL)
-		return sift_v1_att_leaf(lay, heap_att);
+		return heap_att <= RelationGetNumberOfAttributes(host) ? sift_v1_att_leaf(lay, heap_att) : NULL;
 	for (int i = 0; i < host->rd_index->indnatts; i++)
 		if (host->rd_index->indkey.values[i] == heap_att)
 			return sift_v1_att_leaf(lay, i + 1);
@@ -796,11 +797,12 @@ bind_key(SiftV1Cube *c, const SiftSrcLayout *lay)
 	return true;
 }
 
+/* The tests of the quals of the scan and of the clauses no scan key says (SiftV6Spec.vqual, a text test of a sift_table) */
 static bool
 bind_preds(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay, const List *quals)
 {
-	c->pred = palloc0(Max(list_length(quals), 1) * sizeof(Pred));
-	foreach_ptr(Node, q, (List *) quals)
+	c->pred = palloc0(Max(list_length(quals) + list_length(c->spec->vqual), 1) * sizeof(Pred));
+	foreach_ptr(Node, q, list_concat_copy(quals, c->spec->vqual))
 		if (!pred_of(host, lay, q, &c->pred[c->npred++]))
 			return false;
 	return true;

@@ -105,7 +105,7 @@ sift_v6_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, const int *first, S
 	SiftV6Preagg *pa;
 	bool		dist = false;
 
-	if (!sift_v6_spec_cubeable(spec) || spec->nfilters != 0)
+	if (!sift_v6_spec_cubeable(spec) || spec->nfilters != 0 || spec->vqual != NIL)
 		return NULL;
 	pa = palloc0(sizeof(SiftV6Preagg));
 	pa->spec = spec;

@@ -142,7 +142,7 @@ bool
 sift_v6_spec_cubeable(const SiftV6Spec *spec)
 {
 	if (spec->nsets != 0 || spec->nbins != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL ||
-		spec->vqual != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
+		spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
 		return false;
 	for (int i = 0; i < spec->nkeys; i++)
 	{
