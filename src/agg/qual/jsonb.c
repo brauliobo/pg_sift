@@ -55,9 +55,8 @@ text_const(const Expr *e)
 	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == TEXTOID ? TextDatumGetCString(c->constvalue) : NULL;
 }
 
-/* The leaves of the relation: those of its index, or of the store of its table */
-static const SiftColSchema *
-leaves_of(const SiftV6Rel *rel)
+const SiftColSchema *
+sift_v6_rel_leaves(const SiftV6Rel *rel)
 {
 	return rel->table != NULL ? rel->table->leaves : rel->colrel != NULL ? rel->colrel->schema : NULL;
 }
@@ -245,7 +244,7 @@ sift_v6_doc_chain(const Expr *e, List **path)
 static bool
 scalar_leaf(const SiftV6Rel *rel, int leaf)
 {
-	return leaf >= 0 && leaves_of(rel)->cols[leaf].kind == SIFT_COLK_SCALAR;
+	return leaf >= 0 && sift_v6_rel_leaves(rel)->cols[leaf].kind == SIFT_COLK_SCALAR;
 }
 
 static uint32
@@ -372,7 +371,7 @@ jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
 static bool
 leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 {
-	const SiftColDef *d = &leaves_of(rel)->cols[leaf];
+	const SiftColDef *d = &sift_v6_rel_leaves(rel)->cols[leaf];
 	const bool	int_leaf = d->store == SIFT_COLS_INT && rel->ops->jsonb->exact_values;
 	const bool	bool_leaf = int_leaf && d->type == SIFT_COLT_BOOL;
 
@@ -502,7 +501,7 @@ bool
 sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
 {
 	const int	leaf = sift_v6_vatt_leaf(v->varattno);
-	const SiftColSchema *leaves = leaves_of(rel);
+	const SiftColSchema *leaves = sift_v6_rel_leaves(rel);
 	const bool	held = leaves != NULL && leaf < leaves->ncols;
 
 	if (held)

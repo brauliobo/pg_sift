@@ -377,6 +377,7 @@ typedef struct SiftV6Rel
 	const SiftColRel *colrel;	/* NULL for a sift_table */
 	const SiftStoreSchema *table;	/* a sift_table: the schema of its store, whose attributes are those of the table */
 	const SiftStoreOps *ops;	/* the format of the index, NULL when it holds nothing of it (a stale index) */
+	const Bitmapset *notnull;	/* the attributes of the table a NOT NULL constraint holds */
 } SiftV6Rel;
 
 /*
@@ -388,6 +389,8 @@ extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *ou
 /* `(doc -> 'a' -> .. ->> 'k')::float8` of a map of float8 members of a document of the index as a column of the scan, and the keys in order */
 extern bool sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path);
 extern bool sift_v6_values_exact(const SiftV6Rel *rel);
+/* The leaves of the relation: those of its index, or of the store of its table */
+extern const struct SiftColSchema *sift_v6_rel_leaves(const SiftV6Rel *rel);
 /*
  * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
  * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is

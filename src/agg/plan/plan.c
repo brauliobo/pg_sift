@@ -72,7 +72,8 @@
 SiftV6Rel
 sift_v6_plan_rel(const V6Plan *p)
 {
-	return (SiftV6Rel) {.relid = p->rel->relid,.reloid = p->relid,.index = p->index,.colrel = p->colrel,.table = p->is_table ? &p->sch : NULL,.ops = p->ops};
+	return (SiftV6Rel) {.relid = p->rel->relid,.reloid = p->relid,.index = p->index,.colrel = p->colrel,.table = p->is_table ? &p->sch : NULL,.ops = p->ops,
+	.notnull = p->rel->notnullattnums};
 }
 
 static const CustomPathMethods v6_path_methods = {"SiftAggV6", sift_agg_v6_plan_path, NULL};

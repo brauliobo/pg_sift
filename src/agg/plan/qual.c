@@ -343,7 +343,7 @@ compile_lowered(V6Plan *p, const List *tests)
 
 		if (q != NULL)
 			p->spec.indexqual = lappend(p->spec.indexqual, q);
-		else if (IsA(t, NullTest) || !batch_clause(p, t))
+		else if (!batch_clause(p, t))
 			return false;
 	}
 	return true;

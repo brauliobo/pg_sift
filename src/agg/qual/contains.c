@@ -1,5 +1,5 @@
 /*
- * agg/qual/contains.c - jsonb containment and equality as tests of the leaves of the paths of a document of an index of format major 2 (agg/qual/contains.h).
+ * agg/qual/contains.c - jsonb containment and equality as tests of the leaves of the paths of a document of an index of format major 2 or of a sift_table (agg/qual/contains.h).
  *
  * doc @> '{"k": 1, "o": {"s": "x"}}' holds exactly where every scalar member of the constant is the value at its path: a string or a boolean is a leaf of that JSON type whose `->>` text is the
  * literal's, an integer is the one an integer leaf holds (the leaf holds every JSON number equal to an integer of its range, 3.0 as 3, and no other), a null is a leaf of type null. A leaf has a
@@ -29,7 +29,7 @@
 typedef struct Lower
 {
 	const SiftV6Rel *rel;
-	int			att;			/* the column of the index the document is */
+	int			att;			/* the column of the index, or the attribute of the table, the document is */
 	List	   *tests;
 } Lower;
 
@@ -70,7 +70,7 @@ path_text(const char *name, const List *path)
 static int
 path_leaf(const Lower *l, const List *path)
 {
-	const SiftColSchema *sch = l->rel->colrel->schema;
+	const SiftColSchema *sch = sift_v6_rel_leaves(l->rel);
 
 	for (int c = 0; c < sch->ncols; c++)
 	{
@@ -122,7 +122,7 @@ static bool
 lower_scalar(Lower *l, const List *path, const JsonbValue *v)
 {
 	const int	leaf = path_leaf(l, path);
-	const SiftColDef *d = leaf >= 0 ? &l->rel->colrel->schema->cols[leaf] : NULL;
+	const SiftColDef *d = leaf >= 0 ? &sift_v6_rel_leaves(l->rel)->cols[leaf] : NULL;
 	const bool	text_leaf = d != NULL && (d->store == SIFT_COLS_STR || (d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL));
 	int64		iv;
 
@@ -242,7 +242,7 @@ lower_negated(Lower *l, const OpExpr *op)
 		return false;
 	*none = (BooleanTest) {.xpr.type = T_BooleanTest,.arg = make_ands_explicit(l->tests),.booltesttype = IS_NOT_TRUE,.location = -1};
 	l->tests = list_make1(none);
-	if (bms_is_member(doc->varattno, l->rel->index->rel->notnullattnums))
+	if (bms_is_member(doc->varattno, l->rel->notnull))
 		return true;
 	nt = makeNode(NullTest);
 	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = (Expr *) copyObject(doc),.nulltesttype = IS_NOT_NULL,.location = -1};
@@ -257,7 +257,7 @@ sift_v6_contains_quals(const SiftV6Rel *rel, const Expr *clause)
 	const BoolExpr *b = (const BoolExpr *) strip(clause);
 	bool		ok;
 
-	if (rel->table != NULL || rel->colrel == NULL || !sift_v6_values_exact(rel) || !rel->ops->jsonb->exact_values)
+	if (sift_v6_rel_leaves(rel) == NULL || !sift_v6_values_exact(rel) || !rel->ops->jsonb->exact_values)
 		return NIL;
 	if (IsA(b, BoolExpr) && b->boolop == NOT_EXPR)
 		ok = IsA(linitial(b->args), OpExpr) && list_length(((const OpExpr *) linitial(b->args))->args) == 2 && lower_negated(&l, linitial(b->args));
