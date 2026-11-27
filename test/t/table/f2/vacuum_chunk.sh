@@ -4,14 +4,14 @@
 # compressible payloads, parts written under a 64 MB maintenance_work_mem) and measured in a backend of its own at a 2 MB budget under temp_file_limit = 1MB:
 #   alpha_mem  = peak(4x) / peak(1x), the peaks above a floor of the budget; at most 1.15            beta_exact = the slope of the bytes the memory scopes counted; at most 2 B/row
 #   beta_rss   = the slope of the anonymous memory of the backend; at most 8 B/row                    temp_bytes = pg_stat_database.temp_bytes the case wrote; none
-#   alpha_disk = the table after the case over the table before it; at most 2 (the parts that a VACUUM writes are beside the ones they replace)     alpha_time = time(4x) / time(1x); at most 5.5
+#   alpha_disk = the table after the case over the table before it; at most 2 (the parts that a VACUUM writes are beside the ones they replace)     alpha_time = cpu(4x) / cpu(1x), the backend's time on a CPU; at most 5.5
 # vacuum_dead / vacuum_freeze: VACUUM and VACUUM FREEZE settle a partition of parts that each hold more than the budget in chunks of the budget (PROD-95-01); freeze_cap: sift.vacuum_rewrite_limit
 # never stops a pass of VACUUM FREEZE: one pass freezes every part, the oldest transaction first, and pg_class.relfrozenxid follows; vm_span: the pass of the visibility map reads the addresses of a part that spans a
 # map page for each of the pages and not the columns (R1-VAC-02); cic_partial: the validation of CREATE INDEX CONCURRENTLY merges what the scan gave in windows of addresses and writes
 # no temp file (R1-CREATE-02); par_scan: the images of a parallel scan are freed once the scan is set up (R1-READ-01).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-[[ -r /proc/self/status ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
+[[ -r /proc/self/status && -r /proc/self/schedstat ]] || { echo '1..0 # SKIP needs /proc'; exit 0; }
 N1=32768
 SCALES=(1 2 4)
 BUDGET=2097152
@@ -38,14 +38,16 @@ unfrozen() { sql vc "SELECT count(*) FILTER (WHERE unfrozen) FROM sift.parts('$1
 digest() { sql vc "SELECT count(*) || '/' || coalesce(sum(id), 0) FROM $1"; }
 relfrozen() { sql vc "SELECT relfrozenxid::text::bigint FROM pg_class WHERE relname = '$1'"; }
 field() { sed -n "s/^$1 //p" <<<"$MOUT" | tail -n 1; }
+# the seconds the backend ran on a CPU (/proc/self/schedstat): the jobs that share the host take none of them
+CPU="split_part(pg_read_file('/proc/self/schedstat'), ' ', 1)::numeric / 1e9"
 
-# measure TABLE SETTINGS OPERATION...: one backend sets the settings, runs the operation between a memory peak and a clock, and tells the peak (kB), the bytes the scopes counted and the seconds
+# measure TABLE SETTINGS OPERATION...: one backend sets the settings, runs the operation between a memory peak and a clock, and tells the peak (kB), the bytes the scopes counted and the CPU seconds
 measure() {
 	local tbl=$1 settings=$2
 	shift 2
 	MOUT=$(sql vc "SET maintenance_work_mem = '$MWM'" "SET temp_file_limit = '1MB'" "$settings" "SELECT sift._test_thp_disable()" "SELECT sift._test_malloc_stats(true) IS NOT NULL" \
-		"SELECT sift._test_mem_highwater(true) IS NULL" "SELECT 'SZ0 ' || pg_relation_size('$tbl')" "SELECT 'BASE ' || sift._test_rss_peak_start()" "SELECT 'T0 ' || extract(epoch FROM clock_timestamp())" "$@" \
-		"SELECT 'T1 ' || extract(epoch FROM clock_timestamp())" "SELECT 'PEAK ' || sift._test_rss_peak_stop()" "SELECT 'SZ1 ' || pg_relation_size('$tbl')" \
+		"SELECT sift._test_mem_highwater(true) IS NULL" "SELECT 'SZ0 ' || pg_relation_size('$tbl')" "SELECT 'BASE ' || sift._test_rss_peak_start()" "SELECT 'T0 ' || $CPU" "$@" \
+		"SELECT 'T1 ' || $CPU" "SELECT 'PEAK ' || sift._test_rss_peak_stop()" "SELECT 'SZ1 ' || pg_relation_size('$tbl')" \
 		"SELECT 'EXACT ' || coalesce(sum(peak), 0) FROM sift._test_mem_highwater(false) WHERE parent IS NULL" 2>&1)
 }
 
