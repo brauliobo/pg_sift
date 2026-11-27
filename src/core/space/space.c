@@ -114,7 +114,7 @@ cut_lock(Relation rel)
 }
 
 #define CUT_LOCK_WAIT_MS	250
-#define CUT_LOCK_NAP_MS		50
+#define CUT_LOCK_NAP_MS		5
 
 static bool cut_nowait = false;
 
@@ -126,7 +126,7 @@ sift_maint_cut_nowait(bool on)
 
 /*
  * The executor opens every index of a table, the one of a concurrent build that is not ready included, and a reader or a writer holds a lock on a ready one for the length of
- * its statement: on a busy table the lock is rarely free at one instant. Like the tail cut of format 2 (SIFT_TAIL_SHRINK_WAIT_MS) the cut asks again every 50 ms for
+ * its statement: on a busy table the lock is rarely free at one instant. Like the tail cut of format 2 (SIFT_TAIL_SHRINK_WAIT_MS) the cut asks again every 5 ms for
  * 250 ms, conditionally, so that nobody queues behind the request; lock_timeout, when set and shorter, ends the wait, and a cancel ends it at once. The background
  * worker asks once: it holds the maintenance lock between its steps and the next step asks again. So does sift.table_maintain() (sift_maint_cut_nowait): its
  * contract is a pass that takes only what is free now and says busy otherwise, which a call from a client backend must keep.
