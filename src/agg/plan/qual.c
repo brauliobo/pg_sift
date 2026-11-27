@@ -381,7 +381,7 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 
 	if (q == NULL && !ri->pseudoconstant)
 		q = sift_v6_tests_or_qual(p, ri->clause);
-	List	   *jq = ri->pseudoconstant || q != NULL || heap_decides(p, ri->clause) ? NIL : sift_v6_json_qual(rel, ri->clause);
+	List	   *jq = ri->pseudoconstant || q != NULL || heap_decides(p, ri->clause) || (p->is_table && !p->ops->zone->table_json) ? NIL : sift_v6_json_qual(rel, ri->clause);
 	List	   *tests;
 
 	if (q != NULL)

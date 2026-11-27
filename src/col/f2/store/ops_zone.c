@@ -37,6 +37,7 @@ zone_quals_keys(const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys)
 const SiftZoneOps sift_f2_zone_ops = {
 	.table_text = true,
 	.table_star = true,
+	.table_json = true,
 	.compile_quals = zone_compile_quals,
 	.bind_quals = zone_bind_quals,
 	.quals_keys = zone_quals_keys,
