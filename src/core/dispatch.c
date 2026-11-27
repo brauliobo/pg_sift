@@ -9,6 +9,7 @@
 #include "postgres.h"
 
 #include "executor/executor.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planner.h"
@@ -20,16 +21,17 @@
 typedef struct Hooks
 {
 	planner_hook_type planner;
+#if PG_VERSION_NUM < 190000
 	get_relation_info_hook_type rel_info;
+#else
+	build_simple_rel_hook_type simple_rel;
+#endif
 	set_rel_pathlist_hook_type rel_paths;
 	set_join_pathlist_hook_type join_paths;
 	create_upper_paths_hook_type upper_paths;
 	ExecutorStart_hook_type start;
 	ExecutorRun_hook_type run;
 	ExecutorFinish_hook_type finish;
-#if PG_VERSION_NUM >= 190000
-	build_simple_rel_hook_type simple_rel;
-#endif
 } Hooks;
 
 /* what was installed before the library, and the chains of its subsystems */
@@ -56,6 +58,7 @@ entry_planner(SIFT_PLANNER_PARAMS)
 	return before.planner ? before.planner(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 }
 
+#if PG_VERSION_NUM < 190000
 static void
 entry_rel_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
 {
@@ -64,6 +67,16 @@ entry_rel_info(PlannerInfo *root, Oid relid, bool inhparent, RelOptInfo *rel)
 	else if (before.rel_info)
 		before.rel_info(root, relid, inhparent, rel);
 }
+#else
+static void
+entry_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
+{
+	if (sift_db_has_extension())
+		sift.simple_rel(root, rel, rte);
+	else if (before.simple_rel)
+		before.simple_rel(root, rel, rte);
+}
+#endif
 
 static void
 entry_rel_paths(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
@@ -91,17 +104,6 @@ entry_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input,
 	else if (before.upper_paths)
 		before.upper_paths(root, stage, input, output, extra);
 }
-
-#if PG_VERSION_NUM >= 190000
-static void
-entry_simple_rel(PlannerInfo *root, RelOptInfo *rel, RangeTblEntry *rte)
-{
-	if (sift_db_has_extension())
-		sift.simple_rel(root, rel, rte);
-	else if (before.simple_rel)
-		before.simple_rel(root, rel, rte);
-}
-#endif
 
 static void
 entry_start(QueryDesc *qd, int eflags)
@@ -179,11 +181,19 @@ sift_subxact_callback(SubXactCallback fn, void *arg)
 void
 sift_dispatch_begin(void)
 {
-	before = (Hooks) {planner_hook, get_relation_info_hook, set_rel_pathlist_hook, set_join_pathlist_hook, create_upper_paths_hook, ExecutorStart_hook, ExecutorRun_hook,
-		ExecutorFinish_hook,
-#if PG_VERSION_NUM >= 190000
-		build_simple_rel_hook,
+	before = (Hooks) {
+		.planner = planner_hook,
+#if PG_VERSION_NUM < 190000
+		.rel_info = get_relation_info_hook,
+#else
+		.simple_rel = build_simple_rel_hook,
 #endif
+		.rel_paths = set_rel_pathlist_hook,
+		.join_paths = set_join_pathlist_hook,
+		.upper_paths = create_upper_paths_hook,
+		.start = ExecutorStart_hook,
+		.run = ExecutorRun_hook,
+		.finish = ExecutorFinish_hook,
 	};
 	RegisterXactCallback(xact_entry, NULL);
 	RegisterSubXactCallback(subxact_entry, NULL);
@@ -197,14 +207,15 @@ void
 sift_dispatch_end(void)
 {
 	TAKE(planner_hook, planner, entry_planner);
+#if PG_VERSION_NUM < 190000
 	TAKE(get_relation_info_hook, rel_info, entry_rel_info);
+#else
+	TAKE(build_simple_rel_hook, simple_rel, entry_simple_rel);
+#endif
 	TAKE(set_rel_pathlist_hook, rel_paths, entry_rel_paths);
 	TAKE(set_join_pathlist_hook, join_paths, entry_join_paths);
 	TAKE(create_upper_paths_hook, upper_paths, entry_upper_paths);
 	TAKE(ExecutorStart_hook, start, entry_start);
 	TAKE(ExecutorRun_hook, run, entry_run);
 	TAKE(ExecutorFinish_hook, finish, entry_finish);
-#if PG_VERSION_NUM >= 190000
-	TAKE(build_simple_rel_hook, simple_rel, entry_simple_rel);
-#endif
 }
