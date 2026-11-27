@@ -17,6 +17,7 @@
 #include "test/common/bench.h"
 
 #include "core/maint/sched.c"
+#include "core/maint/jobs.c"
 #include "core/maint/db.c"
 #include "core/maint/sched_reap.c"
 

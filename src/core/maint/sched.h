@@ -353,6 +353,7 @@ extern SiftMaintKind sift_maint_kind_of_name(const char *job);
 extern const char *sift_maint_job_name(SiftMaintKind kind, SiftPacerTier tier);
 extern const char *sift_maint_phase_name(SiftMaintPhase phase);
 extern SiftPacerTier sift_maint_kind_tier(SiftMaintKind kind);
+extern uint32 sift_maint_kind_urgency(SiftMaintKind kind);
 extern uint32 sift_maint_score(SiftPacerTier tier, uint32 urgency);
 extern uint32 sift_maint_aged_score(uint32 score, SiftPacerTier tier, TimestampTz enqueued_at, TimestampTz now);
 
