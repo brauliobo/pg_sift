@@ -39,7 +39,7 @@
 	X(LEAF_DIR_READ, "leaf_stats_dir_read", "of those, the indexes whose metapage and directory this backend read in full because the version of the directory was not the one the statistics were made for (the others took one peek at the directory page)") \
 	X(QUAL_ESTIMATED, "qual_selectivity_estimated", "conditions whose selectivity the planning of a scan estimated itself because the planner had kept none (a condition of HAVING, or one the scan made); the others take the planner's own") \
 	X(DICT_SHARED_HITS, "dict_shared_hits", "segment dictionaries this backend copied from shared memory, parsed by another backend") \
-	X(DICT_SHARED_MISSES, "dict_shared_misses", "segment dictionaries big enough to share that this backend parsed from the segment because no other backend had (EXPLAIN (ANALYZE, VERBOSE): Shared Dictionaries)") \
+	X(DICT_SHARED_MISSES, "dict_shared_misses", "segment dictionaries big enough to share that this backend parsed from the segment because no other backend had (EXPLAIN (ANALYZE, VERBOSE) of SiftAggV6: Shared Dictionaries, those of the run of the node)") \
 	X(DICT_SHARED_HELD, "dict_shared_held", "of those, the dictionaries not kept for other backends because the shared memory was throwing out more than other backends found in it") \
 	X(GROUP_SPILLS, "group_table_spills", "times a group table went to partitions on disk because it outgrew hash memory (a node that groups rows counts once if it wrote partitions)") \
 	X(STATEMENTS_RERUN, "statements_rerun", "statements that ran again as PostgreSQL plans them because the groups of a node that cannot spill outgrew hash memory")

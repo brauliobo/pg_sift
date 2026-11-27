@@ -570,5 +570,7 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 	xl_end(&l);
 	if (st->fallback_reason)
 		ExplainPropertyText("Fallback", st->fallback_reason, es);
+	if (es->verbose && st->dict_shared_hits + st->dict_shared_misses > 0)
+		ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, st->dict_shared_hits, st->dict_shared_misses), es);
 	ExplainCloseGroup("Sift", "Sift", true, es);
 }

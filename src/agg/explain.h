@@ -45,6 +45,7 @@ typedef struct SiftExplainStatsV6
 	uint64		par_morsels_stolen, par_radix_parts, par_partial_recs, par_partial_bytes;
 	bool		par_ran, par_escalated;
 	const char *fallback_reason;	/* NULL, or why a faster path was not taken */
+	int64		dict_shared_hits, dict_shared_misses;	/* VERBOSE: the segment dictionaries the backend copied from shared memory, and parsed itself, while the node ran (agg/stats.h) */
 } SiftExplainStatsV6;
 
 extern void sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *simd, int workers_launched, int workers_planned);

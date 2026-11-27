@@ -60,6 +60,7 @@ typedef struct V6State
 	bool		explain_only;
 	SiftV6FuseArm arm;			/* in the registry of the statement: arms of one index and one set of keys scan once */
 	SiftV6ParNode *par;			/* a parallel node: the participants' scan of the units of the index (v6_par_node.c) */
+	int64		dict_shared0[2];	/* the backend's counts of shared dictionaries hit and missed when the node began */
 } V6State;
 
 /* Arms of equal keys read the same rows: the keys of the scan are constants, so their text tells them apart */
@@ -162,6 +163,8 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
 	sift_v6_bind_params(st->spec, estate->es_param_list_info);
 	sift_v6_exec_begin(st->spec, &node->ss.ps);
+	st->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
+	st->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
 	st->nsources = Max(st->spec->nparts, 1);
 	st->sources = palloc0(sizeof(SiftV6ScanSrc) * st->nsources);
 	for (int k = 0; k < st->nsources; k++)
@@ -850,6 +853,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ex.grans_pruned_skip = st->stats.grans_pruned_skip;
 	ex.grans_preagg = st->stats.grans_preagg;
 	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
+	ex.dict_shared_hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - st->dict_shared0[0];
+	ex.dict_shared_misses = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES] - st->dict_shared0[1];
 	if (st->par != NULL)
 		explain_par(st->par, &ex);
 	if (st->par != NULL && !es->analyze)
