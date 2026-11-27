@@ -391,7 +391,7 @@ build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	}
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
-	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->parts) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
+	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->parts) && (!sift_v6_unnest_path_keyed(e) || sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
 }
 
 /* the tests of the plan for the candidates: their streams, their columns among those of the elements of the stream, and their quals */

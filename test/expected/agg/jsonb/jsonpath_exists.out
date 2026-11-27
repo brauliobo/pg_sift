@@ -2,7 +2,8 @@
 -- it tests those of the array doc -> 'items', and a row the leaves do not hold (a document that is no object, items that is no array, a member of another JSON type) is decided by the call itself, lax
 -- mode, strict mode and errors included. A comparison with a float leaf (the leaf rounds), a filter on a scalar path and Format 1 keep the normal plan. Each statement runs with the scan and without
 -- it: `scan` or `plain`, then whether the rows are the same; `why`: an arm the plan uses. NOT of the call is NULL for a NULL document only (the presence leaf of the column tells it from one
--- without items), and a strict path that is not silent raises for a document without items, so it keeps the normal plan.
+-- without items), and a strict path that is not silent raises for a document without items, so it keeps the normal plan. NOT of a test of doc -> 'items' is NULL where
+-- that array is: a document without items too.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;
@@ -59,7 +60,8 @@ INSERT INTO shapes VALUES
   (12, 'undeclared member',   $q$SELECT count(*) FROM $T WHERE doc @? '$.items[*] ? (@.zz == 1)'$q$),
   (13, 'undeclared array',    $q$SELECT count(*) FROM $T WHERE doc @? '$.parts[*] ? (@.kind == "k_1")'$q$),
   (14, 'array of the doc',    $q$SELECT count(*) FROM $T WHERE jsonb_path_exists(doc -> 'items', '$[*] ? (@.kind == "k_1" && @.n >= 8)')$q$),
-  (15, 'strict, not silent',  $q$SELECT count(*) FILTER (WHERE jsonb_path_exists(doc, 'strict $.items[*] ? (@.kind == "k_1")')) FROM $T WHERE g = 9$q$);
+  (15, 'strict, not silent',  $q$SELECT count(*) FILTER (WHERE jsonb_path_exists(doc, 'strict $.items[*] ? (@.kind == "k_1")')) FROM $T WHERE g = 9$q$),
+  (16, 'not of a key array', $q$SELECT g, count(*) FILTER (WHERE NOT (doc -> 'items' @> '[{"kind": "k_1"}]')) AS no_obj, count(*) FILTER (WHERE NOT (doc -> 'items' ? 'k_1')) AS no_key FROM $T GROUP BY g$q$);
 SELECT tbl, n, label, jp_check(replace(q, '$T', tbl)) AS outcome FROM (VALUES (1, 'jp'), (2, 'jp_f1')) t(ord, tbl), shapes ORDER BY ord, n;
   tbl  | n  |       label        |    outcome    
 -------+----+--------------------+---------------
@@ -78,6 +80,7 @@ SELECT tbl, n, label, jp_check(replace(q, '$T', tbl)) AS outcome FROM (VALUES (1
  jp    | 13 | undeclared array   | plain same
  jp    | 14 | array of the doc   | scan same why
  jp    | 15 | strict, not silent | plain same
+ jp    | 16 | not of a key array | plain same
  jp_f1 |  1 | one member         | scan same why
  jp_f1 |  2 | same element       | scan same why
  jp_f1 |  3 | function           | scan same why
@@ -93,7 +96,8 @@ SELECT tbl, n, label, jp_check(replace(q, '$T', tbl)) AS outcome FROM (VALUES (1
  jp_f1 | 13 | undeclared array   | plain same
  jp_f1 | 14 | array of the doc   | scan same why
  jp_f1 | 15 | strict, not silent | plain same
-(30 rows)
+ jp_f1 | 16 | not of a key array | scan same why
+(32 rows)
 
 -- NOT of the call where the leaves hold every document (objects only): one without items is false, so its row is counted; a NULL one is NULL
 CREATE TABLE jp_nk AS SELECT i AS id, i % 4 AS g, CASE WHEN i % 23 = 0 THEN NULL WHEN i % 10 = 4 THEN '{"other": 1}'::jsonb

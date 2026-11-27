@@ -87,6 +87,16 @@ call_path(const Node *e)
 	return IsA(path, Const) && !((const Const *) path)->constisnull ? DatumGetJsonPathP(((const Const *) path)->constvalue) : NULL;
 }
 
+bool
+sift_v6_unnest_path_keyed(const Node *e)
+{
+	const JsonPath *jp = call_func(e) == F_JSONB_PATH_EXISTS || call_func(e) == F_JSONB_PATH_EXISTS_OPR ? call_path(e) : NULL;
+	JsonPathItem any;
+	char	   *key;
+
+	return jp != NULL && path_head(jp, &any, &key) && key != NULL;
+}
+
 const Expr *
 sift_v6_unnest_path_array(const Node *e)
 {

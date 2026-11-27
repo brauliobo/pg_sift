@@ -21,6 +21,8 @@
 extern bool sift_v6_unnest_path_call(const Node *e);
 /* the kind of stream the elements the call tests are: the objects of a jsonpath or a containment, the strings of doc ? 'key' */
 extern SiftV6ElemFn sift_v6_unnest_path_fn(const Node *e);
+/* the call is a jsonpath whose array is $.key[*] of its document: a document without the key is false, a NULL one NULL (any other call is NULL where its array is) */
+extern bool sift_v6_unnest_path_keyed(const Node *e);
 /* the array the call tests, doc or doc -> 'key'; NULL when e is no such call */
 extern const Expr *sift_v6_unnest_path_array(const Node *e);
 /*
