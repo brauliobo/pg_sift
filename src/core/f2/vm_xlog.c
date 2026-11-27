@@ -5,6 +5,7 @@
  */
 #include "postgres.h"
 
+#include "access/bufmask.h"
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "access/xloginsert.h"
@@ -17,6 +18,7 @@
 #include "core/damage.h"
 #include "core/f2/vm_xlog.h"
 #include "core/host.h"
+#include "table/f2/col_delta/xlog.h"
 
 static bool rmgr_registered;
 
@@ -243,6 +245,9 @@ vm_redo(XLogReaderState *r)
 		case SIFT_XLOG_VM_CLEAR:
 			redo_clear(r);
 			break;
+		case SIFT_XLOG_CD_APPEND:
+			sift_col_delta_append_redo(r);
+			break;
 		default:
 			elog(PANIC, "sift_vm_redo: unknown op code %u", XLogRecGetInfo(r) & ~XLR_INFO_MASK);
 	}
@@ -262,7 +267,9 @@ vm_desc(StringInfo buf, XLogReaderState *r)
 	const char *rec = XLogRecGetData(r);
 	const bool	set = (XLogRecGetInfo(r) & ~XLR_INFO_MASK) == SIFT_XLOG_VM_SET;
 
-	if (XLogRecGetDataLen(r) < (set ? sizeof(SiftXlVmSet) : sizeof(SiftXlVmClear)))
+	if ((XLogRecGetInfo(r) & ~XLR_INFO_MASK) == SIFT_XLOG_CD_APPEND)
+		sift_col_delta_append_desc(buf, r);
+	else if (XLogRecGetDataLen(r) < (set ? sizeof(SiftXlVmSet) : sizeof(SiftXlVmClear)))
 		appendStringInfo(buf, "short record of %u bytes", XLogRecGetDataLen(r));
 	else if (set)
 	{
@@ -288,14 +295,25 @@ vm_identify(uint8 info)
 			return "VM_SET";
 		case SIFT_XLOG_VM_CLEAR:
 			return "VM_CLEAR";
+		case SIFT_XLOG_CD_APPEND:
+			return "CD_APPEND";
 	}
 	return NULL;
+}
+
+/* What wal_consistency_checking compares: a page of the map whole (its bits are where a standard page has its hole), a page of the index without the free space between its data and its special space */
+static void
+vm_mask(char *page, BlockNumber blkno pg_attribute_unused())
+{
+	mask_page_lsn_and_checksum(page);
+	if (PageGetSpecialSize((Page) page) > 0)
+		mask_unused_space(page);
 }
 
 void
 sift_vm_xlog_init(void)
 {
-	static const RmgrData rmgr = {.rm_name = SIFT_RMGR_NAME,.rm_redo = vm_redo,.rm_desc = vm_desc,.rm_identify = vm_identify};
+	static const RmgrData rmgr = {.rm_name = SIFT_RMGR_NAME,.rm_redo = vm_redo,.rm_desc = vm_desc,.rm_identify = vm_identify,.rm_mask = vm_mask};
 
 	if (!process_shared_preload_libraries_in_progress)
 		return;

@@ -9,6 +9,7 @@
 #include "core/f2/fsm/fsm.h"
 #include "core/page_io.h"
 #include "table/f2/col_delta/dir.h"
+#include "table/f2/col_delta/xlog.h"
 
 /* ---- the entries ---- */
 
@@ -304,7 +305,6 @@ append_in_place(SiftColDeltaDiskChain *d, BlockNumber head, BlockNumber dir_head
 	Page		page = BufferGetPage(buf);
 	SiftColDeltaBatch part;
 	uint32		room;
-	SiftXlog	x;
 
 	sift_page_expect(rel, page, head, SIFT_PT_COL_DELTA, 0, part_id);
 	if (!sift_page_sum_ok(page))
@@ -323,11 +323,10 @@ append_in_place(SiftColDeltaDiskChain *d, BlockNumber head, BlockNumber dir_head
 	}
 	if (dir_head != InvalidBlockNumber)
 		dbuf = sift_blk_read(rel, dir_head, BUFFER_LOCK_EXCLUSIVE);
-	x = sift_xlog_start(rel);
-	SIFT_INVARIANT(sift_col_delta_page_append(sift_xlog_register(&x, buf, 0), &part), "a column delta batch that fit the page did not");
+	sift_col_delta_xlog_append(rel, buf, dbuf, &part);
 	if (dbuf != InvalidBuffer)
-		sift_cddir_page_widen_last(sift_xlog_register(&x, dbuf, 0), &part);
-	sift_xlog_done(&x);
+		UnlockReleaseBuffer(dbuf);
+	UnlockReleaseBuffer(buf);
 	sift_part_appended(&rel->rd_locator, part_id);
 	sift_col_delta_batch_free(&part);
 	return true;

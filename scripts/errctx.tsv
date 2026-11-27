@@ -36,4 +36,5 @@ src/col/f2/tid/hash.c	-
 src/table/f2/row/pack.c	-
 src/col/f2/locate.c	-
 src/core/f2/vm_xlog.c	-
+src/table/f2/col_delta/xlog.c	-
 src/col/granule/point_decode.c	src/col/f2/scan/fetch.c src/col/f2/write.c

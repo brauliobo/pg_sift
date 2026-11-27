@@ -23,6 +23,7 @@
 #define SIFT_RMGR_NAME				"pg_sift_table_vm"
 #define SIFT_XLOG_VM_SET			0x10	/* bits set on one page of the map, with the horizon the standby must not hold a snapshot below */
 #define SIFT_XLOG_VM_CLEAR			0x20	/* the bits of one vblock cleared, before the delete or the update that makes them untrue is logged */
+#define SIFT_XLOG_CD_APPEND			0x30	/* records of column deltas appended in place to the newest page of a chain (table/f2/col_delta/xlog.h) */
 
 #define SIFT_VM_MAPSIZE				(BLCKSZ - MAXALIGN(SizeOfPageHeaderData))
 #define SIFT_VM_BLOCKS_PER_BYTE		(BITS_PER_BYTE / BITS_PER_HEAPBLOCK)
