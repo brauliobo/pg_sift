@@ -73,7 +73,7 @@ chunk_new(SiftTextArena *ar, uint32 cap)
 
 	if (need > ar->cap)
 	{
-		ar->cap = Max(ar->cap * 2, Max(need, 4096));
+		ar->cap = Max(Min(ar->cap * 2, MaxAllocSize), Max(need, 4096));
 		ar->buf = ar->buf == NULL ? MemoryContextAlloc(ar->cx, ar->cap) : repalloc(ar->buf, ar->cap);
 	}
 	ar->used = need;

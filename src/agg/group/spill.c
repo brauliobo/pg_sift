@@ -255,6 +255,7 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 					hash;
 		int			keys_end;
 
+		CHECK_FOR_INTERRUPTS();
 		slot_keys(g, set, ht, s, key, str, &nulls);
 		resetStringInfo(&out);
 		enlargeStringInfo(&out, OWN_HDR + g->stride);
@@ -564,10 +565,12 @@ group_payload(const SiftV6Group *g)
 	return bytes;
 }
 
-/* A key arena allocates up to MaxAllocSize: a table spills before its arena doubles past SIFT_SPILL_ARENA_MAX, whatever the budget */
+/* A key arena allocates up to MaxAllocSize: a table spills before its arena, or the text arena of the groups, doubles past SIFT_SPILL_ARENA_MAX, whatever the budget */
 static bool
 arena_full(const SiftV6Group *g)
 {
+	if (g->tx.cap >= SIFT_SPILL_ARENA_MAX)
+		return true;
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk > 0 && g->set[s].ht.arena_cap >= SIFT_SPILL_ARENA_MAX)
 			return true;
