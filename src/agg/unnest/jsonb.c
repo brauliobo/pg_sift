@@ -478,6 +478,7 @@ sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, b
 	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));
 	p->xseed = x;
 	p->elem_rel = elem_rel;
+	p->batch_ok = p->ops->jsonb != NULL && p->ops->jsonb->row_quals;
 	return true;
 }
 

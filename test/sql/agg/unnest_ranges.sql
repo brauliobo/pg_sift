@@ -33,6 +33,12 @@ INSERT INTO s_q VALUES
 INSERT INTO s_q VALUES
  ('element LIKE', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE i.kind LIKE ''%3%'' OR i.kind LIKE ''%5'' GROUP BY 1 ORDER BY 1'),
  ('element IS DISTINCT FROM', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE i.kind IS DISTINCT FROM ''c3'' AND i.n IS DISTINCT FROM 4 GROUP BY 1 ORDER BY 1');
+-- the quals of the row no scan key says (NOT IN, an OR of two columns, arithmetic), and a range of its ctid
+INSERT INTO s_q VALUES
+ ('row NOT IN', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id NOT IN (5, 63, 64, 5999) GROUP BY 1 ORDER BY 1'),
+ ('row OR', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id < 100 OR e.day > ''2026-12-01'' GROUP BY 1 ORDER BY 1'),
+ ('row arithmetic', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id * 3 % 7 = 2 GROUP BY 1 ORDER BY 1'),
+ ('row ctid range', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.ctid >= ''(30,3)'' AND e.ctid < ''(400,1)'' GROUP BY 1 ORDER BY 1');
 
 -- the scan runs (SiftAgg), and its rows are the heap's
 CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_regex(qq) $$;

@@ -35,7 +35,7 @@ FROM (VALUES
 ORDER BY n;
 -- a statement the aggregate does not plan, on a sift_table: the table is the source the index row looks at
 SELECT arm, used, slug FROM sift.explain_why('SELECT id FROM et WHERE x * 2 = id');
--- the refused expression of an unnest arm reads a sub-plan, whose value the text of the relation cannot name: the reason names no expression
+-- the refused expression of an unnest arm reads a correlated sub-plan, whose value the text of the relation cannot name: the reason names no expression
 RESET sift.agg_force;
 CREATE TABLE eu (id int, src text, items jsonb);
 INSERT INTO eu SELECT i, 's' || i % 5, jsonb_build_array(jsonb_build_object('c', 'c' || i % 3, 'q', i % 4)) FROM generate_series(1, 2000) i;
@@ -45,9 +45,9 @@ INSERT INTO eu_dim VALUES ('s1'), ('s2'), ('s2');
 VACUUM ANALYZE eu, eu_dim;
 CREATE TABLE eu_q (n text, q text);
 INSERT INTO eu_q VALUES
-	('01 sub-plan key', $q$SELECT i.c, (CASE WHEN e.src IN (SELECT src FROM eu_dim) THEN e.src END) AS d, sum(i.q) FROM eu e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS i(c text, q int) GROUP BY 1, 2$q$),
+	('01 sub-plan key', $q$SELECT i.c, (SELECT count(*) FROM eu_dim d WHERE d.src = e.src) AS d, sum(i.q) FROM eu e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS i(c text, q int) GROUP BY 1, 2$q$),
 	('02 init-plan where', $q$SELECT i.c, sum(i.q) FROM eu e CROSS JOIN LATERAL jsonb_to_recordset(e.items) AS i(c text, q int) WHERE e.id > (SELECT count(*) FROM eu_dim) GROUP BY 1$q$);
-SELECT n, w.arm, w.used, w.slug FROM eu_q, LATERAL sift.explain_why(q) w ORDER BY n, w.arm;
+SELECT n, w.arm, w.used, w.slug FROM eu_q, LATERAL sift.explain_why(q) w ORDER BY n, w.arm, w.slug;
 SELECT n, er_rows(q, true) = er_rows(q, false) AS same_rows FROM eu_q ORDER BY n;
 DROP FUNCTION er_rows(text, bool);
 DROP TABLE er, et, eu, eu_dim, eu_q;

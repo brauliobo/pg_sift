@@ -162,6 +162,13 @@ CREATE INDEX tp_col ON tp USING sift_col (id, g);
 SELECT plan_of('SELECT g, count(*) FROM tp GROUP BY g') AS no_range, plan_of('SELECT g, count(*) FROM tp WHERE ctid >= ''(1,1)'' GROUP BY g') AS with_range;
 SELECT * FROM same('SELECT g, count(*) AS n FROM tp WHERE ctid >= ''(1,1)'' GROUP BY g');
 
+-- the fact of a join to a dimension: its scan keeps the rows of the range, on an index and on a sift_table
+CREATE TABLE th_dim (g int PRIMARY KEY, label text);
+INSERT INTO th_dim SELECT g, 'g' || g FROM generate_series(0, 6) g;
+ANALYZE th_dim;
+SELECT * FROM same('SELECT d.label, count(*) AS n, sum(f.v) AS s FROM th f JOIN th_dim d ON d.g = f.g WHERE f.ctid >= ''(10,4)'' AND f.ctid < ''(300,2)'' AND d.g <> 3 GROUP BY d.label');
+SELECT * FROM same('SELECT d.label, count(*) AS n, sum(f.v) AS s FROM tt f JOIN th_dim d ON d.g = f.g WHERE f.ctid >= ''(10,4)'' AND f.ctid < ''(300,2)'' AND d.g <> 3 GROUP BY d.label');
+
 -- an invalid constant is an error as in any plan
 SELECT count(*) FROM th WHERE ctid >= '(1,2,3)';
 
@@ -170,6 +177,6 @@ DROP FUNCTION all_ranges(text);
 DROP FUNCTION th_q(int, int);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE tp, tr_range, tt, th, th_before;
+DROP TABLE tp, tr_range, tt, th, th_before, th_dim;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

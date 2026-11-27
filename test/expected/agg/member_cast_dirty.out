@@ -154,7 +154,7 @@ SELECT same(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)'
 SELECT pushed(mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$m_total$$)', 'id = 100 OR id = 5990', 't.src')) AS filter_only_pushed;
  filter_only_pushed 
 --------------------
- f
+ t
 (1 row)
 
 SELECT same(mq('sum(CASE WHEN e.key = $$m_total$$ THEN CAST(e.value AS float8) END)', 'id = 100 OR id = 5990', 't.src')) AS case_only;

@@ -41,23 +41,21 @@ leaf_of(const SiftColRel *r, const SiftV6Col *c)
 	return c->typid == JSONBOID && r->json[c->attno] ? present_leaf(r, c->attno) : r->first[c->attno];
 }
 
-static int col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);
-
 /* the column of the batch that is leaf `leaf`, which the statement may not read itself: the source of the value of a member that is a column of the index, or the presence of a document */
 static int
 source_col(UnRun *u, const SiftColRel *r, int leaf, Oid typid)
 {
 	const SiftV6Col c = {.attno = 1,.typid = typid,.jleaf = leaf + 1};
 	const int	before = u->ncols;
-	const int	i = col_index(u, r, &c, false);
+	const int	i = sift_f2_unnest_col_index(u, r, &c, false);
 
 	if (u->ncols > before)
 		u->cols[i].read = false;
 	return i;
 }
 
-static int
-col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
+int
+sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 {
 	const int	leaf = leaf_of(r, c);
 	const SiftF2Rel *f = sift_f2_rel(u->index);
@@ -106,7 +104,7 @@ slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	}
 	if (c->src == SV6SRC_DIM)
 		return sift_v6_pipe_dim_slot(u->pipe, c->dim, c->slot);
-	return u->attr_slot != NULL ? u->attr_slot(u->attr_arg, c) : col_index(u, r, c, month);
+	return u->attr_slot != NULL ? u->attr_slot(u->attr_arg, c) : sift_f2_unnest_col_index(u, r, c, month);
 }
 
 void
@@ -164,7 +162,7 @@ add_col(void *arg, const SiftV6Col *c, bool month)
 {
 	const ColsOf *co = arg;
 
-	col_index(co->u, co->r, c, month);
+	sift_f2_unnest_col_index(co->u, co->r, c, month);
 }
 
 static void
@@ -178,7 +176,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 			const SiftV6XCmp *cmp = &u->x->test[k].cmp[c];
 			const SiftV6Col outer = {.attno = cmp->outer,.typid = cmp->outer_type};
 
-			u->outer_slot[k * SIFT_V6_XCMPS + c] = col_index(u, r, &outer, false);
+			u->outer_slot[k * SIFT_V6_XCMPS + c] = sift_f2_unnest_col_index(u, r, &outer, false);
 		}
 		u->doc_slot[k] = u->x->test[k].doc_leaf >= 0 ? source_col(u, r, u->x->test[k].doc_leaf, BOOLOID) : -1;
 	}
@@ -217,8 +215,7 @@ bind_pg(UnRun *u, const SiftColRel *r, int k)
 		u->pgslot[k][c] = slot_of(u, r, &it.col[c], false);
 		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
 	}
-	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, NULL, it.expr, it.nin, pin);
-	u->pg[k]->restype = it.restype;
+	u->pg[k] = sift_v6_pgexpr_of(CurrentMemoryContext, u->spec, &u->spec->derive[k], &it, pin);
 	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
 }
 
@@ -497,11 +494,13 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 	}
 	if (u->has_where)
 		restrict_where(u, b);
-	if (sift_v6_vet_mask(&u->vet, b->tid, 0, false, n, bs) == 0)
+	if (sift_f2_unnest_vet_rows(u, b) == 0)
 		return;
-	u->stats->rows += bs->n_active;
 	MemoryContextReset(u->bcx);
 	compute_columns(u, b, bs);
+	if (u->bq != NULL && sift_f2_unnest_restrict_quals(u, b) == 0)
+		return;
+	u->stats->rows += bs->n_active;
 	elem_vecs(u, 0, es, ev);
 	if (u->keyed && u->x->elem.group_leaf < 0)
 		sift_f2_unnest_run_keyed(u, b, NULL, fallback);
@@ -551,7 +550,7 @@ par_plain(const UnRun *u)
 {
 	const SiftV6ElemFn fn = u->x->elem.fn;
 
-	if ((fn != SV6E_UNNEST && fn != SV6E_RECORDSET) || u->ntests > 0 || u->row_slot >= 0 || u->spec->nderive > 0 || u->x->ndims > 0 || u->attr_slot != NULL ||
+	if ((fn != SV6E_UNNEST && fn != SV6E_RECORDSET) || u->ntests > 0 || u->bq != NULL || u->row_slot >= 0 || u->spec->nderive > 0 || u->x->ndims > 0 || u->attr_slot != NULL ||
 		(u->eev != NULL && sift_v6_elem_eval_pg(u->eev)))
 		return false;
 	for (int i = 0; i < u->ncols; i++)
@@ -573,7 +572,7 @@ par_select_rows(UnRun *u, const SiftF2ExtBatch *b, uint64 *mask)
 		bs->mask[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
 	if (u->has_where)
 		restrict_where(u, b);
-	if (sift_v6_vet_mask(&u->vet, b->tid, 0, false, b->n, bs) == 0)
+	if (sift_f2_unnest_vet_rows(u, b) == 0)
 		return false;
 	memcpy(mask, bs->mask, words * sizeof(uint64));
 	return true;
@@ -733,7 +732,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		{
 			const bool	flag = sift_v6_col_is_flag(&spec->fcol[i]);
 
-			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !flag ? col_index(u, r, &spec->fcol[i], false) : -1;
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !flag ? sift_f2_unnest_col_index(u, r, &spec->fcol[i], false) : -1;
 			if (flag)
 			{
 				u->flag_used[spec->fcol[i].attno - SIFT_V6_XFLAG_VATT] = true;
@@ -932,6 +931,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	unrun_init(u, spec, index, stats, spec->ext->elem.fn == SV6E_KEYS ? 0 : index->rd_index->indkey.values[spec->ext->elem.attno - 1]);
 	setup_cols(u, r);
 	setup_clauses(u, r);
+	sift_f2_unnest_setup_bq(u, r);
 	for (int c = 0; c < u->nel; c++)
 		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, r, u->x->elem.col_leaf[c], FLOAT8OID) : -1;
 	setup_pipe(u, r, g, star);

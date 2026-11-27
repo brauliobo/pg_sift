@@ -470,7 +470,6 @@ sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d
 {
 	SiftV6PgItem it;
 	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
-	SiftV6PgExpr *x;
 
 	sift_v6_pgexpr_item(s, d, &it);
 	for (int i = 0; i < it.nin; i++)
@@ -480,9 +479,17 @@ sift_v6_pgexpr_bind(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d
 		in[i] = col(arg, &c);
 		pin[i] = (SiftV6PgIn) {.typid = it.col[i].typid,.scale = it.col[i].scale};
 	}
+	return sift_v6_pgexpr_of(cx, s, d, &it, pin);
+}
+
+SiftV6PgExpr *
+sift_v6_pgexpr_of(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d, const SiftV6PgItem *it, const SiftV6PgIn *pin)
+{
+	SiftV6PgExpr *x;
+
 	if (s->exec != NULL && s->exec->item[d->aux] != NULL)
 		return s->exec->item[d->aux];
-	x = sift_v6_pgexpr_open(cx, NULL, it.expr, it.nin, pin);
-	x->restype = it.restype;
+	x = sift_v6_pgexpr_open(cx, NULL, it->expr, it->nin, pin);
+	x->restype = it->restype;
 	return x;
 }

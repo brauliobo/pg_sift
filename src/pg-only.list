@@ -1017,6 +1017,7 @@ col/f2/agg/scope/int.h
 col/f2/agg/scope/run.c
 col/f2/agg/scope/topn.c
 col/f2/agg/unnest/run.c
+col/f2/agg/unnest/rows.c
 col/f2/agg/unnest/run.h
 col/f2/cube/probe.h
 core/f2/fsm/rehome.c

@@ -24,6 +24,7 @@
 #include "agg/expr/pg.h"
 #include "agg/plan/rewrite.h"
 #include "agg/pipe.h"
+#include "agg/qual/bqual.h"
 #include "agg/unnest/late.h"
 #include "agg/star/run.h"
 #include "agg/unnest/unnest.h"
@@ -121,6 +122,10 @@ typedef struct UnRun
 	SiftVec   **wvecs;
 	int		   *wcol;			/* the column of each vector the WHERE clause reads */
 	SiftV6ElemEval *eev;		/* the quals of the element of a lateral unnest */
+	SiftV6Bq   *bq;				/* the quals of the table no scan key says (SiftV6Spec.vqual), NULL: none */
+	int			nbq;
+	int			bqcol[SIFT_V6_MAX_COLS];	/* the column of the batch each input of bq is */
+	SiftVec		bqv[SIFT_V6_MAX_COLS];
 	SiftV6RowTests *tests;		/* the tests of the elements of a row (SiftV6Ext.test), NULL without any */
 	int			ntests;
 	int			outer_slot[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* the column of the batch each comparison of a test is with */
@@ -171,6 +176,13 @@ flag_slot(const UnRun *u, int k)
 
 extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
 extern void sift_f2_unnest_run_keyed(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *vals, uint64 *fallback);
+/* rows.c: the rows of the batch in the TID range whose heap row the snapshot sees; then those the batch quals keep (u->bq), on the columns as the statement reads them (u->fv) */
+extern uint16 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b);
+extern uint16 sift_f2_unnest_restrict_quals(UnRun *u, const SiftF2ExtBatch *b);
+/* the batch quals of the spec (SiftV6Spec.vqual), over the columns of the batch the pull decodes */
+extern void sift_f2_unnest_setup_bq(UnRun *u, const SiftColRel *r);
+/* run.c: the column of the batch that is the column c of the table (its month when month), added to those the pull decodes when it is not one of them */
+extern int	sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);
 extern void sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
 extern void sift_f2_unnest_emit_heap_keys(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);

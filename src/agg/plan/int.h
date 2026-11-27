@@ -37,7 +37,7 @@ typedef struct V6Plan
 	bool		pg_derive;		/* a key or argument that PostgreSQL's evaluator computes is not computed by the native derivations: the partitions of one table compile to one plan whichever kinds of relation they are */
 	AggRefusal	why;			/* the first reason the compile gave up for, which sift_v6_compile_on names for the arm, and the expression of the statement it refused (NULL: no one) */
 	Node	   *why_at;
-	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of */
+	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of, or the unnest of its array by a store that runs them (SiftJsonbOps.row_quals) */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
 	List	   *gen_vars;		/* the columns the generic aggregates read, from any relation of the statement: the position + 1 of a column is the attribute their expressions read it as (v6_gen.h) */

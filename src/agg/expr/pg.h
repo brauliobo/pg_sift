@@ -86,6 +86,9 @@ typedef struct SiftV6PgItem
 	SiftV6Col	col[SIFT_V6_MAX_COLS];
 } SiftV6PgItem;
 
+/* The evaluator of derivation d of item it whose inputs are pin: the one the node prepared when the expression needs the executor, else one of its own in cx */
+extern SiftV6PgExpr *sift_v6_pgexpr_of(MemoryContext cx, const SiftV6Spec *s, const SiftV6Derive *d, const SiftV6PgItem *it, const SiftV6PgIn *pin);
+
 /* The derivation d reads no column of the scan: nothing to decode for it */
 extern bool sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d);
 /* The item of the derivation d (SVD_PG_EXPR) of a spec, or the at-th of its items, and the type of the vector its result is in */
