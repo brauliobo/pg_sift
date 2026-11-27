@@ -15,7 +15,9 @@ INSERT INTO ob (id, n, t, dt, ts)
 SELECT i, CASE WHEN i % 41 = 0 THEN NULL ELSE (i * 7919) % 700 END, CASE WHEN i % 43 = 0 THEN NULL ELSE 't' || lpad(((i::bigint * 7919) % 1500)::text, 5, '0') END,
 	   CASE WHEN i % 37 = 0 THEN NULL ELSE DATE '2020-01-01' + (i * 13) % 400 END, CASE WHEN i % 29 = 0 THEN NULL ELSE TIMESTAMP '2020-01-01' + ((i * 7919) % 100000) * interval '1 second' END
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX ob_i ON ob USING sift_col (id sift.col_int4_ops, n sift.col_int4_ops, t sift.col_text_ops, dt sift.col_date_ops, ts sift.col_timestamp_ops) WITH (order_array_columns = 'id, n, t');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) ob;
 
 -- the answer says DIFFERS with the query when the rows of the scan are not those of the plan without the extension or of the walk of every entry; 'bulk' when the scan used the global order
@@ -87,7 +89,9 @@ SELECT ob_twice('SELECT id, t AS k FROM ob ORDER BY t, id LIMIT 20 OFFSET 7000')
 CREATE TABLE og (id int PRIMARY KEY, g int, w int, pad text DEFAULT repeat('x', 100));
 ALTER TABLE og ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO og (id, g, w) SELECT i, (i * 7919) % 10, CASE WHEN i % 50 = 0 THEN NULL ELSE i % 1000 END FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX og_i ON og USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, w sift.col_int4_ops) WITH (order_array_columns = 'id, g');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) og;
 CREATE FUNCTION og_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE pl text; n int := -1; gord bool := false;
@@ -113,7 +117,9 @@ DROP TABLE og;
 CREATE TABLE orr (id int PRIMARY KEY, r text, pad text DEFAULT repeat('x', 100));
 ALTER TABLE orr ALTER COLUMN pad SET STORAGE PLAIN;
 INSERT INTO orr (id, r) SELECT i, left(md5(i::text), 10) FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX orr_i ON orr USING sift_col (id sift.col_int4_ops, r sift.col_text_ops) WITH (order_array_columns = 'id, r');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) orr;
 DELETE FROM orr WHERE id % 53 = 0;
 UPDATE orr SET r = 'u' || r WHERE id % 97 = 0;

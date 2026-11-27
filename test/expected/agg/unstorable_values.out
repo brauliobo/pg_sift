@@ -28,10 +28,9 @@ CREATE TEMP TABLE events_rows AS SELECT * FROM events ORDER BY ctid;
 TRUNCATE events;
 INSERT INTO events SELECT * FROM events_rows;
 DROP TABLE events_rows;
+SET client_min_messages = warning;
 CREATE INDEX events_col ON events USING sift_col (id, kind, day, payload) WITH (paths = 'payload.* float8');
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+RESET client_min_messages;
 VACUUM ANALYZE events;
 CREATE FUNCTION eq(keep text, sel text DEFAULT 'avg(CAST(e.value AS float8))', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t JOIN LATERAL jsonb_each(t.payload) e ON true WHERE ' || keep || ' GROUP BY ' || grp
@@ -204,10 +203,9 @@ CREATE TEMP TABLE facts_rows AS SELECT * FROM facts ORDER BY ctid;
 TRUNCATE facts;
 INSERT INTO facts SELECT * FROM facts_rows;
 DROP TABLE facts_rows;
+SET client_min_messages = warning;
 CREATE INDEX facts_col ON facts USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
-NOTICE:  sift_col index "facts_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('facts_col');
+RESET client_min_messages;
 VACUUM ANALYZE facts;
 SELECT pushed('SELECT r.kind, avg(r.score) FROM facts t JOIN LATERAL jsonb_to_recordset(t.payload -> $$parts$$) r(kind text, score float8) ON true GROUP BY 1') AS recordset_pushed;
  recordset_pushed 
@@ -246,10 +244,9 @@ INSERT INTO lists SELECT i, 'cat_' || chr(97 + i % 3), i / 10,
 	jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('kind', 'cat_a', 'score', i % 9), jsonb_build_object('kind', 'cat_b', 'score', i % 3)))
 FROM generate_series(1, 2000) i;
 INSERT INTO lists SELECT 5000, 'cat_a', 500, jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('kind', 'cat_a', 'score', g % 5)) FROM generate_series(1, 3000) g));
+SET client_min_messages = warning;
 CREATE INDEX lists_col ON lists USING sift_col (id, kind, day, payload) WITH (paths = 'payload.parts[]{kind text, score float8}');
-NOTICE:  sift_col index "lists_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('lists_col');
+RESET client_min_messages;
 \if :limits
 RESET sift.test_limits;
 \endif

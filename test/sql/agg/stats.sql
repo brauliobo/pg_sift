@@ -7,7 +7,9 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- in id order, padded to about 1800 rows a unit
 CREATE TABLE ev (id int, grp int, day date, amount int, expr_key int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, date '2020-01-01' + i / 300, i % 100, i % 13, repeat('x', 1000) FROM generate_series(0, 59999) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_columns = 'off');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev;
 
 CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats(local => true) WHERE name = n), 0) $$;
@@ -64,7 +66,9 @@ CREATE TABLE rr (id int, lines jsonb, pad text) WITH (autovacuum_enabled = false
 INSERT INTO rr
 SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 5, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e) FROM generate_series(1, g % 4 + 1) e), repeat('p', 300)
 FROM generate_series(1, 12000) g;
+SET client_min_messages = warning;
 CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, q int4}', rollup_leaves = 'lines[].a');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) rr;
 SELECT sift.stats_reset();
 SELECT e.a, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int4) GROUP BY 1 ORDER BY 1 LIMIT 1;

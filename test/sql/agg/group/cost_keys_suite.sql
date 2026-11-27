@@ -120,7 +120,9 @@ INSERT INTO events SELECT g, 1 + (g * 7919) % 4000, 1 + g % 19, CASE WHEN g % 13
 DELETE FROM events WHERE tenant_id > 3900;
 CREATE INDEX events_tenant ON events (tenant_id, category_id);
 CREATE INDEX events_link ON events (link_id);
+SET client_min_messages = warning;
 CREATE INDEX events_col ON events USING sift_col (id, tenant_id, category_id, value_num, link_id) WITH (key_cut = tenant_id);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) events, tenants, marks;
 
 CREATE TABLE lookup_q (n int, label text, q text);
@@ -281,7 +283,9 @@ SET statement_timeout = '30s';
 
 CREATE TABLE facts (id int, u int, v int, w float8);
 INSERT INTO facts SELECT i, i, i % 100, i * 0.5 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX facts_col ON facts USING sift_col (id, u, v, w);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) facts;
 
 CREATE FUNCTION q(keys text) RETURNS text LANGUAGE sql AS

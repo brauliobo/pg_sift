@@ -181,10 +181,14 @@ SET jit = off;
 
 CREATE TABLE ev (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, (i * 7) % 100000, i % 11 FROM generate_series(1, 400000) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
+RESET client_min_messages;
 CREATE TABLE dd (k int PRIMARY KEY, a text, b text) WITH (autovacuum_enabled = false);
 INSERT INTO dd SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE 'a' || i END, CASE WHEN i % 5 = 0 THEN '  ' ELSE 'b' END FROM generate_series(0, 99999) i;
+SET client_min_messages = warning;
 CREATE INDEX dd_col ON dd USING sift_col (k, (nullif(btrim(a), '') IS NOT NULL), (nullif(btrim(b), '') IS NOT NULL));
+RESET client_min_messages;
 -- 50 lists of 2,000 keys each
 CREATE TABLE asg (sub int, k int, deleted_at timestamptz) WITH (autovacuum_enabled = false);
 INSERT INTO asg SELECT i % 50, i, CASE WHEN i % 97 = 0 THEN now() END FROM generate_series(0, 99999) i;

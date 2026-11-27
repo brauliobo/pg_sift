@@ -12,8 +12,12 @@ CREATE TABLE child (id int PRIMARY KEY, parent_id int NOT NULL REFERENCES parent
 -- the parents 24001 to 30000 have no child; v is NULL in one row of seven, and has 1000 values
 INSERT INTO child SELECT g, 1 + (g::bigint * 7919) % 24000, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 1000 END, CASE WHEN g % 5 = 0 THEN NULL ELSE 't' || g % 13 END
 FROM generate_series(1, 300000) g;
+SET client_min_messages = warning;
 CREATE INDEX parent_col ON parent USING sift_col (id, region);
+RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE INDEX child_col ON child USING sift_col (id, parent_id, v, tag);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) parent, child;
 
 CREATE TABLE shapes (n int, sql text);

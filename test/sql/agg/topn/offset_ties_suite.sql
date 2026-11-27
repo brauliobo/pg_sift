@@ -15,7 +15,9 @@ SET jit = off;
 
 CREATE TABLE sk (id int, ent_id int NOT NULL, ts timestamptz NOT NULL, amount float8);
 INSERT INTO sk SELECT i, 1 + i % 10, timestamptz '2026-01-01' + (i * 7 % 100000) * interval '1 second', i % 97 FROM generate_series(1, 100000) i ORDER BY random();
+SET client_min_messages = warning;
 CREATE INDEX sk_col ON sk USING sift_col (ent_id, ts, amount) WITH (key_order = 'ent_id, ts', order_layout = 'whole', track_changes = 'off');
+RESET client_min_messages;
 VACUUM ANALYZE sk;
 
 CREATE FUNCTION sk_plan(q text) RETURNS text LANGUAGE plpgsql AS $$

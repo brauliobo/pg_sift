@@ -15,7 +15,9 @@ SET random_page_cost = 10000;
 
 CREATE TABLE ev (id int PRIMARY KEY, n int, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 500, i % 100 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (n, amount);
+RESET client_min_messages;
 CREATE TABLE bigdim (id int, k int) WITH (autovacuum_enabled = false);
 INSERT INTO bigdim SELECT i, i % 7 FROM generate_series(0, 999) i;
 VACUUM (FREEZE, ANALYZE) ev, bigdim;

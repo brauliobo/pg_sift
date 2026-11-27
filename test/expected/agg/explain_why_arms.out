@@ -6,10 +6,9 @@ SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, ts date NOT NULL, memo text NOT NULL, deleted_at timestamptz, pad text NOT NULL DEFAULT repeat('x', 300)) WITH (autovacuum_enabled = false);
 INSERT INTO events (id, ts, memo, deleted_at) SELECT g, date '2024-01-01' + (hashint4(g) & 1023) % 730, (ARRAY['cable', 'wire', 'plug', 'adapter', 'switch', 'panel', 'socket', 'fuse'])[1 + g % 8] || ' ' || (ARRAY['relay', 'cord', 'clamp', 'bolt', 'valve'])[1 + (g * 7) % 5],
 	CASE WHEN g % 37 = 0 THEN now() END FROM generate_series(1, 30000) g;
+SET client_min_messages = warning;
 CREATE INDEX events_col ON events USING sift_col (id, ts, deleted_at);
-NOTICE:  sift_col index "events_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('events_col');
+RESET client_min_messages;
 SET client_min_messages = warning;
 CREATE INDEX events_memo ON events USING sift (memo);
 RESET client_min_messages;

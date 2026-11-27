@@ -31,7 +31,9 @@ SELECT i, i % 5, jsonb_build_object('parts', CASE i % 7
 	WHEN 3 THEN jsonb_build_array(jsonb_build_object('c', 'b'), jsonb_build_object('c', 'a', 'score', i % 3))
 	ELSE jsonb_build_array(jsonb_build_object('c', 'b', 'score', (i % 9) * 0.25), jsonb_build_object('c', 'a', 'score', 1.5), jsonb_build_object('c', 'b', 'score', i % 4)) END)
 FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
 CREATE INDEX e_t_col ON e_t USING sift_col (id, grp, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
+RESET client_min_messages;
 -- numeric strings in the first element of some rows
 UPDATE e_t SET doc = jsonb_set(doc, '{parts,0,score}', to_jsonb((id % 11 + 0.5)::text)) WHERE id % 33 = 5 AND jsonb_array_length(doc -> 'parts') > 0 AND doc #> '{parts,0}' ? 'score';
 VACUUM ANALYZE e_t;
@@ -100,7 +102,9 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM e_q ORDER BY n;
 CREATE TABLE e_p (id int PRIMARY KEY, grp int, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO e_p SELECT i, i % 5, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('c', 'a', 'score', (i % 11) + 0.5), jsonb_build_object('c', 'b', 'score', i % 4)))
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX e_p_col ON e_p USING sift_col (id, grp, doc) WITH (paths = 'doc.parts[]{c text, score float8}');
+RESET client_min_messages;
 UPDATE e_p SET doc = jsonb_set(doc, '{parts,0,score}', to_jsonb((id % 11 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE e_p SET doc = jsonb_set(doc, '{parts,1,score}', '"abc"') WHERE id = 15001;
 VACUUM ANALYZE e_p;

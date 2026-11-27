@@ -69,7 +69,9 @@ INSERT INTO o
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 301) END, (i % 40) / 4.0, DATE '2024-01-01' + (i % 30), CASE WHEN i % 11 = 0 THEN NULL ELSE i % 6 END,
        CASE i % 9 WHEN 0 THEN 0.0 WHEN 1 THEN -0.0 WHEN 2 THEN 'NaN' WHEN 3 THEN NULL WHEN 4 THEN 'Infinity' WHEN 5 THEN '-Infinity' ELSE i % 5 - 2.5 END, i * 0.1
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX o_col ON o USING sift_col (id, a, b, c, e, f, x);
+RESET client_min_messages;
 VACUUM ANALYZE o;
 
 -- jsonb keys (a dimension built from columns): many distinct values, so the ranks come from the byte keys (gorder.c) and the check of the comparator; numbers that are one double
@@ -81,13 +83,17 @@ SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE i % 19 - 9 END,
        (ARRAY[9007199254740992, 9007199254740993, 9007199254740994, 0, -1.5, 2.25, 1e20, -1e20, 0.1, 0.5])[1 + i % 10]::numeric,
        CASE i % 3 WHEN 0 THEN true WHEN 1 THEN false END, i % 3
 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX oj_col ON oj USING sift_col (id, a, b, c, d, e);
+RESET client_min_messages;
 VACUUM ANALYZE oj;
 
 -- five keys of about 12,000 values each: their ranks take more than 64 bits together, so the groups are sorted by the tuple of ranks and not by one packed integer
 CREATE TABLE ow (id int, k1 int, k2 int, k3 int, k4 int, k5 int) WITH (fillfactor = 20, autovacuum_enabled = false);
 INSERT INTO ow SELECT i, (i * 3) % 12007, (i * 5) % 12011, CASE WHEN i % 29 = 0 THEN NULL ELSE (i * 7) % 12013 END, (i * 11) % 12037, (i * 13) % 12041 FROM generate_series(1, 12000) i;
+SET client_min_messages = warning;
 CREATE INDEX ow_col ON ow USING sift_col (id, k1, k2, k3, k4, k5);
+RESET client_min_messages;
 VACUUM ANALYZE ow;
 
 -- the key columns (the first k of the select list) of the statement, in the order it gives them, as a checksum
@@ -229,7 +235,9 @@ CREATE TEMP TABLE o2_rows AS SELECT * FROM o2 ORDER BY ctid;
 TRUNCATE o2;
 INSERT INTO o2 SELECT * FROM o2_rows;
 DROP TABLE o2_rows;
+SET client_min_messages = warning;
 CREATE INDEX o2_col ON o2 USING sift_col (id, s, n, f, d, t, b, i8, g);
+RESET client_min_messages;
 VACUUM ANALYZE o2;
 
 -- a collation that is not the byte order, when the server has one
@@ -273,7 +281,9 @@ CREATE TEMP TABLE o3_rows AS SELECT * FROM o3 ORDER BY ctid;
 TRUNCATE o3;
 INSERT INTO o3 SELECT * FROM o3_rows;
 DROP TABLE o3_rows;
+SET client_min_messages = warning;
 CREATE INDEX o3_col ON o3 USING sift_col (id, n, f, s, g);
+RESET client_min_messages;
 VACUUM ANALYZE o3;
 
 CREATE FUNCTION o3_check(col text, canon text, dir text) RETURNS TABLE (plan text, same_groups bool) LANGUAGE plpgsql AS $$
@@ -384,7 +394,9 @@ CREATE TABLE s (id int, a text, e int, d date, j int, x float8) WITH (fillfactor
 INSERT INTO s
 SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'k' || (i * 7 % 11) END, CASE WHEN i % 13 = 0 THEN NULL ELSE i % 9 END, DATE '2024-01-01' + (i % 12), i % 5, i * 0.5
 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX s_col ON s USING sift_col (id, a, e, d, j, x);
+RESET client_min_messages;
 VACUUM ANALYZE s;
 
 CREATE FUNCTION s_keys(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$

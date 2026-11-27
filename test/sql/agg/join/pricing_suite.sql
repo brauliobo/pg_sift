@@ -102,7 +102,9 @@ SET seq_page_cost = 20;
 
 CREATE TABLE facts (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO facts SELECT i, i, i % 10 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX facts_col ON facts USING sift_col (id, k, v);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) facts;
 CREATE TABLE keys (n int) WITH (autovacuum_enabled = false);
 INSERT INTO keys SELECT i * 37 FROM generate_series(1, 200) i;
@@ -113,7 +115,9 @@ INSERT INTO wide_keys SELECT i % 100, i % 2000 FROM generate_series(1, 40000) i;
 VACUUM (FREEZE, ANALYZE) wide_keys;
 CREATE TABLE few (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO few SELECT i, i % 100, i % 10 FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX few_col ON few USING sift_col (id, k, v);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) few;
 
 \ir test/common/sql/agg/base.sql

@@ -13,7 +13,9 @@ CREATE TABLE kinds (kind text);
 INSERT INTO kinds VALUES ('a'), ('b');
 CREATE TABLE ev (id int PRIMARY KEY, zone_id int, day date, kind text, price float8) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 50, '2026-03-01'::date + i % 40, (ARRAY['a', 'b', 'c'])[1 + i % 3], (i % 13) + 0.5 FROM generate_series(1, 6000) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, zone_id, day, kind, price);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE zones, kinds;
 

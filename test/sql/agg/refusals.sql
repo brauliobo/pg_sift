@@ -13,7 +13,9 @@ SELECT i, i % 600, 'k' || i % 5, date '2025-01-01' + i % 6,
        jsonb_build_object('metrics', jsonb_build_object('m', i % 10, 'w', (i % 7)::float8),
                           'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 12000) i;
+SET client_min_messages = warning;
 CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
+RESET client_min_messages;
 CREATE TABLE dims (id int PRIMARY KEY, label text);
 INSERT INTO dims SELECT i, 'd' || i FROM generate_series(0, 599) i;
 CREATE TABLE plain (id int, kind text, val int);
@@ -23,7 +25,9 @@ CREATE TABLE parted (id int, kind text, val int) PARTITION BY HASH (id);
 CREATE TABLE parted_0 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 0);
 CREATE TABLE parted_1 PARTITION OF parted FOR VALUES WITH (MODULUS 2, REMAINDER 1);
 INSERT INTO parted SELECT i, 'k' || (i % 5), i % 100 FROM generate_series(1, 2000) i;
+SET client_min_messages = warning;
 CREATE INDEX parted_0_col ON parted_0 USING sift_col (id, kind, val);
+RESET client_min_messages;
 -- a series longer than a spine can be
 CREATE TABLE ticks (a int, b int);
 INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 12000) i;
@@ -31,11 +35,15 @@ INSERT INTO ticks SELECT i, i + 1 FROM generate_series(0, 12000) i;
 CREATE TABLE facts (id int, metrics jsonb);
 INSERT INTO facts SELECT i, jsonb_build_object('m_total', i % 10, 'other', i % 3) FROM generate_series(1, 5000) i;
 INSERT INTO facts VALUES (5001, '{"m_total": "abc"}');
+SET client_min_messages = warning;
 CREATE INDEX facts_col ON facts USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+RESET client_min_messages;
 -- a number among strings in a path whose values a guard of jsonb_typeof keeps apart
 CREATE TABLE guarded (id int PRIMARY KEY, doc jsonb);
 INSERT INTO guarded SELECT i, CASE WHEN i % 4 = 0 THEN jsonb_build_object('m', 'abc') ELSE jsonb_build_object('m', i % 10) END FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
 CREATE INDEX guarded_col ON guarded USING sift_col (id, doc) WITH (paths = 'doc->m float8');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) events;
 VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dims; ANALYZE plain; ANALYZE parted; ANALYZE ticks;
@@ -103,7 +111,9 @@ SELECT s.name, s.arm, w.used, w.slug FROM shapes s LEFT JOIN LATERAL (SELECT * F
 -- a condition on a column the index does not hold names it
 CREATE TABLE narrow (id int, kind text, note int);
 INSERT INTO narrow SELECT i, 'k' || i % 5, i % 7 FROM generate_series(1, 2000) i;
+SET client_min_messages = warning;
 CREATE INDEX narrow_col ON narrow USING sift_col (id, kind);
+RESET client_min_messages;
 ANALYZE narrow;
 SELECT arm, used, slug, reason FROM sift.explain_why('SELECT kind, count(*) FROM narrow WHERE note > 3 GROUP BY 1');
 DROP TABLE narrow;
@@ -169,7 +179,9 @@ SELECT slug, reason ~ 'no unique index on [a-z_, ]+: end the ORDER BY with the p
 FROM sift.explain_why($q$SELECT d.kind, count(*) FROM events e LEFT JOIN LATERAL (SELECT kind FROM plain x WHERE x.id = e.parent_id ORDER BY x.val LIMIT 1) d ON true GROUP BY 1$q$) WHERE slug = 'lateral_limit';
 -- a min() planned as a LIMIT 1 sub-select leaves nothing behind for the next statement of the session (the next plan used the freed list of its arms)
 CREATE TABLE minmax_leftover AS SELECT i AS v FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX minmax_leftover_col ON minmax_leftover USING sift_col (v);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) minmax_leftover;
 SET sift.explain_refusals = on;
 SET client_min_messages = error;

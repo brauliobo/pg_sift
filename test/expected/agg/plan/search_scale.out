@@ -5,10 +5,9 @@ CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE docs (id int PRIMARY KEY, grp int NOT NULL, amount float8 NOT NULL, memo text NOT NULL);
 INSERT INTO docs SELECT g, g % 50, g % 17, (ARRAY['cable', 'wire', 'plug', 'switch'])[1 + g % 4] || ' ' || CASE WHEN g = 1 THEN 'rareword' ELSE 'relay' END FROM generate_series(1, 20000) g;
+SET client_min_messages = warning;
 CREATE INDEX docs_col ON docs USING sift_col (id, grp, amount);
-NOTICE:  sift_col index "docs_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('docs_col');
+RESET client_min_messages;
 SET client_min_messages = warning;
 CREATE INDEX docs_memo ON docs USING sift (memo);
 RESET client_min_messages;

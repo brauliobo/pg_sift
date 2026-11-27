@@ -27,7 +27,9 @@ CREATE TABLE f_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabl
 INSERT INTO f_t
 SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'n', i % 9, 'c', i % 3)
 FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
 CREATE INDEX f_t_col ON f_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.c int4');
+RESET client_min_messages;
 -- numeric strings in the paths the filters cast, none in doc.c
 UPDATE f_t SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE f_t SET doc = jsonb_set(doc, '{n}', to_jsonb((id % 9)::text)) WHERE id % 29 = 5;
@@ -104,7 +106,9 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM (VALUES
 -- the workers of a parallel scan read the rows again and raise or not as the leader does: the gate of the aggregates travels with the plan
 CREATE TABLE f_p (id int PRIMARY KEY, grp int, doc jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO f_p SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'c', i % 3) FROM generate_series(1, 20000) i;
+SET client_min_messages = warning;
 CREATE INDEX f_p_col ON f_p USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.c int4');
+RESET client_min_messages;
 UPDATE f_p SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE f_p SET doc = jsonb_set(doc, '{v}', '"abc"') WHERE id = 15001;
 VACUUM ANALYZE f_p;

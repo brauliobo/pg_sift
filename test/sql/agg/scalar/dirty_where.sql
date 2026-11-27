@@ -28,7 +28,9 @@ CREATE TABLE w_t (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabl
 INSERT INTO w_t
 SELECT i, i % 5, jsonb_build_object('v', (i % 17) + 0.5, 'n', i % 9, 'ok', i % 2 = 0, 't', 'k' || (i % 4), 'c', i % 3)
 FROM generate_series(1, 3000) i;
+SET client_min_messages = warning;
 CREATE INDEX w_t_col ON w_t USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8, doc.n int4, doc.ok bool, doc.t text, doc.c int4');
+RESET client_min_messages;
 -- numeric strings in the paths the conditions cast, none in doc.c
 UPDATE w_t SET doc = jsonb_set(doc, '{v}', to_jsonb((id % 17 + 0.5)::text)) WHERE id % 33 = 5;
 UPDATE w_t SET doc = jsonb_set(doc, '{n}', to_jsonb((id % 9)::text)) WHERE id % 29 = 5;
@@ -56,7 +58,9 @@ SELECT n, plan_of(q) AS plan, reread(q) AS reread, outcome(q) FROM w_q ORDER BY 
 -- the units a condition rules out by their range still hold rows that are read again: a unit whose clean values are all below 3
 CREATE TABLE w_z (id int PRIMARY KEY, grp int, doc jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO w_z SELECT i, i % 3, jsonb_build_object('v', (i % 3)::float8) FROM generate_series(1, 2000) i;
+SET client_min_messages = warning;
 CREATE INDEX w_z_col ON w_z USING sift_col (id, grp, doc) WITH (paths = 'doc.v float8');
+RESET client_min_messages;
 UPDATE w_z SET doc = jsonb_set(doc, '{v}', '"9.5"') WHERE id IN (7, 1500);
 VACUUM ANALYZE w_z;
 SELECT n, plan_of(q) AS plan, reread(q) AS reread, outcome(q) FROM (VALUES
