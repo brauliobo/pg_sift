@@ -7,6 +7,7 @@
 
 #include "access/sysattr.h"
 #include "catalog/pg_statistic.h"
+#include "catalog/pg_type_d.h"
 #include "nodes/bitmapset.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
@@ -125,20 +126,52 @@ f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCa
 	return Min(Max(share, 1.0 / granules), 1.0);
 }
 
-/* the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name, or those of the relation when rel is given), decoded or as stored: those of the view, or unsized for a column it has no size of */
+static int
+index_leaf(const IndexOptInfo *ix, int col)
+{
+	return col > 0 && col < SIFT_V6_ELEM_VATT ? sift_v6_card_leaf(ix, col - 1) : -1;
+}
+
+static int
+heap_leaf(const IndexOptInfo *ix, int attno)
+{
+	const int	col = ix != NULL ? agg_index_col(ix, attno) : -1;
+
+	return col >= 0 ? sift_v6_card_leaf(ix, col) : -1;
+}
+
+/*
+ * The bytes of a decoded string of index column col (0-based): PostgreSQL's width of its column of the table rel (NULL: none). The statistics of the index size what a column takes as stored,
+ * a dictionary code for a string, and a scan that groups or compares the strings reads their bytes.
+ */
 static double
-cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, int leaf_of(const void *, int), const void *ctx, bool stored, double unsized)
+string_width(const RelOptInfo *rel, const IndexOptInfo *ix, int col)
+{
+	const AttrNumber att = rel != NULL && ix != NULL && col >= 0 && col < ix->ncolumns ? ix->indexkeys[col] : 0;
+	const Oid	type = att > 0 ? ix->opcintype[col] : InvalidOid;
+
+	return (type == TEXTOID || type == VARCHAROID || type == BPCHAROID) && att <= rel->max_attr ? (double) rel->attr_widths[att - rel->min_attr] : 0;
+}
+
+/*
+ * the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name when index_cols, else those of the table), decoded or as stored: those of the view, or unsized
+ * for a column it has no size of; decoded, a string at least its width in rel (NULL: none)
+ */
+static double
+cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptInfo *ix, bool index_cols, const RelOptInfo *rel, bool stored, double unsized)
 {
 	double		bytes = 0;
 	int			a = -1;
 
 	while ((a = bms_next_member(cols, a)) >= 0)
 	{
-		const int	leaf = leaf_of(ctx, a + FirstLowInvalidHeapAttributeNumber);
+		const int	col = a + FirstLowInvalidHeapAttributeNumber;
+		const int	leaf = index_cols ? index_leaf(ix, col) : heap_leaf(ix, col);
 		const SiftColCardStats *c = leaf >= 0 && view != NULL && (uint32) leaf < view->ncols ? &view->cols[leaf] : NULL;
 		const double b = c == NULL ? 0 : stored ? c->avg_comp_bytes_row : c->avg_dec_bytes_row;
+		const int	icol = index_cols ? col - 1 : ix != NULL ? agg_index_col(ix, col) : -1;
 
-		bytes += b > 0 ? b : unsized;
+		bytes += Max(b > 0 ? b : unsized, stored ? 0 : string_width(rel, ix, icol));
 	}
 	return bytes;
 }
@@ -158,20 +191,6 @@ leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored
 		bytes += b > 0 ? b : unsized;
 	}
 	return bytes;
-}
-
-static int
-index_leaf(const void *ix, int col)
-{
-	return col > 0 && col < SIFT_V6_ELEM_VATT ? sift_v6_card_leaf((const IndexOptInfo *) ix, col - 1) : -1;
-}
-
-static int
-heap_leaf(const void *ix, int attno)
-{
-	const int	col = ix != NULL ? agg_index_col((const IndexOptInfo *) ix, attno) : -1;
-
-	return col >= 0 ? sift_v6_card_leaf((const IndexOptInfo *) ix, col) : -1;
 }
 
 /* the columns of the index the clauses (filter) or the keys and arguments read, and the leaves of the keys of documents they read instead of the document: a scan decodes those alone */
@@ -328,10 +347,10 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 
 	scan_bytes(root, rel, ix, &b);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
-	b.filter_row = cols_bytes(b.view, filter, index_leaf, ix, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
-	b.measure_row = cols_bytes(b.view, measure, index_leaf, ix, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, index_leaf, ix, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
-	b.measure_io_row = cols_bytes(b.view, measure, index_leaf, ix, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
+	b.filter_row = cols_bytes(b.view, filter, ix, true, rel, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, ix, true, rel, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, ix, true, NULL, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
 	price.in.pg_qual = pg_qual_cost(root, ix, spec->vqual);
@@ -361,10 +380,10 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 		pull_varattnos((Node *) ri->clause, rel->relid, &filter);
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &measure);
 	scan_bytes(root, rel, ix, &b);
-	b.filter_row = cols_bytes(b.view, filter, heap_leaf, ix, false, SIFT_WORD_BYTES);
-	b.measure_row = cols_bytes(b.view, measure, heap_leaf, ix, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, heap_leaf, ix, true, b.io_col_row);
-	b.measure_io_row = cols_bytes(b.view, measure, heap_leaf, ix, true, b.io_col_row);
+	b.filter_row = cols_bytes(b.view, filter, ix, false, rel, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, ix, false, rel, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, ix, false, NULL, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, true, b.io_col_row);
 	in = scan_inputs(&b);
 	*open = open_cost(scan_parts(&b));
 	sift_agg_choose_workers(&in, Min(b.surv / (in.g_eff * SIFT_GRANULE_ROWS), 1.0), false, false, *open, 0, &startup, total);

@@ -1,8 +1,6 @@
--- A text key is read as dictionary codes, and the table of its ids is given every entry of the dictionary of each unit the scan reads, not only
--- the values of the rows that pass the filters, unless few rows pass (0.04 to 0.2 microseconds an entry as the table grows, and a walk of the table of ids each time it outgrows the memory of a
--- hash aggregate, work_mem times hash_mem_multiplier). A near-unique key under a filter that keeps most rows costs the scan its units' entries (5 times the integer key
--- of the same groups), which the estimate counts, and the scan is still the plan taken where it is faster (18 ms against 30 ms of the normal plan for 100,000 rows; a filter that keeps
--- a few rows in a unit maps those only: agg_group_key_cost); a key of a few values has few entries and costs what an integer key does.
+-- A text key is read as dictionary codes and grouped by its strings: a near-unique key under a filter that keeps most rows hashes a string a row into a table of as
+-- many groups, which costs the scan more than the integer key of the same groups (about 1.8 times in time for 100,000 rows, and the estimate prices its bytes above the
+-- integer's), and the scan is still the plan taken where it is not slower than the normal plan; a key of a few values has few groups and costs what an integer key does.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
@@ -21,20 +19,19 @@ VACUUM (FREEZE, ANALYZE) items;
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) WHERE scan_cost IS NOT NULL $$;
 CREATE FUNCTION scan_used(q text) RETURNS boolean LANGUAGE sql AS $$ SELECT bool_or(used) FROM sift.explain_why(q) $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
--- the entries of the near-unique key cost the scan well over the integer key of the same groups; the 17 values of the other cost it the same
+-- the strings of the near-unique key cost the scan over the integer key of the same groups; the 17 values of the other cost it less
 SELECT key,
        scan_cost(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) /
-       scan_cost('SELECT id, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY id') > 5 AS entries_priced,
+       scan_cost('SELECT id, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY id') > 1 AS strings_priced,
        differences(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS differences
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
-         key          | entries_priced | differences 
+         key          | strings_priced | differences 
 ----------------------+----------------+-------------
  17 text values       | f              |           0
  near-unique text key | t              |           0
 (2 rows)
 
--- a text key of repeated values (20,000 groups of 5 rows) maps its entries once each into the table of ids: the repeats of an id the table holds are
--- not the growth of the table, and cost the scan the 20,000 ids and not their 95,000 entries (1.7 times the integer key of the same groups in time, 3.6 when the entries are priced)
+-- a text key of repeated values (20,000 groups of 5 rows) costs the scan its 20,000 groups and not a group a row: about what the integer key of the same groups does
 SELECT scan_cost('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP BY grp') /
        scan_cost('SELECT gi, count(*) AS n, max(amount) AS s FROM items GROUP BY gi') < 2 AS repeats_not_priced,
        differences('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP BY grp') AS differences;
@@ -43,7 +40,7 @@ SELECT scan_cost('SELECT grp, count(*) AS n, max(amount) AS s FROM items GROUP B
  t                  |           0
 (1 row)
 
--- both take the scan: the near-unique key is 1.6 times faster in it than in the normal plan, the 17 values far more
+-- both take the scan: the near-unique key about as fast in it as in the normal plan, the 17 values far faster
 SELECT key, scan_used(format('SELECT %s, count(*) AS n, max(amount) AS s FROM items WHERE part < 60 GROUP BY %s', g, g)) AS scan
 FROM (VALUES ('near-unique text key', 'tag'), ('17 text values', 'cat')) v(key, g) ORDER BY key;
          key          | scan 
