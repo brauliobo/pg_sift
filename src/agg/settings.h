@@ -17,5 +17,6 @@ extern void sift_v6_define_gucs(void);
 
 /* sift.agg_force: the price of a path of the aggregate scan against the normal plan's */
 extern void sift_v6_force_price(Path *p);
+extern Cost sift_v6_forced(Cost c);
 
 #endif							/* SIFT_AGG_V6_SETTINGS_H */

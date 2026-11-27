@@ -298,6 +298,7 @@ sift_agg_v6_asof_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 	cp->custom_private = list_make3(lappend_int(list_make5_int((int) spec.dir, spec.strict, jointype == JOIN_LEFT, (int) host.oid, (int) innerrel->relid), host.is_table),
 									list_make4(id.dim_k, id.dim_ts, id.fact_k, id.fact_ts), id.sub_attno);
 	cp->methods = &asof_path_methods;
+	sift_v6_force_price(&cp->path);
 	add_path(joinrel, &cp->path);
 }
 

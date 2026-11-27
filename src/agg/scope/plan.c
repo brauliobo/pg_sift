@@ -576,6 +576,7 @@ sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInf
 			cp->methods = &scope_path_methods;
 			cp->custom_paths = list_make1(join);
 			cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p.spec), p.v6_tlist, NIL, scope_exprs(&p), sift_v6_spec_pack(&p.v6));
+			sift_v6_force_price(&cp->path);
 			add_path(out, &cp->path);
 			if (!list_member_ptr(out->pathlist, cp))
 				add_path(out, join);
@@ -699,6 +700,7 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 		cp->custom_paths = list_make1(fallback_path(p, input_rel, out, extra, groups));
 		cp->custom_private = list_make4(sift_v6_scope_spec_pack(&p->spec), p->scan_tlist, extra->havingQual, scope_exprs(p));
 	}
+	sift_v6_force_price(&cp->path);
 	add_path(out, &cp->path);
 }
 

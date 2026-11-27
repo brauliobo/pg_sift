@@ -128,12 +128,12 @@ SELECT shape, engine(q) AS engine, same(q) AS same FROM (VALUES
 	('join and filter',  'SELECT x.v, s.c FROM (VALUES (0), (NULL), (1), (2)) x(v) LEFT JOIN LATERAL (SELECT count(*) c FROM win JOIN win_dim ON win_dim.d = win.d WHERE win.g = x.v AND win_dim.tag = 1) s ON true'),
 	('aggregate',        'SELECT x.v, s.c FROM (VALUES (0), (NULL), (1), (2)) x(v) LEFT JOIN LATERAL (SELECT count(*) c FROM win WHERE g = x.v) s ON true')
 ) t(shape, q) ORDER BY shape;
-      shape      |         engine         | same 
------------------+------------------------+------
- aggregate       | SiftAggV6              | t
- join and filter | SiftAggV6,SiftAggV6Sip | t
- top-n by group  | SiftAggV6TopN          | t
- window run      | SiftAggV6Window        | t
+      shape      |     engine      | same 
+-----------------+-----------------+------
+ aggregate       | SiftAggV6       | t
+ join and filter | SiftAggV6       | t
+ top-n by group  | SiftAggV6TopN   | t
+ window run      | SiftAggV6Window | t
 (4 rows)
 
 SELECT x.v, s.k FROM (VALUES (0), (NULL), (1), (2), (1)) x(v) LEFT JOIN LATERAL (SELECT k FROM win WHERE g = x.v ORDER BY k LIMIT 1) s ON true;

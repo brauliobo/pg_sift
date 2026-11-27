@@ -14,14 +14,17 @@ double		sift_agg_scale_horizon = 100.0;
 
 #define FORCE_SCALE	1e-6
 
+Cost
+sift_v6_forced(Cost c)
+{
+	return sift_agg_force ? c * FORCE_SCALE : c;
+}
+
 void
 sift_v6_force_price(Path *p)
 {
-	if (sift_agg_force)
-	{
-		p->startup_cost *= FORCE_SCALE;
-		p->total_cost *= FORCE_SCALE;
-	}
+	p->startup_cost = sift_v6_forced(p->startup_cost);
+	p->total_cost = sift_v6_forced(p->total_cost);
 }
 
 void

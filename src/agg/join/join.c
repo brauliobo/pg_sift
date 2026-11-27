@@ -305,6 +305,7 @@ sift_agg_v6_join_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 	cp->custom_paths = list_make2((Path *) op, (Path *) ip);
 	cp->custom_private = list_make3(list_make3_int((int) type, (int) (uint32) (uint64) build_bytes, (int) (uint32) ((uint64) build_bytes >> 32)), okeys, ikeys);
 	cp->methods = &join_path_methods;
+	sift_v6_force_price(&cp->path);
 	add_path(joinrel, &cp->path);
 }
 

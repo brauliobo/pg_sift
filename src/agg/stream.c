@@ -558,7 +558,7 @@ stream_try(StreamPlan *p)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);
 	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &scan);
 	scan += cpu_tuple_cost * groups;
-	sift_v6_add_path(p->out, &stream_path_methods, open + (scan - open) / Max(groups, 1.0), scan, groups, p->root->group_pathkeys, priv, NIL);
+	sift_v6_add_path(p->out, &stream_path_methods, sift_v6_forced(open + (scan - open) / Max(groups, 1.0)), sift_v6_forced(scan), groups, p->root->group_pathkeys, priv, NIL);
 	return true;
 }
 

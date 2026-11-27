@@ -387,7 +387,7 @@ topn_add_path(TopNPlan *p)
 	const double k = plan_rows(p->spec.limit, p->spec.offset);
 	const double total = tournament_keys_ok(&p->spec) ? index_total(p, k) : rows_total(p, k);
 
-	sift_v6_add_path(p->out, &topn_path_methods, total - cpu_tuple_cost * k, total, Min(k, p->rel->rows), p->root->sort_pathkeys,
+	sift_v6_add_path(p->out, &topn_path_methods, sift_v6_forced(total - cpu_tuple_cost * k), sift_v6_forced(total), Min(k, p->rel->rows), p->root->sort_pathkeys,
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
 }
 
