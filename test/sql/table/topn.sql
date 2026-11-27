@@ -125,6 +125,9 @@ SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, 
 SET sift.enable_agg = off;
 SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10') <> 'top-n' AS no_topn_when_off;
 RESET sift.enable_agg;
+SET sift.agg_force = on;
+SELECT ct_plan('SELECT id, ts, memo FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') = 'top-n' AS topn_when_forced;
+RESET sift.agg_force;
 
 -- inserts land in the write buffer of the table, unvacuumed
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)

@@ -246,6 +246,14 @@ SELECT ct_plan('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, 
 (1 row)
 
 RESET sift.enable_agg;
+SET sift.agg_force = on;
+SELECT ct_plan('SELECT id, ts, memo FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id DESC LIMIT 10') = 'top-n' AS topn_when_forced;
+ topn_when_forced 
+------------------
+ t
+(1 row)
+
+RESET sift.agg_force;
 -- inserts land in the write buffer of the table, unvacuumed
 INSERT INTO ct (store, status, amount, placed, ts, seq, f, memo)
 SELECT 1 + (hashint4(i) & 2147483647) % 40, (ARRAY['paid','shipped'])[1 + i % 2], 20 + i % 90, date '2025-06-01' + i % 20,

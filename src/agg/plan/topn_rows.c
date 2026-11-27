@@ -23,6 +23,7 @@
 #include "agg/topn/rows.h"
 #include "agg/source_rel.h"
 #include "agg/topn/topn.h"
+#include "agg/settings.h"
 #include "agg/vexpr.h"
 #include "core/store/ops.h"
 
@@ -113,12 +114,15 @@ void
 sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
 	PlannerInfo *root = p->root;
+	Path		price;
 
 	p->spec.topn_desc = sift_v6_topn_desc(root, p->rel->relid);
 	if (dims != NIL)
 		p->spec.join_desc = sift_v6_rows_dims_desc(p);
 	scan += cpu_operator_cost * p->rel->rows * log2(k + 1.0) + sort_exprs_cost(root, p->rel->rows);
-	sift_v6_add_path(p->out, sift_v6_group_path_methods(), scan + dims_startup, scan + cpu_tuple_cost * k + dims_total, Min((double) k, p->rel->rows), root->sort_pathkeys,
+	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * k + dims_total};
+	sift_v6_force_price(&price);
+	sift_v6_add_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, Min((double) k, p->rel->rows), root->sort_pathkeys,
 					 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims);
 }
 
