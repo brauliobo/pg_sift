@@ -22,7 +22,7 @@ ANALYZE dims;
 CREATE TABLE spine (day date PRIMARY KEY);
 INSERT INTO spine SELECT d::date FROM generate_series('2026-02-01'::date, '2026-02-14', '1 day') d;
 
--- the rows of the query with the extension on and off, how many differ, and the units the first plan read
+-- the rows of the query with the extension on and off, how many differ, and whether the first plan read granules
 CREATE FUNCTION check_query(q text) RETURNS TABLE (n bigint, diff bigint, units bigint) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -35,12 +35,13 @@ BEGIN
 	SET LOCAL sift.enable_agg = on;
 	units := -1;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s+Units: ' THEN units := greatest(units, 0) + substring(l from 'Units: (\d+)')::bigint; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN units := greatest(units, 0); END IF;
+		IF l ~ '^\s+Granules: scanned=' THEN units := units + sign(substring(l from 'scanned=(\d+)')::bigint); END IF;
 	END LOOP;
 	DROP TABLE r_on, r_off;
 	RETURN NEXT;
 END $$;
--- units is -1 when the plan has no scan of the index, 0 when it read none
+-- units is -1 when the plan has no scan of the index, 0 when it read none, 1 when it read some
 
 -- no key selected: an integer key, a text key
 SELECT * FROM check_query($q$SELECT d.grp, count(*), sum(f.amount) FROM facts f JOIN dims d ON d.id = f.dim_id WHERE d.grp = 'none' GROUP BY d.grp$q$);

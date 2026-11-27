@@ -74,10 +74,14 @@ CREATE INDEX ev_col ON ev USING sift_col (id, k, amount) WITH (point_tid_columns
 RESET client_min_messages;
 CREATE TABLE dm (k int PRIMARY KEY, county text, kind text) WITH (autovacuum_enabled = false);
 INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 20000)::text) END, 'kind' || i % 4 FROM generate_series(0, 39999) i;
+SET client_min_messages = warning;
 CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);
+RESET client_min_messages;
 CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dm2 SELECT * FROM dm;
+SET client_min_messages = warning;
 CREATE INDEX dm2_col ON dm2 USING sift_col (k, county, kind);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev, dm, dm2;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_rows_and_differences(q) $$;
@@ -169,7 +173,9 @@ SELECT i,
 	CASE WHEN i % 29 = 0 THEN NULL ELSE 4000000000 + i % 120 END,
 	(i % 1000) / 10.0
 FROM generate_series(1, 12000) i;
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (k, kv, n, n8, amount);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev;
 
 -- every column type a join reads: by value (int, bigint, float8, bool, date), by reference (text, numeric, bytea, a fixed length uuid), NULLs among them

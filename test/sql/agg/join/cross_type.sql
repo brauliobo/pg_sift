@@ -1,6 +1,7 @@
 -- An equi-join of two columns of one family and two types (float8 = float4, int4 = int8) in SiftAggV6Join reads the key of each side as the type of that side: the rows are those of the
 -- normal plan, with the float4 side promoted to float8 and the int4 side to int8 as PostgreSQL compares them, whichever side is built.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET enable_hashjoin = off;
 SET enable_mergejoin = off;
