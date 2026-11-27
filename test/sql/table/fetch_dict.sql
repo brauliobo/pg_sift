@@ -2,6 +2,8 @@
 -- place, one by one: the first SELECT or UPDATE of a backend does not load the dictionary. After many such reads of a segment the dictionary is loaded and
 -- cached as before, and the rows read are the same either way: NULL, empty, long (stored inline), non-ASCII, varchar, and after DML.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the column segments, their dictionaries in blocks and sift._test_col_dict_cache are Format 1
+SET sift.test_create_format1 = on;
 
 CREATE TABLE tf (id int PRIMARY KEY, s text, v varchar(40), n int) USING sift_table;
 INSERT INTO tf
