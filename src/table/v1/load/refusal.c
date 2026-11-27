@@ -136,8 +136,10 @@ sift_tbl_bulk_refusal(Relation rel)
 
 	if (rel->trigdesc != NULL)
 		return "a trigger or a foreign key can read the table";
+	if (sift_tbl_published(rel))
+		return "the table is published for logical decoding";
 	if (sift_tbl_decoded(rel))
-		return "logical decoding reads the changes of the table";
+		return "a logical slot of the database decodes every table";
 	if (row_expressions_call_user_function(rel))
 		return "a default, a check or a domain of the table calls a function of the user";
 	foreach_oid(indexoid, RelationGetIndexList(rel))
