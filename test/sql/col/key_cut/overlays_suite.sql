@@ -25,14 +25,7 @@ ANALYZE kp;
 
 -- the lookups: the group cut reads the units of the group, the list is the table's
 CREATE INDEX ko_i ON ko USING sift_col (id, group_id, d, seq, v) WITH (key_order = 'group_id, d', key_cut = 'group_id');
-CREATE FUNCTION kunits(q text) RETURNS int LANGUAGE plpgsql AS
-$$ DECLARE l text; r int;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		IF l ~ 'Units:' THEN r := substring(l FROM 'Units: (\d+) read'); END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION kunits(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text(q, true)) $$;
 SET sift.enable_agg = on;
 SET sift.agg_force = on;
 SET enable_indexscan = off;
@@ -256,7 +249,7 @@ FROM generate_series(1, 62500) i;
 VACUUM (FREEZE, ANALYZE) kd;
 
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
+CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_read(q) $$;
 
 -- chosen with the date as the second key; a key list of one column and the time leaf as the key are not extended
 CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id, d');

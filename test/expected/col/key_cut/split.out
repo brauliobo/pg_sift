@@ -30,8 +30,7 @@ SELECT sift.col_verify('ks_idx', true);
  
 (1 row)
 
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
-CREATE FUNCTION kread(q text) RETURNS int LANGUAGE sql AS $$ SELECT (regexp_match(kunits(q), 'Units: (\d+) read'))[1]::int $$;
+CREATE FUNCTION kread(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text(q, true)) $$;
 -- the keys of 8,192 rows and more are cut into units of 4,096; the other keys fill the units of the key alone
 SELECT sum(units) AS units FROM sift.col_segments('ks_idx') WHERE kind = 'immutable';
  units 
@@ -181,6 +180,6 @@ SELECT sift.col_verify('ks_idx', true);
 (1 row)
 
 DROP TABLE kq, ks;
-DROP FUNCTION kunits(text), kread(text), kuse(text), kres(bool), kwhole(bool), kcheck(text);
+DROP FUNCTION kread(text), kuse(text), kres(bool), kwhole(bool), kcheck(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

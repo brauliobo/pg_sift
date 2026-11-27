@@ -22,8 +22,7 @@ CREATE INDEX ks_idx ON ks USING sift_col (id, tenant_id, d, n, f) WITH (key_cut 
 CREATE INDEX ks_one ON ks USING sift_col (id, tenant_id, d, n, f) WITH (key_cut = 'tenant_id');
 SELECT sift.col_verify('ks_idx', true);
 
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
-CREATE FUNCTION kread(q text) RETURNS int LANGUAGE sql AS $$ SELECT (regexp_match(kunits(q), 'Units: (\d+) read'))[1]::int $$;
+CREATE FUNCTION kread(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text(q, true)) $$;
 
 -- the keys of 8,192 rows and more are cut into units of 4,096; the other keys fill the units of the key alone
 SELECT sum(units) AS units FROM sift.col_segments('ks_idx') WHERE kind = 'immutable';
@@ -83,6 +82,6 @@ SELECT sum(units) AS units_after_reindex FROM sift.col_segments('ks_idx') WHERE 
 SELECT sift.col_verify('ks_idx', true);
 
 DROP TABLE kq, ks;
-DROP FUNCTION kunits(text), kread(text), kuse(text), kres(bool), kwhole(bool), kcheck(text);
+DROP FUNCTION kread(text), kuse(text), kres(bool), kwhole(bool), kcheck(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

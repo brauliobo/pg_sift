@@ -27,14 +27,7 @@ VACUUM (FREEZE, ANALYZE) ko;
 ANALYZE kp;
 -- the lookups: the group cut reads the units of the group, the list is the table's
 CREATE INDEX ko_i ON ko USING sift_col (id, group_id, d, seq, v) WITH (key_order = 'group_id, d', key_cut = 'group_id');
-CREATE FUNCTION kunits(q text) RETURNS int LANGUAGE plpgsql AS
-$$ DECLARE l text; r int;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		IF l ~ 'Units:' THEN r := substring(l FROM 'Units: (\d+) read'); END IF;
-	END LOOP;
-	RETURN r;
-END $$;
+CREATE FUNCTION kunits(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text(q, true)) $$;
 SET sift.enable_agg = on;
 SET sift.agg_force = on;
 SET enable_indexscan = off;
@@ -407,7 +400,7 @@ INSERT INTO kd SELECT i, (random() * 20)::int, date '2020-01-01' + (random() * 2
 FROM generate_series(1, 62500) i;
 VACUUM (FREEZE, ANALYZE) kd;
 CREATE FUNCTION kopt(i regclass) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.index_key_cut_reloption(i) $$;
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
+CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_read(q) $$;
 -- chosen with the date as the second key; a key list of one column and the time leaf as the key are not extended
 CREATE INDEX kd_auto ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id, d');
 CREATE INDEX kd_key ON kd USING sift_col (tenant_id, d, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, n, f) WITH (key_cut = 'tenant_id');
@@ -428,16 +421,16 @@ SELECT sift.col_verify('kd_auto', true);
 SET enable_indexscan = off; SET enable_bitmapscan = off; SET seq_page_cost = 10000; SET random_page_cost = 10000;
 UPDATE pg_index SET indisvalid = false WHERE indexrelid IN ('kd_key'::regclass, 'kd_off'::regclass);
 SELECT kunits($$SELECT count(*), sum(a1) FROM kd WHERE tenant_id = 7 AND d >= '2021-01-01' AND d < '2021-03-01'$$) AS second_key;
-                    second_key                    
---------------------------------------------------
-  Units: 1 read, 80 pruned, 0 from pre-aggregates
+        second_key        
+--------------------------
+ SiftAgg read 1 pruned 80
 (1 row)
 
 UPDATE pg_index SET indisvalid = (indexrelid = 'kd_key'::regclass) WHERE indexrelid IN ('kd_auto'::regclass, 'kd_key'::regclass);
 SELECT kunits($$SELECT count(*), sum(a1) FROM kd WHERE tenant_id = 7 AND d >= '2021-01-01' AND d < '2021-03-01'$$) AS key_only;
-                     key_only                     
---------------------------------------------------
-  Units: 4 read, 77 pruned, 0 from pre-aggregates
+         key_only         
+--------------------------
+ SiftAgg read 4 pruned 77
 (1 row)
 
 UPDATE pg_index SET indisvalid = true WHERE indexrelid IN ('kd_auto'::regclass, 'kd_key'::regclass, 'kd_off'::regclass);

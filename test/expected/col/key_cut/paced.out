@@ -41,7 +41,7 @@ BEGIN
 	RETURN true;
 END $$;
 CREATE FUNCTION kp_units() RETURNS int LANGUAGE sql AS $$
-	SELECT substring(sift_helpers.plan_units_lines('SELECT count(*), sum(amount) FROM kp WHERE tenant_id = 42') from 'Units: (\d+) read')::int $$;
+	SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text('SELECT count(*), sum(amount) FROM kp WHERE tenant_id = 42', true)) $$;
 SET enable_seqscan = off; SET enable_bitmapscan = off; SET enable_indexscan = off;
 SELECT kp_units() AS units_before, kp_same() AS same_before;
  units_before | same_before 
