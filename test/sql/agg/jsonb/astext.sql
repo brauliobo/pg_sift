@@ -41,6 +41,7 @@ INSERT INTO a_q VALUES
 	('SELECT e.v->>''score'' AS score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
 	('SELECT count(DISTINCT e.v->>''score'') FROM a_t d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v)'),
 	('SELECT e.score, count(*) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1'),
+	('SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' = ''12'')'),
 	('SELECT e.kind, count(*) FILTER (WHERE e.score = ''1.50''), count(*) FILTER (WHERE e.score IS NULL) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) GROUP BY 1'),
 	('SELECT e.kind, avg(e.score::float8) FROM a_t d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, score text) WHERE e.score ~ ''^[0-9.]+$'' GROUP BY 1'),
 	-- the text of a path of the document
@@ -61,8 +62,7 @@ INSERT INTO a_q VALUES
 	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score != "x")'')'),
 	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (!(@.score == "x"))'')'),
 	-- a string no number or boolean prints as is the string member alone
-	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "x")'')'),
-	('SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' = ''12'')');
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "x")'')');
 
 CREATE FUNCTION a_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN

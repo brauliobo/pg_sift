@@ -2,7 +2,8 @@
  * agg/unnest/members.c - jsonb_array_elements(doc) or (doc -> 'key') AS e over a list of objects the index keeps shredded (`doc.key[]{k1 t1, ..}`), read by the members of its elements, `e ->> 'k'`
  * and `(e ->> 'k')::type`, as the aggregate scan of an unnest takes it (agg/unnest/jsonb.h, SV6E_MEMBERS): each member the statement reads is a column of the element, the leaf the same member of a
  * jsonb_to_recordset is. A row whose list the leaves cannot hold is read from the heap and taken apart by the function, the members read as the statement does: the text of the member, and the input
- * function of the cast, whose error is the one of the pair of that element (the late values of agg/unnest/jsonb.h).
+ * function of the cast, whose error is the one of the pair of that element (the late values of agg/unnest/jsonb.h). The same function in the sub-select of an EXISTS reads its stream of the Ext the
+ * same way (V6Plan.elem_stream).
  */
 #include "postgres.h"
 
@@ -73,14 +74,15 @@ bool
 sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
 	SiftV6Ext  *x = p->xseed;
-	SiftV6XElem *el = &x->elem;
+	SiftV6XElem *el = p->elem_stream == 0 ? &x->elem : &x->streams[p->elem_stream - 1];
+	List	  **names = p->elem_stream == 0 ? &x->elem_names : (List **) &list_nth_cell(x->stream_names, p->elem_stream - 1)->ptr_value;
 	Oid			type;
 	const char *name = member_read(p, e, &type);
 	int			at = 0;
 
 	if (name == NULL)
 		return false;
-	foreach_node(String, n, x->elem_names)
+	foreach_node(String, n, *names)
 	{
 		if (strcmp(strVal(n), name) == 0 && el->col_type[at] == type)
 			break;
@@ -96,7 +98,7 @@ sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 		el->col_type[at] = type;
 		el->col_kind[at] = false;
 		el->ncols++;
-		x->elem_names = lappend(x->elem_names, makeString(pstrdup(name)));
+		*names = lappend(*names, makeString(pstrdup(name)));
 	}
 	*out = (SiftV6Col) {.attno = el->attno,.typid = type,.src = SV6SRC_ELEM,.slot = at};
 	return true;

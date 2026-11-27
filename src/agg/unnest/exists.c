@@ -329,8 +329,12 @@ build_exists(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	SiftV6ElemRte *rte;
 
 	b->elem_rel = c->sub->simple_rel_array[1];
-	return b->elem_rel != NULL && sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) && sift_v6_unnest_array_ok(p->root, p->rel, one.array) &&
-		(rte = stream_of(p, st, one.array, SV6E_RECORDSET, &b->test.stream)) != NULL && merge_declared(rte, &one, b);
+	if (b->elem_rel == NULL || !sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) || !sift_v6_unnest_array_ok(p->root, p->rel, one.array) ||
+		(rte = stream_of(p, st, one.array, one.fn == SV6E_MEMBERS ? SV6E_MEMBERS : SV6E_RECORDSET, &b->test.stream)) == NULL)
+		return false;
+	if (one.fn == SV6E_MEMBERS && rte->array == NULL)
+		*rte = one;
+	return one.fn == SV6E_MEMBERS || merge_declared(rte, &one, b);
 }
 
 /* a jsonpath or containment test: over an index the quals of the elements of its array, over a table the call itself decides each row */
