@@ -105,7 +105,7 @@ write_one(SiftBuildShared *shared, Relation index, int gen, int i)
 	SiftStreamWriter *sw = sift_sw_begin_spool(post);
 	SiftSegmentWriter *rw = sift_segw_begin_range(sw, ent, &rg->ref, cxt);
 
-	sift_segw_spool(rw, sift_seg_postings(shared->budget) / 2);
+	sift_segw_spool(rw, sift_merge_term_postings(shared->budget));
 	/* the plan stays as it is until the ranges taken are done */
 	write_terms(shared, index, i, rw);
 	BufFileExportFileSet(post);

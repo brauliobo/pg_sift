@@ -148,7 +148,7 @@ sift_segs_write(SiftSegment **segs, int nsegs, Size budget, SiftWriteTarget *wt,
 	MemoryContext cxt = sift_mem_allocset_create(CurrentMemoryContext, "sift segment write");
 	SiftSegmentWriter *sw = sift_segs_write_docs(segs, nsegs, budget, wt, gen, ref, cxt);
 
-	sift_segw_spool(sw, sift_seg_postings(budget) / 2);
+	sift_segw_spool(sw, sift_merge_term_postings(budget));
 	sift_segs_write_range(segs, nsegs, budget, NULL, NULL, sw);
 	sift_segw_finish(sw, entry);
 	MemoryContextDelete(cxt);

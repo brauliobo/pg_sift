@@ -36,6 +36,13 @@ sift_seg_postings(Size budget)
 	return TEST_KNOB(sift_test_segment_postings, budget / 10);
 }
 
+/* Postings from which a merge stages a term in files: its readers hold half the budget, the writer's superblock buffers and spools a quarter, the term the rest */
+uint64
+sift_merge_term_postings(Size budget)
+{
+	return sift_seg_postings(budget) / 4;
+}
+
 const char *
 sift_run_file(int worker, int run)
 {
@@ -179,8 +186,7 @@ sift_runs_write(SiftRun **runs, int nruns, SiftWriteTarget *wt, uint64 gen, cons
 	rd = runs_open_readers(runs, nruns, budget, &positions, &ndocs);
 	/* the segment has positions when every run does */
 	mo.sw = runs_segw_begin(wt, gen, ref, cxt, positions, rd[0].nf);
-	/* the merged runs hold a term of any size: the posting writer takes about 10 bytes of each posting, half the budget at most */
-	sift_segw_spool(mo.sw, sift_seg_postings(budget) / 2);
+	sift_segw_spool(mo.sw, sift_merge_term_postings(budget));
 	runs_merge_readers(rd, nruns, positions, &mo);
 	sift_segw_finish(mo.sw, entry);
 	for (int i = 0; i < nruns; i++)

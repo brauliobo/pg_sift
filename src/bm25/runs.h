@@ -169,5 +169,7 @@ extern int	sift_shrink_runs(SiftRun **runs, int nruns, int target, Size budget, 
 
 /* Postings of the largest term of a segment that fit its memory budget (the posting writer takes about 10 bytes of each) */
 extern uint64 sift_seg_postings(Size budget);
+/* Postings from which a term a merge writes is staged in files (sift_segw_spool) */
+extern uint64 sift_merge_term_postings(Size budget);
 
 #endif							/* SIFT_RUNS_H */

@@ -190,7 +190,8 @@ postw_add(SiftPostingWriter *w, const SiftKey *keys, const uint8 *tf, const uint
 		return;
 	if (w->n + n > w->cap)
 	{
-		w->cap = Max(w->n + n, Max(1024, w->cap * 2));
+		/* a term that is staged from spool_limit postings on never needs more room than that */
+		w->cap = Max(w->n + n, Min(Max(1024, w->cap * 2), w->spool_min ? spool_limit(w, pos != NULL) : PG_UINT32_MAX));
 		w->keys = grow(w->mcxt, w->keys, (Size) w->cap * sizeof(SiftKey));
 		w->tf = grow(w->mcxt, w->tf, w->cap);
 		w->bound = grow(w->mcxt, w->bound, w->cap);
