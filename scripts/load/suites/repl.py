@@ -37,9 +37,19 @@ def catchup(db, st) -> int:
     return 0
 
 
-def snapshot_oracle(w, sql: str, guc: str) -> int:
-    """oracle() for a session of the standby: a statement cancelled by a conflict with the recovery (40001) is expected and no mismatch"""
-    return halves_differ(w.do(snap(*gucs(sql, guc)), ('40001',)))
+def snapshot_oracle(w, sql: str, guc: str, indexes: tuple = ()) -> int:
+    """oracle() for a session of the standby: a statement cancelled by a conflict with the recovery (40001) is expected and no mismatch, and so is a read whose INDEXES (the
+    names of its table's indexes) name other indexes after it than before: the swap of a REINDEX CONCURRENTLY of the primary replayed while it ran, and the new index has
+    none of the rows deleted before it was built, which the older snapshot still sees (the primary waits for its own older snapshots, not for a standby's; a btree misses
+    them the same)"""
+    ids = f"SELECT {', '.join(f'to_regclass({i!r})::oid' for i in indexes)}; " if indexes else ''
+    out = w.do(snap(*gucs(sql, guc), ids, ids), ('40001',))
+    if out is None or not indexes:
+        return halves_differ(out)
+    if out[0] != out[-1]:
+        w.expected += 1
+        return 0
+    return halves_differ(out[1:-1])
 
 
 def repl_standby_failover(ctx):

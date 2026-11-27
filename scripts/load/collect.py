@@ -129,9 +129,9 @@ def p99_ratio(quiet: list, busy: list, floor_ms: float = 2.0) -> float:
     return round(p99(busy) / max(p99(quiet), floor_ms), 2)
 
 
-def snap(a: str, b: str, pre: str = '') -> str:
-    """A and B in one REPEATABLE READ snapshot (after PRE), the line of SEP between their answers"""
-    return f'BEGIN ISOLATION LEVEL REPEATABLE READ; {pre}{a}; {SEP}; {b}; COMMIT'
+def snap(a: str, b: str, pre: str = '', post: str = '') -> str:
+    """A and B in one REPEATABLE READ snapshot (after PRE, before POST), the line of SEP between their answers"""
+    return f'BEGIN ISOLATION LEVEL REPEATABLE READ; {pre}{a}; {SEP}; {b}; {post}COMMIT'
 
 
 def gucs(sql: str, guc: str) -> tuple:

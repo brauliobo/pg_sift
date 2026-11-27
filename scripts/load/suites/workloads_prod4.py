@@ -372,13 +372,15 @@ REWRITES = ('VACUUM FULL e_tbl', 'CLUSTER e_col USING e_col_id', 'REINDEX TABLE 
             'REINDEX TABLE CONCURRENTLY e_col', 'VACUUM FULL e_col', 'REINDEX TABLE CONCURRENTLY e_tbl', 'CLUSTER e_bm USING e_bm_id')
 R_CURSOR = ('BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM e_col; DECLARE c CURSOR FOR SELECT id FROM e_col ORDER BY id; FETCH 100 FROM c; '
             'CLUSTER e_side USING e_side_pkey; FETCH ALL FROM c; COMMIT')
-R_READS = ((AGG.format(t='e_col'), 'sift.enable_agg'), (BM.format(t='e_bm'), 'sift.enable_scan'), ('SELECT count(*), sum(v) FROM e_tbl WHERE id % 7 = 3', 'sift.enable_scan'))
+R_READS = ((AGG.format(t='e_col'), 'sift.enable_agg', ('e_col_ix', 'e_col_id')), (BM.format(t='e_bm'), 'sift.enable_scan', ('e_bm_ix', 'e_bm_id')),
+           ('SELECT count(*), sum(v) FROM e_tbl WHERE id % 7 = 3', 'sift.enable_scan', ('e_tbl_pkey',)))
 
 
 def repl_rewrite_cluster_standby(ctx):
     """on the primary 2 writers of the three engines, 1 session that rewrites them by turns (VACUUM FULL, CLUSTER, REINDEX TABLE CONCURRENTLY), idle DUTY times as long as
     its last statement took, and 1 that clusters a side sift_table inside a REPEATABLE READ transaction with a cursor open over another table; 4 REPEATABLE READ sessions of
-    the hot standby compare the index paths with the heap while the rewrites replay (a query cancelled by a conflict with the recovery is no mismatch): every committed row
+    the hot standby compare the index paths with the heap while the rewrites replay (a query cancelled by a conflict with the recovery is no mismatch, nor a read the swap of
+    a REINDEX CONCURRENTLY replayed under: suites.repl.snapshot_oracle): every committed row
     kept, every cursor whole, and after a catch-up the standby answers what the primary does and its sift.check, quarantine and health are clean"""
     db, conn = ctx.db, standby()
     engines(db)
