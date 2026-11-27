@@ -291,8 +291,9 @@ def conc_bm25_query_storm_churn(ctx):
         w.ids = getattr(w, 'ids', set())
         k = zipf(w.seed * 7919 + i, N, 1.1)
         if i % 3 == 2:
-            n = nxt(w)
-            if w.do(f"BEGIN; DELETE FROM q_doc WHERE id = {k}; INSERT INTO q_doc VALUES ({QDOC.format(k=n, title='beta', body=f"'wire switch tail{n % 97}'")}); COMMIT") is not None:
+            n   = nxt(w)
+            row = QDOC.format(k=n, title='beta', body=f"'wire switch tail{n % 97}'")
+            if w.do(f"BEGIN; DELETE FROM q_doc WHERE id = {k}; INSERT INTO q_doc VALUES ({row}); COMMIT") is not None:
                 w.ids.add(n)
         else:
             w.do(f"UPDATE q_doc SET v = v + 1, title = 'gamma t{i % 13}', body = 'switch tail{i % 97}' || CASE WHEN {i} % 2 = 0 THEN ' wire' ELSE '' END WHERE id = {k}")
