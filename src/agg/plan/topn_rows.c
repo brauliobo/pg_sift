@@ -81,7 +81,8 @@ sort_exprs_cost(PlannerInfo *root, double rows)
 void
 sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 {
-	sift_v6_topn_explain(es, spec->topn_desc, spec->topk_count != NIL ? sift_v6_topn_limit_text(linitial(spec->topk_count), lsecond(spec->topk_count)) : psprintf("%u", spec->topk));
+	sift_v6_topn_explain(es, spec->topn_desc, spec->topk_count != NIL ? sift_v6_topn_limit_text(linitial(spec->topk_count), lsecond(spec->topk_count)) :
+						 spec->topk == SIFT_V6_ROWS_ALL ? "all" : psprintf("%u", spec->topk));
 	if (spec->agg_desc != NULL)
 		ExplainPropertyText("Pushed Aggregates", spec->agg_desc, es);
 	if (spec->join_desc != NULL)
@@ -89,7 +90,7 @@ sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 }
 
 /* the format keeps the best rows of the relation, and what the spec asks beyond them (the aggregates of the whole set, the keys computed from columns, the dimensions of a join, a text match) when it serves that;
- * a key computed from columns is the value of the column in the heap row, which only a store that reads its values exactly gives */
+ * a key computed from columns, and a column the node gives from its scan, is the value of the column in the heap row, which only a store that reads its values exactly gives */
 static bool
 rows_served(const V6Plan *p)
 {
@@ -98,7 +99,7 @@ rows_served(const V6Plan *p)
 	const uint8 asks = (p->spec.naggs > 0 ? SIFT_ROWS_TOTALS : 0) | (p->spec.nderive > 0 ? SIFT_ROWS_DERIVED : 0) | (p->spec.ext != NULL ? SIFT_ROWS_STAR : 0) |
 		(OidIsValid(p->spec.text_indexoid) ? SIFT_ROWS_TEXT : 0);
 
-	return order != NULL && order->scan_rows != NULL && (order->rows_serves & asks) == asks && (p->spec.nderive == 0 || sift_v6_values_exact(&rel));
+	return order != NULL && order->scan_rows != NULL && (order->rows_serves & asks) == asks && ((p->spec.nderive == 0 && !p->rows_from_store) || sift_v6_values_exact(&rel));
 }
 
 bool
@@ -110,44 +111,51 @@ sift_v6_rows_compile(V6Plan *p, uint32 k)
 	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p) && rows_served(p);
 }
 
-void
-sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
+/* the path of the best K rows the scan of cost scan keeps, the heap of the winners priced at the rows it holds */
+static Path *
+rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
 	PlannerInfo *root = p->root;
+	const double kept = Min((double) k, p->rel->rows);
 	Path		price;
 
 	p->spec.topn_desc = sift_v6_topn_desc(root, p->rel->relid);
 	if (dims != NIL)
 		p->spec.join_desc = sift_v6_rows_dims_desc(p);
-	scan += cpu_operator_cost * p->rel->rows * log2(k + 1.0) + sort_exprs_cost(root, p->rel->rows);
-	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * k + dims_total};
+	scan += cpu_operator_cost * p->rel->rows * log2(kept + 1.0) + sort_exprs_cost(root, p->rel->rows);
+	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + dims_total};
 	sift_v6_force_price(&price);
-	sift_v6_add_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, Min((double) k, p->rel->rows), root->sort_pathkeys,
-					 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims);
+	return sift_v6_make_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, kept, root->sort_pathkeys,
+							 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims);
 }
 
-static bool
-rows_table_path(V6Plan *p, Oid relid, uint32 k)
+void
+sift_v6_rows_add(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
-	Cost		open,
-				scan;
+	add_path(p->out, rows_path(p, k, scan, dims, dims_startup, dims_total));
+}
+
+/* the plan of the rows over the sift_table relid and the cost of its scan */
+static bool
+rows_table_scan(V6Plan *p, Oid relid, uint32 k, Cost *scan)
+{
+	Cost		open;
 	SiftV6CostIn in;
 
 	if (!sift_v6_plan_table(p, relid) || !sift_v6_rows_compile(p, k))
 		return false;
 	in = (SiftV6CostIn) {.tuples = p->rel->tuples,.rows = p->rel->rows,.f_prune = sift_v6_clause_prune(p->root, p->rel->baserestrictinfo, p->ops->order != NULL ? p->ops->order->lead_att(p->relid, true) : 0),.groups = k,
 	.row_frac = sift_v6_rel_row_frac(p->relid),.ncols_read = sift_v6_spec_ncols_read(&p->spec)};
-	sift_v6_scan_cost(&in, &open, &scan);
-	sift_v6_rows_add(p, k, scan, NIL, 0, 0);
+	sift_v6_scan_cost(&in, &open, scan);
 	return true;
 }
 
+/* the plan of the rows over the index p->index and the cost of its scan */
 static bool
-rows_index_path(V6Plan *p, uint32 k)
+rows_index_scan(V6Plan *p, uint32 k, Cost *scan)
 {
 	Relation	irel;
-	Cost		open,
-				scan;
+	Cost		open;
 	bool		ok;
 
 	if (!sift_v6_index_owned(p->index))
@@ -156,11 +164,42 @@ rows_index_path(V6Plan *p, uint32 k)
 	sift_v6_plan_index(p, irel);
 	ok = sift_v6_rows_compile(p, k);
 	index_close(irel, NoLock);
-	if (!ok)
-		return false;
-	sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, &scan);
-	sift_v6_rows_add(p, k, scan, NIL, 0, 0);
-	return true;
+	if (ok)
+		sift_v6_scan_price(p->root, p->rel, p->index, 0, &open, scan);
+	return ok;
+}
+
+/* the path of the best K rows of the one relation of the statement: over its own store when it is a sift_table, else over the first of its indexes that serves it; NULL for none */
+static Path *
+rows_rel_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, uint32 k, bool from_store)
+{
+	const Oid	relid = planner_rt_fetch(rel->relid, root)->relid;
+	Cost		scan;
+
+	if (sift_v6_rel_owned(relid, true))
+	{
+		V6Plan		p = {.root = root,.rel = rel,.out = out,.relid = relid,.batch_ok = true,.rows_from_store = from_store};
+
+		return rows_table_scan(&p, relid, k, &scan) ? rows_path(&p, k, scan, NIL, 0, 0) : NULL;
+	}
+	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
+	{
+		V6Plan		p = {.root = root,.rel = rel,.out = out,.relid = ix->indexoid,.index = ix,.batch_ok = true,.rows_from_store = from_store};
+
+		if (rows_index_scan(&p, k, &scan))
+			return rows_path(&p, k, scan, NIL, 0, 0);
+	}
+	return NULL;
+}
+
+Path *
+sift_v6_rows_store_path(PlannerInfo *root, RelOptInfo *rel)
+{
+	const Query *q = root->parse;
+
+	if (rel->reloptkind != RELOPT_BASEREL || q->sortClause == NIL || q->hasTargetSRFs || q->rowMarks != NIL || !sift_v6_base_rel_ok(root, rel))
+		return NULL;
+	return rows_rel_path(root, rel, rel, SIFT_V6_ROWS_ALL, true);
 }
 
 /* the rows of the best K of the rows of one table, or of a fact table joined to its dimensions, with every qual pushed to the scan: the rows go to a heap of the best K (v6_rows_topn.h) */
@@ -170,7 +209,7 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 	const Query *q = root->parse;
 	const uint32 k = sift_v6_rows_k_of(q);
 	RelOptInfo *rel;
-	Oid			relid;
+	Path	   *path;
 
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
 		return;
@@ -197,19 +236,6 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 	if (!sift_v6_base_rel_ok(root, rel))
 		return;
 	sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
-	relid = planner_rt_fetch(rel->relid, root)->relid;
-	if (sift_v6_rel_owned(relid, true))
-	{
-		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = relid,.batch_ok = true};
-
-		rows_table_path(&p, relid, k);
-		return;
-	}
-	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-	{
-		V6Plan		p = {.root = root,.rel = rel,.out = output_rel,.relid = ix->indexoid,.index = ix,.batch_ok = true};
-
-		if (rows_index_path(&p, k))
-			return;
-	}
+	if ((path = rows_rel_path(root, rel, output_rel, k, false)) != NULL)
+		add_path(output_rel, path);
 }

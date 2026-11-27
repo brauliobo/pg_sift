@@ -1,5 +1,5 @@
 /*
- * agg/plan/rows_out.c - the columns a row Top-N of SiftAggV6 gives (agg/topn/rows.h): the columns of the table, which the node fetches from the heap rows of the winners, the columns of the
+ * agg/plan/rows_out.c - the columns a row Top-N of SiftAggV6 gives (agg/topn/rows.h): the columns of the table, which the node fetches from the heap rows of the winners or the scan decodes, the columns of the
  * dimensions of a join, which the heap of the winners carries as keys the pipe fills, and the window aggregates over the whole set (count(*) OVER (), sum(x) OVER ()), which the scan folds from every
  * row it keeps into one group that every winner shows.
  */
@@ -112,6 +112,25 @@ dim_out(V6Plan *p, const Var *v, SiftV6RowOut *out)
 	return true;
 }
 
+/* a column of the table the scan decodes as a key the heap of winners carries (the one of a sort key too) */
+static bool
+store_out(V6Plan *p, const Var *v, SiftV6RowOut *out)
+{
+	SiftV6Col	col;
+	int			k = 0;
+
+	if (!sift_v6_compile_sort_key(p, (Expr *) v, &col))
+		return false;
+	while (k < p->spec.nkeys && !sift_v6_col_same(&p->spec.key[k], &col))
+		k++;
+	if (k == SIFT_V6_MAX_KEYS)
+		return false;
+	if (k == p->spec.nkeys)
+		p->spec.key[p->spec.nkeys++] = col;
+	*out = (SiftV6RowOut) {.from = SV6OUT_KEY,.at = k};
+	return true;
+}
+
 static bool
 row_out(V6Plan *p, const Node *n, SiftV6RowOut *out)
 {
@@ -123,8 +142,12 @@ row_out(V6Plan *p, const Node *n, SiftV6RowOut *out)
 		return false;
 	if (v->varno != p->rel->relid)
 		return dim_out(p, v, out);
+	if (v->varattno <= 0 || !bms_is_empty(v->varnullingrels))
+		return false;
+	if (p->rows_from_store)
+		return store_out(p, v, out);
 	*out = (SiftV6RowOut) {.from = SV6OUT_HEAP};
-	return v->varattno > 0 && bms_is_empty(v->varnullingrels);
+	return true;
 }
 
 static Node *

@@ -186,16 +186,17 @@ static Plan *first_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *bes
 
 static const CustomPathMethods first_path_methods = {"SiftAggV6First", first_plan_path, NULL};
 
-/* the inputs the node can take: the cheapest path of the rows, and the rows of the cheapest partial path gathered from the workers */
+/* the inputs the node can take: the cheapest path of the rows, the rows of the cheapest partial path gathered from the workers, and the rows the store of the table decodes (no heap row read) */
 static List *
 first_children(PlannerInfo *root, RelOptInfo *input_rel)
 {
 	List	   *out = input_rel->cheapest_total_path != NULL ? list_make1(input_rel->cheapest_total_path) : NIL;
 	Path	   *partial = input_rel->partial_pathlist != NIL ? linitial(input_rel->partial_pathlist) : NULL;
+	Path	   *store = sift_v6_rows_store_path(root, input_rel);
 
 	if (partial != NULL && input_rel->consider_parallel && partial->param_info == NULL)
 		out = lappend(out, create_gather_path(root, input_rel, partial, partial->pathtarget, NULL, NULL));
-	return out;
+	return store != NULL ? lappend(out, store) : out;
 }
 
 static void first_add_path(PlannerInfo *root, RelOptInfo *output_rel, Path *child);

@@ -552,6 +552,16 @@ v6_totals(V6State *st)
 	SIFT_INVARIANT(sift_v6_group_next(st->group, st->totals, st->totals_null), "the aggregates of the whole set of a row Top-N have no row");
 }
 
+/* a column the node gives is one of the heap row of a winner: the winners are fetched */
+static bool
+rows_fetch(const SiftV6Spec *spec)
+{
+	for (int i = 0; i < spec->nout; i++)
+		if (spec->out[i].from == SV6OUT_HEAP)
+			return true;
+	return false;
+}
+
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
@@ -566,6 +576,8 @@ v6_run_rows(V6State *st, EState *estate)
 
 		sift_v6_rows_source(st->rows, k);
 		v6_scan_rows(st, src, estate->es_snapshot);
+		if (!rows_fetch(st->spec))
+			continue;
 		src->fetch = sift_table_index_fetch_begin(src->heap);
 		src->fetch_slot = table_slot_create(src->heap, NULL);
 	}
@@ -574,7 +586,7 @@ v6_run_rows(V6State *st, EState *estate)
 		v6_totals(st);
 }
 
-/* the next winner of a row Top-N: its columns from the heap row at its address, in the partition it came from, or from what the heap of winners and the scan kept of it */
+/* the next winner of a row Top-N: its columns from the heap row at its address, in the partition it came from (fetched when the node gives a column of it), or from what the heap of winners and the scan kept of it */
 static bool
 v6_next_row(V6State *st, TupleTableSlot *slot)
 {
@@ -591,7 +603,7 @@ v6_next_row(V6State *st, TupleTableSlot *slot)
 		return false;
 	src = &st->sources[source];
 	sift_f2_tid_set(&tid, addr);
-	SIFT_INVARIANT(table_index_fetch_tuple(src->fetch, &tid, st->css.ss.ps.state->es_snapshot, src->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
+	SIFT_INVARIANT(src->fetch == NULL || table_index_fetch_tuple(src->fetch, &tid, st->css.ss.ps.state->es_snapshot, src->fetch_slot, &again, &dead), "a row the scan kept is not in the heap");
 	foreach_node(TargetEntry, te, ((CustomScan *) st->css.ss.ps.plan)->custom_scan_tlist)
 	{
 		const SiftV6RowOut *out = &spec->out[i];

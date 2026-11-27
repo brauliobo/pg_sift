@@ -63,6 +63,7 @@ typedef struct V6Plan
 	const int  *elem_map;		/* the element column of the union of the tests' (SiftV6ElemRte) that column i of the relation of the test being built is; NULL: its own */
 	int			elem_stream;	/* the stream of the Ext (sift_v6_ext_stream) whose elements are the columns of elem_rel */
 	bool		heap_rows;		/* the unnest of a sift_table reads every row again by its address: a qual or a test of the statement only the row itself decides (sift_v6_unnest_ready) */
+	bool		rows_from_store;	/* the columns a row Top-N gives are those its scan decodes, which it carries beside the sort columns: no heap row is fetched (sift_v6_rows_store_path) */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */
@@ -107,6 +108,8 @@ extern void sift_v6_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel, Rel
 extern void sift_v6_add_group_path(V6Plan *p, RelOptInfo *output_rel, List *group_exprs, List *having);
 /* plan_topn_rows.c: the path of ORDER BY columns LIMIT K of the rows of one table, at the UPPERREL_ORDERED stage */
 extern void sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+/* the rows of the one table of the statement, all of them in the order of its ORDER BY, from the columns of its store: the input of a node above that reads every row (SiftAggV6First); NULL when the store cannot give them */
+extern Path *sift_v6_rows_store_path(PlannerInfo *root, RelOptInfo *rel);
 /* the row Top-N of the one index in hand (a partition's), and its path once the scan is priced; dims are the plans of the dimensions of a join, and what they cost */
 extern bool sift_v6_rows_compile(V6Plan *p, uint32 k);
 extern Node *sift_v6_rows_window_aggs(Node *expr);

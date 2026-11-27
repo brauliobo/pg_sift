@@ -99,6 +99,26 @@ INSERT INTO stmts VALUES
 
 SELECT s.id, r.engine, r.spilled, r.result_rows, r.vs_heap FROM stmts s, LATERAL same(s.q, s.forced) r ORDER BY s.id;
 
+-- the input of SiftAggV6First is every row of the table decoded from the columns of the index, sorted by the ORDER BY with no heap row read, when the index holds every column
+-- the statement reads (a column it lacks, note, keeps the rows of the heap); the groups outgrow the hash memory
+CREATE FUNCTION store_input(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE l text; first boolean := false; store boolean := false;
+BEGIN
+	SET LOCAL seq_page_cost = 10000;
+	SET LOCAL random_page_cost = 10000;
+	SET LOCAL work_mem = '64kB';
+	SET LOCAL hash_mem_multiplier = 1;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		first := first OR l LIKE '%Custom Scan (SiftAggV6First)%';
+		store := store OR l LIKE '%Top-N: % (limit all)';
+	END LOOP;
+	RETURN first AND store;
+END $$;
+SELECT r.*, store_input(q) AS store_input FROM unnest(ARRAY['SELECT DISTINCT ON (id) id, tenant, status, placed, total FROM o ORDER BY id',
+	'SELECT DISTINCT ON (status, tenant) tenant, status, id, placed FROM o WHERE tenant < 25 ORDER BY tenant, status, placed DESC, id',
+	'SELECT DISTINCT ON (status, tenant) tenant, status, id, note FROM o WHERE tenant < 25 ORDER BY tenant, status, placed DESC, id']) q, LATERAL same(q, true) r;
+DROP FUNCTION store_input(text);
+
 -- the memory of the node while its partitions are read back: what the hash, equality and sort functions of a row allocate (a numeric key copied out of its short header) is freed with the row,
 -- and the partition of a key whose hash is one value for every row (cint) is sorted at the last level instead of held: the node holds about its 64kB either way
 CREATE TYPE cint;

@@ -839,6 +839,12 @@ sift_v6_explain_count(ExplainState *es, const char *label, int64 value)
 void
 sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths)
 {
+	add_path(output_rel, sift_v6_make_path(output_rel, methods, startup, total, rows, pathkeys, custom_private, custom_paths));
+}
+
+Path *
+sift_v6_make_path(RelOptInfo *output_rel, const CustomPathMethods *methods, double startup, double total, double rows, List *pathkeys, List *custom_private, List *custom_paths)
+{
 	CustomPath *cp = makeNode(CustomPath);
 
 	cp->path.pathtype = T_CustomScan;
@@ -851,7 +857,7 @@ sift_v6_add_path(RelOptInfo *output_rel, const CustomPathMethods *methods, doubl
 	cp->methods = methods;
 	cp->custom_private = custom_private;
 	cp->custom_paths = custom_paths;
-	add_path(output_rel, &cp->path);
+	return &cp->path;
 }
 
 void
