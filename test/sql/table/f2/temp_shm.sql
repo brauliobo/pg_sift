@@ -1,6 +1,7 @@
 -- TEMP sift_table and sift_col never reach the registries in shared memory: no other backend can read a temporary relation, so churning through them evicts no manifest of a permanent
 -- table and takes no slot of it.
 CREATE EXTENSION pg_sift_test CASCADE;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 CREATE TABLE perm_t (id int, v int) USING sift_table;
 INSERT INTO perm_t SELECT g, g FROM generate_series(1, 200) g;

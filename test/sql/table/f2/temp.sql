@@ -1,6 +1,7 @@
 -- TEMP sift_table and sift_col: a table with no block yet is Format 2.0 for every function of sift.*, and stays so after sift.maintain; ON COMMIT PRESERVE ROWS, DELETE ROWS and DROP,
 -- TRUNCATE inside a savepoint and DISCARD TEMP all give what a heap twin gives; a unique sift_col index of a temporary table still refuses a duplicate.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 
 -- an empty one: nothing to maintain, and the first insert still makes Format 2.0
 CREATE TEMP TABLE tmp_empty (id int, v text) USING sift_table;

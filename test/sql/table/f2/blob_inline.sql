@@ -2,6 +2,7 @@
 -- own. Both read back, change, go and are reclaimed the same: the table is as small as its compressed values, and the values are what they were after updates, deletes, VACUUM and a merge.
 -- requires: build col
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 
 CREATE FUNCTION bi_val(i int) RETURNS text LANGUAGE sql IMMUTABLE AS $$

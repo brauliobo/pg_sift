@@ -2,6 +2,7 @@
 -- table and takes no slot of it.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 CREATE TABLE perm_t (id int, v int) USING sift_table;
 INSERT INTO perm_t SELECT g, g FROM generate_series(1, 200) g;
 SELECT count(*) FROM perm_t;

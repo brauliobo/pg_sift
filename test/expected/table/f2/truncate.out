@@ -2,6 +2,7 @@
 -- another session after the commit, and of this one, never share an address. A table made earlier gets a new file, and a TRUNCATE that rolls back gives back the rows the transaction
 -- inserted before it. Heap twins say what the rows are.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 -- made and truncated in one transaction: 100 rows, TRUNCATE, 10 rows
 BEGIN;
 CREATE TABLE tr_t (id int, v text) USING sift_table;
