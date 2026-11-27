@@ -10,11 +10,13 @@
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/table.h"
+#include "access/xact.h"
 #include "catalog/index.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "col/am.h"
+#include "col/f2/agg/colstat.h"
 #include "col/f2/f2.h"
 #include "col/f2/kll/kll.h"
 #include "col/f2/l0/slab.h"
@@ -24,6 +26,7 @@
 #include "col/f2/del/pend.h"
 #include "col/pg.h"
 #include "core/catname.h"
+#include "core/quarantine/quarantine.h"
 #include "executor/spi.h"
 #include "fmgr.h"
 #include "miscadmin.h"
@@ -34,7 +37,6 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "storage/predicate.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "core/memtrack.h"
@@ -63,6 +65,16 @@ index_column(Relation index, const char *col)
 	return -1;
 }
 
+/* The index holds every row a snapshot of this transaction sees, as the planner takes an index to (get_relation_info), with no predicate, and is in service */
+static bool
+index_whole(Relation idx)
+{
+	Form_pg_index ix = idx->rd_index;
+
+	return ix->indisvalid && ix->indisready && ix->indislive && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
+		(!ix->indcheckxmin || TransactionIdPrecedes(HeapTupleHeaderGetXmin(idx->rd_indextuple->t_data), TransactionXmin)) && !sift_index_quarantined(idx);
+}
+
 static bool
 f2_index_with_column(Oid indexoid, const char *col, KllTarget *t)
 {
@@ -73,47 +85,44 @@ f2_index_with_column(Oid indexoid, const char *col, KllTarget *t)
 		return false;
 	idx = index_open(indexoid, AccessShareLock);
 	t->leaf = index_column(idx, col);
-	ok = idx->rd_index->indisvalid && idx->rd_index->indisready && heap_attisnull(idx->rd_indextuple, Anum_pg_index_indpred, NULL) &&
-		sift_col_format_major(idx) == SIFT_FORMAT2_MAJOR && t->leaf >= 0;
+	ok = index_whole(idx) && sift_col_format_major(idx) == SIFT_FORMAT2_MAJOR && t->leaf >= 0;
 	if (ok)
 		t->index = indexoid;
 	index_close(idx, AccessShareLock);
 	return ok;
 }
 
+/* The table, the column and the right to read it come from the catalogs before any lock: a user who may not read the table waits for no lock of it */
 static KllTarget
 resolve_target(Oid relid, const char *col)
 {
 	KllTarget	t = {.index = InvalidOid,.colname = pstrdup(col)};
-	Relation	rel = relation_open(sift_rel_must_exist(relid), AccessShareLock);
-	char		kind = rel->rd_rel->relkind;
+	char		kind = get_rel_relkind(sift_rel_must_exist(relid));
+	Relation	rel;
 
-	if (kind == RELKIND_INDEX)
-	{
-		t.heap = IndexGetRelation(relid, false);
-		f2_index_with_column(relid, col, &t);
-	}
-	else if (kind == RELKIND_RELATION || kind == RELKIND_MATVIEW)
-	{
-		t.heap = relid;
-		foreach_oid(indexoid, RelationGetIndexList(rel))
-		{
-			if (f2_index_with_column(indexoid, col, &t))
-				break;
-		}
-	}
-	else
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a table or an index", RelationGetRelationName(rel))));
-	relation_close(rel, AccessShareLock);
+	if (kind != RELKIND_INDEX && kind != RELKIND_RELATION && kind != RELKIND_MATVIEW)
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a table or an index", get_rel_name(relid))));
+	t.heap = kind == RELKIND_INDEX ? IndexGetRelation(relid, false) : relid;
 	t.heap_att = get_attnum(t.heap, col);
+	if (pg_class_aclcheck(t.heap, GetUserId(), ACL_SELECT) != ACLCHECK_OK &&
+		(t.heap_att == InvalidAttrNumber || pg_attribute_aclcheck(t.heap, t.heap_att, GetUserId(), ACL_SELECT) != ACLCHECK_OK))
+		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(get_rel_relkind(t.heap)), get_rel_name(t.heap));
 	if (t.heap_att == InvalidAttrNumber)
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_COLUMN), errmsg("column \"%s\" does not exist", col)));
 	t.type = get_atttype(t.heap, t.heap_att);
 	if (!sift_f2_kll_type_ok(t.type))
 		ereport(ERROR, (errcode(ERRCODE_DATATYPE_MISMATCH), errmsg("column \"%s\" has a type of no quantile sketch", col),
 						errhint("Quantiles are of int2, int4, int8, float4, float8, numeric, date, timestamp and timestamptz columns.")));
-	if (pg_class_aclcheck(t.heap, GetUserId(), ACL_SELECT) != ACLCHECK_OK && pg_attribute_aclcheck(t.heap, t.heap_att, GetUserId(), ACL_SELECT) != ACLCHECK_OK)
-		aclcheck_error(ACLCHECK_NO_PRIV, get_relkind_objtype(get_rel_relkind(t.heap)), get_rel_name(t.heap));
+	rel = relation_open(relid, AccessShareLock);
+	if (kind == RELKIND_INDEX)
+		f2_index_with_column(relid, col, &t);
+	else
+		foreach_oid(indexoid, RelationGetIndexList(rel))
+		{
+			if (f2_index_with_column(indexoid, col, &t))
+				break;
+		}
+	relation_close(rel, AccessShareLock);
 	return t;
 }
 
@@ -208,30 +217,33 @@ index_rows(Relation idx, const SiftManifestRead *all, uint64 *rows, uint64 *dirt
 	}
 }
 
-/* The snapshot sees every row of the part as its sketch counted it: written by committed transactions it sees, and no column delta changed a value since */
+/* What the heap says of the parts for the snapshot: its xmin when the index was told of every delete the snapshot sees, and the all-visible blocks of the table */
+typedef struct KllSeen
+{
+	Relation	heap;
+	Snapshot	snap;
+	FullTransactionId heard_xmin;
+	V6VisMap	vis;
+} KllSeen;
+
+/*
+ * The snapshot sees every row of the part as its sketch counted it, and no column delta changed a value since: every heap block of the part is all-visible, or the index was told of every
+ * delete and the rows were written by committed transactions the snapshot sees.
+ */
 static bool
-part_sketch_seen(const SiftPartDesc *d, bool col_deltas, Snapshot snap, FullTransactionId snap_xmin)
+part_sketch_seen(KllSeen *s, const SiftPartDesc *d, bool col_deltas)
 {
 	TransactionId xid = XidFromFullTransactionId(d->max_xid);
 
 	if (col_deltas || d->col_delta_blk != InvalidBlockNumber)
 		return false;
-	if (sift_vis_part_inserts_settled(d, snap_xmin))
+	if (sift_v6_vis_part_all_visible(&s->vis, s->heap, d))
 		return true;
-	return FullTransactionIdEquals(d->min_xid, d->max_xid) && !TransactionIdIsCurrentTransactionId(xid) && sift_vis_inserted(xid, FirstCommandId, snap);
-}
-
-/* A serializable statement that reads the sketches reads the whole table: it conflicts with every writer of it */
-static void
-predicate_lock_heap(Relation idx, Snapshot snap)
-{
-	Relation	heap;
-
-	if (!IsolationIsSerializable())
-		return;
-	heap = table_open(idx->rd_index->indrelid, AccessShareLock);
-	PredicateLockRelation(heap, snap);
-	table_close(heap, NoLock);
+	if (!FullTransactionIdIsValid(s->heard_xmin))
+		return false;
+	if (sift_vis_part_inserts_settled(d, s->heard_xmin))
+		return true;
+	return FullTransactionIdEquals(d->min_xid, d->max_xid) && !TransactionIdIsCurrentTransactionId(xid) && sift_vis_inserted(xid, FirstCommandId, s->snap);
 }
 
 /*
@@ -243,8 +255,7 @@ static bool
 index_sketch(Oid indexoid, int leaf, SiftKll *out)
 {
 	Relation	idx = index_open(indexoid, AccessShareLock);
-	Snapshot	snap = GetActiveSnapshot();
-	FullTransactionId snap_xmin = sift_vis_snap_xmin(snap);
+	KllSeen		seen = {.heap = table_open(idx->rd_index->indrelid, AccessShareLock),.snap = GetActiveSnapshot()};
 	SiftManifestRead all = sift_manifest_read_range(idx, NULL, NULL);
 	uint64		rows = 0,
 				dirty = 0;
@@ -252,7 +263,8 @@ index_sketch(Oid indexoid, int leaf, SiftKll *out)
 	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift kll part"),
 				old = CurrentMemoryContext;
 
-	predicate_lock_heap(idx, snap);
+	seen.heard_xmin = sift_f2_deletes_heard(idx, seen.heap, seen.snap) ? sift_vis_snap_xmin(seen.snap) : InvalidFullTransactionId;
+	sift_v6_vis_init(&seen.vis, CurrentMemoryContext);
 	index_rows(idx, &all, &rows, &dirty);
 	ok = !sift_stage_has_pending(idx) && sift_kll_dirty_ok(rows, dirty, SIFT_F2_KLL_DIRTY_PPM);
 	for (int i = 0; ok && i < all.n; i++)
@@ -266,7 +278,7 @@ index_sketch(Oid indexoid, int leaf, SiftKll *out)
 			SiftF2KllSec sec;
 
 			MemoryContextSwitchTo(pcx);
-			if (!part_sketch_seen(&pd[p], col_deltas, snap, snap_xmin) || !sift_f2_kll_load(idx, sift_part_open_desc(idx, &pd[p], (uint32) all.entries[i].part_id), &sec) ||
+			if (!part_sketch_seen(&seen, &pd[p], col_deltas) || !sift_f2_kll_load(idx, sift_part_open_desc(idx, &pd[p], (uint32) all.entries[i].part_id), &sec) ||
 				!sift_f2_kll_merge_col(&sec, (uint16) leaf, out))
 			{
 				dirty += pd[p].nrows;
@@ -277,17 +289,23 @@ index_sketch(Oid indexoid, int leaf, SiftKll *out)
 		}
 	}
 	MemoryContextDelete(pcx);
+	sift_v6_vis_free(&seen.vis);
+	table_close(seen.heap, NoLock);
 	index_close(idx, AccessShareLock);
 	return ok;
 }
 
+/*
+ * The quantiles from the sketches; false when they cannot answer. A serializable transaction reads the heap: the rows a sketch counts or leaves out carry no writer for
+ * CheckForSerializableConflictOut, and a writer whose rows are not in the index yet is in no part.
+ */
 static bool
 sketch_answer(const KllTarget *t, const double *ps, uint32 np, double *out, bool *empty)
 {
 	SiftKll		sk;
 	bool		ok;
 
-	if (!OidIsValid(t->index) || check_enable_rls(t->heap, InvalidOid, true) == RLS_ENABLED)
+	if (!OidIsValid(t->index) || IsolationIsSerializable() || check_enable_rls(t->heap, InvalidOid, true) == RLS_ENABLED)
 		return false;
 	ok = sift_kll_init(&sk, SIFT_KLL_K_DEFAULT, CurrentMemoryContext);
 	SIFT_INVARIANT(ok, "sift: the default sketch parameter k is out of range");

@@ -61,6 +61,7 @@ TESTING_REGRESS += agg/jsonb/typeof
 TESTING_REGRESS += agg/jsonb_exists
 TESTING_REGRESS += agg/jsonpath_kinds
 TESTING_REGRESS += agg/key/cube_fallback
+TESTING_REGRESS += agg/kll/heap_visible
 TESTING_REGRESS += agg/kll/mvcc
 TESTING_REGRESS += agg/kll/nonfinite
 TESTING_REGRESS += agg/kll/quantiles
@@ -786,6 +787,7 @@ TESTING_REGRESS += core/roles/maintenance
 TESTING_REGRESS += table/agg/basic
 # sift._test_s55_* functions, only the testing build has
 TESTING_REGRESS += col/f2/point_dir
+TESTING_REGRESS += col/granule/elem_bytes
 TESTING_REGRESS += col/granule/point
 TESTING_REGRESS += col/key/order
 # the tests of the Format 1 settings that sift.test_* settings replaced (the testing build has them, the release library has not)

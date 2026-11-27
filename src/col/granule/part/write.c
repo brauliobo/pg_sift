@@ -106,7 +106,14 @@ put_strides(StringInfo out, const SiftColIn *time, int cnt)
 	}
 }
 
-/* The bytes of the strings and of the payloads of the values of a row that the leaf cannot hold */
+/* The bytes of the string and of the payload of value v of a column that the leaf cannot hold */
+static uint64
+value_string_bytes(const SiftColIn *col, uint32 v)
+{
+	return (col->slen != NULL ? col->slen[v] : 0) + (col->xplen != NULL ? col->xplen[v] : 0);
+}
+
+/* The bytes of the strings and payloads of a row: its values, and the values of the elements of its arrays of objects */
 static uint64
 row_string_bytes(const SiftRows *rows, int r)
 {
@@ -115,10 +122,15 @@ row_string_bytes(const SiftRows *rows, int r)
 	for (int c = 0; c < rows->ncols; c++)
 	{
 		const SiftColIn *col = &rows->cols[c];
+		const uint32 *eoff = col->group1 > 0 ? rows->cols[col->group1 - 1].eoff : NULL;
 
-		if (col->eoff != NULL || col->group1 > 0)
+		if (col->eoff != NULL)
 			continue;
-		bytes += (col->slen != NULL ? col->slen[r] : 0) + (col->xplen != NULL ? col->xplen[r] : 0);
+		if (eoff == NULL)
+			bytes += value_string_bytes(col, (uint32) r);
+		else
+			for (uint32 e = eoff[r]; e < eoff[r + 1]; e++)
+				bytes += value_string_bytes(col, e);
 	}
 	return bytes;
 }

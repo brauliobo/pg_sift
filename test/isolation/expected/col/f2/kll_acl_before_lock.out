@@ -1,0 +1,7 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1lock s2r s1c
+step s1lock: BEGIN; LOCK TABLE ka IN ACCESS EXCLUSIVE MODE;
+step s2r: SELECT sift.approx_percentile('ka', 'v', 0.5) AS p;
+ERROR:  permission denied for table ka
+step s1c: COMMIT;

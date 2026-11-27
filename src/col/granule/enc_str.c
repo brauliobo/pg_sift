@@ -16,6 +16,7 @@
 #define SIFT_FSST_MIN_BYTES		4096	/* a column of fewer bytes keeps the codec's list: the table (up to 2.3 kB) would not pay */
 #define SIFT_FSST_AVG_MAX		64		/* strings this long on average are left to LZ4 and zstd, which find the repeats within them */
 #define SIFT_FSST_MAX_PERMILLE	800		/* the table codes its sample in at most this much of its size */
+#define SIFT_FSST_RAW_MAX		((uint64) (MaxAllocSize - 1) / 2)	/* the codes, up to 2 bytes for a byte and one past them, fit one allocation */
 #define SIFT_DICT_MAX		65536
 #define SIFT_DICT_PART_MAX	(1 << 20)
 #define SIFT_DICT_ENTRY_MAX	1024
@@ -284,7 +285,7 @@ put_cold_strs(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 
 /*
  * The strings coded by the table of symbols of the whole part: the raw and coded sizes, the coded lengths as a cascade and the codes with one byte past them, and no table. false, nothing
- * written, when this granule's strings do not follow the part's (they code in more than 92% of their size), which keep the rest of the paths.
+ * written, when this granule's strings do not follow the part's (they code in more than 92% of their size) or their codes may not fit one allocation, which keep the rest of the paths.
  */
 static bool
 put_part_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunkOpts *opt)
@@ -293,12 +294,15 @@ put_part_fsst(StringInfo s, const SiftColIn *col, int n, int nn, const SiftChunk
 	uint32		total = 0,
 				hdr[2];
 	uint8	   *enc;
-	int64	   *coded = sift_alloc(nn * sizeof(int64));
+	int64	   *coded;
 	bool		pays;
 
 	for (int i = 0; i < n; i++)
 		if (col->isnull == NULL || !col->isnull[i])
 			raw += col->slen[i];
+	if (raw > SIFT_FSST_RAW_MAX)
+		return false;
+	coded = sift_alloc(nn * sizeof(int64));
 	enc = sift_alloc(2 * (Size) raw + 1);
 	for (int i = 0, k = 0; i < n; i++)
 		if (col->isnull == NULL || !col->isnull[i])

@@ -1,0 +1,53 @@
+-- sift.approx_percentile answers from the sketches only for parts whose rows the heap shows the snapshot as they were counted: the index was told of every delete (track_changes),
+-- or every heap block of the part is all-visible. A table with track_changes = 'off' that lost its rows answers NULL, not the values of the deleted rows; after VACUUM the sketches
+-- answer again. A SERIALIZABLE transaction reads the heap, whose rows carry the writers it conflicts with.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+SET sift.test_create_format1 = off;
+SET client_min_messages = warning;
+CREATE TABLE kv (id int8, v float8, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO kv SELECT i, i, md5(i::text) FROM generate_series(1, 33000) i;
+CREATE INDEX kv_col ON kv USING sift_col (id, v, pad) WITH (sketches = 'kll(v)', track_changes = 'off');
+SELECT sift.approx_percentile('kv', 'v', 0.5) = sift.approx_percentile('kv', 'v', 0.5, 'true') AS exact_while_not_all_visible;
+ exact_while_not_all_visible 
+-----------------------------
+ t
+(1 row)
+
+DELETE FROM kv;
+SELECT sift.approx_percentile('kv', 'v', 0.5) AS after_delete, sift.approx_quantiles('kv', 'v', ARRAY[0.5, 1]) AS quantiles_after_delete;
+ after_delete | quantiles_after_delete 
+--------------+------------------------
+              | 
+(1 row)
+
+VACUUM kv;
+INSERT INTO kv SELECT i, i, md5(i::text) FROM generate_series(1, 33000) i;
+VACUUM kv;
+SELECT sift.approx_percentile('kv', 'v', 0.5) <> sift.approx_percentile('kv', 'v', 0.5, 'true') AS sketch_when_all_visible;
+ sketch_when_all_visible 
+-------------------------
+ t
+(1 row)
+
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT sift.approx_percentile('kv', 'v', 0.5) = sift.approx_percentile('kv', 'v', 0.5, 'true') AS serializable_exact;
+ serializable_exact 
+--------------------
+ t
+(1 row)
+
+COMMIT;
+DROP TABLE kv;
+-- the index was told of every delete: its sketches answer for rows the heap has not made all-visible
+CREATE TABLE kh (id int8 PRIMARY KEY, v float8, pad text) WITH (autovacuum_enabled = false);
+INSERT INTO kh SELECT i, i, md5(i::text) FROM generate_series(1, 33000) i;
+CREATE INDEX kh_col ON kh USING sift_col (id, v, pad) WITH (sketches = 'kll(v)');
+SELECT sift.approx_percentile('kh', 'v', 0.5) <> sift.approx_percentile('kh', 'v', 0.5, 'true') AS sketch_when_heard;
+ sketch_when_heard 
+-------------------
+ t
+(1 row)
+
+DROP TABLE kh;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;
