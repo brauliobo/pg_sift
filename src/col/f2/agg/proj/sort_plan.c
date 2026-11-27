@@ -75,7 +75,8 @@ typedef struct SortSpec
 	bool		desc[SV6P_MAX];
 	bool		nulls_first[SV6P_MAX];
 	int			nkeys;
-	ScanKeyData *key;
+	ScanKeyData *key;			/* of key_list, made when each scan begins */
+	List	   *key_list;
 	SortIosCols iosc;
 	char		proj[SIFT_PROJ_NAME_LEN];
 } SortSpec;
@@ -144,7 +145,7 @@ placeholder_known(Oid type)
 	return ok;
 }
 
-/* The value of the argument of a key: the constant, the parameter's value when the statement runs (econtext), or a placeholder while it is planned (NULL econtext) */
+/* The value of the argument of a key: the constant, the parameter's value when the scan begins (econtext; in the scan's context), or a placeholder while it is planned (NULL econtext) */
 static Datum
 key_value(Node *arg, ExprContext *econtext, bool *null)
 {
@@ -155,7 +156,7 @@ key_value(Node *arg, ExprContext *econtext, bool *null)
 		return ((Const *) arg)->constvalue;
 	if (econtext == NULL)
 		return placeholder_value(exprType(arg), &ok);
-	return ExecEvalExprSwitchContext(ExecInitExpr((Expr *) arg, NULL), econtext, null);
+	return ExecEvalExpr(ExecInitExpr((Expr *) arg, NULL), econtext, null);
 }
 
 static void
@@ -163,6 +164,7 @@ sort_keys(SortSpec *s, const List *keys, ExprContext *econtext)
 {
 	s->key = palloc(Max(list_length(keys), 1) * sizeof(ScanKeyData));
 	s->nkeys = 0;
+	s->null_arg = false;
 	foreach_ptr(List, k, keys)
 	{
 		const List *a = linitial(k);
@@ -209,10 +211,9 @@ sort_is_ios(const List *l)
 }
 
 static SortSpec *
-sort_unpack(const List *l, ExprContext *econtext)
+sort_unpack(const List *l)
 {
 	const List *ints = linitial(l);
-	const List *keys = lsecond(l);
 	SortSpec   *s = palloc0(sizeof(SortSpec));
 	int			at = 0;
 
@@ -222,6 +223,7 @@ sort_unpack(const List *l, ExprContext *econtext)
 	s->residual = list_nth_int(ints, at++);
 	s->norder = list_nth_int(ints, at++);
 	s->ios = list_nth_int(ints, at++);
+	s->key_list = lsecond(l);
 	s->limit_expr = lfourth(l);
 	s->offset_expr = list_nth(l, 4);
 	for (int i = 0; i < s->norder; i++)
@@ -239,8 +241,6 @@ sort_unpack(const List *l, ExprContext *econtext)
 		s->iosc.att[i] = (AttrNumber) list_nth_int(ints, at++);
 		s->iosc.leaf[i] = (int16) list_nth_int(ints, at++);
 	}
-	sort_keys(s, keys, econtext);
-	s->limit = bound_rows(s, econtext);
 	strlcpy(s->proj, strVal(lthird(l)), sizeof(s->proj));
 	return s;
 }
@@ -811,10 +811,11 @@ sort_relation(ProjSortState *st)
 	tuplesort_performsort(st->sort);
 }
 
+/* The keys and the bound are read from the parameters when each scan begins: a rescan has those of the outer row */
 static void
 sort_begin_scan(ProjSortState *st)
 {
-	const SortSpec *s = st->spec;
+	SortSpec   *s = st->spec;
 	SiftProjPred *preds;
 	SiftV6ProjQuery q;
 	MemoryContext old;
@@ -823,6 +824,8 @@ sort_begin_scan(ProjSortState *st)
 	sift_v6_source_enter(owner_of(st), st->index == NULL, st->css.ss.ps.state->es_snapshot);
 	st->cx = sift_mem_allocset_create(st->css.ss.ps.state->es_query_cxt, "sift proj sort scan");
 	old = MemoryContextSwitchTo(st->cx);
+	sort_keys(s, s->key_list, st->css.ss.ps.ps_ExprContext);
+	s->limit = bound_rows(s, st->css.ss.ps.ps_ExprContext);
 	st->vet_slot = table_slot_create(st->css.ss.ss_currentRelation, NULL);
 	st->fetch = sift_table_index_fetch_begin(st->css.ss.ss_currentRelation);
 	st->host = (SiftV6ProjHost) {.rel = owner_of(st),.store = st->store,.heap = st->index != NULL ? st->css.ss.ss_currentRelation : NULL,
@@ -904,7 +907,7 @@ sort_begin(CustomScanState *node, EState *estate, int eflags)
 {
 	ProjSortState  *st = (ProjSortState *) node;
 
-	st->spec = sort_unpack(((CustomScan *) node->ss.ps.plan)->custom_private, node->ss.ps.ps_ExprContext);
+	st->spec = sort_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
 	if (!st->spec->table)
 		st->index = index_open(st->spec->indexoid, AccessShareLock);
 	st->store = sift_f2_store_open(owner_of(st));

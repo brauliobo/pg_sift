@@ -1,0 +1,78 @@
+-- A sort projection (SiftProjSortScan) bounded by a LIMIT and an OFFSET that change with the outer row, or that a generic plan holds as parameters, gives the rows of the heap: the bound is
+-- read when each scan starts, after the outer row has set the parameters, and EXPLAIN of a generic plan reads no parameter (S119-15)
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+CREATE TABLE ps (id int, k int4, v int4);
+CREATE INDEX ps_idx ON ps USING sift_col (id, k, v) WITH (key_order = 'id');
+INSERT INTO ps SELECT i, (i::int8 * 7919 % 100003)::int, i % 50 FROM generate_series(1, 3000) i;
+SELECT sift.create_projection('ps_idx', 'by_k', 'ORDER BY k, id');
+ create_projection 
+-------------------
+ t
+(1 row)
+
+VACUUM (ANALYZE) ps;
+SET sift.enable_agg = off;
+SET max_parallel_workers_per_gather = 0;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE FUNCTION ps_plan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; seen bool := false;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP seen := seen OR l ~ 'SiftProjSortScan'; END LOOP;
+	RETURN seen;
+END $$;
+-- the offset of each outer row: through the projection and through the heap (an order by an expression it does not have)
+SELECT ps_plan('SELECT o.off, (SELECT k FROM ps ORDER BY k, id LIMIT 1 OFFSET o.off) FROM generate_series(0, 4) o(off)') AS correlated_reads_projection;
+ correlated_reads_projection 
+-----------------------------
+ t
+(1 row)
+
+SELECT o.off, (SELECT k FROM ps ORDER BY k, id LIMIT 1 OFFSET o.off) IS NOT DISTINCT FROM (SELECT k FROM ps ORDER BY k + 0, id LIMIT 1 OFFSET o.off) AS agree
+FROM generate_series(0, 4) o(off) ORDER BY 1;
+ off | agree 
+-----+-------
+   0 | t
+   1 | t
+   2 | t
+   3 | t
+   4 | t
+(5 rows)
+
+SELECT o.n, (SELECT count(*) FROM (SELECT k FROM ps ORDER BY k, id LIMIT o.n) w) AS rows FROM generate_series(1, 4) o(n) ORDER BY 1;
+ n | rows 
+---+------
+ 1 |    1
+ 2 |    2
+ 3 |    3
+ 4 |    4
+(4 rows)
+
+-- a generic plan: EXPLAIN names the parameters, and EXECUTE reads them
+PREPARE ps_page(int, int, int) AS SELECT id, k FROM ps WHERE k > $1 ORDER BY k, id LIMIT $2 OFFSET $3;
+SET plan_cache_mode = force_generic_plan;
+EXPLAIN (COSTS OFF, GENERIC_PLAN) SELECT id, k FROM ps WHERE k > $1 ORDER BY k, id LIMIT $2 OFFSET $3;
+                 QUERY PLAN                 
+--------------------------------------------
+ Limit
+   ->  Custom Scan (SiftProjSortScan) on ps
+         Filter: (k > $1)
+         Projection: by_k
+         Index Only: true
+(5 rows)
+
+CREATE TEMP TABLE ps_got AS EXECUTE ps_page(500, 7, 3);
+SELECT count(*) AS rows, md5(string_agg(g::text, '|' ORDER BY g.k, g.id)) = (SELECT md5(string_agg(x::text, '|')) FROM (SELECT id, k FROM ps WHERE k > 500 ORDER BY k + 0, id LIMIT 7 OFFSET 3) x) AS agree
+FROM ps_got g;
+ rows | agree 
+------+-------
+    7 | t
+(1 row)
+
+RESET plan_cache_mode;
+DEALLOCATE ps_page;
+DROP FUNCTION ps_plan(text);
+DROP TABLE ps_got, ps;
+DROP EXTENSION pg_sift;

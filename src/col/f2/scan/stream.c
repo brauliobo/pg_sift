@@ -1,7 +1,7 @@
 /*
  * col/f2/scan/stream.c - the addresses of an unordered scan held in memory in the order of the addresses (col/f2/scan/stream.h).
  *
- * check-memory: allow-allocs the keys are bounded by work_mem, past which the scan sorts on disk
+ * check-memory: allow-allocs the keys are bounded by work_mem and by one allocation, past which the scan sorts on disk
  */
 #include "postgres.h"
 
@@ -38,7 +38,7 @@ sift_f2_stream_put(F2Scan *s, uint64 key)
 	{
 		const uint64 cap = st->cap == 0 ? 1024 : st->cap * 2;
 
-		if (cap * sizeof(uint64) > (uint64) work_mem * 1024)
+		if (cap * sizeof(uint64) > Min((uint64) work_mem * 1024, MaxAllocSize))
 			return false;
 		st->key = st->key != NULL ? repalloc(st->key, cap * sizeof(uint64)) : MemoryContextAlloc(s->cx, cap * sizeof(uint64));
 		st->cap = cap;
