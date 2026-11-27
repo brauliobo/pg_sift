@@ -28,7 +28,7 @@ for part in shards-quick spread areas-select tooling budgets flavors formats; do
 plan_check areas-files . "$PLAN_IN"
 plan_check portability test/t "scripts test/t '*.py'"
 CHECKS+=(
-	'syntax		for f in scripts/*.sh scripts/ci/*.sh $(git ls-files 'test/t/*.sh') bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
+	'syntax		for f in scripts/*.sh scripts/ci/*.sh $(git ls-files 'test/t/*.sh' 'test/t/lib/*.bash') bench/bench bench/*.sh; do bash -n "$f" || exit 1; done'
 	'runner		scripts/lint.sh --selftest'
 	'layout		scripts/restructure-src.sh --check'
 	'path-redundancy	python3 -I scripts/check-path-redundancy.py --selftest && python3 -I scripts/check-path-redundancy.py --spec93 && python3 -I scripts/check-path-redundancy.py test/ scripts/focus/ tools/vk/ bench/test/ sqlite/tests/ mariadb/tests/'

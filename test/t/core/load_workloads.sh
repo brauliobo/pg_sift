@@ -19,7 +19,7 @@ max_worker_processes = 24
 max_parallel_workers = 4
 sift.maintenance_naptime = 200
 deadlock_timeout = '100ms'
-log_min_messages = warning"
+$LOAD_CONF"
 node_start lw || bail "start failed"
 load_suite lw --suite workloads
 done_testing

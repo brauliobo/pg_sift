@@ -25,7 +25,7 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HARNESS_DIRS = ['test/corpus', 'test/col', 'test/plan', 'test/fuzz', 'test/matrix']
+HARNESS_DIRS = ['test/corpus', 'test/col', 'test/plan', 'test/fuzz', 'test/matrix', 'scripts/load']
 HARNESS_FILES = ['scripts/corpus.sh', 'scripts/coldiff.sh', 'scripts/plangate.sh', 'scripts/coverage.sh', 'scripts/fast-gate.sh']
 SUFFIXES = ('.sql', '.py', '.sh', '.bash', '.tsv')
 RULES = [

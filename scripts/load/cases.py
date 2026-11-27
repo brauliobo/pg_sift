@@ -2,21 +2,20 @@
 
 A body builds its tables in the schema load_case (from load_base_fact of fixtures.sql), runs worker sessions in phases (ctx.phase: every role at once for a few seconds, a
 sampler beside them) and returns its counts; run.py adds the hygiene (sift.check, quarantine, sift.health, temporary files, the server log) and judges them all. A worker keeps
-the rows it committed (its ledger): the tables must hold exactly those. `open` names the Spec 106 defect (LC-NN) of a case whose ceilings wait for its fix;
+the rows it committed (its ledger): the tables must hold exactly those. `open` names the defect (LC-NN of Spec 106, Snnn-NN of a later one) of a case whose ceilings wait for its fix;
 an `intermittent` one stays open in a run that does not meet its defect (one pass proves no fix: the closing commit drops both after a stress run of the case).
 """
 from __future__ import annotations
 
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 sys.dont_write_bytecode = True
 
-from collect import (AGG, BM, IN_CASE, META, N, add, base, bm, col, ctx_kb, engines, hygiene, kept, ledger_writes, mem, mem_delta, multi_kept,  # noqa: E402
-                     nxt, oracle, oracle_heap, oracles, p99_ratio, row3, tbl, unexpected_of, until, writers, zipf)
+from collect import (AGG, BM, IN_CASE, META, N, add, base, bm, checks, col, ctx_kb, engines, kept, ledger_writes, mem, mem_delta, multi_kept,  # noqa: E402
+                     nxt, oracle, oracle_heap, oracles, p99_ratio, row3, tbl, until, writers, zipf)
 
 CLASSES = ('conc', 'pool', 'tenant', 'mix', 'bp', 'fault')
 HARD = ('lost_rows', 'dup_rows', 'oracle_mismatch', 'verify_errors', 'false_quarantines', 'health_errors', 'unexpected_errors', 'tmp_files_left', 'traps_and_leaks')
@@ -57,6 +56,11 @@ class Ceilings:
     blocks_kept: int | None = 0
     not_restarted: int | None = 0
     meta_corrupt: int | None = 0
+    wedged: int | None = 0
+    ops: int | None = 1
+    tiered: int | None = 1
+    standby_reads: int | None = 1
+    shifts: int | None = 1
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,7 @@ def conc_rowlock_overflow_mix(ctx):
         w.ledger += w.do(sql) is not None
 
     busy = ctx.phase({'w': (ws[4:], oltp), 'l': (ws[:4], lock)}, 1.5)
+    ctx.close_sessions()
     left = sum(int(x) for x in ctx.db.row('SELECT in_chunks, chunks FROM sift._test_rowlock_stats()')) if ctx.testing else None
     return base(ctx, busy, 'w', lost_rows=abs(sum(w.ledger for w in ws) - int(ctx.db.val('SELECT sum(v) FROM acc'))), rowlock_left=left, locked=busy['l'].ops)
 
@@ -160,13 +165,21 @@ def tenants(db, n: int, rows: int):
 
 
 def drop_tenants(db, n: int):
-    db.run('; '.join(f'DROP SCHEMA load_case_t{j} CASCADE' for j in range(n)) + '; DROP OWNED BY load_tenant; DROP ROLE load_tenant')
+    db.run('; '.join(f'DROP SCHEMA IF EXISTS load_case_t{j} CASCADE' for j in range(n)) + '; DROP OWNED BY load_tenant; DROP ROLE load_tenant')
 
 
 def pool_tx_multiplex_iso(ctx):
     n, rows = 16, 128
     ctx.db.run('DROP ROLE IF EXISTS load_tenant; CREATE ROLE load_tenant')
-    tenants(ctx.db, n, rows)
+    try:
+        tenants(ctx.db, n, rows)
+        return pool_tx_tenants(ctx, n, rows)
+    finally:
+        ctx.close_sessions()
+        drop_tenants(ctx.db, n)
+
+
+def pool_tx_tenants(ctx, n: int, rows: int):
     ws = ctx.sessions(4)
 
     def tx(w, i):
@@ -184,11 +197,9 @@ def pool_tx_multiplex_iso(ctx):
     busy = ctx.phase({'w': (ws, tx)}, 1.5)
     after = mem(ctx, ws)
     total = sum(int(ctx.db.val(f'SELECT sum(v) FROM load_case_t{j}.acc')) for j in range(n))
-    m = base(ctx, busy, 'w', oracle_mismatch=sum(w.ledger for w in ws), lost_rows=abs(total - sum(getattr(w, 'ups', 0) for w in ws)), **mem_delta(ctx, before, after))
-    m.update({k: v for k, v in hygiene(ctx.db).items() if v})
     ctx.close_sessions()
-    drop_tenants(ctx.db, n)
-    return m
+    return base(ctx, busy, 'w', oracle_mismatch=sum(w.ledger for w in ws), lost_rows=abs(total - sum(getattr(w, 'ups', 0) for w in ws)), **mem_delta(ctx, before, after),
+                **checks(ctx.db))
 
 
 def pool_prepared_ddl_inval(ctx):
@@ -302,15 +313,18 @@ def tenant_multidb_bgw_fair(ctx):
 
         busy = ctx.phase({'h': (hot, churn), 'q': (quiet, burst), 'x': (watch, watcher)}, 20.0, lead='x')
         unconv = sum(int(w.val(quiet_sql)) > 0 for w in watch)
-        checks = sum(int(w.val("SELECT count(*) FROM sift.check('acc', true)")) + int(w.val("SELECT count(*) FROM sift.check('ev_ix', true)")) for w in hot + watch)
+        problems = sum(int(w.val("SELECT count(*) FROM sift.check('acc', true)")) + int(w.val("SELECT count(*) FROM sift.check('ev_ix', true)")) for w in hot + watch)
         failures = sum(int(w.val('SELECT coalesce(sum(maint_failures), 0) FROM sift.status()')) for w in hot + watch)
+        q = sum(int(w.val('SELECT count(*) FROM sift.quarantine')) for w in hot + watch)
+        health = sum(int(w.val("SELECT count(*) FROM sift.health() WHERE severity = 'error'")) for w in hot + watch)
         stuck = [f'note: {w.dbname} {r}' for w in watch for r in w.run(QUIET.replace('count(*)', "format('%s dead_pct=%s l0_slabs=%s', relation, dead_pct, l0_slabs)"))] if unconv else []
         for w in [w for w in ctx.open_sessions if w.dbname == DBS[2]]:
             w.close()
             ctx.open_sessions.remove(w)
         _, err, _ = db.q(f'DROP DATABASE {DBS[2]}')
-        m = base(ctx, busy, 'h', unconverged=unconv, verify_errors=checks, maint_failures=failures, drop_in_use=int(err is not None and err[0] == '55006'))
-        return dict(m, notes=m['notes'] + stuck)
+        m = base(ctx, busy, 'h', unconverged=unconv, verify_errors=problems, maint_failures=failures, false_quarantines=q, health_errors=health,
+                 drop_in_use=int(err is not None and err[0] == '55006'))
+        return dict(m, notes=stuck)
     finally:
         ctx.close_sessions()
         db.run('ALTER SYSTEM RESET sift.max_maint_workers; SELECT pg_reload_conf()')
@@ -324,6 +338,10 @@ OLAP = (AGG.format(t='e_col'), 'SELECT id, v FROM e_col ORDER BY v DESC, id LIMI
 
 
 def mix_oltp_par_olap(ctx):
+    """4 writers of the three engines beside 2 parallel analytic readers, the readers alone before and after: every committed row kept, every answer agrees, the p99 of the
+    readers under the writers. Waits for S117-22: on Format 2.0 a parallel two-stage SiftAggV6 GROUP BY of a sift_table fails with XX002 (meta.c sift_page_expect_snap:
+    "expected page type 34 of partition 4294967295, found type 37 of partition 1") once ten rows were inserted one transaction each; the serial plan and the heap path answer
+    (the case is intermittent, Format 1.0 meets no error)"""
     engines(ctx.db)
     ws = ctx.sessions(6, PAR)
 
@@ -437,9 +455,9 @@ def fault_cancel_timeout_storm(ctx):
     ws = ctx.sessions(9)
     for w in ws[4:8]:
         w.allow, w.stored = KILLED, set()
-    storm = (lambda lo: f"SET statement_timeout = '30ms'; WITH i AS (INSERT INTO e_col SELECT g, g % 64, g % 1000 FROM generate_series({lo}, {lo + 49999}) g RETURNING 1) "
-                        "SELECT count(*) FROM i; RESET statement_timeout",
-             lambda lo: "SET lock_timeout = '20ms'; UPDATE e_tbl SET v = v + 1 WHERE id = 1; RESET lock_timeout",
+    storm = (lambda lo: f"BEGIN; SET LOCAL statement_timeout = '30ms'; WITH i AS (INSERT INTO e_col SELECT g, g % 64, g % 1000 FROM generate_series({lo}, {lo + 49999}) g "
+                        "RETURNING 1) SELECT count(*) FROM i; COMMIT",
+             lambda lo: "BEGIN; SET LOCAL lock_timeout = '20ms'; UPDATE e_tbl SET v = v + 1 WHERE id = 1; COMMIT",
              lambda lo: 'SELECT count(*) FROM e_col a JOIN e_col b USING (grp)',
              lambda lo: f"WITH i AS (INSERT INTO e_bm SELECT g, g % 64, 0, 'wire ' || md5(g::text) FROM generate_series({lo}, {lo + 19999}) g RETURNING 1) SELECT count(*) FROM i")
 
@@ -458,6 +476,7 @@ def fault_cancel_timeout_storm(ctx):
 
     busy = ctx.phase({'w': (ws[:4], ledger_writes('e')), 's': (ws[4:8], hit), 'c': (ws[8:], control)}, 1.5)
     holder.run('COMMIT')
+    ctx.close_sessions()
     acked = set().union(*(w.stored for w in ws[4:8]))
     extra = 0
     for t, batch in (('col', 50000), ('bm', 20000)):
@@ -480,7 +499,7 @@ def fault_enospc_quarantine_iso(ctx):
         w.ledger += w.do('SELECT count(*) FROM (SELECT * FROM e_col ORDER BY body, v) s') != [str(N)]
 
     full = ctx.phase({'s': (ws, spill)}, 0.5)
-    m = {'oracle_mismatch': sum(w.ledger for w in ws), 'ops': full['s'].ops, 'temp_limited': full['s'].expected, 'notes': [], 'unexpected_errors': unexpected_of(full), **ctx.obs.metrics()}
+    m = {'oracle_mismatch': sum(w.ledger for w in ws), 'ops': full['s'].ops, 'temp_limited': full['s'].expected, 'notes': [], **ctx.obs.metrics()}
     if not ctx.testing:
         return dict(m, notes=['note: the ENOSPC and quarantine sub-checks need the testing library'])
     used, eof = (int(x) for x in db.row("SELECT used_blocks, relation_blocks FROM sift.space('e_col_ix')"))
@@ -504,9 +523,9 @@ def fault_enospc_quarantine_iso(ctx):
         out = w.do(BM.format(t=t), ('XX002',) if t == 'e_bm' else ())
         w.ledger += out is not None and out != [want[t]]
 
-    reads = ctx.phase({'r': (ws, read)}, 1.0)
+    ctx.phase({'r': (ws, read)}, 1.0)
     missed = 1 - int(db.val(f'SELECT count(*) FROM sift.quarantine WHERE index::oid = {damaged}'))
-    return add(m, {'oracle_mismatch': sum(w.ledger for w in ws) + oracle(db, AGG.format(t='e_col'), 'sift.enable_agg'), 'unexpected_errors': unexpected_of(disk, reads),
+    return add(m, {'oracle_mismatch': sum(w.ledger for w in ws) + oracle(db, AGG.format(t='e_col'), 'sift.enable_agg'),
                    'disk_full': disk['s'].expected, 'quarantine_missed': missed, 'blocks_kept': kept_blocks, 'lost_rows': rows, 'damaged': (damaged,)})
 
 
@@ -544,7 +563,7 @@ CASES = (
     LoadCase('tenant_part_cache_churn', 'tenant', tenant_part_cache_churn, Ceilings(ctx_kb_delta=1280, rss_mb_delta=8, lock_wait_pct=10)),
     LoadCase('tenant_ddl_drop_shm_reclaim', 'tenant', tenant_ddl_drop_shm_reclaim, Ceilings(shm_used_after=0)),
     LoadCase('tenant_multidb_bgw_fair', 'tenant', tenant_multidb_bgw_fair, Ceilings()),
-    LoadCase('mix_oltp_par_olap', 'mix', mix_oltp_par_olap, Ceilings(lwlock_wait_pct=25, p99_ratio=2.5)),
+    LoadCase('mix_oltp_par_olap', 'mix', mix_oltp_par_olap, Ceilings(lwlock_wait_pct=25, p99_ratio=2.5), open='S117-22', intermittent=True),
     LoadCase('mix_pacer_autovac_iso', 'mix', mix_pacer_autovac_iso, Ceilings(p99_ratio=2.5, p99_read_ratio=2.0)),
     LoadCase('bp_burst_l0_starvation', 'bp', bp_burst_l0_starvation, Ceilings(l0_per_kop=50), formats=(2,)),
     LoadCase('bp_burst_meta_race', 'bp', bp_burst_meta_race, Ceilings(), formats=(2,)),

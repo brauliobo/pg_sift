@@ -5,7 +5,6 @@ created and dropped under writes and maintenance, tiering and TTL under DML and 
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 import time
 
@@ -94,9 +93,7 @@ def feat_tier_ttl_fault(ctx):
     1 session vacuums, rebinds the policy and the TTL and tiers, truncates and drops tables of its own, while another tiered table has lost its object: the twin agrees,
     sift.check sees the lost object (fault_unseen), no backend keeps objects of the store open (fd_delta)"""
     db = ctx.db
-    store = os.path.join(db.val('SHOW data_directory'), 'load_tier')
-    shutil.rmtree(store, ignore_errors=True)
-    os.makedirs(store)
+    store = ctx.store('load_tier')
     uri = 'file://' + store
     db.run(f'{tiered("tv", uri, 4096)}; {tiered("tl", uri, 1024)}')
     moved = int(db.val("SELECT count(*) FROM sift.tier_status WHERE relation = 'tv'::regclass"))

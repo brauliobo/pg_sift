@@ -11,7 +11,7 @@ import time
 sys.dont_write_bytecode = True
 
 from cases import LoadCase  # noqa: E402
-from collect import AGG, BM, add, base, checks, engines, hygiene, ledger_writes, multi_kept, oracles  # noqa: E402
+from collect import AGG, BM, add, base, checks, engines, gucs, halves_differ, hygiene, ledger_writes, multi_kept, oracles, snap  # noqa: E402
 from suites.common import Limits, anon_peak_mb  # noqa: E402
 
 DIGEST = ("SELECT count(*), md5(string_agg(id || ':' || v, ',' ORDER BY id)) FROM load_case.e_tbl", AGG.format(t='load_case.e_col'), BM.format(t='load_case.e_bm'))
@@ -39,15 +39,21 @@ def catchup(db, st) -> int:
 
 def snapshot_oracle(w, sql: str, guc: str) -> int:
     """oracle() for a session of the standby: a statement cancelled by a conflict with the recovery (40001) is expected and no mismatch"""
-    out = w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; SET LOCAL {guc} = on; {sql}; SET LOCAL {guc} = off; {sql}; COMMIT', ('40001',))
-    return 0 if out is None else int(out[:len(out) // 2] != out[len(out) // 2:])
+    return halves_differ(w.do(snap(*gucs(sql, guc)), ('40001',)))
 
 
 def repl_standby_failover(ctx):
     """4 writers of the three engines, VACUUM and the maintenance on the primary under a REPEATABLE READ snapshot held for the whole load, while 4 sessions of the hot standby
     compare the index paths with the heap in one snapshot and look keys up; then the standby catches up and answers what the primary does, is promoted, takes writes and its
-    sift.check, quarantine and health are clean; a new standby is cloned for the next case"""
-    db, conn = ctx.db, standby()
+    sift.check, quarantine and health are clean; a new standby is cloned for the next case, whatever the case met"""
+    try:
+        return failover(ctx, ctx.db, standby())
+    finally:
+        ctx.close_sessions()
+        ctx.hook('LOAD_RESTANDBY')
+
+
+def failover(ctx, db, conn: dict) -> dict:
     engines(db)
     st = ctx.sessions(1, conn=conn)[0]
     lag = catchup(db, st)
@@ -78,8 +84,6 @@ def repl_standby_failover(ctx):
     _, err, _ = st.q("INSERT INTO e_tbl VALUES (99999999, 1, 1, 'wire promoted'); INSERT INTO e_col VALUES (99999999, 1, 1, 'wire promoted'); "
                      "INSERT INTO e_bm VALUES (99999999, 1, 1, 'wire promoted')")
     m['promoted_errors'] = int(err is not None) + sum(hygiene(st).values())
-    ctx.close_sessions()
-    ctx.hook('LOAD_RESTANDBY')
     return m
 
 

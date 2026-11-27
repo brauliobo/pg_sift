@@ -42,7 +42,10 @@ def leak_rules(path: str = LEAKCHECK) -> list:
     return [codecs.decode(r, 'unicode_escape').split('\t') for r in re.findall(r"^\s*\$'((?:[^'\\]|\\.)*)'$", rows, re.M)]
 
 
-LEAKS = re.compile('|'.join([r for r, _ in leak_rules()] + ['cache lookup failed', 'could not find block containing chunk']))
+LEAKS = re.compile('|'.join([r for r, _ in leak_rules()] + ['cache lookup failed', 'could not find block containing chunk', r'\[XX000\]']))
+SEP = "SELECT '__SIFT_SEP__'"
+TIER_TMP = """SELECT count(*) FROM (SELECT d FROM pg_ls_dir('base/pgsql_tmp', true, false) d WHERE d LIKE 'pgsql_tmp_sift_tier.%') t,
+  LATERAL pg_ls_dir('base/pgsql_tmp/' || t.d, true, false) f WHERE f LIKE '%.tmp.%'"""
 
 
 class Observer:
@@ -65,8 +68,8 @@ class Observer:
         while not self.done.is_set():
             try:
                 self.sample()
-            except RuntimeError as e:
-                self.error = '' if self.db.dead else str(e)
+            except Exception as e:
+                self.error = '' if self.db.dead else f'{type(e).__name__}: {e}'
                 return
             self.done.wait(SAMPLE_S)
 
@@ -126,11 +129,26 @@ def p99_ratio(quiet: list, busy: list, floor_ms: float = 2.0) -> float:
     return round(p99(busy) / max(p99(quiet), floor_ms), 2)
 
 
+def snap(a: str, b: str, pre: str = '') -> str:
+    """A and B in one REPEATABLE READ snapshot (after PRE), the line of SEP between their answers"""
+    return f'BEGIN ISOLATION LEVEL REPEATABLE READ; {pre}{a}; {SEP}; {b}; COMMIT'
+
+
+def gucs(sql: str, guc: str) -> tuple:
+    return f'SET LOCAL {guc} = on; {sql}', f'SET LOCAL {guc} = off; {sql}'
+
+
+def halves_differ(out: list | None) -> int:
+    """1 when the lines of OUT before the line of SEP differ from those after it, 0 for a statement that failed (None)"""
+    if out is None:
+        return 0
+    i = out.index('__SIFT_SEP__')
+    return int(out[:i] != out[i + 1:])
+
+
 def oracle(db, sql: str, guc: str) -> int:
     """1 when SQL answers differently with GUC on and off in one REPEATABLE READ snapshot (the index path against the heap)"""
-    out = db.run(f'BEGIN ISOLATION LEVEL REPEATABLE READ; SET LOCAL {guc} = on; {sql}; SET LOCAL {guc} = off; {sql}; COMMIT')
-    half = len(out) // 2
-    return int(out[:half] != out[half:])
+    return halves_differ(db.run(snap(*gucs(sql, guc))))
 
 
 def sift_rels(db) -> list:
@@ -143,13 +161,13 @@ def checks(db, damaged: tuple = ()) -> dict:
     problems = sum(int(db.val(f"SELECT count(*) FROM sift.check({r}::regclass, true)")) for r in sift_rels(db) if r not in damaged)
     q = int(db.val(f"SELECT count(*) FROM sift.quarantine WHERE index::oid {IN_CASE} AND index::oid NOT IN ({skip})"))
     health = int(db.val(f"SELECT count(*) FROM sift.health() WHERE severity = 'error' AND relation::oid {IN_CASE} AND relation::oid NOT IN ({skip})"))
-    failures = int(db.val(f"SELECT coalesce(sum(maint_failures), 0) FROM sift.status() WHERE relation::oid {IN_CASE}"))
+    failures = int(db.val(f"SELECT coalesce(sum(maint_failures), 0) FROM sift.status() WHERE relation::oid {IN_CASE} AND relation::oid NOT IN ({skip})"))
     return {'verify_errors': problems, 'false_quarantines': q, 'health_errors': health, 'maint_failures': failures}
 
 
 def hygiene(db, damaged: tuple = ()) -> dict:
-    """checks() and the temporary files of the cluster: counts that add up"""
-    return dict(checks(db, damaged), tmp_files_left=int(db.val('SELECT count(*) FROM pg_ls_tmpdir()')))
+    """checks() and the temporary files of the cluster, the half-written chunks of the tier caches among them: counts that add up"""
+    return dict(checks(db, damaged), tmp_files_left=int(db.val('SELECT count(*) FROM pg_ls_tmpdir()')) + int(db.val(TIER_TMP)))
 
 
 class LogScan:
@@ -234,13 +252,13 @@ def add(*dicts) -> dict:
     out = {}
     for d in dicts:
         for k, v in d.items():
-            out[k] = out.get(k, 0) + v if isinstance(v, (int, float)) and k in out else v
+            out[k] = out[k] + v if k in out and isinstance(v, (int, float, list)) else v
     return out
 
 
 def base(ctx, roles: dict, first: str, **kw) -> dict:
-    bad = [b for r in roles.values() for b in r.bad]
-    return {'ops': roles[first].ops, 'unexpected_errors': len(bad), 'notes': [f'note: {b}' for b in bad[:3]], **ctx.obs.metrics(), **kw}
+    """the ops of the role FIRST and the waits of the phase ROLES; run.py adds the unexpected errors of every worker of the case, in every phase"""
+    return {'ops': roles[first].ops, **ctx.obs.metrics(), **kw}
 
 
 def until(db, sql: str, cap_s: float) -> int:
@@ -295,10 +313,6 @@ def oracles(db, t: str = 'e') -> int:
 
 def oracle_heap(db, t: str) -> str:
     return db.run(f'SET sift.enable_scan = off; {BM.format(t=t)}; RESET sift.enable_scan')[0]
-
-
-def unexpected_of(*phases) -> int:
-    return sum(len(r.bad) for p in phases for r in p.values())
 
 
 def selftest(expect):

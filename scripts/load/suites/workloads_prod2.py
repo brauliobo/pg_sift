@@ -5,33 +5,23 @@ under churn, a parallel star join under timeouts and cancels at a tight work_mem
 """
 from __future__ import annotations
 
-import os
-import shutil
 import sys
 import time
 
 sys.dont_write_bytecode = True
 
 from cases import KILLED, PAR, LoadCase  # noqa: E402
-from collect import BM, N, add, base, checks, ctx_kb, engines, hygiene, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, zipf  # noqa: E402
+from collect import BM, N, add, base, checks, ctx_kb, engines, halves_differ, hygiene, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, snap, zipf  # noqa: E402
 from suites.common import Limits, fd_delta, fds, twin_do, twin_mismatch  # noqa: E402
 from suites.repl import CAP, CDC, SHAPE, catchup, conninfo, standby  # noqa: E402
-from suites.workloads_next import halves_differ  # noqa: E402
 from suites.workloads_olap import WORKERS, cancels, tiered  # noqa: E402
 
 TIGHT = "SET work_mem = '512kB'"
 
 
-def with_errors(busy: dict, warm: dict) -> dict:
-    """the roles of the phase BUSY with the unexpected errors of the phase WARM before it, which no answer may hide"""
-    for name, r in warm.items():
-        busy[name].bad += r.bad
-    return busy
-
-
 def snap_pair(w, a: str, b: str, allow: tuple = KILLED) -> int:
     """1 when the statements A and B answer differently in one REPEATABLE READ snapshot of worker W, 0 when they agree or the snapshot failed with an error of ALLOW"""
-    return halves_differ(w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {a}; {b}; COMMIT', allow))
+    return halves_differ(w.do(snap(a, b), allow))
 
 
 def snap_oracle(w, sql: str, guc: str, allow: tuple = KILLED) -> int:
@@ -103,9 +93,9 @@ def mix_copy_stream_ingest(ctx):
         w.ledger += twin_do(w, 'c_tbl', 'c_col', KILLED) if i % 2 else snap_oracle(w, BM.format(t='c_bm'), 'sift.enable_scan')
 
     roles = {'s': (ws[:3], stream), 'u': (ws[3:4], churn), 'q': ([uq], copier), 'x': ([racer], race), 'm': (ws[6:7], maint), 'r': (ws[7:], read)}
-    warm = ctx.phase(roles, 0.6)
+    ctx.phase(roles, 0.6)
     before = [ctx_kb(w) for w in ws[:3]], ctx.rss(ws[:3])
-    busy = with_errors(ctx.phase(roles, 1.6), warm)
+    busy = ctx.phase(roles, 1.6)
     after = [ctx_kb(w) for w in ws[:3]], ctx.rss(ws[:3])
     tabs = [t for w in ws[:3] for t in w.frozen]
     froze = sum(int(db.val(f'SELECT count(DISTINCT id) FROM {t}')) + int(db.val(f'SELECT count(*) FROM {t}_h')) for t in tabs)
@@ -166,12 +156,12 @@ def olap_wide_toast_jsonb_mix(ctx):
         a, b = WIDE_PAIRS[(w.seed + i) % len(WIDE_PAIRS)]
         w.ledger += snap_oracle(w, WIDE_COL[i % len(WIDE_COL)], 'sift.enable_agg') if i % 3 == 2 else snap_pair(w, a.format(r=i % 16), b.format(r=i % 16))
 
-    warm = ctx.phase({'w': (ws[5:7], write), 'r': (ws[:5], read)}, 0.8)
+    ctx.phase({'w': (ws[5:7], write), 'r': (ws[:5], read)}, 0.8)
     before = [ctx_kb(w) for w in ws[:5]], ctx.rss(ws[:5])
-    busy = with_errors(ctx.phase({'w': (ws[5:7], write), 'r': (ws[:5], read), 'c': (ws[7:], cancels(ws[:5]))}, 1.8), warm)
+    busy = ctx.phase({'w': (ws[5:7], write), 'r': (ws[:5], read), 'c': (ws[7:], cancels(ws[:5]))}, 1.8)
     after = [ctx_kb(w) for w in ws[:5]], ctx.rss(ws[:5])
     ctx.close_sessions()
-    twin = sum(halves_differ(db.run(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {a.format(r=r)}; {b.format(r=r)}; COMMIT')) for a, b in WIDE_PAIRS for r in (0, 7))
+    twin = sum(halves_differ(db.run(snap(a.format(r=r), b.format(r=r)))) for a, b in WIDE_PAIRS for r in (0, 7))
     twin += sum(oracle(db, q, 'sift.enable_agg') for q in WIDE_COL)
     db.run("VACUUM w_tbl, w_col; SELECT busy FROM sift.maintain('w_tbl'); SELECT busy FROM sift.maintain('w_col_ix'); VACUUM w_tbl, w_col")
     pending = int(db.val("SELECT (SELECT pending_blocks FROM sift.space('w_tbl')) + (SELECT pending_blocks FROM sift.space('w_col_ix'))"))
@@ -330,7 +320,7 @@ def olap_par_star_timeout_spill(ctx):
     def olap(w, i):
         w.pid
         q = STAR[(w.seed + i) % len(STAR)]
-        w.do(f"SET statement_timeout = '25ms'; {q}; RESET statement_timeout" if w.seed % 2 else q, KILLED)
+        w.do(f"BEGIN; SET LOCAL statement_timeout = '25ms'; {q}; COMMIT" if w.seed % 2 else q, KILLED)
 
     def write(w, i):
         w.ids = getattr(w, 'ids', set())
@@ -367,9 +357,7 @@ def repl_inflight_promote_cdc_tier(ctx):
     db, conn = ctx.db, standby()
     if db.val('SHOW wal_level') != 'logical':
         raise RuntimeError('the case needs wal_level = logical')
-    store = os.path.join(db.val('SHOW data_directory'), 'load_tier_promote')
-    shutil.rmtree(store, ignore_errors=True)
-    os.makedirs(store)
+    store = ctx.store('load_tier_promote')
     db.run(f"{tiered('pt', 'file://' + store, COLD_ROWS)}; CREATE TABLE cdc ({SHAPE}) USING sift_table; "
            "DROP PUBLICATION IF EXISTS load_pub_p; CREATE PUBLICATION load_pub_p FOR TABLE cdc; SELECT 1 FROM pg_create_logical_replication_slot('load_cdc_p', 'pgoutput'); "
            'DROP DATABASE IF EXISTS load_case_psub WITH (FORCE); CREATE DATABASE load_case_psub')

@@ -5,7 +5,6 @@ whose queries the recovery cancels (scripts/load/suites: WORKLOADS on test/t/cor
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -13,7 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 sys.dont_write_bytecode = True
 
 from cases import KILLED, LoadCase  # noqa: E402
-from collect import AGG, BM, N, add, base, ctx_kb, engines, kept, ledger_writes, mem_delta, multi_kept, nxt, oracle, oracles, row3, tbl, until, zipf  # noqa: E402
+from collect import (AGG, BM, add, base, checks, ctx_kb, engines, halves_differ, kept, ledger_writes, mem_delta, multi_kept, nxt, oracle, oracles, row3,  # noqa: E402
+                     snap, tbl, until, zipf)
 from suites.common import TWIN, Limits, fd_delta, fds, twin_mismatch  # noqa: E402
 from suites.repl import DIGEST, catchup, snapshot_oracle, standby  # noqa: E402
 from suites.workloads_olap import cancels  # noqa: E402
@@ -26,11 +26,6 @@ V6_OPS = ('SELECT DISTINCT ON (grp) grp, id, v FROM e_col ORDER BY grp, v DESC, 
           "SELECT d.name, count(*), sum(e.v) FROM e_col e JOIN nd d USING (grp) WHERE d.name LIKE 'n1%' GROUP BY 1 ORDER BY 1",
           'WITH s AS (SELECT grp, sum(v) v FROM e_col GROUP BY grp) SELECT a.grp, a.v, b.v FROM s a JOIN s b ON b.grp = (a.grp + 1) % 64 ORDER BY 1',
           "SELECT 'a', count(*), sum(v) FROM e_col WHERE grp < 32 UNION ALL SELECT 'b', count(*), sum(v) FROM e_col WHERE grp >= 32")
-
-
-def halves_differ(out: list | None) -> int:
-    """1 when the first half of the lines of OUT (one snapshot) differs from the second, 0 for a statement that failed (None)"""
-    return 0 if out is None else int(out[:len(out) // 2] != out[len(out) // 2:])
 
 
 def olap_v6_ops_tight_mem(ctx):
@@ -69,8 +64,7 @@ MERGE = ("SELECT sift._test_f2_merge('d_tbl', a.part_id, a.key_lo, b.part_id, b.
 
 def held_twin(w, a: str, b: str) -> int:
     """twin_mismatch in a worker whose REPEATABLE READ snapshot is taken on another table a moment before it reads A and B (a rewrite of A may pass in between)"""
-    body = '; '.join(q.format(t=t) for t in (a, b) for q in TWIN)
-    out = w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM d_snap; SELECT pg_sleep(0.03); {body}; COMMIT', KILLED)
+    out = w.do(snap(*('; '.join(q.format(t=t) for q in TWIN) for t in (a, b)), 'SELECT count(*) FROM d_snap; SELECT pg_sleep(0.03); '), KILLED)
     return halves_differ(None if out is None else out[2:])
 
 
@@ -135,6 +129,7 @@ def conc_upsert_fk_unique(ctx):
 
     busy = ctx.phase({'w': (ws[:6], upsert), 'p': (ws[6:], parents)}, 2.0)
     ups, keys = sum(w.ledger for w in ws[:6]), set().union(*(getattr(w, 'ids', set()) for w in ws[:6]))
+    ctx.close_sessions()
     sums = [int(x or 0) for x in db.row('SELECT (SELECT sum(v) FROM u_ch), (SELECT sum(v) FROM u_col), (SELECT sum(n) FROM u_par)')]
     orphans = int(db.val('SELECT count(*) FROM u_ch c WHERE NOT EXISTS (SELECT 1 FROM u_par p WHERE p.id = c.par)'))
     lost = sum(abs(s - ups) for s in sums) + orphans + ws[6].ledger
@@ -154,7 +149,7 @@ PEEK = ('SELECT grp, count(*), sum(v), max({p}) FROM {t} WHERE id BETWEEN {lo} A
 def peek(i: int) -> str:
     """statement I of a reader: SPAN rows of the cold part (about 2.7 MB of the store) read from the sift_table and its twin in one snapshot"""
     q, lo = PEEK[i % 2], i * SPAN % COLD
-    return f'BEGIN ISOLATION LEVEL REPEATABLE READ; {q.format(t="tc", p="md5(pad)", lo=lo, hi=lo + SPAN)}; {q.format(t="tc_tw", p="pad", lo=lo, hi=lo + SPAN)}; COMMIT'
+    return snap(q.format(t='tc', p='md5(pad)', lo=lo, hi=lo + SPAN), q.format(t='tc_tw', p='pad', lo=lo, hi=lo + SPAN))
 
 
 def cold(t: str, uri: str) -> str:
@@ -166,11 +161,11 @@ def cold(t: str, uri: str) -> str:
             f"SELECT sift.set_tier_policy('{t}', '{uri}', '30 days'); VACUUM {t}; CREATE TABLE {t}_tw AS SELECT id, ts, grp, v, md5(pad) AS pad FROM {t}")
 
 
-def cache_files(store: str) -> tuple:
-    """the bytes in the tier cache directories of the cluster of STORE and the .tmp. files left in them"""
+def cache_kb(store: str) -> int:
+    """the bytes in the tier cache directories of the cluster of STORE (the runner counts the .tmp. files left in them)"""
     root = os.path.join(os.path.dirname(store), 'base', 'pgsql_tmp')
     names = [os.path.join(root, d, f) for d in os.listdir(root) if d.startswith(CACHE) for f in os.listdir(os.path.join(root, d))] if os.path.isdir(root) else []
-    return sum(os.path.getsize(p) for p in names if os.path.exists(p)) // 1024, sum('.tmp.' in p for p in names)
+    return sum(os.path.getsize(p) for p in names if os.path.exists(p)) // 1024
 
 
 def feat_tier_cache_evict_storm(ctx):
@@ -178,9 +173,7 @@ def feat_tier_cache_evict_storm(ctx):
     heap twin in one snapshot, 1 cancels them while they fill the cache, 1 writer updates rows, 1 session rebinds the policy: the twin agrees, no backend keeps objects of the store open
     (fd_delta), no temporary file and no half-written chunk is left in the cache"""
     db = ctx.db
-    store = os.path.join(db.val('SHOW data_directory'), 'load_tier_cache')
-    shutil.rmtree(store, ignore_errors=True)
-    os.makedirs(store)
+    store = ctx.store('load_tier_cache')
     uri = 'file://' + store
     db.run(f"{cold('tc', uri)}; UPDATE sift.tier_policies SET cache_mb = 16 WHERE relid = 'tc'::regclass")
     moved = int(db.val("SELECT count(*) FROM sift.tier_status WHERE relation = 'tc'::regclass"))
@@ -202,11 +195,8 @@ def feat_tier_cache_evict_storm(ctx):
     busy = ctx.phase({'r': (ws[:6], read), 'c': (ws[6:7], cancels(ws[:6])), 'w': (ws[7:8], write), 'm': (ws[8:], rebind)}, 2.0)
     f1 = [fds(w.pid, store) for w in ws]
     ctx.close_sessions()
-    kb, half = cache_files(store)
     twin = sum(w.ledger for w in ws[:6]) + sum(halves_differ(db.run(peek(i))) for i in range(0, COLD // SPAN + 1, 3))
-    m = base(ctx, busy, 'r', oracle_mismatch=twin, fd_delta=fd_delta(f0, f1), tiered=moved, cancelled=busy['r'].expected, cache_kb=kb)
-    m['tmp_files_left'] = half + int(db.val('SELECT count(*) FROM pg_ls_tmpdir()'))
-    return m
+    return base(ctx, busy, 'r', oracle_mismatch=twin, fd_delta=fd_delta(f0, f1), tiered=moved, cancelled=busy['r'].expected, cache_kb=cache_kb(store))
 
 
 HIGH = 256
@@ -216,9 +206,10 @@ IDLE = "SELECT count(*) - {n} FROM pg_stat_activity WHERE application_name LIKE 
 POOLS = 'SELECT coalesce(sum(refusals), 0) FROM sift.shared_memory_pools()'
 
 
-def idle_session(psql, i: int):
-    """an idle session of the pool, connected when it returns, and its process number"""
-    s = psql(app=f'load_widle{i}')
+def idle_session(ctx, i: int):
+    """an idle session of the pool (one of the open sessions of CTX), connected when it returns, and its process number"""
+    s = type(ctx.db)(app=f'load_widle{i}')
+    ctx.open_sessions.append(s)
     return s, int(s.val(PROCNO))
 
 
@@ -227,12 +218,12 @@ def high_procnos(ctx) -> int:
     the idle sessions kept"""
     db = ctx.db
     with ThreadPoolExecutor(16) as ex:
-        idle = list(ex.map(lambda i: idle_session(type(db), i), range(int(db.val(FREE)))))
+        idle = list(ex.map(lambda i: idle_session(ctx, i), range(int(db.val(FREE)))))
     keep = [s for s, n in idle if n < HIGH]
     for s, n in idle:
         if n >= HIGH:
             s.close()
-    ctx.open_sessions += keep
+            ctx.open_sessions.remove(s)
     until(db, IDLE.format(n=len(keep)), 30.0)
     return len(keep)
 
@@ -307,8 +298,8 @@ def repl_standby_conflict_storm(ctx):
         busy = ctx.phase({'w': (ws[:3], ledger_writes('e')), 'm': (ws[3:4], maint), 's': (ws[4:5], snap), 'r': (rs, read)}, 2.0)
         lag += catchup(db, st)
         differ = sum(db.run(q) != st.run(q) for q in DIGEST + (("SELECT count(*), sum(v) FROM load_case.r_ttl",) if ttl else ()))
-        return base(ctx, busy, 'w', **add(multi_kept(db, 'e', ws[:3]), {'oracle_mismatch': oracles(db)}), standby_mismatch=differ + lag + sum(w.ledger for w in rs),
-                    conflicts=busy['r'].expected, standby_reads=busy['r'].ops)
+        return base(ctx, busy, 'w', **add(multi_kept(db, 'e', ws[:3]), checks(st), {'oracle_mismatch': oracles(db)}),
+                    standby_mismatch=differ + lag + sum(w.ledger for w in rs), conflicts=busy['r'].expected, standby_reads=busy['r'].ops)
     finally:
         st.q('ALTER SYSTEM RESET max_standby_streaming_delay; ALTER SYSTEM RESET hot_standby_feedback; SELECT pg_reload_conf()')
 

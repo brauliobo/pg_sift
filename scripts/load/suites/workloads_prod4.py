@@ -3,9 +3,8 @@ pg_subtrans) beside row-lock upgrades from FOR KEY SHARE to UPDATE, a partitione
 attached and detached concurrently, a scope index under live facts and pairs beside sift.col_scope_verify and an unprivileged role, 48 pooled sessions of the three engines
 beside sessions that connect, build, drop and disconnect while the ledger of the shared memory is watched, prepared transactions of the three engines through a kill -9, and
 rewrites (VACUUM FULL, CLUSTER, REINDEX CONCURRENTLY) streamed to the readers of a hot standby (scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on
-test/t/core/load_repl.sh). Three cases wait for a finding, each intermittent (met on one format or library only): the savepoint case for S116-30 (a Format 2.0 backend
-crashes on a snapshot whose subtransactions overflowed), the scope case for S116-29 (sift.col_scope_verify reads sift.agg_force and sift.agg_scope, GUCs only the testing
-library defines: on the release library every call fails with 42704), the prepared transactions for S116-31 (a Format 2.0 prepare holds every partition it wrote).
+test/t/core/load_repl.sh). One case waits for a finding, intermittent (met on Format 2.0 only): the prepared transactions for S116-31 (a Format 2.0 prepare holds
+every partition it wrote).
 """
 from __future__ import annotations
 
@@ -19,7 +18,7 @@ from cases import LoadCase  # noqa: E402
 from collect import AGG, BM, N, add, base, checks, col, ctx_kb, engines, kept, ledger_writes, mem_delta, multi_kept, nxt, oracle, oracles, tbl, zipf  # noqa: E402
 from suites.common import Limits, prepared_left  # noqa: E402
 from suites.repl import DIGEST, catchup, snapshot_oracle, standby  # noqa: E402
-from suites.workloads_prod2 import DUTY, snap_oracle, with_errors  # noqa: E402
+from suites.workloads_prod2 import DUTY, snap_oracle  # noqa: E402
 from suites.workloads_prod3 import ROW_DIGEST, digest_differs, dups  # noqa: E402
 
 
@@ -68,9 +67,7 @@ def txn_subxact_overflow_lockraise(ctx):
     subtransactions than a backend caches, so every snapshot of the others looks them up in pg_subtrans), 2 sessions lock Zipf-hot keys FOR KEY SHARE and then update them
     in a savepoint (the lock raised), 2 readers compare the tables and the analytic path with the heap in one snapshot: every increment kept once, every answer agrees, no
     deadlock. The checks after the load run in a session of their own, which exits before the hygiene: on Format 1.0 a backend keeps the tombstone log it read in a cache that
-    spills to temporary files for as long as it lives. Waits for S116-30: on Format 2.0 an index fetch of a sift_table copies the subtransactions of a snapshot that has
-    overflowed them, which PostgreSQL leaves without its array (subxip NULL, subxcnt kept): the backend crashes (SIGSEGV in table/f2/fetch.c snap_key_set) once 3
-    writers run more than 64 subtransactions (the case is intermittent, Format 1.0 meets no crash)"""
+    spills to temporary files for as long as it lives"""
     db = ctx.db
     db.run(f'CREATE TABLE x_tbl ({X_SHAPE}) USING sift_table; CREATE TABLE x_tw ({X_SHAPE}); INSERT INTO x_tbl SELECT * FROM load_base_fact; '
            'INSERT INTO x_tw SELECT * FROM load_base_fact; ANALYZE x_tbl, x_tw')
@@ -274,17 +271,16 @@ def pool_conn_churn_shm_ledger(ctx):
 
     roles = {'w': (ws[:24], oltp), 'r': (ws[24:48], olap), 'c': (ws[48:], churn)}
     probe = ws[:48:4]
-    warm = ctx.phase(roles, 0.6)
+    ctx.phase(roles, 0.6)
     before, r0 = ([ctx_kb(w) for w in probe], ctx.rss(probe)), pools(db)
-    busy = with_errors(ctx.phase(roles, 2.0), warm)
+    busy = ctx.phase(roles, 2.0)
     after = [ctx_kb(w) for w in probe], ctx.rss(probe)
     p0 = pools(db)
-    alone = ctx.phase({'c': (ws[48:], churn)}, 1.0)
+    ctx.phase({'c': (ws[48:], churn)}, 1.0)
     p1 = pools(db)
     ctx.close_sessions()
     grown = {p: p1[p][0] - p0[p][0] for p in p0}
     left = int(db.val("SELECT count(*) FROM pg_class WHERE relname LIKE 'cc\\_%' AND relnamespace = 'load_case'::regnamespace"))
-    busy['c'].bad += alone['c'].bad
     return base(ctx, busy, 'w', **add(multi_kept(db, 'e', ws[:24]), {'lost_rows': left}), oracle_mismatch=oracles(db), shm_used_after=max(0, sum(grown.values())),
                 shm_refusals=sum(p1[p][1] - r0[p][1] for p in p0), cycles=sum(w.ledger for w in ws[48:]), shm_grown=','.join(f'{p}:{g}' for p, g in grown.items()),
                 **mem_delta(ctx, before, after))
@@ -368,7 +364,6 @@ def fault_2pc_crash_recovery(ctx):
     unlocked, overlocked = tpc_locks(after, held)
     db.run('; '.join(f"{('COMMIT', 'ROLLBACK')[j % 2]} PREPARED 'load_tpc_{j}'" for j in sorted(kept_held)))
     m = add(kept(db, 'e_col', have, 10 ** 6, TPC_ID), kept(db, 'e_bm', have, 10 ** 6, TPC_ID), {'lost_rows': len(acked - have)})
-    busy['u'].bad += after.bad
     return base(ctx, busy, 'w', **m, oracle_mismatch=tpc_parity(db, held) + oracles(db), prepared_lost=len(held - kept_held), lock_unenforced=unlocked + ws[4].ledger,
                 prepared_overlock=refused + overlocked + getattr(ws[4], 'over', 0), prepared_left=prepared_left(db), prepared=len(held), acked=len(acked))
 
@@ -414,9 +409,9 @@ def repl_rewrite_cluster_standby(ctx):
 
 
 WORKLOADS = (
-    LoadCase('txn_subxact_overflow_lockraise', 'txn', txn_subxact_overflow_lockraise, Wave4(), open='S116-30', intermittent=True),
+    LoadCase('txn_subxact_overflow_lockraise', 'txn', txn_subxact_overflow_lockraise, Wave4()),
     LoadCase('ddl_sift_part_move_detach', 'ddl', ddl_sift_part_move_detach, Wave4()),
-    LoadCase('feat_scope_live_churn_acl', 'feat', feat_scope_live_churn_acl, Wave4(), open='S116-29', intermittent=True),
+    LoadCase('feat_scope_live_churn_acl', 'feat', feat_scope_live_churn_acl, Wave4()),
     LoadCase('pool_conn_churn_shm_ledger', 'pool', pool_conn_churn_shm_ledger, Wave4(ctx_kb_delta=1280, rss_mb_delta=16, shm_used_after=0)),
     LoadCase('fault_2pc_crash_recovery', 'fault', fault_2pc_crash_recovery, Wave4(), last=True, open='S116-31', intermittent=True),
 )

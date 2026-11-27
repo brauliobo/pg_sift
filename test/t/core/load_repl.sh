@@ -16,15 +16,18 @@ max_connections = 80
 max_worker_processes = 24
 sift.maintenance_naptime = 200
 deadlock_timeout = '100ms'
-log_min_messages = warning"
+$LOAD_CONF"
 node_start lp || bail "start failed"
 
 standby() { node_clone lp ls 2 && node_start ls; }
-# restandby: the leak check of the standby ls into LS_LEAKS (its log, its sanitizer reports and its shutdown, which the clone erases; the runner scans the file), its old
-# slot dropped once its walsender has gone, and a new clone of lp
+# restandby: the leak check of the standby ls into LS_LEAKS (its log, its sanitizer reports and its shutdown, and the lines of its log the runner looks for beyond the
+# leak rules, which the clone erases; the runner scans the file), its old slot dropped once its walsender has gone (60 s at most), and a new clone of lp
 restandby() {
 	node_leakcheck ls >>"$LS_LEAKS" 2>&1 || echo "leaked server state: the leak check of the standby ls failed before its clone" >>"$LS_LEAKS"
-	until [[ $(sql lp "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'ls' AND active") == 0 ]]; do sleep 0.05; done
+	grep -hE 'cache lookup failed|could not find block containing chunk|\[XX000\]' "$(dir ls)/postgres.log" >>"$LS_LEAKS"
+	local n
+	for n in $(seq 1200); do [[ $(sql lp "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'ls' AND active") == 0 ]] && break; sleep 0.05; done
+	((n < 1200)) || echo "leaked server state: the walsender of the standby ls did not exit in 60 s" >>"$LS_LEAKS"
 	sql lp "SELECT count(pg_drop_replication_slot(slot_name)) FROM pg_replication_slots WHERE slot_name = 'ls'" >/dev/null
 	standby
 }

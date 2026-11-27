@@ -52,7 +52,7 @@
 ^scripts/prod-viability-gate\.py$	^tap-shell-(agg/viability_gate)$|{ci}
 ^scripts/bpr/	^tap-shell-(core/storage_bpr)$|{ci}
 ^scripts/load/	^tap-shell-core/load_(gate|workloads|repl)$|{ci}
-^test/t/lib/load\.bash$	^tap-shell-core/load_(workloads|repl)$|{ci}
+^test/t/lib/load\.bash$	^tap-shell-core/load_(gate|workloads|repl)$|{ci}
 ^(test/t/col/f2/aux_reads_scale\.py)$	^tap-shell-(col/f2/aux_reads_scale)$|{ci}
 ^(test/t/table/f2/object_store_mock\.py)$	^tap-shell-(col/f2/tier_s3_faults)$|{ci}
 ^test/col/	^difftest-col|{plan_gate}|^coverage$|{ci}

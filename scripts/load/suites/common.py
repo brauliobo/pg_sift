@@ -11,7 +11,7 @@ from dataclasses import dataclass
 sys.dont_write_bytecode = True
 
 from cases import Ceilings  # noqa: E402
-from collect import rss_kb  # noqa: E402
+from collect import halves_differ, rss_kb, snap  # noqa: E402
 
 TWIN = ('SELECT grp, count(*), sum(v) FROM {t} GROUP BY grp ORDER BY grp', 'SELECT id, v FROM {t} ORDER BY v DESC, id LIMIT 10')
 
@@ -24,7 +24,6 @@ class Limits(Ceilings):
     standby_mismatch: int | None = 0
     promoted_errors: int | None = 0
     fault_unseen: int | None = 0
-    wedged: int | None = 0
     fd_delta: int | None = None
     par_workers_peak: int | None = None
 
@@ -64,16 +63,12 @@ def anon_peak_mb(ctx, w, sql: str) -> float | None:
 
 def twin_mismatch(db, a: str, b: str, sqls: tuple = TWIN) -> int:
     """1 when sift table A and its heap twin B answer differently in one REPEATABLE READ snapshot"""
-    body = '; '.join(q.format(t=t) for t in (a, b) for q in sqls)
-    out = db.run(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {body}; COMMIT')
-    return int(out[:len(out) // 2] != out[len(out) // 2:])
+    return halves_differ(db.run(snap(*('; '.join(q.format(t=t) for q in sqls) for t in (a, b)))))
 
 
 def twin_do(w, a: str, b: str, allow: tuple = ()) -> int:
     """twin_mismatch in a worker: an expected error (ALLOW) is no mismatch"""
-    body = '; '.join(q.format(t=t) for t in (a, b) for q in TWIN)
-    out = w.do(f'BEGIN ISOLATION LEVEL REPEATABLE READ; {body}; COMMIT', allow)
-    return 0 if out is None else int(out[:len(out) // 2] != out[len(out) // 2:])
+    return halves_differ(w.do(snap(*('; '.join(q.format(t=t) for q in TWIN) for t in (a, b))), allow))
 
 
 def prepared_left(db) -> int:

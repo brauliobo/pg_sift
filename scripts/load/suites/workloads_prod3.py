@@ -17,12 +17,11 @@ from dataclasses import dataclass
 
 sys.dont_write_bytecode = True
 
-from cases import KILLED, LoadCase  # noqa: E402
-from collect import AGG, BM, N, add, base, checks, ctx_kb, engines, kept, ledger_writes, mem_delta, multi_kept, nxt, oracles  # noqa: E402
+from cases import LoadCase  # noqa: E402
+from collect import AGG, BM, N, add, base, checks, ctx_kb, engines, halves_differ, kept, ledger_writes, mem_delta, multi_kept, nxt, oracles, snap  # noqa: E402
 from suites.common import Limits, twin_do  # noqa: E402
 from suites.repl import CAP, conninfo  # noqa: E402
-from suites.workloads_next import halves_differ  # noqa: E402
-from suites.workloads_prod2 import DUTY, copy_in, snap_oracle, snap_pair, with_errors  # noqa: E402
+from suites.workloads_prod2 import DUTY, copy_in, snap_oracle, snap_pair  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -101,7 +100,7 @@ def txn_merge_trig_gen_defer(ctx):
 
     busy = ctx.phase({'w': (ws[:3], write), 'r': (ws[3:], read)}, 2.0)
     gen = int(db.val('SELECT count(*) FROM m_tbl WHERE w IS DISTINCT FROM v * 2 + grp'))
-    audit = halves_differ(db.run(f"BEGIN ISOLATION LEVEL REPEATABLE READ; {AUDIT.format(t='m_tbl')}; {AUDIT.format(t='m_tw')}; COMMIT"))
+    audit = halves_differ(db.run(snap(AUDIT.format(t='m_tbl'), AUDIT.format(t='m_tw'))))
     rows = abs(int(db.val('SELECT count(*) FROM m_tbl')) - int(db.val('SELECT count(*) FROM m_tw')))
     return base(ctx, busy, 'w', lost_rows=rows, dup_rows=dups(db, 'm_tbl'), oracle_mismatch=digest_differs(db, 'm_tbl', 'm_tw', M_ROW) + audit + gen + sum(w.ledger for w in ws[3:]),
                 refused=busy['w'].expected, snapshots=busy['r'].ops)
@@ -251,9 +250,9 @@ def feat_kll_obs_poll_ddl_storm(ctx):
         w.do(K_TEMP)
 
     roles = {'w': (ws[:2], write), 'q': (ws[2:4], ask), 'p': (ws[4:6], poll), 't': (ws[6:], churn)}
-    warm = ctx.phase(roles, 0.5)
+    ctx.phase(roles, 0.5)
     before = [ctx_kb(w) for w in ws[4:6]], ctx.rss(ws[4:6])
-    busy = with_errors(ctx.phase(roles, 2.0), warm)
+    busy = ctx.phase(roles, 2.0)
     after = [ctx_kb(w) for w in ws[4:6]], ctx.rss(ws[4:6])
     ctx.close_sessions()
     wrong = sum(w.ledger for w in ws[2:4]) + kll_wrong(db.run(KLL))

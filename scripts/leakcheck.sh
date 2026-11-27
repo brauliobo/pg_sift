@@ -184,10 +184,14 @@ leak_launchers() { leak_children "$1" | grep -c 'sift maintenance launcher'; }
 leak_shared_tables() {
 	local out mode fn=sift._test_dsm_entries make=()
 	[[ -n ${SIFT_TESTING-1} ]] || return 0
-	mode=$(leak_psql -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid())
-			OR NOT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test') THEN 'none'
-		WHEN NOT pg_is_in_recovery() THEN 'primary' WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test') THEN 'standby' ELSE 'none' END")
-	[[ $mode != none ]] || return 0
+	for _ in $(seq 100); do   # a session that is only leaving (the last of a test) ends with its exit callbacks: busy while one is left, for up to 5 s
+		mode=$(leak_psql -c "SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'pg_sift_test') THEN 'none'
+			WHEN EXISTS (SELECT 1 FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()) THEN 'busy'
+			WHEN NOT pg_is_in_recovery() THEN 'primary' WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_sift_test') THEN 'standby' ELSE 'none' END")
+		[[ $mode == busy ]] || break
+		sleep 0.05
+	done
+	[[ $mode != none && $mode != busy ]] || return 0
 	[[ $mode != primary ]] || make=(-c "$LEAK_DSM_FN") fn=pg_temp.leak_dsm_entries
 	leak_psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'sift maintenance'" >/dev/null
 	for _ in $(seq 100); do

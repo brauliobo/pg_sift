@@ -6,7 +6,8 @@ waits (collect.py), and then the checks no load may break: the rows the workers 
 answers in one snapshot (oracle_mismatch), sift.check finds nothing, nothing is quarantined, no temporary file and no crash or leak line is left. The contention ceilings are shares
 of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106, Snnn-NN of Spec nnn) names the
 defect it waits for: it must fail a ceiling until the fix (OPEN=ID, a TODO) and the run fails once it meets them all, until `open` is dropped. --suite picks the catalog: core
-(cases.py, one cluster), workloads and repl (suites/: a cluster sized for many sessions and prepared transactions, a primary with a hot standby and wal_level logical), or all.
+(cases.py, one cluster), workloads and repl (suites/: a cluster sized for many sessions and prepared transactions, a primary with a hot standby and
+wal_level logical), or all. A worker still in its statement long after its phase ended is wedged: what it waits for is its error, its session is killed.
 
   scripts/load/run.py [--suite S] [--only RE] [--class C]   one LOAD line a case: LOAD id [f2] measurements ... PASS | FAIL | OPEN=ID | SKIP
   scripts/load/run.py --determinism             the cases forward, again and in reverse: every verdict agrees
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -41,27 +43,42 @@ ERR = re.compile(r'^(ERROR|FATAL|PANIC): +([0-9A-Z]{5}): (.*)')
 LOST = ('57P01', '08006')
 FINDING = r'(LC-(0[1-9]|[1-4]\d)|S\d{3}-(0[1-9]|[1-9]\d))'
 OPEN_ID = re.compile(f'{FINDING}(,{FINDING})*')
-FLOORS = ('scale_ratio',)
+FLOORS = ('scale_ratio', 'ops', 'tiered', 'standby_reads', 'shifts')
 SKIP_FORMAT, SKIP_TESTING = 'format 2.0 only', 'needs testing library'
 GONE = "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'load_w%'"
+STUCK = """SELECT string_agg(format('%s %s %s:%s %s', pid, application_name, wait_event_type, wait_event, left(query, 60)), '; ') FROM pg_stat_activity
+  WHERE application_name LIKE 'load_w%' AND state = 'active'"""
+DEADLOCKS = 'SELECT coalesce(sum(deadlocks), 0) FROM pg_stat_database'
+
+
+def unexpected(errs: list, allow: tuple, cascade: bool = False):
+    """the first error of ERRS (the errors of one batch) that ALLOW does not expect; a 25P02 after an expected error is its cascade, also in the batch after one that ended
+    on an expected error (CASCADE: a cancel of its COMMIT leaves the transaction aborted)"""
+    ok = lambda e: e[0] in allow or (e[0] in LOST and set(LOST) & set(allow))
+    cascade = cascade or ok(errs[0])
+    return next((e for e in errs if not ok(e) and not (cascade and e[0] == '25P02')), None)
 
 
 class Psql:
-    """one psql process: statements in, a marker line out; run() raises the first error, q() returns it with the SQLSTATE"""
+    """one psql process: statements in, a marker line out; run() raises the first error, q() returns it with the SQLSTATE and keeps every error of the batch in errs"""
 
     def __init__(self, init: str = '', app: str = 'load_ctl', db: str = 'postgres', conn: dict | None = None):
         self.n, self.init, self.app, self.dbname, self.conn, self.p = 0, init, app, db, conn or {}, None
         self.open()
 
+    def env(self) -> dict:
+        """the environment of psql: the PGOPTIONS of the caller, then those of the format of the run (LOAD_PGOPTIONS)"""
+        opts = ' '.join(filter(None, (os.environ.get('PGOPTIONS'), os.environ.get('LOAD_PGOPTIONS'), '-c client_min_messages=error')))
+        return dict(os.environ, PGOPTIONS=opts, LC_ALL='C', PGAPPNAME=self.app, PGDATABASE=self.dbname, **self.conn)
+
     def open(self):
-        env = dict(os.environ, PGOPTIONS=os.environ.get('LOAD_PGOPTIONS', '') + ' -c client_min_messages=error', LC_ALL='C',
-                   PGAPPNAME=self.app, PGDATABASE=self.dbname, **self.conn)
         self.p = subprocess.Popen(['psql', '-X', '-At', '-q', '-v', 'ON_ERROR_STOP=0', '-v', 'VERBOSITY=verbose'], stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
-        self._pid, self.dead = None, False
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, env=self.env())
+        self._pid, self.dead, self.errs = None, False, []
         if self.init:
             _, err, _ = self.q(self.init)
             if err and not self.dead:
+                self.close()
                 raise RuntimeError(f'{err[0]} {err[1]} in the start of a session: {self.init[:120]}')
 
     def q(self, sql: str):
@@ -82,12 +99,12 @@ class Psql:
             else:
                 raise BrokenPipeError
         except (BrokenPipeError, OSError):
-            err = next((m.groups()[1:] for l in out if (m := ERR.match(l))), ('08006', 'the server closed the session'))
+            self.errs = errors(out) or [('08006', 'the server closed the session')]
             self.p.wait()
             self._pid, self.dead = None, True
-            return [], err, (time.monotonic() - t0) * 1000
-        err = next((m.groups()[1:] for l in out if (m := ERR.match(l))), None)
-        return out, err, (time.monotonic() - t0) * 1000
+            return [], self.errs[0], (time.monotonic() - t0) * 1000
+        self.errs = errors(out)
+        return out, (self.errs or [None])[0], (time.monotonic() - t0) * 1000
 
     def run(self, sql: str) -> list:
         out, err, _ = self.q(sql)
@@ -109,34 +126,46 @@ class Psql:
         self._pid = self._pid or int(self.val('SELECT pg_backend_pid()'))
         return self._pid
 
-    def close(self):
+    def close(self, cap: float = 30.0):
+        """ends psql; one still waiting for its server after CAP seconds (a wedged backend) is killed"""
         if self.p.poll() is None:
             try:
                 self.p.stdin.write('\\q\n')
                 self.p.stdin.close()
-            except BrokenPipeError:
+            except (BrokenPipeError, OSError):
                 pass
-        self.p.wait()
+        try:
+            self.p.wait(cap)
+        except subprocess.TimeoutExpired:
+            self.p.kill()
+            self.p.wait()
+
+
+def errors(out: list) -> list:
+    return [m.groups()[1:] for l in out if (m := ERR.match(l))]
 
 
 class Worker(Psql):
-    """a session under load: do() times a statement, counts its errors (the SQLSTATEs in allow are expected) and keeps the unexpected ones"""
+    """a session under load: do() times a statement, counts its errors (the SQLSTATEs in allow are expected) and keeps the unexpected ones in bad, across the phases of
+    the case"""
 
     def __init__(self, init: str, app: str, db: str = 'postgres', seed: int = 0, conn: dict | None = None):
-        self.seed, self.lat, self.ok, self.expected, self.bad, self.ledger, self.last = seed, [], 0, 0, [], 0, None
+        self.seed, self.lat, self.ok, self.expected, self.bad, self.ledger, self.last, self.cascade = seed, [], 0, 0, [], 0, None, False
         super().__init__(init, app, db, conn)
 
     def do(self, sql: str, allow: tuple = ()):
         out, err, ms = self.q(sql)
         self.last = err
         if err is None:
-            self.ok += 1
+            self.ok, self.cascade = self.ok + 1, False
             self.lat.append(ms)
             return out
-        if err[0] in allow or (err[0] in LOST and set(LOST) & set(allow)):
-            self.expected += 1
+        bad = unexpected(self.errs, allow, self.cascade)
+        self.cascade = bad is None
+        if bad:
+            self.bad.append(f'{bad[0]} {bad[1][:100]}')
         else:
-            self.bad.append(f'{err[0]} {err[1][:100]}')
+            self.expected += 1
         return None
 
 
@@ -149,10 +178,11 @@ class Role:
 
 
 class Ctx:
-    """what a case body uses: the control session (db), worker sessions, phases under the sampler and the facts of the cluster"""
+    """what a case body uses: the control session (db), worker sessions (every one the case opened in workers), phases under the sampler and the facts of the cluster"""
 
     def __init__(self, a, db: Psql):
-        self.a, self.db, self.open_sessions, self.obs, self.obs_db = a, db, [], None, Psql(app='load_obs')
+        self.a, self.db, self.open_sessions, self.workers, self.wedged, self.dirs, self.obs = a, db, [], [], 0, [], None
+        self.obs_db = Psql(app='load_obs')
         self.testing = db.val("SELECT count(*) FROM pg_settings WHERE name = 'sift.test_create_format1'") == '1'
         self.fmt = 1 if self.testing and db.val('SHOW sift.test_create_format1') == 'on' else 2
         self.assert_build = db.val('SHOW debug_assertions') == 'on'
@@ -161,16 +191,23 @@ class Ctx:
         self.cache_kb = int(db.val("SELECT setting FROM pg_settings WHERE name = 'sift.backend_cache_kb'"))
 
     def sessions(self, n: int, init: str = '', db: str = 'postgres', path: str = 'load_case, public', conn: dict | None = None) -> list:
-        ws = [Worker(f'SET search_path = {path}; {init}', f'load_w{i}', db, seed=i + 1, conn=conn) for i in range(n)]
-        self.open_sessions += ws
+        ws = []
+        try:
+            for i in range(n):
+                ws.append(Worker(f'SET search_path = {path}; {init}', f'load_w{i}', db, seed=i + 1, conn=conn))
+        finally:
+            self.open_sessions += ws
+            self.workers += ws
         return ws
 
     def phase(self, roles: dict, secs: float, peak: str = '', pacer: bool = False, lead: str = '') -> dict:
-        """runs every (workers, fn) of ROLES together for SECS, or until the workers of the role LEAD end (a fn that returns False ends its worker): fn(worker, i) does statement i"""
+        """runs every (workers, fn) of ROLES together for SECS, or until the workers of the role LEAD end (a fn that returns False ends its worker): fn(worker, i) does statement i;
+        a worker still in its statement cap() seconds after the end is wedged (unwedge)"""
         stop, pairs = threading.Event(), [(name, w, fn) for name, (ws, fn) in roles.items() for w in ws]
         bar = threading.Barrier(len(pairs) + 1)
+        seen = [len(w.bad) for _, w, _ in pairs]
         for _, w, _ in pairs:
-            w.lat, w.ok, w.expected, w.bad = [], 0, 0, []
+            w.lat, w.ok, w.expected = [], 0, 0
 
         def loop(w, fn):
             bar.wait()
@@ -195,13 +232,47 @@ class Ctx:
         try:
             self.obs.stop()
         finally:
+            end = time.monotonic() + self.cap(secs)
             for t in threads:
-                t.join()
+                t.join(max(0.0, end - time.monotonic()))
+            self.unwedge([w for t, (_, w, _) in zip(threads, pairs) if t.is_alive()], threads)
         out = {name: Role() for name in roles}
-        for name, w, _ in pairs:
+        for (name, w, _), n in zip(pairs, seen):
             r = out[name]
-            r.ops, r.expected, r.lat, r.bad = r.ops + w.ok, r.expected + w.expected, r.lat + w.lat, r.bad + w.bad
+            r.ops, r.expected, r.lat, r.bad = r.ops + w.ok, r.expected + w.expected, r.lat + w.lat, r.bad + w.bad[n:]
         return out
+
+    def cap(self, secs: float) -> float:
+        """how long a statement may still run once its phase ended: 30 s or five phases, four times that with assertions"""
+        return max(30.0, 5 * secs) * self.a.scale * (4 if self.assert_build else 1)
+
+    def unwedge(self, stuck: list, threads: list):
+        """the workers STUCK in a statement: what their backends wait for (an unexpected error of each), their backends terminated and their psql killed, so that the
+        threads end; counted in wedged"""
+        if not stuck:
+            return
+        out, err, _ = self.db.q(STUCK)
+        diag = f'{err[0]} {err[1]}' if err else (out or ['no active backend'])[0]
+        self.db.q("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name LIKE 'load_w%' AND state = 'active'")
+        for w in stuck:
+            w.bad.append(f'wedged: {diag}'[:300])
+            w.p.kill()
+        for t in threads:
+            t.join(30.0)
+        self.wedged += len(stuck)
+
+    def store(self, name: str) -> str:
+        """an empty directory NAME in the data directory (a file:// tier store, a tablespace), removed once the case has dropped its schema"""
+        d = os.path.join(self.db.val('SHOW data_directory'), name)
+        shutil.rmtree(d, ignore_errors=True)
+        os.makedirs(d)
+        self.dirs.append(d)
+        return d
+
+    def drop_case(self, db: Psql):
+        db.q('DROP SCHEMA IF EXISTS load_case CASCADE; RESET ALL; SET search_path = load_case, public')
+        for d in self.dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
     def rss(self, ws: list):
         return None if self.no_rss else [collect.rss_kb(w.pid) for w in ws]
@@ -227,16 +298,29 @@ class Ctx:
         self.db.run('SET search_path = load_case, public')
 
     def close_sessions(self):
-        """ends the worker sessions and waits until their backends have exited (their memory and their temporary files are given back at exit)"""
+        """ends the worker sessions and waits until their backends have exited on the primary and the standby (their memory and their temporary files are given back at
+        exit); the backends still there after 30 s are wedged"""
+        conns = {tuple(sorted(w.conn.items())) for w in self.open_sessions}
         for w in self.open_sessions:
             w.close()
         self.open_sessions = []
-        end = time.monotonic() + 30
-        while time.monotonic() < end:
-            out, err, _ = self.db.q(GONE)
-            if err or out == ['0']:
-                return
-            time.sleep(0.01)
+        for c in conns:
+            s = Psql(conn=dict(c)) if c else self.db
+            try:
+                self.wedged += gone(s)
+            finally:
+                if c:
+                    s.close()
+
+
+def gone(db: Psql, cap: float = 30.0) -> int:
+    """0 once no worker backend is left on the server of DB (or it answers no more), else how many are left after CAP seconds"""
+    end = time.monotonic() + cap
+    while True:
+        out, err, _ = db.q(GONE)
+        if err or out == ['0'] or time.monotonic() > end:
+            return 0 if err else int(out[0])
+        time.sleep(0.01)
 
 
 def runs_on(case: LoadCase, ctx: Ctx):
@@ -249,30 +333,38 @@ def measure(ctx: Ctx, case: LoadCase, log: collect.LogScan):
     skip = runs_on(case, ctx)
     if skip:
         return None, [skip]
-    db = ctx.db
+    db, ctx.workers, ctx.wedged, ctx.dirs = ctx.db, [], 0, []
+    log.mark()
     try:
         db.run('DROP SCHEMA IF EXISTS load_case CASCADE; CREATE SCHEMA load_case; SET search_path = load_case, public')
         busy = catalog.until(db, catalog.DRAINED, 60.0 * ctx.a.scale)
         db.run('SELECT pg_stat_force_next_flush()')
-        dl0 = int(db.val('SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()'))
-        log.mark()
+        dl0 = int(db.val(DEADLOCKS))
         m = case.body(ctx)
         ctx.close_sessions()
         db.run('SELECT pg_stat_force_next_flush()')
-        m['deadlocks'] = int(db.val('SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()')) - dl0 - m.pop('deadlocks_meant', 0)
-        m = collect.add(m, collect.hygiene(db, m.pop('damaged', ())))
+        m['deadlocks'] = int(db.val(DEADLOCKS)) - dl0 - m.pop('deadlocks_meant', 0)
+        m = collect.add(m, collect.hygiene(db, m.pop('damaged', ())), worker_errors(ctx))
         found = log.findings()
         m['traps_and_leaks'] = len(found)
         bad = m.pop('notes', []) + found[:3]
         m['shown_notes'] = [b for b in bad if b.startswith('note:')]
         m['shown_notes'] += ['note: the maintenance of the case before did not drain in 60 s'] if busy else []
-        db.run('DROP SCHEMA load_case CASCADE; RESET ALL; SET search_path = load_case, public')
+        ctx.drop_case(db)
         return m, bad
-    except (RuntimeError, OSError) as e:
+    except Exception as e:
         ctx.close_sessions()
-        db.close()
-        ctx.db = reconnect(ctx)
-        return None, [str(e)[:300]]
+        for s in (db, ctx.obs_db):
+            s.close()
+        ctx.obs_db = Psql(app='load_obs')
+        ctx.drop_case(reconnect(ctx))
+        return None, [f'{type(e).__name__}: {e}'[:300]] + log.findings()[:3]
+
+
+def worker_errors(ctx: Ctx) -> dict:
+    """the unexpected errors of every worker the case opened, in every phase and outside them, and the wedged ones"""
+    bad = [b for w in ctx.workers for b in w.bad]
+    return {'unexpected_errors': len(bad), 'notes': [f'note: {b}' for b in bad[:3]], 'wedged': ctx.wedged}
 
 
 def reconnect(ctx: Ctx) -> Psql:
@@ -461,25 +553,30 @@ def main() -> int:
     db = Psql()
     db.run('CREATE EXTENSION IF NOT EXISTS pg_sift')
     ctx = Ctx(a, db)
-    if a.list:
-        return print(*(c.id for c in selected if ctx.fmt in c.formats), sep='\n') or 0
+    try:
+        if a.list:
+            return print(*(c.id for c in selected if ctx.fmt in c.formats), sep='\n') or 0
+        return sweep_all(a, ctx, selected)
+    finally:
+        ctx.close_sessions()
+        ctx.db.close()
+        ctx.obs_db.close()
+
+
+def sweep_all(a, ctx: Ctx, selected: list) -> int:
+    db = ctx.db
     if ctx.testing:
         db.run('CREATE EXTENSION IF NOT EXISTS pg_sift_test')
     else:
         print('LOAD_INFO release build: the sub-checks of the testing library are skipped')
     ctx.db.run(f'\\set rows {catalog.N}\n\\i {HERE}/fixtures.sql\n\\set ON_ERROR_STOP off')
     log = collect.LogScan(a.log)
-    try:
-        runs = [sweep(ctx, selected, log)]
-        if a.determinism:
-            runs.append(sweep(ctx, selected, log))
-        if a.determinism or a.calibrate:
-            runs.append(sweep(ctx, selected, log, reverse=True))
-        return report(a, ctx, selected, runs)
-    finally:
-        ctx.close_sessions()
-        ctx.db.close()
-        ctx.obs_db.close()
+    runs = [sweep(ctx, selected, log)]
+    if a.determinism:
+        runs.append(sweep(ctx, selected, log))
+    if a.determinism or a.calibrate:
+        runs.append(sweep(ctx, selected, log, reverse=True))
+    return report(a, ctx, selected, runs)
 
 
 if __name__ == '__main__':
