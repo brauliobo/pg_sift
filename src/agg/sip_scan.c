@@ -69,6 +69,7 @@ wrap_next(SiftV6Source *s, SiftV6Batch *out)
 	while (w->inner->next(w->inner, out))
 	{
 		const int	words = (out->n + 63) / 64;
+		uint16		kept;
 
 		memset(w->mask, 0, sizeof(w->mask));
 		if (out->mask != NULL)
@@ -76,7 +77,11 @@ wrap_next(SiftV6Source *s, SiftV6Batch *out)
 		else
 			for (int i = 0; i < out->n; i++)
 				w->mask[i / 64] |= UINT64_C(1) << (i % 64);
-		if (sift_sip_probe_vec_adapt(w->sip, &w->ps, &out->col[w->key_slot], w->mask) == 0)
+		kept = sift_sip_probe_vec_adapt(w->sip, &w->ps, &out->col[w->key_slot], w->mask);
+
+		if (w->stats != NULL)
+			*w->stats = w->ps.stats;
+		if (kept == 0)
 			continue;
 		out->mask = w->mask;
 		return true;
@@ -106,8 +111,6 @@ wrap_close(SiftV6Source *s)
 {
 	SipSource  *w = (SipSource *) s;
 
-	if (w->stats != NULL)
-		*w->stats = w->ps.stats;
 	w->inner->close(w->inner);
 	pfree(w);
 }
@@ -286,7 +289,7 @@ sip_path(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *src, const S
 	ints = list_make5_int((int) src->reloid, (int) rel->relid, (int) planner_rt_fetch(j->dim->relid, root)->relid, (int) j->dim->relid, j->fact_key->varattno);
 	ints = lappend_int(lappend_int(ints, j->dim_key->varattno), (int) Min(j->dim->rows, (double) INT_MAX));
 	ints = lappend_int(ints, src->is_table);
-	sift_v6_source_scan_price(root, rel, src, j->fact_key->varattno, &open, &scan);
+	sift_v6_source_filter_price(root, rel, src, j->fact_key->varattno, &open, &scan);
 	sift_v6_add_path(rel, &sip_path_methods, open, scan + sift_v6_fetch_cost(src->is_table) * rows + sift_v6_rel_read_cost(j->dim) + cpu_operator_cost * rel->rows, rows, NIL,
 					 list_make3(ints, pushable(rel, &src->input), clauses_of(j->dim->baserestrictinfo)), NIL);
 	return true;
