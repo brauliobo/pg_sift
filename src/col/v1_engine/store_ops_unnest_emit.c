@@ -262,7 +262,20 @@ sift_v1_unnest_heap_expr(UnRun *u, Expr *e)
 	return state;
 }
 
-void
+/* the clauses over the columns of the heap row, prepared as a qual of the virtual row sift_v1_unnest_heap_load makes */
+ExprState *
+sift_v1_unnest_heap_qual(UnRun *u, List *quals)
+{
+	MemoryContext old = MemoryContextSwitchTo(u->estate->es_query_cxt);
+	ExprState  *state = ExecPrepareQual(quals, u->estate);
+
+	MemoryContextSwitchTo(old);
+	foreach_ptr(Var, v, pull_var_clause((Node *) quals, 0))
+		sift_v1_unnest_heap_att(u, v->varattno);
+	return state;
+}
+
+bool
 sift_v1_unnest_heap_load(UnRun *u, uint64 tag)
 {
 	TupleTableSlot *slot = u->heap_slot;
@@ -284,6 +297,7 @@ sift_v1_unnest_heap_load(UnRun *u, uint64 tag)
 	ExecStoreVirtualTuple(slot);
 	u->econtext->ecxt_scantuple = slot;
 	ResetExprContext(u->econtext);
+	return u->hqual == NULL || ExecQual(u->hqual, u->econtext);
 }
 
 /* the array of the row loaded: its column, or the expression of the columns of the row */
@@ -319,7 +333,11 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 	for (int c = 0; c < u->nel; c++)
 		ev[c].type = u->etype[c];
 	MemoryContextReset(u->bcx);
-	sift_v1_unnest_heap_load(u, b->tag[row]);
+	if (!sift_v1_unnest_heap_load(u, b->tag[row]))
+	{
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	nel = sift_v1_unnest_heap_elems(u, ev);
 	if (u->eev != NULL && nel > 0)
 	{

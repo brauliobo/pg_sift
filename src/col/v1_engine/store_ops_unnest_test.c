@@ -177,10 +177,10 @@ tests_from_heap(UnRun *u, uint64 tag, uint32 row)
 	MemoryContext old = MemoryContextSwitchTo(u->bcx);
 	bool		yes[SIFT_V6_XTESTS],
 				known[SIFT_V6_XTESTS];
-	bool		kept = true;
+	bool		kept = sift_v1_unnest_heap_load(u, tag);
 
-	sift_v1_unnest_heap_load(u, tag);
-	heap_flags(u, yes, known);
+	if (kept)
+		heap_flags(u, yes, known);
 	for (int k = 0; kept && k < u->ntests; k++)
 		kept = need_met(&u->x->test[k], yes[k], known[k]);
 	for (int k = 0; kept && k < u->ntests; k++)

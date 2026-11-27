@@ -369,7 +369,7 @@ compile_lowered(V6Plan *p, const List *tests)
 static bool
 heap_decides(const V6Plan *p, const Expr *clause)
 {
-	return p->is_table && p->xseed != NULL && p->xseed->unnest && p->ops->jsonb != NULL && p->ops->jsonb->table_elems && !contain_subplans((Node *) clause) &&
+	return p->is_table && p->xseed != NULL && p->xseed->unnest && !contain_subplans((Node *) clause) &&
 		!agg_node_has_param((const Node *) clause);
 }
 

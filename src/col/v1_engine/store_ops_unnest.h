@@ -94,6 +94,7 @@ typedef struct UnRun
 	AttrNumber	hatt[MaxHeapAttributeNumber];
 	Datum		hval[MaxHeapAttributeNumber];
 	bool		hnull[MaxHeapAttributeNumber];
+	ExprState  *hqual;			/* the clauses of the WHERE only the heap row decides (SiftV6Ext.heap_where), NULL without them */
 	ExprState  *arr;			/* the array of a row of the heap when it is an expression of its columns (SiftV6Ext.elem_array), else NULL: the column heap_att */
 	SiftV6LateProbe *probe;		/* the expressions that read a member whose cast raised (SiftV6Ext.late_probe) */
 	SiftClause	where;
@@ -160,9 +161,11 @@ extern void sift_v1_unnest_heap_open(UnRun *u, Relation heap);
 extern void sift_v1_unnest_heap_close(UnRun *u);
 /* the elements of the array of the heap row loaded, as columns: how many */
 extern uint32 sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev);
-/* the row at tag of the heap, as the virtual row the expressions of the run read; its columns are those registered with sift_v1_unnest_heap_expr and sift_v1_unnest_heap_att */
-extern void sift_v1_unnest_heap_load(UnRun *u, uint64 tag);
+/* the row at tag of the heap, as the virtual row the expressions of the run read (their columns are those registered with sift_v1_unnest_heap_expr, sift_v1_unnest_heap_qual
+ * and sift_v1_unnest_heap_att); false when the clauses only the heap row decides rule it out */
+extern bool sift_v1_unnest_heap_load(UnRun *u, uint64 tag);
 extern ExprState *sift_v1_unnest_heap_expr(UnRun *u, Expr *e);
+extern ExprState *sift_v1_unnest_heap_qual(UnRun *u, List *quals);
 extern void sift_v1_unnest_heap_att(UnRun *u, AttrNumber att);
 /* a row the leaves cannot hold: the array of its heap row taken apart and its pairs */
 extern void sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row);

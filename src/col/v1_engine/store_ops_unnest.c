@@ -453,6 +453,8 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	u->month_val = palloc0((1 << MONTH_BITS) * sizeof(int32));
 	u->month_unit = CStringGetTextDatum("month");
 	sift_v1_unnest_heap_open(u, heap);
+	if (u->x->heap_where != NIL)
+		u->hqual = sift_v1_unnest_heap_qual(u, u->x->heap_where);
 	if (u->x->elem_array != NIL)
 		u->arr = sift_v1_unnest_heap_expr(u, linitial(u->x->elem_array));
 	else
