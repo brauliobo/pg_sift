@@ -95,11 +95,13 @@ derived_filter_quals(V6Plan *p, Expr *filter)
 bool
 sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 {
-	List	   *quals = native_filter_quals(p, filter);
+	List	   *quals;
 	SiftClause *clause = palloc(sizeof(SiftClause));
 	SiftBytes	canon;
 	int			id;
 
+	filter = (Expr *) sift_v6_placeholder_contents((Node *) filter, NULL);
+	quals = native_filter_quals(p, filter);
 	sift_bytes_init(&canon, CurrentMemoryContext);
 	if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))
 	{

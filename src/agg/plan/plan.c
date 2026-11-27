@@ -233,14 +233,14 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	return true;
 }
 
-static Node *
-placeholder_contents(Node *n, void *context)
+Node *
+sift_v6_placeholder_contents(Node *n, void *context)
 {
 	if (n == NULL)
 		return NULL;
 	if (IsA(n, PlaceHolderVar))
-		return placeholder_contents((Node *) ((PlaceHolderVar *) n)->phexpr, context);
-	return expression_tree_mutator(n, placeholder_contents, context);
+		return sift_v6_placeholder_contents((Node *) ((PlaceHolderVar *) n)->phexpr, context);
+	return expression_tree_mutator(n, sift_v6_placeholder_contents, context);
 }
 
 /* any other aggregate, and the ones whose arguments or collation the kernels do not take: PostgreSQL's own functions over the values the scan decodes (v6_gen.h); the arguments are
@@ -252,8 +252,8 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 	Aggref		unfiltered = *a;
 	Aggref	   *ref;
 
-	unfiltered.args = (List *) placeholder_contents((Node *) a->args, NULL);
-	unfiltered.aggdirectargs = (List *) placeholder_contents((Node *) a->aggdirectargs, NULL);
+	unfiltered.args = (List *) sift_v6_placeholder_contents((Node *) a->args, NULL);
+	unfiltered.aggdirectargs = (List *) sift_v6_placeholder_contents((Node *) a->aggdirectargs, NULL);
 	unfiltered.aggfilter = NULL;
 	if ((ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
@@ -685,7 +685,7 @@ refused_text(const V6Plan *p)
 
 	if (p->why_at == NULL || !bms_is_subset(pull_varnos(p->root, p->why_at), p->rel->relids) || sift_v6_pgexpr_exec(p->why_at))
 		return NULL;
-	e = copyObject(p->why_at);
+	e = sift_v6_placeholder_contents(p->why_at, NULL);
 	ChangeVarNodes(e, p->rel->relid, 1, 0);
 	return deparse_expression(e, deparse_context_for(get_rel_name(relid), relid), false, false);
 }
