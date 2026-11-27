@@ -6,11 +6,11 @@
 #   lane 1   corpus (col, table)       scripts/corpus.sh [--table] [--only GLOB|GLOB]
 #            plangate (col, table, 4t) scripts/plangate.sh --runs 0 --slice smoke|AREA|all [--table | --lane stock-4t]
 #            lifecycle                 DML, VACUUM, ADD COLUMN, ADD PRIMARY KEY, DROP COLUMN, VACUUM FULL, REINDEX and sift.check on a sift_col index and a sift_table
-#   lane 2   surface_sweep             test/fuzz/surface_sweep.py --tier quick: every SQL function with hostile arguments, the roles
-#            coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
+#   lane 2   coldiff (col, table)      scripts/coldiff.sh --fast [--table]: DML, abort and VACUUM scenarios against the plain plan
 #   lane 3   shapes_matrix             test/fuzz/shapes_matrix.py --tier quick
 #            txn_fuzz                  test/fuzz/txn/cli.py --shapes: two sessions, savepoints, cursors, prepared statements
-#   lane 4   tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin, the longest step (its --seconds and the checks after them): alone on its lane
+#   lane 4   tbl_twin_fuzz             test/fuzz/tbl_twin.py: a sift_table against its heap twin, the longest step (its --seconds and the checks after them)
+#            surface_sweep             test/fuzz/surface_sweep.py --tier quick: every SQL function with hostile arguments, the roles; the longest step with --assert
 #            bm25_fuzz, diff_fuzz      only for an area or a harness that names them
 #   lane 5   regress                   scripts/pgtest.sh regress TEST...: the test/sql files of the change, on Format 1 (--include-sql, or a test/sql file edited)
 #   every lane ends with the leak gate of its cluster (scripts/leakcheck.sh, run by pgtest.sh stop)
@@ -263,7 +263,7 @@ build_plan() {
 		if [[ ${DEM[$f:corpus]} != ALL ]]; then a+=(--corpus "${DEM[$f:corpus]}"); elif ! supports --fast scripts/coldiff.sh; then a+=(--slice 1/48); fi
 		add_step "$f" 2 scripts/coldiff.sh "$([[ $f == coldiff ]] || echo --table)" "${a[@]}"
 	done
-	[[ -z ${DEM[surface_sweep]-} ]] || add_step surface_sweep 2 test/fuzz/surface_sweep.py - --tier "$matrix" --use-cluster $([[ ${DEM[surface_sweep:only]} == ALL ]] || echo --only "${DEM[surface_sweep:only]}")
+	[[ -z ${DEM[surface_sweep]-} ]] || add_step surface_sweep 4 test/fuzz/surface_sweep.py - --tier "$matrix" --use-cluster $([[ ${DEM[surface_sweep:only]} == ALL ]] || echo --only "${DEM[surface_sweep:only]}")
 	if [[ -n ${DEM[shapes_matrix]-} ]]; then
 		a=(--tier "$matrix"); [[ ${DEM[shapes_matrix:only]} == ALL ]] || a+=(--only "${DEM[shapes_matrix:only]}")
 		facts=${DEM[shapes_matrix:facts]}
