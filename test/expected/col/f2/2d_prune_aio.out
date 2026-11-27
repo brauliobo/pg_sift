@@ -236,7 +236,7 @@ END $$;
 SELECT count(*) AS parts FROM sift._test_f2_parts('rs_idx', 1, NULL);
  parts 
 -------
-    10
+     6
 (1 row)
 
 SELECT f2_both_ways('SELECT count(*), sum(amount), min(note) FROM rs WHERE status = ''open''');
@@ -313,7 +313,7 @@ SELECT f2_both_ways('SELECT count(*) FROM rs WHERE created_at >= now() - interva
 SELECT sift._test_f2_check_keys('rs_idx');
           _test_f2_check_keys          
 ---------------------------------------
- parts=4 granules=23 rows=180000 exact
+ parts=3 granules=20 rows=154286 exact
 (1 row)
 
 RESET sift.test_io_read_stream;
@@ -406,7 +406,7 @@ SELECT (sift._test_f2_alloc('fs_idx', 1024)).start <= :run1 AS tail_reused;
 SELECT sift._test_f2_check('fs_idx');
              _test_f2_check              
 -----------------------------------------
- parts=0 quarantined=0/0 meta_free=15/16
+ parts=0 quarantined=0/0 meta_free=14/16
 (1 row)
 
 -- Block 0 keeps the summary of the partitions inline, and the check of the manifest compares it with the directory

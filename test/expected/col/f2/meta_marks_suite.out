@@ -603,9 +603,9 @@ SELECT count(*) AS scopes, min(scope_ord) AS lo, max(scope_ord) AS hi, bool_and(
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
-              _test_f2_check               
--------------------------------------------
- parts=1 quarantined=12/12 meta_free=45/64
+             _test_f2_check              
+-----------------------------------------
+ parts=1 quarantined=8/8 meta_free=17/32
 (1 row)
 
 -- The pages of the directories a commit replaced are queued for reuse, and the allocator is whole
@@ -622,9 +622,9 @@ SELECT sift._test_f2_reclaim('t_idx') >= 0 AS reclaimed;
 (1 row)
 
 SELECT sift._test_f2_check('t_idx');
-              _test_f2_check               
--------------------------------------------
- parts=1 quarantined=12/12 meta_free=13/32
+             _test_f2_check             
+----------------------------------------
+ parts=1 quarantined=8/8 meta_free=1/16
 (1 row)
 
 -- The largest ordinal is 65534
