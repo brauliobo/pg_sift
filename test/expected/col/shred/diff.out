@@ -105,7 +105,7 @@ BEGIN
 	END LOOP;
 	res := cur;
 END $$;
--- the state and value of a scalar: the jsonb casts decide what fits
+-- the state and value of a scalar: the jsonb casts decide what fits, an integer takes the ->> text as (doc ->> 'k')::int does (3.0 raises)
 CREATE FUNCTION fit(j jsonb, ovf bool, typ text, OUT state text, OUT val text) LANGUAGE plpgsql AS $$
 BEGIN
 	IF ovf THEN state := 'overflow'; RETURN; END IF;
@@ -120,8 +120,8 @@ BEGIN
 		ELSIF jsonb_typeof(j) = 'number' THEN
 			IF typ = 'float4' THEN val := j::float4::text;
 			ELSIF typ = 'float8' THEN val := j::float8::text;
-			ELSIF trunc(j::numeric) = j::numeric THEN
-				val := CASE typ WHEN 'int2' THEN (j::numeric)::int2::text WHEN 'int4' THEN (j::numeric)::int4::text ELSE (j::numeric)::int8::text END;
+			ELSE
+				val := CASE typ WHEN 'int2' THEN (j #>> '{}')::int2::text WHEN 'int4' THEN (j #>> '{}')::int4::text ELSE (j #>> '{}')::int8::text END;
 			END IF;
 		END IF;
 	EXCEPTION WHEN numeric_value_out_of_range OR invalid_text_representation THEN val := NULL;
