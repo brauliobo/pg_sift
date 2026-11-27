@@ -247,7 +247,12 @@ v6_scan_fact(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 	else if (src->index == NULL)
 		scan_table_with_text(st, src, snap, st->star);
 	else
-		scan_with_text(st, src, snap, st->star);
+	{
+		SiftV6ScanSrc pass = *src;
+
+		pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, src->nkeys, &pass.nkeys);
+		scan_with_text(st, &pass, snap, st->star);
+	}
 }
 
 /* The scans of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem), each pass reading every source */

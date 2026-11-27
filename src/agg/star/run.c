@@ -7,6 +7,8 @@
 #include <math.h>
 
 #include "miscadmin.h"
+#include "access/stratnum.h"
+#include "catalog/pg_type_d.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rangetypes.h"
@@ -621,6 +623,63 @@ sift_v6_star_cache(const SiftV6StarRun *r, uint32 *hits, uint32 *built)
 	*hits = r->hits;
 	*built = r->built;
 	return r->hits + r->built > 0;
+}
+
+/* A column the zones of the index order by the int64 of its value */
+static bool
+int_key_type(Oid typid)
+{
+	return typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID;
+}
+
+static Datum
+key_datum(Oid typid, int64 v)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return Int16GetDatum((int16) v);
+		case INT4OID:
+		case DATEOID:
+			return Int32GetDatum((int32) v);
+		default:
+			return Int64GetDatum(v);
+	}
+}
+
+static void
+bound_key(Relation index, AttrNumber att, Oid typid, StrategyNumber strategy, Oid opno, int64 v, ScanKey key)
+{
+	ScanKeyEntryInitialize(key, 0, att, strategy, typid, index->rd_indcollation[att - 1], get_opcode(opno), key_datum(typid, v));
+}
+
+ScanKey
+sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n)
+{
+	ScanKey		out = palloc(((Size) nkeys + 2 * r->x->ndims) * sizeof(ScanKeyData));
+
+	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
+	*n = nkeys;
+	for (int d = 0; d < r->x->ndims; d++)
+		if (r->x->dim[d].mode == SV6J_LEFT_EQUI || r->x->dim[d].mode == SV6J_FULL_EQUI)
+			return out;
+	for (int d = 0; d < r->x->ndims; d++)
+	{
+		const SiftV6XDim *xd = &r->x->dim[d];
+		const SiftStarPush push = sift_star_push(&r->dim[d]);
+		const AttrNumber att = (AttrNumber) xd->fatt[0];
+		const Oid	type = xd->ftype[0],
+					family = att >= 1 && att <= index->rd_index->indnatts ? index->rd_opfamily[att - 1] : InvalidOid,
+					ge = OidIsValid(family) ? get_opfamily_member(family, type, type, BTGreaterEqualStrategyNumber) : InvalidOid,
+					le = OidIsValid(family) ? get_opfamily_member(family, type, type, BTLessEqualStrategyNumber) : InvalidOid;
+
+		if (push.kind == SSP_NONE || (xd->mode != SV6J_INNER_EQUI && xd->mode != SV6J_SEMI_EQUI) || xd->fsrc[0] != SV6SRC_ATTR || xd->kx[0] != 0 ||
+			type != xd->ktype[0] || !int_key_type(type) || !OidIsValid(ge) || !OidIsValid(le))
+			continue;
+		bound_key(index, att, type, BTGreaterEqualStrategyNumber, ge, push.lo, &out[(*n)++]);
+		bound_key(index, att, type, BTLessEqualStrategyNumber, le, push.hi, &out[(*n)++]);
+	}
+	return out;
 }
 
 void
