@@ -282,8 +282,9 @@ sift_row_part_count(Relation rel)
 }
 
 /*
- * A row the transaction staged, or staged a change of, is alive for it, and the others are read where they are: nothing is written to ask the relation about a row, which at every index
- * page the btree tries to clean made a part of the stage or of a micro-slab.
+ * Only a row on disk whose deleter committed before every snapshot is known dead: a row no part holds may be staged by a running transaction of any backend (its entry is in the index before
+ * the row is written), and the orphan an aborted one left is VACUUM's to reap (table/f2/vm). The rows are read where they are: nothing is written to ask the relation about a row, which
+ * at every index page the btree tries to clean made a part of the stage or of a micro-slab.
  *
  * What the btree reads back (access/tableam.h): an entry its caller marked deletable stays deletable, and the array ends at the last deletable entry, so that no deletable entry at all is
  * an empty array, which only a bottom-up caller may get.
@@ -293,25 +294,14 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 {
 	GlobalVisState *vistest = GlobalVisTestFor(rel);
 	TransactionId horizon = InvalidTransactionId;
-	uint64	   *tids = palloc(Max(delstate->ndeltids, 1) * sizeof(uint64));
-	bool	   *staged = palloc(Max(delstate->ndeltids, 1) * sizeof(bool));
 	int			final_ndeltids = 0;
 
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
-		tids[i] = sift_tbl_tid_pack(&delstate->deltids[i].tid);
-		staged[i] = sift_stage_holds_in(rel, tids[i], tids[i]);
-	}
-	for (int i = 0; i < delstate->ndeltids; i++)
-	{
 		TM_IndexStatus *status = &delstate->status[delstate->deltids[i].id];
-		SiftRowState rs = {.xmax = InvalidTransactionId,.found = staged[i]};
-		bool		deletable;
-
-		if (!staged[i])
-			rs = sift_row_state_read_settled(rel, tids[i]);
-		deletable = !rs.found || (TransactionIdIsValid(rs.xmax) && !TransactionIdIsInProgress(rs.xmax) && (!TransactionIdIsNormal(rs.xmax) || TransactionIdDidCommit(rs.xmax)) &&
-								  sift_vis_removable_xid(vistest, rs.xmax));
+		SiftRowState rs = sift_row_state_read_settled(rel, sift_tbl_tid_pack(&delstate->deltids[i].tid));
+		bool		deletable = rs.found && TransactionIdIsValid(rs.xmax) && !TransactionIdIsInProgress(rs.xmax) && (!TransactionIdIsNormal(rs.xmax) || TransactionIdDidCommit(rs.xmax)) &&
+			sift_vis_removable_xid(vistest, rs.xmax);
 		status->knowndeletable |= deletable;
 		if (deletable && TransactionIdIsNormal(rs.xmax) && (!TransactionIdIsValid(horizon) || TransactionIdFollows(rs.xmax, horizon)))
 			horizon = rs.xmax;
@@ -319,7 +309,5 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 			final_ndeltids = i + 1;
 	}
 	delstate->ndeltids = final_ndeltids;
-	pfree(tids);
-	pfree(staged);
 	return horizon;
 }
