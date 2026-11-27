@@ -1,8 +1,10 @@
--- A top-N of the scan (ORDER BY .. LIMIT, the latest rows of a tenant) reads the scope units less the members whose pairs changed, and the delta (the rows of the write buffers and those of the changed
--- members, copied for each pair) as units of the same scan, so its heap takes the rows of both under the sort and the tie rule of the join. Every state of the pairs and of the facts, every shape of the
--- sort (ties, mixed directions, an offset, an output the sort does not read, a sort expression, a condition besides the tenant), md5 equal to stock PostgreSQL, and whether the units were read.
--- The second half: an index that keeps only some columns of its units (cols(..)) answers a top-N whose output the units give only when they hold every column it reads, and the join says why otherwise.
+-- A top-N of the scan (ORDER BY .. LIMIT, the latest rows of a tenant) over the pairs and the facts as the snapshot sees them: the rows of the write buffers, of the members whose pairs changed and
+-- of the facts deleted or moved, under the sort and the tie rule of the join. Every state of the pairs and of the facts, every shape of the sort (ties, mixed directions, an offset, an output the
+-- sort does not read, a sort expression, a condition besides the tenant), md5 equal to the join and to stock PostgreSQL, and how the node read the scope (Scope Read).
+-- The second half: an index whose scope keeps only some columns (cols(..)) answers a top-N whose output those columns give, and the join answers otherwise.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -20,8 +22,6 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) W
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events, tenant_scope;
 
-SET sift.test_scope_patch = on;
-
 CREATE TABLE shapes (n int, label text, q text);
 INSERT INTO shapes VALUES
 	(1, 'latest 20',                    'SELECT id, created_at FROM events e WHERE @ ORDER BY created_at DESC, id DESC LIMIT 20'),
@@ -34,9 +34,9 @@ INSERT INTO shapes VALUES
 	(8, 'a sort expression',            'SELECT id, v FROM events e WHERE @ ORDER BY abs(v - 5) DESC, id LIMIT 15'),
 	(9, 'ties, the time alone',         'SELECT id FROM events e WHERE @ ORDER BY created_at DESC, id LIMIT 12');
 
-CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text, patched boolean) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' ELSE 'no units' END), r.patched
-	FROM shapes s, LATERAL scope_run(replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)'), replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)')) r
+CREATE FUNCTION probe() RETURNS TABLE (n int, label text, verdict text, route text) LANGUAGE sql AS $$
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.route, 'no scope read')
+	FROM shapes s, LATERAL scope_read(replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)')) r
 	ORDER BY s.n
 $$;
 
@@ -68,7 +68,7 @@ SELECT * FROM probe();
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT %s AS n, %L AS state', n, label), stmt, 'SELECT * FROM probe()']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
 SELECT sift.col_verify('events_col', true);
 
--- an index that keeps some columns of its units: a top-N reads the units for the columns they hold, and the join answers for the others
+-- an index whose scope keeps some columns: a top-N reads the scope for the columns it keeps, and the join answers for the others
 CREATE TABLE events_cols (id int PRIMARY KEY, dim_a_id int, created_at timestamptz, v int) WITH (autovacuum_enabled = false);
 INSERT INTO events_cols SELECT id, dim_a_id, created_at, v FROM events;
 CREATE INDEX events_cols_col ON events_cols USING sift_col (id, dim_a_id, created_at, v) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id) cols(id, created_at)');
@@ -80,8 +80,8 @@ INSERT INTO shapes_cols VALUES
 	(2, 'an output the units do not keep',   'SELECT id, v FROM events_cols e WHERE @ ORDER BY id DESC LIMIT 25'),
 	(3, 'a sort the units do not keep',      'SELECT id FROM events_cols e WHERE @ ORDER BY v DESC, id LIMIT 25');
 CREATE FUNCTION probe_cols() RETURNS TABLE (n int, label text, verdict text, route text) LANGUAGE sql AS $$
-	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.why, CASE WHEN r.stored THEN 'units' ELSE 'no units' END)
-	FROM shapes_cols s, LATERAL scope_run(replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)'), replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)')) r
+	SELECT s.n, s.label, CASE r.same WHEN true THEN 'same' ELSE 'DIFFERENT' END, coalesce(r.route, 'no scope read')
+	FROM shapes_cols s, LATERAL scope_read(replace(s.q, '@', 'dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3)')) r
 	ORDER BY s.n
 $$;
 \echo columns, clean
