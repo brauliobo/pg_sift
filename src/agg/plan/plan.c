@@ -680,14 +680,14 @@ compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	return true;
 }
 
-/* the expression the compile refused as the statement names it; NULL when it names none or reads another relation than the one planned */
+/* the expression the compile refused as the statement names it; NULL when it names none or reads another relation than the one planned (a sub-plan reads its own) */
 static char *
 refused_text(const V6Plan *p)
 {
 	const Oid	relid = planner_rt_fetch(p->rel->relid, p->root)->relid;
 	Node	   *e;
 
-	if (p->why_at == NULL || !bms_is_subset(pull_varnos(p->root, p->why_at), p->rel->relids))
+	if (p->why_at == NULL || !bms_is_subset(pull_varnos(p->root, p->why_at), p->rel->relids) || sift_v6_pgexpr_exec(p->why_at))
 		return NULL;
 	e = copyObject(p->why_at);
 	ChangeVarNodes(e, p->rel->relid, 1, 0);

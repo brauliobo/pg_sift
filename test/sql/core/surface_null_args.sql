@@ -69,7 +69,12 @@ SELECT call, sna_state(call) FROM (VALUES
 	('SELECT count(*) FROM sift.col_unit_agg(NULL, ''g'')'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''g'')'),
 	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''9:eq:1'')'),
-	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')')
+	('SELECT count(*) FROM sift._test_col_tids(''sna_idx''::regclass, ''0:bogus:1'')'),
+	('SELECT sift._projection_index_sql(NULL, NULL, NULL, NULL, NULL, NULL)'),
+	('SELECT sift._projection_index_sql(''id'', ''sna_heap''::regclass, NULL, ''id'', ''id'', true)'),
+	('SELECT sift._projection_index_sql(''i'', (SELECT gone FROM sna_oids)::regclass, ARRAY[''id''], NULL, NULL, false)'),
+	('SELECT sift._projection_put(NULL::sift.projections, NULL)'),
+	('SELECT sift._projection_put(NULL::sift.projections, true)')
 ) v(call) ORDER BY call;
 
 DROP FUNCTION sna_state(text);

@@ -33,6 +33,7 @@
 #include "utils/rel.h"
 #include "core/catalog.h"
 #include "core/catname.h"
+#include "core/host.h"
 #include "core/inspect.h"
 
 PG_FUNCTION_INFO_V1(sift_col_projection_filter_served);
@@ -143,13 +144,18 @@ sift_col_projection_filter_served(PG_FUNCTION_ARGS)
 Datum
 sift_col_projection_index_sql(PG_FUNCTION_ARGS)
 {
-	Oid			source = PG_GETARG_OID(1);
+	Oid			source;
 	char	   *filter = PG_ARGISNULL(4) ? NULL : text_to_cstring(PG_GETARG_TEXT_PP(4));
 	Datum	   *leaves;
 	bool	   *nulls;
 	int			n;
 	StringInfoData sql;
 
+	SIFT_ARG_REQUIRED(0, "sift._projection_index_sql", "index");
+	SIFT_ARG_REQUIRED(1, "sift._projection_index_sql", "source");
+	SIFT_ARG_REQUIRED(2, "sift._projection_index_sql", "leaves");
+	SIFT_ARG_REQUIRED(5, "sift._projection_index_sql", "conc");
+	source = sift_rel_must_exist(PG_GETARG_OID(1));
 	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(2), TEXTOID, &leaves, &nulls, &n);
 	initStringInfo(&sql);
 	appendStringInfo(&sql, "CREATE INDEX %s%s ON %s USING sift_col (", PG_GETARG_BOOL(5) ? "CONCURRENTLY " : "", quote_identifier(text_to_cstring(PG_GETARG_TEXT_PP(0))),
