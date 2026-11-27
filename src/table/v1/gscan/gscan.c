@@ -125,7 +125,7 @@ sift_tbl_gscan_ref(SiftTblGroupScan *g)
 void
 sift_tbl_gscan_unref(SiftTblGroupScan *g)
 {
-	if (--g->refs == 0 && g->ended)
+	if (--g->refs == 0 && g->ended && !g->cached)
 		MemoryContextDelete(g->cxt);
 }
 

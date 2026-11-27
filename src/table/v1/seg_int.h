@@ -56,6 +56,7 @@ struct SiftTblGroupCache
 	uint64		fetch_clock;
 	uint32		fetch_version;
 	TransactionId fetch_xmin;
+	List	   *dropped;		/* fetch scans ended while a slot held a row of them: freed when none does, at the latest when the transaction ends */
 	uint64		pkey;			/* path_zones: the segments pls was computed over */
 	SiftColLeafStats *pls;
 	struct PathWbuf *pwb;		/* path_wbuf_ovf: per write buffer */

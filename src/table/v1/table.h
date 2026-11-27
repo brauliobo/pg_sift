@@ -395,7 +395,7 @@ sift_tbl_slot_is_lazy(TupleTableSlot *slot)
 
 /* Does a column group hold the row of tid (live)? On true *rv is filled, rv->tuple palloc'd. */
 extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy);
-/* The fetch scans kept for the next transaction hold no more than sift_cache_scan_bytes(): the unit each one decoded last stays with it */
+/* The end of a transaction: the fetch scans dropped while a slot held a row of them are freed, and those kept for the next one hold no more than sift_cache_scan_bytes() */
 extern void sift_tbl_fetch_trim(SiftTblRel *st);
 
 /*

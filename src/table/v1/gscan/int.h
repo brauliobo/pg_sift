@@ -112,6 +112,7 @@ struct SiftTblGroupScan
 	bool		point;			/* the fetch scan: a superblock's cache is the page directories of its units, not the TIDs of their rows (sift_col_unit_index) */
 	Bitmapset  *want;			/* the attributes a reader asks for (offset by FirstLowInvalidHeapAttributeNumber, as pull_varattnos makes them); NULL: all; the others come back NULL */
 	bool		park_fill;		/* the fetch scan: the pages a fill pinned are released at once (nothing ends it before the transaction does) */
+	bool		cached;			/* a fetch scan of the table cache: the cache frees it once it is ended, not the last slot to let go (a slot of a statement an error ended never does) */
 	uint32		token;		/* changes whenever another unit becomes the current one: vec, ord and unit are then not the slot's */
 };
 

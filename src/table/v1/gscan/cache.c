@@ -187,6 +187,32 @@ fetch_bytes(SiftTblGroupScan *g)
 	return bytes;
 }
 
+/* Fetch scan i leaves the cache: freed now, else once no slot holds a row of it (fetch_sweep) */
+static void
+fetch_drop(struct SiftTblGroupCache *c, int i)
+{
+	SiftTblGroupScan *g = c->fetch[i];
+	MemoryContext old = MemoryContextSwitchTo(GetMemoryChunkContext(c));
+
+	c->fetch[i] = NULL;
+	if (g->refs > 0)
+		c->dropped = lappend(c->dropped, g);
+	MemoryContextSwitchTo(old);
+	sift_tbl_gscan_end(g);
+}
+
+/* Frees the dropped fetch scans no slot holds a row of; all: every one, at the end of the transaction, which no slot outlives */
+static void
+fetch_sweep(struct SiftTblGroupCache *c, bool all)
+{
+	foreach_ptr(SiftTblGroupScan, g, c->dropped)
+		if (all || g->refs == 0)
+		{
+			MemoryContextDelete(g->cxt);
+			c->dropped = foreach_delete_current(c->dropped, g);
+		}
+}
+
 /*
  * The fetch scans are dropped, oldest first, until what they hold fits sift_cache_scan_bytes(), with a new one as large as the largest when one is to begin: the slot it takes,
  * an empty one, else the least recently used
@@ -217,8 +243,7 @@ fetch_fit(struct SiftTblGroupCache *c, bool begin)
 		}
 		if (lru < 0 || bytes + (begin ? largest : 0) <= sift_cache_scan_bytes())
 			return empty >= 0 ? empty : lru;
-		sift_tbl_gscan_end(c->fetch[lru]);
-		c->fetch[lru] = NULL;
+		fetch_drop(c, lru);
 	}
 }
 
@@ -232,13 +257,11 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 	struct SiftTblGroupCache *c = gcache_of(st);
 	int			pick = -1;
 
+	fetch_sweep(c, false);
 	if (!fetch_kept(rel, st, c))
 		for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
 			if (c->fetch[i])
-			{
-				sift_tbl_gscan_end(c->fetch[i]);
-				c->fetch[i] = NULL;
-			}
+				fetch_drop(c, i);
 	for (int i = 0; i < SIFT_TBL_FETCH_SCANS; i++)
 		if (c->fetch[i] && c->fetch[i]->cache_sb == sb)
 			pick = i;
@@ -248,9 +271,10 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 
 		pick = fetch_fit(c, true);
 		if (c->fetch[pick])
-			sift_tbl_gscan_end(c->fetch[pick]);
+			fetch_drop(c, pick);
 		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, st->dir, NULL);
 		c->fetch[pick]->park_fill = true;
+		c->fetch[pick]->cached = true;
 		c->fetch[pick]->point = true;
 		c->fetch_version = st->dir->version;
 		c->fetch_xmin = TransactionXmin;
@@ -263,8 +287,10 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 void
 sift_tbl_fetch_trim(SiftTblRel *st)
 {
-	if (st->gcache != NULL)
-		(void) fetch_fit(st->gcache, false);
+	if (st->gcache == NULL)
+		return;
+	fetch_sweep(st->gcache, true);
+	(void) fetch_fit(st->gcache, false);
 }
 
 /* Where tid is among the cached units of its superblock: unit k, the row index pos in its vectors */
