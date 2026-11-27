@@ -21,6 +21,7 @@
 
 static int	dir_scans,
 			dir_reads,
+			null_reads,
 			interrupts;
 
 static DIR *
@@ -51,10 +52,12 @@ AllocateDir(const char *dirname)
 	return opendir(dirname);
 }
 
+/* As fd.c's: a directory AllocateDir could not open is an error of the read, never a listing */
 struct dirent *
 ReadDir(DIR *dir, const char *dirname)
 {
 	dir_reads++;
+	null_reads += dir == NULL;
 	return dir != NULL ? readdir(dir) : NULL;
 }
 
@@ -201,6 +204,25 @@ test_listing_and_eviction_take_a_cancel(void)
 	scratch_drop(c, dir);
 }
 
+/* A directory that is gone (or that the server may not open) is not read: the cache evicts from the index it has, and a miss is fetched and served */
+static void
+test_directory_that_cannot_be_opened_is_not_read(void)
+{
+	char		dir[] = "/tmp/sift-unit-tier-cache-XXXXXX";
+	SiftTierCache *c = scratch_cache(dir, 16);
+	char		cmd[64];
+
+	read_chunks(c, 0, 8);
+	snprintf(cmd, sizeof(cmd), "rm -rf %s", dir);
+	SIFT_CHECKF(system(cmd) == 0, "the directory goes");
+	null_reads = 0;
+	read_chunks(c, 8, 32);
+	SIFT_CHECKF(null_reads == 0, "a directory that could not be opened was read %d times", null_reads);
+	SIFT_CHECKF(sift_tier_cache_stats(c)->resident_chunks <= 16, "the index holds %llu chunks, the budget 16", (unsigned long long) sift_tier_cache_stats(c)->resident_chunks);
+	SIFT_CHECKF(mkdir(dir, 0700) == 0, "the directory is made again");
+	scratch_drop(c, dir);
+}
+
 int
 main(void)
 {
@@ -208,5 +230,6 @@ main(void)
 	test_full_cache_misses_do_not_list_the_directory_each();
 	test_one_backend_lists_the_directory_at_a_time();
 	test_listing_and_eviction_take_a_cancel();
+	test_directory_that_cannot_be_opened_is_not_read();
 	return sift_check_summary();
 }

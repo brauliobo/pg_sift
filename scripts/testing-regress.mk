@@ -348,6 +348,7 @@ TESTING_REGRESS += col/f2/tier_drop_remote
 TESTING_REGRESS += col/f2/tier_orphans
 TESTING_REGRESS += col/f2/tier_policy_cache
 TESTING_REGRESS += col/f2/tier_privileges
+TESTING_REGRESS += col/f2/tier_reindex_concurrently
 TESTING_REGRESS += col/f2/tier_template_db
 TESTING_REGRESS += col/f2/tier_wide
 TESTING_REGRESS += col/f2/tiering

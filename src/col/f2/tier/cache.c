@@ -292,13 +292,16 @@ forget_index(SiftTierCache *c)
 	c->st.resident_chunks = 0;
 }
 
-/* The index as the directory is now, within the budget; while a peer makes its own (the lock goes with the descriptor of the directory), this one evicts from the index it has */
+/*
+ * The index as the directory is now, within the budget; while a peer makes its own (the lock goes with the descriptor of the directory), or when the directory cannot be opened (gone, or out
+ * of descriptors), this one evicts from the index it has
+ */
 static void
 sync_directory(SiftTierCache *c)
 {
 	DIR		   *d = AllocateDir(c->dir);
 
-	if (d != NULL && flock(dirfd(d), LOCK_EX | LOCK_NB) != 0)
+	if (d == NULL || flock(dirfd(d), LOCK_EX | LOCK_NB) != 0)
 	{
 		FreeDir(d);
 		evict_to_budget(c);

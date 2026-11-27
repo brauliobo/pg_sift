@@ -1,23 +1,28 @@
 /*
  * table/utility.c - the statements on a sift_table that its format has to see around the server's own work (ALTER TABLE, SET SCHEMA and RENAME COLUMN): the hook finds the table of
  * the format and calls the callbacks it has (table/dispatch.h); a format without them (Format 1 follows through its event trigger) is left alone. A sift_table that becomes a partition
- * (ATTACH PARTITION, CREATE TABLE ... PARTITION OF) is checked against the publications of the table it joins, and DISCARD ALL empties the caches of the extension.
+ * (ATTACH PARTITION, CREATE TABLE ... PARTITION OF) is checked against the publications of the table it joins, DISCARD ALL empties the caches of the extension, and the rows of an index
+ * that REINDEX CONCURRENTLY builds again follow it to its new OID.
  */
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_inherits.h"
 #include "commands/defrem.h"
 #include "commands/tablecmds.h"
+#include "executor/spi.h"
 #include "nodes/parsenodes.h"
 #include "tcop/utility.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 #include "core/cachebudget.h"
 #include "col/f2/compact/par.h"
 #include "core/catalog.h"
+#include "core/owner_sql.h"
 #include "table/dispatch.h"
 #include "table/wal.h"
 
@@ -185,6 +190,114 @@ vacuum_parallel(Node *parse)
 	return 0;
 }
 
+/* An index that a catalog of the extension names by OID (sift.projection_defs, sift.tier_policies), as it was before REINDEX CONCURRENTLY built it again */
+typedef struct Rebuilt
+{
+	Oid			relid;
+	Oid			table;
+	Oid			nsp;
+	NameData	name;
+} Rebuilt;
+
+typedef struct RebuiltRead
+{
+	MemoryContext cx;
+	List	   *out;
+} RebuiltRead;
+
+/* The two catalogs read with the policies: a database without the extension, or with the SQL of a version before them, has none */
+static Oid
+rebind_catalog(void)
+{
+	Oid			nsp = get_namespace_oid("sift", true);
+
+	return OidIsValid(nsp) ? get_relname_relid("tier_policies", nsp) : InvalidOid;
+}
+
+static bool
+reindex_concurrently(Node *parse)
+{
+	if (IsA(parse, ReindexStmt))
+		foreach_ptr(DefElem, opt, castNode(ReindexStmt, parse)->params)
+			if (strcmp(opt->defname, "concurrently") == 0)
+				return defGetBoolean(opt);
+	return false;
+}
+
+static void
+read_rebuilt(void *arg)
+{
+	RebuiltRead *r = arg;
+	MemoryContext old = MemoryContextSwitchTo(r->cx);
+
+	for (uint64 i = 0; i < SPI_processed; i++)
+	{
+		bool		isnull;
+		Oid			relid = DatumGetObjectId(SPI_getbinval(SPI_tuptable->vals[i], SPI_tuptable->tupdesc, 1, &isnull));
+		HeapTuple	tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+		Rebuilt    *b;
+
+		if (!HeapTupleIsValid(tp))
+			continue;
+		if (((Form_pg_class) GETSTRUCT(tp))->relkind == RELKIND_INDEX)
+		{
+			b = palloc(sizeof(Rebuilt));
+			*b = (Rebuilt) {relid, IndexGetRelation(relid, false), ((Form_pg_class) GETSTRUCT(tp))->relnamespace, ((Form_pg_class) GETSTRUCT(tp))->relname};
+			r->out = lappend(r->out, b);
+		}
+		ReleaseSysCache(tp);
+	}
+	MemoryContextSwitchTo(old);
+}
+
+/*
+ * The indexes the catalogs of the extension name, read before REINDEX CONCURRENTLY: it builds each index it rebuilds under a new OID, gives it the name of the old one and drops that one without
+ * the event triggers of a DROP, so only the name and the table tie the two
+ */
+static List *
+named_indexes(Node *parse)
+{
+	Oid			catalog = reindex_concurrently(parse) ? rebind_catalog() : InvalidOid;
+	RebuiltRead r = {CurrentMemoryContext, NIL};
+
+	if (OidIsValid(catalog))
+		sift_owner_sql(catalog, &(SiftOwnerSql) {.sql = "SELECT rel::pg_catalog.oid FROM sift.projection_defs UNION SELECT relid::pg_catalog.oid FROM sift.tier_policies",
+					   .read_only = true,.expect = SPI_OK_SELECT,.rows = read_rebuilt,.out = &r});
+	return r.out;
+}
+
+/* The index REINDEX CONCURRENTLY built in place of b: once b is gone, the index of its table that has its name */
+static Oid
+rebuilt_as(const Rebuilt *b)
+{
+	Oid			relid = SearchSysCacheExists1(RELOID, ObjectIdGetDatum(b->relid)) ? InvalidOid : get_relname_relid(NameStr(b->name), b->nsp);
+
+	return OidIsValid(relid) && get_rel_relkind(relid) == RELKIND_INDEX && IndexGetRelation(relid, false) == b->table ? relid : InvalidOid;
+}
+
+static const char *const rebind_sql[] = {
+	"UPDATE sift.projection_defs SET rel = $2 WHERE rel::pg_catalog.oid = $1", "UPDATE sift.tier_policies SET relid = $2 WHERE relid::pg_catalog.oid = $1",
+};
+
+/*
+ * The rows of each rebuilt index name the new one: its projections are built again from their definitions, and its policy keeps its scope, so the sweep of the new index finds the objects of the
+ * old one (another relfilenumber) unnamed and deletes them as it deletes those of a REINDEX
+ */
+static void
+rebind_rebuilt(List *named)
+{
+	foreach_ptr(Rebuilt, b, named)
+	{
+		Oid			to = rebuilt_as(b);
+		Oid			types[] = {OIDOID, OIDOID};
+		Datum		values[] = {ObjectIdGetDatum(b->relid), ObjectIdGetDatum(to)};
+
+		if (OidIsValid(to))
+			for (int i = 0; i < (int) lengthof(rebind_sql); i++)
+				sift_owner_sql(rebind_catalog(), &(SiftOwnerSql) {.sql = rebind_sql[i],.nargs = 2,.types = types,.values = values,.expect = SPI_OK_UPDATE});
+	}
+}
+
 /* The format of each table as the statement finds it: a table the statement takes off sift_table is still told to the callbacks of the format it left */
 static List *
 formats_of(List *relids)
@@ -247,6 +360,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	int			workers = sift_vacuum_parallel_workers;
 	List	   *outer = altered;
 	List	   *formats = formats_of(relids);
+	List	   *rebuilt = named_indexes(parse);
 
 	each_table(relids, formats, named, parse, call_before);
 	PG_TRY();
@@ -266,6 +380,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	}
 	PG_END_TRY();
 	check_new_partitions(parse);
+	rebind_rebuilt(rebuilt);
 	if (IsA(parse, DiscardStmt) && castNode(DiscardStmt, parse)->target == DISCARD_ALL)
 		sift_cache_discard_all();
 	each_table(relids, formats, named, parse, call_after);
