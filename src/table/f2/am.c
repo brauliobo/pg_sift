@@ -175,6 +175,8 @@ sift_tbl_f2_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber
 	SiftShmIndexMeta peek;
 	BlockNumber unused,
 				also_unused;
+	uint64		total = 0,
+				dead = 0;
 	uint64		rows = 0;
 
 	/* IndexOnlyNext asks the map fork by the vblock of an address: the fraction is that of the vblocks VACUUM found all visible, and 0 where the server cannot log the map */
@@ -182,15 +184,20 @@ sift_tbl_f2_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber
 	if (RelationGetNumberOfBlocks(rel) > 0)
 	{
 		if (sift_shm_manifest_peek(&rel->rd_locator, &peek))
-			rows = peek.total_rows - peek.total_dead;
+		{
+			total = peek.total_rows;
+			dead = peek.total_dead;
+		}
 		else
 		{
 			SiftColMetaPageData meta = sift_col_meta_read(rel);
 
-			rows = meta.total_rows - meta.total_dead;
+			total = meta.total_rows;
+			dead = meta.total_dead;
 		}
-		/* rows that only the slabs of the partitions hold are in no part: the rows ANALYZE counted stand for them */
-		if (rows == 0 && rel->rd_rel->reltuples > 0)
+		rows = total - dead;
+		/* a table whose parts count no row has its rows in the slabs of its partitions, which the rows ANALYZE counted stand for; one whose part rows are all dead is empty */
+		if (total == 0 && rel->rd_rel->reltuples > 0)
 			rows = (uint64) rel->rd_rel->reltuples;
 	}
 	(void) get_rel_data_width(rel, attr_widths);
