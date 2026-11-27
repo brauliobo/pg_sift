@@ -1,10 +1,8 @@
 -- A group table that outgrows hash memory (statistics that predate a bulk load: 10 groups known, 20,000 real) ends no statement with 54000, whatever the kind of
--- node and the context the statement runs in. A node that can spill (grouping sets, a generic aggregate with a combine function) writes its groups to partitions.
--- A node that cannot (an ordered scan on a text key, with or without a limit, an ordered-set aggregate, a generic aggregate that sorts, a distinct count of a joined column) holds its groups
--- to the end: where the statement can run again as PostgreSQL plans it (a SELECT that calls no volatile function: also a cursor's first fetch, a function's query
--- with parameters, a prepared statement, a scan with workers that failed) it does; where it cannot (an INSERT, a volatile function) the planner leaves the
--- statement to the normal plan when the most groups the source can make would not fit hash memory.
--- A node that can spill but runs with workers does not spill (each process holds its groups): past its share of hash memory it runs again too.
+-- node and the context the statement runs in: every kind (grouping sets, a generic aggregate with or without a sort, an ordered scan on a text key, with or without
+-- a limit, an ordered-set aggregate, a distinct count of a joined column, two levels of groups) writes its groups to partitions and reads them back, in a SELECT,
+-- a cursor, a function, a prepared statement, an INSERT and a statement that calls a volatile function alike, so none runs again as PostgreSQL plans it.
+-- A scan with workers spills in each process that holds the groups (what a worker spills is not in the leader's counter).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -130,11 +128,11 @@ END $$;
 SELECT run_cell(kind, ctx) FROM kinds, unnest(ARRAY['plain', 'cursor', 'scroll cursor', 'plpgsql function', 'sql function', 'prepared', 'workers only', 'insert', 'volatile']) ctx
 	ORDER BY kind, ctx;
 SELECT kind, ctx, rows, differ, CASE WHEN spilled THEN 'spilled' WHEN reran THEN 'ran again' ELSE '' END AS how, state FROM cells ORDER BY kind, ctx;
--- the cells of the scan with workers did run with workers (what a worker spills is not in the leader's counter: such a cell shows neither)
+-- the cells of the scan with workers ran with workers, but for the kinds the scan runs in one process (an aggregate that sorts its input, an ordered-set aggregate,
+-- a distinct count of a joined column); what a worker spills is not in the leader's counter
 SELECT kind, workers FROM cells WHERE ctx = 'workers only' ORDER BY kind;
 
--- what the planner leaves the node: with stale statistics, a statement that can run again takes the scan (its estimate is small); one that cannot, the most groups
--- the source can make (its rows) against hash memory
+-- what the planner leaves the node: with stale statistics every kind takes the scan, an INSERT and a volatile statement too, since each spills
 CREATE TABLE ins_shape (k text, n bigint, x text);
 CREATE FUNCTION shape(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'heap';

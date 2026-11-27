@@ -5,6 +5,7 @@
  */
 #include "core/host.h"
 
+#include "access/parallel.h"
 #include "executor/nodeAgg.h"
 
 #include "agg/par/par.h"
@@ -253,6 +254,7 @@ sift_v6_par_run_end(SiftV6ParRun *r)
 
 		*st = r->stats;
 		st->topk_dropped = r->topk != NULL ? sift_v6_topk_run_dropped(r->topk) : 0;
+		st->workers = IsParallelWorker();
 	}
 	pfree(r);
 }

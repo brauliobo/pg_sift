@@ -642,12 +642,18 @@ static void
 v6_fold_stats(const V6State *st)
 {
 	SiftV6ParSummary ps = {0};
+	uint64		spills = 0,
+				spill_bytes;
 
 	if (st->par != NULL)
 		sift_v6_par_node_summary(st->par, &ps);
 	if (!st->ran && !ps.ran)
 		return;
+	if (st->group != NULL)
+		sift_v6_group_spill_stats(st->group, &spills, &spill_bytes);
+	sift_stat_add(SIFT_STAT_GROUP_SPILLS, spills > 0);
 	sift_stat_add(SIFT_STAT_SCANS, 1);
+	sift_stat_add(SIFT_STAT_WORKERS, ps.workers);
 	sift_stat_add(SIFT_STAT_UNITS, st->stats.batches + ps.grans_scanned);
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, st->stats.grans_preagg + ps.grans_preagg);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows);

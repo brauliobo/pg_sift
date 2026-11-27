@@ -41,7 +41,7 @@ test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438
 test/expected/agg/scope/param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
 test/expected/agg/scope/recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
 test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
-test/expected/agg/spill/contexts_1.out	a879aa77beb39ff57c76ae083c7b0174dfda0c5d	17	kind     | select_ |      insert_       |     volatile_
+test/expected/agg/spill/contexts_1.out	a1a88f183c421b68450005b5a927dbb44c767626	17	kind     | select_ | insert_ | volatile_
 test/expected/agg/subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
 test/expected/agg/subplan_lut_1.out	18f010d562e7cd0f6b312fc1d9d10bde0b3d257f	19	plan          | result_rows | vs_normal_plan

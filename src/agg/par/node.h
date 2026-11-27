@@ -31,6 +31,7 @@ typedef struct SiftV6ParSummary
 	uint64		grans_preagg_delta;
 	uint64		heap_vet_rows;
 	uint64		topk_dropped;
+	uint64		workers;
 } SiftV6ParSummary;
 
 extern SiftV6ParNode *sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, Snapshot snap, MemoryContext mcx,
