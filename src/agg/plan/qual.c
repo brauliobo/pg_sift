@@ -86,7 +86,7 @@ static bool
 numeric_exact(const V6Plan *p, int strat, const SiftV6Col *col, const Var *v, const Node *operand)
 {
 	if (p->in_filter)
-		return !p->is_table && v->vartypmod >= VARHDRSZ && sift_v6_numeric_typmod_scale(v->vartypmod) == col->scale;
+		return v->vartypmod >= VARHDRSZ && sift_v6_numeric_typmod_scale(v->vartypmod) == col->scale;
 	return !p->is_table && strat >= BTLessStrategyNumber && strat <= BTGreaterStrategyNumber && IsA(operand, Const) &&
 		sift_col_numeric_key_fits(col->scale, ((const Const *) operand)->constvalue);
 }
@@ -263,8 +263,8 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
 	Expr	   *q;
 
-	/* a table has no scan to decide the rows whose stored value is a NaN: PostgreSQL's own comparison of the datums does */
-	if (p->is_table && has_numeric_var((Node *) clause, NULL))
+	/* a table has no scan to decide the rows whose stored value is a NaN in a WHERE clause: PostgreSQL's own comparison of the datums does */
+	if (p->is_table && !p->in_filter && has_numeric_var((Node *) clause, NULL))
 		return NULL;
 
 	switch (nodeTag(clause))

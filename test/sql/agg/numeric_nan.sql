@@ -58,6 +58,12 @@ SELECT parity($q$SELECT grp, count(*) FILTER (WHERE amount = 10.25), count(*) FI
 	count(*) FILTER (WHERE amount IS NULL), count(*) FILTER (WHERE amount IS NOT NULL), count(*) FILTER (WHERE amount IN (10.25, 3.5, 3.333)),
 	count(*) FILTER (WHERE amount NOT IN (10.25, 3.5)), count(*) FILTER (WHERE amount BETWEEN 1.001 AND 20) FROM @T GROUP BY grp$q$) AS numeric_filters;
 SELECT plan_ok('SELECT grp, count(*) FILTER (WHERE amount < 10.255), count(*) FILTER (WHERE amount > ''NaN''), count(*) FILTER (WHERE amount IS NULL) FROM @T GROUP BY grp') AS numeric_filters_plan;
+-- every operator against twelve constants: 72 filters share the clauses of the scan of the index and of the table
+CREATE FUNCTION many_filters() RETURNS text LANGUAGE sql AS
+$$ SELECT 'SELECT grp, ' || string_agg(format('count(*) FILTER (WHERE amount %s %s)', op, c), ', ') || ' FROM @T GROUP BY grp'
+   FROM unnest(ARRAY['=', '<>', '<', '<=', '>', '>=']) op,
+        unnest(ARRAY['10.25', '10.255', '0.005', '-0.001', '7', '0.10', '1e30', '-1e30', '''NaN''', '''Infinity''', '''-Infinity''', '9999999999.995']) c $$;
+SELECT parity(many_filters()) AS many_numeric_filters, plan_ok(many_filters()) AS many_numeric_filters_plan;
 
 -- a statement a NaN meets that SiftAggV6 cannot fold is refused never answered without the NaN (the heap decides with sift.enable_agg = off)
 CREATE FUNCTION refused(q text) RETURNS boolean LANGUAGE plpgsql AS $$
@@ -81,6 +87,6 @@ SELECT parity('SELECT count(amount), sum(amount), min(amount), max(amount), coun
 SELECT parity('SELECT grp, count(amount), sum(amount), min(amount), max(amount) FROM @T GROUP BY grp') AS after_dml_grouped;
 SELECT parity('SELECT grp, count(*) FILTER (WHERE amount >= 10), count(*) FILTER (WHERE amount <> 10) FROM @T GROUP BY grp') AS after_dml_filters;
 DROP TABLE nh, nc, nt;
-DROP FUNCTION refused(text), plan_ok(text), parity(text);
+DROP FUNCTION refused(text), plan_ok(text), parity(text), many_filters();
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
