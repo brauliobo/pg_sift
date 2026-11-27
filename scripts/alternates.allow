@@ -1,6 +1,7 @@
 removed	test/expected/agg_child_predicates_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_exists_elements_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_group_order_1.out	17 18 18-arm64 19	
+removed	test/expected/agg/scope/recognition_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_semi_lut_1.out	17 18 18-arm64 19	
 removed	test/expected/col_gorder_group_range_1.out	17 18 18-arm64 19	
 removed	test/expected/col/scope/text/key_1.out	17 18 18-arm64 19	
@@ -67,13 +68,10 @@ test/expected/agg/scope/param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e6
 test/expected/agg/scope/param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	19	CTE, $1                                                 | force_custom_plan  |
 test/expected/agg/scope/param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	19	IN, $1                                                  | force_custom_plan  |
 test/expected/agg/scope/param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	19	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg/scope/param_keys_1.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	19	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
 test/expected/agg/scope/param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	17 18 18-arm64	latest 5, $1                                            | force_custom_plan  |
 test/expected/agg/scope/param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	17 18 18-arm64	CTE, $1                                                 | force_custom_plan  |
 test/expected/agg/scope/param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	17 18 18-arm64	IN, $1                                                  | force_custom_plan  |
 test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	17 18 18-arm64	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg/scope/param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
-test/expected/agg/scope/recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
 test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
 test/expected/agg/semi_same_table_1.out	acd646fad5b5064d8b12e1fac7cc927ed7357775	17 19	0 | f
 test/expected/agg/spill_context_1.out	b5baa3c8ff9473ed7d1774d9f629ee41e3d38c5f	17	spill_over_the_li

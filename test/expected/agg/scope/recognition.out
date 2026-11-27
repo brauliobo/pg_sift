@@ -1,8 +1,10 @@
 -- A join to the scope relation of a scope index (JOIN, IN, EXISTS by the declared columns, the scope key bound by constants) is planned a second time with the join taken out of the
 -- FROM list and its conditions the scope conjunct of the scan (EXPLAIN: Scope Index), the same through a view, a security barrier view over the relation and an inlined SQL function;
 -- the prices choose between the two plans. Every statement returns the rows of the statement with sift.agg_scope off and of the normal plan, after the build and after each change of the
--- pairs. Each near miss keeps the join and names its reason (sift.explain_why, arm scope); the reader's own refusals are the Scope Fallback of EXPLAIN ANALYZE.
+-- pairs. Each near miss keeps the join and names its reason (sift.explain_why, arm scope); a run that cannot answer from the summary says why (Scope Fallback of EXPLAIN ANALYZE).
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
@@ -108,14 +110,14 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', false);
 	RETURN a = b AND b = c;
 END $$;
--- what the run did: the reader's refusal, or the keys it patched
+-- what the run did: how the node read the scope (the summary, the ring, the scan of the members, or the join) and why it fell back to the join
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
+		IF l ~ 'Scope (Fallback|Read):' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN CASE WHEN r = '' THEN 'no scope read' ELSE rtrim(r, '; ') END;
 END $$;
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
                    name                   |                                                                            plan                                                                             | same_rows 
@@ -168,7 +170,7 @@ SELECT name, label(q) FROM forms WHERE name IN ('join', 'IN', 'IN, three keys') 
 (3 rows)
 
 RESET sift.agg_scope;
--- several keys: a member in two of them counts once for IN and EXISTS, which the reader does; the join counts it for each pair and keeps the join. The rows are the join's
+-- several keys: a member in two of them counts once for IN and EXISTS, which the scan of their members does; the join counts it for each pair. The rows are the join's
 SELECT count(*) > 0 AS members_in_two_keys FROM (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 5, 9) GROUP BY dim_a_id HAVING count(*) > 1) t;
  members_in_two_keys 
 ---------------------
@@ -178,10 +180,10 @@ SELECT count(*) > 0 AS members_in_two_keys FROM (SELECT dim_a_id FROM tenant_sco
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, two keys', 'IN, three keys', 'IN, ANY array', 'EXISTS, two keys') ORDER BY name;
        name       |                       run                        
 ------------------+--------------------------------------------------
- EXISTS, two keys | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, ANY array    | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, three keys   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
- IN, two keys     | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1
+ EXISTS, two keys | Read: scan of the facts (the members of the key)
+ IN, ANY array    | Read: scan of the facts (the members of the key)
+ IN, three keys   | Read: scan of the facts (the members of the key)
+ IN, two keys     | Read: scan of the facts (the members of the key)
 (4 rows)
 
 -- a parameter of a generic plan is a key the scan evaluates when it starts (agg_scope_param_keys); the custom plan has the constant
@@ -195,89 +197,74 @@ SELECT label('EXECUTE by_param(3)') AS custom_plan, same('EXECUTE by_param(3)') 
 
 RESET plan_cache_mode;
 DEALLOCATE by_param;
--- the pairs change after the build: the reader patches the members that changed (the journal says which), from every form
+-- the pairs change after the build: the summary of a key counts the pairs the snapshot sees (the journal says which members changed), from every form
 CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, run text, same_rows bool) LANGUAGE sql AS $$
 	SELECT note, f.name, run_of(f.q), same(f.q) FROM forms f WHERE f.name IN ('join', 'IN', 'IN, three keys', 'EXISTS, two keys', 'barrier view, IN', 'top 5 ids', 'latest 5') ORDER BY f.name
 $$;
 DELETE FROM tenant_scope WHERE dim_a_id = 10 AND tenant_id = 1;
 SELECT * FROM states('an ended pair');
-     state     |       name       |                       run                        | same_rows 
----------------+------------------+--------------------------------------------------+-----------
- an ended pair | EXISTS, two keys | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | IN               | units                                            | t
- an ended pair | IN, three keys   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- an ended pair | barrier view, IN | units                                            | t
- an ended pair | join             | units                                            | t
- an ended pair | latest 5         | units                                            | t
- an ended pair | top 5 ids        | units                                            | t
+     state     |       name       |                                                     run                                                     | same_rows 
+---------------+------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ an ended pair | EXISTS, two keys | Read: scan of the facts (the members of the key)                                                            | t
+ an ended pair | IN               | Read: scan of the facts (the members of the key)                                                            | t
+ an ended pair | IN, three keys   | Read: scan of the facts (the members of the key)                                                            | t
+ an ended pair | barrier view, IN | Read: scan of the facts (the members of the key)                                                            | t
+ an ended pair | join             | Read: scan of the facts (the members of the key)                                                            | t
+ an ended pair | latest 5         | Fallback: the summary is not exact for the snapshot; Read: join (the summary is not exact for the snapshot) | t
+ an ended pair | top 5 ids        | Read: scan of the facts (the members of the key)                                                            | t
 (7 rows)
 
 INSERT INTO tenant_scope VALUES (370, 3, NULL), (371, 2, NULL), (371, 5, NULL);
 SELECT * FROM states('inserted pairs');
-     state      |       name       |                       run                        | same_rows 
-----------------+------------------+--------------------------------------------------+-----------
- inserted pairs | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | IN               | Changed Keys: 1; Patched Keys: 1                 | t
- inserted pairs | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- inserted pairs | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
- inserted pairs | join             | Changed Keys: 1; Patched Keys: 1                 | t
- inserted pairs | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
- inserted pairs | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
+     state      |       name       |                                                     run                                                     | same_rows 
+----------------+------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ inserted pairs | EXISTS, two keys | Read: scan of the facts (the members of the key)                                                            | t
+ inserted pairs | IN               | Read: scan of the facts (the members of the key)                                                            | t
+ inserted pairs | IN, three keys   | Read: scan of the facts (the members of the key)                                                            | t
+ inserted pairs | barrier view, IN | Read: scan of the facts (the members of the key)                                                            | t
+ inserted pairs | join             | Read: scan of the facts (the members of the key)                                                            | t
+ inserted pairs | latest 5         | Fallback: the summary is not exact for the snapshot; Read: join (the summary is not exact for the snapshot) | t
+ inserted pairs | top 5 ids        | Read: scan of the facts (the members of the key)                                                            | t
 (7 rows)
 
 UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of two keys moved, write buffer');
-                       state                       |       name       |                       run                        | same_rows 
----------------------------------------------------+------------------+--------------------------------------------------+-----------
- facts of a member of two keys moved, write buffer | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of two keys moved, write buffer | IN               | Changed Keys: 1; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- facts of a member of two keys moved, write buffer | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | join             | Changed Keys: 1; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
- facts of a member of two keys moved, write buffer | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
+                       state                       |       name       |                                                     run                                                     | same_rows 
+---------------------------------------------------+------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ facts of a member of two keys moved, write buffer | EXISTS, two keys | Read: scan of the facts (the members of the key)                                                            | t
+ facts of a member of two keys moved, write buffer | IN               | Read: scan of the facts (the members of the key)                                                            | t
+ facts of a member of two keys moved, write buffer | IN, three keys   | Read: scan of the facts (the members of the key)                                                            | t
+ facts of a member of two keys moved, write buffer | barrier view, IN | Read: scan of the facts (the members of the key)                                                            | t
+ facts of a member of two keys moved, write buffer | join             | Read: scan of the facts (the members of the key)                                                            | t
+ facts of a member of two keys moved, write buffer | latest 5         | Fallback: the summary is not exact for the snapshot; Read: join (the summary is not exact for the snapshot) | t
+ facts of a member of two keys moved, write buffer | top 5 ids        | Read: scan of the facts (the members of the key)                                                            | t
 (7 rows)
 
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
-            state             |       name       |                       run                        | same_rows 
-------------------------------+------------------+--------------------------------------------------+-----------
- every pair of a member ended | EXISTS, two keys | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | IN               | Changed Keys: 1; Patched Keys: 1                 | t
- every pair of a member ended | IN, three keys   | Changed Keys: 1; Patched Keys: 1; Dedupe Keys: 1 | t
- every pair of a member ended | barrier view, IN | Changed Keys: 1; Patched Keys: 1                 | t
- every pair of a member ended | join             | Changed Keys: 1; Patched Keys: 1                 | t
- every pair of a member ended | latest 5         | Changed Keys: 1; Patched Keys: 1                 | t
- every pair of a member ended | top 5 ids        | Changed Keys: 1; Patched Keys: 1                 | t
+            state             |       name       |                                                     run                                                     | same_rows 
+------------------------------+------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ every pair of a member ended | EXISTS, two keys | Read: scan of the facts (the members of the key)                                                            | t
+ every pair of a member ended | IN               | Read: scan of the facts (the members of the key)                                                            | t
+ every pair of a member ended | IN, three keys   | Read: scan of the facts (the members of the key)                                                            | t
+ every pair of a member ended | barrier view, IN | Read: scan of the facts (the members of the key)                                                            | t
+ every pair of a member ended | join             | Read: scan of the facts (the members of the key)                                                            | t
+ every pair of a member ended | latest 5         | Fallback: the summary is not exact for the snapshot; Read: join (the summary is not exact for the snapshot) | t
+ every pair of a member ended | top 5 ids        | Read: scan of the facts (the members of the key)                                                            | t
 (7 rows)
 
--- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
-SET sift.test_scope_patch = off;
-SELECT * FROM states('more changed pairs than the bound');
-               state               |       name       |                 run                  | same_rows 
------------------------------------+------------------+--------------------------------------+-----------
- more changed pairs than the bound | EXISTS, two keys | Fallback: join is cheaper for 2 keys | t
- more changed pairs than the bound | IN               | Fallback: join is cheaper for 1 key  | t
- more changed pairs than the bound | IN, three keys   | Fallback: join is cheaper for 3 keys | t
- more changed pairs than the bound | barrier view, IN | Changed Keys: 1; Patched Keys: 1     | t
- more changed pairs than the bound | join             | Fallback: join is cheaper for 1 key  | t
- more changed pairs than the bound | latest 5         | Fallback: join is cheaper for 1 key  | t
- more changed pairs than the bound | top 5 ids        | Fallback: join is cheaper for 1 key  | t
-(7 rows)
-
-RESET sift.test_scope_patch;
--- the changed pairs reach the reader as a verdict on a rewrite of the units
+-- a rebuild folds the changed pairs into the summary
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');
-  state  |       name       |                       run                        | same_rows 
----------+------------------+--------------------------------------------------+-----------
- rebuilt | EXISTS, two keys | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- rebuilt | IN               | units                                            | t
- rebuilt | IN, three keys   | Changed Keys: 0; Patched Keys: 0; Dedupe Keys: 1 | t
- rebuilt | barrier view, IN | units                                            | t
- rebuilt | join             | units                                            | t
- rebuilt | latest 5         | units                                            | t
- rebuilt | top 5 ids        | units                                            | t
+  state  |       name       |                                                     run                                                     | same_rows 
+---------+------------------+-------------------------------------------------------------------------------------------------------------+-----------
+ rebuilt | EXISTS, two keys | Read: scan of the facts (the members of the key)                                                            | t
+ rebuilt | IN               | Read: scan of the facts (the members of the key)                                                            | t
+ rebuilt | IN, three keys   | Read: scan of the facts (the members of the key)                                                            | t
+ rebuilt | barrier view, IN | Read: scan of the facts (the members of the key)                                                            | t
+ rebuilt | join             | Read: scan of the facts (the members of the key)                                                            | t
+ rebuilt | latest 5         | Fallback: the summary is not exact for the snapshot; Read: join (the summary is not exact for the snapshot) | t
+ rebuilt | top 5 ids        | Read: scan of the facts (the members of the key)                                                            | t
 (7 rows)
 
 DROP FUNCTION label(text), rows_md5(text), same(text), run_of(text), states(text);

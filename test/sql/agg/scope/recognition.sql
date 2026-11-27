@@ -1,8 +1,10 @@
 -- A join to the scope relation of a scope index (JOIN, IN, EXISTS by the declared columns, the scope key bound by constants) is planned a second time with the join taken out of the
 -- FROM list and its conditions the scope conjunct of the scan (EXPLAIN: Scope Index), the same through a view, a security barrier view over the relation and an inlined SQL function;
 -- the prices choose between the two plans. Every statement returns the rows of the statement with sift.agg_scope off and of the normal plan, after the build and after each change of the
--- pairs. Each near miss keeps the join and names its reason (sift.explain_why, arm scope); the reader's own refusals are the Scope Fallback of EXPLAIN ANALYZE.
+-- pairs. Each near miss keeps the join and names its reason (sift.explain_why, arm scope); a run that cannot answer from the summary says why (Scope Fallback of EXPLAIN ANALYZE).
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
@@ -114,14 +116,14 @@ BEGIN
 	RETURN a = b AND b = c;
 END $$;
 
--- what the run did: the reader's refusal, or the keys it patched
+-- what the run did: how the node read the scope (the summary, the ring, the scan of the members, or the join) and why it fell back to the join
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
+		IF l ~ 'Scope (Fallback|Read):' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
 	END LOOP;
-	RETURN CASE WHEN r = '' THEN 'units' ELSE rtrim(r, '; ') END;
+	RETURN CASE WHEN r = '' THEN 'no scope read' ELSE rtrim(r, '; ') END;
 END $$;
 
 SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
@@ -131,7 +133,7 @@ SET sift.agg_scope = off;
 SELECT name, label(q) FROM forms WHERE name IN ('join', 'IN', 'IN, three keys') ORDER BY name;
 RESET sift.agg_scope;
 
--- several keys: a member in two of them counts once for IN and EXISTS, which the reader does; the join counts it for each pair and keeps the join. The rows are the join's
+-- several keys: a member in two of them counts once for IN and EXISTS, which the scan of their members does; the join counts it for each pair. The rows are the join's
 SELECT count(*) > 0 AS members_in_two_keys FROM (SELECT dim_a_id FROM tenant_scope WHERE tenant_id IN (2, 5, 9) GROUP BY dim_a_id HAVING count(*) > 1) t;
 SELECT name, run_of(q) AS run FROM forms WHERE name IN ('IN, two keys', 'IN, three keys', 'IN, ANY array', 'EXISTS, two keys') ORDER BY name;
 
@@ -142,7 +144,7 @@ SELECT label('EXECUTE by_param(3)') AS custom_plan, same('EXECUTE by_param(3)') 
 RESET plan_cache_mode;
 DEALLOCATE by_param;
 
--- the pairs change after the build: the reader patches the members that changed (the journal says which), from every form
+-- the pairs change after the build: the summary of a key counts the pairs the snapshot sees (the journal says which members changed), from every form
 CREATE FUNCTION states(note text) RETURNS TABLE (state text, name text, run text, same_rows bool) LANGUAGE sql AS $$
 	SELECT note, f.name, run_of(f.q), same(f.q) FROM forms f WHERE f.name IN ('join', 'IN', 'IN, three keys', 'EXISTS, two keys', 'barrier view, IN', 'top 5 ids', 'latest 5') ORDER BY f.name
 $$;
@@ -154,11 +156,7 @@ UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of two keys moved, write buffer');
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
--- more changed members than the price of the patch allows (the bound of the entity rows of the table): the entity rows of the members the pairs list
-SET sift.test_scope_patch = off;
-SELECT * FROM states('more changed pairs than the bound');
-RESET sift.test_scope_patch;
--- the changed pairs reach the reader as a verdict on a rewrite of the units
+-- a rebuild folds the changed pairs into the summary
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');
 

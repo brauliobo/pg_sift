@@ -1,9 +1,11 @@
 -- The keys of the scope conjunct may be the parameters of a prepared statement (a $n, an array $n, a list of them), the output of an InitPlan (a scalar sub-select, ARRAY(SELECT ..))
--- or a stable expression: the plan has the scope read of every value, the scan evaluates the keys when it starts and the reader's verdict is made for them, under the snapshot of
--- each execution (EXPLAIN: Scope Keys: $1, and in a run the number of keys it had). A generic plan prices the key by the average pairs a key has (an array by the 10 keys PostgreSQL
--- assumes). The rows are those of the join in every form, mode and state: after the pairs change between two executions of one cached plan, with a NULL, an empty array, more keys
--- than the dedupe lists (Scope Fallback: dedupe keys) or than work_mem holds (dedupe over work_mem). Every near miss keeps the join and names its reason.
+-- or a stable expression: the plan has the scope read of every value, the scan evaluates the keys when it starts and reads them, under the snapshot of each execution (EXPLAIN: Scope
+-- Keys: $1, and in a run the number of keys it had, and how it read them: Scope Read). A generic plan prices the key by the average pairs a key has (an array by the 10 keys PostgreSQL
+-- assumes). The rows are those of the join in every form, mode and state: after the pairs change between two executions of one cached plan, with a NULL, an empty array, many keys and a
+-- work_mem their members do not fit. Every near miss keeps the join and names its reason.
 CREATE EXTENSION pg_sift;
+-- the scope summary is Format 2.0; the testing library builds new indexes in Format 1.0 when told to
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 1000;
@@ -85,12 +87,12 @@ BEGIN
 	RETURN CASE WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 
--- what the run did: the keys it had, the reader's refusal, or the keys it patched
+-- what the run did: the keys it had, how it read them, and why it fell back to the join
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := '';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ 'Scope (Keys|Fallback|Changed Keys|Patched Keys|Dedupe Keys|Members Listed)' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
+		IF l ~ 'Scope (Keys|Fallback|Read):' THEN r := r || regexp_replace(l, '^ *Scope ', '') || '; '; END IF;
 	END LOOP;
 	RETURN CASE WHEN r = '' THEN 'no scope read' ELSE rtrim(r, '; ') END;
 END $$;
@@ -155,7 +157,7 @@ RESET sift.explain_refusals;
 SET client_min_messages = warning;
 DROP FUNCTION miss_run(pforms);
 
--- a statement run with the arguments given: the keys of the run and the reader's refusal
+-- a statement run with the arguments given: the keys of the run and how it read them
 CREATE FUNCTION arg_run(f pforms, extra text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -178,7 +180,7 @@ INSERT INTO pargs VALUES
 SELECT a.form, a.extra, arg_run(f, a.extra) AS run, same_rows(f, 'force_generic_plan', a.extra) AS same_rows FROM pargs a JOIN pforms f ON f.name = a.form ORDER BY a.form COLLATE "C", a.extra COLLATE "C";
 DROP TABLE pargs;
 
--- the caps of the dedupe of many keys: the entity rows of the members the pairs list answer (EXPLAIN says it), the rows are the join's
+-- many keys, and their members over a small work_mem: the rows are the join's
 SELECT c.note, arg_run(f, c.keys) AS run, same_rows(f, 'force_generic_plan', c.keys) AS same_rows
 FROM (VALUES ('keys that have lists', $a$'{1,2,3}'$a$),
 			 ('more keys than the dedupe lists', quote_literal('{' || (SELECT string_agg(g::text, ',') FROM generate_series(1, 80) g) || '}'))) c(note, keys), pforms f
@@ -211,7 +213,7 @@ SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY['3', '4', 'NULL', '3', '0
 SELECT f.name, c.* FROM pforms f, cached_args(f, ARRAY[$a$'{3}'$a$, $a$'{4,5}'$a$, $a$'{}'$a$, $a$'{3,4,5,6}'$a$, 'NULL']) c WHERE f.name = 'IN, ANY ($1)';
 DROP FUNCTION cached_args(pforms, text[]);
 
--- the pairs change between two executions of one cached generic plan: the reader patches the members that changed, and the rows are the join's
+-- the pairs change between two executions of one cached generic plan: each run reads the pairs its snapshot sees, and the rows are the join's
 CREATE FUNCTION states(note text) RETURNS TABLE (state text, form text, run text, same_rows boolean) LANGUAGE plpgsql AS $$
 DECLARE f pforms; a text;
 BEGIN
@@ -239,9 +241,6 @@ UPDATE events SET dim_a_id = 371 WHERE id <= 40;
 SELECT * FROM states('facts of a member of three keys moved, write buffer');
 DELETE FROM tenant_scope WHERE dim_a_id = 20;
 SELECT * FROM states('every pair of a member ended');
-SET sift.test_scope_patch = off;
-SELECT * FROM states('more changed pairs than the bound');
-RESET sift.test_scope_patch;
 REINDEX INDEX events_col;
 SELECT * FROM states('rebuilt');
 DEALLOCATE ALL;
