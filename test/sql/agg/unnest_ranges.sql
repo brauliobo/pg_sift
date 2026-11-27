@@ -29,6 +29,10 @@ INSERT INTO s_q SELECT replace(name, 'kept', 'few elements, kept'), replace(q, '
 INSERT INTO s_q VALUES
  ('left lateral, kept 5 %', 'SELECT i.kind, count(*) AS n, count(e.id) AS ids FROM ev e LEFT JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) ON true WHERE (e.id + 0) % 200 < 10 GROUP BY 1 ORDER BY 1'),
  ('one row of the last word', 'SELECT i.kind, count(*) AS n FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE e.id + 0 IN (63, 64, 127, 128, 5999, 6000) GROUP BY 1 ORDER BY 1');
+-- the quals of the element: LIKE a literal inside the text or at its ends, IS DISTINCT FROM a constant
+INSERT INTO s_q VALUES
+ ('element LIKE', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE i.kind LIKE ''%3%'' OR i.kind LIKE ''%5'' GROUP BY 1 ORDER BY 1'),
+ ('element IS DISTINCT FROM', 'SELECT i.kind, count(*) AS n, sum(i.n) AS s FROM ev e CROSS JOIN LATERAL jsonb_to_recordset(e.items) i(kind text, n int) WHERE i.kind IS DISTINCT FROM ''c3'' AND i.n IS DISTINCT FROM 4 GROUP BY 1 ORDER BY 1');
 
 -- the scan runs (SiftAgg), and its rows are the heap's
 CREATE FUNCTION s_scan(qq text) RETURNS boolean LANGUAGE sql AS $$ SELECT sift_helpers.plan_mentions_siftagg_regex(qq) $$;

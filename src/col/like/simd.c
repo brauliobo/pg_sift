@@ -263,6 +263,22 @@ sift_like_test(const SiftLikeNeedle *nd, const uint8 *s, uint32 len)
 	return nd->has_ik && sift_like_has_high(s, len) ? SIFT_LIKE_MAYBE : SIFT_LIKE_NO;
 }
 
+bool
+sift_like_shape_holds(SiftLikeShape shape, const SiftLikeNeedle *lit, const uint8 *s, uint32 len)
+{
+	switch (shape)
+	{
+		case SIFT_LIKE_CONTAINS:
+			return sift_like_find(lit, s, len) >= 0;
+		case SIFT_LIKE_PREFIX:
+			return len >= lit->len && memcmp(s, lit->bytes, lit->len) == 0;
+		case SIFT_LIKE_SUFFIX:
+			return len >= lit->len && memcmp(s + len - lit->len, lit->bytes, lit->len) == 0;
+		default:
+			return len == lit->len && memcmp(s, lit->bytes, len) == 0;
+	}
+}
+
 uint32
 sift_like_dict(const SiftLikeNeedle *nd, uint32 n, const uint32 *off, const uint8 *bytes, uint64 *match, uint64 *maybe)
 {

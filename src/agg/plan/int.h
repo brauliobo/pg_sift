@@ -112,6 +112,8 @@ extern Oid sift_v6_plan_opfamily(const V6Plan *p, int att);
 extern Expr *sift_v6_index_qual(V6Plan *p, Expr *clause);
 /* the comparison of one column the clause implies when it is no index qual itself (a row comparison, a coalesce, a nullif, IS NOT DISTINCT FROM), NULL for none (agg/plan/prednorm.c) */
 extern Expr *sift_v6_implied_qual(PlannerInfo *root, Expr *clause);
+/* a IS DISTINCT FROM a constant as the tests a clause of the scan says: a <> c OR a IS NULL, or a IS NOT NULL for a NULL c; NULL when it is not of that form (agg/plan/prednorm.c) */
+extern Expr *sift_v6_distinct_tests(const DistinctExpr *d);
 extern bool sift_v6_index_complete(const V6Plan *p);
 extern bool sift_v6_compile_quals(V6Plan *p);
 

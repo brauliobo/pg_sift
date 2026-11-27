@@ -80,6 +80,9 @@ typedef enum SiftLikeShape
 
 extern SiftLikeShape sift_like_parse(const uint8 *pat, uint32 len, uint8 *lit, uint32 *litlen);
 
+/* Whether the string s[0 .. len - 1] matches a pattern of the shape whose literal is the needle (not case folded) */
+extern bool sift_like_shape_holds(SiftLikeShape shape, const SiftLikeNeedle *lit, const uint8 *s, uint32 len);
+
 /* The kernels of an instruction set (like_simd_x86.c, like_simd_neon.c) */
 extern int64 sift_like_find_avx2(const SiftLikeNeedle *nd, const uint8 *hay, size_t hlen);
 extern bool sift_like_has_high_avx2(const uint8 *p, size_t len);

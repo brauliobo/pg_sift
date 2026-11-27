@@ -48,8 +48,7 @@ like_of(const Const *c, bool negate, SiftTextQual *q)
 	q->negate = negate;
 	q->shape = sift_like_parse(lit.bytes, lit.len, pattern, &q->len);
 	q->bytes = pattern;
-	if (q->shape == SIFT_LIKE_CONTAINS)
-		sift_like_needle_borrow(&q->needle, pattern, q->len, false);
+	sift_like_needle_borrow(&q->needle, pattern, q->len, false);
 	return q->shape != SIFT_LIKE_OTHER;
 }
 
@@ -84,25 +83,7 @@ sift_text_qual_of(const Node *clause, Index relid, SiftTextQual *q, const Var **
 bool
 sift_text_qual_holds(const SiftTextQual *q, const uint8 *p, uint32 len)
 {
-	bool		hit;
+	const bool	hit = q->like ? sift_like_shape_holds(q->shape, &q->needle, p, len) : len == q->len && memcmp(p, q->bytes, len) == 0;
 
-	if (!q->like)
-		hit = len == q->len && memcmp(p, q->bytes, len) == 0;
-	else
-		switch (q->shape)
-		{
-			case SIFT_LIKE_CONTAINS:
-				hit = sift_like_test(&q->needle, p, len) == SIFT_LIKE_YES;
-				break;
-			case SIFT_LIKE_PREFIX:
-				hit = len >= q->len && memcmp(p, q->bytes, q->len) == 0;
-				break;
-			case SIFT_LIKE_SUFFIX:
-				hit = len >= q->len && memcmp(p + len - q->len, q->bytes, q->len) == 0;
-				break;
-			default:
-				hit = len == q->len && memcmp(p, q->bytes, len) == 0;
-				break;
-		}
 	return hit != q->negate;
 }

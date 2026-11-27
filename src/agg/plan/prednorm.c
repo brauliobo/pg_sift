@@ -3,7 +3,7 @@
  * a >= x), the column of a coalesce whose default fails the comparison (coalesce(a, k) < c is a < c when k < c is not true), the column of a nullif under a strict operator
  * (nullif(a, k) = c implies a = c), a IS NOT DISTINCT FROM of a constant that is not NULL (a = c) and the longest literal run r of a LIKE pattern (a LIKE '%x%r%' implies
  * a LIKE '%r%'). The scan prunes and filters by the implied comparison, and the clause still
- * decides every row it keeps.
+ * decides every row it keeps. IS DISTINCT FROM a constant is also given as the tests of a clause of the scan (a <> c OR a IS NULL).
  */
 #include "postgres.h"
 
@@ -152,6 +152,28 @@ implied_of(PlannerInfo *root, Expr *clause)
 		default:
 			return NULL;
 	}
+}
+
+Expr *
+sift_v6_distinct_tests(const DistinctExpr *d)
+{
+	const bool	flip = IsA(linitial(d->args), Const);
+	Expr	   *a = copyObject((Expr *) list_nth(d->args, flip));
+	const Const *c = list_nth(d->args, !flip);
+	NullTest   *nt = makeNode(NullTest);
+	const Oid	ne = get_negator(d->opno);
+	Expr	   *q;
+
+	if (!IsA(c, Const) || IsA(a, Const) || (!c->constisnull && !OidIsValid(ne)))
+		return NULL;
+	nt->arg = a;
+	nt->nulltesttype = c->constisnull ? IS_NOT_NULL : IS_NULL;
+	nt->location = -1;
+	if (c->constisnull)
+		return (Expr *) nt;
+	q = make_orclause(list_make2(make_opclause(ne, BOOLOID, false, copyObject(a), copyObject((Expr *) c), InvalidOid, d->inputcollid), nt));
+	fix_opfuncids((Node *) q);
+	return q;
 }
 
 Expr *

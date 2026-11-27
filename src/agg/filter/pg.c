@@ -6,6 +6,7 @@
 
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
+#include "mb/pg_wchar.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/array.h"
@@ -274,13 +275,21 @@ set_no_row(SiftPred *p)
 	p->nin = 0;
 }
 
-/* text LIKE 'abc%': the pattern is literal bytes and one % at its end, which no collation or escape can read another way */
+/* the bytes of a literal match where its characters do: at the start of a string in any encoding, anywhere in one whose characters no byte of another character can begin */
 static bool
-pred_prefix(Build *b, const OpExpr *op, SiftPred *p)
+like_shape_exact(SiftLikeShape shape)
+{
+	return shape == SIFT_LIKE_PREFIX || shape == SIFT_LIKE_EQUAL || (shape != SIFT_LIKE_OTHER && (GetDatabaseEncoding() == PG_UTF8 || pg_database_encoding_max_length() == 1));
+}
+
+/* text LIKE 'lit', 'lit%', '%lit' or '%lit%': the literal of the pattern on the bytes of the string */
+static bool
+pred_like(Build *b, const OpExpr *op, SiftPred *p)
 {
 	const Var  *v;
 	const Const *c;
 	SiftPredStr pattern;
+	uint8	   *lit;
 
 	if (list_length(op->args) != 2 || !IsA(linitial(op->args), Var) || !IsA(lsecond(op->args), Const))
 		return false;
@@ -289,12 +298,14 @@ pred_prefix(Build *b, const OpExpr *op, SiftPred *p)
 	if (v->vartype != TEXTOID || c->constisnull || c->consttype != TEXTOID)
 		return false;
 	pattern = str_of(b, c->constvalue);
-	if (pattern.len == 0 || pattern.bytes[pattern.len - 1] != '%' || memchr(pattern.bytes, '%', pattern.len - 1) != NULL ||
-		memchr(pattern.bytes, '_', pattern.len) != NULL || memchr(pattern.bytes, '\\', pattern.len) != NULL)
+	lit = MemoryContextAlloc(b->cx, Max(pattern.len, 1));
+	p->like = sift_like_parse(pattern.bytes, pattern.len, lit, &p->s.len);
+	if (!like_shape_exact(p->like))
 		return false;
-	p->op = SPO_PREFIX;
+	p->op = SPO_LIKE;
 	p->kind = SPK_STR;
-	p->s = (SiftPredStr) {pattern.bytes, pattern.len - 1};
+	p->s.bytes = lit;
+	sift_like_needle_borrow(&p->needle, lit, p->s.len, false);
 	return (p->vec = fcol_index(b, v)) >= 0;
 }
 
@@ -417,7 +428,7 @@ pred_null_test(Build *b, const NullTest *nt, SiftPred *p)
 static void
 canon_pred(Build *b, const SiftPred *p)
 {
-	const uint8 head[2] = {(uint8) p->op, (uint8) p->kind};
+	const uint8 head[3] = {(uint8) p->op, (uint8) p->kind, (uint8) p->like};
 	const int	attno = b->fcol[p->vec].attno;
 	const int	derive = b->fcol[p->vec].derive;
 
@@ -468,7 +479,7 @@ add_pred(Build *b, const Node *q, int group, SiftClause *out)
 	switch (nodeTag(q))
 	{
 		case T_OpExpr:
-			ok = get_opcode(((const OpExpr *) q)->opno) == F_TEXTLIKE ? pred_prefix(b, (const OpExpr *) q, p) : pred_compare(b, (const OpExpr *) q, p);
+			ok = get_opcode(((const OpExpr *) q)->opno) == F_TEXTLIKE ? pred_like(b, (const OpExpr *) q, p) : pred_compare(b, (const OpExpr *) q, p);
 			break;
 		case T_ScalarArrayOpExpr:
 			ok = pred_in(b, (const ScalarArrayOpExpr *) q, p);

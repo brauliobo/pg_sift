@@ -18,7 +18,7 @@ typedef struct SiftTextQual
 	SiftLikeShape shape;
 	const uint8 *bytes;			/* the text constant, or the literal of the pattern */
 	uint32		len;
-	SiftLikeNeedle needle;		/* the literal of a contains pattern, over bytes */
+	SiftLikeNeedle needle;		/* the literal of a LIKE pattern, over bytes */
 } SiftTextQual;
 
 /* clause is `column op 'literal'` over a text or varchar column of relid (the literal is not NULL): its qual, in the current memory context, and the column */

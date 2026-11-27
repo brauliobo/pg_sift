@@ -34,10 +34,14 @@ text_compares_bytes(const Node *n, Oid collation)
 	return sift_v6_class(exprType(n)) != SV6C_TEXT || sift_text_bytes_equal(collation);
 }
 
-/* a comparison of a column of the element with a constant, an IN list of constants, or a null test, over the virtual attribute of the column; or an AND, OR or NOT of such tests */
+/* a comparison of a column of the element with a constant, an IN list of constants, a null test or IS DISTINCT FROM a constant, over the virtual attribute of the column; or an AND, OR or NOT of such tests */
 static Expr *
 elem_qual(const V6Plan *p, Node *clause, bool pairs)
 {
+	Expr	   *tests = IsA(clause, DistinctExpr) ? sift_v6_distinct_tests((const DistinctExpr *) clause) : NULL;
+
+	if (tests != NULL)
+		return elem_qual(p, (Node *) tests, pairs);
 	if (IsA(clause, BoolExpr))
 	{
 		BoolExpr   *q = copyObject((BoolExpr *) clause);
