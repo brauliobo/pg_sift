@@ -134,7 +134,7 @@ SELECT * FROM check_query('sublink', $q$
  SELECT g.grp, (SELECT t.id FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE t.rn = 1 AND t.grp = g.grp) AS latest FROM groups g $q$);
   label  | in_scan | same | rows 
 ---------+---------+------+------
- sublink | f       | t    |   37
+ sublink | t       | t    |   37
 (1 row)
 
 -- NULLs: a NULL partition key is a group of its own, a NULL order key sorts where NULLS FIRST / LAST (and the default of ASC / DESC) put it
@@ -174,7 +174,7 @@ SELECT runq($q$ SELECT id, grp, rn FROM (SELECT id, grp, row_number() OVER (PART
  t
 (1 row)
 
--- the window stays as written: a window function besides it, no PARTITION BY or ORDER BY, a sub-select that limits, a CTE read twice, the first row
+-- the window stays as written: a window function besides it, no ORDER BY, a sub-select that limits, a CTE read twice, the first row
 -- in a condition that is not a conjunct, the second row (the first N rows are agg_topn_rownumber)
 SELECT * FROM check_query('another window function', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn, count(*) OVER (PARTITION BY grp) n FROM events) t WHERE rn = 1 $q$);
           label          | in_scan | same | rows 
@@ -191,7 +191,7 @@ SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITIO
 SELECT * FROM check_query('no PARTITION BY', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
       label      | in_scan | same | rows 
 -----------------+---------+------+------
- no PARTITION BY | f       | t    |    1
+ no PARTITION BY | t       | t    |    1
 (1 row)
 
 SELECT * FROM check_query('no ORDER BY, a group of one', $q$ SELECT count(*) FROM (SELECT id, grp, row_number() OVER (PARTITION BY id) rn FROM events) t WHERE rn = 1 $q$);

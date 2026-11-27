@@ -459,6 +459,7 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	List	   *priv;
 	Cost		open,
 				total;
+	bool		whole;
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 	{
@@ -470,12 +471,15 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 	if (!sift_v6_window_spec(priv, &in, NULL, &spec) || (spec.win.n_ord == 0 && (spec.win.n_part == 0 || !sift_v6_win_order_free(&spec.win))) || !sift_v6_split_quals(CurrentMemoryContext, p->root, p->quals, p->rel->relid, NULL, &in, &probe) ||
 		(spec.winx != NULL && !sift_v6_winx_filters(CurrentMemoryContext, p->funcs, p->rel->relid, NULL, &in, filters)))
 		return false;
+	whole = p->part_mode == WIN_PARTSORT && spec.win.n_part == 0;
 	for (int i = 0; i < spec.win.n_part; i++)
 		atts[n++] = in.col[spec.part_slot[i]].attno;
 	for (int i = 0; p->part_mode == WIN_EXACT && i < spec.win.n_ord; i++)
 		atts[n++] = in.col[spec.ord_slot[i]].attno;
 	if (p->part_mode == WIN_REGROUP ? !sift_win_regroup_fits(&in, vars_of_tlist(p->scan_tlist), p->rel->rows, estimate_num_groups(p->root, p->part, p->rel->rows, NULL, NULL), (uint64) work_mem * 1024) :
-		!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, n))
+		(n > 0 && !sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, n)))
+		return false;
+	if (whole && !sift_v6_window_whole_fits(&spec, &in, p->rel->rows))
 		return false;
 	sift_v6_source_scan_price(p->root, p->rel, p->src, 0, &open, &total);
 	total += cpu_tuple_cost * rows + cpu_operator_cost * p->rel->rows * (spec.win.n_funcs + list_length(p->quals));
@@ -483,6 +487,8 @@ window_finish(WinPlan *p, List *pathkeys, double rows)
 		total += cpu_operator_cost * p->rel->rows * 2.0 * (1 + spec.win.n_ord);
 	if (p->part_mode == WIN_REGROUP)
 		total += cpu_operator_cost * p->rel->rows * 4.0;
+	if (whole)
+		total += sift_v6_window_whole_cost(&spec, p->rel->rows);
 	sift_v6_add_path(p->out, &window_path_methods, open, total, rows, pathkeys, lappend(list_copy(priv), p->quals), NIL);
 	return true;
 }
@@ -534,7 +540,8 @@ vars_any(WinPlan *p, const List *clauses, List **vars, List **flags)
 }
 
 /*
- * The window over the index with the partitions made as mode says: from the parts that are sorted by the keys and the order (integer keys, no sort), by the keys (each partition is sorted), or by
+ * The window over the index with the partitions made as mode says: from the parts that are sorted by the keys and the order (integer keys, no sort), by the keys (each partition is sorted;
+ * with no PARTITION BY the whole input is the one partition, agg/win/whole.c), or by
  * neither (the rows of a partition are put together first, and the rows leave in no order: a path with no pathkeys, so that PostgreSQL sorts them when the statement wants them sorted).
  */
 static bool
@@ -543,7 +550,7 @@ window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, con
 	WinPlan		p = {.root = root,.rel = input_rel,.out = output_rel,.src = src,.mode = SWIN_MODE_WINDOW,.part_mode = mode};
 
 	if (!frame_ok(wc, &p.range) || (mode == WIN_EXACT ? !(vars_of(&p, wc->partitionClause, false, &p.part) && vars_of(&p, wc->orderClause, false, &p.ord) && int_vars(p.part) && int_vars(p.ord)) :
-		(wc->partitionClause == NIL || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part)))))
+		((wc->partitionClause == NIL && mode == WIN_REGROUP) || !vars_any(&p, wc->partitionClause, &p.part, NULL) || !vars_any(&p, wc->orderClause, &p.ord, &p.ord_flags) || (mode == WIN_REGROUP && !int_vars(p.part)))))
 		return false;
 	return collect_funcs(&p, wc) && run_condition(&p) && window_finish(&p, mode == WIN_REGROUP ? NIL : root->window_pathkeys, input_rel->rows);
 }
@@ -816,7 +823,8 @@ window_start(WindowState *st, EState *estate)
 	SiftV6Input in;
 	SiftV6Input open_in;
 	SiftV6SplitQuals quals;
-	bool		compiled;
+	bool		compiled,
+				sorted;
 	const bool	is_table = list_nth_int(linitial(st->priv), 6);
 	Relation	source = sift_v6_source_open((Oid) list_nth_int(linitial(st->priv), 0), is_table, AccessShareLock, &in);
 
@@ -837,7 +845,8 @@ window_start(WindowState *st, EState *estate)
 	st->carry = st->spec->winx != NULL ? NULL : sift_win_carry_open(st->cx, &in, st->attvar, st->nattrs, (uint64) work_mem * 1024 / 4);
 	open_in = in;
 	sift_v6_split_quals_columns(&open_in, &quals);
-	st->src = sift_v6_source_over_quals(st->cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, !st->spec->regroup), &open_in, &quals);
+	sorted = !st->spec->partsort || (!st->spec->regroup && st->spec->win.n_part > 0);
+	st->src = sift_v6_source_over_quals(st->cx, sift_v6_rel_open(estate, &open_in, quals.has_machine ? &quals.machine : NULL, sorted), &open_in, &quals);
 	if (st->spec->regroup)
 		st->src = sift_win_regroup_over(st->cx, st->src, &in, st->spec->win.n_part, st->spec->part_slot, (uint64) work_mem * 1024);
 	if (sift_v6_par_win_wanted(st->spec, &in))

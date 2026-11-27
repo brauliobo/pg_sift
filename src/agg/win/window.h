@@ -1,7 +1,8 @@
 /*
  * agg/win/window.h - window functions (UPPERREL_WINDOW) and DISTINCT ON (UPPERREL_DISTINCT) of one table over the sorted parts of an index of format major 2, as a SiftAggV6Window node: when
  * the partition keys and then the order keys of the one window are a prefix of the sort key of the parts, agg/window.h computes the functions in the memory of one partition, with no sort and
- * no tuplestore of the input; when only the partition keys are, each partition is sorted by the order of the window in memory (any direction, NULLs first or last, int, float, numeric or C text keys); when no key is, the rows of a table of integers, dates, timestamps and float8 that fits work_mem are put together by partition first. A WHERE rn <= K over ROW_NUMBER, RANK or DENSE_RANK (the run condition PostgreSQL gives the window) stops a partition at its K-th row; DISTINCT ON is the same with
+ * no tuplestore of the input; when only the partition keys are, each partition is sorted by the order of the window in memory (any direction, NULLs first or last, int, float, numeric or C text keys), and a window
+ * with no PARTITION BY is one such partition while it fits work_mem (agg/win/whole.c); when no key is, the rows of a table of integers, dates, timestamps and float8 that fits work_mem are put together by partition first. A WHERE rn <= K over ROW_NUMBER, RANK or DENSE_RANK (the run condition PostgreSQL gives the window) stops a partition at its K-th row; DISTINCT ON is the same with
  * K = 1, or the last row of each partition when ORDER BY reverses the order of the parts. The rows leave in the order of the parts, one tuple for each row the engine emits.
  * What is not taken stays with PostgreSQL's WindowAgg: another sort order, a frame other than from the start of the partition to the current row, a function the engine does not have.
  *
@@ -43,6 +44,10 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_window_plan_methods;
 
 extern void sift_agg_v6_window_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_window_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
+
+/* A window with no PARTITION BY over parts not sorted by its order (agg/win/whole.c): do the rows it holds fit the memory of the sort, and what the sort costs */
+extern bool sift_v6_window_whole_fits(const SiftV6WindowSpec *spec, const SiftV6Input *in, double rows);
+extern Cost sift_v6_window_whole_cost(const SiftV6WindowSpec *spec, double rows);
 
 /* A finished plan node (after set_plan_refs): of a SiftAggV6Window, the scan tlist with each WindowFunc as a call EXPLAIN prints (agg/win/tlist.c) */
 extern void sift_v6_window_finish_tlist(Plan *plan);

@@ -1,0 +1,60 @@
+-- A window with no PARTITION BY over an index that is not sorted by its order: the whole input is one partition, sorted in memory by SiftAggV6Window, while the rows it holds fit
+-- a quarter of work_mem; past that the plan is PostgreSQL's Sort and WindowAgg. A row_number() <= K holds only K rows, and a K that a generic plan learns at execution spills its sort.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET enable_sort = off;
+
+CREATE TABLE wnp (id int, k int, v int, s text COLLATE "C", n numeric(8,2)) WITH (autovacuum_enabled = false);
+INSERT INTO wnp SELECT i, ((i::bigint * 2654435761) % 1000003)::int % 4000, CASE WHEN i % 7 = 0 THEN NULL ELSE i % 300 END, 's' || (i % 97), (i % 509) / 4.0
+FROM generate_series(1, 20000) i;
+CREATE INDEX wnp_col ON wnp USING sift_col (id, k, v, s, n);
+VACUUM ANALYZE wnp;
+
+\ir test/common/sql/agg/rows.sql
+
+CREATE FUNCTION win_node(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAggV6Window%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE wnp_q (q text);
+INSERT INTO wnp_q VALUES
+	('SELECT id, rank() OVER (ORDER BY k) FROM wnp'),
+	('SELECT id, row_number() OVER (ORDER BY k, id) FROM wnp'),
+	('SELECT id, dense_rank() OVER (ORDER BY v DESC NULLS FIRST) FROM wnp'),
+	('SELECT id, sum(v) OVER (ORDER BY k), count(*) OVER (ORDER BY k) FROM wnp'),
+	('SELECT id, rank() OVER (ORDER BY s, k) FROM wnp WHERE v > 100'),
+	('SELECT id, sum(n) OVER (ORDER BY k DESC, id) FROM wnp'),
+	('SELECT max(r), sum(r) FROM (SELECT rank() OVER (ORDER BY k) r FROM wnp) s'),
+	('SELECT * FROM (SELECT id, k, row_number() OVER (ORDER BY k, id) rn FROM wnp) s WHERE rn <= 5');
+
+-- the window node runs each window over the one partition (no Sort is planned for PostgreSQL's WindowAgg while it fits), and the rows are the normal plan's
+SELECT q AS query, win_node(q) AS window_node, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM wnp_q ORDER BY 1;
+
+-- past a quarter of work_mem the sort is PostgreSQL's; a row_number() <= 5 holds 5 rows and stays the scan's
+SET work_mem = '64kB';
+SELECT q AS query, win_node(q) AS window_node, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same FROM wnp_q ORDER BY 1;
+
+-- a K known only at execution: the plan holds one row, the execution all of them, and the sort spills
+SET plan_cache_mode = force_generic_plan;
+PREPARE wnp_top(int) AS SELECT * FROM (SELECT id, k, row_number() OVER (ORDER BY k, id) rn FROM wnp) s WHERE rn <= $1;
+SET sift.enable_agg = on;
+SELECT win_node('EXECUTE wnp_top(20000)') AS window_node;
+CREATE TABLE wnp_a AS EXECUTE wnp_top(20000);
+SET sift.enable_agg = off;
+CREATE TABLE wnp_b AS EXECUTE wnp_top(20000);
+SELECT count(*) AS rows, (SELECT count(*) FROM (TABLE wnp_a EXCEPT ALL TABLE wnp_b) d) AS differ FROM wnp_a;
+RESET sift.enable_agg;
+RESET plan_cache_mode;
+RESET work_mem;
+
+DEALLOCATE wnp_top;
+DROP TABLE wnp, wnp_q, wnp_a, wnp_b;
+DROP FUNCTION agg_rows, agg_pushed, win_node;
+DROP EXTENSION pg_sift;
