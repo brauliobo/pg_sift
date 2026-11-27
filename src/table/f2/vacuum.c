@@ -177,10 +177,11 @@ sift_tbl_f2_vacuum_dead_tids(void *vac_ctx, const uint64 *tids, uint32 ntids)
 
 /* ---- the rows dead for every snapshot ---- */
 
+/* The writers of a part are asked once each: its rows come from a few transactions interleaved, and every question of the process array takes ProcArrayLock */
 static bool
-aborted(TransactionId xid)
+aborted(SiftXidHorizonCache *hc, TransactionId xid)
 {
-	return TransactionIdIsNormal(xid) && !TransactionIdIsInProgress(xid) && !TransactionIdDidCommit(xid);
+	return sift_xid_horizon_status(hc, xid) == SIFT_H_ABORTED;
 }
 
 static bool
@@ -191,13 +192,13 @@ settled_delete(const SiftDvXmaxEntry *e, TransactionId oldest)
 
 /* The addresses of the rows of granule g that are dead for every snapshot, in tids (rows is the scratch of the walk); how many. A granule with no row in doubt is not read: one that is frozen and has no delete, or that one transaction wrote and has none either */
 static uint32
-granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, uint16 *rows, uint64 *tids)
+granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, SiftXidHorizonCache *hc, uint16 *rows, uint64 *tids)
 {
 	const SiftGranuleDesc *gd = &pin->gdir[g];
 	const SiftDvGran *dvg = pin->dv != NULL ? sift_dv_granule(pin->dv, g) : NULL;
 	const bool	frozen = (gd->flags & SIFT_GDESC_ALL_FROZEN) != 0,
 				single = (gd->flags & SIFT_GDESC_SINGLE_XACT) != 0;
-	const bool	single_aborted = !frozen && single && aborted(XidFromFullTransactionId(gd->min_xid));
+	const bool	single_aborted = !frozen && single && aborted(hc, XidFromFullTransactionId(gd->min_xid));
 	SiftRowVer *vers;
 	uint32		n = 0;
 
@@ -206,7 +207,7 @@ granule_dead(Relation rel, SiftF2PartPin *pin, uint32 g, TransactionId oldest, u
 	vers = frozen || single ? NULL : sift_part_read_vers(rel, pin->part, pin->gdir, g);
 	for (uint16 r = 0; r < gd->nrows; r++)
 	{
-		bool		isdead = !frozen && (single ? single_aborted : aborted(vers[r].xmin));
+		bool		isdead = !frozen && (single ? single_aborted : aborted(hc, vers[r].xmin));
 
 		if (!isdead && dvg != NULL)
 		{
@@ -235,13 +236,15 @@ collect_part(VacCtx *vc, SiftF2Store *store, const SiftPartitionEntry *e, const 
 	MemoryContext gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift table vacuum granule");
 	uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
 	uint16	   *rows = palloc(sizeof(uint16) * SIFT_GRANULE_ROWS);
+	SiftXidHorizonCache hc;
 
+	sift_xid_horizon_init(&hc, sift_xid_fxid_at(ReadNextFullTransactionId(), oldest));
 	PG_TRY();
 	{
 		for (uint32 g = 0; g < pin->part->hdr.ngranules; g++)
 		{
 			MemoryContext old = MemoryContextSwitchTo(gcx);
-			uint32		n = granule_dead(vc->rel, pin, g, oldest, rows, tids);
+			uint32		n = granule_dead(vc->rel, pin, g, oldest, &hc, rows, tids);
 
 			MemoryContextSwitchTo(old);
 			MemoryContextReset(gcx);

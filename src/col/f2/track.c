@@ -145,6 +145,15 @@ concurrent_copy(Relation heap, Oid index)
 	return copy;
 }
 
+static void
+cells_free(void)
+{
+	if (ctx.cells != NULL)
+		pfree(ctx.cells);
+	ctx.cells = NULL;
+	ctx.cells_cap = 0;
+}
+
 /* What the command needs of the index: one lock on it for the transaction, its stage, and where the keys of the rows are; false when it is not in service */
 static bool
 ctx_make(TriggerData *td)
@@ -178,8 +187,7 @@ ctx_make(TriggerData *td)
 			ctx.journal_att = ctx.journal ? sift_f2_journal_key(index) : InvalidAttrNumber;
 			if (ctx.cells_cap < f->ncols)
 			{
-				if (ctx.cells != NULL)
-					pfree(ctx.cells);
+				cells_free();
 				ctx.cells = MemoryContextAllocZero(TopTransactionContext, f->ncols * sizeof(SiftCell));
 				ctx.cells_cap = f->ncols;
 			}

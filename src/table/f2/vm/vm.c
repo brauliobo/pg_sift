@@ -297,6 +297,17 @@ typedef struct CountWindow
 	bool		counted;
 } CountWindow;
 
+/* The window of the vblocks a quarter of the budget counts, in whole pages of the map: no more than the table has, nor than one palloc makes */
+static CountWindow
+window_make(Size budget, uint64 limit)
+{
+	uint64		pages = Min(Min(budget / 4, MaxAllocSize) / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, (limit + SIFT_VM_BLOCKS_PER_PAGE - 1) / SIFT_VM_BLOCKS_PER_PAGE);
+	CountWindow win = {.nvblocks = Max(pages, 1) * SIFT_VM_BLOCKS_PER_PAGE};
+
+	win.counts = palloc(sizeof(uint16) * win.nvblocks);
+	return win;
+}
+
 static void
 window_open(CountWindow *win, uint64 base)
 {
@@ -587,12 +598,13 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	MemoryContext outer = CurrentMemoryContext,
 				cx;
 	const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
-	CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};
-	uint32		max_partial = (uint32) Min(Max(budget / 4 / (sizeof(BlockNumber) + SIFT_TBL_OFFMASK_WORDS * sizeof(uint64)), 1), (Size) PG_UINT32_MAX),
+	CountWindow win;
+	uint32		max_partial = (uint32) Min(Max(budget / 4 / (sizeof(BlockNumber) + SIFT_TBL_OFFMASK_WORDS * sizeof(uint64)), 1), MaxAllocSize / (SIFT_TBL_OFFMASK_WORDS * sizeof(uint64))),
 				npartial = 0,
 				cap = 0;
 	BlockNumber *vblocks = NULL;
 	SiftTblVmSwept *res = NULL;
+	VmOrphanSweep sw = {0};
 
 	/* a running insert holds rows of a vblock below the floor in its memory, with their index entries made: the sweep waits for no writer (ShareLock) as the pass that sets the bits does */
 	if (!sift_tbl_vm_active(rel) || !ConditionalLockRelation(rel, ShareLock))
@@ -609,7 +621,7 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	cx = sift_mem_allocset_create(outer, "sift vm orphan sweep");
 	MemoryContextSwitchTo(cx);
 	plan.budget = budget - budget / 4;
-	win.counts = palloc(sizeof(uint16) * win.nvblocks);
+	win = window_make(budget, plan.limit);
 	plan_relation(rel, store, oldest, oldest, &plan);
 	for (uint64 base = 0; !plan.incomplete && base < plan.limit && npartial < max_partial; base += SIFT_VM_BLOCKS_PER_PAGE)
 	{
@@ -664,26 +676,27 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 		{
 			uint64	   *live = palloc0((Size) npartial * SIFT_TBL_OFFMASK_WORDS * sizeof(uint64));
 			uint64	   *tids = palloc(sizeof(uint64) * SIFT_GRANULE_ROWS);
-			VmOrphanSweep sw = {.vblocks = vblocks,.n = npartial,.live = live};
 
 			for (int i = 0; i < plan.clean.n; i++)
 				if (plan.clean.v[i].hi >= vblocks[0] && plan.clean.v[i].lo <= vblocks[npartial - 1])
 					mark_live_part(rel, store, &plan.clean.v[i], vblocks, npartial, live, tids);
-			for (int i = 0; i < nindexes; i++)
-			{
-				IndexVacuumInfo ivinfo = {.index = indexes[i],.heaprel = rel,.estimated_count = true,.message_level = DEBUG2,.strategy = bstrategy};
-
-				stats[i] = index_bulk_delete(&ivinfo, stats[i], vm_orphan_reaped, &sw);
-			}
+			sw = (VmOrphanSweep) {.vblocks = vblocks,.n = npartial,.live = live};
 		}
 		res = MemoryContextAlloc(outer, sizeof(SiftTblVmSwept));
 		res->n = npartial;
 		res->vblocks = MemoryContextAlloc(outer, sizeof(BlockNumber) * npartial);
 		memcpy(res->vblocks, vblocks, sizeof(BlockNumber) * npartial);
 	}
+	/* every row of the vblocks below the floor is written and a run taken from now on starts above it: the entries the indexes lose are known, and the writers need not wait for them */
+	UnlockRelation(rel, ShareLock);
+	for (int i = 0; res != NULL && i < nindexes; i++)
+	{
+		IndexVacuumInfo ivinfo = {.index = indexes[i],.heaprel = rel,.estimated_count = true,.message_level = DEBUG2,.strategy = bstrategy};
+
+		stats[i] = index_bulk_delete(&ivinfo, stats[i], vm_orphan_reaped, &sw);
+	}
 	MemoryContextSwitchTo(outer);
 	MemoryContextDelete(cx);
-	UnlockRelation(rel, ShareLock);
 	return res;
 }
 
@@ -708,12 +721,12 @@ sift_tbl_vm_vacuum(Relation rel, FullTransactionId oldest, FullTransactionId fre
 	if ((meta.common.ro_compat_flags & SIFT_ROCOMPAT_TTL) == 0 && sift_shm_tid_lease_floor(&rel->rd_locator, plan.limit, &plan.floor) && plan.floor > 0)
 	{
 		const Size	budget = sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2);
-		CountWindow win = {.nvblocks = Max(budget / 4 / sizeof(uint16) / SIFT_VM_BLOCKS_PER_PAGE, 1) * SIFT_VM_BLOCKS_PER_PAGE};
+		CountWindow win;
 
 		cx = sift_mem_allocset_create(CurrentMemoryContext, "sift vm plan");
 		old = MemoryContextSwitchTo(cx);
 		plan.budget = budget - budget / 4;
-		win.counts = palloc(sizeof(uint16) * win.nvblocks);
+		win = window_make(budget, plan.limit);
 		plan_relation(rel, store, oldest, freeze, &plan);
 		if (plan.incomplete)
 			ereport(WARNING, (errmsg("the visibility map of \"%s\" is left as it was: the parts take more memory than this VACUUM has", RelationGetRelationName(rel)),

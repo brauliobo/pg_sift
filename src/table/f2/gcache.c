@@ -407,13 +407,19 @@ bcache_evict_one(void)
 }
 
 static void
+drop_unkept(void)
+{
+	if (bunkept != NULL)
+		pfree(bunkept);
+	bunkept = NULL;
+}
+
+static void
 bcache_evict_all(void)
 {
 	while (bcache_evict_one())
 		;
-	if (bunkept != NULL)
-		pfree(bunkept);
-	bunkept = NULL;
+	drop_unkept();
 }
 
 static void
@@ -466,8 +472,7 @@ read_block_in(MemoryContext cx, Relation rel, SiftF2PartPin *pin, uint32 blk)
 static const SiftRowPackBlk *
 block_unkept(Relation rel, SiftF2PartPin *pin, uint32 blk)
 {
-	if (bunkept != NULL)
-		pfree(bunkept);
+	drop_unkept();
 	bunkept = read_block_in(bcache_cx, rel, pin, blk);
 	return bunkept;
 }

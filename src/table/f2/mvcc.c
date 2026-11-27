@@ -44,6 +44,14 @@ conflict_out(SiftTblVis *v, TransactionId xid)
 		CheckForSerializableConflictOut(v->rel, xid, v->snap);
 }
 
+/* The transaction did not roll back. A commit is final, so the log is asked first and the process array (ProcArrayLock) only of one the log has not seen commit, the log again after
+ * it for one that committed in between */
+static bool
+not_aborted(TransactionId xid)
+{
+	return TransactionIdDidCommit(xid) || TransactionIdIsCurrentTransactionId(xid) || TransactionIdIsInProgress(xid) || TransactionIdDidCommit(xid);
+}
+
 /* The insert of (xmin, cmin) is there for the snapshot */
 static bool
 inserted(SiftTblVis *v, TransactionId xmin, CommandId cmin)
@@ -57,7 +65,7 @@ inserted(SiftTblVis *v, TransactionId xmin, CommandId cmin)
 		case SNAPSHOT_SELF:
 			return TransactionIdIsCurrentTransactionId(xmin) || TransactionIdDidCommit(xmin);
 		case SNAPSHOT_ANY:
-			return TransactionIdIsCurrentTransactionId(xmin) || TransactionIdIsInProgress(xmin) || TransactionIdDidCommit(xmin);
+			return not_aborted(xmin);
 		case SNAPSHOT_DIRTY:
 			if (TransactionIdIsCurrentTransactionId(xmin))
 				return true;
@@ -77,13 +85,13 @@ inserted(SiftTblVis *v, TransactionId xmin, CommandId cmin)
 	}
 }
 
-/* A column delta never touches a column of an index, so a dirty snapshot has nothing to wait for in a writer that is running: the value is the committed one. So is it for a snapshot that
- * takes any row: the old row an UPDATE makes its new one from carries no value of a writer that may still roll back */
+/* A column delta never touches a column of an index, so a dirty snapshot has nothing to wait for in a writer that is running: the value is the committed one, which the log tells
+ * without the process array. So is it for a snapshot that takes any row: the old row an UPDATE makes its new one from carries no value of a writer that may still roll back */
 bool
 sift_tbl_f2_delta_visible(SiftTblVis *v, TransactionId xmin, CommandId cid)
 {
 	if (v->snap->snapshot_type == SNAPSHOT_DIRTY || v->snap->snapshot_type == SNAPSHOT_ANY)
-		return !TransactionIdIsNormal(xmin) || TransactionIdIsCurrentTransactionId(xmin) || (!TransactionIdIsInProgress(xmin) && TransactionIdDidCommit(xmin));
+		return !TransactionIdIsNormal(xmin) || TransactionIdIsCurrentTransactionId(xmin) || TransactionIdDidCommit(xmin);
 	return inserted(v, xmin, cid);
 }
 
