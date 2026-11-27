@@ -209,8 +209,9 @@ ALTER TABLE a ALTER COLUMN val TYPE text USING val::text;
 SELECT sift_helpers.assert_eq('recast values', (SELECT min(val) FROM a WHERE id = 5000), '5000');
 ALTER TABLE a ADD COLUMN gen int GENERATED ALWAYS AS (id * 2) STORED;
 SELECT sift_helpers.assert_eq('stored generated column', gen, 20) FROM a WHERE id = 10;
--- a column named by an option cannot be dropped; renaming it renames the option value
+-- a column named by an option cannot be dropped; renaming it renames the option value. The row read first caches the table: setting and resetting the option replace it
 CREATE TABLE ao (id int, ts timestamp, v int) USING sift_table;
+INSERT INTO ao VALUES (1, '2024-01-01', 1);
 SELECT sift.table_set_option('ao', 'key_order', 'ts');
 SELECT fails('ALTER TABLE ao DROP COLUMN ts', '2BP01');
 ALTER TABLE ao RENAME COLUMN ts TO tm;

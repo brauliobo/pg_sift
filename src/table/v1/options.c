@@ -95,12 +95,22 @@ PG_FUNCTION_INFO_V1(sift_table_get_option);
 PG_FUNCTION_INFO_V1(sift_table_option_stored);
 PG_FUNCTION_INFO_V1(sift_table_reset_option);
 
-/* The entry of the table in the cache of every backend is replaced (a table that is being dropped has none to replace) */
+/*
+ * The entry of the table in the cache of every backend is replaced at commit: its pg_class row is invalidated, which the relcache entry of Format 1 and the store of
+ * Format 2.0 both follow (a table that is being dropped has none to replace)
+ */
 static void
 opt_invalidate(Oid relid)
 {
-	if (SearchSysCacheExists1(RELOID, ObjectIdGetDatum(relid)))
-		CacheInvalidateRelcacheByRelid(relid);
+	Relation	classrel = table_open(RelationRelationId, AccessShareLock);
+	HeapTuple	tup = SearchSysCache1(RELOID, ObjectIdGetDatum(relid));
+
+	if (HeapTupleIsValid(tup))
+	{
+		CacheInvalidateHeapTuple(classrel, tup, NULL);
+		ReleaseSysCache(tup);
+	}
+	table_close(classrel, AccessShareLock);
 }
 
 /* ---- the key: the OID of a table, written as its name ---- */
