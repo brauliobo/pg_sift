@@ -205,28 +205,83 @@ slot_outputs(void *slots, uint32 cap, uint32 nshares, int *nout)
 	return out;
 }
 
+/* Out of disk or memory: giving the parts back would fail too, and the orphan sweep finds them */
+static bool
+out_of_space(const ErrorData *e)
+{
+	return e->sqlerrcode == ERRCODE_DISK_FULL || e->sqlerrcode == ERRCODE_OUT_OF_MEMORY;
+}
+
+/* The error being handled, copied out in cx */
+static ErrorData *
+take_error(MemoryContext cx)
+{
+	ErrorData  *e;
+
+	MemoryContextSwitchTo(cx);
+	e = CopyErrorData();
+	FlushErrorState();
+	return e;
+}
+
 /*
- * A participant failed: the others take no more shares and are waited for before their slots are read, then the parts of the shares that were done are given back, as no manifest will take
- * them. Out of disk or memory, giving them back would fail too: the orphan sweep finds them.
+ * Waits for the processes of the workers to stop, though more of them fail (their errors reach the wait): true when one failed out of space. A worker that failed to start stops too, where
+ * WaitForParallelWorkersToFinish would raise that again on every call.
+ */
+static bool
+finish_workers(ParallelContext *pcxt, MemoryContext cx)
+{
+	volatile int i = 0;
+	volatile bool space = false;
+
+	while (i < pcxt->nworkers_launched)
+	{
+		PG_TRY();
+		{
+			(void) WaitForBackgroundWorkerShutdown(pcxt->worker[i].bgwhandle);
+			i++;
+		}
+		PG_CATCH();
+		{
+			space |= out_of_space(take_error(cx));
+		}
+		PG_END_TRY();
+	}
+	return space;
+}
+
+/*
+ * A participant failed: the others take no more shares and are waited for (their errors after the first are dropped) before their slots are read, then the parts of the shares that were done are
+ * given back, as no manifest will take them.
  */
 static void
 abort_shares(Relation rel, uint64 part_id, SiftParLeader *ldr, uint32 cap, uint32 nshares, MemoryContext cx)
 {
 	CompactParShared *sh = ldr->shared;
-	ErrorData  *e;
+	ErrorData  *e = take_error(cx);
+	bool		space;
 	SiftPartDesc *out;
 	int			nout;
 
-	MemoryContextSwitchTo(cx);
-	e = CopyErrorData();
-	FlushErrorState();
 	pg_atomic_write_u32(&sh->abort, 1);
-	WaitForParallelWorkersToFinish(ldr->pcxt);
+	space = finish_workers(ldr->pcxt, cx) || out_of_space(e);
 	out = slot_outputs(ldr->parts, cap, nshares, &nout);
 	sift_par_end(ldr);
-	if (e->sqlerrcode != ERRCODE_DISK_FULL && e->sqlerrcode != ERRCODE_OUT_OF_MEMORY)
+	if (!space)
 		sift_compact_release_outputs(rel, part_id, out, nout);
 	ReThrowError(e);
+}
+
+/*
+ * The parts a share of the granules writes at most: each granule read writes at most one part of each side of the cut (sink_flush_due in compact.c), and the end of the share one more of each
+ * side; a share is at most ceil(total / nshares) granules (share_of).
+ */
+static uint32
+slot_cap(Relation rel, const SiftCompactCut *cut, uint64 total, uint32 nshares)
+{
+	uint32		sides = spec_of(rel)->time_cols[cut->slot] > 0 && cut->at != PG_INT64_MIN ? 2 : 1;
+
+	return sides * ((uint32) ((total + nshares - 1) / nshares) + 1);
 }
 
 /* The participants the group is worth (none in parallel mode: the leader of a parallel VACUUM of the heap is in it, and a worker is): what VACUUM (PARALLEL n) asks for, no more than the leader and the workers max_parallel_maintenance_workers allows, and two granules for each */
@@ -257,7 +312,7 @@ sift_compact_par_write(Relation rel, uint64 part_id, const SiftPartDesc *in, con
 	if (n < 2)
 		return SIFT_COMPACT_PAR_OFF;
 	nshares = (uint32) Min((uint64) SIFT_COMPACT_PAR_SHARES * n, total / SIFT_COMPACT_PAR_MIN_GRANULES);
-	cap = (uint32) ((total + nshares - 1) / nshares) + 3;
+	cap = slot_cap(rel, cut, total, nshares);
 	ldr = sift_par_enter(false);
 	if (!sift_par_setup(ldr, "sift_compact_par_worker", (int) n - 1, shared_size(nin), mul_size(slot_size(cap), nshares), false))
 		return SIFT_COMPACT_PAR_OFF;

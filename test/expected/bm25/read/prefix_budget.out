@@ -59,6 +59,14 @@ SELECT q FROM rb_ref WHERE rb_answer(q) IS DISTINCT FROM a;
 ---
 (0 rows)
 
+-- the terms of the expansion are far more than half the budget: the windows read them back from a temporary file, not the dictionary
+SELECT sum(value) FILTER (WHERE key = 'prefix_dict_scans') + sum(value) FILTER (WHERE key = 'prefix_windows') = sum(value) FILTER (WHERE key = 'prefix_passes') AS windows_skip_dictionary
+	FROM sift._test_read_stats();
+ windows_skip_dictionary 
+-------------------------
+ t
+(1 row)
+
 SELECT key, value > 0 AS nonzero FROM sift._test_read_stats(true) WHERE key IN ('prefix_windows', 'prefix_direct') ORDER BY key;
       key       | nonzero 
 ----------------+---------

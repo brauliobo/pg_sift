@@ -37,6 +37,9 @@ SELECT value * 4 > 64 * 1024 AS unbounded_gathers_more FROM sift._test_read_stat
 SET sift.test_prefix_gather = 1;
 SET sift.backend_cache_kb = 0;
 SELECT q FROM rb_ref WHERE rb_answer(q) IS DISTINCT FROM a;
+-- the terms of the expansion are far more than half the budget: the windows read them back from a temporary file, not the dictionary
+SELECT sum(value) FILTER (WHERE key = 'prefix_dict_scans') + sum(value) FILTER (WHERE key = 'prefix_windows') = sum(value) FILTER (WHERE key = 'prefix_passes') AS windows_skip_dictionary
+	FROM sift._test_read_stats();
 SELECT key, value > 0 AS nonzero FROM sift._test_read_stats(true) WHERE key IN ('prefix_windows', 'prefix_direct') ORDER BY key;
 
 -- a budget of several superblocks: windows that gather, none that sums on the spot

@@ -28,6 +28,7 @@ extern PGDLLIMPORT int sift_prefix_gather_kb;
 typedef struct SiftPrefixStats
 {
 	uint64		passes;			/* scans of the expansion's terms */
+	uint64		dict_scans;		/* ... that read the dictionary (the first of a segment: the windows read the terms it kept) */
 	uint64		windows;		/* passes over part of the segment */
 	uint64		direct;			/* ... of one superblock, summed on the spot */
 	uint64		peak;			/* most postings one pass gathered */

@@ -31,7 +31,7 @@
 /* A superblock with at most this many postings is merged by sorting them; a denser one in the table of slots */
 #define UNION_SPARSE_MAX	2048
 
-/* A term the pass found: later windows read its postings without the scan of the dictionary and the matcher */
+/* A term the pass found: later windows read its postings without the scan of the dictionary and the matcher (from spill once they are more than half the budget) */
 typedef struct CapTerm
 {
 	SiftTermInfo info;
@@ -74,11 +74,10 @@ typedef struct Union
 	uint64	   *count;			/* counting: postings of every superblock of the segment, else NULL */
 	uint8	   *acc;			/* tf of every slot of the superblock being merged (a dense one), made by the first */
 	uint64		dirty[(1 << SLOT_BITS) / 64 / 64];	/* the blocks of 64 slots of acc that hold a tf */
-	CapTerm    *terms;			/* the terms of the pass over the segment, while it fits half the budget (terms_capped: it did not) */
+	CapTerm    *terms;			/* the terms of the pass over the segment not yet in spill, at most half the budget */
 	uint32		nterms;
 	uint32		termcap;
-	bool		capture;
-	bool		terms_capped;
+	BufFile    *spill;			/* the terms that did not fit, NULL while they fit */
 	bool		replay;			/* the passes of windows read terms, not the dictionary */
 	sift_tid   *tids;
 	uint8	   *tf;
@@ -312,25 +311,28 @@ union_postings(Union *u, const SiftTermInfo *info, CapTerm *ct)
 	MemoryContextReset(u->tcxt);
 }
 
-/* Keeps the term for the later windows, unless the terms of the segment would take more than half the budget */
+/* The terms kept in memory go to spill, which the windows read back in arrays of termcap */
+static void
+union_spill_terms(Union *u)
+{
+	if (u->spill == NULL)
+		u->spill = BufFileCreateTemp(false);
+	BufFileWrite(u->spill, u->terms, (Size) u->nterms * sizeof(CapTerm));
+	u->nterms = 0;
+}
+
+/* Keeps the term for the later windows: in memory while the terms take at most half the budget, then in spill */
 static CapTerm *
 union_capture(Union *u, const SiftTermInfo *info)
 {
+	uint32		limit = (uint32) Max(u->budget / 2 / sizeof(CapTerm), 1);
 	CapTerm    *ct;
 
-	if (u->terms_capped)
-		return NULL;
-	if ((uint64) (u->nterms + 1) * sizeof(CapTerm) > u->budget / 2)
-	{
-		u->terms_capped = true;
-		if (u->terms)
-			pfree(u->terms);
-		u->terms = NULL;
-		return NULL;
-	}
+	if (u->nterms == limit)
+		union_spill_terms(u);
 	if (u->nterms == u->termcap)
 	{
-		u->termcap = Max(256, 2 * u->termcap);
+		u->termcap = Min(Max(256, 2 * u->termcap), limit);
 		u->terms = union_regrow(u, u->terms, (Size) u->termcap * sizeof(CapTerm));
 	}
 	ct = &u->terms[u->nterms++];
@@ -352,8 +354,32 @@ union_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 		u->left_out = Max(u->left_out, info->max_bound);
 		return true;
 	}
-	union_postings(u, info, u->capture ? union_capture(u, info) : NULL);
+	union_postings(u, info, union_capture(u, info));
 	return true;
+}
+
+/* The next array of the kept terms: all of them when they are in memory, else the next termcap of spill */
+static uint32
+union_next_terms(Union *u, bool first)
+{
+	if (u->spill == NULL)
+		return first ? u->nterms : 0;
+	if (first)
+		BufFileSeek(u->spill, 0, 0, SEEK_SET);
+	return (uint32) (BufFileRead(u->spill, u->terms, (Size) u->termcap * sizeof(CapTerm)) / sizeof(CapTerm));
+}
+
+/* The postings of the kept terms that have some in the superblocks [from, to] */
+static void
+union_replay(Union *u, uint32 from, uint32 to)
+{
+	for (uint32 n = union_next_terms(u, true); n > 0; n = union_next_terms(u, false))
+		for (uint32 i = 0; i < n; i++)
+		{
+			CHECK_FOR_INTERRUPTS();
+			if (u->terms[i].sb_hi >= from && u->terms[i].sb_lo <= to)
+				union_postings(u, &u->terms[i].info, NULL);
+		}
 }
 
 /* The dl of every key (ascending, all in superblock gid) from the docmap */
@@ -512,13 +538,10 @@ union_scan(Union *u, uint32 from, uint32 to)
 	UNION_STAT(from != u->seg->hdr->sb_lo || to != u->seg->hdr->sb_hi, windows, sift_prefix_stats.windows + 1);
 	UNION_STAT(from == to && u->count == NULL && u->seg->hdr->sb_lo != u->seg->hdr->sb_hi, direct, sift_prefix_stats.direct + 1);
 	if (u->replay)
-	{
-		for (uint32 i = 0; i < u->nterms; i++)
-			if (u->terms[i].sb_hi >= from && u->terms[i].sb_lo <= to)
-				union_postings(u, &u->terms[i].info, NULL);
-	}
+		union_replay(u, from, to);
 	else
 	{
+		UNION_STAT(true, dict_scans, sift_prefix_stats.dict_scans + 1);
 		sift_matcher_bounds(u->m, &lo, &lolen, &hi, &hilen);
 		sift_dict_scan_skipping(u->seg->dict, lo, lolen, hi, hilen, sift_matcher_skips(u->m) ? union_skip : NULL, union_term, u);
 	}
@@ -592,10 +615,10 @@ union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool 
 		sift_matcher_bounds(m, &lo, &lolen, &hi, &hilen);
 		u.field = lolen > 0 && SIFT_FIELD_TERM(lo[0], SIFT_MAX_FIELDS);
 	}
-	u.capture = true;
 	union_scan(&u, h->sb_lo, h->sb_hi);
-	u.capture = false;
-	u.replay = !u.terms_capped;
+	if (u.spill != NULL && u.nterms > 0)
+		union_spill_terms(&u);
+	u.replay = true;
 	if (u.count)
 		union_windows(&u);
 	else if (union_direct(&u))
@@ -610,6 +633,8 @@ union_build(SiftSegment *seg, SiftTermMatcher *m, const SiftScoreRef *ref, bool 
 	info->slot = -1;
 	if (left_out)
 		*left_out = u.left_out;
+	if (u.spill != NULL)
+		BufFileClose(u.spill);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 	return blob;

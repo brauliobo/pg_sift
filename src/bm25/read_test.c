@@ -61,6 +61,7 @@ sift_test_read_stats(PG_FUNCTION_ARGS)
 		{"segcache_evicted", sift_segcache_stats.evicted},
 		{"segcache_refused", sift_segcache_stats.refused},
 		{"prefix_passes", sift_prefix_stats.passes},
+		{"prefix_dict_scans", sift_prefix_stats.dict_scans},
 		{"prefix_windows", sift_prefix_stats.windows},
 		{"prefix_direct", sift_prefix_stats.direct},
 		{"prefix_peak_postings", sift_prefix_stats.peak},
