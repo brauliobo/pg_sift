@@ -103,7 +103,7 @@ check "and none of them failed or met a deadlock" test "$brc" -eq 0 -a "$(grep -
 check "no page lock for the intention of the row locks was seen while they ran" test "$polls" -eq 0
 t1=$(tps "$D/lock1.out"); t16=$(tps "$D/lock16.out")
 out="1 client $t1 tps, 16 clients $t16 tps"
-check "16 clients that lock disjoint rows run at 3 times the rate of one or better" awk -v a="$t1" -v b="$t16" 'BEGIN { exit !(b >= 3 * a) }'
+scales 3 "16 clients that lock disjoint rows run at 3 times the rate of one or better" awk -v a="$t1" -v b="$t16" 'BEGIN { exit !(b >= 3 * a) }'
 
 bench 16 "$D/ins.pgb" "$D/ins.out"
 tx=$(sed -n 's/^number of transactions actually processed: //p' "$D/ins.out")
