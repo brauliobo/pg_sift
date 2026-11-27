@@ -1,5 +1,5 @@
 -- The pool of compute threads, the driver and the grouped aggregation of core/par and agg/par (src/core/par/test.c): every run gives every group and every row once, on one, two and four threads, in the
--- two regimes; and a statement that is cancelled (by the leader at its n-th unit, or by statement_timeout) leaves the pool idle and its memory freed, so that the next statement runs as the first did.
+-- two regimes; and a statement that is cancelled (at the n-th unit of the call, or by statement_timeout) leaves the pool idle and its memory freed, so that the next statement runs as the first did.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET max_parallel_workers_per_gather = 3;
@@ -9,7 +9,7 @@ FROM (VALUES (1), (2), (4)) AS v(w), (VALUES (100), (3000), (50000)) AS x(g),
      LATERAL sift._test_par_group(w, 200000, g, 3, 0) AS r
 ORDER BY w, g;
 
--- the leader cancels at its n-th unit of work: the statement ends with a cancel, 30 times in a row, and every run after it is complete
+-- the statement is cancelled at the n-th unit of work of the call, whichever thread takes it: the statement ends with a cancel, 30 times in a row, and every run after it is complete
 DO $$
 DECLARE
 	cancelled int := 0;

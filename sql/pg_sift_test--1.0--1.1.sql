@@ -228,7 +228,7 @@ CREATE FUNCTION sift._test_rowlock_stats(OUT in_table int8, OUT in_chunks int8, 
 -- The pages of column delta chains the cache of a sift_table's chains has read since the backend started (src/table/f2/chain_cache.c): a chain that grew is read from its newest page on, not whole
 CREATE FUNCTION sift._test_chain_cache_pages() RETURNS int8 AS 'MODULE_PATHNAME', 'sift_test_chain_cache_pages' LANGUAGE C STRICT;
 
--- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the leader cancels the statement at its n-th unit of work (0: never).
+-- The pool, the driver and the grouped aggregation of core/par and agg/v6/par (src/core/par/test.c): threads used, runs done, groups of the last run, runs that gave a wrong number of rows or groups. cancel_at: the statement is cancelled at the n-th unit of work of the call, whichever thread takes it (0: never).
 CREATE FUNCTION sift._test_par_group(workers int4, rows int4, groups int4, loops int4, cancel_at int4,
 									 OUT threads int4, OUT runs int4, OUT out_groups int8, OUT bad int8)
 	AS 'MODULE_PATHNAME', 'sift_test_par_group' LANGUAGE C STRICT;

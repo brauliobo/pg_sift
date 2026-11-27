@@ -1,11 +1,14 @@
 /*
  * core/par/test.c - test-only SQL function of the pool, the driver and the grouped aggregation of core/par and agg/par, compiled only with SIFT_TESTING and registered by the pg_sift_test
  * extension: `loops` runs of the aggregation of `rows` rows of `groups` groups on `workers` threads of the pool. Every run must give every group and every row once. The statement may be cancelled
- * (statement_timeout, pg_cancel_backend, or the leader's n-th unit when cancel_at is set), and the pool is then idle and its memory freed: the next call runs as the first did.
+ * (statement_timeout, pg_cancel_backend, or the n-th unit of the call when cancel_at is set: the thread that takes it signals the backend as pg_cancel_backend does, whichever thread it is, since
+ * the threads steal the leader's units), and the pool is then idle and its memory freed: the next call runs as the first did.
  */
 #include "postgres.h"
 
 #ifdef SIFT_TESTING
+
+#include <signal.h>
 
 #include "funcapi.h"
 
@@ -22,7 +25,7 @@ typedef struct ParTest
 	uint64	   *key;
 	uint64	   *arg;
 	uint32		cancel_at;
-	pg_atomic_uint32 leader_units;
+	pg_atomic_uint32 units;
 	struct
 	{
 		uint64		groups;
@@ -36,11 +39,8 @@ test_fill(void *arg, int worker, uint32 lo, uint32 hi, SiftArena *scratch, SiftP
 {
 	ParTest    *t = arg;
 
-	if (worker == 0 && t->cancel_at > 0 && pg_atomic_add_fetch_u32(&t->leader_units, 1) == t->cancel_at)
-	{
-		QueryCancelPending = true;
-		InterruptPending = true;
-	}
+	if (t->cancel_at > 0 && pg_atomic_add_fetch_u32(&t->units, 1) == t->cancel_at)
+		kill(MyProcPid, SIGINT);
 	b->n = hi - lo;
 	b->key[0] = t->key + lo;
 	b->arg[0] = t->arg + lo;
@@ -115,7 +115,7 @@ sift_test_par_group(PG_FUNCTION_ARGS)
 		elog(ERROR, "return type must be a row type");	/* check-errors: allow */
 	t->rows = rows;
 	t->cancel_at = PG_GETARG_INT32(4);
-	pg_atomic_init_u32(&t->leader_units, 0);
+	pg_atomic_init_u32(&t->units, 0);
 	t->key = palloc_extended(sizeof(uint64) * rows, MCXT_ALLOC_HUGE);
 	t->arg = palloc_extended(sizeof(uint64) * rows, MCXT_ALLOC_HUGE);
 	for (uint32 i = 0; i < rows; i++)
