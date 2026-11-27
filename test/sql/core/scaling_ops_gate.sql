@@ -149,7 +149,7 @@ SELECT pg_temp.gate('bulk delete', 'DELETE FROM tb2k WHERE id % 8 = 0', 'DELETE 
 SELECT pg_temp.gate('column update', 'UPDATE tb2k SET v = v + 1 WHERE id % 8 = 0', 'UPDATE tb16k SET v = v + 1 WHERE id % 8 = 0', 'ModifyTable', 10.5);
 SELECT pg_temp.gate('in list', pg_temp.inlist(2, 2000), pg_temp.inlist(16, 16000), 'SiftAggV6', 10.0, NULL, '{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
 SELECT pg_temp.gate('star range join', 'SELECT d.cat, count(*), sum(f.val) FROM fx2k f JOIN dm2k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat',
-					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'Index Scan', 11.5, NULL,
+					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'SiftAggV6', 11.5, NULL,
 					'{"enable_seqscan = off"}', '{"enable_seqscan = off"}');
 SELECT pg_temp.gate('bm25 terms', pg_temp.terms(2, 16), pg_temp.terms(16, 128), 'SiftScan', 11.5);
 
