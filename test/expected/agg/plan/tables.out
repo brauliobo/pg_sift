@@ -123,9 +123,9 @@ SELECT * FROM same($$SELECT e.kind, s.n, count(*) AS c FROM ev e LEFT JOIN (SELE
 
 -- a function: generate_series
 SELECT * FROM same($$SELECT g.n % 3 AS b, count(*) AS n FROM ev e JOIN generate_series(1, 30) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$);
-  plan  | result_rows | vs_normal_plan 
---------+-------------+----------------
- normal |           3 |              0
+         plan         | result_rows | vs_normal_plan 
+----------------------+-------------+----------------
+ SiftAgg g (function) |           3 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev e WHERE e.tenant_id IN (SELECT g FROM generate_series(1, 10) g)$$);
@@ -192,9 +192,9 @@ SELECT plan_of($$SELECT count(*) FROM ev WHERE tenant_id IN (SELECT id FROM tena
 (1 row)
 
 SELECT plan_of($$SELECT g.n % 2, count(*) FROM ev e JOIN generate_series(1, 5) AS g(n) ON e.tenant_id = g.n GROUP BY 1$$) AS function_join;
- function_join 
----------------
- normal
+    function_join     
+----------------------
+ SiftAgg g (function)
 (1 row)
 
 EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM tenants ORDER BY id LIMIT 5) s ON e.tenant_id = s.id GROUP BY s.kind;
