@@ -81,7 +81,6 @@ agg/explain_why_arms	0.28
 agg/explain_why_limit	0.55
 agg/explain_why_scan	0.40
 agg/expression_inputs	0.63
-agg/facts_reread_bound	0.57
 agg/facts_reread_plans	3.54
 agg/few_keys_pick	0.41
 agg/filter_hashed_subplan_price	3.04
