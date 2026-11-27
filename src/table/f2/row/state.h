@@ -29,6 +29,9 @@ extern SiftRowState sift_row_state_read(Relation rel, uint64 tid);
 /* What the system columns of the row say to the snapshot: its inserter (a row only staged included) or the writer of the newest column delta it sees, and its deleter, the writer of a newer column delta, or its last locker */
 extern SiftRowState sift_row_sysattr_read(Relation rel, uint64 tid, Snapshot snap);
 
+/* The row and the inserter of the version the snapshot sees: the writer of the newest column delta it sees, else the inserter of the row; the snapshot judges the deltas of this transaction too */
+extern SiftRowState sift_row_version_read(Relation rel, uint64 tid, Snapshot snap);
+
 /* The same for a row that is not in the stage of the transaction, without writing the stage or a micro-slab */
 extern SiftRowState sift_row_state_read_settled(Relation rel, uint64 tid);
 

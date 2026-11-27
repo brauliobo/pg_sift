@@ -24,7 +24,6 @@
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
-#include "utils/datum.h"
 #include "utils/inval.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -225,7 +224,6 @@ typedef struct SiftTblRewrite
 	TransactionId oldest;
 	SiftTblF2Bulk bulk;
 	TupleTableSlot *before;		/* a version that a delta replaced */
-	TupleTableSlot *horizon;	/* the version every snapshot sees */
 	TransactionId *hide;		/* the writers the snapshot of the version before does not see */
 	int			nhide;
 	int			caphide;
@@ -366,45 +364,6 @@ put_version(SiftTblRewrite *r, TupleTableSlot *slot, SiftRowState ins, Transacti
 	r->dead[r->ndead++].rec = (SiftPendDelRec) {.tid = sift_tbl_tid_pack(&tid),.xmax = xmax,.cmax = own_cid(xmax, cmax)};
 }
 
-static bool
-same_values(TupleTableSlot *a, TupleTableSlot *b)
-{
-	TupleDesc	desc = a->tts_tupleDescriptor;
-
-	slot_getallattrs(a);
-	slot_getallattrs(b);
-	for (int i = 0; i < desc->natts; i++)
-	{
-		Form_pg_attribute att = TupleDescAttr(desc, i);
-
-		if (a->tts_isnull[i] != b->tts_isnull[i] ||
-			(!a->tts_isnull[i] && !datum_image_eq(a->tts_values[i], b->tts_values[i], att->attbyval, att->attlen)))
-			return false;
-	}
-	return true;
-}
-
-/*
- * The inserter of the version before a delta of this transaction, which hides none of its own writes from a reader of the row: the version every snapshot sees, as no other delta newer than
- * the horizon changed it. A row that such a delta changed too keeps versions this transaction cannot tell apart, and the rewrite is refused.
- */
-static SiftRowState
-before_own_delta(SiftTblRewrite *r, ItemPointer at, const SiftRowState *rs)
-{
-	SiftTblRewrite all = {.oldest = r->oldest};
-	Snapshot	snap = snapshot_before(&all);
-	bool		found;
-
-	snap->xmax = r->oldest;
-	found = table_tuple_fetch_row_version(r->old, at, snap, r->horizon);
-	pfree(snap);
-	if (!found || !same_values(r->before, r->horizon))
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("cannot rewrite \"%s\" in this transaction: it updated a row that another transaction changed after a snapshot that is still open", RelationGetRelationName(r->old)),
-						errhint("Run CLUSTER outside the transaction that changed the rows, or once the older snapshots have ended.")));
-	return *rs;
-}
-
 /* The row the scan read, as the newest delta that committed made it, and the versions before it that a snapshot may still read */
 static void
 rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
@@ -437,7 +396,7 @@ rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
 		found = table_tuple_fetch_row_version(r->old, &at, snap, r->before);
 		SIFT_INVARIANT(found, "the version of (%u,%u) of \"%s\" before its delta of xid %u is gone",
 					   ItemPointerGetBlockNumber(&at), ItemPointerGetOffsetNumber(&at), RelationGetRelationName(r->old), replaced.xmin);
-		ins = TransactionIdIsCurrentTransactionId(replaced.xmin) ? before_own_delta(r, &at, &rs) : sift_row_sysattr_read(r->old, tid, snap);
+		ins = sift_row_version_read(r->old, tid, snap);
 		put_version(r, r->before, ins, replaced.xmin, replaced.cmin);
 		pfree(snap);
 	}
@@ -451,11 +410,9 @@ copy_versions(SiftTblRewrite *r)
 	TupleTableSlot *slot = table_slot_create(r->old, NULL);
 
 	r->before = table_slot_create(r->old, NULL);
-	r->horizon = table_slot_create(r->old, NULL);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 		rewrite_row(r, slot);
 	ExecDropSingleTupleTableSlot(r->before);
-	ExecDropSingleTupleTableSlot(r->horizon);
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
 }

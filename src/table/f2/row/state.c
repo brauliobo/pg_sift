@@ -196,6 +196,25 @@ sift_row_sysattr_read(Relation rel, uint64 tid, Snapshot snap)
 	return rs;
 }
 
+SiftRowState
+sift_row_version_read(Relation rel, uint64 tid, Snapshot snap)
+{
+	SiftRowState rs = sift_row_state_read(rel, tid);
+	SiftTblVis	vis;
+	SiftColDeltaOps ops;
+	SiftColDeltaWriters w;
+
+	sift_tbl_f2_vis_begin(&vis, rel, snap);
+	sift_col_delta_ops_init(&ops, &vis);
+	w = deltas_on_disk(rel, tid, &ops);
+	if (w.seen.found)
+	{
+		rs.xmin = w.seen.xid;
+		rs.cmin = w.seen.cid;
+	}
+	return rs;
+}
+
 void
 sift_tbl_f2_tuple_get_latest_tid(TableScanDesc scan, ItemPointer tid)
 {

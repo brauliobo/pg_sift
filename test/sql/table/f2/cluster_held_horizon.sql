@@ -1,0 +1,25 @@
+-- CLUSTER of a sift_table in the transaction that updated and deleted its rows, while a prepared transaction holds the horizon back before the rows were inserted and
+-- before another transaction updated them: the rewrite keeps every version and the table reads as the transaction left it.
+CREATE EXTENSION IF NOT EXISTS pg_sift_test CASCADE;
+SET sift.test_create_format1 = off;
+BEGIN;
+SELECT pg_current_xact_id() IS NOT NULL AS holds;
+PREPARE TRANSACTION 'chh_hold';
+CREATE TABLE chh (id int, k int, v int) USING sift_table WITH (autovacuum_enabled = false);
+INSERT INTO chh SELECT g, g, 0 FROM generate_series(1, 600) g;
+CREATE INDEX chh_k ON chh (k);
+UPDATE chh SET v = v + 100 WHERE id % 2 = 0;
+BEGIN;
+UPDATE chh SET v = v + 1 WHERE id % 4 = 0;
+DELETE FROM chh WHERE id % 3 = 0;
+CLUSTER chh USING chh_k;
+SELECT count(*), sum(k), sum(v), max(id) FROM chh;
+COMMIT;
+SELECT count(*), sum(k), sum(v), max(id) FROM chh;
+ROLLBACK PREPARED 'chh_hold';
+VACUUM chh;
+UPDATE chh SET v = v + 10 WHERE id % 7 = 0;
+SELECT count(*), sum(k), sum(v), max(id) FROM chh;
+DROP TABLE chh;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

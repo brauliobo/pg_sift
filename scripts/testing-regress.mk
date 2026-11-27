@@ -704,6 +704,7 @@ TESTING_REGRESS += table/f2/autottl_rekey
 TESTING_REGRESS += table/f2/blob_stream_fragmented
 TESTING_REGRESS += table/f2/cic_validate_budget
 TESTING_REGRESS += table/f2/cluster_cid
+TESTING_REGRESS += table/f2/cluster_held_horizon
 TESTING_REGRESS += table/f2/col_delta
 TESTING_REGRESS += table/f2/col_delta_dir
 TESTING_REGRESS += table/f2/col_delta_hot
