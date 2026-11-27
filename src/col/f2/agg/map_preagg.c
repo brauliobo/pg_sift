@@ -86,7 +86,7 @@ spec_ok(const SiftV6Spec *spec)
 		spec->vqual != NIL || spec->pgexpr != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1 ||
 		spec->nkeys > 1 || spec->is_table)
 		return false;
-	if (x == NULL || !x->unnest || x->ndims != 0 || x->nrcol != 0 || x->resid != NIL || x->where != NIL || x->heap_where != NIL || x->elem.left || x->elem.semi ||
+	if (x == NULL || !x->unnest || x->ndims != 0 || x->nrcol != 0 || x->ntests != 0 || x->resid != NIL || x->where != NIL || x->heap_where != NIL || x->elem.left || x->elem.semi ||
 		(!elem_fn_map(x->elem.fn) && x->elem.fn != SV6E_RECORDSET && x->elem.fn != SV6E_ELEMS_TEXT))
 		return false;
 	for (int c = 0; c < x->elem.ncols; c++)

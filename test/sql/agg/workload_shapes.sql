@@ -60,6 +60,8 @@ SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_t
 SELECT * FROM same($$SELECT op_txt(doc) ->> 'lang' AS lang, count(*) AS n FROM ev
 	WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category IN ('catg_m', 'catg_h')) GROUP BY 1$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category = 'catg_d')$$);
+-- a test of the elements as the whole WHERE counts the rows that pass it, not the elements of the cubes
+SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text) WHERE o.category = 'catg_d')$$);
 -- nested jsonpath tests over the parts
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), '$.parts[*] ? (@.category == "catg_j" && @.dir_a == "down")')$$);
 SELECT * FROM same($$SELECT count(*) AS n FROM ev WHERE op_txt(doc) @? '$.parts[*] ? (@.dir_a != "flat")'$$);
