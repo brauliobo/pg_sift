@@ -3,6 +3,8 @@
  * relation to a transaction of another, sift_fast_intent_conflict for the first relation never returns the xid of the second (a wait on a transaction that holds nothing of the key).
  * A coarse lock among many processes reads the slots that are held, not the free ones of every process, and takes a cancel while it scans them.
  * A process records the relation and partition intentions of 32 sift_tables (S119-28: a transaction that locked a row in each of 17 took page locks), and a coarse lock reads each of them.
+ * A coarse lock of a partition meets the intention of another partition that shares its page lock (S120-16: PREPARE of the holder of the intention found that lock taken), and the intention
+ * taken after the coarse lock of the other partition is refused as a record.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -59,7 +61,7 @@ DoLockModesConflict(LOCKMODE mode1, LOCKMODE mode2)
 uint32
 sift_esc_stripe_of(const RelFileLocator *loc, uint64 part_id)
 {
-	return 0;
+	return (uint32) (part_id % SIFT_ESC_STRIPES);
 }
 
 TransactionId
@@ -160,9 +162,34 @@ test_slots_of_many_tables(void)
 	free(shm);
 }
 
+/* Partitions P and P + SIFT_LOCK_PART_ESC_SLOTS are one page lock of the lock manager: an intention of one is in the way of a coarse lock of the other, a partition next to them is not */
+static void
+test_partitions_that_share_a_page_lock(void)
+{
+	SiftEscModes want = sift_esc_coarse_modes(LockTupleExclusive);
+	uint64		p1 = 7,
+				p2 = p1 + SIFT_LOCK_PART_ESC_SLOTS;
+
+	MaxBackends = 2;
+	MyProcNumber = 0;
+	top_xid = XID_T1;
+	shm = calloc(1, sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE);
+	sift_fast_intent_init(shm);
+	SIFT_CHECK(sift_fast_intent_set(shm, &t1, p1, -1, LockTupleKeyShare, 0) == 0);
+	SIFT_CHECKF(sift_fast_intent_conflict(shm, &t1, p2, want) == XID_T1, "a coarse lock of partition %llu meets the intention of partition %llu", (unsigned long long) p2, (unsigned long long) p1);
+	SIFT_CHECK(sift_fast_intent_conflict(shm, &t1, p1 + 1, want) == InvalidTransactionId);
+	sift_fast_intent_release_all(shm);
+	sift_esc_coarse_enter(shm, &t1, p2);
+	MyProcNumber = 1;
+	SIFT_CHECKF(sift_fast_intent_set(shm, &t1, p1, -1, LockTupleKeyShare, 0) == -1, "an intention of partition %llu under a coarse lock of partition %llu takes the page lock", (unsigned long long) p1, (unsigned long long) p2);
+	sift_esc_coarse_leave(shm, &t1, p2);
+	free(shm);
+}
+
 int
 main(void)
 {
+	test_partitions_that_share_a_page_lock();
 	test_slots_of_many_tables();
 	shm = calloc(1, sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE);
 	sift_fast_intent_init(shm);

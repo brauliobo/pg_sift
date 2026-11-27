@@ -175,26 +175,24 @@ chunk_at(dsa_area *a, dsa_pointer p)
 #define TAG_ONES	UINT64CONST(0x0101010101010101)
 #define TAG_HIGHS	UINT64CONST(0x8080808080808080)
 
-/* The entries of the table of the stripe whose tag is the key's, eight tags to a compare: every byte of the word that is zero after the xor shows its high bit, and a byte that only looks like it is told apart by the key */
+/* The entry of the n whose tag is the key's, eight tags to a compare: every byte of the word that is zero after the xor shows its high bit, and a byte that only looks like it is told apart by the key */
 static SiftRowLockEntry *
-find_in_table(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
+find_tagged(const uint8 *tags, uint32 n, SiftRowLockEntry *entries, const SiftRowLockKey *k)
 {
-	const SiftRowLockStripeHdr *h = &t->hdr[si];
 	uint64		want = sift_rowlock_tag(k) * TAG_ONES;
 
-	for (int w = 0; w < h->table_n; w += 8)
+	for (uint32 w = 0; w < n; w += 8)
 	{
-		uint64		tags,
-					hit;
+		uint64		hit;
 
-		memcpy(&tags, &h->tags[w], sizeof(tags));
-		hit = tags ^ want;
+		memcpy(&hit, &tags[w], sizeof(hit));
+		hit ^= want;
 		for (hit = (hit - TAG_ONES) & ~hit & TAG_HIGHS; hit != 0; hit &= hit - 1)
 		{
-			int			i = w + pg_rightmost_one_pos64(hit) / 8;
+			uint32		i = w + pg_rightmost_one_pos64(hit) / 8;
 
-			if (i < h->table_n && memcmp(&t->stripes[si].entries[i].key, k, sizeof(*k)) == 0)
-				return &t->stripes[si].entries[i];
+			if (i < n && memcmp(&entries[i].key, k, sizeof(*k)) == 0)
+				return &entries[i];
 		}
 	}
 	return NULL;
@@ -203,22 +201,17 @@ find_in_table(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 SiftRowLockEntry *
 sift_rowlock_find(SiftRowLockTable *t, int si, const SiftRowLockKey *k)
 {
-	SiftRowLockEntry *e = find_in_table(t, si, k);
-	dsa_area   *a;
+	SiftRowLockEntry *e = find_tagged(t->hdr[si].tags, t->hdr[si].table_n, t->stripes[si].entries, k);
+	dsa_area   *a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
 
-	if (e != NULL)
-		return e;
-	a = t->hdr[si].overflow != InvalidDsaPointer ? area : NULL;
-	for (dsa_pointer p = t->hdr[si].overflow; a != NULL && p != InvalidDsaPointer;)
+	for (dsa_pointer p = t->hdr[si].overflow; e == NULL && a != NULL && p != InvalidDsaPointer;)
 	{
 		SiftRowLockChunk *c = chunk_at(a, p);
 
-		for (uint32 i = 0; i < c->n; i++)
-			if (memcmp(&c->entries[i].key, k, sizeof(*k)) == 0)
-				return &c->entries[i];
+		e = find_tagged(c->tags, c->n, c->entries, k);
 		p = c->next;
 	}
-	return NULL;
+	return e;
 }
 
 bool
@@ -270,13 +263,28 @@ in_table(const SiftRowLockStripe *s, const SiftRowLockEntry *e)
 	return e >= s->entries && e < s->entries + SIFT_ROWLOCK_BUCKETS;
 }
 
+/* The byte that keeps the tag of entry e of the stripe: in its header for the table, in the header of the chunk that holds it */
+static uint8 *
+tag_of(SiftRowLockTable *t, int si, const SiftRowLockEntry *e)
+{
+	SiftRowLockChunk *c;
+
+	if (in_table(&t->stripes[si], e))
+		return &t->hdr[si].tags[e - t->stripes[si].entries];
+	for (dsa_pointer p = t->hdr[si].overflow;; p = c->next)
+	{
+		c = chunk_at(area, p);
+		if (e >= c->entries && e < c->entries + SIFT_ROWLOCK_CHUNK_ENTRIES)
+			return &c->tags[e - c->entries];
+	}
+}
+
 void
 sift_rowlock_reset(SiftRowLockTable *t, int si, SiftRowLockEntry *e, const SiftRowLockKey *k)
 {
 	memset(e, 0, sizeof(*e));
 	e->key = *k;
-	if (in_table(&t->stripes[si], e))
-		t->hdr[si].tags[e - t->stripes[si].entries] = sift_rowlock_tag(k);
+	*tag_of(t, si, e) = sift_rowlock_tag(k);
 }
 
 SiftRowLockEntry *
@@ -321,9 +329,10 @@ sift_rowlock_remove(SiftRowLockTable *t, int si, SiftRowLockEntry *e)
 	c = head == InvalidDsaPointer ? NULL : chunk_at(area, head);
 	last = c != NULL ? &c->entries[--c->n] : &s->entries[--h->table_n];
 	if (e != last)
+	{
 		*e = *last;
-	if (e != last && in_table(s, e))
-		h->tags[e - s->entries] = sift_rowlock_tag(&e->key);
+		*tag_of(t, si, e) = sift_rowlock_tag(&e->key);
+	}
 	count_entry(t, si, -1);
 	if (c != NULL && c->n == 0)
 	{

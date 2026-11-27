@@ -709,6 +709,7 @@ TESTING_REGRESS += table/f2/fetch_dv
 TESTING_REGRESS += table/f2/join_parts
 TESTING_REGRESS += table/f2/key_order_check
 TESTING_REGRESS += table/f2/lock_escalation
+TESTING_REGRESS += table/f2/lock_savepoint_promote
 TESTING_REGRESS += table/f2/native_strings_legacy
 TESTING_REGRESS += table/f2/owner_sql_search_path
 TESTING_REGRESS += table/f2/parity

@@ -22,7 +22,6 @@
 #include "access/multixact.h"
 #include "access/transam.h"
 #include "access/xact.h"
-#include "common/hashfn.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
@@ -77,12 +76,6 @@ key_of(const RelFileLocator *loc, uint64 tid)
 	k.locator = *loc;
 	k.tid = tid & SIFT_PD_TID_MASK;
 	return k;
-}
-
-static int
-stripe_of(const SiftRowLockKey *k)
-{
-	return hash_bytes((const unsigned char *) k, sizeof(*k)) % SIFT_ROWLOCK_PARTITIONS;
 }
 
 static TransactionId
@@ -303,7 +296,7 @@ reclaim_kept(void)
 static void
 clear_overflow(const SiftRowLockKey *k, MultiXactId mx)
 {
-	int			si = stripe_of(k);
+	int			si = sift_rowlock_stripe_of(k);
 	SiftRowLockEntry *e;
 
 	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
@@ -368,7 +361,7 @@ settle_locked(const SiftTouched *t, int si, bool commit, bool keep_speculative, 
 static bool
 settle(const SiftTouched *t, bool commit, bool keep_speculative)
 {
-	int			si = stripe_of(&t->key);
+	int			si = sift_rowlock_stripe_of(&t->key);
 	MultiXactId overflow = InvalidMultiXactId;
 	bool		settled;
 
@@ -382,38 +375,34 @@ settle(const SiftTouched *t, bool commit, bool keep_speculative)
 
 #define SETTLE_WINDOW	4096
 
-/* The rows touched[base, base + n) given back stripe by stripe, each stripe locked once for all of them: the end of a transaction takes no memory, so the order of the window is on the stack */
+/*
+ * The rows touched[at[0..n)] given back stripe by stripe, each stripe locked once for all of them (at: NULL for touched[base, base + n)): the end of a transaction takes no memory, so the order of the
+ * window is on the stack. settled[j]: the row of at[j] went (a speculative insert in flight keeps it where keep_speculative)
+ */
 static void
-settle_window(uint32 base, uint32 n, bool commit)
+settle_window(const uint32 *at, uint32 base, uint32 n, bool commit, bool keep_speculative, bool *settled)
 {
-	uint16		first[SIFT_ROWLOCK_PARTITIONS + 1] = {0},
-				at[SETTLE_WINDOW];
+	uint16		order[SETTLE_WINDOW];
 	MultiXactId overflow[SETTLE_WINDOW];
+	const SiftTouched *t[SETTLE_WINDOW];
 
-	if (n == 1)
-	{
-		settle(sift_touched_at(base), commit, false);
-		return;
-	}
-	for (uint32 i = 0; i < n; i++)
-		first[stripe_of(&sift_touched_at(base + i)->key) + 1]++;
-	for (int si = 0; si < SIFT_ROWLOCK_PARTITIONS; si++)
-		first[si + 1] += first[si];
-	for (uint32 i = 0; i < n; i++)
-		at[first[stripe_of(&sift_touched_at(base + i)->key)]++] = i;
+	sift_touched_by_stripe(at, base, n, order);
+	for (uint32 j = 0; j < n; j++)
+		t[j] = sift_touched_at(at != NULL ? at[order[j]] : base + order[j]);
 	for (uint32 lo = 0, hi; lo < n; lo = hi)
 	{
-		int			si = stripe_of(&sift_touched_at(base + at[lo])->key);
+		int			si = sift_rowlock_stripe_of(&t[lo]->key);
 
-		for (hi = lo; hi < n && stripe_of(&sift_touched_at(base + at[hi])->key) == si; hi++)
-			overflow[hi] = InvalidMultiXactId;
 		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
-		for (uint32 j = lo; j < hi; j++)
-			(void) settle_locked(sift_touched_at(base + at[j]), si, commit, false, &overflow[j]);
+		for (hi = lo; hi < n && sift_rowlock_stripe_of(&t[hi]->key) == si; hi++)
+		{
+			overflow[hi] = InvalidMultiXactId;
+			settled[order[hi]] = settle_locked(t[hi], si, commit, keep_speculative, &overflow[hi]);
+		}
 		stripe_unlock(si);
 		for (uint32 j = lo; commit && j < hi; j++)
 			if (MultiXactIdIsValid(overflow[j]))
-				retire_overflow(&sift_touched_at(base + at[j])->key, overflow[j]);
+				retire_overflow(&t[j]->key, overflow[j]);
 	}
 }
 
@@ -421,16 +410,17 @@ static void
 settle_all(bool commit)
 {
 	uint32		n = sift_touched_count();
+	bool		settled[SETTLE_WINDOW];
 
 	for (uint32 base = 0; base < n; base += SETTLE_WINDOW)
-		settle_window(base, Min(SETTLE_WINDOW, n - base), commit);
+		settle_window(NULL, base, Min(SETTLE_WINDOW, n - base), commit, false, settled);
 }
 
 /* The row stays held after the prepare: the entry says so, and the lock manager gets the tuple lock that a restart finds again (f2_lock_2pc.h) */
 static void
 prepare_row(const SiftTouched *t)
 {
-	int			si = stripe_of(&t->key);
+	int			si = sift_rowlock_stripe_of(&t->key);
 	SiftRowLockEntry *e;
 	SiftMxMembers members = SIFT_MX_NONE;
 	MultiXactId overflow = InvalidMultiXactId;
@@ -462,7 +452,7 @@ prepare_row(const SiftTouched *t)
 static void
 retag_holder(const SiftTouched *t, SubTransactionId parent)
 {
-	int			si = stripe_of(&t->key);
+	int			si = sift_rowlock_stripe_of(&t->key);
 	SiftRowLockEntry *e;
 
 	sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
@@ -499,25 +489,29 @@ sift_rowlock_release_new(Relation rel, uint64 tid, uint64 part_id)
 	sift_esc_note_tier1_release(&rel->rd_locator, part_id, 1);
 }
 
-/* The tier 2 lock holds the rows of the (sub)transaction now: its entries go, but those of the speculative inserts in flight */
+/* The tier 2 lock holds the rows of the (sub)transaction now: its entries go, a window of them for each lock of a stripe, but those of the speculative inserts in flight */
 void
 sift_rowlock_release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransactionId subxid)
 {
-	for (int32 i = sift_touched_sub_first(subxid); i >= 0;)
-	{
-		SiftTouched t = *sift_touched_at((uint32) i);
-		int32		next = sift_touched_next((uint32) i),
-					moved;
+	uint32		n;
+	uint32	   *at = sift_touched_sub_of(loc, part_id, subxid, &n);
+	bool		settled[SETTLE_WINDOW];
 
-		if (!(RelFileLocatorEquals(t.key.locator, *loc) && (part_id == SIFT_ESC_PART_ALL || t.part_id == part_id)) || !settle(&t, false, true))
-		{
-			i = next;
-			continue;
-		}
-		sift_esc_note_tier1_release(loc, t.part_id, 1);
-		moved = sift_touched_remove((uint32) i);
-		i = moved >= 0 && moved == next ? i : next;
+	for (uint32 lo = 0; lo < n; lo += SETTLE_WINDOW)
+	{
+		uint32		w = Min(SETTLE_WINDOW, n - lo);
+
+		CHECK_FOR_INTERRUPTS();
+		settle_window(at + lo, 0, w, false, true, settled);
+		for (uint32 j = 0; j < w; j++)
+			if (settled[j])
+			{
+				sift_esc_note_tier1_release(loc, sift_touched_at(at[lo + j])->part_id, 1);
+				(void) sift_touched_remove(at[lo + j]);
+			}
 	}
+	if (at != NULL)
+		pfree(at);
 }
 
 void
@@ -647,7 +641,7 @@ try_acquire(Relation rel, const SiftRowLockKey *k, int si, uint64 part_id, LockT
 	if (e != NULL)
 		judge_entry(e, mode, &r, &o->seen, &o->ask);
 	if (r.result == TM_Ok && e == NULL)
-		e = entry_for_write(si, k, out);
+		e = slot_for_write(si, k, out);
 	r.stripe_full = r.result == TM_Ok && e == NULL;
 	if (r.result == TM_Ok && e != NULL)
 		r.prev_mode = own_mode(e, &o->seen);
@@ -663,7 +657,7 @@ SiftRowLockResult
 sift_tbl_rowlock_acquire(Relation rel, uint64 tid, uint64 part_id, LockTupleMode mode)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
+	int			si = sift_rowlock_stripe_of(&k);
 	SiftHoldOutside o = {.ask = {.rel = rel},.seen = SIFT_MX_NONE};
 	Outside		out = OUTSIDE_INIT(&o.ask);
 	SiftRowLockResult r;
@@ -691,7 +685,7 @@ void
 sift_tbl_rowlock_lower(Relation rel, uint64 tid, int prev_mode)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
+	int			si = sift_rowlock_stripe_of(&k);
 	TransactionId xid = GetCurrentTransactionId();
 	SiftRowLockEntry *e;
 
@@ -715,7 +709,7 @@ held_entry(const SiftRowLockKey *k, int *si)
 
 	if (!tier1_ready())
 		return NULL;
-	*si = stripe_of(k);
+	*si = sift_rowlock_stripe_of(k);
 	for (;;)
 	{
 		MultiXactId unread = InvalidMultiXactId;
@@ -779,7 +773,7 @@ bool
 sift_tbl_rowlock_set_staged(Relation rel, uint64 tid, uint32 token)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
+	int			si = sift_rowlock_stripe_of(&k);
 	SiftRowLockEntry *e;
 	SiftXidAsk	ask = {.rel = rel};
 	Outside		out = OUTSIDE_INIT(&ask);
@@ -810,7 +804,7 @@ sift_tbl_rowlock_find_locked(Relation rel, uint64 tid, LWLockMode mode, int *si)
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
 	SiftRowLockEntry *e;
 
-	*si = stripe_of(&k);
+	*si = sift_rowlock_stripe_of(&k);
 	if (!tier1_ready() || sift_rowlock_stripe_empty(rows, *si))
 		return NULL;
 	sift_rowlock_stripe_acquire(rows, *si, mode);
@@ -841,7 +835,7 @@ SiftSpecProbe
 sift_tbl_rowlock_probe_staged(Relation rel, uint64 tid, TransactionId *xmin, uint32 *token)
 {
 	SiftRowLockKey k = key_of(&rel->rd_locator, tid);
-	int			si = stripe_of(&k);
+	int			si = sift_rowlock_stripe_of(&k);
 	SiftRowLockEntry *e;
 	SiftSpecProbe r = SIFT_SPEC_NONE;
 	FullTransactionId inserter = InvalidFullTransactionId,

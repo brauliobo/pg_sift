@@ -72,7 +72,7 @@ add_failing(uint32 n, int fail_at, const char *what)
 	{
 		SiftRowLockKey k = key_of(r);
 
-		SIFT_CHECKF(is_touched(&k, sift_touched_at(r)->subxid), "%s: row %u is found after the failure", what, r);
+		SIFT_CHECKF(is_touched(&k, sift_touched_at(r)->xid), "%s: row %u is found after the failure", what, r);
 	}
 	before = oom_allocs;
 	SIFT_CHECK(pgshim_try(add_next, NULL));

@@ -21,7 +21,7 @@ typedef struct SiftTouched
 	int32		sub_next;
 } SiftTouched;
 
-/* True when the (sub)transaction did not hold the row already: a row is one entry however many statements lock or update it */
+/* True when the (sub)transaction did not hold the row already: a row is one entry for each xid that holds it, however many statements lock or update it */
 extern bool sift_touched_add(const SiftRowLockKey *k, uint64 part_id);
 
 /* The row a speculative insert gave up leaves the table of the transaction */
@@ -33,6 +33,13 @@ extern const SiftTouched *sift_touched_at(uint32 i);
 /* The first entry of the list of a subtransaction, -1 with none; sift_touched_next is the one after i */
 extern int32 sift_touched_sub_first(SubTransactionId sub);
 extern int32 sift_touched_next(uint32 i);
+
+/* order[0..n): the positions in the window touched[at[0..n)] (at NULL: touched[base, base + n)) sorted by the stripe of their rows, for one lock of each stripe */
+extern void sift_touched_by_stripe(const uint32 *at, uint32 base, uint32 n, uint16 *order);
+
+/* The positions of the rows of the relation (of the partition, unless SIFT_ESC_PART_ALL) that the subtransaction holds, highest first, so that removing them in that order moves none of
+ * the others; NULL with none, else palloc'd */
+extern uint32 *sift_touched_sub_of(const RelFileLocator *loc, uint64 part_id, SubTransactionId sub, uint32 *n);
 
 /* Removes entry i: the last entry takes its place, and the return is the position that one had (-1 when i was the last), for a walk that holds a position */
 extern int32 sift_touched_remove(uint32 i);

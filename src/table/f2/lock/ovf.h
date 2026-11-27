@@ -9,7 +9,7 @@
  * (it touched rows, or its snapshot came before) sweeps the stripes whose oldest is past every snapshot, so that no chunk outlives the last of them.
  *
  * The lock, the counts, the head of the chunks and one tag byte for each entry of the table are the header of the stripe, one cache line that no other stripe shares: a find compares the tags of
- * the stripe eight at a time and reads the entries whose tag is the key's, and a reader that finds the count of the stripe zero has nothing to look for and takes no lock. A chunk comes from the
+ * the stripe eight at a time and reads the entries whose tag is the key's, and so for each chunk, whose tags are in the line of its next and count (a full stripe costs a line a chunk, not one an entry), and a reader that finds the count of the stripe zero has nothing to look for and takes no lock. A chunk comes from the
  * area before the stripe is locked (sift_rowlock_spare_take), as the one spare of the backend that sift_rowlock_add takes, and the spare and the chunks the removes emptied are given back
  * by sift_rowlock_chunks_release: at the end of a request, and at the end of the transaction that an error or an exit cut short.
  *
@@ -24,6 +24,7 @@
 #include "postgres.h"
 
 #include "access/transam.h"
+#include "common/hashfn.h"
 #include "utils/dsa.h"
 
 #include "table/f2/lock/rowlock.h"
@@ -34,10 +35,12 @@ typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftRowLockChunk
 {
 	dsa_pointer next;			/* the chunk below; every chunk but the head is full */
 	uint32		n;
+	uint8		tags[SIFT_ROWLOCK_CHUNK_ENTRIES + 1];	/* sift_rowlock_tag of the key of each entry, in the line of the header: a find reads one line of a chunk that does not hold the key */
 	SiftRowLockEntry entries[SIFT_ROWLOCK_CHUNK_ENTRIES];
 } SiftRowLockChunk;
 
 StaticAssertDecl(sizeof(SiftRowLockChunk) <= 8192, "a chunk is one allocation of the largest size class of the area");
+StaticAssertDecl(offsetof(SiftRowLockChunk, entries) == PG_CACHE_LINE_SIZE, "the tags of a chunk share the line of its header");
 
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftRowLockStripeHdr
 {
@@ -66,6 +69,12 @@ static inline uint8
 sift_rowlock_tag(const SiftRowLockKey *k)
 {
 	return (uint8) (((k->tid ^ ((uint64) k->locator.relNumber << 40)) * UINT64CONST(0x9E3779B97F4A7C15)) >> 56);
+}
+
+static inline int
+sift_rowlock_stripe_of(const SiftRowLockKey *k)
+{
+	return hash_bytes((const unsigned char *) k, sizeof(*k)) % SIFT_ROWLOCK_PARTITIONS;
 }
 
 /* A stripe with no entry is read without its lock: a lock that is taken later still finds what a writer put there before it let go */

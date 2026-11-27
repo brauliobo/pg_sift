@@ -41,7 +41,7 @@ sift_tbl_rowlock_staged_flushed(Relation rel, uint64 tid)
 	sift_tbl_rowlock_unlock(si);
 }
 
-/* The mark of a row the stage wrote goes, and the entry with it when it holds nothing else; a speculative insert keeps its token until it completes */
+/* The mark of a row the stage wrote goes, and the entry with it when it holds nothing else (the inserter is this transaction or a subtransaction of it that was released); a speculative insert keeps its token until it completes */
 static void
 forget_written(Relation rel, uint64 tid)
 {
@@ -51,7 +51,7 @@ forget_written(Relation rel, uint64 tid)
 	if (e == NULL)
 		return;
 	if ((e->flags & (SIFT_ROWLOCK_STAGED_INSERT | SIFT_ROWLOCK_SPECULATIVE)) == SIFT_ROWLOCK_STAGED_INSERT &&
-		FullTransactionIdEquals(e->updater_fxid, GetCurrentFullTransactionId()))
+		TransactionIdIsCurrentTransactionId(XidFromFullTransactionId(e->updater_fxid)))
 	{
 		sift_spec_flushed(e);
 		sift_tbl_rowlock_drop_idle(si, e);

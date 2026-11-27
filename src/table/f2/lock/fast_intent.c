@@ -65,10 +65,23 @@ sift_fast_intent_bytes(void)
 	return (Size) nprocs() * sizeof(SiftFastProc);
 }
 
+/* The page lock a partition is held by in the lock manager (SIFT_LOCK_PART_ESC_BLKNO): the partitions that share one are one key here, so that a coarse lock of one meets the intention of the other */
+static uint64
+lock_key(uint64 part_id)
+{
+	return part_id == SIFT_ESC_PART_ALL ? SIFT_ESC_PART_ALL : 1 + part_id % SIFT_LOCK_PART_ESC_SLOTS;
+}
+
+static uint32
+stripe_of(const RelFileLocator *loc, uint64 part_id)
+{
+	return sift_esc_stripe_of(loc, lock_key(part_id));
+}
+
 static pg_atomic_uint32 *
 fast_active(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id)
 {
-	return &s->esc[sift_esc_stripe_of(loc, part_id)].fast_active;
+	return &s->esc[stripe_of(loc, part_id)].fast_active;
 }
 
 /* The mode of slot j of the process set to mode (0 frees it), and the count of its stripe and the used mask of the process with it */
@@ -169,7 +182,7 @@ sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 
 	if (before == 0)
 		slot_own(i, loc, part_id);
 	slot_write(s, p, slot, mode + 1);
-	if (pg_atomic_read_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active) == 0)
+	if (pg_atomic_read_u32(&s->esc[stripe_of(loc, part_id)].coarse_active) == 0)
 	{
 		pg_read_barrier();
 		if (pg_atomic_read_u32(&s->prepared_epoch) == epoch)
@@ -200,7 +213,7 @@ sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, ui
 		{
 			SiftFastSeen i = slot_read(&procs[pn].slot[pg_rightmost_one_pos64(used)]);
 
-			if (i.mode != 0 && i.part_id == part_id && RelFileLocatorEquals(i.locator, *loc) && !TransactionIdIsCurrentTransactionId(i.xid) &&
+			if (i.mode != 0 && lock_key(i.part_id) == lock_key(part_id) && RelFileLocatorEquals(i.locator, *loc) && !TransactionIdIsCurrentTransactionId(i.xid) &&
 				sift_esc_modes_conflict(want, sift_esc_intent_modes((LockTupleMode) (i.mode - 1))) && TransactionIdIsInProgress(i.xid))
 				return i.xid;
 		}
@@ -220,13 +233,13 @@ sift_fast_intent_release_all(SiftRowLockShmLayout *s)
 void
 sift_esc_coarse_enter(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id)
 {
-	pg_atomic_fetch_add_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active, 1);
+	pg_atomic_fetch_add_u32(&s->esc[stripe_of(loc, part_id)].coarse_active, 1);
 }
 
 void
 sift_esc_coarse_leave(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id)
 {
-	pg_atomic_fetch_sub_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active, 1);
+	pg_atomic_fetch_sub_u32(&s->esc[stripe_of(loc, part_id)].coarse_active, 1);
 }
 
 /* ---- the directory of the coarse holders ---- */

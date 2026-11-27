@@ -91,6 +91,7 @@ main(void)
 	chunk.next = InvalidDsaPointer;
 	chunk.n = 1;
 	chunk.entries[0].key = k;
+	chunk.tags[0] = sift_rowlock_tag(&k);
 
 	LWLockAcquire(&tbl->hdr[si].lock, LW_EXCLUSIVE);
 	(void) sift_rowlock_find(tbl, si, &k);
