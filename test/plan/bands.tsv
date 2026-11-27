@@ -684,7 +684,7 @@ table	bench_list_elements	scan	0.12	0.49
 table	bench_member_jsonb_group	gap:S113-08	-	-
 table	bench_null_count_zone	scan	0.25	1.0
 table	bench_partitioned_range_agg	scan	0.26	1.0
-table	bench_period_unnest	gap:S113-05	-	-
+table	bench_period_unnest	scan	0.093	0.37
 table	bench_presence_not_null	gap:S113-10	-	-
 table	bench_star_snowflake_join	scan	0.24	0.94
 table	bench_subscript_group	gap:S113-08	-	-
@@ -756,7 +756,7 @@ table	lag_of_months	scan	0.32	1.3
 table	lateral_dim_limit_one	scan	0.14	0.56
 table	lateral_first_fact_per_parent	scan	0.22	0.87
 table	lateral_latest_fact	either	7.1	28
-table	lateral_recordset	gap:S113-12	0.52	2.1
+table	lateral_recordset	scan	0.15	0.61
 table	lateral_series	gap:S113-16	-	-
 table	left_cross_dims	scan	0.40	1.6
 table	left_join_active	scan	0.34	1.3
