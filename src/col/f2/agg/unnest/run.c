@@ -699,6 +699,13 @@ unnest_par(UnRun *u, SiftV6Group *g)
 	return sift_v6_unnest_par(u->spec, g, u->index, &src);
 }
 
+/* the attribute of the heap a column of the host is: of the index, or the table's own */
+static AttrNumber
+heap_attno(const UnRun *u, int att)
+{
+	return u->index != NULL ? u->index->rd_index->indkey.values[att - 1] : att;
+}
+
 static void
 setup_clauses(UnRun *u, const SiftColRel *r)
 {
@@ -730,7 +737,7 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 	foreach_ptr(List, tq, u->x->test_quals)
 	{
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
-			u->outer_att[k * SIFT_V6_XCMPS + c] = u->index->rd_index->indkey.values[u->x->test[k].cmp[c].outer - 1];
+			u->outer_att[k * SIFT_V6_XCMPS + c] = heap_attno(u, u->x->test[k].cmp[c].outer);
 		if (lsecond(tq) != NIL)
 			u->heap_test[k] = ExecPrepareExpr(linitial(lsecond(tq)), u->estate);
 		u->flag_data[k] = palloc0(SIFT_VEC_LEN * sizeof(int64));
@@ -929,18 +936,33 @@ sift_v6_unnest_rows_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap,
 	return u;
 }
 
+/* the flags of the tests of a batch whose rows all come from the heap: none known until the row is read */
+static void
+clear_flags(UnRun *u, uint32 n)
+{
+	for (int k = 0; k < u->ntests; k++)
+	{
+		memset(u->flag_valid[k], 0, SIFT_VEC_WORDS * sizeof(uint64));
+		u->flagv[k] = (SiftVec) {.data = u->flag_data[k],.valid = u->flag_valid[k],.len = (uint16) n,.all_valid = false,.dense = true,.type = SVEC_I64};
+	}
+}
+
 void
 sift_v6_unnest_rows_run(SiftV6UnnestRows *u, SiftVec *const *fact, const SiftBatchSel *bs, const uint64 *tid)
 {
 	for (int i = 0; i < u->ncols; i++)
 		u->fv[i] = *fact[i];
 	MemoryContextReset(u->bcx);
+	clear_flags(u, bs->n_raw);
 	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
 		{
 			const uint32 row = w * 64 + __builtin_ctzll(bits);
 
-			sift_f2_unnest_emit_heap_row(u, u->fv, tid[row], row);
+			if (u->ntests > 0)
+				sift_f2_unnest_emit_test_heap_row(u, tid[row], row);
+			else
+				sift_f2_unnest_emit_heap_row(u, u->fv, tid[row], row);
 		}
 }
 

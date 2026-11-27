@@ -426,7 +426,7 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 {
 	const SiftColRel *r = p->colrel;
 	const char *key;
-	const int	i = rte_column(p, rte, &key);
+	const int	i = p->is_table ? -1 : rte_column(p, rte, &key);
 	int			group,
 				leaf;
 

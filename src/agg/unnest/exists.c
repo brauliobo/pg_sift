@@ -364,15 +364,14 @@ exists_cost(const RelOptInfo *rel)
 }
 
 static void
-try_index(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, IndexOptInfo *ix, const List *cands)
+try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, const SiftV6RelSource *src, const List *cands)
 {
-	V6Plan		p = {.root = root,.rel = rel,.out = out,.relid = ix->indexoid,.index = ix};
-	Relation	irel = index_open(ix->indexoid, AccessShareLock);
+	V6Plan		p = {.root = root,.rel = rel,.out = out};
+	Relation	source = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
 	SiftV6ElemRte rte = {0};
 	bool		ok;
 
-	sift_v6_plan_index(&p, irel);
-	ok = p.ops != NULL && build_tests(&p, cands, &rte) && sift_v6_unnest_seed(&p, NULL, &rte, false) && build_exists_quals(&p);
+	ok = sift_v6_plan_bind(&p, src, source) && build_tests(&p, cands, &rte) && sift_v6_unnest_seed(&p, NULL, &rte, false) && build_exists_quals(&p);
 	if (ok)
 	{
 		store_tests(&p);
@@ -380,17 +379,19 @@ try_index(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraDat
 	}
 	if (ok)
 		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, exists_cost(rel), rel->rows);
-	index_close(irel, NoLock);
+	sift_v6_source_close(source, src->is_table, NoLock);
 }
 
 void
 sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs)
 {
 	List	   *cands;
+	SiftV6RelSource *src;
+	int			nsrc;
 
 	if (!sift_v6_plan_fact_ok(root, rel) || (cands = collect_cands(root, rel, out, extra)) == NIL)
 		return;
-	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-		if (sift_v6_index_owned(ix))
-			try_index(root, rel, out, extra, group_exprs, ix, cands);
+	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
+	for (int i = 0; i < nsrc; i++)
+		try_source(root, rel, out, extra, group_exprs, &src[i], cands);
 }

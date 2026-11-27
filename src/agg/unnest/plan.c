@@ -177,18 +177,25 @@ sift_v6_unnest_where(V6Plan *p)
 	return true;
 }
 
+/* the compiled statement is one the scan of an unnest computes over the columns its source gives */
+static bool
+unnest_computes(const V6Plan *p)
+{
+	return (!p->is_table || table_rows_ok(&p->spec)) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && store_reads_cols(p);
+}
+
 /* the statement compiled on the index to what the scan of an unnest computes */
 bool
 sift_v6_unnest_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_compile_on(p, extra, group_exprs) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && store_reads_cols(p);
+	return sift_v6_compile_on(p, extra, group_exprs) && unnest_computes(p);
 }
 
 /* what the unnest scan needs of the compiled statement besides its columns: the quals of the element and of the table run on the batches */
 bool
 sift_v6_unnest_ready(V6Plan *p)
 {
-	return (!p->is_table || table_rows_ok(&p->spec)) && !any_col(&p->spec, is_type_tag) && store_reads_cols(p) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
+	return unnest_computes(p) && !any_col(&p->spec, is_type_tag) && sift_v6_unnest_elem_quals(p) && sift_v6_unnest_where(p);
 }
 
 /* the pairs the filter of an aggregate drops are not skipped by an argument PostgreSQL computes for every pair: as the CASE of its filter, the executor leaves them out of the argument; the members of jsonb_each of a map are float8 leaves, no cast of them raises, and its filter is a clause of the pairs */
