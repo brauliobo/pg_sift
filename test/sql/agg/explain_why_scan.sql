@@ -22,7 +22,7 @@ SELECT * FROM why($q$ SELECT * FROM ew WHERE id + k = 5 $q$);
 -- a condition that keeps most of the table: the sequential scan is cheaper
 SELECT * FROM why($q$ SELECT * FROM ew WHERE k >= 0 $q$);
 -- an aggregate keeps its arms and gets no "index" row
-SELECT * FROM why($q$ SELECT count(*) FROM ew WHERE grp = 3 $q$);
+SELECT * FROM why($q$ SELECT grp, count(*) FROM ew WHERE k < 512 GROUP BY grp $q$);
 -- an aggregate of an argument the scan does not compute (a volatile function): the arm names it, not a condition
 SELECT * FROM why($q$ SELECT grp, sum(random()) FROM ew GROUP BY grp $q$);
 DROP FUNCTION why(text);

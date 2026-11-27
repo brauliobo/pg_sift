@@ -47,7 +47,7 @@ SELECT * FROM why($q$ SELECT * FROM ew WHERE k >= 0 $q$);
 (1 row)
 
 -- an aggregate keeps its arms and gets no "index" row
-SELECT * FROM why($q$ SELECT count(*) FROM ew WHERE grp = 3 $q$);
+SELECT * FROM why($q$ SELECT grp, count(*) FROM ew WHERE k < 512 GROUP BY grp $q$);
   arm   | used | slug | has_scan_cost | has_normal_cost | scan_below_normal 
 --------+------+------+---------------+-----------------+-------------------
  single | t    |      | t             | t               | t
