@@ -1,6 +1,8 @@
 -- The units of a scan come in the order of their superblocks whatever segment holds them. The segments of a table cut by key number their units from 0, so the units of different
 -- segments take turns, and the next unit is the lowest head of all the segments (the lowest segment on a tie).
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the units of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET sift.async_maintenance = off;

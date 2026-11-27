@@ -2,6 +2,8 @@
 -- the least and the greatest of them, a statement that spans every key opens every segment, and rows without a key and rows that changed key end up as the heap says.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the deletion vectors of key ranges are Format 1 segments.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;

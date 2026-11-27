@@ -2,6 +2,8 @@
 -- deletes, VACUUM, a rewrite and a merge keep the bounds true (col_verify); a key of three components whose value holds more rows than a partition is cut inside the value, at a row address
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the nested partition directory is Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

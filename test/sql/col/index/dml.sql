@@ -4,6 +4,8 @@ CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the write buffer and segments are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 
 CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.col_index_matches_heap(idx, preds, heapwhere) $$;

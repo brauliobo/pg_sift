@@ -2,6 +2,8 @@
 -- units of a segment share its dictionary, so a LUT over all of it per unit costs the scan its units times the dictionary.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the dictionaries of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET maintenance_work_mem = '256MB';
 SET max_parallel_maintenance_workers = 0;

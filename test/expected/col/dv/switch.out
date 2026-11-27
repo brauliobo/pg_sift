@@ -4,6 +4,8 @@
 -- Every state is compared with the answer of the heap: records of a statement in progress, committed ones, and after the fold.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the deletion vectors of segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, note text) WITH (autovacuum_enabled = false, fillfactor = 60);

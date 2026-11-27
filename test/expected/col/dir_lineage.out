@@ -3,6 +3,8 @@
 -- no segment falls out of its partition into the entries of none, and a partition that lost all its rows is gone.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the partition directory and its lineages are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;

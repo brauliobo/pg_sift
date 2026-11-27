@@ -3,6 +3,8 @@
 -- values read back against the heap's text, through the write buffer, promotion, merge, VACUUM and REINDEX.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the leaves of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET lc_monetary = 'C';
 

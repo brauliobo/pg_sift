@@ -2,6 +2,8 @@
 -- segments a backend folds: when the record covers the first segments of the directory (a promotion added one), only the others are opened, and the statistics are
 -- those of folding all of them. sift._test_leaf_fold folds both ways and says how many segments each opened and whether the bytes are the same.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the folded leaves of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE lf (id int, dim_a_id int, kind int, label text, amount float8, doc jsonb) WITH (autovacuum_enabled = off);

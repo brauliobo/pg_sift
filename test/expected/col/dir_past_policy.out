@@ -4,6 +4,8 @@
 -- merge of it writes fewer, with the bytes of its writer flat in the segments it reads.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the partition directory is Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

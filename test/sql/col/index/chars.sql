@@ -3,6 +3,8 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the segments and leaves read here are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 

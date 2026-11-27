@@ -2,6 +2,8 @@
 -- (sift_colk_cut_near): a value that fits is in one segment, and a value bigger than the slack allows for is cut inside, at the first unit past it. The merge reads nothing more for it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the segments a key cut aligns are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
