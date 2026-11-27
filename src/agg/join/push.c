@@ -35,6 +35,7 @@
 #include "agg/join/lookup.h"
 #include "agg/settings.h"
 #include "agg/join/push.h"
+#include "agg/qual/qual.h"
 #include "agg/source_rel.h"
 #include "col/am.h"
 #include "col/col.h"
@@ -585,7 +586,7 @@ push_scan(PushState *st, EState *estate, MemoryContext cx, ArrayType *ids)
 	}
 	else
 	{
-		ExecIndexBuildScanKeys(&st->css.ss.ps, st->index, quals, false, &keys, &nkeys, &rtkeys, &nrt, NULL, NULL);
+		sift_v6_qual_scankeys(&st->css.ss.ps, st->spec->jsonqual, st->index, quals, &keys, &nkeys, &rtkeys, &nrt);
 		if (nrt > 0)
 			ExecIndexEvalRuntimeKeys(st->css.ss.ps.ps_ExprContext, rtkeys, nrt);
 		st->ops->zone->scan_run(st->spec, st->group, st->heap, st->index, keys, nkeys, estate->es_snapshot, NULL, 0, st->router, &st->stats, NULL, NULL, NULL);
