@@ -60,6 +60,7 @@ typedef struct PageStamp
 typedef struct Slot
 {
 	MemoryContext cx;			/* NULL: free */
+	bool		ready;			/* the log is whole: a statement that errored while it read or extended it leaves it unready, and no lookup finds it */
 	bool		pending;		/* else the column delta chain */
 	RelFileLocator loc;
 	Oid			relid;
@@ -220,7 +221,7 @@ static Slot *
 slot_find(Relation rel, bool pending, uint64 part_id)
 {
 	for (int i = 0; i < CHAIN_SLOTS; i++)
-		if (slots[i].cx != NULL && slots[i].pending == pending && slots[i].part_id == part_id && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
+		if (slots[i].ready && slots[i].pending == pending && slots[i].part_id == part_id && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
 			return &slots[i];
 	return NULL;
 }
@@ -230,12 +231,12 @@ static Slot *
 slot_find_head(Relation rel, uint64 part_id, BlockNumber head)
 {
 	for (int i = 0; i < CHAIN_SLOTS; i++)
-		if (slots[i].cx != NULL && slots[i].pending && slots[i].part_id == part_id && slots[i].head_blk == head && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
+		if (slots[i].ready && slots[i].pending && slots[i].part_id == part_id && slots[i].head_blk == head && RelFileLocatorEquals(slots[i].loc, rel->rd_locator))
 			return &slots[i];
 	return NULL;
 }
 
-/* A free slot, else the least recently used one, emptied */
+/* A free or unready slot, else the least recently used one, emptied */
 static Slot *
 slot_take(void)
 {
@@ -243,8 +244,11 @@ slot_take(void)
 
 	for (int i = 0; i < CHAIN_SLOTS; i++)
 	{
-		if (slots[i].cx == NULL)
+		if (!slots[i].ready)
+		{
+			slot_drop(&slots[i]);
 			return &slots[i];
+		}
 		if (slots[i].tick < lru->tick)
 			lru = &slots[i];
 	}
@@ -366,6 +370,7 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry, uint64 epoch)
 	MemoryContextSwitchTo(old);
 	s->checked_epoch = epoch;
 	s->tick = sift_cache_tick();
+	s->ready = true;
 	(void) sift_cache_commit();
 	return &s->log.pd;
 }
@@ -589,11 +594,13 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 	}
 	if (s != NULL)
 	{
+		s->ready = false;
 		old = MemoryContextSwitchTo(s->cx);
 		has = cd_extend(rel, entry, s);
 		MemoryContextSwitchTo(old);
 		if (has)
 		{
+			s->ready = true;
 			s->tick = sift_cache_tick();
 			(void) sift_cache_commit();
 			return &s->log.cd;
@@ -601,6 +608,7 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 		slot_drop(s);
 	}
 	s = slot_open(rel, false, entry->part_id);
+	SIFT_POINT("sift-col-delta-log-load");
 	old = MemoryContextSwitchTo(s->cx);
 	has = sift_col_delta_load_chain(rel, entry, 0, &s->log.cd.chain);
 	if (has)
@@ -623,6 +631,7 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 	s->head_blk = entry->manifest_blk;
 	s->manifest_gen = entry->manifest_gen;
 	s->tick = sift_cache_tick();
+	s->ready = true;
 	(void) sift_cache_commit();
 	return &s->log.cd;
 }
