@@ -32,13 +32,14 @@ kept_in(Relids l, Relids rest)
 	return single_in(l, rest) || bms_equal(l, rest);
 }
 
-/* a dimension a RIGHT or FULL join keeps of the join of all the other relations: the last join of the statement */
+/* a dimension a RIGHT or FULL join keeps; closing: of the join of all the other relations, the last join of the statement */
 static bool
-closing_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode)
+preserved_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode, const SpecialJoinInfo *sj, bool closing)
 {
 	if (!sift_v6_join_add_dim(sh, rels, mode))
 		return false;
-	sh->dim[sh->nd - 1].closing = true;
+	sh->dim[sh->nd - 1].closing = closing;
+	sh->dim[sh->nd - 1].ojrelid = sj->ojrelid;
 	return true;
 }
 
@@ -57,12 +58,12 @@ special_dim(PlannerInfo *root, SiftV6JoinShape *sh, const SpecialJoinInfo *sj, R
 			if (single_in(r, rest))
 				return sift_v6_join_add_dim(sh, r, SV6J_LEFT_EQUI);
 			if (single_in(l, rest) && bms_equal(bms_intersect(sj->syn_righthand, before), bms_del_members(bms_copy(before), l)))
-				return closing_dim(sh, l, SV6J_RIGHT_EQUI);
-			return bms_equal(r, fact) && kept_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_RIGHT_EQUI);
+				return preserved_dim(sh, l, SV6J_RIGHT_EQUI, sj, true);
+			return bms_equal(r, fact) && kept_in(l, rest) && preserved_dim(sh, l, SV6J_RIGHT_EQUI, sj, false);
 		case JOIN_FULL:
 			if (single_in(r, rest) && bms_equal(bms_intersect(sj->syn_lefthand, before), bms_del_members(bms_copy(before), r)))
-				return closing_dim(sh, r, SV6J_FULL_EQUI);
-			return bms_equal(r, fact) && kept_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
+				return preserved_dim(sh, r, SV6J_FULL_EQUI, sj, true);
+			return bms_equal(r, fact) && kept_in(l, rest) && preserved_dim(sh, l, SV6J_FULL_EQUI, sj, false);
 		case JOIN_SEMI:
 		case JOIN_ANTI:
 			return bms_is_subset(bms_difference(r, root->outer_join_rels), rest) && sift_v6_join_add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);

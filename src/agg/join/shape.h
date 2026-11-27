@@ -23,6 +23,7 @@ typedef struct SiftV6JoinDim
 	Path	   *path;			/* the plan the node reads it with */
 	List	   *on;				/* the RestrictInfo of each condition of its ON clause that no key says */
 	bool		closing;		/* a RIGHT or FULL join of the join of all the other relations: the last join of the statement */
+	Index		ojrelid;		/* a RIGHT or FULL join: the relation of that outer join, which the conditions above it name */
 	SiftV6JoinMode mode;
 	int			nkeys;
 	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the column of the relations before the dimension, or the expression of them, that its key is probed with */

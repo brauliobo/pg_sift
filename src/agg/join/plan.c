@@ -401,14 +401,27 @@ place_on(SiftV6JoinShape *sh, RestrictInfo *ri)
 	return true;
 }
 
+/* the RIGHT or FULL join a condition of the relations it nulls is under (it reads them, and its relations do not name the outer join): it drops their rows before the join; -1 for none */
+static int
+preserved_over(const SiftV6JoinShape *sh, const RestrictInfo *ri)
+{
+	for (int i = 0; i < sh->nd; i++)
+		if (sift_star_preserves_dim(sh->dim[i].mode) && !bms_is_empty(ri->clause_relids) && !bms_overlap(ri->clause_relids, sh->dim[i].rels) &&
+			!bms_is_member(sh->dim[i].ojrelid, ri->clause_relids))
+			return i;
+	return -1;
+}
+
 /*
  * where a condition of the join goes: a key of the dimension it joins to the relations before it, a condition of the plan of one dimension, or a condition on the pairs. false: the join has no place
- * for it. A clone (is_clone) is the form of the clause for an order of commuting outer joins other than the statement's, the order the pipe joins in: the clause it is a clone of is placed
+ * for it. A clone (is_clone) is the form of the clause for an order of commuting outer joins other than the statement's, the order the pipe joins in: the clause it is a clone of is placed.
+ * A condition under a RIGHT join decides which rows a row of the preserved dimension meets, as its ON clause does; the rows a FULL join keeps of the other side would pass no such filter
  */
 static bool
 place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 {
 	const OpExpr *op = (const OpExpr *) ri->clause;
+	int			d;
 
 	if (ri->is_clone)
 		return true;
@@ -423,7 +436,13 @@ place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 		return place_on(sh, ri);
 	if (matches_once(sh, ri->required_relids))
 		return false;
-	sh->resid = lappend(sh->resid, ri);
+	d = preserved_over(sh, ri);
+	if (d < 0)
+		sh->resid = lappend(sh->resid, ri);
+	else if (sh->dim[d].mode == SV6J_RIGHT_EQUI)
+		sh->dim[d].on = lappend(sh->dim[d].on, ri);
+	else
+		return false;
 	return true;
 }
 
