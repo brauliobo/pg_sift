@@ -9,6 +9,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
+#include "col/compress.h"
 #include "core/cachebudget.h"
 #include "core/dispatch.h"
 #include "core/host.h"
@@ -174,7 +175,7 @@ sift_cache_commit(void)
 	return make_room(0, clock_now);
 }
 
-/* MEM[MEM-IDLE-15]: xact-end cache commit + idle malloc_trim hook (reclaims >= 128 KB) */
+/* MEM[MEM-IDLE-15]: xact-end cache commit, the zstd contexts freed (their workspace is sized by the largest frame they saw) + idle malloc_trim hook (reclaims >= 128 KB) */
 static void
 cache_xact_event(XactEvent event, void *arg)
 {
@@ -182,6 +183,7 @@ cache_xact_event(XactEvent event, void *arg)
 
 	if (event != XACT_EVENT_COMMIT && event != XACT_EVENT_ABORT && event != XACT_EVENT_PREPARE)
 		return;
+	sift_colz_thread_fini();
 	used = clock_now != xact_floor;
 	xact_floor = clock_now;
 	if (cache_root == NULL || !used)

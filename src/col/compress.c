@@ -47,7 +47,7 @@ sift_colz_bound(int alg, Size n)
 }
 
 #ifdef SIFT_HAVE_ZSTD
-/* The contexts of the thread, made once: ZSTD_compress and ZSTD_decompress make and free one for each call, which a dictionary of 200,000 strings in blocks of 64 does 3,000 times (the bytes are the same) */
+/* The contexts of the thread, made once for a transaction (a backend frees them at its end, core/cachebudget.c: a context keeps the workspace of the largest frame it compressed): ZSTD_compress and ZSTD_decompress make and free one for each call, which a dictionary of 200,000 strings in blocks of 64 does 3,000 times (the bytes are the same) */
 static _Thread_local ZSTD_CCtx *zstd_cctx;
 static _Thread_local ZSTD_DCtx *zstd_dctx;
 #endif
