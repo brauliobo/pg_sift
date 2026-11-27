@@ -18,7 +18,7 @@ scripts/ci.sh affected --focus  # regression tests covering the changed C functi
 - `scripts/coldiff.sh` runs differential tests comparing `sift.enable_agg = on` against `off` across fixtures and randomized shapes (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 - `scripts/replication.sh` verifies physical and logical replication (`--container` runs each node in Docker).
 - `SIFT_TESTING=1` (default in `make check` and `pgtest.sh`) builds test-only `sift._test_*` helpers and `pg_sift_test`; normal `make install` never ships them. Switching modes requires `make clean`.
-- Add test-only regression files to `TESTING_REGRESS` in `Makefile` in byte order so parallel branches merge cleanly (`scripts/check-testing-regress.sh`). Keep limit, privilege, and planner tests free of `sift._test_*` so they also run against the release library (`release-library-regress`).
+- Add test-only regression files to `TESTING_REGRESS` in `scripts/testing-regress.mk` in byte order so parallel branches merge cleanly (`scripts/check-testing-regress.sh`). Keep limit, privilege, and planner tests free of `sift._test_*` so they also run against the release library (`release-library-regress`).
 
 ## Standalone Search Ports
 

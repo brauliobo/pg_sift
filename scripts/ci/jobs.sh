@@ -62,7 +62,7 @@ build_checks() {
 # The format compatibility tiers (the v5 formats stay readable and writable beside the default 2.0; the build refuses nothing of Format 1):
 #   1. every regression test runs on the default format (2.0): installcheck-*;
 #   2. compat_v1_* (test/sql) build Format 1 with SET sift.test_create_format1 = on, a setting of the testing flavour only: scripts/check-test-settings.sh keeps it out of the release
-#      library and scripts/check-testing-regress.sh keeps the tests that set it in TESTING_REGRESS (Makefile: compat_v1_%), so release-library-regress never runs them;
+#      library and scripts/check-testing-regress.sh keeps the tests that set it in TESTING_REGRESS (scripts/testing-regress.mk: compat_v1_%), so release-library-regress never runs them;
 #   3. tap-013_upgrade_v5_to_v6 and the tap-shell upgrade tests of the =compat group (scripts/areas.tsv) upgrade a golden v5 cluster by binary swap, ALTER EXTENSION UPDATE and pg_upgrade;
 #   4. format-isolation: no source of one format includes the other's (scripts/check-format-isolation.sh, static, no build; queued once the script exists).
 format_checks() { [[ ! -x $S/check-format-isolation.sh ]] || job format-isolation format-isolation 0 "$S/check-format-isolation.sh"; }

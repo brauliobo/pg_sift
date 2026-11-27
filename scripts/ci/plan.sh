@@ -42,7 +42,7 @@ once_on_18() { (( PG_MAJOR == 18 )); }
 # visit every stage, the write buffers, the promotion and the merge
 once_on_18 && job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --docs 2500 --queries 12 --rounds 2 --minimize 1 --min-trials 10
 # the regression tests that need no test-only function, against the release library (SIFT_TESTING off). The quick tests only: the slow ones and the ones that need
-# the test-only build (TESTING_REGRESS of the Makefile; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
+# the test-only build (TESTING_REGRESS of scripts/testing-regress.mk; scripts/check-testing-regress.sh keeps a test that calls a sift._test_ function in it) are not run.
 # A test gives the same answers on both builds unless it refers to a test-only name (a sift.test_ setting, a sift._test_ function, pg_sift_test) behind a guard, or forces a
 # parallel build (max_parallel_maintenance_workers above 0): the release library builds some indexes in one process where the test library keeps the participants
 # (build_pays in src/col/v1/build_par.c), so a test that counts the segments of that build says so only on the release library. Those run, with a smoke of STOCK_SMOKE, one test
@@ -51,7 +51,7 @@ once_on_18 && job difftest difftest 1 "$S/difftest.sh" --jobs "$DIFF_JOBS" --doc
 release_library_tests() {
 	local t p f pats globs=()
 	local -A guarded=() named=()   # guarded: the tests that name a test-only object or force a parallel build, found in one grep; named: the names of the Makefile that are no pattern
-	read -ra pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/Makefile" | paste -sd' ' -)
+	read -ra pats < <(sed -En 's/^TESTING_REGRESS \+?= //p' "$REPO/scripts/testing-regress.mk" | paste -sd' ' -)
 	for p in "${pats[@]}"; do if [[ $p == *%* ]]; then globs+=("${p//%/*}"); else named[$p]=1; fi; done   # one regular expression for all of them is slower to match (4 s of CPU for the plan instead of 0.7)
 	while IFS= read -r f; do f=${f#"$REPO/test/sql/"}; guarded[${f%.sql}]=1; done < <(grep -rlE --include='*.sql' 'sift\.test_|sift\._test_|pg_sift_test|max_parallel_maintenance_workers (=|TO) [1-9]' "$REPO/test/sql")
 	for t in $(rest sql .sql $SLOW_REGRESS); do

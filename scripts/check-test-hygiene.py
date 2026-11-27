@@ -6,7 +6,7 @@
 
 Manifests (no PostgreSQL, no build):
   - scripts/regress-times.tsv names no test that test/sql no longer has, and no test twice;
-  - every TESTING_REGRESS line of the Makefile names a test (or a pattern with %) that test/sql has;
+  - every TESTING_REGRESS line of scripts/testing-regress.mk names a test (or a pattern with %) that test/sql has;
   - scripts/weights-*.tsv, scratch.tsv name no job twice (the loader keeps the last row, so the first one lied);
   - a `# tap: pooled` shell test (test/t) that runs CREATE DATABASE pins no sift. setting in node_init: the pool sets it on the database of the node alone, never on the ones the test creates.
 High-level harnesses (test/{corpus,col,plan,fuzz,matrix}/, scripts/{corpus,coldiff,plangate,coverage,fast-gate}.sh) run on Format 1, Format 2.0 and the release library:
@@ -64,14 +64,14 @@ def check_regress_times(root, tests):
 
 def check_testing_regress(root, tests):
     errs = []
-    with open(os.path.join(root, 'Makefile'), encoding='utf-8') as f:
+    with open(os.path.join(root, 'scripts/testing-regress.mk'), encoding='utf-8') as f:
         for n, line in enumerate(f, 1):
             m = re.match(r'TESTING_REGRESS \+?= (.*)$', line.rstrip('\n'))
             if not m:
                 continue
             for pat in m.group(1).split():
                 if not any(fnmatch.fnmatchcase(t, pat.replace('%', '*')) for t in tests):
-                    errs.append(f"Makefile:{n}: TESTING_REGRESS {pat} matches no test/sql/*.sql: delete the line, or name the test it was meant for")
+                    errs.append(f"scripts/testing-regress.mk:{n}: TESTING_REGRESS {pat} matches no test/sql/*.sql: delete the line, or name the test it was meant for")
     return errs
 
 
@@ -175,7 +175,7 @@ def put(root, rel, text):
 
 
 def tree(root, **over):
-    files = {'test/sql/a.sql': '', 'test/sql/b.sql': '', 'Makefile': 'TESTING_REGRESS =\nTESTING_REGRESS += a\nTESTING_REGRESS += b%\n',
+    files = {'test/sql/a.sql': '', 'test/sql/b.sql': '', 'scripts/testing-regress.mk': 'TESTING_REGRESS =\nTESTING_REGRESS += a\nTESTING_REGRESS += b%\n',
              'scripts/regress-times.tsv': '# h\na\t1.0\nb\t2.0\n', 'scripts/weights-quick.tsv': '# h\nj1\t1\t2\nj2\t3\t4\n', 'scripts/scratch.tsv': 'j1\t5\n',
              'test/corpus/run.py': 'ok\n', 'scripts/plangate.sh': "ok 'Custom Scan (SiftAgg%'\n"}
     files.update(over)
@@ -191,8 +191,8 @@ def selftest():
         ('a clean tree passes', {}, False, {}, []),
         ('a stale regress-times row', {'scripts/regress-times.tsv': 'a\t1\ngone\t3\n'}, False, {}, ['regress-times.tsv:2: gone has no test/sql/gone.sql']),
         ('a regress-times row twice', {'scripts/regress-times.tsv': 'a\t1\na\t2\n'}, False, {}, ['regress-times.tsv:2: a twice']),
-        ('a stale TESTING_REGRESS name', {'Makefile': 'TESTING_REGRESS += a\nTESTING_REGRESS += gone\n'}, False, {}, ['Makefile:2: TESTING_REGRESS gone matches no test']),
-        ('a TESTING_REGRESS pattern with no test', {'Makefile': 'TESTING_REGRESS += zz%\n'}, False, {}, ['Makefile:1: TESTING_REGRESS zz% matches no test']),
+        ('a stale TESTING_REGRESS name', {'scripts/testing-regress.mk': 'TESTING_REGRESS += a\nTESTING_REGRESS += gone\n'}, False, {}, ['scripts/testing-regress.mk:2: TESTING_REGRESS gone matches no test']),
+        ('a TESTING_REGRESS pattern with no test', {'scripts/testing-regress.mk': 'TESTING_REGRESS += zz%\n'}, False, {}, ['scripts/testing-regress.mk:1: TESTING_REGRESS zz% matches no test']),
         ('a duplicate weights key', {'scripts/weights-quick.tsv': 'j1\t1\nj1\t2\n'}, False, {}, ['weights-quick.tsv:2: j1 twice']),
         ('a duplicate scratch key', {'scripts/scratch.tsv': 'j1\t1\nj1\t2\n'}, False, {}, ['scratch.tsv:2: j1 twice']),
         ('a pooled test that pins a setting and creates a database',
