@@ -222,7 +222,7 @@ sift_f2_build_begin(Relation heap, Relation index, int nparticipants)
 	bs->index = index;
 	bs->cx = CurrentMemoryContext;
 	bs->f = sift_f2_rel(index);
-	bs->rowcxt = sift_col_rel_rowcxt(sift_col_rel(index));
+	bs->rowcxt = AllocSetContextCreate(bs->cx, "sift f2 build row", ALLOCSET_SMALL_SIZES);
 	bs->cells = palloc0(bs->f->ncols * sizeof(SiftCell));
 	bs->elem = palloc0(bs->f->ncols * sizeof(SiftCell *));
 	bs->rb = sift_rowbuf_new(&bs->f->spec);
