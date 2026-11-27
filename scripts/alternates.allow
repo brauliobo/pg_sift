@@ -9,6 +9,7 @@ removed	test/expected/col/scope/text/member_collide_1.out	17 18 18-arm64 19
 removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19	
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
+test/expected/agg/append_children_1.out	5cd2ba5d2b7850383285de762257a1d653fdf733	17	f      | t        |           0
 test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
 test/expected/agg/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
@@ -45,8 +46,8 @@ test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874
 test/expected/agg/matrix_join_parity_1.out	739fe00e0cd47b533ec99b08c5e8f34891517d84	19	32 | SiftAggV6 |           2 |       0
 test/expected/agg/matrix_join_parity_1.out	94c8419784ad5e0be51a841d71c5b87544879197	19	32 | SiftAggV6 |           3 |       0
 test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	json map key     | v6 same
-test/expected/agg/plan/tables_1.out	1003fd94fbe2001151019b9a1ddbe67dddc08361	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
+test/expected/agg/plan/tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	e27dc9de096ede2f9088587ed6eb69289afab2e5	19	plan                  | result_rows | vs_normal_plan
 test/expected/agg/scalar/dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	17	cast float8     | t      |     60 | same rows
 test/expected/agg/scalar/dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
@@ -68,6 +69,7 @@ test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438
 test/expected/agg/scope/param_keys_2.out	cbafab979d05dead65468cbabd46cd3e2ce9c7ea	17 18 18-arm64	more changed pairs than the bound | latest 5, $1 | Keys: $1 (1 keys); Fallback:
 test/expected/agg/scope/recognition_1.out	6bc29cda1b6c0fc38b3e9ca4bfd892a238a51160	17 18 18-arm64 19	more changed pairs than the bound | latest 5         | Fallback: join is cheape
 test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
+test/expected/agg/spill_context_1.out	b5baa3c8ff9473ed7d1774d9f629ee41e3d38c5f	17	spill_over_the_li
 test/expected/agg/spill/contexts_1.out	a1a88f183c421b68450005b5a927dbb44c767626	17	kind     | select_ | insert_ | volatile_
 test/expected/agg/subplan_lut_1.out	01841054a351688288ac808012bbf7f61517a2a1	19	plan          | result_rows | vs_normal_plan
 test/expected/agg/subplan_lut_1.out	14041d7151598025fefce12ddffde531149e5982	19	not_in
@@ -95,6 +97,28 @@ test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	
 test/expected/agg/subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
 test/expected/agg/subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
 test/expected/agg/subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
+test/expected/bm25/conflict_1.out	015a9ef6270ad8053a855f788e25b1ff423d7afe	17	id  | code
+test/expected/bm25/conflict_1.out	206942de823ad6dbb4c89c5d6ff9dc62cd18e0ed	17	2 |      1
+test/expected/bm25/conflict_1.out	241da297e9ff1d28770020bf954de33b99a4218f	17	id  |  code   |  n
+test/expected/bm25/conflict_1.out	274315ae80ef2c7d3edc26dd0e4bcdbe53808411	17	id
+test/expected/bm25/conflict_1.out	2772e4d9141d277fe36f73183cef3659d5717088	17	id  |  code
+test/expected/bm25/conflict_1.out	2aca9b9b0eadc7ca7f9863d3645e304d70b66eb9	17	id
+test/expected/bm25/conflict_1.out	6a035b4b949d9e028919f697bd2e530b7abd4bf0	17	ERROR:  ON CONFLICT DO UPDATE command cannot affect row a second time
+test/expected/bm25/conflict_1.out	6eabc163f4cdb0585b107fa519b360f5498d47cd	17	k | a | b |       v
+test/expected/bm25/conflict_1.out	77534d53ee8034e8c73c1290fe3db9bf4aebb2ec	17	k | a | b |  v
+test/expected/bm25/conflict_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/bm25/conflict_1.out	8a94c9c08f3f8565950c519da1837b1ea5e45606	17	id
+test/expected/bm25/conflict_1.out	8dc7a8494fe07787d927929079fd59febbc4856d	17	201 |  201
+test/expected/bm25/conflict_1.out	938475d0ef4883f744fc29e2086e257276f87f87	17	id | code  | n
+test/expected/bm25/conflict_1.out	a2512357879f1ad581e2f298615c52e6bb7b8740	17	id
+test/expected/bm25/conflict_1.out	a396d021e91990f6e036f7a34d1b2f22dbcbd687	17	id | code  | n
+test/expected/bm25/conflict_1.out	a8b09ddadd024049c3108f485f5f3e985680b0b3	17	id
+test/expected/bm25/conflict_1.out	b3977a32d2cb6443fb490c7b12c94a8996f84517	17	id | code  | n
+test/expected/bm25/conflict_1.out	c23004878c9f94b086e1936361f668a6076b34aa	17	id | code
+test/expected/bm25/conflict_1.out	e919fa461c04f7f19b7050464ff8c77b030c2741	17	206 |  206
+test/expected/bm25/conflict_1.out	e94b13ff94665ed6dffedd51b4341e3aecc155c6	17	id  | n
+test/expected/bm25/conflict_1.out	eba6c43bb42d7c6c93d3d271a0587c6592d50ba5	17	k | a | b |       v
+test/expected/col/alter_layout_1.out	5eb4fb419f4f1fda6ca65b316641c6ae755b1c22	17	expect
 test/expected/col/f2/limits_ios_1.out	1e907d3890cd64d040f6cb4c12b9ac4986c17dc8	17	suggest_stored_doc
 test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	17	ERROR:  column "vdoc" is a virtual generated column: no row stores its documents
 test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
@@ -108,11 +132,20 @@ test/expected/col/f2/map_cubes_1.out	55d1881db4657fc2f9f4893999f85c74f30e3348	17
 test/expected/col/f2/map_cubes_1.out	6e82b6c0b3dc6c9c13ca1c4310ff61100e28a886	17	same preagg ok
 test/expected/col/f2/map_cubes_1.out	71bb2afbe27c37a8fd312f21cf6bce8f24fab5c4	17	late_keys
 test/expected/col/f2/map_cubes_1.out	783258202a97d7dccbf912572e088798e587c839	17	same
+test/expected/col/f2/opclasses_choices_1.out	34a2e20e35fb4ae761d79fa528463934ab93d0ad	17	k     | v
+test/expected/col/f2/opclasses_choices_1.out	538b6cb4209f034db92b2ba93bdf9c31af160640	17	k3       | v
+test/expected/col/f2/opclasses_choices_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/col/f2/opclasses_choices_1.out	89fcb06d84233267cddca3804f8c0080587ac16a	17	k2  | v
+test/expected/col/f2/opclasses_choices_1.out	b62cfab0599933b20408937f0bec800ad9ec619a	17	k  | v
+test/expected/col/f2/opclasses_choices_1.out	efeafb4736c7c526d8dffa2e5116fa6b38ff87c2	17	k  | v
 test/expected/col/f2/ordered_scan_1.out	019f6a6f0b4a4668ea3f0e3560db809cdb09dcec	17	(4 rows)
 test/expected/col/f2/ordered_scan_1.out	06db9b018342a84288131c02e3889606d65da734	17	Index Cond: (ROW(a, b) > ROW(30, 40))
 test/expected/col/f2/ordered_scan_1.out	5eae321912bb0181a74ee9aaeba901eb95101c9c	17	QUERY PLAN
 test/expected/col/ord_rowcompare_1.out	4de0ed9351ea9baf9faf15ea55161b171c433ed0	17	1 |     0
 test/expected/col/ord_rowcompare_1.out	95a66444f07d0ce4128817ceb17d9386acd0a691	17	date        | t            |     24 | t
+test/expected/col/point/dir_1.out	04a7b4965d2a574eec22a01d19697bc4823c5634	17	t = timestamp '1999-01-01'
+test/expected/col/point/dir_1.out	089b736f352809b9a5e23c37515171e2564f3ccb	17	d = date '2030-01-01'
+test/expected/col/point/dir_1.out	2e3f51aea843ac2ad4e29d2b67cf22ebb119ca8d	17	i2 = 1500
 test/expected/col/skip_map_1.out	200271921995c65698d6521f4cb726bcc492fec3	18	sm_o | avg(f)  | 6 | k < 0                 | normal                    |
 test/expected/col/skip_map_1.out	42c9691c59600b08f1427499788fe9278580ae86	18	sm_o | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	5a8f08ada73519eef481c9df90c4f91e234796f7	18	sm   | sum(id) | 3 | k = 500               | normal                    |
@@ -125,15 +158,50 @@ test/expected/col/skip_map_1.out	bfde826c67f6f744a27ca4d008cd34e0ccf69546	18	sm 
 test/expected/col/skip_map_1.out	d90b0b4dfa757a4884a224c2f7433556ab57ef1b	18	sm   | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	f8f4825b56bd92ba01a2773d6c6cb884eb7b03df	18	sm_z | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	fcfb8eb492b07fe4cc2646c01efefe1e869aae9d	18	sm   | sum(id) | 6 | k < 0                 | normal                    |
+test/expected/col/topn/trail_1.out	89f5c013da11312cc80fee817f277de046c48037	17	QUERY PLAN
+test/expected/col/topn/trail_1.out	c5d9a500028752371c59fb7b97e541ce0544b55b	17	Disabled: true
 test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
 test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
 test/expected/col/unique_include_2.out	4c74016e37a4e684f3b78adcff25e0d2f5c92942	19	LINE 1: ...INDEX inc_bad ON inc USING sift_col (k1) INCLUDE (c1_renamed...
+test/expected/col/unique_shm_1.out	02bac5b9e995ad4019eb920b335fca5569418bdc	17	key                   | hits
+test/expected/col/unique_shm_1.out	0eede020b349df4b48537103729068261b29add2	17	150010 | 150010
+test/expected/col/unique_shm_1.out	3728ed58d1f95b590d02620d66c5850e320edc1d	17	400 |  400 |   700
+test/expected/col/unique_shm_1.out	63e65c11a38a48066b167ea6645b500868bae633	17	150010
+test/expected/col/unique_shm_1.out	72ed850818a3202eb489fd0c63b7c364ee9182de	17	150021
+test/expected/col/unique_shm_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/col/unique_shm_1.out	85f8247678d3fd44a16f4d00487fc540664fa3db	17	2 | upserted
+test/expected/col/unique_shm_1.out	e7fb366e442fa08b0fbab9e8704c38d4d824340e	17	13 |   24
+test/expected/col/unique_shm_1.out	f43b1edfc8241005a6ffea15be4911ae240b7208	17	ERROR:  canceling statement due to lock timeout
+test/expected/col/unique_shm_1.out	f88623762b0fa2bb5885c2e2cf89f2a6b66248ec	17	1 |   100
+test/expected/col/unique_stage_1.out	31560d648b2870bb9dc1c9b3f4d81cc202bcbfc0	17	27001
+test/expected/col/unique_stage_1.out	396ddcf3a7de218601745c58b1c6faf5178f5862	17	1 | 24000
+test/expected/col/unique_stage_1.out	688eaf8a864e73bb31281424e267e24d375c2061	17	ERROR:  current transaction is aborted, commands ignored until end of transactio
+test/expected/col/unique_stage_1.out	76c4df30688f4d7281b1328816b916ed06c234ca	17	ERROR:  duplicate key value violates unique constraint "st_i"
+test/expected/col/unique_stage_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
+test/expected/col/unique_stage_1.out	86130d0a2a04d30789e0e9c37c913dd3020d2376	17	27000 | 27000 | 30000
+test/expected/col/unique_stage_1.out	925e2ccc93085fef10c7cfa052b22d9db59b1bc5	17	stage_writes
+test/expected/compat/v1/unified_preagg_cube_1.out	14ea07c3a0341ec4ca721f9a286f1f879fdd6173	19	count_by_kind |     2 | t
+test/expected/compat/v1/unified_preagg_cube_1.out	2866bb19ec4f61b473e5dd1c54704a50ee9ca7d1	19	count_by_kind |     3 | t
+test/expected/compat/v1/unified_preagg_cube_1.out	a26d1aec4fe79345f15d6fcf374df6cb49108319	19	count_live    |     2 | t
+test/expected/compat/v1/unified_preagg_cube_1.out	ab2d86deb36b555b18d8a706b97ffa39ebe5622d	19	by_kind_sums  |     3 | t
+test/expected/compat/v1/unified_preagg_cube_1.out	ae41c35c543712811afc22a60d6e5e871fabcd9a	19	count_live    |     3 | t
+test/expected/core/spool_1.out	b6ee8403895cf8769c15bfdae14a5450ec1d19e6	17	ERROR:  temporary file size exceeds "temp_file_limit" (64kB)
 test/expected/table/f2/fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
 test/expected/table/f2/parity_1.out	03b666735fa26a3b749a14c9538e29a62d55f585	17	assert_eq
 test/expected/table/f2/parity_1.out	3e638e713af760fb57e5658af4017318e0527a33	17	assert_eq
 test/expected/table/f2/parity_1.out	6b44508f6bd0c0cc6f792c3bb347f24c43fb1b0b	17	assert_eq
 test/expected/table/f2/parity_1.out	7929064a4189ca7a8a2826e9f461d8c9693ea60a	17	assert_eq
+test/expected/table/f2/returning_old_1.out	0bbf155b469f0b682ea0d386bb2400892d17d977	17	same_returning
+test/expected/table/f2/returning_old_1.out	3d57f000feaa00eb7d0fa883c49799634462d2af	17	same_returning
+test/expected/table/f2/returning_old_1.out	5c9c3c229ff54af180687d3b10715fee592d7332	17	same_returning
+test/expected/table/f2/returning_old_1.out	7faa033b50c900381a81aca121753675c9e73425	17	same_returning
+test/expected/table/f2/returning_old_1.out	926f8f0e1c2747ddf7c5faef3864f02e0b17e994	17	same_returning
+test/expected/table/f2/returning_old_1.out	9c30f50bc12fffc2e7a52cbaed232518926eca08	17	same_returning
+test/expected/table/f2/returning_old_1.out	b6d24c8a7325f689d8448d6e67ec7d9dd5128a4b	17	same_returning
+test/expected/table/f2/returning_old_1.out	dcbec81a28eab0b462348f1a0489725227c74cf6	17	same_returning
+test/expected/table/f2/returning_old_1.out	f1b53ccb6d57e5160c8dde8f1ff2733c93d5d544	17	sift           |          heap
+test/expected/table/f2/returning_old_1.out	ff83416a98dc4d6f3dd63ec232cddcd694443042	17	same_returning
 test/expected/table/virtual_parity_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
 test/expected/table/virtual_parity_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
 test/expected/table/virtual_parity_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"

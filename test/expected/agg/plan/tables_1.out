@@ -211,8 +211,8 @@ EXPLAIN (COSTS OFF) SELECT s.kind, count(*) FROM ev e JOIN (SELECT id, kind FROM
 (8 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM ev WHERE id IN (SELECT id FROM ev WHERE memo @@> 'cable' ORDER BY sift.score(ctid) DESC LIMIT 100);
-                    QUERY PLAN                     
----------------------------------------------------
+                     QUERY PLAN                     
+----------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: ev_col
    Pushed Aggregates: count(*)
