@@ -195,7 +195,7 @@ run_check() {
 
 # at most LINT_JOBS checks at a time (default: half the cores, at least 8: a hosted runner of 4 cores waits on its checks as much as it computes); LINT_TIMES=FILE appends "name wall-seconds cpu-seconds" of every check
 run_checks() {
-	local cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu) jobs running=0 c name rc wall cpu bad=0 sel=() order=() walls=()
+	local cores=$(nproc 2>/dev/null || sysctl -n hw.ncpu) jobs c name rc wall cpu bad=0 sel=() order=() walls=()
 	local -A cmd=()
 	jobs=${LINT_JOBS:-$(( cores / 2 > 8 ? cores / 2 : 8 ))}
 	for c in "${CHECKS[@]}"; do
@@ -206,9 +206,8 @@ run_checks() {
 	for name in $FIRST; do [[ -z ${cmd[$name]:-} ]] || order+=("$name"); done
 	for name in "${sel[@]}"; do [[ " $FIRST " == *" $name "* ]] || order+=("$name"); done
 	for name in "${order[@]}"; do
-		(( running < jobs )) || { wait -n; running=$((running - 1)); }
+		while (( $(jobs -rp | wc -l) >= jobs )); do wait -n; done
 		( run_check "$name" "${cmd[$name]}" ) &
-		running=$((running + 1))
 	done
 	wait
 	for name in "${sel[@]}"; do

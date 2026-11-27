@@ -1,13 +1,14 @@
 /*
  * shim.c - what the fuzz targets need beyond test/common/pgshim.c (test/fuzz/README.md): fz_try() sorts the errors of a decoder of untrusted
  * bytes by SQLSTATE (the answer it may give to corrupt bytes or a finding), the CPU dispatch, the stream the targets read and the storage
- * symbols they never reach.
+ * symbols they never reach, the interrupts of CHECK_FOR_INTERRUPTS included (no signal reaches a target).
  */
 #include "postgres.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "miscadmin.h"
 #include "storage/buffile.h"
 
 #include "core/sift.h"
@@ -212,4 +213,12 @@ sift_sr_release(SiftStreamReader *sr)
 void
 sift_sr_unlock(SiftStreamReader *sr)
 {
+}
+
+volatile sig_atomic_t InterruptPending = false;
+
+void
+ProcessInterrupts(void)
+{
+	pgshim_unreached("ProcessInterrupts");
 }
