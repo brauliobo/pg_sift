@@ -10,6 +10,7 @@
 #include "access/table.h"
 #include "access/tableam.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
@@ -43,6 +44,7 @@ scan_pairs(Oid btree, Relation rel, AttrNumber a, SiftKeyMap *ma, AttrNumber b, 
 		const Datum x = slot_getattr(slot, a, &na),
 					y = slot_getattr(slot, b, &nb);
 
+		CHECK_FOR_INTERRUPTS();
 		if (!na && !nb)
 		{
 			const int64 code_a = sift_scope_key_code(ta, ma, x),
@@ -77,6 +79,7 @@ join_via(SiftScopeSpool *groups, SiftScopeSpool *hop, SiftScopeSpool *out)
 	more = sift_scope_spool_next(groups, &g, &k);
 	while (sift_scope_spool_next(hop, &hg, &member))
 	{
+		CHECK_FOR_INTERRUPTS();
 		while (more && g < hg)
 			more = sift_scope_spool_next(groups, &g, &k);
 		if (!have || run != hg)
@@ -130,74 +133,82 @@ scan_hops(Relation heap, Relation index, const SiftScopeSpec *spec, SiftKeyMap *
 	table_close(joined, NoLock);
 }
 
-static void
-grow(void **p, uint32 *cap, uint32 need, Size width)
+/* An array of n of width bytes for the map: exactly what it holds (palloc of 0 for none), the statement failing with the name of what needs more than one allocation */
+static void *
+map_array(uint32 n, Size width)
 {
-	if (need <= *cap)
-		return;
-	*cap = Max(need, *cap * 2);
-	*p = *p ? repalloc(*p, (Size) *cap * width) : palloc((Size) *cap * width);
+	return palloc(sift_alloc_grow(0, (Size) n * width, "the pair map of a scope"));
 }
 
-/* The map of pairs that went to a sort, made as sift_spm_build makes it of the pairs of an array: the keys of the pairs sorted and distinct, then the keys of each member by their ordinals; a multiset keeps the repeated pairs */
+/* The distinct keys of the sorted (key, 0) rows */
+static int64 *
+distinct_keys(SiftScopeSpool *keys, uint32 *nk)
+{
+	int64	   *out;
+	int64		a,
+				b,
+				prev = 0;
+
+	*nk = 0;
+	for (; sift_scope_spool_next(keys, &a, &b); prev = a)
+	{
+		CHECK_FOR_INTERRUPTS();
+		*nk += *nk == 0 || a != prev;
+	}
+	out = map_array(*nk, sizeof(int64));
+	sift_scope_spool_rewind(keys);
+	for (uint32 k = 0; sift_scope_spool_next(keys, &a, &b);)
+		if (k == 0 || out[k - 1] != a)
+			out[k++] = a;
+	return out;
+}
+
+/*
+ * The map of pairs that went to a sort, made as sift_spm_build makes it of the pairs of an array: the keys of the pairs sorted and distinct, then the keys of each member by their ordinals; a
+ * multiset keeps the repeated pairs. A first read counts the members and the pairs and spools the keys, so that each array is allocated once at its size.
+ */
 static SiftScopePairMap *
 sorted_map(SiftScopeSpool *pairs, SiftMemTracker *mem, bool multiset)
 {
 	SiftScopePairMap *pm = palloc0(sizeof(*pm));
 	SiftScopeSpool *keys = sift_scope_spool_new(mem);
-	int64	   *scope_keys = NULL,
-			   *members = NULL;
-	uint32	   *offsets = NULL,
-			   *ords = NULL;
-	uint32		nk = 0,
-				kcap = 0,
-				nmem = 0,
-				mcap = 0,
-				ocap = 0,
-				n = 0,
-				ncap = 0;
+	uint32		nmem = 0,
+				n = 0;
 	int64		a,
 				b,
 				pa = 0,
 				pb = 0;
 
 	sift_scope_spool_sort(pairs);
-	while (sift_scope_spool_next(pairs, &a, &b))
-		sift_scope_spool_put(keys, b, 0);
-	sift_scope_spool_sort(keys);
-	while (sift_scope_spool_next(keys, &a, &b))
-		if (nk == 0 || scope_keys[nk - 1] != a)
-		{
-			grow((void **) &scope_keys, &kcap, nk + 1, sizeof(int64));
-			scope_keys[nk++] = a;
-		}
-	sift_scope_spool_free(keys);
-	pm->scope_keys = scope_keys;
-	pm->nkeys = nk;
-	sift_scope_spool_rewind(pairs);
-	while (sift_scope_spool_next(pairs, &a, &b))
+	for (; sift_scope_spool_next(pairs, &a, &b); pa = a, pb = b)
 	{
+		CHECK_FOR_INTERRUPTS();
 		if (!multiset && n > 0 && a == pa && b == pb)
 			continue;
-		if (n == 0 || a != pa)
-		{
-			grow((void **) &members, &mcap, nmem + 1, sizeof(int64));
-			grow((void **) &offsets, &ocap, nmem + 2, sizeof(uint32));
-			members[nmem] = a;
-			offsets[nmem++] = n;
-		}
-		grow((void **) &ords, &ncap, n + 1, sizeof(uint32));
-		ords[n++] = (uint32) sift_spm_key_ordinal(pm, b);
-		pa = a;
-		pb = b;
+		nmem += n == 0 || a != pa;
+		n++;
+		sift_scope_spool_put(keys, b, 0);
 	}
-	offsets[nmem] = n;
-	pm->scope_keys = repalloc(scope_keys, sizeof(int64) * nk);
-	pm->member_ids = repalloc(members, sizeof(int64) * nmem);
-	pm->offsets = repalloc(offsets, sizeof(uint32) * (nmem + 1));
-	pm->key_ordinals = repalloc(ords, sizeof(uint32) * n);
-	pm->nmembers = nmem;
-	pm->npairs = n;
+	sift_scope_spool_sort(keys);
+	pm->scope_keys = distinct_keys(keys, &pm->nkeys);
+	sift_scope_spool_free(keys);
+	pm->member_ids = map_array(nmem, sizeof(int64));
+	pm->offsets = map_array(nmem + 1, sizeof(uint32));
+	pm->key_ordinals = map_array(n, sizeof(uint32));
+	sift_scope_spool_rewind(pairs);
+	for (; sift_scope_spool_next(pairs, &a, &b); pa = a, pb = b)
+	{
+		CHECK_FOR_INTERRUPTS();
+		if (!multiset && pm->npairs > 0 && a == pa && b == pb)
+			continue;
+		if (pm->npairs == 0 || a != pa)
+		{
+			pm->member_ids[pm->nmembers] = a;
+			pm->offsets[pm->nmembers++] = pm->npairs;
+		}
+		pm->key_ordinals[pm->npairs++] = (uint32) sift_spm_key_ordinal(pm, b);
+	}
+	pm->offsets[pm->nmembers] = pm->npairs;
 	return pm;
 }
 

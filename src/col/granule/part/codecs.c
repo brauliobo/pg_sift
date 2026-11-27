@@ -47,6 +47,13 @@ cdict_free(void *arg)
 	sift_colz_zstd_free_cdict(((ZstdCb *) arg)->cdict);
 }
 
+/* The bytes of string i that a sample of cap bytes takes: the head of a longer one, so that a sample holds less than twice its cap whatever the strings */
+static inline uint32
+sampled(const SiftColIn *col, int i, uint32 cap)
+{
+	return Min(col->slen[i], cap);
+}
+
 /* The strings of column col over the n values of the part, and an even sample of at most SIFT_CODEC_SAMPLE_STRS of them (and SIFT_CODEC_SAMPLE_BYTES bytes) */
 static void
 take_sample(const SiftColIn *col, int n, StrSample *sm)
@@ -70,7 +77,7 @@ take_sample(const SiftColIn *col, int n, StrSample *sm)
 			if (seen++ % stride != 0)
 				continue;
 			sm->p[sm->n] = col->s[i];
-			sm->bytes += sm->len[sm->n++] = col->slen[i];
+			sm->bytes += sm->len[sm->n++] = sampled(col, i, SIFT_CODEC_SAMPLE_BYTES);
 		}
 }
 
@@ -140,7 +147,7 @@ take_run(const SiftColIn *col, int n, StrSample *sm)
 		if (col->isnull == NULL || !col->isnull[i])
 		{
 			sm->p[sm->n] = col->s[i];
-			sm->bytes += sm->len[sm->n++] = col->slen[i];
+			sm->bytes += sm->len[sm->n++] = sampled(col, i, SIFT_CODEC_SAMPLE_BYTES);
 		}
 }
 
@@ -199,7 +206,7 @@ zstd_probe(const SiftColIn *col, int n, void *cdict, uint64 *with_dict, uint64 *
 	initStringInfo(&buf);
 	for (int i = 0; i < n && buf.len < SIFT_CODEC_ZSTD_PROBE; i++)
 		if (col->isnull == NULL || !col->isnull[i])
-			appendBinaryStringInfo(&buf, col->s[i], col->slen[i]);
+			appendBinaryStringInfo(&buf, col->s[i], sampled(col, i, SIFT_CODEC_ZSTD_PROBE));
 	cap = sift_colz_bound(SIFT_CC_ALG_ZSTD, buf.len);
 	out = palloc(cap);
 	*raw = buf.len;
@@ -241,8 +248,8 @@ zstd_for(MemoryContext cx, const SiftColIn *col, int n, const StrSample *sm, uin
 		for (int i = 0; i < n && ns < SIFT_CODEC_SAMPLE_STRS && buf.len < SIFT_ZSTD_DICT_SAMPLE_CAP; i++)
 			if ((col->isnull == NULL || !col->isnull[i]) && col->slen[i] > 0 && seen++ % stride == 0)
 			{
-				appendBinaryStringInfo(&buf, col->s[i], col->slen[i]);
-				sizes[ns++] = col->slen[i];
+				sizes[ns] = sampled(col, i, SIFT_ZSTD_DICT_SAMPLE_CAP);
+				appendBinaryStringInfo(&buf, col->s[i], sizes[ns++]);
 			}
 		zlen = sift_colz_zstd_train_dict(dict, dict_cap, buf.data, sizes, ns);
 		pfree(buf.data);

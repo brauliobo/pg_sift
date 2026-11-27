@@ -252,10 +252,9 @@ part_sketch_seen(KllSeen *s, const SiftPartDesc *d, bool col_deltas)
  * when the manifest says the rows may be clean enough.
  */
 static bool
-index_sketch(Oid indexoid, int leaf, SiftKll *out)
+parts_sketch(Relation idx, Relation heap, int leaf, SiftKll *out)
 {
-	Relation	idx = index_open(indexoid, AccessShareLock);
-	KllSeen		seen = {.heap = table_open(idx->rd_index->indrelid, AccessShareLock),.snap = GetActiveSnapshot()};
+	KllSeen		seen = {.heap = heap,.snap = GetActiveSnapshot()};
 	SiftManifestRead all = sift_manifest_read_range(idx, NULL, NULL);
 	uint64		rows = 0,
 				dirty = 0;
@@ -290,8 +289,23 @@ index_sketch(Oid indexoid, int leaf, SiftKll *out)
 	}
 	MemoryContextDelete(pcx);
 	sift_v6_vis_free(&seen.vis);
-	table_close(seen.heap, NoLock);
-	index_close(idx, AccessShareLock);
+	return ok;
+}
+
+/*
+ * The sketch of the index of the target. The table is locked before its index, as DDL on the table locks them, and the index is opened only if it is still the one of the table
+ * resolve_target found: it may have been dropped, or replaced, while no lock was held.
+ */
+static bool
+index_sketch(const KllTarget *t, SiftKll *out)
+{
+	Relation	heap = table_open(t->heap, AccessShareLock),
+				idx = try_relation_open(t->index, AccessShareLock);
+	bool		ok = idx != NULL && idx->rd_rel->relkind == RELKIND_INDEX && idx->rd_index->indrelid == t->heap && index_whole(idx) && parts_sketch(idx, heap, t->leaf, out);
+
+	if (idx != NULL)
+		index_close(idx, AccessShareLock);
+	table_close(heap, NoLock);
 	return ok;
 }
 
@@ -309,7 +323,7 @@ sketch_answer(const KllTarget *t, const double *ps, uint32 np, double *out, bool
 		return false;
 	ok = sift_kll_init(&sk, SIFT_KLL_K_DEFAULT, CurrentMemoryContext);
 	SIFT_INVARIANT(ok, "sift: the default sketch parameter k is out of range");
-	ok = index_sketch(t->index, t->leaf, &sk);
+	ok = index_sketch(t, &sk);
 	*empty = ok && sk.n == 0;
 	ok = ok && (*empty || sift_kll_quantiles(&sk, ps, np, out));
 	sift_kll_free(&sk);

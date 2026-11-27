@@ -13,6 +13,7 @@
 #define SIFT_PREFIX_SAMPLE		64
 #define SIFT_PREFIX_CANDIDATES	6
 #define SIFT_PREFIX_TRIAL_ROWS	8192
+#define SIFT_PREFIX_TRIAL_BYTES	(16u * 1024 * 1024)
 #define SIFT_PREFIX_MIN_ROWS	64
 #define SIFT_PREFIX_CONFORM_PCT	95
 #define SIFT_PREFIX_GAIN_PCT	90
@@ -128,7 +129,7 @@ typedef struct Trial
 	int			ns;
 } Trial;
 
-/* The first rows of the column as the numbers, and as the text of all of them */
+/* The first rows of the column as the numbers, and as the text of all of them: the trial ends at SIFT_PREFIX_TRIAL_BYTES of text, and a longer string is tried by its head */
 static void
 trial_rows(const SiftColIn *col, int n, const SiftPromoPrefix *cx, Trial *t)
 {
@@ -141,15 +142,18 @@ trial_rows(const SiftColIn *col, int n, const SiftPromoPrefix *cx, Trial *t)
 	t->nv = t->ns = 0;
 	t->xbytes = 0;
 	t->off[0] = 0;
-	for (int i = 0; i < n && t->ns < SIFT_PREFIX_TRIAL_ROWS; i++)
+	for (int i = 0; i < n && t->ns < SIFT_PREFIX_TRIAL_ROWS && b.len < SIFT_PREFIX_TRIAL_BYTES; i++)
 	{
+		uint32		len;
+
 		if (col->isnull != NULL && col->isnull[i])
 			continue;
+		len = Min(col->slen[i], SIFT_PREFIX_TRIAL_BYTES);
 		if (sift_prefix_typed(cx, col->s[i], col->slen[i], col->tag ? col->tag[i] : 0, &v))
 			t->v[t->nv++] = v;
 		else
-			t->xbytes += col->slen[i] + 6;
-		appendBinaryStringInfo(&b, col->s[i], col->slen[i]);
+			t->xbytes += len + 6;
+		appendBinaryStringInfo(&b, col->s[i], len);
 		t->off[++t->ns] = b.len;
 	}
 	t->bytes = b.data;

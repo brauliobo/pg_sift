@@ -293,15 +293,15 @@ owned_by_stripe(const void *a, const void *b)
 
 /*
  * A (sub)transaction is out of the running xids before the callbacks of its end run, and a probe that finds an entry of such an xid frees it (and a writer may take its slot): the owner lets go
- * of an entry only while the slot still holds the entry of its xid, which no one makes again once that xid has ended. The entries that are let go are moved after the ones that are kept, and, when
- * there are more than a few, put in the order of their stripes: each stripe is locked once for all its entries
+ * of an entry only while the slot still holds the entry of its xid, which no one makes again once that xid has ended. The entries from the first on that are let go are moved after the ones that
+ * are kept, in their order, and, when there are more than a few, put in the order of their stripes: each stripe is locked once for all its entries
  */
 static void
-owned_release_where(bool (*pick) (const Owned *, void *), void *arg)
+owned_release_where(int first, bool (*pick) (const Owned *, void *), void *arg)
 {
-	int			kept = 0;
+	int			kept = first;
 
-	for (int n = 0; n < nowned; n++)
+	for (int n = first; n < nowned; n++)
 		if (!pick(&owned[n], arg))
 		{
 			Owned		t = owned[kept];
@@ -336,22 +336,30 @@ pick_index(const Owned *o, void *arg)
 	return RelFileLocatorEquals(o->locator, *(const RelFileLocator *) arg);
 }
 
-static bool
-pick_sub(const Owned *o, void *arg)
+/*
+ * The first entry of the subtransaction that ends: the list is in the order of the subtransactions, since an entry is made by the one that runs, the newest of those that have not ended, and
+ * the entries of one that ends go with it or pass to its parent, the one that runs next
+ */
+static int
+owned_first_of(SubTransactionId subid)
 {
-	return o->subid == *(const SubTransactionId *) arg;
+	int			n = nowned;
+
+	while (n > 0 && owned[n - 1].subid == subid)
+		n--;
+	return n;
 }
 
 void
 sift_uniq_shm_release(const RelFileLocator *locator)
 {
-	owned_release_where(pick_index, (void *) locator);
+	owned_release_where(0, pick_index, (void *) locator);
 }
 
 static void
 uniq_exit(int code pg_attribute_unused(), Datum arg pg_attribute_unused())
 {
-	owned_release_where(pick_all, NULL);
+	owned_release_where(0, pick_all, NULL);
 }
 
 static void
@@ -359,7 +367,7 @@ uniq_xact(XactEvent event, void *arg pg_attribute_unused())
 {
 	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PREPARE || event == XACT_EVENT_ABORT)
 	{
-		owned_release_where(pick_all, NULL);
+		owned_release_where(0, pick_all, NULL);
 		owned = NULL;
 		capowned = 0;
 	}
@@ -371,12 +379,11 @@ uniq_subxact(SubXactEvent event, SubTransactionId mySubid, SubTransactionId pare
 	if (event == SUBXACT_EVENT_ABORT_SUB)
 	{
 		SIFT_F2_GATE(UNIQ_ABORT_GATE);
-		owned_release_where(pick_sub, &mySubid);
+		owned_release_where(owned_first_of(mySubid), pick_all, NULL);
 	}
 	else if (event == SUBXACT_EVENT_COMMIT_SUB)
-		for (int n = 0; n < nowned; n++)
-			if (owned[n].subid == mySubid)
-				owned[n].subid = parentSubid;
+		for (int n = owned_first_of(mySubid); n < nowned; n++)
+			owned[n].subid = parentSubid;
 }
 
 /* Room in the list for one more entry, and the callbacks that let the entries go: everything that can fail comes before an entry is made, so that none is made that nobody lets go */
@@ -547,7 +554,7 @@ sweep_ended(UniqShm *u, Stripe *s)
 /*
  * Takes a free entry of the stripe, else a spare one. A stripe with none gives back the entries of the transactions that ended first, with no lock held, when no spare is left or when
  * SWEEP_EVERY transactions have ended since its last sweep: a sweep asks the process array once for each transaction of the stripe, which a full stripe of running ones would otherwise
- * pay for every insert once any transaction of the server ends. The stripe is locked on return; 0 where no entry is free even then
+ * pay for every insert once any transaction of the server ends; none has when no transaction ended since the last one. The stripe is locked on return; 0 where no entry is free even then
  */
 static uint32
 reserve_slot(UniqShm *u, Stripe *s, uint32 hash)
@@ -555,7 +562,7 @@ reserve_slot(UniqShm *u, Stripe *s, uint32 hash)
 	uint32		i;
 
 	LWLockAcquire(&s->lock, LW_EXCLUSIVE);
-	if ((i = take_free(u, s, hash)) != 0 || (completions() - s->swept_at < SWEEP_EVERY && (i = take_spare(u)) != 0))
+	if ((i = take_free(u, s, hash)) != 0 || (completions() - s->swept_at < SWEEP_EVERY && (i = take_spare(u)) != 0) || completions() == s->swept_at)
 		return i;
 	LWLockRelease(&s->lock);
 	sweep_ended(u, s);

@@ -12,3 +12,8 @@ TESTS += col/granule/decode
 LIB_col/granule/decode = $(GRANULE_LIB)
 # granule_filter.c is linked for the FSST chunk opener the point decode uses; its predicate engine is not run: col/granule/decode_stubs.c
 FX_col/granule/decode  = $(GRANULE_FX) $(B)/col/granule/decode_stubs.o
+
+TESTS    += col/granule/part/codecs
+AUTOSTUB += col/granule/part/codecs
+LIB_col/granule/part/codecs = core/par/arena.c $(CODEC_SRC) $(GRANULE_WRITE) col/granule/part/codecs.c
+FX_col/granule/part/codecs  = $(CPU)

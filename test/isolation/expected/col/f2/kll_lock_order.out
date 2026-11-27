@@ -1,0 +1,25 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1lock s2q s1trunc s1c
+step s1lock: BEGIN; LOCK TABLE kl IN ACCESS EXCLUSIVE MODE;
+step s2q: SELECT sift.approx_percentile('kl_col', 'v', 0.5) AS p; <waiting ...>
+step s1trunc: TRUNCATE kl;
+step s1c: COMMIT;
+step s2q: <... completed>
+p
+-
+ 
+(1 row)
+
+
+starting permutation: s1lock s2q s1drop s1c
+step s1lock: BEGIN; LOCK TABLE kl IN ACCESS EXCLUSIVE MODE;
+step s2q: SELECT sift.approx_percentile('kl_col', 'v', 0.5) AS p; <waiting ...>
+step s1drop: DROP INDEX kl_col;
+step s1c: COMMIT;
+step s2q: <... completed>
+  p
+---
+500
+(1 row)
+

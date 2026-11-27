@@ -527,7 +527,7 @@ sift_f2_unique_insert(Relation index, Relation heap, Datum *values, bool *isnull
 		{
 			bool		reserved = sift_uniq_shm_reserve(&rk, GetCurrentTransactionId(), heap_tid);
 
-			if (!reserved && !spilled)
+			if (!reserved && !spilled && sift_stage_has_pending(index))
 			{
 				UnlockPage(index, lock, ExclusiveLock);
 				spill(index);
