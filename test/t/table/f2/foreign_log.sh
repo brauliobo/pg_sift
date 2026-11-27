@@ -7,7 +7,8 @@
 
 plan 5
 node_init fl 0 "autovacuum = off
-sift.async_maintenance = off"
+sift.async_maintenance = off
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start fl || bail "start failed"
 sql fl "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE p (k int PRIMARY KEY, v int) USING sift_table" \
