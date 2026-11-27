@@ -375,7 +375,8 @@ bulk_put_meta(SiftWriteTarget *wt)
 /*
  * LAYOUT: the pages go to the file only after their WAL is durable, and no checkpoint takes its redo pointer in between. A bulk write
  * (smgr_bulk_*) sends them ahead of it, which is safe only for a file the same transaction created: here the file exists and is committed, so a
- * crash before the WAL flush leaves pages that neither the recovery nor a standby has, and the next record of them carries no full image.
+ * crash before the WAL flush leaves pages that neither the recovery nor a standby has, and the next record of them carries no full image. An abort does not clear the
+ * flag (log_newpages and smgrextend allocate, so this is no critical section): an error leaves it set, and every later checkpoint waits for this backend.
  */
 static void
 layout_write(SiftWriteTarget *wt)
@@ -387,17 +388,24 @@ layout_write(SiftWriteTarget *wt)
 
 	layout_pages(wt, pages[0], pages[1]);
 	MyProc->delayChkptFlags |= DELAY_CHKPT_START;
-	if (RelationNeedsWAL(wt->index))
+	PG_TRY();
 	{
-		log_newpages(&srel->smgr_rlocator.locator, MAIN_FORKNUM, 2, blknos, pages, true);
-		XLogFlush(PageGetLSN(pages[1]));	/* the end of the record: the insert position can lie past the written WAL */
+		if (RelationNeedsWAL(wt->index))
+		{
+			log_newpages(&srel->smgr_rlocator.locator, MAIN_FORKNUM, 2, blknos, pages, true);
+			XLogFlush(PageGetLSN(pages[1]));	/* the end of the record: the insert position can lie past the written WAL */
+		}
+		for (int i = 0; i < 2; i++)
+		{
+			sift_page_set_checksum(pages[i], blknos[i]);
+			smgrextend(srel, MAIN_FORKNUM, blknos[i], pages[i], false);
+		}
 	}
-	for (int i = 0; i < 2; i++)
+	PG_FINALLY();
 	{
-		sift_page_set_checksum(pages[i], blknos[i]);
-		smgrextend(srel, MAIN_FORKNUM, blknos[i], pages[i], false);
+		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 	}
-	MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
+	PG_END_TRY();
 }
 
 /* BULK spare: trailing runs shrink the relation, the rest go to a free list */

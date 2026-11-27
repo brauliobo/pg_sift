@@ -95,6 +95,7 @@ table/f2/pk_concurrent	0.1
 table/f2/key_share_cic	0.1
 table/f2/speculative_ssi	0.0
 table/f2/ssi_delvec	0.1
+table/f2/ssi_scan_caches	0.6	quiet
 table/fetch_past_dir	2.4
 table/maintain	2.0	quiet
 table/par_scan	0.6

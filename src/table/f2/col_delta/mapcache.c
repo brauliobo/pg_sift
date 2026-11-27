@@ -373,7 +373,8 @@ stamp_of(const char *page, BlockNumber blk)
 	return (HeadStamp) {blk, SiftPageGetOpaque((Page) page)->gen, PageGetLSN((Page) page), SiftPageGetUsed((Page) page), *(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF)};
 }
 
-/* The newest page of the chain as the scan looked at it first: a scan asks for each part of a partition in turn, and its snapshot sees no record written after its first look */
+/* The newest page of the chain as the scan looked at it first: a scan asks for each part of a partition in turn, and its snapshot sees no record written after its first look. A
+ * SERIALIZABLE one reads the page again: a record written since is a conflict out of the reader */
 static SiftColDeltaLook *
 look_of(SiftColDeltaLooks *looks, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, BlockNumber blk)
 {
@@ -386,7 +387,7 @@ look_of(SiftColDeltaLooks *looks, const SiftPartitionEntry *entry, const SiftCol
 static HeadStamp
 head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, BlockNumber blk)
 {
-	bool		scoped = looks != NULL && vis->snap->snapshot_type == SNAPSHOT_MVCC;
+	bool		scoped = looks != NULL && vis->snap->snapshot_type == SNAPSHOT_MVCC && !vis->serializable;
 	SiftColDeltaLook *l = scoped ? look_of(looks, entry, a, blk) : NULL;
 	Buffer		buf;
 	HeadStamp	st;

@@ -3,7 +3,8 @@
  *
  * A row is inserted by (xmin, cmin) and dead by the delete of its deletion vector entry or of a pending delete (xmax, cmax). A granule of one inserter keeps no version bytes
  * (SIFT_GDESC_SINGLE_XACT), a frozen one neither, and a sealed part older than the snapshot is asked nothing. The transactions are asked of the log once each (SiftXidCache), and a
- * SERIALIZABLE transaction is told of the writers it cannot see.
+ * SERIALIZABLE transaction is told of the writers it cannot see: it reads the pending deletes again for every row (pd_epoch 0), as one written after the first look of the scan is such a
+ * writer.
  */
 #include "postgres.h"
 
@@ -27,7 +28,7 @@ sift_tbl_f2_vis_begin(SiftTblVis *v, Relation rel, Snapshot snap)
 	sift_xid_cache_init(&v->xc, snap);
 	v->snap_xmin = sift_vis_snap_xmin(snap);
 	v->serializable = IsolationIsSerializable() && CheckForSerializableConflictOutNeeded(rel, snap);
-	v->pd_epoch = snap->snapshot_type == SNAPSHOT_MVCC ? ++pd_epochs : 0;
+	v->pd_epoch = snap->snapshot_type == SNAPSHOT_MVCC && !v->serializable ? ++pd_epochs : 0;
 	v->pd_cid = snap->curcid;
 }
 

@@ -689,13 +689,14 @@ sift_tbl_vm_sweep_orphans(Relation rel, FullTransactionId oldest, Relation *inde
 	}
 	/* every row of the vblocks below the floor is written and a run taken from now on starts above it: the entries the indexes lose are known, and the writers need not wait for them */
 	UnlockRelation(rel, ShareLock);
+	/* the result an index makes on its first bulk delete outlives the sweep: the cleanup of the index reads it */
+	MemoryContextSwitchTo(outer);
 	for (int i = 0; res != NULL && i < nindexes; i++)
 	{
 		IndexVacuumInfo ivinfo = {.index = indexes[i],.heaprel = rel,.estimated_count = true,.message_level = DEBUG2,.strategy = bstrategy};
 
 		stats[i] = index_bulk_delete(&ivinfo, stats[i], vm_orphan_reaped, &sw);
 	}
-	MemoryContextSwitchTo(outer);
 	MemoryContextDelete(cx);
 	return res;
 }

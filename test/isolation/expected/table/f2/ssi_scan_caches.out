@@ -1,0 +1,95 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1warm s1b s1f s2b s2del s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+busy
+----
+f   
+(1 row)
+
+parts        
+-------------
+3:1000 7:1000
+(1 row)
+
+step s1warm: SELECT count(*), sum(v) FROM iso_sc WHERE id > 0;
+count|sum
+-----+---
+ 1999|  1
+(1 row)
+
+step s1b: BEGIN; DECLARE c CURSOR FOR SELECT id, v FROM iso_sc WHERE id IN (1, 2000) ORDER BY id;
+step s1f: FETCH 1 FROM c;
+id|v
+--+-
+ 1|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2del: DELETE FROM iso_sc WHERE id = 2000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+  id|v
+----+-
+2000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1warm s1b s1f s2b s2upd s2c s1f s1w s1c
+busy
+----
+f   
+(1 row)
+
+busy
+----
+f   
+(1 row)
+
+parts        
+-------------
+3:1000 7:1000
+(1 row)
+
+step s1warm: SELECT count(*), sum(v) FROM iso_sc WHERE id > 0;
+count|sum
+-----+---
+ 1999|  1
+(1 row)
+
+step s1b: BEGIN; DECLARE c CURSOR FOR SELECT id, v FROM iso_sc WHERE id IN (1, 2000) ORDER BY id;
+step s1f: FETCH 1 FROM c;
+id|v
+--+-
+ 1|0
+(1 row)
+
+step s2b: BEGIN; SELECT n FROM iso_mark;
+n
+-
+0
+(1 row)
+
+step s2upd: UPDATE iso_sc SET v = 2 WHERE id = 2000;
+step s2c: COMMIT;
+step s1f: FETCH 1 FROM c;
+  id|v
+----+-
+2000|0
+(1 row)
+
+step s1w: UPDATE iso_mark SET n = 1;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
