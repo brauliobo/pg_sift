@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # The row locks of a prepared transaction of a sift_table are the lock manager's after a crash, as a heap's tuple locks are: four prepared transactions hold a row each in one of the four modes
-# (FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE, FOR UPDATE) while a session that holds another row in the partition keeps them from taking the partition, so that each one's lock is a row entry in shared
-# memory, which the crash empties. After the restart a request of each mode conflicts with each prepared lock as the matrix of the heap says, a wait ends with ROLLBACK PREPARED or COMMIT PREPARED,
-# and a SKIP LOCKED request that skips a row holds no lock on it.
+# (FOR KEY SHARE, FOR SHARE, FOR NO KEY UPDATE, FOR UPDATE) and a fifth one changes a row, each as a row entry in shared memory, which the crash empties. Before and after the restart the other rows
+# of the partition are free (S116-31), a request of each mode conflicts with each prepared lock as the matrix of the heap says, a wait ends with ROLLBACK PREPARED or COMMIT PREPARED, and a SKIP
+# LOCKED request that skips a row holds no lock on it. A prepared transaction with more rows of the partition than its share of the lock manager holds the partition until it ends.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 12
+plan 18
 node_init lc 52 "autovacuum = off
 sift.async_maintenance = off
 ${SIFT_TESTING:+sift.test_create_format1 = off}
 max_prepared_transactions = 8
-deadlock_timeout = 200ms"
+deadlock_timeout = 200ms
+lock_timeout = 15s"
 node_start lc || bail "start failed"
 D=$(dir lc)
 EXT=pg_sift
 [[ -z ${SIFT_TESTING:-} ]] || EXT="pg_sift_test CASCADE"
 sql lc "CREATE EXTENSION $EXT" \
 	"CREATE TABLE orders (id int PRIMARY KEY, st text) USING sift_table" \
-	"INSERT INTO orders SELECT g, 'new' FROM generate_series(1, 20) g" \
+	"INSERT INTO orders SELECT g, 'new' FROM generate_series(1, 200) g" \
 	"SELECT busy FROM sift.table_maintain('orders')" >/dev/null || bail "setup failed"
 
 MODES=("KEY SHARE" "SHARE" "NO KEY UPDATE" "UPDATE")
@@ -33,14 +34,17 @@ start_session() {
 end_session() { touch "$D/release"; wait "$session"; }
 verdict() { if out=$(sql lc "SELECT id FROM orders WHERE id = $1 FOR $2 NOWAIT" 2>&1); then echo ok; else echo busy; fi; }
 
-start_session "SELECT id FROM orders WHERE id = 20 FOR UPDATE;" holder
 for i in 0 1 2 3; do
 	sql lc "BEGIN" "SELECT id FROM orders WHERE id = $((i + 1)) FOR ${MODES[i]}" "PREPARE TRANSACTION 'p$((i + 1))'" >/dev/null || bail "prepare p$((i + 1)) failed"
+	((i > 0)) || { out=$(verdict 10 UPDATE); check "one prepared row leaves the other rows of its partition free" test "$out" == ok; }
 done
 sql lc "BEGIN" "UPDATE orders SET st = 'prepared' WHERE id = 5" "PREPARE TRANSACTION 'p5'" >/dev/null || bail "prepare p5 failed"
-end_session
 out=$(sql lc "SELECT count(*) FROM pg_prepared_xacts")
 check "five transactions are prepared" test "$out" -eq 5
+out=$(verdict 1 UPDATE)
+check "a prepared FOR KEY SHARE refuses FOR UPDATE NOWAIT" test "$out" == busy
+out=$(sql lc "SET lock_timeout = '300ms'" "UPDATE orders SET st = 'other' WHERE id = 11" 2>&1)	# timeout-ok: the lock_timeout bounds a wait the row must not have
+check "an UPDATE of a row no prepared transaction holds does not wait" test -z "$out"
 
 crash lc
 node_start lc || bail "restart failed"
@@ -58,7 +62,9 @@ for i in 0 1 2 3; do
 done
 
 out=$(verdict 10 UPDATE)
-check "a row no prepared transaction holds is free" test "$out" == ok
+check "after the restart a row no prepared transaction holds is free" test "$out" == ok
+out=$(sql lc "SET lock_timeout = '300ms'" "UPDATE orders SET st = 'other' WHERE id = 12" 2>&1)	# timeout-ok: the lock_timeout bounds a wait the row must not have
+check "after the restart an UPDATE of a row no prepared transaction holds does not wait" test -z "$out"
 out=$(sql lc "SET lock_timeout = '300ms'" "UPDATE orders SET st = 'lost' WHERE id = 4" 2>&1)	# timeout-ok: the lock_timeout is the product's bound on the wait for the prepared transaction
 check "an UPDATE of a row a prepared transaction holds FOR UPDATE waits for it" grep -q 'lock timeout' <<<"$out"
 out=$(sql lc "SELECT count(*) FROM (SELECT id FROM orders WHERE id = 5 FOR UPDATE SKIP LOCKED) s")
@@ -78,4 +84,11 @@ out=$(verdict 3 UPDATE)
 check "COMMIT PREPARED frees the row" test "$out" == ok
 check "no backend died after the restart" test "$(grep -ac 'terminated by signal' "$D/postgres.log")" -eq "$died"
 sql lc "ROLLBACK PREPARED 'p1'" "ROLLBACK PREPARED 'p2'" >/dev/null
+
+sql lc "BEGIN" "SELECT count(*) FROM (SELECT id FROM orders WHERE id > 100 FOR UPDATE) s" "PREPARE TRANSACTION 'p6'" >/dev/null || bail "prepare p6 failed"
+out=$(verdict 1 UPDATE)
+check "a prepared transaction past its share of the lock manager holds the partition" test "$out" == busy
+sql lc "COMMIT PREPARED 'p6'" >/dev/null
+out=$(sql lc "SELECT count(*) FROM pg_locks WHERE locktype IN ('page', 'tuple') AND relation = 'orders'::regclass")
+check "COMMIT PREPARED leaves no lock of the relation" test "$out" -eq 0
 finish

@@ -205,7 +205,7 @@ extern bool sift_esc_prepared_locks_possible(Relation rel);
 extern bool sift_esc_prepared_ids(const RelFileLocator *loc, Oid *dbid, Oid *relid, bool *first);
 extern bool sift_esc_rel_is_escalated(const RelFileLocator *loc);
 
-/* The transaction is about to prepare: partitions nobody else is in are held coarsely (their entries go), the holders it keeps are marked prepared */
+/* The transaction is about to prepare: partitions past its share of the lock manager that nobody else is in are held coarsely (their entries go), the holders it keeps are marked prepared */
 extern void sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb);
 /* The rows of the transaction that prepares are held in the lock manager too: a backend that found no prepared transaction asks again */
 extern void sift_esc_prepared(void);

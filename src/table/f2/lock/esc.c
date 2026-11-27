@@ -892,10 +892,15 @@ hold_prepared(SiftLocalLock *l)
 	}
 }
 
+/*
+ * Each row a prepared transaction keeps by entry is a tuple lock of the lock manager (f2_lock_2pc.h), whose table has max_locks_per_transaction locks for each prepared transaction: the rows
+ * of a partition stay row locks while they fit in what is left of it, as a heap's do, and a partition with more, which nobody else is in, is held coarsely instead (its entries go)
+ */
 void
 sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 {
 	bool		waited = false;
+	uint32		budget = (uint32) max_locks_per_xact;
 
 	for (uint32 i = 0; i < nlocks; i++)
 	{
@@ -904,6 +909,11 @@ sift_esc_pre_prepare(SiftTier1ReleaseCb release_cb)
 
 		if (l->part_id == SIFT_ESC_PART_ALL || l->tier1_rows == 0 || l->esc_mode >= 0 || rl->esc_mode >= 0 || shm == NULL)
 			continue;
+		if (l->tier1_rows <= budget)
+		{
+			budget -= l->tier1_rows;
+			continue;
+		}
 		if (pin_splits(rl, LockWaitSkip, &waited) == TM_Ok)
 		{
 			LockTupleMode mode = (LockTupleMode) l->held_max;
