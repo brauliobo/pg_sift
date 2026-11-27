@@ -31,6 +31,7 @@ typedef struct V1ParScan
 	MemoryContext cx;
 	const void *view;
 	SiftSrcFold *fold;
+	SiftV1Scan	key_scan;		/* the JSON type and key tests of the scan keys, which every morsel applies as the serial scan does */
 } V1ParScan;
 
 static struct SiftV6Scan *
@@ -41,7 +42,8 @@ par_begin(const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey 
 	V1ParScan  *s = MemoryContextAllocZero(cx, sizeof(V1ParScan));
 
 	SIFT_INVARIANT((index == NULL) == (quals != NULL), "a parallel scan of Format 1 reads a sift_col index by its scan keys or a sift_table by its quals");
-	*s = (V1ParScan) {.spec = spec,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.quals = quals,.snap = snap,.stats = stats,.emit = emit,.emit_arg = emit_arg,.cx = cx};
+	*s = (V1ParScan) {.spec = spec,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.quals = quals,.snap = snap,.stats = stats,.emit = emit,.emit_arg = emit_arg,.cx = cx,
+	.key_scan = index != NULL ? sift_v1_key_scan(index, keys, nkeys) : (SiftV1Scan) {0}};
 	return (struct SiftV6Scan *) s;
 }
 
@@ -92,8 +94,10 @@ static SiftV6Source *
 open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals)
 {
 	const V1Morsel *m = arg;
+	SiftV1Scan	scan = m->s->key_scan;
 
-	SiftV1Scan	scan = sift_v1_spec_scan(&(SiftV1Scan) {.range = &m->range}, m->s->spec);
+	scan.range = &m->range;
+	scan = sift_v1_spec_scan(&scan, m->s->spec);
 
 	return sift_v1_source_open(m->s->cx, m->s->snap, in, quals, &scan);
 }
