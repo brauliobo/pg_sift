@@ -84,21 +84,6 @@ ref_size(const SiftTblBlobRef *ref)
 	return (uint32) SIFT_TBL_BLOB_REF_SIZE(ref->nextents) + (is_inline(ref) ? ref->stored_len : 0);
 }
 
-static SiftTblBlobRef *
-new_ref(uint32 raw_len, const char *stored, uint32 stored_len, uint16 flags, uint16 next, uint64 gen)
-{
-	SiftTblBlobRef *ref = palloc0(SIFT_TBL_BLOB_REF_SIZE(next) + ((flags & SIFT_BLOB_FLAG_INLINE) ? stored_len : 0));
-
-	ref->magic = SIFT_TBL_BLOB_MAGIC;
-	ref->raw_len = raw_len;
-	ref->stored_len = stored_len;
-	ref->crc32c = sift_crc32c(stored, stored_len);
-	ref->flags = flags;
-	ref->nextents = next;
-	ref->gen = gen;
-	return ref;
-}
-
 /* A wide value of the stage on its way to its reference: compressed, then given its pages when it does not fit in the reference */
 typedef struct WideValue
 {
@@ -110,6 +95,22 @@ typedef struct WideValue
 	uint16		flags;
 	SiftTblBlobRef *ref;
 } WideValue;
+
+/* The reference takes the place of a value of the buffer, in the buffer's memory: it lives as long as the row, wherever a flush moves it */
+static SiftTblBlobRef *
+new_ref(const SiftRowBuf *rb, const WideValue *v, uint16 flags, uint16 next)
+{
+	SiftTblBlobRef *ref = MemoryContextAllocZero(rb->cx, SIFT_TBL_BLOB_REF_SIZE(next) + ((flags & SIFT_BLOB_FLAG_INLINE) ? v->stored_len : 0));
+
+	ref->magic = SIFT_TBL_BLOB_MAGIC;
+	ref->raw_len = rb->xplen[v->col][v->row];
+	ref->stored_len = v->stored_len;
+	ref->crc32c = sift_crc32c(v->stored, v->stored_len);
+	ref->flags = flags;
+	ref->nextents = next;
+	ref->gen = v->gen;
+	return ref;
+}
 
 static bool
 out_of_line(const WideValue *v)
@@ -181,7 +182,7 @@ write_values(Relation rel, const SiftRowBuf *rb, WideValue *vals, int nvals, uin
 			if (!out_of_line(v))
 				continue;
 			k = take_pages(ext, &e, &off, SIFT_PAYLOAD_PAGES(v->stored_len), cut);
-			v->ref = new_ref(rb->xplen[v->col][v->row], v->stored, v->stored_len, v->flags, (uint16) k, v->gen);
+			v->ref = new_ref(rb, v, v->flags, (uint16) k);
 			memcpy(v->ref->ext, cut, sizeof(SiftExtent) * k);
 			write_pages(run, &w, v->ref, v->stored);
 		}
@@ -247,7 +248,7 @@ sift_tbl_blob_spill_rows(Relation rel, SiftRowBuf *rb)
 	{
 		if (!out_of_line(v))
 		{
-			v->ref = new_ref(rb->xplen[v->col][v->row], v->stored, v->stored_len, v->flags | SIFT_BLOB_FLAG_INLINE, 0, v->gen);
+			v->ref = new_ref(rb, v, v->flags | SIFT_BLOB_FLAG_INLINE, 0);
 			memcpy(v->ref->ext, v->stored, v->stored_len);
 		}
 		if (v->stored != rb->xpay[v->col][v->row])
