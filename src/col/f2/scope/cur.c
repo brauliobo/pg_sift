@@ -88,6 +88,13 @@ parts_match(Relation rel, const SiftManifestRead *manifest, const SiftScopeMeta 
 	return found == named;
 }
 
+/* The attribute a column delta names a leaf by: its column in a sift_table, the leaf plus one in a sift_col index (col/f2/col_delta/idx.h) */
+static int16
+delta_attnum(const SiftF2Store *store, int leaf)
+{
+	return sift_f2s_is_table(store) ? store->leaf_attno[leaf] : (int16) (leaf + 1);
+}
+
 /* The columns the summary reads or may be asked to read, as the bloom of attributes a column delta page keeps */
 static uint64
 read_bloom(const SiftF2Store *store, const SiftF2ScopeCfg *sc)
@@ -96,7 +103,7 @@ read_bloom(const SiftF2Store *store, const SiftF2ScopeCfg *sc)
 
 	for (int l = 0; l < store->ncols; l++)
 		if (sift_f2s_is_table(store) ? l == sc->member_leaf || l == sc->time_leaf || sift_f2s_kept(store, sc->spec, l) : sift_f2s_reads_leaf(store, sc, l))
-			bloom |= sift_cd_att_bit(store->leaf_attno[l]);
+			bloom |= sift_cd_att_bit(delta_attnum(store, l));
 	return bloom;
 }
 

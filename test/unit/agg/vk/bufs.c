@@ -1,6 +1,8 @@
 /*
  * test_vk_bufs - the job buffers of the device layer (agg/vk/run.c) with the allocator of the driver faked: a job whose hash table, result or read back cannot be made leaves no
  * buffer that claims room it does not have, so the next smaller job makes it again and binds the buffers it holds (never a destroyed one), and reads its result from a mapped read back.
+ * A job that needs no hash table or result (an ungrouped scan) after one could not be made, or after the end of a job could not make the small ones it keeps, makes them again: no
+ * descriptor ever names no buffer.
  */
 #include "postgres.h"
 
@@ -73,6 +75,8 @@ fake_unmap(VkDevice dev, VkDeviceMemory m)
 static void
 fake_update(VkDevice dev, uint32_t n, const VkWriteDescriptorSet *w, uint32_t nc, const VkCopyDescriptorSet *c)
 {
+	for (uint32_t i = 0; i < n; i++)
+		SIFT_CHECK(w[i].pBufferInfo->buffer != VK_NULL_HANDLE && live[(uintptr_t) w[i].pBufferInfo->buffer]);
 	bound_ht = w[BIND_HT].pBufferInfo->buffer;
 	bound_out = w[BIND_OUT].pBufferInfo->buffer;
 }
@@ -98,7 +102,8 @@ device(void)
 	vk->mp.memoryTypeCount = 1;
 	vk->mp.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
 		VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-	vk->res.b = vk->arena.b = vk->slot[0].work.b = (VkBuffer) (uintptr_t) (NBUF - 1);
+	vk->res.b = vk->arena.b = vk->slot[0].work.b = vk->slot[0].dj.b = vk->slot[0].ctl.b = (VkBuffer) (uintptr_t) (NBUF - 1);
+	live[NBUF - 1] = true;
 	vk->res_words = RES_CAP_WORDS;
 	return vk;
 }
@@ -145,12 +150,52 @@ test_hash_table_that_cannot_be_made(void)
 	check_small_job_after(16 << 20);
 }
 
+static void
+check_bound_live(const SiftVk *vk)
+{
+	SIFT_CHECK(vk->ht.b != VK_NULL_HANDLE && vk->out.b != VK_NULL_HANDLE && !vk->unbound);
+	SIFT_CHECK(bound_ht == vk->ht.b && bound_out == vk->out.b);
+}
+
+/* S120-03: an ungrouped job (no hash table, no result) after a hash table that could not be made */
+static void
+test_ungrouped_after_lost_hash_table(void)
+{
+	SiftVk	   *vk = device();
+
+	SIFT_CHECK(job(vk, 64 << 10, 64 << 10));
+	fail_size = 16 << 20;
+	SIFT_CHECK(!job(vk, 16 << 20, 12 << 20));
+	fail_size = 0;
+	SIFT_CHECK(job(vk, 0, 0));
+	check_bound_live(vk);
+	free(vk);
+}
+
+/* S120-03: an ungrouped job after the end of a large one could not make the small hash table it keeps */
+static void
+test_ungrouped_after_failed_trim(void)
+{
+	SiftVk	   *vk = device();
+
+	SIFT_CHECK(job(vk, 32 << 20, 64 << 10));
+	fail_size = 1 << 20;
+	trim_job_buffers(vk);
+	SIFT_CHECK(vk->ht.b == VK_NULL_HANDLE);
+	fail_size = 0;
+	SIFT_CHECK(job(vk, 0, 0));
+	check_bound_live(vk);
+	free(vk);
+}
+
 int
 main(void)
 {
 	test_result_that_cannot_be_made();
 	test_read_back_that_cannot_be_made();
 	test_hash_table_that_cannot_be_made();
+	test_ungrouped_after_lost_hash_table();
+	test_ungrouped_after_failed_trim();
 	puts("test_vk_bufs: ok");
 	return 0;
 }

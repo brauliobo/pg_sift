@@ -17,7 +17,7 @@
 #include "agg/vk/vk.h"
 
 #define SIFT_GPU_SHM_NAME			"sift_gpu_shm_v6"
-#define SIFT_GPU_SHM_VERSION		3
+#define SIFT_GPU_SHM_VERSION		4
 #define SIFT_GPU_SLOTS				4
 /* MEM[MEM-VK-02]: SiftGpuShm staging DSM (SIFT_GPU_SLOTS * 4MiB = 16MiB of pinned shared memory, pages of idle slots dropped from the worker; was 4 * 16MiB) */
 #define SIFT_GPU_STAGE_BYTES		((Size) 4 << 20)
@@ -141,6 +141,7 @@ typedef struct SiftGpuShm
 	pg_atomic_uint64 heartbeat_us;
 	pg_atomic_uint64 failed_at_us;
 	pg_atomic_uint64 host_bytes;	/* the host memory the device layer holds (sift_vk_set_account) */
+	pg_atomic_uint32 caps_seq;	/* odd while the worker writes caps: a backend copies them again until the sequence is even and has not moved */
 	SiftVkCaps	caps;
 	char		last_error[160];
 	SiftGpuSlot slot[SIFT_GPU_SLOTS];

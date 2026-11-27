@@ -297,6 +297,7 @@ shm_init(SIFT_DSM_INIT_ARGS)
 	pg_atomic_init_u64(&shm->heartbeat_us, 0);
 	pg_atomic_init_u64(&shm->failed_at_us, 0);
 	pg_atomic_init_u64(&shm->host_bytes, 0);
+	pg_atomic_init_u32(&shm->caps_seq, 0);
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 	{
 		pg_atomic_init_u64(&shm->slot[i].word, sift_gpu_slot_word(0, SIFT_GPU_S_FREE));
@@ -383,6 +384,29 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 	sift_vk_seat_close(&worker->seat);
 }
 
+/* The worker is the one writer of the capabilities (fetch_add is a full barrier on both sides of the copy) */
+static void
+caps_publish(SiftGpuShm *shm, const SiftVkCaps *caps)
+{
+	pg_atomic_fetch_add_u32(&shm->caps_seq, 1);
+	shm->caps = *caps;
+	pg_atomic_fetch_add_u32(&shm->caps_seq, 1);
+}
+
+static void
+caps_read(SiftGpuShm *shm, SiftVkCaps *caps)
+{
+	uint32		seq;
+
+	do
+	{
+		seq = pg_atomic_read_u32(&shm->caps_seq);
+		pg_read_barrier();
+		*caps = shm->caps;
+		pg_read_barrier();
+	} while ((seq & 1) != 0 || pg_atomic_read_u32(&shm->caps_seq) != seq);
+}
+
 /* The device the job asks for (agg/vk/seat.c): one that was lost or timed out, or that was opened for other settings, is opened again, a change of the cache resizes it (the worker runs one job at a time: no job is in flight) */
 static bool
 worker_open(WorkerState *w, const char *device, bool software, uint64 cache_bytes, char *err, size_t errlen)
@@ -399,7 +423,7 @@ worker_open(WorkerState *w, const char *device, bool software, uint64 cache_byte
 	{
 		sift_vk_set_account(vk, account_to, &w->shm->host_bytes);
 		sift_vk_set_envelope(vk, SIFT_VK_VRAM_ENVELOPE, SIFT_VK_VRAM_FIXED);
-		w->shm->caps = *sift_vk_caps(vk);
+		caps_publish(w->shm, sift_vk_caps(vk));
 	}
 	return true;
 }
@@ -734,7 +758,7 @@ sift_gpu_conn_open(bool allow_local, const char **why)
 	if (shm != NULL && ensure_worker(shm, why))
 	{
 		c->shm = shm;
-		c->caps = shm->caps;
+		caps_read(shm, &c->caps);
 	}
 	else if (allow_local && (c->vk = sift_gpu_local_open(why)) != NULL)
 		c->caps = *sift_vk_caps(c->vk);

@@ -81,10 +81,23 @@ free_pipelines(SiftVk *vk)
 		vk->vkDestroyDescriptorSetLayout(vk->dev, vk->dsl, NULL);
 }
 
-/* the buffers of the descriptor set of every slot that has its work buffer: the arena four times (words, bytes, halves, double words), the work area three times, ... */
+static bool
+all_made(const VkBuffer *src)
+{
+	for (int i = 0; i < NBIND; i++)
+		if (src[i] == VK_NULL_HANDLE)
+			return false;
+	return true;
+}
+
+/*
+ * the buffers of the descriptor set of every slot that has its work buffer: the arena four times (words, bytes, halves, double words), the work area three times, ... A set never names a
+ * buffer that is not made (Vulkan has no null descriptor here): a slot with one missing stays unbound until ensure_buffers makes it
+ */
 bool
 bind_buffers(SiftVk *vk)
 {
+	vk->unbound = false;
 	for (int k = 0; k < NSLOT; k++)
 	{
 		Slot	   *s = &vk->slot[k];
@@ -93,8 +106,13 @@ bind_buffers(SiftVk *vk)
 		VkBuffer	src[NBIND] = {vk->arena.b, vk->arena.b, vk->arena.b, vk->arena.b, s->work.b, s->work.b, s->work.b, s->dj.b, s->ctl.b,
 		vk->res.b, vk->ht.b, vk->out.b};
 
-		if (!s->work.b || !vk->arena.b)
+		if (!s->work.b)
 			continue;
+		if (!all_made(src))
+		{
+			vk->unbound = true;
+			continue;
+		}
 		for (int i = 0; i < NBIND; i++)
 		{
 			bi[i] = (VkDescriptorBufferInfo) {src[i], 0, VK_WHOLE_SIZE};

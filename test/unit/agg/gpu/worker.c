@@ -4,7 +4,8 @@
  * the generation of the slot it claimed (agg/gpu/slot.c): it frees no other backend's answer, and no backend takes a live slot for the pid of the owner before it. A worker that ends
  * finishes only the jobs it took or would have taken, and leaves the state, the pid and the jobs of a worker that replaced it alone. The worker wakes the backend whose job it
  * finished, even when that backend frees the slot and another claims it as soon as the answer is out. A backend gives a start up (a timeout, a cancel) only while no worker holds the
- * pid: the READY or FAILED of a worker that came up meanwhile stays, a second worker of the same start ends, and a cancel leaves no STARTING behind.
+ * pid: the READY or FAILED of a worker that came up meanwhile stays, a second worker of the same start ends, and a cancel leaves no STARTING behind. A backend that copies the
+ * capabilities of the device while the worker writes new ones gets the old or the new, never a mix of the two.
  */
 #include "postgres.h"
 
@@ -442,6 +443,64 @@ test_exit_drains_own(void)
 	SIFT_CHECK(slot_state(2) == SIFT_GPU_S_DONE && shm->slot[2].status == SIFT_VK_LOST);
 }
 
+enum { CAPS_ROUNDS = 100000 };
+
+static pg_atomic_uint32 caps_torn;
+static pg_atomic_uint32 caps_written;
+
+static SiftVkCaps
+caps_of(int k)
+{
+	SiftVkCaps	c = {.software = k,.rebar = k,.subgroup_size = 32u << k,.pcie_gbps = 8.0 * (k + 1),.vram_bytes = UINT64CONST(0x0101010101010101) * (k + 1),
+	.cache_bytes = UINT64CONST(0x0202020202020202) * (k + 1),.pci_bus = k,.pci_dev = k};
+
+	memset(c.name, 'a' + k, sizeof(c.name) - 1);
+	return c;
+}
+
+static bool
+caps_eq(const SiftVkCaps *a, const SiftVkCaps *b)
+{
+	return strcmp(a->name, b->name) == 0 && a->software == b->software && a->rebar == b->rebar && a->subgroup_size == b->subgroup_size && a->pcie_gbps == b->pcie_gbps &&
+		a->vram_bytes == b->vram_bytes && a->cache_bytes == b->cache_bytes && a->pci_bus == b->pci_bus && a->pci_dev == b->pci_dev;
+}
+
+static void
+caps_race(void *arg, int worker)
+{
+	const SiftVkCaps *caps = arg;
+
+	if (worker == 0)
+	{
+		for (int i = 0; i < CAPS_ROUNDS; i++)
+			caps_publish(shm, &caps[i & 1]);
+		pg_atomic_write_u32(&caps_written, 1);
+		return;
+	}
+	while (pg_atomic_read_u32(&caps_written) == 0)
+	{
+		SiftVkCaps	c;
+
+		caps_read(shm, &c);
+		if (!caps_eq(&c, &caps[0]) && !caps_eq(&c, &caps[1]))
+			pg_atomic_fetch_add_u32(&caps_torn, 1);
+	}
+}
+
+/* S120-17: the capabilities the worker publishes are copied whole by a backend that reads them meanwhile */
+static void
+test_caps_whole(void)
+{
+	SiftVkCaps	caps[2] = {caps_of(0), caps_of(1)};
+
+	SIFT_DSM_INIT_CALL(shm_init, shm);
+	caps_publish(shm, &caps[0]);
+	pg_atomic_init_u32(&caps_torn, 0);
+	pg_atomic_init_u32(&caps_written, 0);
+	unit_run_workers(2, caps_race, caps);
+	SIFT_CHECK(pg_atomic_read_u32(&caps_torn) == 0);
+}
+
 int
 main(void)
 {
@@ -478,6 +537,11 @@ main(void)
 		test_start_failed_kept();
 	if (unit_wants("gpu_second_worker_ends"))
 		test_second_worker_ends();
+#ifndef __SANITIZE_THREAD__
+	/* the copy a reader of a sequence lock makes again is a race ThreadSanitizer reports by design */
+	if (unit_wants("gpu_caps_whole"))
+		test_caps_whole();
+#endif
 	free(shm);
 	puts("gpu_worker: ok");
 	return 0;

@@ -23,6 +23,8 @@ typedef struct RunCtx
 	Batch		bt[NSLOT];
 } RunCtx;
 
+#define JOB_BUF_MIN		((uint64_t) 1 << 20)	/* the hash table and the result kept between jobs, and the least one a job makes */
+
 /* the words of the control and result buffers that only the finish kernels use (agg/vk/shaders/common_compact.glsl) */
 #define J_TK_NCOMP		90u
 #define J_TK_COMP		91u
@@ -297,14 +299,15 @@ finish_batch(RunCtx *rc, Batch *b)
 	return batch_check(vk, b);
 }
 
-/* b holds at least bytes, else it is made again (a buffer that could not be made holds none: buf_new leaves it empty) */
+/* b holds at least bytes, and a buffer that is gone (one that could not be made) is made again, of JOB_BUF_MIN at least: the descriptor sets do not name the new one yet */
 static bool
 ensure_buf(SiftVk *vk, Buf *b, uint64_t bytes, VkBufferUsageFlags usage, int kind)
 {
-	if (bytes <= b->size)
+	if (b->b && bytes <= b->size)
 		return true;
 	buf_free(vk, b);
-	return buf_new(vk, b, bytes, usage, kind);
+	vk->unbound = true;
+	return buf_new(vk, b, bytes > JOB_BUF_MIN ? bytes : JOB_BUF_MIN, usage, kind);
 }
 
 /* MEM[MEM-VK-05]: vk ht + out + hout (ht and out in VRAM grow to the job and are freed above 16MiB and 8MiB when it ends; hout pinned host is at most HOUT_CHUNK=8MiB, was up to 2.25GiB) */
@@ -314,17 +317,15 @@ ensure_buffers(SiftVk *vk, const Plan *p)
 	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 	const uint64_t hout = p->out_bytes < HOUT_CHUNK ? p->out_bytes : HOUT_CHUNK;
 
-	if (!ensure_res(vk, (uint64_t) SIFT_VK_RES_ACC_OFF + p->acc_words))
-		return false;
-	vk->unbound |= p->ht_bytes > vk->ht.size || p->out_bytes > vk->out.size;
 	if (!ensure_buf(vk, &vk->ht, p->ht_bytes, u, K_DEVICE) || !ensure_buf(vk, &vk->out, p->out_bytes, u, K_DEVICE) ||
-		!ensure_buf(vk, &vk->hout, hout, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
+		!ensure_buf(vk, &vk->hout, hout, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK) || !ensure_res(vk, (uint64_t) SIFT_VK_RES_ACC_OFF + p->acc_words))
 		return false;
-	vk->unbound = vk->unbound && !bind_buffers(vk);
+	if (vk->unbound)
+		bind_buffers(vk);
 	return !vk->unbound;
 }
 
-/* when a job ends, the hash table and the result buffer that went over what the device keeps between jobs are freed (the gathered result stays until the next job: the caller reads it) */
+/* when a job ends, the hash table and the result buffer that went over what the device keeps between jobs are made again small (the gathered result stays until the next job: the caller reads it) */
 void
 trim_job_buffers(SiftVk *vk)
 {
@@ -336,9 +337,8 @@ trim_job_buffers(SiftVk *vk)
 		buf_free(vk, &vk->ht);
 	if (vk->out.size > OUT_RETAIN_MAX)
 		buf_free(vk, &vk->out);
-	vk->unbound |= vk->ht.size == 0 || vk->out.size == 0;
-	if (vk->unbound && ensure_buf(vk, &vk->ht, 1 << 20, u, K_DEVICE) && ensure_buf(vk, &vk->out, 1 << 20, u, K_DEVICE))
-		vk->unbound = !bind_buffers(vk);
+	if (ensure_buf(vk, &vk->ht, 0, u, K_DEVICE) && ensure_buf(vk, &vk->out, 0, u, K_DEVICE) && vk->unbound)
+		bind_buffers(vk);
 }
 
 /* the job went over every granule: its descriptor table is kept for the next job with its key (the device having no room for it is no failure of the job), or (tests) the one it used is checked */

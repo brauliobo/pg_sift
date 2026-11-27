@@ -243,10 +243,14 @@ pending_masks(Relation rel, const SiftF2PartPin *pin, const SiftPendDelIndex *px
 	return masks;
 }
 
-/* The column deltas of the partition patch the part in a column the query reads: its chunks do not hold what the snapshot sees */
+/*
+ * The column deltas of the partition patch the part in a column the query reads (its chunks do not hold what the snapshot sees), or, in a sift_col index whose pending deletes name heap
+ * addresses, move a row to an address the part does not hold (pending_masks would not find it)
+ */
 static bool
 col_delta_patches(const Admit *a, const SiftF2PartPin *pin)
 {
+	const uint64 bloom = a->att_bloom | (a->pdel != NULL && a->q->heap != NULL ? sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP) : 0);
 	SiftTblVis	vis;
 	SiftColDeltaPartMap *map;
 	bool		patched;
@@ -255,7 +259,7 @@ col_delta_patches(const Admit *a, const SiftF2PartPin *pin)
 		return false;
 	sift_tbl_f2_vis_begin(&vis, a->q->rel, a->q->snap);
 	map = sift_col_delta_load_part_map(a->q->rel, a->e, pin->part_gen, pin->part->hdr.ngranules, &vis, 0);
-	patched = sift_col_delta_part_touches(map, a->att_bloom);
+	patched = sift_col_delta_part_touches(map, bloom);
 	sift_col_delta_part_map_free(map);
 	return patched;
 }
@@ -631,13 +635,20 @@ plan_parts(SiftGpuPlan *p, const Admit *proto, const SiftPlanSnapshot *view)
 	p->ndevice = pv->npart;
 }
 
+/* The attribute a column delta names a leaf by: its column in a sift_table, the leaf plus one in a sift_col index (col/f2/col_delta/idx.h) */
+static int16
+delta_attnum(const SiftF2Store *store, int leaf)
+{
+	return store->host->host_kind == SIFT_F2_HOST_TABLE ? store->leaf_attno[leaf] : (int16) (leaf + 1);
+}
+
 static uint64
 att_bloom(const SiftGpuQuery *q)
 {
 	uint64		bloom = 0;
 
 	for (int c = 0; c < q->ncols; c++)
-		bloom |= sift_cd_att_bit(store_of(q)->leaf_attno[q->leaf[c]]);
+		bloom |= sift_cd_att_bit(delta_attnum(store_of(q), q->leaf[c]));
 	return bloom;
 }
 
