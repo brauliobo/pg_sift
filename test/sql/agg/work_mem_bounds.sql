@@ -1,5 +1,6 @@
--- What SiftAggV6 holds at once stays within work_mem, or the statement fails naming it: a dimension of a left star join that one key makes too large to split
--- (the plan was made at a larger work_mem) and the rows the heap of an ORDER BY .. LIMIT of the groups copies.
+-- What SiftAggV6 holds at once stays within work_mem (the plans are made at a larger one): a dimension of a left, full or anti star join that one key makes too large to split
+-- is read in chunks of rows and a last pass of its distinct keys, and the rows the heap of an ORDER BY .. LIMIT of the groups copies move to a sort that writes to disk. A star join
+-- whose condition runs on the pairs, which no keys answer, fails naming work_mem.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -16,23 +17,35 @@ RESET client_min_messages;
 
 SET plan_cache_mode = force_generic_plan;
 PREPARE left_star AS SELECT d.label_a, count(*) FROM facts f LEFT JOIN dim_a d ON d.id = f.dim_a_id GROUP BY d.label_a ORDER BY 1;
+PREPARE full_star AS SELECT d.label_a, count(f.id), count(d.id) FROM facts f FULL JOIN dim_a d ON d.id = f.dim_a_id GROUP BY d.label_a ORDER BY 1;
+PREPARE anti_star AS SELECT f.counter_a, count(*) FROM facts f WHERE NOT EXISTS (SELECT 1 FROM dim_a d WHERE d.id = f.dim_a_id) GROUP BY 1 ORDER BY 1;
+PREPARE left_pairs AS SELECT d.label_a, count(*) FROM facts f LEFT JOIN dim_a d ON d.id = f.dim_a_id AND d.id + f.counter_a > 3 GROUP BY d.label_a ORDER BY 1;
 EXPLAIN (COSTS OFF) EXECUTE left_star;
+EXPLAIN (COSTS OFF) EXECUTE full_star;
+EXPLAIN (COSTS OFF) EXECUTE anti_star;
+EXPLAIN (COSTS OFF) EXECUTE left_pairs;
 EXECUTE left_star;
+EXECUTE full_star;
+EXECUTE anti_star;
 SET work_mem = '64kB';
-\set VERBOSITY terse
 EXECUTE left_star;
+EXECUTE full_star;
+EXECUTE anti_star;
+\set VERBOSITY terse
+EXECUTE left_pairs;
 \set VERBOSITY default
 RESET work_mem;
 DEALLOCATE left_star;
+DEALLOCATE full_star;
+DEALLOCATE anti_star;
+DEALLOCATE left_pairs;
 RESET plan_cache_mode;
 
--- 200 groups of a 2000-byte label: their copies are 400 kB
+-- 200 groups of a 2000-byte label: their copies are 400 kB, which pass a work_mem of 256kB and go to the sort
 EXPLAIN (COSTS OFF) SELECT id % 1000 AS k, max(label) FROM facts GROUP BY 1 ORDER BY 1 LIMIT 200;
 SELECT count(*), sum(length(m)) FROM (SELECT id % 1000 AS k, max(label) AS m FROM facts GROUP BY 1 ORDER BY 1 LIMIT 200) t;
 SET work_mem = '256kB';
-\set VERBOSITY terse
 SELECT count(*), sum(length(m)) FROM (SELECT id % 1000 AS k, max(label) AS m FROM facts GROUP BY 1 ORDER BY 1 LIMIT 200) t;
-\set VERBOSITY default
 SELECT count(*), sum(length(m)) FROM (SELECT id % 1000 AS k, max(label) AS m FROM facts GROUP BY 1 ORDER BY 1 LIMIT 20) t;
 RESET work_mem;
 

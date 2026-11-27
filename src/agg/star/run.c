@@ -45,6 +45,7 @@ struct SiftV6StarRun
 	uint32		nchunks[SIFT_STAR_MAX_DIMS];	/* the passes the part in hand is read in: its rows are more than a budget, whatever the parts, and are read a budget at a time */
 	uint32		chunk[SIFT_STAR_MAX_DIMS];
 	uint32	   *cstart[SIFT_STAR_MAX_DIMS];	/* the first row of each chunk among the rows of the part */
+	bool		keyed[SIFT_STAR_MAX_DIMS];	/* the last chunk is the distinct keys of the part: a dimension of an outer, semi or anti join read in chunks */
 	bool		dirty[SIFT_STAR_MAX_DIMS];	/* the part or chunk of the pass is not the one the table holds */
 	uint32		passes;
 	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
@@ -330,7 +331,30 @@ part_row(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part
 	return false;
 }
 
-/* Reads the plan of the dimension into its table: the rows [from, to) of the part of its keys; false when they do not fit the budget */
+/* The pass of the distinct keys of the part: the last chunk of a keyed dimension */
+static bool
+keys_pass(const SiftV6StarRun *r, int d)
+{
+	return r->keyed[d] && r->chunk[d] + 1 == r->nchunks[d];
+}
+
+/*
+ * How the table of the pass joins: as the statement says, but a keyed dimension joins the rows of each chunk as an inner join (a right one when it keeps its own rows), and its keys, in the last pass,
+ * as a semi join (semi) or an anti join (left, full, anti: the fact rows of a key no row of the part has, which an outer join keeps with a NULL dimension side)
+ */
+static SiftV6JoinMode
+pass_mode(const SiftV6StarRun *r, int d)
+{
+	const SiftV6JoinMode mode = r->x->dim[d].mode;
+
+	if (!r->keyed[d])
+		return mode;
+	if (keys_pass(r, d))
+		return mode == SV6J_SEMI_EQUI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI;
+	return sift_star_preserves_dim(mode) ? SV6J_RIGHT_EQUI : SV6J_INNER_EQUI;
+}
+
+/* Reads the plan of the dimension into its table: the rows [from, to) of the part of its keys, or its distinct keys in the keys pass; false when they do not fit the budget */
 static bool
 read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint32 to, uint64 budget)
 {
@@ -338,14 +362,16 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint3
 	SiftStarDim *dim = &r->dim[d];
 	SiftStarRow row;
 	bool		fits = true;
+	const bool	keys = keys_pass(r, d);
 	uint32		at = 0;
 
 	read_of(r->x, d, budget, &sh);
+	sh.shape.mode = pass_mode(r, d);
 	rewind_dim(r, d);
 	sift_star_dim_init(dim, &sh.shape);
 	while (fits && at < to && part_row(r, d, &sh, nparts, part, &row))
 		if (at++ >= from)
-			fits = sift_star_dim_add(dim, &row);
+			fits = keys ? sift_star_dim_add_key(dim, &row) : sift_star_dim_add(dim, &row);
 	if (fits)
 		sift_star_dim_finish(dim);
 	return fits;
@@ -387,17 +413,45 @@ plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 	sift_star_dim_free(&dim);
 }
 
-/* The rows of the chunk in hand among those of the part */
+/* The rows of the chunk in hand among those of the part (the keys pass reads them all) */
 static uint32
 chunk_from(const SiftV6StarRun *r, int d)
 {
-	return r->nchunks[d] > 1 ? r->cstart[d][r->chunk[d]] : 0;
+	return r->nchunks[d] > 1 && !keys_pass(r, d) ? r->cstart[d][r->chunk[d]] : 0;
 }
 
 static uint32
 chunk_to(const SiftV6StarRun *r, int d)
 {
-	return r->nchunks[d] > r->chunk[d] + 1 ? r->cstart[d][r->chunk[d] + 1] : UINT32_MAX;
+	return r->nchunks[d] - r->keyed[d] > r->chunk[d] + 1 ? r->cstart[d][r->chunk[d] + 1] : UINT32_MAX;
+}
+
+/* The join keeps the fact rows of the keys the dimension has (semi) or has not (anti, and the fact side of a left or full join), whatever its rows */
+static bool
+joins_keys(SiftV6JoinMode mode)
+{
+	return mode == SV6J_SEMI_EQUI || mode == SV6J_ANTI_EQUI || sift_star_keeps_fact(mode);
+}
+
+/*
+ * The passes of a part that no number of parts makes smaller: the chunks of its rows that each fit, each matched by every fact row of the part (a right or full join sends the rows of the chunk
+ * no fact row matched at the end of its pass), then for a join of the keys the distinct keys of the part (a semi or anti join needs those alone). The keys tell which fact row matches a row only
+ * when the condition is the keys: a range join, or a join of the keys with a condition on the pairs, is not read in chunks.
+ */
+static void
+chunk_dim(SiftV6StarRun *r, int d)
+{
+	const SiftV6JoinMode mode = r->x->dim[d].mode;
+
+	if (mode == SV6J_RANGE_SMALL || (joins_keys(mode) && r->x->on[d] != NIL))
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of a star join does not fit work_mem and no chunks of it answer the join"),
+						errdetail("A range join, or an outer, semi or anti join with a condition on its pairs, is not read in chunks."), errhint("Increase work_mem.")));
+	r->keyed[d] = joins_keys(mode);
+	r->nchunks[d] = 0;
+	if (mode != SV6J_SEMI_EQUI && mode != SV6J_ANTI_EQUI)
+		plan_chunks(r, d, r->nparts[d], r->part[d]);
+	r->nchunks[d] += r->keyed[d];
+	r->chunk[d] = 0;
 }
 
 static void
@@ -486,12 +540,14 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			if (share != NULL)
 				sift_v6_shared_dim_abort(share);
 			share = NULL;
-			if (r->x->dim[d].mode != SV6J_INNER_EQUI)
-				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of a star join that is not an inner equi-join does not fit work_mem"),
-								errdetail("Only the dimension of an inner join is read in chunks."), errhint("Increase work_mem.")));
-			plan_chunks(r, d, r->nparts[d], r->part[d]);
-			r->chunk[d] = 0;
-			fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
+			if (!keys_pass(r, d))
+			{
+				chunk_dim(r, d);
+				fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
+			}
+			if (!fits)
+				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the keys of a dimension of a star join do not fit work_mem"),
+								errhint("Increase work_mem.")));
 		}
 		settled = fits && last;
 		if (keep && fits && whole)
@@ -590,6 +646,7 @@ next_pass(SiftV6StarRun *r)
 			r->part[d]++;
 			r->chunk[d] = 0;
 			r->nchunks[d] = 1;
+			r->keyed[d] = false;
 			r->dirty[d] = true;
 			return true;
 		}
@@ -597,6 +654,7 @@ next_pass(SiftV6StarRun *r)
 			r->dirty[d] = true;
 		r->part[d] = r->chunk[d] = 0;
 		r->nchunks[d] = 1;
+		r->keyed[d] = false;
 	}
 	return false;
 }
@@ -633,6 +691,7 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 		{
 			r->part[d] = r->chunk[d] = 0;
 			r->nchunks[d] = 1;
+			r->keyed[d] = false;
 			r->dirty[d] = true;
 		}
 	else if (!next_pass(r))
@@ -790,6 +849,7 @@ sift_v6_star_close(SiftV6StarRun *r)
 		r->found[d] = NULL;
 		r->cstart[d] = NULL;
 		r->nchunks[d] = 1;
+		r->keyed[d] = false;
 	}
 	MemoryContextReset(r->cx);
 	sift_mem_release_os(r->bytes);

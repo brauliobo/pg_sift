@@ -359,6 +359,60 @@ range_index(SiftStarDim *d)
 	pfree(ps);
 }
 
+/* the index of the keys added so far, built as they come: at least two slots a row, every row of the table in it */
+static void
+key_index_room(SiftStarDim *d)
+{
+	if (d->head != NULL && d->ht_cap >= 2 * d->nrows)
+		return;
+	if (d->head != NULL)
+		pfree(d->head);
+	d->ht_cap = Max(d->ht_cap * 2, 16);
+	d->head = palloc0(d->ht_cap * sizeof(uint32));
+	for (uint32 i = 0; i + 1 < d->nrows; i++)
+	{
+		uint32		slot = (uint32) row_hash(d, i) & (d->ht_cap - 1);
+
+		while (d->head[slot] != 0)
+			slot = (slot + 1) & (d->ht_cap - 1);
+		d->head[slot] = i + 1;
+	}
+}
+
+/* the last row added is kept in the index of the keys, or dropped when its keys are there already */
+static void
+keep_new_key(SiftStarDim *d, uint64 arena_used)
+{
+	const uint32 i = d->nrows - 1;
+	uint32		slot;
+
+	key_index_room(d);
+	for (slot = (uint32) row_hash(d, i) & (d->ht_cap - 1); d->head[slot] != 0; slot = (slot + 1) & (d->ht_cap - 1))
+		if (rows_equal(d, d->head[slot] - 1, i))
+		{
+			d->nrows--;
+			d->arena_used = arena_used;
+			d->bytes = table_bytes(&d->shape, d->cap, d->nrows, d->arena_cap);
+			return;
+		}
+	d->head[slot] = i + 1;
+}
+
+bool
+sift_star_dim_add_key(SiftStarDim *d, const SiftStarRow *row)
+{
+	const uint64 arena_used = d->arena_used;
+	SiftStarRow keys = *row;
+	bool		added;
+
+	for (int c = 0; c < d->shape.npay; c++)
+		keys.pay_null[c] = true;
+	added = sift_star_dim_add(d, &keys);
+	if (added)
+		keep_new_key(d, arena_used);
+	return added;
+}
+
 void
 sift_star_dim_finish(SiftStarDim *d)
 {
@@ -376,6 +430,8 @@ sift_star_dim_finish(SiftStarDim *d)
 		d->finished = true;
 		return;
 	}
+	if (d->head != NULL)
+		pfree(d->head);
 	d->ht_cap = 16;
 	while (d->ht_cap < 2 * d->nrows)
 		d->ht_cap *= 2;

@@ -138,6 +138,8 @@ extern double sift_star_table_est(const SiftStarShape *sh, double nrows, double 
 extern double sift_star_dense_est(const SiftStarShape *sh, double nrows, double span, double str_bytes);
 /* false when the row would take the table past its budget (the first row of an empty table, as a hash join batch takes it, only past one allocation), or is the SIFT_STAR_RANGE_MAX + 1st period of a range join (nothing is added) */
 extern bool sift_star_dim_add(SiftStarDim *d, const SiftStarRow *row);
+/* the same for the keys of the row alone, unless the table holds them: the distinct keys of a dimension, with a NULL payload (a semi or anti join of its keys only) */
+extern bool sift_star_dim_add_key(SiftStarDim *d, const SiftStarRow *row);
 /* the index over the rows added */
 extern void sift_star_dim_finish(SiftStarDim *d);
 extern void sift_star_dim_free(SiftStarDim *d);

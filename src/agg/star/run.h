@@ -1,8 +1,10 @@
 /*
  * agg/star/run.h - the dimensions of a star join read from the plans of the node (custom_plans) into the tables of agg/star/star.h, and the passes a dimension too big for its share of
- * work_mem is read in: its keys fall into as many classes as it takes for one class to fit, and each pass joins the fact rows of one class (every fact row is in one pass). A class of an inner join
- * that is still more than work_mem (the rows of one key) is read in chunks that each fit, and the fact rows of the class are joined to each chunk in a pass of its own. A class of any other join that is still more than work_mem is read
- * whole, as the batch of a hash join that no more batches make smaller is: a fact row that matches nothing must come out once, which no chunk of the rows alone knows.
+ * work_mem is read in: its keys fall into as many classes as it takes for one class to fit, and each pass joins the fact rows of one class (every fact row is in one pass). A class that is still
+ * more than work_mem (the rows of one key) is read in chunks that each fit, and the fact rows of the class are joined to each chunk in a pass of its own, as an inner join (a right one when the join
+ * keeps the rows of the dimension: those of a chunk no fact row matched come out at the end of its pass). A left, full, semi or anti join whose condition is its keys then joins the fact rows to the
+ * distinct keys of the class in a last pass, as an anti join (a fact row of a key the class has no row of comes out once) or a semi join; a range join, or one of those with a condition on the
+ * pairs, fails naming work_mem.
  */
 #ifndef SIFT_AGG_V6_STAR_RUN_H
 #define SIFT_AGG_V6_STAR_RUN_H
