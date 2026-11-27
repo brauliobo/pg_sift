@@ -49,8 +49,8 @@ ht_alloc(SiftSaltedHT *ht, uint32 capacity)
 	ht->mask = capacity - 1;
 	ht->count = 0;
 	ht->grow_at = (uint32) ((uint64) capacity * SIFT_HT_MAX_LOAD_NUM / SIFT_HT_MAX_LOAD_DEN);
-	ht->ctrl = MemoryContextAllocZero(ht->cxt, capacity + SIFT_HT_GROUP_WIDTH);
-	ht->slots = MemoryContextAllocAligned(ht->cxt, sizeof(SiftAggSlot64) * (size_t) capacity, 64, 0);
+	ht->ctrl = MemoryContextAllocExtended(ht->cxt, (size_t) capacity + SIFT_HT_GROUP_WIDTH, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
+	ht->slots = MemoryContextAllocAligned(ht->cxt, sizeof(SiftAggSlot64) * (size_t) capacity, 64, MCXT_ALLOC_HUGE);
 }
 
 void
@@ -210,13 +210,25 @@ ht_grow(SiftSaltedHT *ht, uint32 capacity)
 	pfree(old.slots);
 }
 
+/* the capacity of a table that holds n groups: the power of 2 of cap or above it, at most the largest one a uint32 mask covers */
+static uint32
+ht_capacity_for(uint32 cap, uint64 n)
+{
+	while (n > (uint64) cap * SIFT_HT_MAX_LOAD_NUM / SIFT_HT_MAX_LOAD_DEN)
+	{
+		if (cap > PG_UINT32_MAX / 2)
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("an aggregate has more groups than one group table holds"),
+							errhint("Group by fewer keys, or run the statement with sift.enable_agg = off.")));
+		cap <<= 1;
+	}
+	return cap;
+}
+
 void
 sift_ht_reserve(SiftSaltedHT *ht, uint32 n)
 {
-	uint32		cap = ht->capacity;
+	const uint32 cap = ht_capacity_for(ht->capacity, (uint64) ht->count + n);
 
-	while ((uint64) (ht->count + n) > (uint64) cap * SIFT_HT_MAX_LOAD_NUM / SIFT_HT_MAX_LOAD_DEN)
-		cap <<= 1;
 	if (cap != ht->capacity)
 		ht_grow(ht, cap);
 }
@@ -225,7 +237,7 @@ sift_ht_reserve(SiftSaltedHT *ht, uint32 n)
 static void
 ext_resize(SiftSaltedHT *ht, uint32 cap)
 {
-	uint8	   *slab = MemoryContextAllocAligned(ht->cxt, (size_t) cap * ht->ext_stride, SIFT_HT_EXT_ALIGN, MCXT_ALLOC_ZERO);
+	uint8	   *slab = MemoryContextAllocAligned(ht->cxt, (size_t) cap * ht->ext_stride, SIFT_HT_EXT_ALIGN, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	if (ht->ext_slab)
 	{
@@ -356,7 +368,7 @@ ht_upsert(SiftSaltedHT *ht, uint64 hash, const HtKey *k, bool *found, bool grow_
 				return (*found = false, NULL);
 			if (grow_on_miss && ht->count >= ht->grow_at)
 			{
-				ht_grow(ht, ht->capacity << 1);
+				ht_grow(ht, ht_capacity_for(ht->capacity, (uint64) ht->count + 1));
 				return ht_upsert(ht, hash, k, found, false);
 			}
 			*found = false;
@@ -373,7 +385,7 @@ sift_ht_upsert(SiftSaltedHT *ht, uint64 hash, const SiftInlineKey16 *key, bool *
 
 	Assert(!ht->key_is_wide);
 	if (ht->count >= ht->grow_at)
-		ht_grow(ht, ht->capacity << 1);
+		ht_grow(ht, ht_capacity_for(ht->capacity, (uint64) ht->count + 1));
 	return ht_upsert(ht, hash, &k, found, false);
 }
 
@@ -384,7 +396,7 @@ sift_ht_upsert_wide(SiftSaltedHT *ht, uint64 hash, const void *key, uint32 len, 
 
 	Assert(ht->key_is_wide);
 	if (ht->count >= ht->grow_at)
-		ht_grow(ht, ht->capacity << 1);
+		ht_grow(ht, ht_capacity_for(ht->capacity, (uint64) ht->count + 1));
 	return ht_upsert(ht, hash, &k, found, false);
 }
 

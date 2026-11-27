@@ -52,3 +52,8 @@ TESTS    += agg/star/exec agg/ht/rec agg/group/fast agg/dictseen agg/par/scan
 AUTOSTUB += agg/star/exec agg/ht/rec agg/group/fast agg/dictseen agg/par/scan
 LIB_agg/star/exec = agg/star/exec.c
 FX_agg/par/scan   = $(HOST)
+
+TESTS    += agg/ht/core agg/ht/spill
+AUTOSTUB += agg/ht/core agg/ht/spill
+LIB_agg/ht/core  = agg/ht/ht.c agg/kern/hash.c
+LIB_agg/ht/spill = agg/ht/spill.c agg/ht/rec.c agg/ht/ht.c agg/kern/hash.c

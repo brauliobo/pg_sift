@@ -501,6 +501,16 @@ BufFileReadExact(BufFile *file, void *ptr, size_t size)
 		pgshim_unreached("BufFileReadExact");
 }
 
+size_t
+BufFileReadMaybeEOF(BufFile *file, void *ptr, size_t size, bool eofOK)
+{
+	const size_t got = size > 0 ? fread(ptr, 1, size, file->fp) : 0;
+
+	if (got != size && !(eofOK && got == 0))
+		pgshim_unreached("BufFileReadMaybeEOF");
+	return got;
+}
+
 int
 BufFileSeek(BufFile *file, int fileno, off_t offset, int whence)
 {

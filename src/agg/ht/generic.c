@@ -110,7 +110,7 @@ static void
 grow_table(SiftGenKey *k)
 {
 	const uint32 slots = k->slots * 2;
-	uint32	   *tab = MemoryContextAllocZero(k->cx, slots * sizeof(uint32));
+	uint32	   *tab = MemoryContextAllocExtended(k->cx, slots * sizeof(uint32), MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	for (uint32 c = 1; c <= k->count; c++)
 	{
@@ -132,13 +132,13 @@ grow_values(SiftGenKey *k)
 
 	if (k->vals == NULL)
 	{
-		k->vals = MemoryContextAlloc(k->cx, cap * sizeof(Datum));
-		k->hashes = MemoryContextAlloc(k->cx, cap * sizeof(uint32));
+		k->vals = MemoryContextAllocExtended(k->cx, cap * sizeof(Datum), MCXT_ALLOC_HUGE);
+		k->hashes = MemoryContextAllocExtended(k->cx, cap * sizeof(uint32), MCXT_ALLOC_HUGE);
 	}
 	else
 	{
-		k->vals = repalloc(k->vals, cap * sizeof(Datum));
-		k->hashes = repalloc(k->hashes, cap * sizeof(uint32));
+		k->vals = repalloc_extended(k->vals, cap * sizeof(Datum), MCXT_ALLOC_HUGE);
+		k->hashes = repalloc_extended(k->hashes, cap * sizeof(uint32), MCXT_ALLOC_HUGE);
 	}
 	k->cap = cap;
 }

@@ -67,7 +67,7 @@ static void
 dist_resize(SiftDistSet *s, uint32 cap)
 {
 	const uint32 mask = cap - 1;
-	uint64	   *cells = MemoryContextAllocZero(s->cxt, sizeof(uint64) * cap);
+	uint64	   *cells = MemoryContextAllocExtended(s->cxt, sizeof(uint64) * (size_t) cap, MCXT_ALLOC_HUGE | MCXT_ALLOC_ZERO);
 
 	for (uint32 i = 0; i < s->cap; i++)
 	{
@@ -87,6 +87,9 @@ dist_resize(SiftDistSet *s, uint32 cap)
 static void
 dist_grow(SiftDistSet *s)
 {
+	if (s->cap > PG_UINT32_MAX / 2)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a group of an aggregate has more distinct values than one set holds"),
+						errhint("Run the statement with sift.enable_agg = off.")));
 	dist_resize(s, s->cap << 1);
 }
 

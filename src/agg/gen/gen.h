@@ -27,6 +27,7 @@
 #define V6GEN_NOVAL		4		/* noTransValue: a strict transition function without an initial value takes its first input as the state */
 #define V6GEN_DONE		8		/* v0 is the result */
 #define V6GEN_RNULL		16		/* ... and it is NULL */
+#define V6GEN_FILE		32		/* ... and v0 is where it is in the results file */
 
 /* the columns one aggregate reads: arg, arg2 and the xcols of SiftV6Agg */
 #define V6GEN_MAX_COLS	(SIFT_V6_MAX_DCOLS + 1)
@@ -111,6 +112,7 @@ typedef struct V6Gen
 	int			natts;
 	ExprContext *tmp;			/* the argument values of a batch, the transition functions' temporary memory */
 	MemoryContext res;			/* the results of the sorted aggregates, until the scan's end */
+	struct BufFile *results;	/* the results that came when res held the bytes of limit */
 	V6GenAgg  **agg;			/* per aggregate of the spec: NULL for the ones the kernels run */
 	uint64		limit;			/* the bytes the states may hold */
 	bool		sorted;

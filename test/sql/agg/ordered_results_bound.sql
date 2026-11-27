@@ -1,0 +1,39 @@
+-- The results of an ORDER BY aggregate (string_agg, array_agg, jsonb_agg) are made group by group from its sort when the scan ends, and kept until the groups are returned: past the
+-- memory of the group table they go to a temporary file: the scan returns the rows of PostgreSQL, and its results hold no more than the memory while it returns them.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET client_min_messages = warning;
+
+-- 200 groups of 20 rows of 1 kB: each result is 20 kB, 4 MB in all
+CREATE TABLE gr (id int, k int, payload text);
+INSERT INTO gr SELECT g, g % 200, repeat(md5(g::text), 32) FROM generate_series(1, 4000) g;
+CREATE INDEX gr_col ON gr USING sift_col (id, k, payload);
+VACUUM (FREEZE, ANALYZE) gr;
+
+CREATE FUNCTION results(sift boolean) RETURNS TABLE (k int, s text, a text, j text) LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN sift THEN 'on' ELSE 'off' END, true);
+	RETURN QUERY SELECT gr.k, md5(string_agg(payload, ',' ORDER BY id)), md5(array_agg(payload ORDER BY id DESC)::text), md5(jsonb_agg(payload ORDER BY id)::text)
+		FROM gr GROUP BY gr.k;
+END $$;
+CREATE TEMP TABLE want AS SELECT * FROM results(false);
+
+-- the bytes of the results of the scan now: read with every row it returns
+CREATE FUNCTION results_kb() RETURNS bigint LANGUAGE sql VOLATILE AS $$
+	SELECT coalesce(sum(total_bytes), 0) / 1024 FROM pg_backend_memory_contexts WHERE name = 'sift agg generic results'
+$$;
+
+-- 256 kB of hash memory: the group table fits, the results do not
+SET work_mem = '256kB';
+SET hash_mem_multiplier = 1;
+EXPLAIN (COSTS OFF) SELECT k, string_agg(payload, ',' ORDER BY id) FROM gr GROUP BY k;
+CREATE TEMP TABLE got AS SELECT * FROM results(true);
+SELECT count(*) AS groups, (SELECT count(*) FROM (TABLE want EXCEPT TABLE got) d) AS differ FROM got;
+SELECT max(kb) > 0 AS seen, max(kb) < 1024 AS held FROM (SELECT n, results_kb() AS kb FROM (SELECT k, length(string_agg(payload, ',' ORDER BY id)) AS n FROM gr GROUP BY k) s) r WHERE n > 0;
+RESET work_mem;
+RESET hash_mem_multiplier;
+
+DROP FUNCTION results(boolean);
+DROP FUNCTION results_kb();
+DROP TABLE gr;
+DROP EXTENSION pg_sift;

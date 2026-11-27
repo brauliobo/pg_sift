@@ -366,6 +366,8 @@ iter_load(SiftGroupSpillIter *it, BufFile *f, uint32 depth)
 						errhint("Check the free space of the temporary tablespace.")));
 	while (read_record(f, &it->rec))
 	{
+		if (++n % 64 == 0)
+			CHECK_FOR_INTERRUPTS();
 		if (it->sp->run)
 			sort_put(it->sp->run, sift_rec_hash(it->rec.p), it->rec.p, sift_rec_len(it->rec.p));
 		else if (sub)
@@ -373,12 +375,8 @@ iter_load(SiftGroupSpillIter *it, BufFile *f, uint32 depth)
 		else
 		{
 			sift_rec_merge(&m, it->rec.p);
-			if (++n % 64 == 0)
-			{
-				CHECK_FOR_INTERRUPTS();
-				if (over_budget(it, &m))
-					spill_table(it, depth, &sub, &bytes);
-			}
+			if (n % 64 == 0 && over_budget(it, &m))
+				spill_table(it, depth, &sub, &bytes);
 		}
 	}
 	if (!sub && !it->sp->run && over_budget(it, &m))

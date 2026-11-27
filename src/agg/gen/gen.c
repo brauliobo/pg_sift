@@ -16,6 +16,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/planmain.h"
 #include "optimizer/plancat.h"
+#include "storage/buffile.h"
 #include "parser/parse_agg.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -298,11 +299,56 @@ final_value(V6Gen *gen, V6GenAgg *ga, V6Acc *acc, bool *isnull)
 	return res;
 }
 
-/* the result of a group whose inputs went through the transition function (or none did): made once, kept in the results' memory */
+/* a result into the results file: its place (the segment, then the offset in it) */
+static uint64
+result_put(V6Gen *gen, Datum d, int16 len)
+{
+	const Size	n = datumGetSize(d, false, len);
+	int			fileno;
+	off_t		off;
+
+	if (gen->results == NULL)
+	{
+		MemoryContext old = MemoryContextSwitchTo(gen->cx);
+
+		gen->results = BufFileCreateTemp(false);
+		MemoryContextSwitchTo(old);
+	}
+	BufFileTell(gen->results, &fileno, &off);
+	BufFileWrite(gen->results, &n, sizeof(n));
+	BufFileWrite(gen->results, DatumGetPointer(d), n);
+	return (uint64) fileno << 32 | (uint64) off;
+}
+
+static Datum
+result_get(V6Gen *gen, uint64 at)
+{
+	Size		n;
+	void	   *p;
+
+	if (BufFileSeek(gen->results, (int) (at >> 32), (off_t) (uint32) at, SEEK_SET) != 0)
+		ereport(ERROR, (errcode(ERRCODE_IO_ERROR), errmsg("could not seek in the results file of an aggregate"),
+						errhint("Check the free space of the temporary tablespace.")));
+	BufFileReadExact(gen->results, &n, sizeof(n));
+	p = palloc(n);
+	BufFileReadExact(gen->results, p, n);
+	return PointerGetDatum(p);
+}
+
+static void
+results_close(V6Gen *gen)
+{
+	if (gen->results != NULL)
+		BufFileClose(gen->results);
+	gen->results = NULL;
+}
+
+/* the result of a group whose inputs went through the transition function (or none did): made once, kept in the results' memory until it holds limit, then in the results file */
 void
 v6_gen_final(V6Gen *gen, V6GenAgg *ga, V6Acc *acc)
 {
-	MemoryContext old = MemoryContextSwitchTo(gen->res);
+	const bool	to_file = !ga->rbyval && MemoryContextMemAllocated(gen->res, true) >= gen->limit;
+	MemoryContext old = MemoryContextSwitchTo(to_file ? gen->tmp->ecxt_per_tuple_memory : gen->res);
 	bool		isnull;
 	Datum		res;
 
@@ -311,9 +357,13 @@ v6_gen_final(V6Gen *gen, V6GenAgg *ga, V6Acc *acc)
 	res = final_value(gen, ga, acc, &isnull);
 	if (!isnull && !ga->rbyval)
 		res = datumCopy(res, ga->rbyval, ga->rlen);
+	if (!isnull && to_file)
+		res = (Datum) result_put(gen, res, ga->rlen);
 	MemoryContextSwitchTo(old);
+	if (to_file)
+		ResetExprContext(gen->tmp);
 	acc->v0 = (uint64) res;
-	acc->n = (acc->n & V6GEN_INIT) | V6GEN_DONE | (isnull ? V6GEN_RNULL : 0);
+	acc->n = (acc->n & V6GEN_INIT) | V6GEN_DONE | (isnull ? V6GEN_RNULL : 0) | (!isnull && to_file ? V6GEN_FILE : 0);
 }
 
 Datum
@@ -325,7 +375,7 @@ v6_gen_datum(V6Gen *gen, int j, V6Acc *acc, bool *isnull)
 	if (acc->n & V6GEN_DONE)
 	{
 		*isnull = (acc->n & V6GEN_RNULL) != 0;
-		return (Datum) acc->v0;
+		return acc->n & V6GEN_FILE ? result_get(gen, acc->v0) : (Datum) acc->v0;
 	}
 	if (!(acc->n & V6GEN_INIT))
 		state_init(ga, acc);
@@ -726,6 +776,7 @@ v6_gen_free(V6Gen *gen)
 		ExecDropSingleTupleTableSlot(gen->slot);
 	FreeExprContext(gen->tmp, true);
 	MemoryContextDelete(gen->res);
+	results_close(gen);
 }
 
 void
@@ -734,6 +785,7 @@ v6_gen_restart(V6Gen *gen)
 	MemoryContext old = MemoryContextSwitchTo(gen->cx);
 
 	MemoryContextReset(gen->res);
+	results_close(gen);
 	v6_gen_release(gen);
 	for (int j = 0; j < gen->spec->naggs; j++)
 		if (gen->agg[j] != NULL && gen->agg[j]->sorted)
