@@ -200,7 +200,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(collect.LEAKS.search('2026-11-27 [42] [57014] ERROR:  canceling statement due to user request'))
         conf = bash('. test/t/lib/load.bash; echo "$LOAD_CONF"').stdout
         self.assertIn("log_line_prefix = '%m [%p] [%e] '", conf)
-        for t in ('load_gate', 'load_workloads', 'load_repl'):
+        for t in ('load_gate', 'load_workloads', 'load_repl', 'load_stress'):
             with open(os.path.join(REPO, f'test/t/core/{t}.sh')) as f:
                 body = f.read()
             self.assertIn('$LOAD_CONF"', body, t)

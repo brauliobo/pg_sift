@@ -6,7 +6,7 @@ waits (collect.py), and then the checks no load may break: the rows the workers 
 answers in one snapshot (oracle_mismatch), sift.check finds nothing, nothing is quarantined, no temporary file and no crash or leak line is left. The contention ceilings are shares
 of samples and ratios of a p99 under load to the p99 of the same statements alone: never a time or a rate. A case with `open` (LC-NN of Spec 106, Snnn-NN of Spec nnn) names the
 defect it waits for: it must fail a ceiling until the fix (OPEN=ID, a TODO) and the run fails once it meets them all, until `open` is dropped. --suite picks the catalog: core
-(cases.py, one cluster), workloads and repl (suites/: a cluster sized for many sessions and prepared transactions, a primary with a hot standby and
+(cases.py, one cluster), workloads, stress and repl (suites/: a cluster sized for many sessions and prepared transactions, one of its own, a primary with a hot standby and
 wal_level logical), or all. A worker still in its statement long after its phase ended is wedged: what it waits for is its error, its session is killed.
 
   scripts/load/run.py [--suite S] [--only RE] [--class C]   one LOAD line a case: LOAD id [f2] measurements ... PASS | FAIL | OPEN=ID | SKIP
@@ -470,7 +470,7 @@ def selftest():
     for name, (cases, classes) in suites.SUITES.items():
         expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
     every = suites.cases('all')
-    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 51, 'the suites share no id: 17 core, 28 workloads, 6 repl')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 58, 'the suites share no id: 17 core, 28 workloads, 7 stress, 6 repl')
     suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
