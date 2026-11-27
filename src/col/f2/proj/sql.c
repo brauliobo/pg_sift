@@ -32,6 +32,7 @@
 #include "col/am.h"
 #include "col/pg.h"
 #include "core/catname.h"
+#include "core/dispatch.h"
 #include "core/inspect.h"
 #include "core/meta_peek.h"
 #include "core/restrict.h"
@@ -233,8 +234,8 @@ pending_add(Oid relid, const char *name)
 
 	if (!drops_hooked)
 	{
-		RegisterXactCallback(drops_xact, NULL);
-		RegisterSubXactCallback(drops_subxact, NULL);
+		sift_xact_callback(drops_xact, NULL);
+		sift_subxact_callback(drops_subxact, NULL);
 		drops_hooked = true;
 	}
 	p->relid = relid;

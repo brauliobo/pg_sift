@@ -17,6 +17,7 @@
 
 #include "col/dsmreg.h"
 #include "col/f2/uniq/shm.h"
+#include "core/dispatch.h"
 #include "core/f2/gate.h"
 #include "core/hash.h"
 
@@ -395,8 +396,8 @@ owned_ensure(void)
 	if (!registered)
 	{
 		before_shmem_exit(uniq_exit, 0);
-		RegisterXactCallback(uniq_xact, NULL);
-		RegisterSubXactCallback(uniq_subxact, NULL);
+		sift_xact_callback(uniq_xact, NULL);
+		sift_subxact_callback(uniq_subxact, NULL);
 		registered = true;
 	}
 #ifdef SIFT_TESTING

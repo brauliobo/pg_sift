@@ -270,8 +270,6 @@ sift_set_join_pathlist(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 {
 	if (prev_join_hook)
 		prev_join_hook(root, joinrel, outerrel, innerrel, jointype, extra);
-	if (!sift_db_has_extension())
-		return;
 	if (sift_v6_rels_have_index(root, joinrel->relids))
 	{
 		sift_agg_v6_join_paths(root, joinrel, outerrel, innerrel, jointype, extra);
@@ -422,8 +420,6 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
-	if (!sift_db_has_extension())
-		return;
 	if (rte->rtekind == RTE_RELATION && sift_v6_rels_have_index(root, rel->relids))
 		sift_agg_v6_rel_paths(root, rel, rti, rte);
 	if (!scannable(root, rel, rte))
@@ -553,8 +549,6 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 {
 	if (prev_upper_hook)
 		prev_upper_hook(root, stage, input_rel, output_rel, extra);
-	if (!sift_db_has_extension())
-		return;
 	if (sift_query_touches_sift(root))
 	{
 		count_upper_paths(root, stage, input_rel, output_rel);
@@ -642,8 +636,6 @@ sift_score_planner(SIFT_PLANNER_PARAMS)
 {
 	PlannedStmt *stmt;
 
-	if (!sift_db_has_extension())
-		return prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	if ((parse->commandType == CMD_UPDATE || parse->commandType == CMD_DELETE || parse->commandType == CMD_MERGE || parse->rowMarks != NIL) &&
 		sift_enable_scan && sift_catalog()->am != InvalidOid)
 	{

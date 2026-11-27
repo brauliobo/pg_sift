@@ -31,6 +31,7 @@
 #include "col/f2/journal.h"
 #include "col/track_hear.h"
 #include "col/f2/l0/stage.h"
+#include "core/dispatch.h"
 #include "core/memtrack.h"
 #include "core/quarantine/quarantine.h"
 #include "core/visibility/visibility.h"
@@ -162,7 +163,7 @@ ctx_make(TriggerData *td)
 
 	if (!ctx.hooked)
 	{
-		RegisterXactCallback(ctx_reset, NULL);
+		sift_xact_callback(ctx_reset, NULL);
 		CacheRegisterSyscacheCallback(RELOID, ctx_inval, (Datum) 0);
 		ctx.hooked = true;
 	}
@@ -319,7 +320,7 @@ sift_f2_track_note_unchanged(Relation index, ItemPointer new_tid)
 
 		if (!unchanged_ended_registered)
 		{
-			RegisterXactCallback(unchanged_ended, NULL);
+			sift_xact_callback(unchanged_ended, NULL);
 			unchanged_ended_registered = true;
 		}
 		unchanged = hash_create("sift_col indexUnchanged notes", 64, &hc, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);

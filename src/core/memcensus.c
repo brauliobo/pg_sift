@@ -65,14 +65,6 @@ static char dbname[NAMEDATALEN];
 static ExecutorRun_hook_type prev_run;
 static ProcessUtility_hook_type prev_utility;
 
-#if PG_VERSION_NUM >= 180000
-#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count
-#define RUN_ARGS	qd, dir, count
-#else
-#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count, bool once
-#define RUN_ARGS	qd, dir, count, once
-#endif
-
 static long
 anon_kb(void)
 {
@@ -270,15 +262,15 @@ statement_end(const char *query)
 }
 
 static void
-census_run(RUN_PARAMS)
+census_run(SIFT_RUN_PARAMS)
 {
 	statement_begin();
 	PG_TRY();
 	{
 		if (prev_run != NULL)
-			prev_run(RUN_ARGS);
+			prev_run(SIFT_RUN_ARGS);
 		else
-			standard_ExecutorRun(RUN_ARGS);
+			standard_ExecutorRun(SIFT_RUN_ARGS);
 	}
 	PG_CATCH();
 	{

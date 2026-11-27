@@ -25,6 +25,7 @@
 #include "col/v1/conn/conn.h"
 #include "core/cachebudget.h"
 #include "core/compat.h"
+#include "core/dispatch.h"
 #include "core/quarantine/quarantine.h"
 #include "core/v1_col/tomb/tomb.h"
 #include "core/catname.h"
@@ -439,7 +440,7 @@ dead_keys_write(void *arg)
 
 		if (!registered)
 		{
-			RegisterXactCallback(dead_share_reset, NULL);
+			sift_xact_callback(dead_share_reset, NULL);
 			registered = true;
 		}
 		dead_share_reset(XACT_EVENT_COMMIT, NULL);

@@ -19,6 +19,7 @@
 #include "utils/snapmgr.h"
 
 #include "col/am.h"
+#include "core/dispatch.h"
 #include "core/errctx.h"
 #include "table/v1/table.h"
 #include "table/v1/scan_int.h"
@@ -65,8 +66,8 @@ par_image_build(Relation rel)
 		sift_tbl_seg_load(rel, &st->wbuf[i]);
 	if (!par_hooked)
 	{
-		RegisterXactCallback(par_xact_end, NULL);
-		RegisterSubXactCallback(par_subxact_end, NULL);
+		sift_xact_callback(par_xact_end, NULL);
+		sift_subxact_callback(par_subxact_end, NULL);
 		par_hooked = true;
 	}
 	old = MemoryContextSwitchTo(TopTransactionContext);

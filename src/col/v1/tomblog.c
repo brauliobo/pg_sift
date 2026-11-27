@@ -22,6 +22,7 @@
 #include "core/v1_col/tomb/tomb.h"
 #include "core/v1_col/tomb/dv.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/memtrack.h"
 
 typedef struct LogEnt
@@ -254,7 +255,7 @@ log_ent(Relation index)
 
 		log_tab = hash_create("sift cache tombstone logs", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		CacheRegisterSyscacheCallback(RELOID, log_inval, (Datum) 0);
-		RegisterXactCallback(log_xact, NULL);
+		sift_xact_callback(log_xact, NULL);
 		sift_cache_register(&log_kind);
 	}
 	reap_stale(relid);

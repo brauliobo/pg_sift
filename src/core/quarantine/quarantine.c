@@ -21,6 +21,7 @@
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
 
+#include "core/dispatch.h"
 #include "core/maint/maint.h"
 #include "col/dsmreg.h"
 #include "core/cachebudget.h"
@@ -274,7 +275,7 @@ hook_xact(void)
 {
 	if (!xact_hooked)
 	{
-		RegisterXactCallback(quarantine_xact, NULL);
+		sift_xact_callback(quarantine_xact, NULL);
 		xact_hooked = true;
 	}
 }

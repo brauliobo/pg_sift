@@ -24,6 +24,7 @@
 #include "col/f2/l0/href.h"
 #include "col/f2/l0/stage_int.h"
 #include "col/f2/part/vis.h"
+#include "core/dispatch.h"
 #include "core/hash.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -432,8 +433,8 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 	}
 	if (!callbacks_registered)
 	{
-		RegisterXactCallback(stage_xact, NULL);
-		RegisterSubXactCallback(stage_subxact, NULL);
+		sift_xact_callback(stage_xact, NULL);
+		sift_subxact_callback(stage_subxact, NULL);
 		callbacks_registered = true;
 	}
 	cx = sift_mem_allocset_create(TopTransactionContext, "sift stage");

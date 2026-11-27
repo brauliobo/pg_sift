@@ -14,6 +14,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+#include "core/dispatch.h"
 #include "table/v1/load/int.h"
 #include "core/memtrack.h"
 
@@ -322,8 +323,8 @@ sift_tbl_load_wanted(Relation rel, SiftTblRel *st, bool frozen)
 		return !ld->refused;
 	if (!callbacks_registered)
 	{
-		RegisterXactCallback(load_xact_event, NULL);
-		RegisterSubXactCallback(load_subxact_event, NULL);
+		sift_xact_callback(load_xact_event, NULL);
+		sift_subxact_callback(load_subxact_event, NULL);
 		callbacks_registered = true;
 	}
 	cxt = AllocSetContextCreate(TopMemoryContext, "sift_table bulk load", ALLOCSET_DEFAULT_SIZES);

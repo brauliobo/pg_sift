@@ -36,6 +36,7 @@
 #include "agg/refuse.h"
 #include "agg/scope/scope.h"
 #include "agg/stats.h"
+#include "core/dispatch.h"
 #include "core/limits.h"
 #include "core/sift.h"
 
@@ -569,8 +570,8 @@ assign_count(bool newval, void *extra)
 void
 sift_agg_refuse_init(void)
 {
-	RegisterXactCallback(forget_arms_xact, NULL);
-	RegisterSubXactCallback(forget_arms_subxact, NULL);
+	sift_xact_callback(forget_arms_xact, NULL);
+	sift_subxact_callback(forget_arms_subxact, NULL);
 	DefineCustomBoolVariable("sift.explain_refusals",
 							 "Reports as a notice why a query kept the normal plan instead of Custom Scan (SiftAgg): the first reason each candidate path gave up for.",
 							 NULL, &notice_refusals, false,

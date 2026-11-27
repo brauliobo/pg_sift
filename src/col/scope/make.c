@@ -34,6 +34,7 @@
 #ifdef SIFT_TESTING
 #include "bm25/build/build.h"
 #endif
+#include "core/dispatch.h"
 #include "core/meta_peek.h"
 #include "col/am.h"
 #include "col/v1/build.h"
@@ -174,7 +175,7 @@ sift_scope_journal_make(const SiftScopeSpec *s, Relation rel, int hop, AttrNumbe
 		sift_index_set_state(addr.objectId, INDEX_DROP_CLEAR_VALID);
 		CommandCounterIncrement();
 		if (!pending_hooked)
-			RegisterXactCallback(pending_xact, NULL);
+			sift_xact_callback(pending_xact, NULL);
 		pending_hooked = true;
 		{
 			MemoryContext old = MemoryContextSwitchTo(PortalContext);

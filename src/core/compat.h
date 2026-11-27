@@ -273,6 +273,15 @@ typedef UpperUniquePath SiftSortedUniquePath;
 #define sift_initplan_named(sp, name)	((sp)->plan_name = "InitPlan " name)
 #endif
 
+/* ExecutorRun and its hook lost execute_once (18) */
+#if PG_VERSION_NUM >= 180000
+#define SIFT_RUN_PARAMS			QueryDesc *qd, ScanDirection dir, uint64 count
+#define SIFT_RUN_ARGS			qd, dir, count
+#else
+#define SIFT_RUN_PARAMS			QueryDesc *qd, ScanDirection dir, uint64 count, bool once
+#define SIFT_RUN_ARGS			qd, dir, count, once
+#endif
+
 /* The planner hook and standard_planner take the EXPLAIN state too (19) */
 #if PG_VERSION_NUM >= 190000
 #define SIFT_PLANNER_PARAMS		Query *parse, const char *query_string, int cursorOptions, ParamListInfo boundParams, ExplainState *es

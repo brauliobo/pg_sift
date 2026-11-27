@@ -19,6 +19,7 @@
 #include "col/f2/journal.h"
 #include "col/track_hear.h"
 #include "core/cmp.h"
+#include "core/dispatch.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/meta.h"
 #include "core/page_io.h"
@@ -366,8 +367,8 @@ hold(Oid index, uint32 kind, int64 key)
 
 	if (!held.hooked)
 	{
-		RegisterXactCallback(journal_xact, NULL);
-		RegisterSubXactCallback(journal_subxact, NULL);
+		sift_xact_callback(journal_xact, NULL);
+		sift_subxact_callback(journal_subxact, NULL);
 		held.hooked = true;
 	}
 	if (kind == SIFT_KJ_ADD && last != NULL && last->kind == kind && last->index == index && last->xid == xid && last->subid == subid)

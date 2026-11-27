@@ -375,7 +375,7 @@ agg_planner(SIFT_PLANNER_PARAMS)
 	bool		priced,
 				rows;
 
-	if (!sift_enable_agg || !sift_db_has_extension() || !reads_scannable((Node *) parse, NULL))
+	if (!sift_enable_agg || !reads_scannable((Node *) parse, NULL))
 		return plan_query(SIFT_PLANNER_ARGS(parse));
 	if (parse->commandType == CMD_SELECT)
 		sift_agg_drop_unused_laterals(parse);

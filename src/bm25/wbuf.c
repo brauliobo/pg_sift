@@ -24,6 +24,7 @@
 
 #include "bm25/am.h"
 #include "bm25/doc.h"
+#include "core/dispatch.h"
 #include "core/lane.h"
 #include "core/quarantine/quarantine.h"
 #include "core/maint/maint.h"
@@ -568,16 +569,8 @@ speculates(const PlannedStmt *ps)
 	return false;
 }
 
-#if PG_VERSION_NUM >= 180000
-#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count
-#define RUN_ARGS	qd, dir, count
-#else
-#define RUN_PARAMS	QueryDesc *qd, ScanDirection dir, uint64 count, bool once
-#define RUN_ARGS	qd, dir, count, once
-#endif
-
 static void
-stage_run(RUN_PARAMS)
+stage_run(SIFT_RUN_PARAMS)
 {
 	bool		spec = speculates(qd->plannedstmt);
 
@@ -586,9 +579,9 @@ stage_run(RUN_PARAMS)
 	PG_TRY();
 	{
 		if (prev_run != NULL)
-			prev_run(RUN_ARGS);
+			prev_run(SIFT_RUN_ARGS);
 		else
-			standard_ExecutorRun(RUN_ARGS);
+			standard_ExecutorRun(SIFT_RUN_ARGS);
 	}
 	PG_FINALLY();
 	{
@@ -643,8 +636,8 @@ sift_wbuf_stage_init(void)
 	ExecutorRun_hook = stage_run;
 	prev_utility = ProcessUtility_hook;
 	ProcessUtility_hook = stage_utility;
-	RegisterXactCallback(stage_xact, NULL);
-	RegisterSubXactCallback(stage_subxact, NULL);
+	sift_xact_callback(stage_xact, NULL);
+	sift_subxact_callback(stage_subxact, NULL);
 }
 
 /*

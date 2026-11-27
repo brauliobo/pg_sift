@@ -33,6 +33,7 @@
 #include "col/f2/part/vis.h"
 #include "col/pg.h"
 #include "core/compat.h"
+#include "core/dispatch.h"
 #include "core/errctx.h"
 #include "core/cachebudget.h"
 #include "core/f2/pace.h"
@@ -257,7 +258,7 @@ sift_f2_maint_request(Relation rel, SiftMaintKind kind, uint64 part_id)
 		return false;
 	if (!registered)
 	{
-		RegisterXactCallback(ask_queue, NULL);
+		sift_xact_callback(ask_queue, NULL);
 		registered = true;
 	}
 	if (asked_cx == NULL)

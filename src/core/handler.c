@@ -32,6 +32,7 @@
 #include "col/f2/vacuum/run.h"
 #include "col/f2/l0/stage.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/f2/vm_xlog.h"
 #include "core/memtrack.h"
 #include "core/shm/budget.h"
@@ -329,6 +330,7 @@ void
 _PG_init(void)
 {
 	refuse_second_load();
+	sift_dispatch_begin();
 	sift_cpu_init();
 	sift_init();
 	sift_cpu_register(codec_rebind);
@@ -357,6 +359,7 @@ _PG_init(void)
 	sift_agg_refuse_init();
 	sift_tbl_init();
 	sift_vm_xlog_init();
+	sift_dispatch_end();
 #ifdef SIFT_TESTING
 	sift_leak_test_init();
 	sift_memcensus_init();
@@ -388,6 +391,12 @@ sift_func(Oid nsp, const char *name, int nargs, const Oid *argtypes)
 	}
 	ReleaseSysCacheList(cl);
 	return oid;
+}
+
+bool
+sift_catalog_absent(void)
+{
+	return catalog_valid && catalog.am == InvalidOid && catalog.col_am == InvalidOid && catalog.tbl_am == InvalidOid;
 }
 
 const SiftCatalog *

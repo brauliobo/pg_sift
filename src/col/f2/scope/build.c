@@ -14,6 +14,7 @@
 #include "col/f2/part/vis.h"
 #include "col/scope/scope.h"
 #include "core/compat.h"
+#include "core/dispatch.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/gate.h"
 #include "core/f2/pace.h"
@@ -57,8 +58,8 @@ unnamed_written(Relation rel)
 
 	if (!registered)
 	{
-		RegisterXactCallback(unnamed_xact_end, NULL);
-		RegisterSubXactCallback(unnamed_subxact_end, NULL);
+		sift_xact_callback(unnamed_xact_end, NULL);
+		sift_subxact_callback(unnamed_subxact_end, NULL);
 		registered = true;
 	}
 	unnamed = rel->rd_locator;

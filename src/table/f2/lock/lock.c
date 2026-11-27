@@ -29,6 +29,7 @@
 #include "utils/snapmgr.h"
 
 #include "core/compat.h"
+#include "core/dispatch.h"
 #include "table/f2/lock/2pc.h"
 #include "table/f2/lock/esc.h"
 #include "table/f2/lock/int.h"
@@ -566,8 +567,8 @@ sift_tbl_rowlock_subxact_callback(SubXactEvent event, SubTransactionId mysubid, 
 void
 sift_tbl_f2_locks_init(void)
 {
-	RegisterXactCallback(sift_tbl_rowlock_xact_callback, NULL);
-	RegisterSubXactCallback(sift_tbl_rowlock_subxact_callback, NULL);
+	sift_xact_callback(sift_tbl_rowlock_xact_callback, NULL);
+	sift_subxact_callback(sift_tbl_rowlock_subxact_callback, NULL);
 }
 
 /* ---- the protocol ---- */

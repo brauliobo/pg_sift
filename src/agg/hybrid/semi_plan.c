@@ -258,7 +258,7 @@ is_hybrid_node(Plan *plan)
 static PlannedStmt *
 semi_planner(SIFT_PLANNER_PARAMS)
 {
-	Query	   *alt = sift_enable_scan && sift_db_has_extension() ? exists_as_arrays(parse) : NULL;
+	Query	   *alt = sift_enable_scan ? exists_as_arrays(parse) : NULL;
 	PlannedStmt *std = prev_planner_hook ? prev_planner_hook(SIFT_PLANNER_ARGS(parse)) : standard_planner(SIFT_PLANNER_ARGS(parse));
 	PlannedStmt *hyb;
 

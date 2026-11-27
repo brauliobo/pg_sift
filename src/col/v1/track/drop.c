@@ -34,6 +34,7 @@
 #include "utils/timestamp.h"
 
 #include "col/am.h"
+#include "core/dispatch.h"
 #include "core/restrict.h"
 #include "core/visibility/visibility.h"
 #include "core/worker.h"
@@ -287,7 +288,7 @@ gone_xact(XactEvent event, void *arg)
 void
 sift_col_track_init(void)
 {
-	RegisterXactCallback(gone_xact, NULL);
+	sift_xact_callback(gone_xact, NULL);
 	loaded_stmt = IsTransactionState() ? GetCurrentStatementStartTimestamp() : 0;
 }
 

@@ -21,6 +21,7 @@
 #include "utils/timestamp.h"
 
 #include "core/catalog.h"
+#include "core/dispatch.h"
 #include "core/sift.h"
 #include "bm25/analyze/analyze.h"
 #include "col/am.h"
@@ -287,7 +288,7 @@ sift_ops_init(void)
 							PGC_SUSET, GUC_UNIT_MS, NULL, NULL, NULL);
 	prev_object_access_hook = object_access_hook;
 	object_access_hook = sift_object_access;
-	RegisterXactCallback(forget_deleted_files, NULL);
+	sift_xact_callback(forget_deleted_files, NULL);
 	sift_col_track_init();
 	sift_keystore_init();
 }

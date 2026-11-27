@@ -23,6 +23,7 @@
 #include "lib/ilist.h"
 #include "utils/hsearch.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/f2/vm_xlog.h"
 #include "core/shm/manifest.h"
 #include "table/f2/tbl.h"
@@ -297,7 +298,7 @@ leases_init(void)
 	if (registered)
 		return;
 	before_shmem_exit(leases_release_all, 0);
-	RegisterXactCallback(leases_end_xact, NULL);
+	sift_xact_callback(leases_end_xact, NULL);
 	sift_f2_invalidator_register(leases_invalidate);
 	sift_cache_register(&leases_kind);
 	registered = true;

@@ -20,6 +20,7 @@
 #include "col/f2/meta.h"
 #include "col/f2/part/vis.h"
 #include "core/damage.h"
+#include "core/dispatch.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/gcache.h"
 #include "table/f2/row/state.h"
@@ -352,7 +353,7 @@ tx_fetch_for(Relation rel)
 		tx_manifest_version = version;
 		if (!tx_callback_registered)
 		{
-			RegisterXactCallback(tx_fetch_xact_callback, NULL);
+			sift_xact_callback(tx_fetch_xact_callback, NULL);
 			tx_callback_registered = true;
 		}
 	}

@@ -739,6 +739,8 @@ core/dirchain/memo.c
 core/dirchain/test.c
 core/dirpart.c
 core/dirpart.h
+core/dispatch.c
+core/dispatch.h
 core/errctx.c
 core/errctx.h
 core/explain.c

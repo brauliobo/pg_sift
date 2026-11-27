@@ -10,6 +10,7 @@
 #include "utils/memutils.h"
 
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/host.h"
 #include "core/memtrack.h"
 
@@ -230,7 +231,7 @@ backend_cache_assign(int newval, void *extra)
 void
 sift_cache_budget_define_gucs(void)
 {
-	RegisterXactCallback(cache_xact_event, NULL);
+	sift_xact_callback(cache_xact_event, NULL);
 	DefineCustomIntVariable("sift.backend_cache_kb",
 							"Memory per backend that every cache of the extension keeps together for the next statement (0: no cache is kept).",
 							"The least recently used entry that no statement holds is dropped from whichever cache has it when another needs room; an entry that alone is larger than the total is not kept.",

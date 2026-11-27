@@ -47,6 +47,7 @@
 #include "col/am.h"
 #include "col/scope/scope.h"
 #include "col/keystore/keystore.h"
+#include "core/dispatch.h"
 #include "core/maint/maint.h"
 #include "core/meta_peek.h"
 #include "core/restrict.h"
@@ -499,7 +500,7 @@ gone_xact(XactEvent event, void *arg)
 void
 sift_keystore_init(void)
 {
-	RegisterXactCallback(gone_xact, NULL);
+	sift_xact_callback(gone_xact, NULL);
 }
 
 /* The owner of the stores of the table is the table's (ALTER TABLE ... OWNER TO), as an index's is */

@@ -15,6 +15,7 @@
 #include "utils/tuplestore.h"
 
 #include "col/dsmreg.h"
+#include "core/dispatch.h"
 #include "core/f2/manifest/manifest.h"
 #include "core/inspect.h"
 #include "core/meta_peek.h"
@@ -156,8 +157,8 @@ sift_progress_begin(Relation index, SiftJob job)
 	if (!hooked)
 	{
 		before_shmem_exit(progress_exit, (Datum) 0);
-		RegisterXactCallback(progress_xact, NULL);
-		RegisterSubXactCallback(progress_subxact, NULL);
+		sift_xact_callback(progress_xact, NULL);
+		sift_subxact_callback(progress_subxact, NULL);
 		hooked = true;
 	}
 	now = GetCurrentTimestamp();

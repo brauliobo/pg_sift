@@ -230,6 +230,8 @@ typedef struct SiftCatalog
 } SiftCatalog;
 
 extern const SiftCatalog *sift_catalog(void);
+/* The cache of the catalog is valid and says the database has no access method of the library; no catalog read, so a transaction that failed may ask */
+extern bool sift_catalog_absent(void);
 
 extern void _PG_init(void);
 extern void sift_relopt_alias_notice(const char *old, const char *new);

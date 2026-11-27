@@ -31,6 +31,7 @@
 #include "col/f2/slab_view.h"
 #include "col/f2/store/schema.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/maint/pacer.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/gcache.h"
@@ -173,8 +174,8 @@ sift_tbl_f2_parallelscan_estimate(Relation rel)
 	MemoryContextSwitchTo(TopTransactionContext);
 	if (!par_hooked)
 	{
-		RegisterXactCallback(par_xact_end, NULL);
-		RegisterSubXactCallback(par_subxact_end, NULL);
+		sift_xact_callback(par_xact_end, NULL);
+		sift_subxact_callback(par_subxact_end, NULL);
 		par_hooked = true;
 	}
 	par_images = lappend(par_images, im);

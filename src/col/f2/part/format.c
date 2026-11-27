@@ -7,6 +7,7 @@
 
 #include "col/f2/part/format.h"
 #include "col/granule/granule.h"
+#include "core/dispatch.h"
 #include "core/extlock.h"
 #include "core/f2/bulk_io.h"
 #include "core/f2/extent.h"
@@ -70,8 +71,8 @@ sift_part_prefer_extents(Relation rel, const SiftExtent *ext, int n)
 {
 	if (!preferred_callback_registered)
 	{
-		RegisterXactCallback(preferred_xact_end, NULL);
-		RegisterSubXactCallback(preferred_subxact_end, NULL);
+		sift_xact_callback(preferred_xact_end, NULL);
+		sift_subxact_callback(preferred_subxact_end, NULL);
 		preferred_callback_registered = true;
 	}
 	preferred = MemoryContextAlloc(TopTransactionContext, Max(n, 1) * sizeof(SiftExtent));

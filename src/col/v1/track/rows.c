@@ -46,6 +46,7 @@
 #include "utils/timestamp.h"
 
 #include "agg/stats.h"
+#include "core/dispatch.h"
 #include "core/maint/maint.h"
 #include "col/am.h"
 #include "core/v1_col/tomb/tomb.h"
@@ -141,7 +142,7 @@ track_row(TriggerData *td)
 		ItemPointerSetOffsetNumber(&tid, chain_root(td->tg_relation, &tid));
 	if (!rowmemo.hooked)
 	{
-		RegisterXactCallback(rowmemo_reset, NULL);
+		sift_xact_callback(rowmemo_reset, NULL);
 		CacheRegisterSyscacheCallback(RELOID, rowmemo_inval, (Datum) 0);
 		rowmemo.hooked = true;
 	}

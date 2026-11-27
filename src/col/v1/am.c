@@ -18,6 +18,7 @@
 #include "catalog/pg_am_d.h"
 #include "bm25/am.h"
 #include "col/am/int.h"
+#include "core/dispatch.h"
 #include "core/quarantine/quarantine.h"
 
 int			sift_col_format_minor = SIFT_COL_FORMAT_MINOR;
@@ -118,8 +119,8 @@ sift_col_batch_hook(void)
 {
 	if (!batch_hooked)
 	{
-		RegisterXactCallback(batch_xact, NULL);
-		RegisterSubXactCallback(batch_subxact, NULL);
+		sift_xact_callback(batch_xact, NULL);
+		sift_subxact_callback(batch_subxact, NULL);
 		batch_hooked = true;
 	}
 }

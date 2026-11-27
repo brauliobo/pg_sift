@@ -12,6 +12,7 @@
 #include "agg/gpu/shm.h"
 #include "agg/gpu/scan.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 
 #ifdef SIFT_VULKAN
 
@@ -62,7 +63,7 @@ local_hooks(void)
 	if (local.hooks)
 		return;
 	sift_cache_register(&kind);
-	RegisterXactCallback(local_xact, NULL);
+	sift_xact_callback(local_xact, NULL);
 	on_proc_exit(local_exit, 0);
 	local.hooks = true;
 }

@@ -14,6 +14,7 @@
 #include "storage/lmgr.h"
 #include "storage/ipc.h"
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/maint/maint.h"
 #include "core/wal_conflict.h"
 #include "core/extlock.h"
@@ -156,7 +157,7 @@ sift_tbl_rel(Relation rel)
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(CacheEnt),.hcxt = CacheMemoryContext};
 
 		cache_tab = hash_create("sift_table relations", 16, &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-		RegisterXactCallback(cache_xact, NULL);
+		sift_xact_callback(cache_xact, NULL);
 		before_shmem_exit(cache_exit, 0);
 		sift_cache_register(&cache_kind);
 	}

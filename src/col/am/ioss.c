@@ -7,6 +7,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "col/am.h"
+#include "core/dispatch.h"
 
 /*
  * An index-only scan of a sift_col index forms its index tuples from the columns the plan node reads, the others NULL (a column it never reads is not decoded,
@@ -103,7 +104,7 @@ ioss_walk(PlanState *ps, void *context)
 
 			if (!ioss_xact_registered)
 			{
-				RegisterXactCallback(ioss_xact_callback, NULL);
+				sift_xact_callback(ioss_xact_callback, NULL);
 				ioss_xact_registered = true;
 			}
 			w = palloc0(sizeof(IossWant));
