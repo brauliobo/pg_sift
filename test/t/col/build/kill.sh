@@ -81,6 +81,7 @@ kill_held() { # LOCK TYPE SETTING...
 		SIFT_TMP=$D leak_expect 1 'terminated by signal 9'
 		kill -9 "$victim"
 	fi
+	sql primary "SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE query = 'SELECT pg_sleep(600);'" >/dev/null 2>&1
 	wait "$builder"; built=$?
 	test -n "$victim" -a "$built" -ne 0
 }
