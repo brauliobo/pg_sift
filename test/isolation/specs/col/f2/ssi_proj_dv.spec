@@ -1,6 +1,7 @@
 # SERIALIZABLE write skew through the deletion vector a projection reads past: s2 deletes a row of a sift_table and commits, a vacuum folds the delete into the deletion
 # vector of the part while s1 still holds the snapshot that sees the row, and s1 reads the table through its pre-aggregate (SiftAggV6, the dead rows subtracted) or its sort
-# projection (SiftProjSortScan, the dead rows left out). s1 read past a delete it does not see, s2 read what s1 then writes: s1 fails with 40001, as the read of the table does.
+# projection (SiftProjSortScan, the dead rows left out; sift.agg_force, which would plan the Top-N node instead, is off for it). s1 read past a delete it does not see,
+# s2 read what s1 then writes: s1 fails with 40001, as the read of the table does.
 # requires: col
 
 setup
@@ -56,9 +57,9 @@ session s1
 setup		{ SET max_parallel_workers_per_gather = 0; SET sift.agg_force = on; }
 step s1b	{ BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw; }
 step s1agg	{ SELECT iso_pd_node($$SELECT k, count(*), sum(v) FROM iso_pd GROUP BY k$$) AS node; SELECT k, count(*), sum(v) FROM iso_pd GROUP BY k ORDER BY k; }
-step s1sort	{ SELECT iso_pd_node($$SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2; }
+step s1sort	{ SET LOCAL sift.agg_force = off; SELECT iso_pd_node($$SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2; }
 step s1cagg	{ SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SELECT iso_pd_node($$SELECT k, count(*), sum(v) FROM iso_pc GROUP BY k$$) AS node; SELECT k, count(*), sum(v) FROM iso_pc GROUP BY k ORDER BY k; }
-step s1csort	{ SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SELECT iso_pd_node($$SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2; }
+step s1csort	{ SET LOCAL sift.agg_force = off; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SELECT iso_pd_node($$SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2; }
 step s1w	{ INSERT INTO iso_pw VALUES (1); }
 step s1c	{ COMMIT; }
 
