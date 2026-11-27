@@ -29,6 +29,7 @@
 #include "core/f2/meta.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "core/part_lock.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/col_delta/dir.h"
 #include "table/f2/tbl.h"
@@ -53,6 +54,8 @@ typedef struct MapSlot
 	bool		has_xmin;
 	bool		cut;			/* the watch ends at a record whose writer, cut_xmin, was not settled */
 	TransactionId cut_xmin;
+	uint64		appends;		/* the writes in place of the partition's newest page counted before the watch was taken or last found the page as it is */
+	bool		counted;
 	uint64		tick;
 } MapSlot;
 
@@ -239,6 +242,7 @@ slot_widen(MapSlot *s, uint64 want)
 	s->max_xmin = InvalidTransactionId;
 	s->has_xmin = false;
 	s->cut = false;
+	s->counted = false;
 }
 
 /* ---- the chain the slot covers, and what it gained ---- */
@@ -405,18 +409,27 @@ head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor
 	return st;
 }
 
-/* The newest page of the chain is the one the slot saw, with the records it held and no more: with the same anchor, the chain is the slot's */
+/*
+ * The newest page of the chain is the one the slot saw, with the records it held and no more: with the same anchor, the chain is the slot's. A slot that covers the whole chain knows it
+ * without reading the page while no write in place of the newest page was counted since (appends, taken before any page of the ask was read)
+ */
 static bool
-chain_unchanged(Relation rel, const SiftPartitionEntry *entry, const MapSlot *s, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks)
+chain_unchanged(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, uint64 appends)
 {
 	HeadStamp	seen,
 				now;
 
 	if (s->watch.npages == 0 || memcmp(&s->anchor, a, sizeof(*a)) != 0)
 		return false;
+	if (s->counted && !s->cut && s->appends == appends)
+		return true;
 	seen = (HeadStamp) {s->watch.blks[s->watch.npages - 1], s->watch.head.gen, s->watch.head.lsn, s->watch.head.used, s->watch.head.crc};
 	now = head_now(rel, entry, a, vis, looks, seen.blk);
-	return seen.gen == now.gen && seen.lsn == now.lsn && seen.used == now.used && seen.crc == now.crc;
+	if (seen.gen != now.gen || seen.lsn != now.lsn || seen.used != now.used || seen.crc != now.crc)
+		return false;
+	s->appends = appends;
+	s->counted = true;
+	return true;
 }
 
 bool
@@ -426,10 +439,12 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	SiftColDeltaAnchor a;
 	MapSlot    *s;
 	uint64		want = attnum_bloom == 0 ? ALL_ATTRS : attnum_bloom;
+	uint64		appends;
 	Advance		r = ADVANCED;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || RecoveryInProgress() || !snapshot_supported(vis))
 		return false;
+	appends = sift_part_appends(&rel->rd_locator, (uint32) entry->part_id);
 	a = sift_manifest_read_col_delta(rel, entry);
 	if (!sift_col_delta_anchor_sane(&a))
 		return false;
@@ -448,7 +463,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		slot_widen(s, want);
 	if (s == NULL)
 		s = slot_open(rel, entry->part_id, part_gen, want);
-	if (chain_unchanged(rel, entry, s, &a, vis, looks))
+	if (chain_unchanged(rel, entry, s, &a, vis, looks, appends))
 		*map = sift_col_delta_part_map_ref(s->map);
 	else
 		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
@@ -464,6 +479,8 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		slot_drop(s);
 		return false;
 	}
+	s->appends = appends;
+	s->counted = true;
 	s->tick = sift_cache_tick();
 	*settled = !s->cut;
 	if ((s->map != NULL && MemoryContextMemAllocated(s->map->cx, true) > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())

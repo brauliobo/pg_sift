@@ -80,6 +80,15 @@ extern void sift_part_unlock(const RelFileLocator *locator, uint32 part_id);
 extern void sift_part_lock_pair(const RelFileLocator *locator, uint32 part_a, uint32 part_b);
 extern void sift_part_unlock_pair(const RelFileLocator *locator, uint32 part_a, uint32 part_b);
 
+/*
+ * The writes in place of the newest page of a chain of column deltas, counted in one of SIFT_PART_APPEND_SLOTS counters by the hash of the partition (one count for the partitions that share it).
+ * A reader that took the count before it read the page has the page as it is now while the count stays: it need not read the page again. The other changes of a chain move its anchor in the manifest.
+ */
+#define SIFT_PART_APPEND_SLOTS		256U
+
+extern void sift_part_appended(const RelFileLocator *locator, uint32 part_id);
+extern uint64 sift_part_appends(const RelFileLocator *locator, uint32 part_id);
+
 /* The heavy tier: the page lock of the partition */
 extern void sift_part_page_lock(Relation rel, uint32 part_id, LOCKMODE mode);
 extern void sift_part_page_unlock(Relation rel, uint32 part_id, LOCKMODE mode);

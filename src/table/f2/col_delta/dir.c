@@ -328,6 +328,7 @@ append_in_place(SiftColDeltaDiskChain *d, BlockNumber head, BlockNumber dir_head
 	if (dbuf != InvalidBuffer)
 		sift_cddir_page_widen_last(sift_xlog_register(&x, dbuf, 0), &part);
 	sift_xlog_done(&x);
+	sift_part_appended(&rel->rd_locator, part_id);
 	sift_col_delta_batch_free(&part);
 	return true;
 }

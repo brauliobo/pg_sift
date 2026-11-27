@@ -122,3 +122,51 @@ sift_part_page_unlock(Relation rel, uint32 part_id, LOCKMODE mode)
 {
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), mode);
 }
+
+/* ---- the counts of the writes in place of the newest page of a chain ---- */
+
+#define APPENDS_TABLE_NAME	"sift_part_appends"
+
+typedef union AppendSlot
+{
+	pg_atomic_uint64 appends;
+	char		pad[PG_CACHE_LINE_SIZE];
+} AppendSlot;
+
+typedef struct AppendCounts
+{
+	AppendSlot	slot[SIFT_PART_APPEND_SLOTS];
+} AppendCounts;
+
+static AppendCounts *append_counts;
+
+static void
+appends_init(SIFT_DSM_INIT_ARGS)
+{
+	AppendCounts *t = (AppendCounts *) TYPEALIGN(PG_CACHE_LINE_SIZE, ptr);
+
+	for (int i = 0; i < SIFT_PART_APPEND_SLOTS; i++)
+		pg_atomic_init_u64(&t->slot[i].appends, 0);
+}
+
+static pg_atomic_uint64 *
+appends_of(const RelFileLocator *locator, uint32 part_id)
+{
+	if (append_counts == NULL)
+		/* MEM[MEM-SHM-22]: DSM counts of the in-place writes of the newest pages of the column delta chains (256 cache lines) */
+		append_counts = (AppendCounts *) TYPEALIGN(PG_CACHE_LINE_SIZE, sift_dsm_join(APPENDS_TABLE_NAME, sizeof(AppendCounts) + PG_CACHE_LINE_SIZE, appends_init));
+	return &append_counts->slot[sift_part_lock_stripe(locator, part_id) % SIFT_PART_APPEND_SLOTS].appends;
+}
+
+void
+sift_part_appended(const RelFileLocator *locator, uint32 part_id)
+{
+	(void) pg_atomic_fetch_add_u64(appends_of(locator, part_id), 1);
+}
+
+uint64
+sift_part_appends(const RelFileLocator *locator, uint32 part_id)
+{
+	pg_memory_barrier();
+	return pg_atomic_read_u64(appends_of(locator, part_id));
+}

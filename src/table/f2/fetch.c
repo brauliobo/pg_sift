@@ -21,6 +21,7 @@
 #include "col/f2/part/vis.h"
 #include "core/damage.h"
 #include "core/dispatch.h"
+#include "core/shm/manifest.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/gcache.h"
 #include "table/f2/row/state.h"
@@ -343,7 +344,8 @@ static SiftTblF2Fetch *
 tx_fetch_for(Relation rel)
 {
 	SiftTblF2Fetch *f = tx_fetch;
-	uint64		version = sift_col_meta_read(rel).manifest_version;
+	SiftShmIndexMeta peek;
+	uint64		version = sift_shm_manifest_peek(&rel->rd_locator, &peek) ? peek.manifest_version : sift_col_meta_read(rel).manifest_version;
 	SiftF2Store *store = sift_f2_store_open(rel);
 
 	if (f == NULL || f->base.rel != rel || tx_relid != RelationGetRelid(rel) || tx_manifest_version != version || f->store != store)

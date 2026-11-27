@@ -7,6 +7,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "access/xlog.h"
 #include "storage/bufmgr.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -15,6 +16,7 @@
 #include "core/cachebudget.h"
 #include "core/compat.h"
 #include "core/f2/meta.h"
+#include "core/part_lock.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "table/f2/chain_cache.h"
@@ -69,6 +71,8 @@ typedef struct Slot
 	BlockNumber head_blk;
 	uint64		manifest_gen;
 	PageStamp	stamp;
+	uint64		appends;		/* of a column delta log: the writes in place of the newest page counted before the stamp was taken or last found the page as it is */
+	bool		counted;
 	uint64		checked_epoch;	/* the snapshot epoch the stamp was last checked in (sift_pend_del_log) */
 	uint64		tick;
 	union
@@ -563,15 +567,22 @@ cd_extend(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 	return true;
 }
 
+/* The log is the chain's as it is now: the same entry of the manifest, and the newest page as the stamp has it, which no count of a write in place since says to read again */
 static bool
-cd_hit(Relation rel, const SiftPartitionEntry *entry, const Slot *s)
+cd_hit(Relation rel, const SiftPartitionEntry *entry, Slot *s, uint64 appends)
 {
 	PageStamp	now;
 
 	if (s->head_blk != entry->manifest_blk || s->manifest_gen != entry->manifest_gen)
 		return false;
+	if (s->counted && s->appends == appends && !RecoveryInProgress())
+		return true;
 	now = stamp_read(rel, s->stamp.blk);
-	return stamp_same(&now, &s->stamp);
+	if (!stamp_same(&now, &s->stamp))
+		return false;
+	s->appends = appends;
+	s->counted = true;
+	return true;
 }
 
 #define LOG_ROWS_PER_PAGE		(BLCKSZ / 3)	/* a row of a batch takes 3 bytes at the least */
@@ -589,14 +600,16 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 {
 	Slot	   *s;
 	MemoryContext old;
+	uint64		appends;
 	bool		has;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
 		return NULL;
 	if (chain_cx == NULL)
 		chain_init();
+	appends = sift_part_appends(&rel->rd_locator, (uint32) entry->part_id);
 	s = slot_find(rel, false, entry->part_id);
-	if (s != NULL && cd_hit(rel, entry, s))
+	if (s != NULL && cd_hit(rel, entry, s, appends))
 	{
 		s->tick = sift_cache_tick();
 		return &s->log.cd;
@@ -610,6 +623,8 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 		if (has)
 		{
 			s->ready = true;
+			s->appends = appends;
+			s->counted = true;
 			s->tick = sift_cache_tick();
 			(void) sift_cache_commit();
 			return &s->log.cd;
@@ -639,6 +654,8 @@ sift_col_delta_log(Relation rel, const SiftPartitionEntry *entry)
 	}
 	s->head_blk = entry->manifest_blk;
 	s->manifest_gen = entry->manifest_gen;
+	s->appends = appends;
+	s->counted = true;
 	s->tick = sift_cache_tick();
 	s->ready = true;
 	(void) sift_cache_commit();
