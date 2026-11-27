@@ -63,7 +63,7 @@ Block 0: SiftColMetaPageData (424 B, CRC32C)
 
 ### Refusal Slugs
 
-Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+), or `SELECT * FROM sift.explain_why(query);`. List all slugs with `SELECT * FROM sift.refusal_slugs();`.
+Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+), or `SELECT * FROM sift.explain_why(query);`. The reason of an arm names, in parentheses, the expression of the statement it refused (a key, an aggregate) or the capability its format lacks. List all slugs with `SELECT * FROM sift.refusal_slugs();`.
 
 <!-- refusals:start -->
 | Slug | Class | Reason | Action |
@@ -72,6 +72,10 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | `no_source` | semantic (by design) | no sift_col index or sift_table covers the table | Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>); |
 | `where` | semantic | a condition of the WHERE or ON clause is not one the scan can test | Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index. |
 | `aggregate` | semantic | an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes | Use aggregates supported by SiftAgg (see docs/AGG.md) without the unsupported clause, or compute the remaining aggregates in an outer query. |
+| `key` | semantic | a GROUP BY key, a grouping set or an output of the statement is not one the scan computes | Group by columns of the index or expressions of them (date_trunc, date_bin, arithmetic), and compute the other outputs in an outer query. |
+| `jsonb` | semantic | the statement reads both the JSON type and the value of a key, and the leaf of the key cannot hold the values of the other types its type test leaves out | Test the type in the WHERE clause (jsonb_typeof(doc -> 'k') = 'number'), whose scan keys drop the other rows before the value is read. |
+| `json_order` | semantic | a cast of a JSON value that can raise would run for a row the normal plan tests first and drops | Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to. |
+| `format` | semantic | the format of the index or sift_table lacks a capability the statement needs | Rebuild the index or sift_table in the current format (REINDEX, VACUUM FULL), or compute the part the detail names in an outer query. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
 <!-- refusals:end -->
 

@@ -87,7 +87,8 @@ CREATE TABLE widths (kind text, dflt int);
 INSERT INTO widths VALUES
 	('virtual_leaves', 16), ('arms', 16), ('joins', 32), ('combos', 8), ('join_keys', 3), ('join_cols', 16), ('first_order_cols', 8), ('float_ops', 16), ('rows_shared', 32);
 
--- every width at N and at N + 1: the rows are those of the normal plan, and a shape the scan does not run names its slug
+-- every width at N and at N + 1: the rows are those of the normal plan, and a shape the scan does not run names its slug. The virtual leaves are refused by each
+-- format for its own reason: Format 2.0 does not compute the aggregate of a member of the map, Format 1 computes it but its batch does not hold the 16 leaves
 CREATE FUNCTION at_width() RETURNS TABLE (kind text, n int, used bool, slug text, rows_ok bool) LANGUAGE plpgsql AS $$
 DECLARE w record; q text; p record; i int;
 BEGIN
@@ -95,7 +96,8 @@ BEGIN
 		FOREACH i IN ARRAY ARRAY[w.dflt, w.dflt + 1] LOOP
 			q := shape(w.kind, i);
 			SELECT * INTO p FROM probe(q);
-			kind := w.kind; n := i; used := p.used; slug := p.slug;
+			kind := w.kind; n := i; used := p.used;
+			slug := CASE WHEN w.kind = 'virtual_leaves' AND p.slug IN ('aggregate', 'format') THEN 'aggregate or format' ELSE p.slug END;
 			rows_ok := same(q);
 			RETURN NEXT;
 		END LOOP;

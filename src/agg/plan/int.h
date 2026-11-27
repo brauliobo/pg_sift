@@ -10,6 +10,7 @@
 
 #include "agg/engine.h"
 #include "agg/plan/shape.h"
+#include "agg/refuse.h"
 #include "col/am.h"
 #include "core/store/ops.h"
 
@@ -34,7 +35,8 @@ typedef struct V6Plan
 	SiftFilterReg *freg;		/* the distinct FILTER clauses of the statement */
 	bool		in_filter;		/* compiling a FILTER clause: its operands are constants, which the clause folds into its bitmaps at plan time */
 	bool		pg_derive;		/* a key or argument that PostgreSQL's evaluator computes is not computed by the native derivations: the partitions of one table compile to one plan whichever kinds of relation they are */
-	bool		agg_refused;	/* an aggregate of the statement compiled in no form: the arm names aggregate */
+	AggRefusal	why;			/* the first reason the compile gave up for, which sift_v6_compile_on names for the arm, and the expression of the statement it refused (NULL: no one) */
+	Node	   *why_at;
 	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */

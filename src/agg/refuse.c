@@ -60,6 +60,7 @@ typedef struct ArmPrice
 	double		normal;
 	bool		used;
 	AggRefusal	why;
+	const char *detail;			/* what the arm refused: an expression of the statement, a capability; NULL: none named */
 } ArmPrice;
 
 static List *arms;
@@ -148,7 +149,7 @@ arm_of(const char *name)
 			return x;
 	old = MemoryContextSwitchTo(why_cx);
 	a = palloc(sizeof(ArmPrice));
-	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE};
+	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE, NULL};
 	arms = lappend(arms, a);
 	MemoryContextSwitchTo(old);
 	return a;
@@ -175,15 +176,30 @@ sift_agg_arm_used(const char *arm)
 }
 
 void
-sift_agg_arm_refused(const char *arm, AggRefusal why)
+sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail)
 {
 	ArmPrice   *a;
 
 	if (why_store == NULL)
 		return;
 	a = arm_of(arm);
-	if (a->why == AGG_REFUSE_NONE)
-		a->why = why;
+	if (a->why != AGG_REFUSE_NONE)
+		return;
+	a->why = why;
+	a->detail = detail != NULL ? MemoryContextStrdup(why_cx, detail) : NULL;
+}
+
+void
+sift_agg_arm_refused(const char *arm, AggRefusal why)
+{
+	sift_agg_arm_refused_by(arm, why, NULL);
+}
+
+/* sift.explain_why is planning the statement: the rows of its arms are kept */
+bool
+sift_agg_arms_noted(void)
+{
+	return why_store != NULL;
 }
 
 static AggRefusal
@@ -199,7 +215,7 @@ static bool
 why_arms(void)
 {
 	foreach_ptr(ArmPrice, a, arms)
-		agg_report(a->name, arm_why(a), NULL, a->used, isinf(a->scan) ? 0 : a->scan, a->normal);
+		agg_report(a->name, arm_why(a), arm_why(a) == a->why ? a->detail : NULL, a->used, isinf(a->scan) ? 0 : a->scan, a->normal);
 	return arms != NIL;
 }
 
@@ -323,18 +339,19 @@ plan_stmt_reads_sift_index(const PlannedStmt *ps, Oid amoid)
 	return plan_reads_sift_index(ps->planTree, ps->subplans, amoid);
 }
 
-/* does a table of the statement have a sift_col index? */
+/* is a table of the statement a sift_table, or has it a sift_col index? */
 static bool
-tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
+tables_have_source(const PlannedStmt *ps, Oid amoid)
 {
 	foreach_node(RangeTblEntry, rte, ps->rtable)
 	{
 		Relation	rel;
-		bool		found = false;
+		bool		found;
 
 		if (rte->rtekind != RTE_RELATION)
 			continue;
 		rel = table_open(rte->relid, AccessShareLock);
+		found = rel->rd_rel->relam == sift_catalog()->tbl_am;
 		foreach_oid(ix, RelationGetIndexList(rel))
 			found |= get_rel_relam(ix) == amoid;
 		table_close(rel, AccessShareLock);
@@ -347,7 +364,7 @@ tables_have_sift_index(const PlannedStmt *ps, Oid amoid)
 /*
  * The statement has no aggregate, so no arm of the pushdown looked at it: the row "index" says whether the plan reads a sift_col index, and if not why. The statement is
  * planned again with the sequential scan off: a plan with a sift_col index then is the one the normal plan was estimated cheaper than (cost, with both costs);
- * none means the table has no such index (no_source) or no condition of the statement is one the index answers (where).
+ * none means no table is a sift_table or has such an index (no_source), or no condition of the statement is one the index answers (where).
  */
 static void
 why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *ptypes, int nparams, ParamListInfo params)
@@ -363,7 +380,7 @@ why_index_arm(RawStmt *raw, const char *sql, const PlannedStmt *ps, const Oid *p
 		agg_report("index", AGG_REFUSE_NONE, NULL, true, ps->planTree->total_cost, -1);
 		return;
 	}
-	if (!tables_have_sift_index(ps, amoid))
+	if (!tables_have_source(ps, amoid))
 	{
 		agg_report("index", AGG_REFUSE_NO_SOURCE, NULL, false, 0, -1);
 		return;

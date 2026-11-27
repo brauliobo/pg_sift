@@ -22,6 +22,10 @@
 	X(NO_SOURCE, "no_source", "no sift_col index or sift_table covers the table", 0, 1, "Create a columnar index: CREATE INDEX ON <table> USING sift_col (<filter_and_group_cols>);") \
 	X(WHERE, "where", "a condition of the WHERE or ON clause is not one the scan can test", 0, 0, "Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index.") \
 	X(AGGREGATE, "aggregate", "an aggregate, or its FILTER, DISTINCT or ORDER BY, is not one the scan computes", 0, 0, "Use aggregates supported by SiftAgg (see docs/AGG.md) without the unsupported clause, or compute the remaining aggregates in an outer query.") \
+	X(KEY, "key", "a GROUP BY key, a grouping set or an output of the statement is not one the scan computes", 0, 0, "Group by columns of the index or expressions of them (date_trunc, date_bin, arithmetic), and compute the other outputs in an outer query.") \
+	X(JSONB, "jsonb", "the statement reads both the JSON type and the value of a key, and the leaf of the key cannot hold the values of the other types its type test leaves out", 0, 0, "Test the type in the WHERE clause (jsonb_typeof(doc -> 'k') = 'number'), whose scan keys drop the other rows before the value is read.") \
+	X(JSON_ORDER, "json_order", "a cast of a JSON value that can raise would run for a row the normal plan tests first and drops", 0, 0, "Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to.") \
+	X(FORMAT, "format", "the format of the index or sift_table lacks a capability the statement needs", 0, 0, "Rebuild the index or sift_table in the current format (REINDEX, VACUUM FULL), or compute the part the detail names in an outer query.") \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1, "None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale.")
 
 typedef enum AggRefusal
@@ -48,11 +52,13 @@ extern void sift_agg_refuse(const char *arm, AggRefusal why, const char *detail,
 
 /*
  * For sift.explain_why, the row of an arm of the aggregate: it added a path of cost scan beside the normal plan of cost normal (< 0: none), and the plan takes it (sift_agg_arm_used)
- * or not (cost); an arm that added no path says why (sift_agg_arm_refused, the first reason)
+ * or not (cost); an arm that added no path says why (sift_agg_arm_refused, the first reason; _by names what it refused, which is worth making only when sift_agg_arms_noted)
  */
 extern void sift_agg_arm_priced(const char *arm, double scan, double normal);
 extern void sift_agg_arm_used(const char *arm);
 extern void sift_agg_arm_refused(const char *arm, AggRefusal why);
+extern void sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail);
+extern bool sift_agg_arms_noted(void);
 
 extern void agg_explain_begin(void);
 extern List *agg_explain_take(void);

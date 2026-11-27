@@ -19,10 +19,10 @@ CREATE FUNCTION keys_q(n int) RETURNS text LANGUAGE sql AS $$
 	FROM generate_series(1, n) k
 $$;
 SELECT n, w.used, w.slug FROM unnest(ARRAY[8, 9]) n, LATERAL sift.explain_why(keys_q(n)) w ORDER BY n;
- n | used | slug  
----+------+-------
+ n | used | slug 
+---+------+------
  8 | t    | 
- 9 | f    | where
+ 9 | f    | key
 (2 rows)
 
 -- the rows of the scan and of the normal plan
@@ -42,14 +42,18 @@ SELECT n, answer(keys_q(n), true) = answer(keys_q(n), false) AS same_rows FROM u
 
 -- the registry names the class of every slug and what to change: every slug has a line, and the refusal of explain_why joins to it on the slug
 SELECT slug, class FROM sift.refusal_slugs() ORDER BY slug;
-   slug    |  class   
------------+----------
- aggregate | semantic
- cost      | semantic
- no_source | semantic
- other     | semantic
- where     | semantic
-(5 rows)
+    slug    |  class   
+------------+----------
+ aggregate  | semantic
+ cost       | semantic
+ format     | semantic
+ json_order | semantic
+ jsonb      | semantic
+ key        | semantic
+ no_source  | semantic
+ other      | semantic
+ where      | semantic
+(9 rows)
 
 SELECT count(*) = count(*) FILTER (WHERE a.action <> '' AND a.action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() a USING (slug);
  every_slug_has_an_action 
@@ -58,9 +62,9 @@ SELECT count(*) = count(*) FILTER (WHERE a.action <> '' AND a.action IS NOT NULL
 (1 row)
 
 SELECT w.slug, r.class, a.action <> '' AS has_action FROM sift.explain_why(keys_q(9)) w JOIN sift.refusal_slugs() r ON r.slug = w.slug JOIN sift.refusal_actions() a ON a.slug = w.slug;
- slug  |  class   | has_action 
--------+----------+------------
- where | semantic | t
+ slug |  class   | has_action 
+------+----------+------------
+ key  | semantic | t
 (1 row)
 
 -- sift.help(slug) answers a refusal slug too: the reason and the action of the registry; the list of sift.help() stays the messages

@@ -27,6 +27,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/ruleutils.h"
 #include "utils/selfuncs.h"
 #include "utils/timestamp.h"
 
@@ -297,6 +298,18 @@ key_index_of(const V6Plan *p, Index ref)
 	return -1;
 }
 
+/* the compile gives up for why at the expression e of the statement (NULL: no one): the first reason is the one sift_v6_compile_on names for the arm */
+static bool
+agg_refused_at(V6Plan *p, AggRefusal why, Node *e)
+{
+	if (p->why == AGG_REFUSE_NONE)
+	{
+		p->why = why;
+		p->why_at = e;
+	}
+	return false;
+}
+
 static bool
 compile_grouping(V6Plan *p, GroupingFunc *gf)
 {
@@ -327,10 +340,8 @@ compile_aggs(V6Plan *p, Node *e)
 			continue;
 		if (scan_tlist_has(p, (Expr *) n))
 			continue;
-		if (IsA(n, Aggref) && !compile_agg(p, (Aggref *) n))
-			p->agg_refused = true;
-		if (p->agg_refused || (IsA(n, GroupingFunc) && !compile_grouping(p, (GroupingFunc *) n)))
-			return false;
+		if (IsA(n, Aggref) ? !compile_agg(p, (Aggref *) n) : !compile_grouping(p, (GroupingFunc *) n))
+			return agg_refused_at(p, IsA(n, Aggref) ? AGG_REFUSE_AGGREGATE : AGG_REFUSE_KEY, n);
 		add_scan_var(p, (Expr *) n);
 	}
 	return true;
@@ -351,7 +362,7 @@ compile_sets(V6Plan *p)
 			const int	k = key_index_of(p, ref);
 
 			if (k < 0)
-				return false;
+				return agg_refused_at(p, AGG_REFUSE_KEY, NULL);
 			mask |= ((uint32) 1) << k;
 		}
 		p->spec.set_mask[p->spec.nsets++] = mask;
@@ -494,12 +505,14 @@ compile_keys(V6Plan *p, List *group_exprs)
 		if (IsA(e, PlaceHolderVar))
 			e = ((PlaceHolderVar *) e)->phexpr;
 		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !compile_key(p, e, k))
-			return false;
+			return agg_refused_at(p, AGG_REFUSE_KEY, (Node *) e);
 		p->spec.nkeys++;
 		add_scan_var(p, e);
 	}
 	p->spec.constant_groups = p->spec.nkeys == 0 && p->root->parse->groupClause != NIL && p->root->parse->groupingSets == NIL;
-	return p->spec.nkeys > 0 || p->spec.constant_groups || group_exprs == NIL;
+	if (p->spec.nkeys > 0 || p->spec.constant_groups || group_exprs == NIL)
+		return true;
+	return agg_refused_at(p, AGG_REFUSE_KEY, NULL);
 }
 
 bool
@@ -577,10 +590,16 @@ reads_outside_scan_tlist(Node *e, void *context)
 	return expression_tree_walker(e, reads_outside_scan_tlist, context);
 }
 
+/* every output (an expression of exprs, then the HAVING) reads only what the scan gives */
 static bool
-reads_only_scan_tlist(const V6Plan *p, Node *e)
+reads_only_scan_tlist(V6Plan *p, List *exprs, Node *having)
 {
-	return !reads_outside_scan_tlist(e, (void *) p);
+	foreach_ptr(Node, e, exprs)
+		if (reads_outside_scan_tlist(e, p))
+			return agg_refused_at(p, AGG_REFUSE_KEY, e);
+	if (having != NULL && reads_outside_scan_tlist(having, p))
+		return agg_refused_at(p, AGG_REFUSE_KEY, having);
+	return true;
 }
 
 /* an output as the scan computes it (CASE as FILTER, the sums of an offset collapsed); a sorted one stays the expression of its pathkey, which the Sort above finds by equal() */
@@ -626,8 +645,8 @@ outputs_as_written(const PathTarget *target)
 bool
 sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	Node	   *exprs,
-			   *having = extra != NULL ? extra->havingQual : NULL;
+	List	   *exprs;
+	Node	   *having = extra != NULL ? extra->havingQual : NULL;
 
 	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
@@ -636,32 +655,79 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->scan_vars = NULL;
 	p->gen_vars = NIL;
 	p->text = NULL;
-	exprs = (Node *) rewrite_target(p->out->reltarget);
+	p->why = AGG_REFUSE_NONE;
+	p->why_at = NULL;
+	exprs = rewrite_target(p->out->reltarget);
 	having = sift_vn_rewrite_aggs(having);
-	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, exprs) && (having == NULL || compile_aggs(p, having)) &&
-		reads_only_scan_tlist(p, exprs) && (having == NULL || reads_only_scan_tlist(p, having));
+	return compile_keys(p, group_exprs) && compile_sets(p) && compile_aggs(p, (Node *) exprs) && (having == NULL || compile_aggs(p, having)) && reads_only_scan_tlist(p, exprs, having);
+}
+
+static bool
+compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
+{
+	p->why = AGG_REFUSE_NONE;
+	p->why_at = NULL;
+	if (!sift_v6_index_complete(p))
+		return agg_refused_at(p, AGG_REFUSE_NO_SOURCE, NULL);
+	if (!sift_v6_compile_head(p, extra, group_exprs))
+		return agg_refused_at(p, AGG_REFUSE_OTHER, NULL);
+	if (!sift_v6_compile_quals(p))
+		return agg_refused_at(p, AGG_REFUSE_WHERE, NULL);
+	if (sift_v6_json_type_clash(&p->spec))
+		return agg_refused_at(p, AGG_REFUSE_JSONB, NULL);
+	if (!sift_v6_json_cast_order_ok(p))
+		return agg_refused_at(p, AGG_REFUSE_JSON_ORDER, NULL);
+	return true;
+}
+
+/* the expression the compile refused as the statement names it; NULL when it names none or reads another relation than the one planned */
+static char *
+refused_text(const V6Plan *p)
+{
+	const Oid	relid = planner_rt_fetch(p->rel->relid, p->root)->relid;
+	Node	   *e;
+
+	if (p->why_at == NULL || !bms_is_subset(pull_varnos(p->root, p->why_at), p->rel->relids))
+		return NULL;
+	e = copyObject(p->why_at);
+	ChangeVarNodes(e, p->rel->relid, 1, 0);
+	return deparse_expression(e, deparse_context_for(get_rel_name(relid), relid), false, false);
 }
 
 bool
 sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 {
-	return sift_v6_index_complete(p) && sift_v6_compile_head(p, extra, group_exprs) && sift_v6_compile_quals(p) && !sift_v6_json_type_clash(&p->spec) && sift_v6_json_cast_order_ok(p);
+	const bool	ok = compile_on(p, extra, group_exprs);
+
+	if (!ok && sift_agg_arms_noted())
+		sift_agg_arm_refused_by("single", p->why, refused_text(p));
+	return ok;
 }
 
-/* the format of the relation serves what the spec asks of it: with a zone-pruned scan, the capabilities the spec reads; without one, the batches of open() */
-static bool
-format_serves(const V6Plan *p)
+/* what the format of the relation does not serve of the spec (NULL: it serves all): with a zone-pruned scan, the capabilities the spec reads; without one, the batches of open() */
+static const char *
+format_lacks(const V6Plan *p)
 {
 	const SiftStoreOps *ops = p->ops;
 	const SiftV6Spec *s = &p->spec;
 
 	if (ops == NULL)
-		return false;
+		return "the index holds nothing this library reads";
 	if (ops->zone == NULL)
-		return sift_v6_open_scan_ok(s);
-	return (ops->zone->batch_cols == 0 || sift_v6_spec_batch_fits(s, ops->zone->batch_cols)) && (!p->is_table || !OidIsValid(s->text_indexoid) || ops->zone->table_text) &&
-		(!p->is_table || s->ext == NULL || s->ext->ndims == 0 || ops->zone->table_star) &&
-		(!s->rows || (ops->order != NULL && ops->order->scan_rows != NULL)) && (s->ext == NULL || !s->ext->unnest || ops->jsonb != NULL) && (s->par_strategy == 0 || ops->par != NULL);
+		return sift_v6_open_scan_ok(s) ? NULL : "the format reads whole batches: no condition, computed column, FILTER or generic aggregate";
+	if (ops->zone->batch_cols != 0 && !sift_v6_spec_batch_fits(s, ops->zone->batch_cols))
+		return "more columns than a batch of the format holds";
+	if (p->is_table && OidIsValid(s->text_indexoid) && !ops->zone->table_text)
+		return "a text search of a sift_table";
+	if (p->is_table && s->ext != NULL && s->ext->ndims > 0 && !ops->zone->table_star)
+		return "a dimension joined to a sift_table";
+	if (s->rows && (ops->order == NULL || ops->order->scan_rows == NULL))
+		return "the rows of an ORDER BY .. LIMIT";
+	if (s->ext != NULL && s->ext->unnest && ops->jsonb == NULL)
+		return "an unnest of a jsonb array";
+	if (s->par_strategy != 0 && ops->par == NULL)
+		return "a parallel scan";
+	return NULL;
 }
 
 /* the cost of the cheapest path the relation has so far (-1: none) */
@@ -703,9 +769,18 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 				passes;
 	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
+	const char *lack = format_lacks(p);
 
-	if (!format_serves(p) || !sift_v6_gen_fits(&p->spec, groups))
+	if (lack != NULL)
+	{
+		sift_agg_arm_refused_by("single", AGG_REFUSE_FORMAT, lack);
 		return;
+	}
+	if (!sift_v6_gen_fits(&p->spec, groups))
+	{
+		sift_agg_arm_refused_by("single", AGG_REFUSE_AGGREGATE, "the states of a generic aggregate for the groups pass the hash memory limit");
+		return;
+	}
 	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * sift_v6_quals_sel(p->root, list_make1(p->text_qual), p->rel->relid)))
 	{
 		sift_agg_refuse("search", AGG_REFUSE_COST, "a scan of a btree on the other conditions reads fewer rows than the scan walks postings", 0, -1);
