@@ -60,11 +60,11 @@ key_leaf(Relation index, const SiftColSchema *s, const char *name)
 		if (d->path[0] == '\0' && d->name != NULL && strcmp(d->name, name) == 0)
 		{
 			if (!key_type(index, d))
-				break;
+				ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("key_order column \"%s\" of index \"%s\" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column", name, RelationGetRelationName(index))));
 			return i;
 		}
 	}
-	ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("key_order column \"%s\" of index \"%s\" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column", name, RelationGetRelationName(index))));
+	ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("invalid key_order option \"%s\": column \"%s\" is not a column of the index", name, name)));
 	pg_unreachable();
 }
 

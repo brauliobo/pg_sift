@@ -29,13 +29,13 @@ INSERT INTO k SELECT i, i % 100, i % 7, i % 13, i % 2 = 0, 'x' || i, i / 3.0 FRO
 SELECT spec, try_order('k', spec) AS result
 FROM unnest(ARRAY['a', 'a ASC', 'a DESC', 'a asc nulls last', 'A DESC NULLS LAST', 'a NULLS FIRST', 'a NULLS LAST', '  a   desc   nulls   first  ', '"a" DESC', 'a DESC, b NULLS FIRST, c ASC NULLS LAST, id DESC, d',
 				'auto: a DESC', 'a DESC,b DESC,c DESC', 't DESC', 'a, t DESC NULLS FIRST']) AS s(spec);
-                        spec                         |                                                            result                                                             
------------------------------------------------------+-------------------------------------------------------------------------------------------------------------------------------
+                        spec                         |                                result                                 
+-----------------------------------------------------+-----------------------------------------------------------------------
  a                                                   | built
  a ASC                                               | built
  a DESC                                              | built
  a asc nulls last                                    | built
- A DESC NULLS LAST                                   | key_order column "A" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
+ A DESC NULLS LAST                                   | invalid key_order option "A": column "A" is not a column of the index
  a NULLS FIRST                                       | built
  a NULLS LAST                                        | built
    a   desc   nulls   first                          | built
@@ -51,18 +51,18 @@ SELECT spec, try_order('k', spec) AS result
 FROM unnest(ARRAY['a DESCENDING', 'a NULLS', 'a NULLS MIDDLE', 'NULLS FIRST', 'a DESC DESC', 'a DESC NULLS', 'a, , b', 'a DESC,', 'nosuch DESC', 'f DESC', 'a NULLS FIRST NULLS LAST', 'a DESC b']) AS s(spec);
            spec           |                                                                         result                                                                         
 --------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------------
- a DESCENDING             | key_order column "a DESCENDING" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- a NULLS                  | key_order column "a NULLS" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- a NULLS MIDDLE           | key_order column "a NULLS MIDDLE" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
+ a DESCENDING             | invalid key_order option "a DESCENDING": column "a DESCENDING" is not a column of the index
+ a NULLS                  | invalid key_order option "a NULLS": column "a NULLS" is not a column of the index
+ a NULLS MIDDLE           | invalid key_order option "a NULLS MIDDLE": column "a NULLS MIDDLE" is not a column of the index
  NULLS FIRST              | invalid key_order option "NULLS FIRST": a list of column names, each with an optional ASC or DESC and NULLS FIRST or NULLS LAST ('group, key' for two)
- a DESC DESC              | key_order column "a DESC" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- a DESC NULLS             | key_order column "a DESC NULLS" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
+ a DESC DESC              | invalid key_order option "a DESC": column "a DESC" is not a column of the index
+ a DESC NULLS             | invalid key_order option "a DESC NULLS": column "a DESC NULLS" is not a column of the index
  a, , b                   | invalid key_order option "a, , b": a list of column names, each with an optional ASC or DESC and NULLS FIRST or NULLS LAST ('group, key' for two)
  a DESC,                  | invalid key_order option "a DESC,": a list of column names, each with an optional ASC or DESC and NULLS FIRST or NULLS LAST ('group, key' for two)
- nosuch DESC              | key_order column "nosuch" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- f DESC                   | key_order column "f" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- a NULLS FIRST NULLS LAST | key_order column "a NULLS FIRST" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
- a DESC b                 | key_order column "a DESC b" of index "try_idx" is not an integer, date, timestamp, boolean, text, uuid or numeric(p <= 18, s) column
+ nosuch DESC              | invalid key_order option "nosuch": column "nosuch" is not a column of the index
+ f DESC                   | invalid key_order option "f": column "f" is not a column of the index
+ a NULLS FIRST NULLS LAST | invalid key_order option "a NULLS FIRST": column "a NULLS FIRST" is not a column of the index
+ a DESC b                 | invalid key_order option "a DESC b": column "a DESC b" is not a column of the index
 (12 rows)
 
 -- eight columns, each of the four orders, a ninth is refused
