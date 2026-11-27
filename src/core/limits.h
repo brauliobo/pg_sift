@@ -284,6 +284,9 @@
 	X(v6_topk_items, "SIFT_V6_MAX_TOPK_ITEMS", "agg/engine.h", 12, "columns", \
 	  "ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan", \
 	  "normal plan", "-", 0) \
+	X(v6_text_arms, "SIFT_V6_TEXT_MAX_ARMS", "agg/engine.h", 16, "arms", \
+	  "arms of the search of a SiftAgg scan: the product of the branches of its ANDed search clauses on one text index ((a OR b) AND (c OR d) has four)", \
+	  "normal plan (where)", "-", 0) \
 	X(v6_topk_k, "SIFT_TOPK_MAX_K", "agg/group/topk.h", 65536, "rows", \
 	  "LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT)", \
 	  "normal plan (a Sort of the groups)", "-", 0) \

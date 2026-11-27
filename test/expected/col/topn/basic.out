@@ -155,7 +155,7 @@ NOTICE:  table "ct_b" does not exist, skipping
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | or_and=same 10         +
+       | or_and=same+topn 10    +
        | or_column=same 10      +
        | or_filters=same+topn 10+
        | or_none=same 0         +
@@ -202,7 +202,7 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | num_nan=same+topn 30   +
                           | offset=same+topn 5     +
                           | oldest=same+topn 7     +
-                          | or_and=same 10         +
+                          | or_and=same+topn 10    +
                           | or_column=same 10      +
                           | or_filters=same+topn 10+
                           | or_none=same 0         +
@@ -398,7 +398,7 @@ SELECT * FROM ct_stage('insert');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same 10         +
+        | or_and=same+topn 10    +
         | or_column=same 10      +
         | or_filters=same+topn 10+
         | or_none=same 0         +
@@ -447,7 +447,7 @@ SELECT * FROM ct_stage('update');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same 10         +
+        | or_and=same+topn 10    +
         | or_column=same 10      +
         | or_filters=same+topn 10+
         | or_none=same 0         +
@@ -494,7 +494,7 @@ SELECT * FROM ct_stage('delete');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same 10         +
+        | or_and=same+topn 10    +
         | or_column=same 10      +
         | or_filters=same+topn 10+
         | or_none=same 0         +
@@ -545,7 +545,7 @@ SELECT * FROM ct_stage('own');
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | or_and=same 10         +
+       | or_and=same+topn 10    +
        | or_column=same 10      +
        | or_filters=same+topn 10+
        | or_none=same 0         +
@@ -592,7 +592,7 @@ SELECT * FROM ct_stage('rollback');
           | num_nan=same+topn 30   +
           | offset=same+topn 5     +
           | oldest=same+topn 7     +
-          | or_and=same 10         +
+          | or_and=same+topn 10    +
           | or_column=same 10      +
           | or_filters=same+topn 10+
           | or_none=same 0         +
@@ -640,7 +640,7 @@ SELECT * FROM ct_stage('vacuum');
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | or_and=same 10         +
+        | or_and=same+topn 10    +
         | or_column=same 10      +
         | or_filters=same+topn 10+
         | or_none=same 0         +
@@ -693,7 +693,7 @@ SELECT * FROM ct_stage('promote');
          | num_nan=same+topn 30   +
          | offset=same+topn 5     +
          | oldest=same+topn 7     +
-         | or_and=same 10         +
+         | or_and=same+topn 10    +
          | or_column=same 10      +
          | or_filters=same+topn 10+
          | or_none=same 0         +
@@ -744,7 +744,7 @@ SELECT * FROM ct_stage('workers');
          | num_nan=same+topn 30   +
          | offset=same+topn 5     +
          | oldest=same+topn 7     +
-         | or_and=same 10         +
+         | or_and=same+topn 10    +
          | or_column=same 10      +
          | or_filters=same+topn 10+
          | or_none=same 0         +

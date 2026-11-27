@@ -1,8 +1,9 @@
 /*
- * agg/text.c - a text query (body @@> 'const', or an OR of them on one index) among the quals of an aggregate of a table with a sift_col index of format major 2. The scan of the index reads
- * the rows of the hits only: the hits of the arms on their sift index are read in heap order, without scores, a row matched by several arms once, into chunks of a bridge (agg/hybrid/hybrid.c, the byte
- * budget of work_mem / 2), and each chunk is a pass of the scan, which skips the granules the chunk misses and every row not in it. The groups of every pass are one. A query that needs the indexed
- * text of its hits, or whose phrase the rows of the write buffer (which have no positions) may leave undecided, is not served: the planner leaves it to the text index's own scan.
+ * agg/text.c - a search (body @@> 'const'; an OR of them on one index, and ANDs of those) among the quals of an aggregate of a table with a sift_col index of format major 2. The scan of the index
+ * reads the rows of the hits only: the hits of the arms on their sift index (an arm binds the queries it ANDs into one plan) are read in heap order, without scores, a row matched by several arms
+ * once, into chunks of a bridge (agg/hybrid/hybrid.c, the byte budget of work_mem / 2), and each chunk is a pass of the scan, which skips the granules the chunk misses and every row not in it. The
+ * groups of every pass are one. A query that needs the indexed text of its hits, or whose phrase the rows of the write buffer (which have no positions) may leave undecided, is not served: the
+ * planner leaves it to the text index's own scan.
  */
 #include "postgres.h"
 
@@ -30,6 +31,7 @@
 
 typedef struct TextArm
 {
+	SiftPlan   *plan;
 	SiftMatchIter *it;
 	SiftPageMatch pm;			/* the arm's next page, when has */
 	bool		has;
@@ -55,40 +57,39 @@ sift_v6_text_index(const IndexOptInfo *ix)
 	return ix->relam == sift_catalog()->am && !ix->hypothetical && (ix->indpred == NIL || ix->predOK);
 }
 
+/* a query whose text the plan has: a text constant */
+static bool
+query_given(const Expr *q)
+{
+	return IsA(q, Const) && !((const Const *) q)->constisnull && ((const Const *) q)->consttype == TEXTOID;
+}
+
 /* the index of a partitioned table is no storage: only a partition's own index has hits to read */
 static IndexOptInfo *
-arm_index(RelOptInfo *rel, Node *clause, Const **query)
+arm_index(RelOptInfo *rel, Node *clause, Expr **query)
 {
 	foreach_ptr(IndexOptInfo, ix, rel->indexlist)
-	{
-		Expr	   *q;
-
-		if (sift_v6_text_index(ix) && get_rel_relkind(ix->indexoid) == RELKIND_INDEX && sift_match_clause(clause, ix, &q) && IsA(q, Const) && !((Const *) q)->constisnull &&
-			((Const *) q)->consttype == TEXTOID)
-		{
-			*query = (Const *) q;
+		if (sift_v6_text_index(ix) && get_rel_relkind(ix->indexoid) == RELKIND_INDEX && sift_match_clause(clause, ix, query) && query_given(*query))
 			return ix;
-		}
-	}
 	return NULL;
 }
 
 IndexOptInfo *
-sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries)
+sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **branches)
 {
-	List	   *branches = IsA(ri->clause, BoolExpr) && ((BoolExpr *) ri->clause)->boolop == OR_EXPR ? ((BoolExpr *) ri->clause)->args : list_make1(ri->clause);
+	List	   *clauses = IsA(ri->clause, BoolExpr) && ((BoolExpr *) ri->clause)->boolop == OR_EXPR ? ((BoolExpr *) ri->clause)->args : list_make1(ri->clause);
 	IndexOptInfo *text = NULL;
 
-	*queries = NIL;
-	foreach_ptr(Node, branch, branches)
+	*branches = NIL;
+	foreach_ptr(Node, branch, clauses)
 	{
-		Const	   *query;
+		Expr	   *query;
 		IndexOptInfo *ix = arm_index(rel, branch, &query);
 
 		if (ix == NULL || (text != NULL && ix != text))
 			return NULL;
 		text = ix;
-		*queries = lappend(*queries, query);
+		*branches = lappend(*branches, query);
 	}
 	return text;
 }
@@ -107,17 +108,24 @@ sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri)
 	return false;
 }
 
+/* The plan of an arm: the AND of its queries */
 static SiftPlan *
-bind_query(SiftIndexState *ist, Const *query, int flags)
+arm_plan(SiftIndexState *ist, List *queries, int flags)
 {
-	text	   *t = DatumGetTextPP(query->constvalue);
-	SiftQuery  *q = sift_state_query(ist, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+	SiftQuery **q = palloc(list_length(queries) * sizeof(SiftQuery *));
+	int			n = 0;
 
-	return sift_plan_bind(ist, &q, 1, flags);
+	foreach_node(Const, c, queries)
+	{
+		const text *t = DatumGetTextPP(c->constvalue);
+
+		q[n++] = sift_state_query(ist, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+	}
+	return sift_plan_bind(ist, q, n, flags);
 }
 
 bool
-sift_v6_text_usable(IndexOptInfo *text, List *queries)
+sift_v6_text_usable(IndexOptInfo *text, List *arms)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 text query");
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -125,8 +133,8 @@ sift_v6_text_usable(IndexOptInfo *text, List *queries)
 	SiftIndexState *ist = sift_state_open(index, cx);
 	bool		usable = true;
 
-	foreach_ptr(Const, query, queries)
-		usable &= !sift_plan_recheck_possible(bind_query(ist, query, SIFT_BIND_CAPPED));
+	foreach_node(List, arm, arms)
+		usable &= !sift_plan_recheck_possible(arm_plan(ist, arm, SIFT_BIND_CAPPED));
 	sift_state_close(ist);
 	index_close(index, AccessShareLock);
 	MemoryContextSwitchTo(old);
@@ -139,12 +147,15 @@ sift_v6_text_usable(IndexOptInfo *text, List *queries)
 
 /* The hits cost the dictionary lookups and each posting its walk into the bridge: the rows the scan decodes are those of the granules the hits are in */
 double
-sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch)
+sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, List *quals, List *arms, double *touch)
 {
 	double		rows = Max(rel->tuples, 1.0),
 				granules = Max(1.0, ceil(rows / SIFT_GRANULE_ROWS)),
-				sel = clause_selectivity(root, (Node *) ri->clause, rel->relid, JOIN_INNER, NULL);
+				sel = clauselist_selectivity(root, quals, rel->relid, JOIN_INNER, NULL);
+	List	   *queries = NIL;
 
+	foreach_node(List, arm, arms)
+		queries = list_concat(queries, arm);
 	*touch = sift_hybrid_granule_hit(sel, rows / granules);
 	return sift_dict_cost(text, queries) + rows * sel * SEARCH_BRIDGE_OPS * cpu_operator_cost;
 }
@@ -206,6 +217,13 @@ sift_v6_search_key_first(PlannerInfo *root, RelOptInfo *rel, double postings)
 		Max(rel->tuples, 1.0) * clauselist_selectivity(root, own, rel->relid, JOIN_INNER, NULL) * SEARCH_KEY_ROW_OPS < postings * SEARCH_POSTING_OPS;
 }
 
+/* The arm's next page */
+static void
+arm_next(SiftV6Text *t, TextArm *a)
+{
+	a->has = sift_iter_next(a->it, &a->pm);
+}
+
 SiftV6Text *
 sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent)
 {
@@ -221,11 +239,12 @@ sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent)
 	t->arm = palloc0(t->narms * sizeof(TextArm));
 	for (int i = 0; i < t->narms; i++)
 	{
-		SiftPlan   *plan = bind_query(t->ist, list_nth_node(Const, spec->text_queries, i), 0);
+		TextArm    *a = &t->arm[i];
 
-		SIFT_INVARIANT(!sift_plan_recheck_needed(plan), "sift: the aggregate scan takes no query that needs the text of its hits");
-		t->arm[i].it = sift_iter_begin(plan);
-		t->arm[i].has = sift_iter_next(t->arm[i].it, &t->arm[i].pm);
+		a->plan = arm_plan(t->ist, list_nth_node(List, spec->text_queries, i), 0);
+		SIFT_INVARIANT(!sift_plan_recheck_needed(a->plan), "sift: the aggregate scan takes no query that needs the text of its hits");
+		a->it = sift_iter_begin(a->plan);
+		arm_next(t, a);
 	}
 	t->word = SIFT_OFFMASK_WORDS;
 	t->run = sift_hybrid_begin(cx, SIFT_HYB_BM25_TO_COL, &v6_text_store, (Size) work_mem * 1024 / 2, NULL, NULL);
@@ -253,7 +272,7 @@ union_page(SiftV6Text *t)
 		{
 			for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
 				t->page.offmask[w] |= t->arm[i].pm.offmask[w];
-			t->arm[i].has = sift_iter_next(t->arm[i].it, &t->arm[i].pm);
+			arm_next(t, &t->arm[i]);
 		}
 	t->word = 0;
 	return true;

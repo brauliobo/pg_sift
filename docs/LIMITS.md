@@ -21,6 +21,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | columns, constant and operators of an arithmetic expression of float8 columns in the scan of an unnest (postfix) | `32 tokens` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_TOKENS` |
 | operands an arithmetic expression of the scan of an unnest holds at once while it is computed | `8 values` | normal plan | — | `agg/plan/rewrite.h` `SIFT_ARITH_MAX_STACK` |
 | ORDER BY columns of the Top-K of the groups or rows of a SiftAgg scan | `12 columns` | normal plan | — | `agg/engine.h` `SIFT_V6_MAX_TOPK_ITEMS` |
+| arms of the search of a SiftAgg scan: the product of the branches of its ANDed search clauses on one text index ((a OR b) AND (c OR d) has four) | `16 arms` | normal plan (where) | — | `agg/engine.h` `SIFT_V6_TEXT_MAX_ARMS` |
 | LIMIT + OFFSET of the Top-K of the groups of a SiftAgg scan (ORDER BY .. LIMIT) | `65,536 rows` | normal plan (a Sort of the groups) | — | `agg/group/topk.h` `SIFT_TOPK_MAX_K` |
 | LIMIT + OFFSET of a GROUP BY .. LIMIT with no ORDER BY, HAVING or DISTINCT ON, for which the group table stops taking new groups once it holds them | `4,096 rows` | the table takes every group, as without a LIMIT | — | `agg/plan/rewrite.h` `SIFT_LOCK_MAX_K` |
 | PARTITION BY keys, and ORDER BY keys, of a window of a SiftAgg scan | `4 keys` | normal plan | — | `agg/win/datebin.h` `SIFT_WINX_MAX_KEYS` |

@@ -44,9 +44,9 @@ typedef struct V6Plan
 	RelOptInfo *elem_rel;		/* the relation of the unnest */
 	bool		members;		/* a member of a map of a document may be a column of the scan: no row the source gives is left out after it (no batch qual, FILTER or join), so PostgreSQL would read the document of each */
 	bool		score_ok;		/* an aggregate over sift.score(ctid): the scan that brings its rows brings their scores (agg/hybrid/plan.c) */
-	IndexOptInfo *text;			/* the sift index of the text query of the statement, if it has one (v6_text.c) */
-	RestrictInfo *text_qual;
-	List	   *text_queries;
+	IndexOptInfo *text;			/* the sift index of the text queries of the statement, if it has them (v6_text.c) */
+	List	   *text_quals;		/* the clauses they come from */
+	List	   *text_queries;		/* the arms of their search (SiftV6Spec.text_queries) */
 	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan joins the dimensions of its elements for and decides itself (v6_exists_plan.h): no clause of the table is compiled for it */
 	List	   *tests;			/* the tests of the elements of an array (EXISTS, jsonpath) that the scan decides itself (v6_unnest_exists.h): no clause of the table is compiled for those of a WHERE, a FILTER reads their flags */
 	const int  *elem_map;		/* the element column of the union of the tests' (SiftV6ElemRte) that column i of the relation of the test being built is; NULL: its own */

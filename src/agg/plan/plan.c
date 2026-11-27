@@ -88,7 +88,7 @@ scan_cost(const V6Plan *p, double groups, Cost *startup, Cost *total)
 	if (p->text != NULL)
 	{
 		double		touch = 1.0,
-					text_cost = sift_v6_text_cost(p->root, p->rel, p->text, p->text_qual, p->text_queries, &touch);
+					text_cost = sift_v6_text_cost(p->root, p->rel, p->text, p->text_quals, p->text_queries, &touch);
 
 		/* a term the text index does not hold touches no granule, and the scan still pays for its opening */
 		*total = Max(*total * touch + text_cost, *startup);
@@ -652,6 +652,7 @@ sift_v6_compile_head(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 	p->scan_vars = NULL;
 	p->gen_vars = NIL;
 	p->text = NULL;
+	p->text_quals = p->text_queries = NIL;
 	p->why = AGG_REFUSE_NONE;
 	p->why_at = NULL;
 	exprs = rewrite_target(p->out->reltarget);
@@ -778,7 +779,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 		sift_agg_arm_refused_by("single", AGG_REFUSE_AGGREGATE, "the states of a generic aggregate for the groups pass the hash memory limit");
 		return;
 	}
-	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * sift_v6_quals_sel(p->root, list_make1(p->text_qual), p->rel->relid)))
+	if (p->text != NULL && sift_v6_search_key_first(p->root, p->rel, p->rel->tuples * sift_v6_quals_sel(p->root, p->text_quals, p->rel->relid)))
 	{
 		sift_agg_refuse("search", AGG_REFUSE_COST, "a scan of a btree on the other conditions reads fewer rows than the scan walks postings", 0, -1);
 		return;

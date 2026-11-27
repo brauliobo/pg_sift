@@ -278,8 +278,8 @@ typedef struct SiftV6Spec
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/qual/jsonb.c) */
 	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/qual/bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
-	Oid			text_indexoid;	/* a sift index whose text queries (the Consts of text_queries, the arms of an OR) keep the rows: their hits go to the scan as bridges (v6_text.c); InvalidOid without one */
-	List	   *text_queries;
+	Oid			text_indexoid;	/* a sift index whose search keeps the rows: its hits go to the scan as bridges (v6_text.c); InvalidOid without one */
+	List	   *text_queries;	/* the search: an OR of arms, each the list of the queries (text Consts) it ANDs */
 	int			par_strategy;	/* SiftV6ParStrategy of the plan (0: serial) */
 	int			par_workers;
 	int			nderive;
@@ -553,12 +553,16 @@ typedef bool (*SiftV6ChunkFn) (void *arg, const SiftTidBridge **bridge);
 /* v6_text.c: the text query of a statement of the aggregate (the planner reads it from the quals, the executor feeds it to the scan as chunks) */
 /* A text index of the rel that holds every row the query reads: the whole table, or the rows of a predicate the query implies */
 extern bool sift_v6_text_index(const IndexOptInfo *ix);
-extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries);
+/* The arms of a search are at most this many: the product of the branches of its ANDed clauses */
+#define SIFT_V6_TEXT_MAX_ARMS	16
+/* The clause is a search of a text index of rel, or an OR of searches of one: that index, and in branches the query (a text Const) of each */
+extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **branches);
 /* The clause is a match of a text index of the relation, which no scan key or batch qual decides */
 extern bool sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri);
-extern bool sift_v6_text_usable(IndexOptInfo *text, List *queries);
+/* No arm of the search can need the text of its hits */
+extern bool sift_v6_text_usable(IndexOptInfo *text, List *arms);
 /* touch: the fraction of the rows of the store that the scan of the chunks reads (the granules the hits are in) */
-extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, RestrictInfo *ri, List *queries, double *touch);
+extern double sift_v6_text_cost(PlannerInfo *root, RelOptInfo *rel, IndexOptInfo *text, List *quals, List *arms, double *touch);
 /* A btree or bitmap path on the other conditions of rel reads fewer rows than the scan walks postings (postings: the rows the text query matches), unless sift.agg_force is on: PostgreSQL's plan stands */
 extern bool sift_v6_search_key_first(PlannerInfo *root, RelOptInfo *rel, double postings);
 

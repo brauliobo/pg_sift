@@ -79,15 +79,25 @@ explain_filters(const SiftV6Spec *spec, Relation heap, Relation index, ExplainSt
 		ExplainPropertyText("Filters", buf.data, es);
 }
 
-/* the text queries that keep the rows: one, or the arms of an OR */
+/* the search that keeps the rows: one query, or the arms of an OR, an arm the AND of its queries (in parentheses beside other arms) */
 static char *
 search_desc(const SiftV6Spec *spec)
 {
+	const char *index = get_rel_name(spec->text_indexoid);
+	const bool	nested = list_length(spec->text_queries) > 1;
 	StringInfoData buf;
 
 	initStringInfo(&buf);
-	foreach_ptr(Node, q, spec->text_queries)
-		appendStringInfo(&buf, "%s%s @@> %s", buf.len > 0 ? " OR " : "", get_rel_name(spec->text_indexoid), deparse_expression(q, NIL, false, false));
+	foreach_node(List, arm, spec->text_queries)
+	{
+		const bool	paren = nested && list_length(arm) > 1;
+
+		appendStringInfoString(&buf, buf.len > 0 ? " OR " : "");
+		appendStringInfoString(&buf, paren ? "(" : "");
+		foreach_ptr(Node, q, arm)
+			appendStringInfo(&buf, "%s%s @@> %s", foreach_current_index(q) > 0 ? " AND " : "", index, deparse_expression(q, NIL, false, false));
+		appendStringInfoString(&buf, paren ? ")" : "");
+	}
 	return buf.data;
 }
 

@@ -114,6 +114,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  v6_derived          | SIFT_V6_MAX_DERIVE              |                  64 | t         | f
  v6_join_keys        | JOIN_MAX_KEYS                   |                   8 | t         | f
  v6_lock_k           | SIFT_LOCK_MAX_K                 |                4096 | t         | f
+ v6_text_arms        | SIFT_V6_TEXT_MAX_ARMS           |                  16 | t         | f
  v6_topk_items       | SIFT_V6_MAX_TOPK_ITEMS          |                  12 | t         | f
  v6_topk_k           | SIFT_TOPK_MAX_K                 |               65536 | t         | f
  vexpr_args          | SIFT_VEXPR_MAX_ARGS             |                  17 | t         | f
@@ -133,7 +134,7 @@ SELECT id, macro, dflt, effective = dflt AS unchanged, hooked FROM sift._test_li
  winx_offset         | SIFT_WINX_MAX_OFFSET            |                4096 | t         | f
  write_buffer_kb     | SIFT_DEFAULT_WRITE_BUFFER_LIMIT |                4096 | t         | f
  zstd_dict_bytes     | SIFT_ZSTD_DICT_MAX_BYTES        |               16384 | t         | f
-(129 rows)
+(130 rows)
 
 -- a hooked limit is lowered for the session and comes back with RESET
 SET sift.test_limits = 'query_bytes=64, phrase_terms=3';

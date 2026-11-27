@@ -95,13 +95,26 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 	return true;
 }
 
-/* The text query of a base relation: its hits keep the rows (a partition of a partitioned table has its own text index, so no partition takes this) */
+/*
+ * A text query of a base relation: its hits keep the rows (a partition of a partitioned table has its own text index, so no partition takes this). Each clause is an OR of
+ * searches of one index and the clauses are ANDed, so the arms of the search are the product of their branches, an arm the AND of a branch of each
+ */
 bool
 sift_v6_text_qual(V6Plan *p, RestrictInfo *ri)
 {
-	if (p->text != NULL || p->rel->reloptkind != RELOPT_BASEREL || (p->text = sift_v6_text_match(p->rel, ri, &p->text_queries)) == NULL)
+	List	   *branches;
+	List	   *arms = NIL;
+	IndexOptInfo *ix;
+
+	if (p->rel->reloptkind != RELOPT_BASEREL || (ix = sift_v6_text_match(p->rel, ri, &branches)) == NULL || (p->text != NULL && ix != p->text) ||
+		Max(list_length(p->text_queries), 1) * list_length(branches) > SIFT_V6_TEXT_MAX_ARMS)
 		return false;
-	p->text_qual = ri;
+	foreach_node(List, arm, p->text != NULL ? p->text_queries : list_make1(NIL))
+		foreach_ptr(Expr, q, branches)
+			arms = lappend(arms, lappend(list_copy(arm), q));
+	p->text = ix;
+	p->text_queries = arms;
+	p->text_quals = lappend(p->text_quals, ri);
 	return true;
 }
 
