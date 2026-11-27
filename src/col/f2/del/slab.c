@@ -79,23 +79,49 @@ settled_deletes(const SiftPendDelRec *recs, int n, const bool *hit, bool *settle
 	return px;
 }
 
-/* Some delete names a row of the inline slab: only then is the slab sorted into a part, so that the delete finds the row */
+/*
+ * The addresses the slab names, ascending: the references of a slab of them (a chain or a directory) as they are, not resolved against the heap, whose versions a VACUUM deletes
+ * are the ones no snapshot sees any more; the rows of an inline slab
+ */
+static uint64 *
+slab_tids(Relation rel, uint64 part_id, BlockNumber head, const SiftPartSpec *spec, uint32 *n)
+{
+	uint64	   *tids;
+
+	if (sift_l0_slab_is_href(rel, part_id, head))
+	{
+		SiftL0HeapRef *refs = sift_l0_href_refs(rel, part_id, head, n);
+
+		tids = palloc(Max(*n, 1) * sizeof(uint64));
+		for (uint32 i = 0; i < *n; i++)
+			tids[i] = sift_f2_tid(&refs[i].ctid);
+		pfree(refs);
+	}
+	else
+	{
+		/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
+		SiftRowBuf *rb = sift_rowbuf_new(spec);
+
+		sift_l0_slab_read(rel, part_id, head, rb, spec, NULL, NULL, NULL);
+		*n = (uint32) rb->n;
+		tids = memcpy(palloc(Max(*n, 1) * sizeof(uint64)), rb->tid, *n * sizeof(uint64));
+		sift_rowbuf_free(rb);
+	}
+	qsort(tids, *n, sizeof(uint64), tid_cmp);
+	return tids;
+}
+
+/* Some delete names a row of the slab: only then is the slab sorted into a part, so that the delete finds the row */
 static bool
 slab_holds_deleted(Relation rel, uint64 part_id, BlockNumber head, const SiftPartSpec *spec, const SiftPendDelRec *recs, int n)
 {
-/* check-memory: allow bounded to one micro-slab: SIFT_L0_SLAB_MAX_PAGES pages */
-	SiftRowBuf *rb = sift_rowbuf_new(spec);
-	uint64	   *tids;
+	uint32		ntids;
+	uint64	   *tids = slab_tids(rel, part_id, head, spec, &ntids);
 	bool	   *hit = palloc(Max(n, 1) * sizeof(bool));
-	int			nhit;
+	int			nhit = sift_del_slab_hits(tids, ntids, recs, n, hit);
 
-	sift_l0_slab_read(rel, part_id, head, rb, spec, NULL, NULL, NULL);
-	tids = memcpy(palloc(Max(rb->n, 1) * sizeof(uint64)), rb->tid, rb->n * sizeof(uint64));
-	qsort(tids, rb->n, sizeof(uint64), tid_cmp);
-	nhit = sift_del_slab_hits(tids, (uint32) rb->n, recs, n, hit);
 	pfree(tids);
 	pfree(hit);
-	sift_rowbuf_free(rb);
 	return nhit > 0;
 }
 
