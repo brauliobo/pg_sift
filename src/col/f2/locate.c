@@ -755,7 +755,7 @@ sift_f2_locate_published_if(Relation rel, SiftF2Store *store, uint64 tid, SiftF2
 	MemoryContext pinned = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 visit");
 	LocateArg	a = {.tid = tid,.loc = loc,.live_only = rel->rd_rel->relkind == RELKIND_INDEX,.accept = accept,.accept_arg = arg};
 	const SiftPlanSnapshot *v = sift_plan_cache_get(rel, pinned);
-	VisitPart	vp = {rel, store, v, tid, tid, true, sift_f2_gbuf_load, locate_cb, &a};
+	VisitPart	vp = {rel, store, v, tid, tid, true, sift_f2_gcache_get, locate_cb, &a};
 
 	tid_visit_begin(pinned);
 	tid_index_visit(tid_index_of(rel, v, pinned), tid, tid, visit_part, &vp);
