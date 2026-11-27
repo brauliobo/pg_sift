@@ -32,8 +32,8 @@ records=0
 diag "$(grep -E "^(number of transactions actually|tps)" "$D/pgbench.log"); the reads wrote $(sql rw "SELECT pg_wal_lsn_diff('$l1', '$l0')") bytes of WAL, $records generic records"
 check "32 clients reading an open write buffer of 500 documents write no WAL" test "$records" == 0
 
-# 2. 16 writers of a UNIQUE index of 4 KB documents: a writer waits at most for the lookup and the write of the row of its key, never for a promotion
-sql rw "CREATE TABLE u (id bigserial, body text)" \
+# 2. 16 writers of a UNIQUE index of 4 KB documents, each row on a new table block half the time (a promotion keeps the docs of rows on blocks added while it seals): a writer waits at most for the lookup and the write of the row of its key, never for a promotion
+sql rw "CREATE TABLE u (id bigserial, body text)" "ALTER TABLE u ALTER body SET STORAGE PLAIN" \
 	"CREATE UNIQUE INDEX u_idx ON u USING sift (body) WITH (write_buffer_limit = 64)" >/dev/null || bail "unique setup failed"
 printf '%s\n' "\\set n random(1, 9223372036854775806)" \
 	"INSERT INTO u (body) SELECT string_agg(md5(:n::text || g::text), ' ') FROM generate_series(1, 120) g;" >"$D/write.sql"

@@ -408,7 +408,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_mem_init_sub(&mt_bm25_promote, "bm25_promote", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	Tuplesortstate *sort;
-	DocText    *dt = sift_doctext_open(index, true);
+	DocText    *dt;
 	SiftSegEntry neu;
 	bool		any;
 	SiftExtent *pages;
@@ -417,6 +417,8 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_vacuum_delay_point();
 	sift_lane_flag_sealed(index, sealed);
+	/* once no doc can join the buffer: the text reader bounds its rows by the table's blocks, and a late appender's doc may name a block added before the seal */
+	dt = sift_doctext_open(index, true);
 	pages = sift_lane_extents(index, sealed, &npages);
 	sift_wt_expect(wt, extents_bytes(pages, npages));
 	sort = sort_docs(index, sealed, dt);
