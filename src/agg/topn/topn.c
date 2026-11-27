@@ -68,7 +68,27 @@ initplan_mutator(Node *n, PlannerInfo *root)
 	return expression_tree_mutator(n, initplan_mutator, root);
 }
 
-/* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name */
+/* the expression reads columns of the table rti only */
+static bool
+reads_only(Node *e, Index rti)
+{
+	foreach_node(Var, v, pull_var_clause(e, PVC_RECURSE_AGGREGATES | PVC_RECURSE_WINDOWFUNCS | PVC_RECURSE_PLACEHOLDERS))
+		if (v->varno != rti)
+			return false;
+	return true;
+}
+
+/* the namespace of every relation of the statement, as EXPLAIN names them */
+static List *
+statement_context(PlannerInfo *root)
+{
+	PlannedStmt *ps = makeNode(PlannedStmt);
+
+	ps->rtable = root->parse->rtable;
+	return deparse_context_for_plan_tree(ps, select_rtable_names_for_explain(ps->rtable, bms_add_range(NULL, 1, list_length(ps->rtable))));
+}
+
+/* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name, an expression of several by their aliases */
 static char *
 sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
 {
@@ -77,6 +97,8 @@ sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
 	if (IsA(e, Var) && v->varno != rti)
 		return get_rte_attribute_name(planner_rt_fetch(v->varno, root), v->varattno);
 	e = initplan_mutator(e, root);
+	if (!reads_only(e, rti))
+		return deparse_expression(e, statement_context(root), true, false);
 	ChangeVarNodes(e, rti, 1, 0);
 	return deparse_expression(e, dcx, false, false);
 }
