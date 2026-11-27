@@ -82,7 +82,7 @@ RESET sift.agg_force;
 EXPLAIN (COSTS OFF) SELECT word, count(*) FROM ev GROUP BY 1;
           QUERY PLAN           
 -------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: ev_col
    Group Keys: word
    Pushed Aggregates: count(*)
