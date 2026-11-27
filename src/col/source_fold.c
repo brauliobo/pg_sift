@@ -492,8 +492,15 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 	SiftV6Source *src = open(open_arg, &f->in, f->quals);
 	SiftV6Batch b;
 
+	SiftV6GranCounts grans = {0};
+
 	while (src->next(src, &b))
 		sift_srcfold_batch(f, &b);
+	if (src->granules != NULL)
+		src->granules(src, &grans);
+	f->a.stats->grans += grans.read;
+	f->a.stats->grans_pruned_zone += grans.pruned_zone;
+	f->a.stats->grans_pruned_skip += grans.pruned_skip;
 	src->close(src);
 }
 

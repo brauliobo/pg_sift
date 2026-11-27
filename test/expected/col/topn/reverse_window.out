@@ -36,12 +36,12 @@ SELECT n, chk(q) FROM (VALUES
 	(7, 'SELECT id, k FROM rw WHERE k <= 7000 ORDER BY k DESC OFFSET 600 LIMIT 10')) v (n, q) ORDER BY n;
  n |                          chk                           
 ---+--------------------------------------------------------
- 1 | same | Granules: scanned=4 pruned_zone=0 pruned_skip=0
- 2 | same | Granules: scanned=4 pruned_zone=0 pruned_skip=0
+ 1 | same | Granules: scanned=1 pruned_zone=1 pruned_skip=0
+ 2 | same | Granules: scanned=1 pruned_zone=1 pruned_skip=0
  3 | same | Granules Scanned: 1 Granules Pruned: 1
- 4 | same | Granules: scanned=4 pruned_zone=0 pruned_skip=0
+ 4 | same | Granules: scanned=1 pruned_zone=1 pruned_skip=0
  5 | same | Granules Scanned: 1 Granules Pruned: 1
- 6 | same |
+ 6 | same | Granules: scanned=0 pruned_zone=2 pruned_skip=0
  7 | same | Granules Scanned: 1 Granules Pruned: 1
 (7 rows)
 

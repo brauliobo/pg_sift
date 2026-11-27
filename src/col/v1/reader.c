@@ -77,6 +77,21 @@ sift_v1_idx_close(void *impl)
 	sift_col_maint_tick(RelationGetRelid(r->index), dirty_rows);
 }
 
+void
+sift_v1_units_pruned(const SiftColSource *src, SiftV6GranCounts *out)
+{
+	const SiftColCounters *c = sift_col_counters(src);
+
+	out->pruned_zone += c->units_pruned - c->units_set;
+	out->pruned_skip += c->units_set;
+}
+
+static void
+idx_pruned(void *impl, SiftV6GranCounts *out)
+{
+	sift_v1_units_pruned(((SiftV1Idx *) impl)->cs, out);
+}
+
 static const SiftSrcLayout *
 sift_v1_idx_source_layout(const void *impl)
 {
@@ -303,6 +318,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.view_size = idx_view_size,
 	.view_export = idx_view_export,
 	.close = sift_v1_idx_close,
+	.pruned = idx_pruned,
 	.source_layout = sift_v1_idx_source_layout,
 	.nsb = sift_v1_idx_nsb,
 	.select = sift_v1_idx_select,

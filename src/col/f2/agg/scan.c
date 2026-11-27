@@ -589,6 +589,15 @@ sift_f2_v6_sink(void *arg, const SiftF2Batch *b)
 	}
 }
 
+void
+sift_f2_v6_flush_grans(V6Scan *s)
+{
+	s->stats->grans += s->grans.scanned;
+	s->stats->grans_pruned_zone += s->grans.pruned_zone;
+	s->stats->grans_pruned_skip += s->grans.pruned_skip;
+	s->grans = (SiftF2GranCounts) {0};
+}
+
 int *
 sift_f2_v6_scan_leaves(const V6Scan *s)
 {
@@ -704,7 +713,9 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 		sift_f2_scan_set_pin_win(scan, sift_v6_par_window(s->par));
 	if (s->pin != NULL)
 		sift_f2_scan_set_pin_win(scan, sift_v6_pinrun_window(s->pin));
+	sift_f2_scan_count_granules(scan, &s->grans);
 	sift_f2_scan_sink(scan, sift_f2_v6_sink, s, sift_f2_v6_scan_leaves(s), s->ncols);
+	sift_f2_v6_flush_grans(s);
 	if (s->par != NULL)
 		sift_v6_par_end(s->par);
 	if (s->pin != NULL)
@@ -848,6 +859,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
+	sift_f2_scan_count_granules(s->scan, &s->grans);
 	s->preagg = emit != NULL && !spec->tid_range && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(s->scan, sift_v6_preagg_try_granule, s->preagg);
@@ -886,6 +898,7 @@ sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref,
 		sift_v6_preagg_set_group(s->preagg, into);
 	s->all_visible = (ref->flags & SIFT_PAR_PART_ALL_VISIBLE) != 0;
 	sift_f2_scan_morsel(s->scan, ref, first, n);
+	sift_f2_v6_flush_grans(s);
 	s->all_visible = false;
 }
 

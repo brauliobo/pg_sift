@@ -278,6 +278,7 @@ probe_skips(Relation rel, const F2Scan *s, const SiftPart *part, const PartPreds
 		if (v == SIFT_SKIP_PRUNE)
 		{
 			F2_STAT(skip_pruned);
+			F2_GRANS(s, pruned_skip);
 			return false;
 		}
 		if (v == SIFT_SKIP_ALL_MATCH)
@@ -331,7 +332,10 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 	if (bridge_miss && s->bridge_skipped)
 		(*s->bridge_skipped)++;
 	if (skip && !ruled)
+	{
 		F2_STAT(zone_skipped);
+		F2_GRANS(s, pruned_zone);
+	}
 	else if (!ruled && !probe_skips(rel, s, part, pp, zones, g0, g, exceptions, decided))
 		skip = true;
 	pfree(exceptions);
@@ -477,6 +481,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 							 .decided = win.decided + (Size) wi * np,.zones = offer_zones,.exceptions = offer_exc,.pend_hit = pend_hit,.patched = sift_cdi_scan_granule_patched(s, g),.px = px,.vis = SIFT_GVIS_HEAP}))
 				continue;
 		}
+		F2_GRANS(s, scanned);
 		if (s->pinwin != NULL && sift_pin_win_take(s->pinwin, rel, s, schema, pin, pp, g, win.decided + (Size) wi * np, px, snap))
 			continue;
 		old = MemoryContextSwitchTo(gcx);
@@ -791,7 +796,10 @@ scan_slab(Relation rel, F2Scan *s, const SiftF2Rel *f, const SiftColSchema *sche
 			emit(s, schema, rb->tid[r], verdict, views, r);
 	}
 	if (s->sink != NULL && rb->n > 0)
+	{
+		F2_GRANS(s, scanned);
 		s->sink(s->sink_arg, &(SiftF2Batch) {.views = views,.tid = rb->tid,.live = live,.maybe = maybe,.scores = s->bscores,.n = rb->n});
+	}
 	MemoryContextDelete(slab_cx);
 }
 

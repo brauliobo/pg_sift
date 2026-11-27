@@ -15,6 +15,7 @@
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
+#include "agg/batch_source.h"
 #include "col/pg.h"
 #include "col/v1/preagg/preagg.h"
 #include "col/v1/src_exec.h"
@@ -34,6 +35,8 @@ typedef struct SiftV1ReaderOps
 	Size		(*view_size) (void *impl);
 	void		(*view_export) (void *impl, void *buf);
 	void		(*close) (void *impl);
+	/* adds the units its zones and set summaries ruled out to out */
+	void		(*pruned) (void *impl, SiftV6GranCounts *out);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
 	/* the units begin starts: those with a row of the filter, which must outlive them (NULL: all rows) */
@@ -58,6 +61,9 @@ typedef struct SiftV1ReaderOps
 
 extern const SiftV1ReaderOps sift_v1_idx_reader;
 extern const SiftV1ReaderOps sift_v1_tbl_reader;
+
+/* Adds the units the zones and the set summaries of a column source ruled out to out */
+extern void sift_v1_units_pruned(const SiftColSource *src, SiftV6GranCounts *out);
 
 /* The leaf of column def i of a shredded attribute (a sift_col index, or the declared paths of a sift_table): its place in the group tree, its path below the attribute, its kind and vector type; desc names the attribute and gives its type */
 extern void sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l);

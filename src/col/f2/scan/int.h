@@ -33,6 +33,7 @@
 #define F2_STAT_ADD(field, n)	((void) 0)
 #endif
 #define F2_STAT(field)	F2_STAT_ADD(field, 1)
+#define F2_GRANS(s, field)	((s)->grans != NULL ? (void) (s)->grans->field++ : (void) 0)
 
 #define F2_TID_BATCH	4096
 
@@ -130,6 +131,7 @@ typedef struct F2Scan
 	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
 	struct SiftRescanScan *rescan;	/* what it keeps between the rescans (scan/rescan_cache.c) */
 
+	SiftF2GranCounts *grans;	/* not NULL: the granules the scan read and those it ruled out are counted here (sift_f2_scan_count_granules) */
 	struct SiftPinWin *pinwin;	/* the granules the compute threads of the backend filter and decode: the scan hands them over instead of reading them (col/f2/pin_win.h) */
 } F2Scan;
 

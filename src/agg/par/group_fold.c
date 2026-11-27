@@ -307,7 +307,9 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 	e->cur = l;
 	e->sources[ref->child_idx].ops->par->morsel(scan, l->g, ref, m->first, m->n);
 	st->rows_scanned += e->stats.rows - e->seen.rows;
-	st->grans_scanned += e->stats.batches - e->seen.batches;
+	st->grans_scanned += e->stats.grans - e->seen.grans;
+	st->grans_pruned_zone += e->stats.grans_pruned_zone - e->seen.grans_pruned_zone;
+	st->grans_pruned_skip += e->stats.grans_pruned_skip - e->seen.grans_pruned_skip;
 	st->grans_preagg += e->stats.grans_preagg - e->seen.grans_preagg;
 	st->grans_preagg_delta += e->stats.grans_preagg_delta - e->seen.grans_preagg_delta;
 	st->heap_vet_rows += e->stats.heap_vet_rows - e->seen.heap_vet_rows;

@@ -307,9 +307,12 @@ END $$;
 -- plan_granules_read: the granules the SiftAggV6 nodes of an EXPLAIN ANALYZE read (scanned or answered from the pre-aggregates)
 CREATE FUNCTION sift_helpers.plan_granules_read(plan text) RETURNS int LANGUAGE sql IMMUTABLE AS $$
 	SELECT coalesce(sum(m[1]::int), 0)::int FROM regexp_matches(plan, '(?:scanned|preagg)=(\d+)', 'g') m $$;
--- agg_units_read: 'normal', or the granules the SiftAggV6 nodes of the plan read
+-- plan_granules_pruned: the granules the zones and the skipping indexes of the SiftAggV6 nodes ruled out unread
+CREATE FUNCTION sift_helpers.plan_granules_pruned(plan text) RETURNS int LANGUAGE sql IMMUTABLE AS $$
+	SELECT coalesce(sum(m[1]::int), 0)::int FROM regexp_matches(plan, 'pruned_(?:zone|skip)=(\d+)', 'g') m $$;
+-- agg_units_read: 'normal', or the granules the SiftAggV6 nodes of the plan read and those they pruned
 CREATE FUNCTION sift_helpers.agg_units_read(q text) RETURNS text LANGUAGE sql AS $$
-	SELECT CASE WHEN NOT sift_helpers.plan_pushed(p) THEN 'normal' ELSE format('SiftAgg read %s', sift_helpers.plan_granules_read(p)) END
+	SELECT CASE WHEN NOT sift_helpers.plan_pushed(p) THEN 'normal' ELSE format('SiftAgg read %s pruned %s', sift_helpers.plan_granules_read(p), sift_helpers.plan_granules_pruned(p)) END
 	FROM (SELECT sift_helpers.plan_text(q, true) p) x $$;
 CREATE FUNCTION sift_helpers.agg_units_kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
 DECLARE p text; line text; kept numeric; pruned numeric;

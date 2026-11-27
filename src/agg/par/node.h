@@ -27,6 +27,8 @@ typedef struct SiftV6ParSummary
 	uint64		partial_recs;
 	uint64		partial_bytes;
 	uint64		grans_scanned;
+	uint64		grans_pruned_zone;
+	uint64		grans_pruned_skip;
 	uint64		grans_preagg;
 	uint64		grans_preagg_delta;
 	uint64		heap_vet_rows;

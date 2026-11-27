@@ -209,6 +209,15 @@ sift_v1_tbl_close(void *impl)
 	UnregisterSnapshot(t->snapshot);
 }
 
+static void
+tbl_pruned(void *impl, SiftV6GranCounts *out)
+{
+	SiftV1Tbl  *t = impl;
+
+	for (int k = 0; k < t->nparts; k++)
+		sift_v1_units_pruned(t->part[k].src, out);
+}
+
 const SiftSrcLayout *
 sift_v1_tbl_source_layout(const void *impl)
 {
@@ -468,6 +477,7 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.view_size = sift_v1_tbl_view_size,
 	.view_export = sift_v1_tbl_view_export,
 	.close = sift_v1_tbl_close,
+	.pruned = tbl_pruned,
 	.source_layout = sift_v1_tbl_source_layout,
 	.nsb = sift_v1_tbl_nsb,
 	.select = sift_v1_tbl_select,

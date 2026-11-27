@@ -659,7 +659,7 @@ v6_fold_stats(const V6State *st)
 	sift_stat_add(SIFT_STAT_GROUP_SPILLS, spills > 0);
 	sift_stat_add(SIFT_STAT_SCANS, 1);
 	sift_stat_add(SIFT_STAT_WORKERS, ps.workers);
-	sift_stat_add(SIFT_STAT_UNITS, st->stats.batches + ps.grans_scanned);
+	sift_stat_add(SIFT_STAT_UNITS, st->stats.grans + ps.grans_scanned);
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, st->stats.grans_preagg + ps.grans_preagg);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, st->stats.heap_vet_rows + ps.heap_vet_rows);
@@ -760,6 +760,8 @@ explain_par(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
 	ex->par_ran = ps.ran;
 	ex->par_escalated = ps.escalated;
 	ex->grans_scanned += ps.grans_scanned;
+	ex->grans_pruned_zone += ps.grans_pruned_zone;
+	ex->grans_pruned_skip += ps.grans_pruned_skip;
 	ex->grans_preagg += ps.grans_preagg;
 	ex->grans_preagg_delta += ps.grans_preagg_delta;
 	ex->heap_vet_rows += ps.heap_vet_rows;
@@ -841,7 +843,9 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Shared Dimensions", NULL, st->star_shared, es);
 	sift_v6_gpu_explain(&st->gpu, es);
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
-	ex.grans_scanned = st->stats.batches;
+	ex.grans_scanned = st->stats.grans;
+	ex.grans_pruned_zone = st->stats.grans_pruned_zone;
+	ex.grans_pruned_skip = st->stats.grans_pruned_skip;
 	ex.grans_preagg = st->stats.grans_preagg;
 	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
 	if (st->par != NULL)

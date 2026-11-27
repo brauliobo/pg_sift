@@ -514,6 +514,9 @@ extern const char *sift_v6_group_mode(const SiftV6Group *g);
 typedef struct SiftV6ScanStats
 {
 	uint64		batches;
+	uint64		grans;			/* granules (units) the scan read, and those the zones and the skipping indexes ruled out unread */
+	uint64		grans_pruned_zone;
+	uint64		grans_pruned_skip;
 	uint64		rows;
 	uint64		heap_vet_rows;
 	uint64		heap_rows_dead;

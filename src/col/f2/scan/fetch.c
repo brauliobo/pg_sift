@@ -91,6 +91,12 @@ sift_f2_scan_set_gran_sink(IndexScanDesc scan, SiftF2GranSink gran_sink, void *g
 }
 
 void
+sift_f2_scan_count_granules(IndexScanDesc scan, SiftF2GranCounts *counts)
+{
+	((F2Scan *) scan->opaque)->grans = counts;
+}
+
+void
 sift_f2_scan_set_pin_win(IndexScanDesc scan, struct SiftPinWin *win)
 {
 	((F2Scan *) scan->opaque)->pinwin = win;

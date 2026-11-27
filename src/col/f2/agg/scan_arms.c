@@ -130,7 +130,9 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 	sift_v6_vet_begin(&a.s[0].vet, heap, snap, a.s[0].stats);
 	scan = sift_index_beginscan(heap, index, snap, nkeys);
 	index_rescan(scan, keys, nkeys, NULL, 0);
+	sift_f2_scan_count_granules(scan, &a.s[0].grans);
 	sift_f2_scan_sink(scan, arms_sink, &a, leaves, nleaves);
+	sift_f2_v6_flush_grans(&a.s[0]);
 	index_endscan(scan);
 	sift_v6_vet_end(&a.s[0].vet);
 	for (int i = 0; i < cohort->narms; i++)

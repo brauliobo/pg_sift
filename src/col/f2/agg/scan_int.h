@@ -120,6 +120,7 @@ struct SiftV6Scan
 	SiftV6FoldCol *pub;
 	struct SiftV6ParScan *par;	/* the granules of the scan that the compute threads of the backend fold (agg/par/run.h) */
 	struct SiftV6PinRun *pin;	/* the same for the statements of par/pinrun.h */
+	SiftF2GranCounts grans;		/* the granules of the index scan, added to stats after each pass and morsel */
 };
 
 typedef struct SiftV6Scan V6Scan;
@@ -129,6 +130,8 @@ extern void sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *
 extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
 extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
 extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
+/* The granules the scan counted since the last call, added to its stats */
+extern void sift_f2_v6_flush_grans(V6Scan *s);
 extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);
 extern void sift_f2_v6_derive_columns(V6Scan *s);
 extern void sift_f2_v6_bin_keys(V6Scan *s);

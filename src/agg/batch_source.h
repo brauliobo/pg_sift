@@ -62,6 +62,14 @@ typedef struct SiftV6Batch
 typedef struct SiftV6Source SiftV6Source;
 typedef struct SiftV6Vexpr SiftV6Vexpr;
 
+/* The granules (units) a source read, and those its zones and its summaries of key columns ruled out before it read them */
+typedef struct SiftV6GranCounts
+{
+	uint64		read;
+	uint64		pruned_zone;
+	uint64		pruned_skip;
+} SiftV6GranCounts;
+
 struct SiftV6Source
 {
 	/* the next batch, valid until the next call; false at the end. The rows come in the order of the parts when the operator asked for a sorted scan */
@@ -71,6 +79,8 @@ struct SiftV6Source
 	/* the columns attnos[0 .. n-1] of the table for the row of the tag, as the Datums of their types */
 	bool		(*fetch) (SiftV6Source *s, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
 	void		(*close) (SiftV6Source *s);
+	/* adds the granules the source read so far to out (NULL: the format counts none) */
+	void		(*granules) (SiftV6Source *s, SiftV6GranCounts *out);
 };
 
 /* The rows of the batch that pass quals (NULL: the batch's own), written to out as a bitmap of the batch rows; returns how many */

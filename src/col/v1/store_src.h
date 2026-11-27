@@ -25,6 +25,7 @@ typedef struct SiftV1Src
 	Snapshot	snap;
 	const SiftV1ReaderOps *rd;
 	void	   *src;
+	uint64		units_read;		/* the units whose leaves the source decoded */
 	SiftV6Input in;
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];

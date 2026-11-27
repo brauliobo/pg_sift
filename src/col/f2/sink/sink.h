@@ -109,6 +109,16 @@ extern void sift_f2_scan_set_bound(IndexScanDesc scan, int sink_leaf, const Sift
 /* The sink leaves (by their place among the leaves given to sift_f2_scan_sink; the array must outlive the scan) it takes as the codes of the dictionary of a granule when the chunk has one; call it before the scan runs */
 extern void sift_f2_scan_set_dict_leaves(IndexScanDesc scan, const bool *dict_leaf);
 
+/* The granules a scan read, and those the zones and the skipping indexes ruled out before it read them (EXPLAIN of the aggregate scan) */
+typedef struct SiftF2GranCounts
+{
+	uint64		scanned;
+	uint64		pruned_zone;
+	uint64		pruned_skip;
+} SiftF2GranCounts;
+/* The scan adds its granules to counts (which must outlive it); call it before the scan runs */
+extern void sift_f2_scan_count_granules(IndexScanDesc scan, SiftF2GranCounts *counts);
+
 /* The granules the scan would filter and decode go to the window instead, which the compute threads of the backend work through (col/f2/pin_win.h): call it before the scan runs */
 struct SiftPinWin;
 extern void sift_f2_scan_set_pin_win(IndexScanDesc scan, struct SiftPinWin *win);

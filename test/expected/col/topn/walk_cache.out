@@ -50,7 +50,7 @@ SELECT * FROM run_all('built');
  built      | 1 | same | normal plan | kept order skips the same
  built      | 2 | same | normal plan | kept order skips the same
  built      | 3 | same | normal plan | kept order skips the same
- built      | 4 | same | granules 8 | kept order skips the same
+ built      | 4 | same | granules 60 | kept order skips the same
  built      | 5 | same | normal plan | kept order skips the same
  built      | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -64,7 +64,7 @@ SELECT * FROM run_all('write buffer');
  write buffer | 1 | same | normal plan | kept order skips the same
  write buffer | 2 | same | normal plan | kept order skips the same
  write buffer | 3 | same | normal plan | kept order skips the same
- write buffer | 4 | same | granules 8 | kept order skips the same
+ write buffer | 4 | same | granules 61 | kept order skips the same
  write buffer | 5 | same | normal plan | kept order skips the same
  write buffer | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -81,7 +81,7 @@ SELECT * FROM run_all('promoted');
  promoted   | 1 | same | normal plan | kept order skips the same
  promoted   | 2 | same | normal plan | kept order skips the same
  promoted   | 3 | same | normal plan | kept order skips the same
- promoted   | 4 | same | granules 8 | kept order skips the same
+ promoted   | 4 | same | granules 61 | kept order skips the same
  promoted   | 5 | same | normal plan | kept order skips the same
  promoted   | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -89,12 +89,12 @@ SELECT * FROM run_all('promoted');
 DELETE FROM zc WHERE id % 11 = 0;
 UPDATE zc SET k = k + 100000 WHERE id % 13 = 0;
 SELECT * FROM run_all('deleted and updated');
-     after_step      | n |                     result                     
----------------------+---+------------------------------------------------
+     after_step      | n |                     result                      
+---------------------+---+-------------------------------------------------
  deleted and updated | 1 | same | normal plan | kept order skips the same
  deleted and updated | 2 | same | normal plan | kept order skips the same
  deleted and updated | 3 | same | normal plan | kept order skips the same
- deleted and updated | 4 | same | granules 7 | kept order skips the same
+ deleted and updated | 4 | same | granules 121 | kept order skips the same
  deleted and updated | 5 | same | normal plan | kept order skips the same
  deleted and updated | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -112,7 +112,7 @@ SELECT * FROM run_all('vacuumed');
  vacuumed   | 1 | same | normal plan | kept order skips the same
  vacuumed   | 2 | same | normal plan | kept order skips the same
  vacuumed   | 3 | same | normal plan | kept order skips the same
- vacuumed   | 4 | same | granules 7 | kept order skips the same
+ vacuumed   | 4 | same | granules 66 | kept order skips the same
  vacuumed   | 5 | same | normal plan | kept order skips the same
  vacuumed   | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -129,7 +129,7 @@ SELECT * FROM run_all('merged');
  merged     | 1 | same | normal plan | kept order skips the same
  merged     | 2 | same | normal plan | kept order skips the same
  merged     | 3 | same | normal plan | kept order skips the same
- merged     | 4 | same | granules 7 | kept order skips the same
+ merged     | 4 | same | granules 60 | kept order skips the same
  merged     | 5 | same | normal plan | kept order skips the same
  merged     | 6 | same | normal plan | kept order skips the same
 (6 rows)
@@ -141,7 +141,7 @@ SELECT * FROM run_all('reindexed');
  reindexed  | 1 | same | normal plan | kept order skips the same
  reindexed  | 2 | same | normal plan | kept order skips the same
  reindexed  | 3 | same | normal plan | kept order skips the same
- reindexed  | 4 | same | granules 7 | kept order skips the same
+ reindexed  | 4 | same | granules 60 | kept order skips the same
  reindexed  | 5 | same | normal plan | kept order skips the same
  reindexed  | 6 | same | normal plan | kept order skips the same
 (6 rows)

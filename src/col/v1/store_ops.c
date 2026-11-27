@@ -373,6 +373,7 @@ unit_next(SiftV1Src *s)
 						sift_v1_src_read_types(s, i);
 					else if (s->jkind[i] == SIFT_V1_JSON_PRESENT)
 						sift_v1_src_read_presence(s, i);
+				s->units_read++;
 				for (int k = 0; k < s->nread; k++)
 					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
 				for (int i = 0; i < s->in.ncols; i++)
@@ -681,6 +682,15 @@ sift_v1_src_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *attnos, int 
 }
 
 static void
+v1_granules(SiftV6Source *base, SiftV6GranCounts *out)
+{
+	SiftV1Src	   *s = (SiftV1Src *) base;
+
+	out->read += s->units_read;
+	s->rd->pruned(s->src, out);
+}
+
+static void
 v1_close(SiftV6Source *base)
 {
 	SiftV1Src	   *s = (SiftV1Src *) base;
@@ -923,7 +933,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	bind_types(s, scan);
 	prune_begin(s, range);
 	MemoryContextSwitchTo(old);
-	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close};
+	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules};
 	return &s->base;
 }
 

@@ -64,23 +64,23 @@ INSERT INTO sl_q VALUES
 SELECT n, sl_rows(q, true) = sl_rows(q, false) AS same, sl_units(q) AS units FROM sl_q ORDER BY n;
  n  | same | units 
 ----+------+-------
-  1 | t    |     3
-  2 | t    |      
-  3 | t    |     3
-  4 | t    |    25
-  5 | t    |    30
-  6 | t    |     2
-  7 | t    |      
-  8 | t    |    26
-  9 | t    |     7
- 10 | t    |    23
- 11 | t    |      
- 12 | t    |     1
- 13 | t    |    30
- 14 | t    |    30
- 15 | t    |     1
- 16 | t    |     9
- 17 | t    |     5
+  1 | t    |     6
+  2 | t    |     0
+  3 | t    |     5
+  4 | t    |    64
+  5 | t    |    80
+  6 | t    |     3
+  7 | t    |     0
+  8 | t    |    64
+  9 | t    |    16
+ 10 | t    |    60
+ 11 | t    |    34
+ 12 | t    |     5
+ 13 | t    |     5
+ 14 | t    |    80
+ 15 | t    |     2
+ 16 | t    |    23
+ 17 | t    |    12
 (17 rows)
 
 DROP TABLE sl_q;
