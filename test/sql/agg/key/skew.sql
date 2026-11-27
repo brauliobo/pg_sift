@@ -1,9 +1,8 @@
 -- The plan the planner picks on its own costs when the keys of the scan come from a lookup table PostgreSQL can count: it prices each probe of
 -- the normal plan (a nested loop of index probes) for the mean rows of a key, while the parents a query passes own most of the rows when the
--- column is skewed, and SiftAgg reads the units of the keys whatever their share. The probes are priced for the rows the column's most
--- common values own (sift.agg_key_skew = off gives the mean back); a flat column keeps the normal plan. The planner cannot tell a list of the
--- heaviest parents from one of the rarest, so both take the same plan; every statement is also run with sift.enable_agg = off: the rows must
--- be the same.
+-- column is skewed, and SiftAgg reads the granules of the keys whatever their share. The probes are priced for the rows the column's most
+-- common values own; a flat column keeps the normal plan. The planner cannot tell a list of the heaviest parents from one of the rarest, so both
+-- take the same plan; every statement is also run with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -30,11 +29,11 @@ VACUUM (FREEZE, ANALYZE) ks_events, ks_flat, ks_pick;
 SELECT round(100 * count(*) FILTER (WHERE parent_id <= 5) / count(*)::numeric) AS pct_rows_heaviest_5,
        round(100 * count(*) FILTER (WHERE parent_id >= 996) / count(*)::numeric, 1) AS pct_rows_rarest_5 FROM ks_events;
 
-CREATE FUNCTION plan_of(q text, skew text DEFAULT 'on') RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
-	RETURN CASE WHEN j::text LIKE '%"SiftAgg"%' THEN 'SiftAgg' ELSE 'normal' END;
+	RETURN CASE WHEN j::text LIKE '%"SiftAgg%' THEN 'SiftAgg' ELSE 'normal' END;
 END $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_plan_and_differences(plan_of(q), q) $$;
@@ -54,11 +53,11 @@ SELECT result_rows, vs_normal_plan FROM same(join_list('ks_events', 1));
 SELECT result_rows, vs_normal_plan FROM same(join_list('ks_events', 2));
 SELECT * FROM same(in_list('ks_flat', 1));
 SELECT result_rows, vs_normal_plan FROM same(join_list('ks_flat', 2));
--- the switch: with sift.agg_key_skew = off the probes are priced for the mean rows of a key; a flat column takes the same plan either way
-SELECT t AS tbl, g AS grp, plan_of(in_list(t, g), 'on') AS skew_on, plan_of(in_list(t, g), 'off') AS skew_off
+-- the plans of both lists of both tables: the skewed column takes the scan, the flat one the probes
+SELECT t AS tbl, g AS grp, plan_of(in_list(t, g)) AS plan
 FROM (VALUES ('ks_events', 1), ('ks_events', 2), ('ks_flat', 1), ('ks_flat', 2)) v (t, g);
 
-DROP FUNCTION in_list(text, int), join_list(text, int), plan_of(text, text), same(text);
+DROP FUNCTION in_list(text, int), join_list(text, int), plan_of(text), same(text);
 DROP TABLE ks_events, ks_flat, ks_pick;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

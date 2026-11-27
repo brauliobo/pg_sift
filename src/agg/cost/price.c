@@ -9,9 +9,11 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/bitmapset.h"
+#include "nodes/makefuncs.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "parser/parsetree.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
@@ -103,6 +105,38 @@ clause_share(PlannerInfo *root, RestrictInfo *ri, AttrNumber lead_att)
 	const double alpha = Min(Max((corr - SIFT_CORR_CLUSTERED) / (1.0 - SIFT_CORR_CLUSTERED), 0.0), 1.0);
 
 	return alpha * sel + (1.0 - alpha) * yao_share(sel);
+}
+
+double
+sift_v6_key_skew(PlannerInfo *root, RelOptInfo *rel, AttrNumber att)
+{
+	Var		   *var = makeVar(rel->relid, att, InvalidOid, -1, InvalidOid, 0);
+	VariableStatData vd;
+	AttStatsSlot slot;
+	bool		isdefault;
+	double		nd,
+				left,
+				sq = 0;
+
+	var->vartype = get_atttype(planner_rt_fetch(rel->relid, root)->relid, att);
+	examine_variable(root, (Node *) var, 0, &vd);
+	nd = get_variable_numdistinct(&vd, &isdefault);
+	left = HeapTupleIsValid(vd.statsTuple) ? 1.0 - ((Form_pg_statistic) GETSTRUCT(vd.statsTuple))->stanullfrac : 0;
+	if (isdefault || !HeapTupleIsValid(vd.statsTuple) || !get_attstatsslot(&slot, vd.statsTuple, STATISTIC_KIND_MCV, InvalidOid, ATTSTATSSLOT_NUMBERS))
+	{
+		ReleaseVariableStats(vd);
+		return 1.0;
+	}
+	for (int i = 0; i < slot.nnumbers; i++)
+	{
+		sq += (double) slot.numbers[i] * slot.numbers[i];
+		left -= slot.numbers[i];
+	}
+	if (left > 0 && nd > slot.nnumbers)
+		sq += left * left / (nd - slot.nnumbers);
+	free_attstatsslot(&slot);
+	ReleaseVariableStats(vd);
+	return Max(nd * sq, 1.0);
 }
 
 double

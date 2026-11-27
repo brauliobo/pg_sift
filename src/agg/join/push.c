@@ -314,6 +314,63 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	add_path(out, &cp->path);
 }
 
+/* The keys a query passes own this many times the mean rows of a key and no fewer than twice it: a statistics sample and a mild unevenness of a column are not skew */
+#define PUSH_SKEW_FLOOR	2.0
+
+/* The scan of the fact table a path probes once for each key of the join (a nested loop, under aggregation, sorts and gathers): NULL for any other */
+static const Path *
+fact_probe(const Path *p, const RelOptInfo *fact)
+{
+	for (;;)
+		switch (nodeTag(p))
+		{
+			case T_AggPath:
+				p = ((const AggPath *) p)->subpath;
+				break;
+			case T_GroupPath:
+				p = ((const GroupPath *) p)->subpath;
+				break;
+			case T_SortPath:
+				p = ((const SortPath *) p)->subpath;
+				break;
+			case T_IncrementalSortPath:
+				p = ((const IncrementalSortPath *) p)->spath.subpath;
+				break;
+			case T_ProjectionPath:
+				p = ((const ProjectionPath *) p)->subpath;
+				break;
+			case T_NestPath:
+				{
+					const Path *inner = ((const JoinPath *) p)->innerjoinpath;
+
+					if (IsA(inner, MemoizePath))
+						inner = ((const MemoizePath *) inner)->subpath;
+					return (IsA(inner, IndexPath) || IsA(inner, BitmapHeapPath)) && inner->param_info != NULL && inner->parent == fact ? inner : NULL;
+				}
+			default:
+				return NULL;
+		}
+}
+
+/*
+ * The plans that probe the fact once for each key of the small side are priced by PostgreSQL for the mean rows of a key; a small side it has statistics of passes the keys its rows hold,
+ * which own the skew of the column, so those plans cost that many times more, up to the rows the fact's own filters keep.
+ */
+static void
+price_probes(PlannerInfo *root, const PushJoin *j, RelOptInfo *input_rel, RelOptInfo *out)
+{
+	const double g = Min(Max(sift_v6_key_skew(root, j->fact, j->fact_attno) / PUSH_SKEW_FLOOR, 1.0), Max(j->fact->rows / Max(input_rel->rows, 1.0), 1.0));
+
+	if (g <= 1.0)
+		return;
+	foreach_ptr(Path, p, out->pathlist)
+		if (fact_probe(p, j->fact) != NULL)
+		{
+			p->startup_cost *= g;
+			p->total_cost *= g;
+		}
+}
+
 void
 sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
 {
@@ -333,6 +390,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi ? semi_inner(&j) : dim_unique(&j)))
 			continue;
 		j.dim_path = sift_v6_dim_path(root, j.fact, j.dim, j.semi ? SV6J_SEMI_EQUI : SV6J_INNER_EQUI, 1, &j.fact_attno, (const Var *const *) &j.dim_var);
+		price_probes(root, &j, input_rel, out);
 		add_push_path(root, &j, out, extra, NULL);
 		foreach_ptr(IndexOptInfo, ix, j.fact->indexlist)
 			add_push_path(root, &j, out, extra, ix);

@@ -72,6 +72,12 @@ extern Cost sift_v6_rel_read_cost(const RelOptInfo *rel);
 /* What the node pays to read a dimension whole: the price of its plan, less the page reads of the share of its pages the cache holds when a sequential scan takes the table */
 extern Cost sift_v6_dim_cost(const Path *child);
 
+/*
+ * How many times more rows the key of a row owns than the mean, for column att of rel: nd * sum(freq^2) over its values, the frequencies of its most common values by PostgreSQL's
+ * statistics and the other rows spread evenly; 1 for a flat column or one without statistics. PostgreSQL prices a probe of a key for the mean, and the keys a lookup passes are ones with rows.
+ */
+extern double sift_v6_key_skew(PlannerInfo *root, RelOptInfo *rel, AttrNumber att);
+
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
 extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att);
 
