@@ -3,7 +3,10 @@
 # The stress suite of the load gate (scripts/load/run.py --suite stress, scripts/load/suites/workloads_prod5.py, Spec 117): serializable write skew through the three engines
 # and the projections of a sift_table, cursors held across commits and maintenance beside spilling cursors, high-cardinality analytics that spill under cancels, databases
 # cloned from a template beside busy siblings, MERGE and COPY that skips bad rows beside hybrid readers, access method, type and tablespace changes under pg_dump, and
-# temporary and unlogged objects through a kill -9 (LOAD_CRASH, LOAD_RESTART), the last case. A cluster of its own; one check a case; a case that names a finding
+# temporary and unlogged objects through a kill -9 (LOAD_CRASH, LOAD_RESTART), the last case; and those of Specs 118 and 119 (workloads_prod6.py, workloads_prod7.py):
+# parts dropped and a table re-keyed under writers, drifting shredded JSONB, connected indexes beside an unprivileged role, VACUUM at the least maintenance_work_mem,
+# 64 pooled sessions under row-level security, BM25 over large documents, sketches and skip indexes under churn, materialized views beside bitmap scans, every row-lock
+# mode across 20 sift_tables, and a hybrid as-of join beside sift.explain_why. A cluster of its own; one check a case; a case that names a finding
 # (open=Snnn-NN) is a TODO while it fails and fails when it stops. Runs on Format 2.0 and Format 1.0, the release library and Assert-PG.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 . "$TAP_LIB/load.bash"
