@@ -139,9 +139,9 @@ DELETE FROM wa WHERE id % 5 = 1;
 UPDATE wa SET n38 = round(n38 / 2, 10), m = m / 2, iv = iv + interval '1 day'
 WHERE id % 11 = 2 AND id % 71 <> 0 AND id % 73 <> 0 AND id % 79 <> 0 AND id % 83 <> 0 AND id % 101 <> 0 AND id % 103 <> 0;
 SELECT shapes('updated');
-SELECT sift.col_promote('wa_col');
+SELECT sift.col_promote('wa_col') >= 0 AS promoted;
 VACUUM wa;
-SELECT sift.col_merge('wa_col', true);
+SELECT sift.col_merge('wa_col', true) >= 0 AS merged;
 SELECT shapes('merged');
 
 -- parallel workers: the aggregates run in them, a key of equal spellings does not

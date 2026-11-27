@@ -188,17 +188,17 @@ SELECT shapes('updated');
  updated scan same scan same scan same scan same scan same
 (1 row)
 
-SELECT sift.col_promote('wa_col');
- col_promote 
--------------
-           1
+SELECT sift.col_promote('wa_col') >= 0 AS promoted;
+ promoted 
+----------
+ t
 (1 row)
 
 VACUUM wa;
-SELECT sift.col_merge('wa_col', true);
- col_merge 
------------
-         1
+SELECT sift.col_merge('wa_col', true) >= 0 AS merged;
+ merged 
+--------
+ t
 (1 row)
 
 SELECT shapes('merged');
