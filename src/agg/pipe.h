@@ -51,6 +51,9 @@ typedef struct SiftV6Pipe
 	uint32	   *dim_row;
 	int			semi_slot;		/* the slot of the number of the fact row of each pair: only the first pair of a row that goes through every dimension and condition goes on to the groups (-1: all do) */
 	uint64	   *semi_seen;		/* the rows of the batch whose pair has gone on */
+	ErrorData  *late_err;		/* the error of the cast of the element of the pairs that run (NULL: none), raised by sift_v6_pipe_late */
+	Bitmapset  *late_vecs;		/* the vectors of the spec that read what the cast gives */
+	bool		late_key;		/* a key of the groups reads it: every pair raises */
 	SiftV6PipeBatch *lvl[SIFT_STAR_MAX_DIMS + 1];
 	MemoryContext cx;
 	uint64		rows_out;
@@ -64,6 +67,12 @@ extern SiftV6Pipe *sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, Sif
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
 /* The slot of the payload column of a dimension */
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
+/*
+ * The pairs the pipe runs until sift_v6_pipe_late_end carry err, the error of the cast of their element, and the fact slots [lo, hi) hold what the cast gives: as PostgreSQL, the pipe raises
+ * it when an aggregate that reads one of them (but a text one, which no cast gave) takes a pair under its FILTER, and folds the pairs otherwise
+ */
+extern void sift_v6_pipe_late(SiftV6Pipe *p, ErrorData *err, int lo, int hi);
+extern void sift_v6_pipe_late_end(SiftV6Pipe *p);
 /* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset */
 extern void sift_v6_pipe_semi(SiftV6Pipe *p, int slot);
 extern void sift_v6_pipe_semi_reset(SiftV6Pipe *p);

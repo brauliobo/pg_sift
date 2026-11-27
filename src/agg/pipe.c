@@ -199,6 +199,8 @@ update_groups(SiftV6Pipe *p, SiftV6PipeBatch *b)
 		p->keyvec[i] = &b->vec[p->key_slot[i]];
 	for (int j = 0; j < sift_v6_spec_nvec(spec); j++)
 		p->argvec[j] = p->arg_slot[j] < 0 ? NULL : &b->vec[p->arg_slot[j]];
+	if (p->late_err != NULL && b->bs->n_active > 0 && (p->late_key || sift_v6_group_reads_any(p->group, b->bs, p->argvec, p->late_vecs)))
+		ReThrowError(p->late_err);
 	if (p->sink != NULL)
 		p->sink(p->sink_arg, b->bs, p->keyvec, p->argvec);
 	else if (p->rows != NULL)
@@ -206,6 +208,27 @@ update_groups(SiftV6Pipe *p, SiftV6PipeBatch *b)
 	else
 		sift_v6_group_update(p->group, b->bs, p->keyvec, p->argvec);
 	p->rows_out += b->bs->n_active;
+}
+
+void
+sift_v6_pipe_late(SiftV6Pipe *p, ErrorData *err, int lo, int hi)
+{
+	p->late_err = err;
+	p->late_vecs = NULL;
+	p->late_key = false;
+	for (int i = 0; i < p->spec->nkeys; i++)
+		p->late_key |= p->key_slot[i] >= lo && p->key_slot[i] < hi && p->type[p->key_slot[i]] != SVEC_STRVIEW;
+	for (int v = 0; v < sift_v6_spec_nvec(p->spec); v++)
+		if (p->arg_slot[v] >= lo && p->arg_slot[v] < hi && p->type[p->arg_slot[v]] != SVEC_STRVIEW)
+			p->late_vecs = bms_add_member(p->late_vecs, v);
+}
+
+void
+sift_v6_pipe_late_end(SiftV6Pipe *p)
+{
+	p->late_err = NULL;
+	bms_free(p->late_vecs);
+	p->late_vecs = NULL;
 }
 
 void

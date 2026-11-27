@@ -213,13 +213,10 @@ array_elems(UnRun *u, ArrayIterator it, SiftVec *ev, MemoryContext cx)
 	return k;
 }
 
-static void
-raise_late(void *err, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
-{
-	ReThrowError((ErrorData *) err);
-}
-
-/* the pair of a member whose cast raised: the error is the pair's, raised when it reaches the groups and gone with it when a join drops it; a qual over the members casts it before the join */
+/*
+ * the pair of a member whose cast raised: the error is the pair's, raised when it reaches an aggregate that reads the element (the columns of the element and those derived) and gone with it
+ * when a join or the FILTER of every such aggregate drops it; a qual over the members casts it before the join
+ */
 static void
 emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uint32 k, ErrorData *err)
 {
@@ -227,11 +224,9 @@ emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uin
 		ReThrowError(err);
 	u->pidx[0] = row;
 	u->eidx[0] = k;
-	u->pipe->sink = raise_late;
-	u->pipe->sink_arg = err;
+	sift_v6_pipe_late(u->pipe, err, u->ncols, u->ncols + u->nel + u->spec->nderive);
 	sift_f2_unnest_emit_pairs(u, fact, ev, 1);
-	u->pipe->sink = NULL;
-	u->pipe->sink_arg = NULL;
+	sift_v6_pipe_late_end(u->pipe);
 }
 
 /* the pairs of the elements of a chunk of a row in ev: those the bitmap keeps (NULL: all); late[k]: the error of the cast of member k (NULL: none); returns how many it keeps */
