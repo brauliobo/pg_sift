@@ -547,24 +547,36 @@ reuse_class(FsmCtx *c, uint64 nblocks, int cls, int room, int *from)
 	return -1;
 }
 
-/* STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth) */
+/* The extents of the end of the file that the n blocks take: the room a stream keeps to end there */
+static uint64
+eof_extents(uint64 nblocks)
+{
+	return (nblocks + SIFT_FSM_MAX_EXTENT - 1) / SIFT_FSM_MAX_EXTENT;
+}
+
+/*
+ * STOR[STOR-F2-03]: FSM small-index meta reserve and multi-extent fallback (cuts EOF growth). A free extent is taken only while the room left holds the end of the file for what remains, so
+ * the stream always ends within max extents
+ */
 int
 sift_fsm_alloc_stream(Relation rel, uint64 nblocks, SiftExtent *out, int max)
 {
-	FsmCtx		c = ctx_open_shared(rel);
+	FsmCtx		c;
 	int			n = 0;
 
+	if (eof_extents(nblocks) > (uint64) max)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a stream of %llu blocks in at most %d extents", (unsigned long long) nblocks, max),
+						errhint("Write the stream in several parts.")));
+	c = ctx_open_shared(rel);
 	while (nblocks > 0)
 	{
 		uint32		top = (uint32) Min(nblocks, SIFT_FSM_MAX_EXTENT);
+		uint64		spare = (uint64) (max - n) - eof_extents(nblocks);
 		int			cls = sift_fsm_class_floor(top),
-					k = find_class(&c, cls),
+					k = spare > 0 ? find_class(&c, cls) : SIFT_FSM_NCLASSES,
 					small = -1;
 
-		if (n == max)
-			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("sift: a stream of more than %d extents", max),
-							errhint("Write the stream in several parts.")));
-		if (k == SIFT_FSM_NCLASSES && (small = reuse_class(&c, nblocks, cls, max - n, &k)) >= 0)
+		if (k == SIFT_FSM_NCLASSES && spare > 0 && (small = reuse_class(&c, nblocks, cls, max - n, &k)) >= 0)
 			cls = small;
 		if (!take_extent(&c, k, k == SIFT_FSM_NCLASSES ? top : SIFT_FSM_CLASS_BLOCKS(cls), &out[n]))
 			continue;

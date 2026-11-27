@@ -1,0 +1,54 @@
+-- A wide value of a sift_table whose pages come from a free space map cut into many small extents is written in the extents its stream has room for: it ends at the end of the file when the
+-- free extents would take more, so the write never fails half way with the extents it took lost to the table.
+-- requires: build col
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+-- counts[c + 1] free extents of 2^c blocks, each kept apart from the next by a block in use
+CREATE FUNCTION bsf_fragment(rel regclass, counts int[]) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+	starts bigint[] := '{}';
+	lens int[] := '{}';
+BEGIN
+	FOR c IN 0..10 LOOP
+		FOR k IN 1..counts[c + 1] LOOP
+			starts := starts || (sift._test_f2_alloc(rel, 1 << c)).start;
+			lens := lens || (1 << c);
+			PERFORM sift._test_f2_alloc(rel, 1);
+		END LOOP;
+	END LOOP;
+	FOR k IN 1..array_length(starts, 1) LOOP
+		PERFORM sift._test_f2_release(rel, starts[k], lens[k], 'none');
+	END LOOP;
+	PERFORM sift._test_f2_reclaim(rel);
+END $$;
+-- 1142 pages of a value that does not compress
+CREATE TABLE bsf_val AS SELECT substring(string_agg(sha256(int4send(g)), ''::bytea) FROM 1 FOR 1142 * 8152 - 100) AS v FROM generate_series(1, 1142 * 255) g;
+CREATE TABLE bsf (id int, v bytea) USING sift_table;
+INSERT INTO bsf VALUES (0, 'x');
+SELECT bsf_fragment('bsf', '{2,4,4,20,20,8,8,1,0,0,0}');
+ bsf_fragment 
+--------------
+ 
+(1 row)
+
+INSERT INTO bsf SELECT 1, v FROM bsf_val;
+SELECT count(*) AS rows, bool_or(b.v = r.v) AS same FROM bsf b, bsf_val r;
+ rows | same 
+------+------
+    2 | t
+(1 row)
+
+SELECT count(*) AS findings FROM sift.check('bsf', false, 100);
+ findings 
+----------
+        0
+(1 row)
+
+DROP TABLE bsf, bsf_val;
+DROP FUNCTION bsf_fragment(regclass, int[]);
+RESET client_min_messages;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;
