@@ -1,6 +1,7 @@
 /*
  * test/unit/table/f2/col_delta_compact.c - the plan of a garbage collection of a column delta chain (table/f2/col_delta/compact.c): a record every attribute of which a later record of the
  * row writes again is dropped when both writers committed before the horizon; one the later record does not cover, and one whose later writer is still in the horizon's reach, stays.
+ * Every pass over the pages takes a cancel once a page, and a chain whose plan one allocation cannot hold fails with 54000 before it asks for the memory.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -12,6 +13,7 @@
 #undef qsort
 
 #include "test/common/bench.h"
+#include "test/common/pgshim.h"
 
 bool		sift_test_col_delta = true;
 
@@ -20,6 +22,15 @@ bool		sift_test_col_delta = true;
 #include "table/f2/col_delta/compact.c"
 
 enum { PART = 7, RUNNING_FROM = 100 };
+
+volatile sig_atomic_t InterruptPending = false;
+static int	interrupts;
+
+void
+ProcessInterrupts(void)
+{
+	interrupts++;
+}
 
 static SiftHorizonStatus
 status_of(void *ctx, TransactionId xid, FullTransactionId *fxid)
@@ -149,12 +160,17 @@ test_carry(void)
 	put_in(&c, REWRITTEN, 1, 11, 1u << 3);
 	put_in(&c, OTHER, 2, 10, 1u << 3);
 	put_in(&c, OTHER, 2, 11, 1u << 3);
+	InterruptPending = true;
+	interrupts = 0;
 	sift_col_delta_compact_plan(&chain, gens, 1, live, 2, &hz, UINT32_MAX, &plan);
+	SIFT_CHECKF(interrupts == 2, "the classifying pass and the walk back take a cancel at the page: %d", interrupts);
 	SIFT_CHECKF(plan.nfolded == 1, "the settled record of the rewritten part folds: %d", plan.nfolded);
 	SIFT_CHECKF(plan.ndropped == 1, "the superseded record of the other part goes: %d", plan.ndropped);
 	SIFT_CHECKF(plan.ncarry == 4, "four stay: %d", plan.ncarry);
 	SIFT_CHECKF(plan.nwant == 1, "the two records that move name one address: %d", plan.nwant);
 	sift_col_delta_compact_carry(&plan, &src, FullTransactionIdFromEpochAndXid(0, 1000), &remap, emit_parts, &out);
+	SIFT_CHECKF(interrupts == 3, "the carry takes a cancel at the page: %d", interrupts);
+	InterruptPending = false;
 	SIFT_CHECKF(out.n == 4, "four are written: %d", out.n);
 	SIFT_CHECKF(out.n == 4 && out.part_gen[0] == MOVED_TO && out.part_gen[1] == OTHER && out.part_gen[2] == MOVED_TO && out.part_gen[3] == OTHER,
 		  "in the order of the chain, the moved ones at their new part: %d %d %d %d", (int) out.part_gen[0], (int) out.part_gen[1], (int) out.part_gen[2], (int) out.part_gen[3]);
@@ -162,10 +178,31 @@ test_carry(void)
 	pfree(c.page);
 }
 
+static void
+moved_map_fn(void *arg)
+{
+	(void) moved_map_new(*(int *) arg);
+}
+
+/* More moves than one allocation holds (a chain of short batch rows has them): the error says the chain is too long, before anything is allocated */
+static void
+test_moved_map_bound(void)
+{
+	int			nmoved = (int) (MaxAllocSize / sizeof(Moved)) + 1;
+
+	SIFT_CHECKF(!pgshim_try(moved_map_fn, &nmoved), "a map of %d moves is not allocated", nmoved);
+	SIFT_CHECKF(pgshim_sqlstate == ERRCODE_PROGRAM_LIMIT_EXCEEDED && strstr(pgshim_errmsg, "column delta chain") != NULL, "%d: %s", pgshim_sqlstate, pgshim_errmsg);
+	pgshim_reset();
+}
+
 int
 main(void)
 {
-	test_superseded();
-	test_carry();
+	if (unit_wants("compact_superseded"))
+		test_superseded();
+	if (unit_wants("compact_carry"))
+		test_carry();
+	if (unit_wants("compact_moved_map_bound"))
+		test_moved_map_bound();
 	return sift_check_summary();
 }

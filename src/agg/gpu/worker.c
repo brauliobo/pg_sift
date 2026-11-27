@@ -325,9 +325,28 @@ worker_lose(SiftGpuSlot *s, uint32 gen, SiftGpuSlotState st)
 	sift_gpu_slot_finish(s, gen, SIFT_GPU_S_RUNNING);
 }
 
+/* The worker that holds the pid owns the state: a second one started for the same STARTING finds a live pid and ends, leaving the slots, the pid and the state alone */
+static bool
+worker_claim(SiftGpuShm *shm)
+{
+	uint32		pid = pg_atomic_read_u32(&shm->worker_pid);
+
+	return (pid == 0 || !sift_gpu_worker_alive(shm)) && pg_atomic_compare_exchange_u32(&shm->worker_pid, &pid, (uint32) MyProcPid);
+}
+
+/* The start the worker was registered for ends in to; false when a backend gave it up (the worker ends and another start owns the state) */
+static bool
+worker_settle(SiftGpuShm *shm, SiftGpuWorkerState to)
+{
+	uint32		st = SIFT_GPU_W_STARTING;
+
+	pg_write_barrier();
+	return pg_atomic_compare_exchange_u32(&shm->worker_state, &st, to);
+}
+
 /*
  * The worker ends, whatever the way. Its pid leaves first: one that is no longer there was replaced, and the state and the jobs belong to the new worker but for its own job. Else the state is
- * STOPPING while every job it holds is lost, so that no backend waits for it and no new worker takes a slot it still writes, then STOPPED.
+ * STOPPING while every job it holds is lost, so that no backend waits for it and no new worker takes a slot it still writes, then STOPPED; one that ends before it is READY leaves STOPPED.
  */
 static void
 worker_exit(pg_attribute_unused() int code, Datum arg)
@@ -335,8 +354,8 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 	SiftGpuShm *shm = (SiftGpuShm *) DatumGetPointer(arg);
 	uint32		pid = (uint32) MyProcPid;
 	uint32		st = SIFT_GPU_W_READY;
-	const bool	stopping = pg_atomic_compare_exchange_u32(&shm->worker_pid, &pid, 0) &&
-		pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STOPPING);
+	const bool	owner = pg_atomic_compare_exchange_u32(&shm->worker_pid, &pid, 0);
+	const bool	stopping = owner && pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STOPPING);
 
 	for (int i = 0; i < SIFT_GPU_SLOTS; i++)
 	{
@@ -353,6 +372,8 @@ worker_exit(pg_attribute_unused() int code, Datum arg)
 		pg_write_barrier();
 		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
 	}
+	else if (owner)
+		(void) worker_settle(shm, SIFT_GPU_W_STOPPED);
 	if (worker->jobcx != NULL)
 	{
 		MemoryContextSwitchTo(worker->basecx);
@@ -507,12 +528,14 @@ worker_loop(WorkerState *w, const WorkerExtra *extra)
 	{
 		strlcpy(shm->last_error, err, sizeof(shm->last_error));
 		pg_atomic_write_u64(&shm->failed_at_us, (uint64) GetCurrentTimestamp());
-		pg_write_barrier();
-		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_FAILED);
+		(void) worker_settle(shm, SIFT_GPU_W_FAILED);
 		return;
 	}
-	pg_write_barrier();
-	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_READY);
+	if (!worker_settle(shm, SIFT_GPU_W_READY))
+	{
+		sift_vk_seat_close(&w->seat);
+		return;
+	}
 	for (;;)
 	{
 		bool		did = false;
@@ -567,10 +590,10 @@ sift_gpu_worker_main(pg_attribute_unused() Datum main_arg)
 		proc_exit(1);
 	w.basecx = CurrentMemoryContext;
 	worker = &w;
+	if (!worker_claim(w.shm))
+		proc_exit(0);
 	before_shmem_exit(worker_exit, PointerGetDatum(w.shm));
 	w.shm->worker_procno = MyProcNumber;
-	pg_write_barrier();
-	pg_atomic_write_u32(&w.shm->worker_pid, (uint32) MyProcPid);
 	heartbeat(w.shm);
 	worker_loop(&w, &extra);
 	proc_exit(0);
@@ -588,6 +611,15 @@ struct SiftGpuConn
 	MemoryContext rcx;
 };
 
+/* A start that no worker took up goes back to STOPPED: once a worker holds the pid, the state is the worker's */
+static bool
+abandon_start(SiftGpuShm *shm)
+{
+	uint32		st = SIFT_GPU_W_STARTING;
+
+	return !sift_gpu_worker_alive(shm) && pg_atomic_compare_exchange_u32(&shm->worker_state, &st, SIFT_GPU_W_STOPPED);
+}
+
 static bool
 register_worker(SiftGpuShm *shm)
 {
@@ -595,6 +627,7 @@ register_worker(SiftGpuShm *shm)
 	BackgroundWorkerHandle *handle;
 	WorkerExtra extra = {.cache_mb = (uint32) sift_gpu_cache_mb,.software = sift_gpu_mode == SIFT_GPU_ON};
 	pid_t		pid;
+	bool		started;
 
 	strlcpy(extra.device, sift_gpu_device, sizeof(extra.device));
 	bw.bgw_flags = BGWORKER_SHMEM_ACCESS;
@@ -606,11 +639,19 @@ register_worker(SiftGpuShm *shm)
 	snprintf(bw.bgw_name, BGW_MAXLEN, "sift gpu worker");
 	snprintf(bw.bgw_type, BGW_MAXLEN, "sift gpu");
 	memcpy(bw.bgw_extra, &extra, sizeof(extra));
-	if (RegisterDynamicBackgroundWorker(&bw, &handle) && WaitForBackgroundWorkerStartup(handle, &pid) == BGWH_STARTED)
-		return true;
-	strlcpy(shm->last_error, "no background worker could be started (max_worker_processes)", sizeof(shm->last_error));
-	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
-	return false;
+	PG_TRY();
+	{
+		started = RegisterDynamicBackgroundWorker(&bw, &handle) && WaitForBackgroundWorkerStartup(handle, &pid) == BGWH_STARTED;
+	}
+	PG_CATCH();
+	{
+		(void) abandon_start(shm);
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+	if (!started && abandon_start(shm))
+		strlcpy(shm->last_error, "no background worker could be started (max_worker_processes)", sizeof(shm->last_error));
+	return started;
 }
 
 /* True when the worker is up and ready; else why not. The first backend that finds none registers it and waits for its device to open */
@@ -643,8 +684,7 @@ ensure_worker(SiftGpuShm *shm, const char **why)
 		CHECK_FOR_INTERRUPTS();
 		waited += WAIT_SLICE_MS;
 	}
-	if (pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STARTING && !sift_gpu_worker_alive(shm))
-		pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
+	(void) abandon_start(shm);
 	*why = shm->last_error[0] ? shm->last_error : "the GPU worker did not start in time";
 	return false;
 }

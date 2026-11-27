@@ -62,7 +62,7 @@ sift_tourn_create(MemoryContext cxt, const SiftTournSpec *spec, uint64 max_bytes
 	t = MemoryContextAllocZero(cxt, sizeof(SiftTournament));
 	t->spec = *spec;
 	t->k = spec->limit == 0 ? 0 : k;
-	t->max_tie_rows = max_bytes / sizeof(SiftTopNWinRow);
+	t->max_tie_rows = Min(max_bytes, MaxAllocSize) / sizeof(SiftTopNWinRow);
 	t->queue = queue;
 	t->cxt = cxt;
 	return t;
@@ -364,7 +364,7 @@ tie_add(SiftTournament *t, const SiftTopNWinRow *row)
 	}
 	if (t->tie_len == t->tie_cap)
 	{
-		t->tie_cap = t->tie_cap ? t->tie_cap * 2 : 64;
+		t->tie_cap = (uint32) Min(Max((uint64) t->tie_cap * 2, 64), t->max_tie_rows);
 		t->tie = t->tie ? repalloc(t->tie, (Size) t->tie_cap * sizeof(*t->tie)) : MemoryContextAlloc(t->cxt, (Size) t->tie_cap * sizeof(*t->tie));
 	}
 	t->tie[t->tie_len++] = *row;
@@ -491,6 +491,9 @@ sift_tourn_result(SiftTournament *t, uint32 *n)
 	uint32		end,
 				start;
 
+	if (all > MaxAllocSize / sizeof(*t->res))
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a Top-N WITH TIES of %llu rows is not run by the tournament", (unsigned long long) all),
+						errdetail("At most %zu rows are output at once.", MaxAllocSize / sizeof(*t->res)), errhint("Use a sort key that ties fewer rows.")));
 	if (t->res)
 		pfree(t->res);
 	t->res = MemoryContextAlloc(t->cxt, Max(1, all) * sizeof(*t->res));

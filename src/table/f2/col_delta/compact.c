@@ -5,14 +5,25 @@
  * dropped; every other record stays, remapped to the new part when its part is the one rewritten. A row's records are in the order of their writers' serialization, so that once one of
  * them has to stay every later one of the row stays too (a fold of a later patch under an earlier one that stays would put the earlier value over it). The chain is classified a page at
  * a time, in the order it was written, and what is held of it is a nibble for each record (its fate) and the addresses the records that move name: never the chain, and no record. The
- * records that stay are read again from the pages when they are written. No server call.
+ * records that stay are read again from the pages when they are written. The server is called for memory, for a cancel once a page, and for a chain past what one allocation holds.
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+#include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
 #include "table/f2/col_delta/batch_enc.h"
 #include "table/f2/col_delta/col_delta.h"
+
+/* n entries of width bytes in one allocation, or the error that the chain is too long for one pass */
+static void
+chain_bound(Size n, Size width)
+{
+	if (n > MaxAllocSize / width)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a column delta chain is too long to be compacted in one pass"),
+						errdetail("It needs %zu entries of %zu bytes, more than one allocation of %zu bytes holds.", n, width, (Size) MaxAllocSize)));
+}
 
 static bool
 in_sorted(const uint64 *v, int n, uint64 x)
@@ -123,6 +134,7 @@ blocked_add(SiftColDeltaPass *p, const SiftColDeltaEntryHdr *h)
 		BlockedRow *old = p->slot;
 		uint32		n = old == NULL ? 0 : p->mask + 1;
 
+		chain_bound(Max((Size) n * 2, 64), sizeof(BlockedRow));
 		p->mask = Max(n * 2, 64) - 1;
 		/* check-memory: allow a slot for each row that has a record that stays, twice over: what no later record of the row is folded under */
 		p->slot = palloc0(((Size) p->mask + 1) * sizeof(BlockedRow));
@@ -257,11 +269,12 @@ fate_set(SiftColDeltaCompactPlan *plan, uint32 seq, uint8 fate)
 }
 
 static void
-want_add(SiftColDeltaCompactPlan *plan, int *cap, uint64 tid)
+want_add(SiftColDeltaCompactPlan *plan, Size *cap, uint64 tid)
 {
-	if (plan->nwant == *cap)
+	if ((Size) plan->nwant == *cap)
 	{
-		*cap = Max(64, *cap * 2);
+		chain_bound(*cap + 1, sizeof(uint64));
+		*cap = Min(Max(64, *cap * 2), MaxAllocSize / sizeof(uint64));
 		/* check-memory: allow an address for each record that moves, which a writer that has not committed before the horizon made */
 		plan->want = plan->want != NULL ? repalloc(plan->want, sizeof(uint64) * *cap) : palloc(sizeof(uint64) * *cap);
 	}
@@ -352,7 +365,7 @@ atts_within(const uint64 *atts, const uint64 *seen)
 
 /* A record that stays and whose every attribute a later one of its row writes again goes; one that moves and stays is the address a row it names is looked for by */
 static void
-walk_record(Seen *seen, SiftColDeltaCompactPlan *plan, int *want_cap, const uint8 *rec, uint32 seq)
+walk_record(Seen *seen, SiftColDeltaCompactPlan *plan, Size *want_cap, const uint8 *rec, uint32 seq)
 {
 	uint8		fate = fate_of(plan, seq);
 	SiftColDeltaEntryHdr h;
@@ -388,7 +401,7 @@ walk_back(const SiftColDeltaPageSource *src, SiftColDeltaCompactPlan *plan)
 	/* check-memory: allow a table of a fixed number of rows */
 	Seen	   *seen = palloc0(sizeof(Seen) * SEEN_SLOTS);
 	uint32		end = plan->nrecords;
-	int			want_cap = 0;
+	Size		want_cap = 0;
 
 	for (int i = src->npages - 1; i >= 0; i--)
 	{
@@ -398,6 +411,7 @@ walk_back(const SiftColDeltaPageSource *src, SiftColDeltaCompactPlan *plan)
 				   *off;
 		uint8	   *recs;
 
+		CHECK_FOR_INTERRUPTS();
 		page_recs(&r, src, i);
 		while (recs_more(&r))
 		{
@@ -449,6 +463,7 @@ stream_records(const SiftColDeltaPageSource *src, const uint64 *gens, int ngens,
 	{
 		PageRecs	r;
 
+		CHECK_FOR_INTERRUPTS();
 		page_recs(&r, src, i);
 		while (recs_more(&r))
 		{
@@ -627,11 +642,11 @@ moved_to(const MovedMap *m, uint64 tid, SiftColDeltaEntryHdr *h)
 static MovedMap
 moved_map_new(int nmoved)
 {
-	uint32		slots = 32;
 	MovedMap	mm = {0};
+	uint32		slots;
 
-	while (slots < 2 * (uint32) nmoved)
-		slots *= 2;
+	chain_bound(Max(nmoved, 1), sizeof(Moved));
+	slots = Max(pg_nextpower2_32(2 * (uint32) Max(nmoved, 1)), 32);
 	mm.mv = palloc(sizeof(Moved) * Max(nmoved, 1));
 	/* check-memory: allow a slot for each carried address change of one compaction, twice over */
 	mm.slot = palloc0(slots * sizeof(int32));
@@ -690,6 +705,7 @@ sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColD
 	{
 		PageRecs	r;
 
+		CHECK_FOR_INTERRUPTS();
 		page_recs(&r, src, i);
 		while (recs_more(&r))
 		{

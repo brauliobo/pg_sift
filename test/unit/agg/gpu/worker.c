@@ -3,7 +3,8 @@
  * after the 30 s of a statement held up, and a result the backend cannot copy (an allocation that fails) leaves the slot free for the other backends. A backend that left acts only on
  * the generation of the slot it claimed (agg/gpu/slot.c): it frees no other backend's answer, and no backend takes a live slot for the pid of the owner before it. A worker that ends
  * finishes only the jobs it took or would have taken, and leaves the state, the pid and the jobs of a worker that replaced it alone. The worker wakes the backend whose job it
- * finished, even when that backend frees the slot and another claims it as soon as the answer is out.
+ * finished, even when that backend frees the slot and another claims it as soon as the answer is out. A backend gives a start up (a timeout, a cancel) only while no worker holds the
+ * pid: the READY or FAILED of a worker that came up meanwhile stays, a second worker of the same start ends, and a cancel leaves no STARTING behind.
  */
 #include "postgres.h"
 
@@ -303,6 +304,111 @@ sift_vk_seat_close(SiftVkSeat *s)
 
 static WorkerState exiting;
 
+static BgwHandleStatus (*startup_hook) (void);
+
+bool
+RegisterDynamicBackgroundWorker(BackgroundWorker *worker, BackgroundWorkerHandle **handle)
+{
+	*handle = NULL;
+	return true;
+}
+
+BgwHandleStatus
+WaitForBackgroundWorkerStartup(BackgroundWorkerHandle *handle, pid_t *pid)
+{
+	return startup_hook();
+}
+
+static BgwHandleStatus
+startup_cancelled(void)
+{
+	pg_re_throw();
+	return BGWH_STARTED;
+}
+
+static BgwHandleStatus
+startup_no_device(void)
+{
+	strlcpy(shm->last_error, "no device", sizeof(shm->last_error));
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_FAILED);
+	return BGWH_STOPPED;
+}
+
+/* The worker of the start comes up between the backend's read of STARTING and its give-up at the timeout */
+static void
+worker_comes_up(void)
+{
+	pg_atomic_write_u32(&shm->worker_pid, (uint32) MyProcPid);
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_READY);
+}
+
+static void
+test_start_timeout_keeps_ready(void)
+{
+	const char *why = NULL;
+
+	fresh_shm();
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STARTING);
+	pg_atomic_write_u32(&shm->worker_pid, (uint32) dead_pid());
+	kill_hook = worker_comes_up;
+	SIFT_CHECK(!ensure_worker(shm, &why));
+	SIFT_CHECK(kill_hook == NULL);
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_READY);
+}
+
+static void
+test_start_cancel(void)
+{
+	const char *why = NULL;
+	volatile bool failed = false;
+
+	fresh_shm();
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
+	pg_atomic_write_u32(&shm->worker_pid, 0);
+	startup_hook = startup_cancelled;
+	PG_TRY();
+	{
+		(void) ensure_worker(shm, &why);
+	}
+	PG_CATCH();
+	{
+		failed = true;
+	}
+	PG_END_TRY();
+	SIFT_CHECK(failed);
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STOPPED);
+}
+
+static void
+test_start_failed_kept(void)
+{
+	const char *why = NULL;
+
+	fresh_shm();
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
+	pg_atomic_write_u32(&shm->worker_pid, 0);
+	startup_hook = startup_no_device;
+	SIFT_CHECK(!ensure_worker(shm, &why));
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_FAILED);
+	SIFT_CHECK(why != NULL && strcmp(why, "no device") == 0);
+}
+
+/* W2 is started while W1, which holds the pid, opens its device: W2 ends; W1 given up finds no STARTING to settle */
+static void
+test_second_worker_ends(void)
+{
+	fresh_shm();
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STARTING);
+	pg_atomic_write_u32(&shm->worker_pid, (uint32) getppid());
+	SIFT_CHECK(!worker_claim(shm));
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_pid) == (uint32) getppid());
+	pg_atomic_write_u32(&shm->worker_pid, (uint32) dead_pid());
+	SIFT_CHECK(worker_claim(shm) && pg_atomic_read_u32(&shm->worker_pid) == (uint32) MyProcPid);
+	pg_atomic_write_u32(&shm->worker_state, SIFT_GPU_W_STOPPED);
+	SIFT_CHECK(!worker_settle(shm, SIFT_GPU_W_READY));
+	SIFT_CHECK(pg_atomic_read_u32(&shm->worker_state) == SIFT_GPU_W_STOPPED);
+}
+
 /* W1 ends after W2 replaced it: W2's pid, state and RUNNING job stay as they are, W2's staging area is no backend's to reuse */
 static void
 test_exit_superseded(void)
@@ -362,6 +468,16 @@ main(void)
 		test_exit_drains_own();
 	if (unit_wants("gpu_finish_wakes_owner"))
 		test_finish_wakes_owner();
+	if (unit_wants("gpu_start_timeout_keeps_ready"))
+		test_start_timeout_keeps_ready();
+#ifndef __SANITIZE_THREAD__
+	if (unit_wants("gpu_start_cancel"))
+		test_start_cancel();
+#endif
+	if (unit_wants("gpu_start_failed_kept"))
+		test_start_failed_kept();
+	if (unit_wants("gpu_second_worker_ends"))
+		test_second_worker_ends();
 	free(shm);
 	puts("gpu_worker: ok");
 	return 0;
