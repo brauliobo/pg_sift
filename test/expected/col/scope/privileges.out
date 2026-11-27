@@ -135,9 +135,9 @@ REVOKE SELECT ON sp_pairs FROM sp_owner;
 GRANT SELECT ON sp_pairs TO sp_reader;
 SET ROLE sp_reader;
 SELECT read_as_join('sp_pairs', 's') AS reader_with_select;
- reader_with_select 
---------------------
- same, as the join
+    reader_with_select     
+---------------------------
+ same, from the scope node
 (1 row)
 
 RESET ROLE;
@@ -163,9 +163,9 @@ RESET ROLE;
 GRANT SELECT (s) ON sp_pairs TO sp_reader;
 SET ROLE sp_reader;
 SELECT read_as_join('sp_pairs', 's') AS reader_with_both_columns;
- reader_with_both_columns 
---------------------------
- same, as the join
+ reader_with_both_columns  
+---------------------------
+ same, from the scope node
 (1 row)
 
 RESET ROLE;
