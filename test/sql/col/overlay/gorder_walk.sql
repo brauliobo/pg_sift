@@ -1,6 +1,8 @@
 -- A top-N by an order array of the build's choice ('auto: ..') walks the arrays (Global Order, no unit read) while a small promotion is alive: the walk reads the array of
 -- every segment, so an overlay without one would send the scan back to the units (all the rows). Answers are the heap's, with dead rows and after the merge.
 CREATE EXTENSION pg_sift;
+-- Format 1: the overlays this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -14,10 +16,10 @@ CREATE FUNCTION gw_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; walk bool := false; units int;
 BEGIN
 	FOR r IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		walk := walk OR r LIKE '%Global Order: true%';
-		IF r LIKE '%Units: %' THEN units := substring(r FROM 'Units: (\d+) read')::int; END IF;
+		walk := walk OR r LIKE '%Top-N Rows: %';
+		IF r LIKE '%Granules Scanned: %' THEN units := substring(r FROM 'Granules Scanned: (\d+)')::int; END IF;
 	END LOOP;
-	RETURN CASE WHEN walk THEN 'array walk, ' || units || ' units read' ELSE 'no array walk' END;
+	RETURN CASE WHEN walk THEN 'array walk, ' || units || ' granules read' ELSE 'no array walk' END;
 END $$;
 CREATE FUNCTION gw_answers() RETURNS text LANGUAGE sql AS $$
   SELECT md5(concat_ws('|',

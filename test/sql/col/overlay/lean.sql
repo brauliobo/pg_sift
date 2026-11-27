@@ -3,6 +3,8 @@
 -- A merge that makes a large segment of it writes the full set again, and the answers are the same all along.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the overlays this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
@@ -54,7 +56,7 @@ INSERT INTO og SELECT 20000 + i, TIMESTAMP '2026-02-01' + i * INTERVAL '1 minute
 SELECT sift.col_promote('og_ix') >= 0 AS promoted;
 SELECT count(*) AS overlays FROM sift.col_segments('og_ix') WHERE kind = 'immutable' AND rows < 1000;
 SET enable_sort = off;
-SELECT sift_helpers.plan_reads_global_order('SELECT id FROM og ORDER BY ts DESC LIMIT 20') AS top_n_reads_the_order;
+SELECT sift_helpers.plan_text('SELECT id FROM og ORDER BY ts DESC LIMIT 20', true) LIKE '%Top-N Rows: %' AS top_n_reads_the_order;
 RESET enable_sort;
 DROP TABLE og;
 
