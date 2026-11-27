@@ -48,7 +48,7 @@ sift_v1_att_leaf(const SiftSrcLayout *lay, int att)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
 
-		if (l->attno != att || l->typid == InvalidOid)
+		if (l->attno != att || l->typid == InvalidOid || l->scope)
 			continue;
 		if (found != NULL || l->parent >= 0 || l->kind != SCL_SCALAR || l->path != NIL || l->arrhead || l->arrlen != 0 || l->lossy || l->astext)
 			return NULL;
@@ -100,7 +100,7 @@ datum_head(const SiftSrcLayout *lay, int att)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
 
-		if (l->attno != att || l->typid == InvalidOid || l->arrlen != 0 || elem_list(l))
+		if (l->attno != att || l->typid == InvalidOid || l->scope || l->arrlen != 0 || elem_list(l))
 			continue;
 		if (found != NULL || l->kind != SCL_SCALAR || l->path != NIL || l->noimage || l->lossy || l->astext)
 			return NULL;
@@ -252,7 +252,7 @@ leaf_map(const SiftSrcLayout *lay, SiftStoreSchema *out)
 
 		sc->cols[i] = leaf_def(l);
 		kinds[i] = l->vtype == SCV_F64 ? SIFT_CELL_F8 : l->vtype == SCV_CODE ? SIFT_CELL_STR : SIFT_CELL_INT;
-		if (l->attno < 1 || l->attno > out->natts)
+		if (l->attno < 1 || l->attno > out->natts || l->scope)
 			continue;
 		first[l->attno] = first[l->attno] < 0 ? i : first[l->attno];
 		count[l->attno]++;
