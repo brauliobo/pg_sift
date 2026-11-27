@@ -8,6 +8,7 @@
 
 #include "lib/stringinfo.h"
 
+#include "col/api/leaf.h"
 #include "col/f2/part/format.h"
 #include "col/f2/preagg/v2.h"
 #include "core/hash.h"
@@ -20,7 +21,7 @@
 #define PAG_AUTO_CELL_BYTES		65536	/* ... and the most bytes of them: the budget of SIFT_PAG_BUDGET_PERCENT would leave the cube out of most granules otherwise */
 #define PAG_SPARSE_PERCENT		2		/* a column that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one, whatever the distinct values a part samples */
 #define PAG_EXPLICIT_GROUPS		4096
-#define PAG_MAP_GROUPS			256		/* the most keys of a map a granule has in the cube of its members */
+#define PAG_MAP_GROUPS			256		/* the most keys a granule has in the cube of the elements of a map or an array */
 #define PAG_SAMPLE_ROWS			16384
 
 /* ---- which cubes ---- */
@@ -293,26 +294,49 @@ map_measure(const SiftColIn *c, SiftPreaggMeasKind *kind)
 	return c->kind == SIFT_CELL_F8 || c->kind == SIFT_CELL_INT;
 }
 
-/* A cube of the members of each map whose keys the part keeps a dictionary of, with the value leaves of the map as its measures */
-static void
-add_map_cubes(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
+/* The group of the arrays a leaf is an element of (its lengths, a column of the rows) is a map: one of its leaves is the `#key` leaf */
+static bool
+map_group(const SiftRows *rows, int group1)
 {
-	for (int c = 0; rows->map_key != NULL && c < rows->ncols && plan->ncubes < SIFT_PREAGG_MAX_CUBES; c++)
+	for (int c = 0; rows->map_key != NULL && c < rows->ncols; c++)
+		if (rows->map_key[c] && rows->cols[c].group1 == group1)
+			return true;
+	return false;
+}
+
+/* The flags of the cube of the elements a string leaf groups (the `#key` leaf of a map, or a leaf of an array of objects or of strings that is a column of the rows), 0: it groups none */
+static uint8
+elem_cube_flags(const SiftRows *rows, const SiftDictEnc *const *dicts, int c)
+{
+	const SiftColIn *key = &rows->cols[c];
+
+	if (key->kind != SIFT_CELL_STR || key->group1 == 0 || !dict_codes_kept(key, dicts != NULL ? dicts[c] : NULL))
+		return 0;
+	if (rows->map_key != NULL && rows->map_key[c])
+		return SIFT_PCUBE_ELEMENTS;
+	return rows->cols[key->group1 - 1].group1 == 0 && !map_group(rows, key->group1) ? SIFT_PCUBE_KIND : 0;
+}
+
+/* A cube of the elements of each map, array of objects or array of strings whose keys the part keeps a dictionary of, with the numeric leaves of the same elements as its measures */
+static void
+add_elem_cubes(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
+{
+	for (int c = 0; c < rows->ncols && plan->ncubes < SIFT_PREAGG_MAX_CUBES; c++)
 	{
-		const SiftColIn *key = &rows->cols[c];
+		const uint8 flags = elem_cube_flags(rows, dicts, c);
 		SiftPreaggCubeDesc *cd;
 
-		if (!rows->map_key[c] || key->kind != SIFT_CELL_STR || key->group1 == 0 || !dict_codes_kept(key, dicts != NULL ? dicts[c] : NULL))
+		if (flags == 0)
 			continue;
 		cd = &plan->cube[plan->ncubes++];
-		*cd = (SiftPreaggCubeDesc) {.ndims = 1,.flags = SIFT_PCUBE_ELEMENTS,.max_groups_per_gran = PAG_MAP_GROUPS};
+		*cd = (SiftPreaggCubeDesc) {.ndims = 1,.flags = flags,.max_groups_per_gran = PAG_MAP_GROUPS};
 		cd->dim_leaf[0] = (uint16) c;
 		cd->dim_kind[0] = SIFT_PDIM_DICT32;
 		for (int v = 0; v < rows->ncols && cd->nmeasures < SIFT_PREAGG_MAX_MEAS; v++)
 		{
 			SiftPreaggMeasKind kind;
 
-			if (v != c && rows->cols[v].group1 == key->group1 && map_measure(&rows->cols[v], &kind))
+			if (v != c && rows->cols[v].group1 == rows->cols[c].group1 && map_measure(&rows->cols[v], &kind))
 			{
 				cd->meas_leaf[cd->nmeasures] = (uint16) v;
 				cd->meas_kind[cd->nmeasures++] = (uint8) kind;
@@ -333,7 +357,7 @@ sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftP
 				njoint = 0;
 	uint32		groups;
 
-	*plan = (SiftPreaggPlan) {0};
+	*plan = (SiftPreaggPlan) {.ncols = nc};
 	for (int c = 0; c < nc; c++)
 		col_info(rows, dicts, c, &ci[c]);
 	if (rows->preagg_decl != NULL && rows->preagg_decl->ndims > 0)
@@ -355,7 +379,7 @@ sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftP
 		if (njoint > 1)
 			add_cube(plan, ci, nc, dims, njoint, dist, 0, groups);
 	}
-	add_map_cubes(rows, dicts, plan);
+	add_elem_cubes(rows, dicts, plan);
 	pfree(ci);
 	pfree(dims);
 	pfree(dist);
@@ -711,27 +735,27 @@ cols_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows)
 	return true;
 }
 
-/* The group of the lengths of the map a cube of members is of */
+/* The column of the lengths of the arrays a cube of elements is of */
 static const SiftColIn *
-map_lengths(const SiftPreaggCubeDesc *cd, const SiftColIn *cols)
+elem_lengths(const SiftPreaggCubeDesc *cd, const SiftColIn *cols)
 {
 	return &cols[cols[cd->dim_leaf[0]].group1 - 1];
 }
 
-/* The values the cube folds: the rows of the granule, or the members of the maps of its rows */
+/* The values the cube folds: the rows of the granule, or the elements of the arrays of its rows */
 static int
 cube_values(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows)
 {
-	const SiftColIn *len = map_lengths(cd, cols);
+	const SiftColIn *len = elem_lengths(cd, cols);
 
 	return (cd->flags & SIFT_PCUBE_ELEMENTS) ? (int) (len->eoff[nrows] - len->eoff[0]) : nrows;
 }
 
-/* The maps of every row are ones the leaves hold: a row whose document they cannot (a tag on its lengths) sends its members to the heap */
+/* The arrays of every row are ones the leaves hold: a row whose document they cannot (a tag on its lengths) sends its elements to the heap */
 static bool
-maps_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows)
+lengths_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows)
 {
-	const SiftColIn *len = map_lengths(cd, cols);
+	const SiftColIn *len = elem_lengths(cd, cols);
 
 	for (int r = 0; len->tag != NULL && r < nrows; r++)
 		if (len->tag[r] != 0)
@@ -739,16 +763,38 @@ maps_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows)
 	return true;
 }
 
+/* No leaf of the elements of a SIFT_PCUBE_LIST cube holds a value it cannot (a JSON null is the NULL of a declared column) */
+static bool
+list_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int ncols, int nvals)
+{
+	const int	group1 = cols[cd->dim_leaf[0]].group1;
+
+	for (int c = 0; c < ncols; c++)
+		for (int r = 0; cols[c].group1 == group1 && cols[c].tag != NULL && r < nvals; r++)
+			if (cols[c].tag[r] != 0 && cols[c].tag[r] != SIFT_COLTAG_JNULL)
+				return false;
+	return true;
+}
+
+/* The granule is one the cube can hold: the columns it reads, and those of the elements it folds, hold no value they cannot */
+static bool
+cube_exact(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int ncols, int nrows, int nvals)
+{
+	if (cd->flags & SIFT_PCUBE_LIST)
+		return list_exact(cd, cols, ncols, nvals) && lengths_exact(cd, cols, nrows);
+	return cols_exact(cd, cols, nvals) && (!(cd->flags & SIFT_PCUBE_ELEMENTS) || lengths_exact(cd, cols, nrows));
+}
+
 /* The cells of the granule in this cube, appended to cells and dist; false when it has more groups than the cube holds or a column it reads is not exact */
 static bool
-cube_granule(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int nrows, const SiftDictEnc *const *dicts, StringInfo cells, StringInfo dist, uint32 *ncells, uint8 *cflags)
+cube_granule(const SiftPreaggCubeDesc *cd, const SiftColIn *cols, int ncols, int nrows, const SiftDictEnc *const *dicts, StringInfo cells, StringInfo dist, uint32 *ncells, uint8 *cflags)
 {
 	const int	nvals = cube_values(cd, cols, nrows);
 	GranCtx		x = {.cd = cd,.cols = cols,.dicts = dicts,.nrows = nvals};
 	const uint32 size = pg_nextpower2_32(Max(cd->max_groups_per_gran, 4) * 2);
 	bool		full = false;
 
-	if (!cols_exact(cd, cols, nvals) || ((cd->flags & SIFT_PCUBE_ELEMENTS) && !maps_exact(cd, cols, nrows)))
+	if (!cube_exact(cd, cols, ncols, nrows, nvals))
 		return false;
 	x.grp = palloc(Min(cd->max_groups_per_gran, (uint32) nvals) * sizeof(Grp) + sizeof(Grp));
 	x.slot = palloc(size * sizeof(int));
@@ -800,7 +846,7 @@ sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, 
 
 		initStringInfo(&cells);
 		initStringInfo(&dist);
-		ok = cube_granule(&b->plan.cube[k], cols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || *used + cells.len + dist.len <= budget);
+		ok = cube_granule(&b->plan.cube[k], cols, b->plan.ncols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || *used + cells.len + dist.len <= budget);
 		b->first[k][g] = b->ncells[k];
 		if (ok)
 		{

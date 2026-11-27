@@ -62,6 +62,12 @@ typedef enum SiftPreaggMeasKind
  * members with its key. A granule with a row whose document the map leaves cannot hold, or a member they cannot hold, has no cells in it. A granule with no member has one cell of no rows.
  */
 #define SIFT_PCUBE_ELEMENTS		(UINT8_C(1) << 1)
+/*
+ * A cube of SIFT_PCUBE_ELEMENTS whose dimension is a string leaf of an array of objects or of strings (a column of the rows): its measures are the numeric leaves of the same array. A granule has cells
+ * only when no leaf of the array holds a value of another kind in it (a JSON null is a NULL), so whichever of them a statement declares, it reads what the cells count.
+ */
+#define SIFT_PCUBE_LIST			(UINT8_C(1) << 2)
+#define SIFT_PCUBE_KIND			(SIFT_PCUBE_ELEMENTS | SIFT_PCUBE_LIST)	/* the flags that say what a cube groups, not what its cells hold */
 
 typedef struct SiftPreaggCubeDesc
 {
@@ -206,6 +212,7 @@ extern const char *sift_preagg_decl_parse(const char *opt, const struct SiftColS
 typedef struct SiftPreaggPlan
 {
 	int			ncubes;
+	int			ncols;			/* of the rows */
 	bool		declared;		/* the cubes of the rows are those of the option preagg: exactly these, with no byte budget */
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
 } SiftPreaggPlan;

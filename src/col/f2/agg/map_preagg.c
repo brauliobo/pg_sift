@@ -1,5 +1,5 @@
 /*
- * col/f2/agg/map_preagg.c - SiftAggV6 answering granules of a map from the cubes of its members (col/f2/agg/map_preagg.h).
+ * col/f2/agg/map_preagg.c - SiftAggV6 answering granules of a map or an array from the cubes of its elements (col/f2/agg/map_preagg.h).
  */
 /* check-memory: allow-allocs every array here follows the aggregates of one statement or the keys of one granule, not the rows of the table */
 #include "postgres.h"
@@ -17,8 +17,9 @@
 #include "core/memtrack.h"
 
 #define MAP_ROWS_ONLY	(-1)
+#define MAP_DIM_COUNT	(-2)
 
-/* What the statement makes of the cubes of one part: the cube of the members of its map and the measure each aggregate reads */
+/* What the statement makes of the cubes of one part: the cube of the elements and the measure each aggregate reads */
 typedef struct MapBind
 {
 	uint64		gen;
@@ -26,7 +27,7 @@ typedef struct MapBind
 	bool		usable;
 	const SiftPreaggPart *pp;
 	int			cube;
-	int		   *meas;			/* of each aggregate the measure of the cube it reads, MAP_ROWS_ONLY: the count of the members */
+	int		   *meas;			/* of each aggregate the measure of the cube it reads, MAP_ROWS_ONLY: the count of the elements, MAP_DIM_COUNT: of those whose key is not NULL */
 	SiftKeyDict dict;
 } MapBind;
 
@@ -36,6 +37,7 @@ struct SiftV6MapPreagg
 	SiftV6Group *group;
 	SiftV6Vet  *vet;
 	SiftV6ScanStats *stats;
+	int			dslot;			/* the column of the element the dimension of the cube is: the key, the one the tests read, -1: any */
 	SiftClause	ewhere;
 	bool		has_ewhere;
 	int			ecol[SIFT_V6_MAX_FCOLS];
@@ -49,9 +51,16 @@ struct SiftV6MapPreagg
 	MapBind		pb;
 };
 
-/* The aggregate reads the count of the members (count(*), count(key)) or a value of them */
+/* The function takes apart a map (the cube of its members) or an array of objects or strings (a cube of SIFT_PCUBE_LIST) */
 static bool
-agg_shape_ok(const SiftV6Agg *a)
+elem_fn_map(SiftV6ElemFn fn)
+{
+	return fn >= SV6E_EACH;
+}
+
+/* The aggregate reads the count of the elements, the count of a column of them or the value of a numeric one */
+static bool
+agg_shape_ok(const SiftV6Agg *a, int dslot)
 {
 	const SiftV6Class cls = sift_v6_class(a->arg.typid);
 
@@ -62,10 +71,10 @@ agg_shape_ok(const SiftV6Agg *a)
 	if (a->arg.src != SV6SRC_ELEM)
 		return false;
 	if (a->kind == SV6_COUNT)
-		return a->arg.slot <= 1;
+		return true;
 	if (sift_agg_exact_float && cls == SV6C_F64 && (a->kind == SV6_SUM || a->kind == SV6_AVG))
 		return false;
-	return a->arg.slot == 1 && (a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX) && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
+	return a->arg.slot != dslot && (a->kind == SV6_SUM || a->kind == SV6_AVG || a->kind == SV6_MIN || a->kind == SV6_MAX) && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
 }
 
 static bool
@@ -77,14 +86,29 @@ spec_ok(const SiftV6Spec *spec)
 		spec->vqual != NIL || spec->pgexpr != NIL || spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1 ||
 		spec->nkeys > 1 || spec->is_table)
 		return false;
-	if (x == NULL || !x->unnest || x->ndims != 0 || x->nrcol != 0 || x->resid != NIL || x->where != NIL || x->heap_where != NIL || x->elem.left || x->elem.semi || x->elem.fn < SV6E_EACH)
+	if (x == NULL || !x->unnest || x->ndims != 0 || x->nrcol != 0 || x->resid != NIL || x->where != NIL || x->heap_where != NIL || x->elem.left || x->elem.semi ||
+		(!elem_fn_map(x->elem.fn) && x->elem.fn != SV6E_RECORDSET && x->elem.fn != SV6E_ELEMS_TEXT))
 		return false;
-	if (spec->nkeys == 1 && (spec->key[0].src != SV6SRC_ELEM || spec->key[0].slot != 0 || spec->key[0].derive > 0 || sift_v6_class(spec->key[0].typid) != SV6C_TEXT))
-		return false;
-	for (int j = 0; j < spec->naggs; j++)
-		if (!agg_shape_ok(&spec->agg[j]))
+	for (int c = 0; c < x->elem.ncols; c++)
+		if (x->elem.col_kind[c])
 			return false;
-	return true;
+	return spec->nkeys == 0 || (spec->key[0].src == SV6SRC_ELEM && spec->key[0].derive == 0 && sift_v6_class(spec->key[0].typid) == SV6C_TEXT &&
+								(spec->key[0].slot == 0 || !elem_fn_map(x->elem.fn)));
+}
+
+/* The column of the element all the tests read, -1: none, -2: more than one (or one a map does not key by) */
+static int
+ewhere_slot(const SiftV6MapPreagg *m)
+{
+	int			slot = -1;
+
+	for (int v = 0; v < m->nevec; v++)
+	{
+		if (slot >= 0 && slot != m->ecol[v])
+			return -2;
+		slot = m->ecol[v];
+	}
+	return slot > 0 && elem_fn_map(m->spec->ext->elem.fn) ? -2 : slot;
 }
 
 SiftV6MapPreagg *
@@ -99,15 +123,20 @@ sift_v6_map_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6Vet *vet,
 	m->group = g;
 	m->vet = vet;
 	m->stats = stats;
+	m->dslot = spec->nkeys == 1 ? spec->key[0].slot : elem_fn_map(spec->ext->elem.fn) ? 0 : -1;
 	if (spec->ext->elem_where != NIL)
 	{
-		if (!sift_v6_unnest_elem_clause(CurrentMemoryContext, spec->ext->elem_where, &m->ewhere, m->ecol, &m->nevec))
+		int			slot;
+
+		if (!sift_v6_unnest_elem_clause(CurrentMemoryContext, spec->ext->elem_where, &m->ewhere, m->ecol, &m->nevec) || (slot = ewhere_slot(m)) == -2 ||
+			(m->dslot >= 0 && slot >= 0 && slot != m->dslot))
 			return NULL;
-		for (int v = 0; v < m->nevec; v++)
-			if (m->ecol[v] != 0)
-				return NULL;
+		m->dslot = slot >= 0 ? slot : m->dslot;
 		m->has_ewhere = true;
 	}
+	for (int j = 0; j < spec->naggs; j++)
+		if (!agg_shape_ok(&spec->agg[j], m->dslot))
+			return NULL;
 	m->keybuf = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	m->pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v6 map preagg part");
 	m->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v6 map preagg granule");
@@ -132,9 +161,9 @@ find_meas(const SiftPreaggCubeDesc *cd, int leaf)
 	return -1;
 }
 
-/* Where each aggregate is in the cube of the members of the map; false when one reads what the cube does not keep */
+/* Where each aggregate is in the cube whose dimension is the column dslot of the element; false when one reads what the cube does not keep */
 static bool
-bind_aggs(const SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, int *meas)
+bind_aggs(const SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, int dslot, int *meas)
 {
 	const SiftV6XElem *e = &m->spec->ext->elem;
 
@@ -143,9 +172,11 @@ bind_aggs(const SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, int *meas)
 		const SiftV6Agg *a = &m->spec->agg[j];
 		int			i;
 
-		if (a->kind == SV6_COUNT_STAR || a->arg.slot == 0)
+		if (a->kind == SV6_COUNT_STAR)
 			meas[j] = MAP_ROWS_ONLY;
-		else if ((i = find_meas(cd, e->col_leaf[1])) < 0 ||
+		else if (a->arg.slot == dslot)
+			meas[j] = MAP_DIM_COUNT;
+		else if ((i = find_meas(cd, e->col_leaf[a->arg.slot])) < 0 ||
 				 (a->kind != SV6_COUNT && (cd->meas_kind[i] >= SIFT_PMEAS_F4) != (sift_v6_class(a->arg.typid) == SV6C_F64)))
 			return false;
 		else
@@ -154,11 +185,25 @@ bind_aggs(const SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, int *meas)
 	return true;
 }
 
+/* The column of the element the dimension of the cube is (the one of the statement when it names one), -1: none */
+static int
+cube_slot(const SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd)
+{
+	const SiftV6XElem *e = &m->spec->ext->elem;
+	const uint8 kind = elem_fn_map(e->fn) ? SIFT_PCUBE_ELEMENTS : SIFT_PCUBE_KIND;
+
+	if ((cd->flags & SIFT_PCUBE_KIND) != kind)
+		return -1;
+	for (int c = 0; c < e->ncols; c++)
+		if (e->col_leaf[c] == cd->dim_leaf[0] && (m->dslot < 0 || m->dslot == c))
+			return c;
+	return -1;
+}
+
 static void
 bind_part(SiftV6MapPreagg *m, const SiftF2GranOffer *o)
 {
 	MapBind    *pb = &m->pb;
-	const SiftV6XElem *e = &m->spec->ext->elem;
 	MemoryContext old;
 
 	MemoryContextReset(m->pcx);
@@ -169,8 +214,9 @@ bind_part(SiftV6MapPreagg *m, const SiftF2GranOffer *o)
 	for (int k = 0; pb->pp != NULL && !pb->usable && k < pb->pp->hdr.ncubes; k++)
 	{
 		const SiftPreaggCubeDesc *cd = &pb->pp->cube[k];
+		const int	slot = cube_slot(m, cd);
 
-		if ((cd->flags & SIFT_PCUBE_ELEMENTS) && cd->dim_leaf[0] == e->col_leaf[0] && bind_aggs(m, cd, pb->meas))
+		if (slot >= 0 && bind_aggs(m, cd, slot, pb->meas))
 		{
 			const SiftPartDict *pd = sift_part_dict_find(sift_part_dicts(o->rel, o->part), cd->dim_leaf[0], SIFT_DICT_KIND_STR);
 
@@ -235,7 +281,6 @@ merge_batch(SiftV6MapPreagg *m, SiftVec *key, const V6Acc *acc, uint16 n)
 	SiftVec    *keys[1] = {key};
 
 	key->len = n;
-	key->all_valid = true;
 	sift_v6_group_merge_cells(m->group, m->spec->nkeys > 0 ? keys : NULL, acc, n);
 }
 
@@ -247,7 +292,8 @@ fold_cells(SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, const SiftPreaggGra
 	const int	naggs = m->spec->naggs;
 	uint32	   *codes = palloc(SIFT_VEC_LEN * sizeof(uint32) + SIFT_VEC_PAD);
 	V6Acc	   *acc = palloc(SIFT_VEC_LEN * naggs * sizeof(V6Acc));
-	SiftVec		key = {.data = codes,.dense = true,.type = SVEC_DICT32,.dict = &pb->dict.d};
+	uint64		valid[SIFT_VEC_WORDS] = {0};
+	SiftVec		key = {.data = codes,.valid = valid,.all_valid = true,.dense = true,.type = SVEC_DICT32,.dict = &pb->dict.d};
 	uint16		n = 0;
 
 	for (uint32 c = 0; c < gran->ncells; c++)
@@ -263,13 +309,19 @@ fold_cells(SiftV6MapPreagg *m, const SiftPreaggCubeDesc *cd, const SiftPreaggGra
 			*out = (V6Acc) {0};
 			if (pb->meas[j] == MAP_ROWS_ONLY)
 				out->n = grp->row_count;
+			else if (pb->meas[j] == MAP_DIM_COUNT)
+				out->n = (grp->dim_null_mask & 1) ? 0 : grp->row_count;
 			else
 				sift_v6_preagg_meas_acc(&m->spec->agg[j], sift_pag_measure(cd, grp, pb->meas[j]), out);
 		}
-		codes[n++] = (uint32) grp->keys[0];
-		if (n == SIFT_VEC_LEN)
+		codes[n] = (uint32) grp->keys[0];
+		valid[n >> 6] |= (uint64) !(grp->dim_null_mask & 1) << (n & 63);
+		key.all_valid &= !(grp->dim_null_mask & 1);
+		if (++n == SIFT_VEC_LEN)
 		{
 			merge_batch(m, &key, acc, n);
+			memset(valid, 0, sizeof(valid));
+			key.all_valid = true;
 			n = 0;
 		}
 	}

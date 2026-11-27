@@ -16,13 +16,13 @@ CREATE INDEX pr_dirty_col ON pr_dirty USING sift_col (id, items) WITH (paths = '
 VACUUM (FREEZE, ANALYZE, DISABLE_PAGE_SKIPPING) pr_clean, pr_dirty;
 
 \ir test/common/sql/agg/base.sql
--- whether a unit was answered from the rollup (NULL: the query fails)
+-- whether a granule was answered from the cubes of the elements (NULL: the query fails)
 CREATE FUNCTION from_rollup(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-    n := coalesce(substring(l from '(\d+) from pre-aggregates')::int, n);
+    n := n + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
   END LOOP;
   RETURN n > 0;
 EXCEPTION WHEN OTHERS THEN RETURN NULL;
