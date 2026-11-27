@@ -35,62 +35,126 @@ dirty_everywhere(const SiftSegment *seg, SiftDocChunk *ch)
 	ch->dirty = (seg->entry.flags & SIFT_SEG_DIRTY) != 0;
 }
 
-/* The docs of the SB at position at of the directory */
+/* Where the row of each page of the SB starts (a row ends past the last doc of its page) and the slots of all of them, in e->start */
+static void
+sbdocs_layout(SiftSegment *seg, const SiftDocChunk *ch, SBDocs *e)
+{
+	e->start[0] = 0;
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+	{
+		uint64		present[SIFT_OFFMASK_WORDS];
+		int			len = 0;
+
+		if (ch->pagemask[p / 64] & (1ULL << (p % 64)))
+		{
+			sift_seg_page(seg, ch, p, present, NULL);
+			for (int wd = SIFT_OFFMASK_WORDS - 1; wd >= 0 && len == 0; wd--)
+				if (present[wd])
+					len = wd * 64 + 64 - __builtin_clzll(present[wd]);
+		}
+		e->start[p + 1] = e->start[p] + len;
+	}
+}
+
+static inline uint16
+sbdocs_slot_dl(const SBDocs *e, uint32 slot)
+{
+	if (e->bits == 16)
+		return ((const uint16 *) e->dl)[slot];
+	return e->bits == 8 ? e->dl[slot] : e->dl[slot / 2] >> (slot % 2 * 4) & 15;
+}
+
+static inline void
+sbdocs_put_dl(SBDocs *e, uint32 slot, uint16 dl)
+{
+	if (e->bits == 16)
+		((uint16 *) e->dl)[slot] = dl;
+	else if (e->bits == 8)
+		e->dl[slot] = dl;
+	else
+		e->dl[slot / 2] |= dl << (slot % 2 * 4);
+}
+
+/* The bits a slot of the SB needs for the longest of its docs */
+static uint8
+sbdocs_bits(SiftSegment *seg, const SiftDocChunk *ch, const SBDocs *e)
+{
+	uint16		maxdl = 0;
+
+	for (int p = 0; p < SIFT_SB_PAGES; p++)
+	{
+		const uint16 *dl;
+
+		if (e->start[p + 1] == e->start[p])
+			continue;
+		sift_seg_page(seg, ch, p, NULL, &dl);
+		for (uint32 i = 0; i < e->start[p + 1] - e->start[p]; i++)
+			maxdl = Max(maxdl, dl[i]);
+	}
+	return maxdl < 16 ? 4 : maxdl < 256 ? 8 : 16;
+}
+
+/* The vacuumed docs of page p in e->dead */
+static bool
+sbdocs_mark_dead(SiftSegment *seg, const SiftDocChunk *ch, int p, const uint64 *present, SBDocs *e)
+{
+	uint64		live[SIFT_OFFMASK_WORDS];
+	bool		any = false;
+
+	sift_seg_page_live(seg, ch, p, live);
+	for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
+		for (uint64 m = present[wd] & ~live[wd]; m; m &= m - 1, any = true)
+		{
+			uint32		slot = e->start[p] + wd * 64 + __builtin_ctzll(m);
+
+			e->dead[slot / 8] |= 1 << (slot % 8);
+		}
+	return any;
+}
+
+/* The docs of the SB at position at of the directory: the entry, the dl of its rows at the width they need and their vacuumed bits in one allocation, whose size the cache counts */
 static SBDocs *
 sbdocs_build(DocCache *dc, int64 at)
 {
 	SiftSegment *seg = dc->seg;
 	SiftDocChunk ch;
-	SBDocs	   *e = MemoryContextAllocZero(dc->mcxt, sizeof(SBDocs));
-	uint16	   *rows = MemoryContextAlloc(dc->mcxt, SIFT_SB_PAGES * MAXOFF * sizeof(uint16));
-	uint8	   *dead = MemoryContextAllocZero(dc->mcxt, ((Size) SIFT_SB_PAGES * MAXOFF + 7) / 8);
-	uint32		total = 0;
+	SBDocs		layout;
+	uint32		total;
+	Size		dllen,
+				deadlen;
+	SBDocs	   *e;
 	bool		anydead = false;
 
 	sift_seg_docs(seg, docmap(seg)->dir[at].sb, &ch);
 	dirty_everywhere(seg, &ch);
+	sbdocs_layout(seg, &ch, &layout);
+	layout.bits = sbdocs_bits(seg, &ch, &layout);
+	total = layout.start[SIFT_SB_PAGES];
+	dllen = ((Size) total * layout.bits + 7) / 8;
+	deadlen = ch.dirty ? (total + 7) / 8 : 0;
+	/* check-memory: allow the docs of one superblock (at most 256 pages of 291 rows) */
+	e = MemoryContextAllocZero(dc->mcxt, sizeof(SBDocs) + dllen + deadlen);
+	e->size = sizeof(SBDocs) + dllen + deadlen;
+	memcpy(e->start, layout.start, sizeof(layout.start));
+	e->bits = layout.bits;
+	e->dl = (uint8 *) (e + 1);
+	e->dead = e->dl + dllen;
 	for (int p = 0; p < SIFT_SB_PAGES; p++)
 	{
-		uint64		present[SIFT_OFFMASK_WORDS],
-					live[SIFT_OFFMASK_WORDS];
+		uint64		present[SIFT_OFFMASK_WORDS];
 		const uint16 *dl;
-		int			len = 0;
 
-		if (!(ch.pagemask[p / 64] & (1ULL << (p % 64))))
+		if (e->start[p + 1] == e->start[p])
 			continue;
 		sift_seg_page(seg, &ch, p, present, &dl);
-		for (int wd = SIFT_OFFMASK_WORDS - 1; wd >= 0 && len == 0; wd--)
-			if (present[wd])
-				len = wd * 64 + 64 - __builtin_clzll(present[wd]);
-		memcpy(rows + total, dl, len * sizeof(uint16));
+		for (uint32 i = 0; i < e->start[p + 1] - e->start[p]; i++)
+			sbdocs_put_dl(e, e->start[p] + i, dl[i]);
 		if (ch.dirty)
-		{
-			sift_seg_page_live(seg, &ch, p, live);
-			for (int wd = 0; wd < SIFT_OFFMASK_WORDS; wd++)
-				for (uint64 m = present[wd] & ~live[wd]; m; m &= m - 1, anydead = true)
-				{
-					uint32		slot = total + wd * 64 + __builtin_ctzll(m);
-
-					dead[slot / 8] |= 1 << (slot % 8);
-				}
-		}
-		e->start[p] = total;
-		e->len[p] = len;
-		total += len;
+			anydead |= sbdocs_mark_dead(seg, &ch, p, present, e);
 	}
+	if (!anydead)
+		e->dead = NULL;
 	e->at = at;
-	/* check-memory: allow the docs of one superblock (at most 256 pages of 291 rows) */
-	e->dl = MemoryContextAlloc(dc->mcxt, total * sizeof(uint16));
-	memcpy(e->dl, rows, total * sizeof(uint16));
-	e->size = sizeof(SBDocs) + total * sizeof(uint16);
-	if (anydead)
-	{
-		e->dead = MemoryContextAlloc(dc->mcxt, (total + 7) / 8);
-		memcpy(e->dead, dead, (total + 7) / 8);
-		e->size += (total + 7) / 8;
-	}
-	pfree(rows);
-	pfree(dead);
 	return e;
 }
 
@@ -120,9 +184,6 @@ sbdocs_get(DocCache *dc, uint32 sb)
 		lru_unlink(dc, old);
 		dc->sb[old->at] = NULL;
 		dc->used -= old->size;
-		pfree(old->dl);
-		if (old->dead)
-			pfree(old->dead);
 		pfree(old);
 	}
 	dc->sb[at] = e;
@@ -138,9 +199,9 @@ sbdocs_raw(DocCache *dc, const SBDocs *e, SiftKey key, uint32 *slot)
 	int			page = sift_key_block(key) & (SIFT_SB_PAGES - 1),
 				off = (key & 0xFFFF) - 1;
 
-	if (off < 0 || off >= e->len[page] || e->dl[*slot = e->start[page] + off] == 0)
+	if (off < 0 || (uint32) off >= e->start[page + 1] - e->start[page] || sbdocs_slot_dl(e, *slot = e->start[page] + off) == 0)
 		corrupt(dc->seg, "Posting (%u,%u) is not a doc of the segment.", sift_key_block(key), (uint32) (key & 0xFFFF));
-	return e->dl[*slot];
+	return sbdocs_slot_dl(e, *slot);
 }
 
 /* The dl of the doc with this key, 0 when it was vacuumed */

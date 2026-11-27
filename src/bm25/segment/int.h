@@ -137,10 +137,10 @@ typedef struct SBDocs
 	struct SBDocs *older;
 	int64		at;				/* in the SB directory */
 	Size		size;
-	uint16	   *dl;				/* the rows of its pages one after the other */
+	uint8	   *dl;				/* the rows of its pages one after the other, bits bits a slot */
 	uint8	   *dead;			/* a bit for each doc slot of dl: vacuumed (NULL in a clean SB) */
-	uint32		start[SIFT_SB_PAGES];	/* of the row of each page in dl */
-	uint16		len[SIFT_SB_PAGES];		/* 0: no docs on the page */
+	uint8		bits;			/* 4, 8 or 16: what the longest doc of the SB needs */
+	uint32		start[SIFT_SB_PAGES + 1];	/* of the row of each page in dl, and the slots of all of them */
 } SBDocs;
 
 typedef struct DocCache
