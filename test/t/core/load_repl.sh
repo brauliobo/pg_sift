@@ -19,17 +19,21 @@ deadlock_timeout = '100ms'
 log_min_messages = warning"
 node_start lp || bail "start failed"
 
-# restandby: the standby ls stopped and cloned again from lp, its old slot dropped once its walsender has gone
+standby() { node_clone lp ls 2 && node_start ls; }
+# restandby: the leak check of the standby ls into LS_LEAKS (its log, its sanitizer reports and its shutdown, which the clone erases; the runner scans the file), its old
+# slot dropped once its walsender has gone, and a new clone of lp
 restandby() {
-	node_stop ls
+	node_leakcheck ls >>"$LS_LEAKS" 2>&1 || echo "leaked server state: the leak check of the standby ls failed before its clone" >>"$LS_LEAKS"
 	until [[ $(sql lp "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'ls' AND active") == 0 ]]; do sleep 0.05; done
 	sql lp "SELECT count(pg_drop_replication_slot(slot_name)) FROM pg_replication_slots WHERE slot_name = 'ls'" >/dev/null
-	node_clone lp ls 2 && node_start ls
+	standby
 }
-restandby || bail "the standby did not start"
+standby || bail "the standby did not start"
 export -f $(compgen -A function)
-export TAPDIR TAP_SCRIPTS SIFT_PORT
+export TAPDIR TAP_SCRIPTS SIFT_PORT LS_LEAKS=$TAPDIR/ls.leaks
+: >"$LS_LEAKS"
 S=$(dir ls)
-LOAD_STANDBY_HOST=$S/sock LOAD_STANDBY_PORT=$(port ls) LOAD_PROMOTE="pg_ctl -D '$S/data' -w promote >/dev/null" LOAD_RESTANDBY=restandby load_suite lp --suite repl
+LOAD_STANDBY_HOST=$S/sock LOAD_STANDBY_PORT=$(port ls) LOAD_PROMOTE="pg_ctl -D '$S/data' -w promote >/dev/null" LOAD_RESTANDBY=". '$TAP_SCRIPTS/leakcheck.sh'; restandby" \
+	load_suite lp --suite repl --log "$S/postgres.log" --log "$LS_LEAKS"
 done_testing
 finish

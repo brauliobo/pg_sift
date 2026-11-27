@@ -14,7 +14,7 @@ defect it waits for: it must fail a ceiling until the fix (OPEN=ID, a TODO) and 
   scripts/load/run.py --list                    the cases it would run (for the format of the cluster, --format 1|2 for another)
   scripts/load/run.py --selftest                the logic without a server
 
-Reads PGHOST, PGPORT and PGUSER like psql; --log is the server log (the crash and leak lines of each case), --no-rss skips the anonymous memory of the backends (no /proc),
+Reads PGHOST, PGPORT and PGUSER like psql; --log is a server log, once for each (the crash and leak lines of each case: the primary, the standby, its leak checks), --no-rss skips the anonymous memory of the backends (no /proc),
 LOAD_CRASH and LOAD_RESTART are the shell commands that kill -9 the server and start it again (the last case, and a case that crashed it); LOAD_STANDBY_HOST and LOAD_STANDBY_PORT
 name the hot standby of the repl suite, LOAD_PROMOTE and LOAD_RESTANDBY promote it and clone a new one. --format 1|2 runs the cases on that format (the testing library: sift.test_create_format1).
 """
@@ -84,7 +84,7 @@ class Psql:
         except (BrokenPipeError, OSError):
             err = next((m.groups()[1:] for l in out if (m := ERR.match(l))), ('08006', 'the server closed the session'))
             self.p.wait()
-            self.dead = True
+            self._pid, self.dead = None, True
             return [], err, (time.monotonic() - t0) * 1000
         err = next((m.groups()[1:] for l in out if (m := ERR.match(l))), None)
         return out, err, (time.monotonic() - t0) * 1000
@@ -175,8 +175,11 @@ class Ctx:
         def loop(w, fn):
             bar.wait()
             i = 0
-            while not stop.is_set() and fn(w, i) is not False:
-                i += 1
+            try:
+                while not stop.is_set() and fn(w, i) is not False:
+                    i += 1
+            except Exception as e:
+                w.bad.append(f'{type(e).__name__}: {e}'[:200])
 
         threads = [threading.Thread(target=loop, args=(w, fn), daemon=True) for _, w, fn in pairs]
         for t in threads:
@@ -189,9 +192,11 @@ class Ctx:
             if not lead or name == lead:
                 t.join(max(0.0, end - time.monotonic()))
         stop.set()
-        for t in threads:
-            t.join()
-        self.obs.stop()
+        try:
+            self.obs.stop()
+        finally:
+            for t in threads:
+                t.join()
         out = {name: Role() for name in roles}
         for name, w, _ in pairs:
             r = out[name]
@@ -255,7 +260,7 @@ def measure(ctx: Ctx, case: LoadCase, log: collect.LogScan):
         ctx.close_sessions()
         db.run('SELECT pg_stat_force_next_flush()')
         m['deadlocks'] = int(db.val('SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()')) - dl0 - m.pop('deadlocks_meant', 0)
-        m.update({k: v for k, v in collect.hygiene(db, m.pop('damaged', ())).items() if k not in m})
+        m = collect.add(m, collect.hygiene(db, m.pop('damaged', ())))
         found = log.findings()
         m['traps_and_leaks'] = len(found)
         bad = m.pop('notes', []) + found[:3]
@@ -401,6 +406,8 @@ def selftest():
     expect(ERR.match('ERROR:  57014: canceling statement due to statement timeout').groups()[1] == '57014', 'sqlstate parse')
     expect(catalog.zipf(1, 100, 1.2) == catalog.zipf(1, 100, 1.2) and 1 <= catalog.zipf(7, 100, 1.2) <= 100, 'deterministic zipf')
     collect.selftest(expect)
+    import test_harness
+    test_harness.selftest()
     print(f'selftest ok: {len(catalog.CASES)} core cases, ' + ', '.join(f'{len(c)} {n}' for n, (c, _) in suites.SUITES.items()))
 
 
@@ -428,17 +435,21 @@ def report(a, ctx: Ctx, selected: list, runs: list) -> int:
     return int(failed > 0)
 
 
-def main() -> int:
+def parse(argv: list | None = None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--suite', choices=('core', *suites.SUITES, 'all'), default='core')
     ap.add_argument('--only', default='')
     ap.add_argument('--class', dest='cls', default='')
     ap.add_argument('--format', type=int, default=0)
-    ap.add_argument('--log', default='')
+    ap.add_argument('--log', action='append', default=[])
     ap.add_argument('--scale', type=float, default=float(os.environ.get('LOAD_SCALE', '1')))
     for flag in ('list', 'calibrate', 'determinism', 'selftest', 'no-rss'):
         ap.add_argument('--' + flag, action='store_true')
-    a = ap.parse_args()
+    return ap.parse_args(argv)
+
+
+def main() -> int:
+    a = parse()
     if a.selftest:
         return selftest() or 0
     selected = [c for c in suites.cases(a.suite) if re.search(a.only, c.id) and c.cls.startswith(a.cls)]

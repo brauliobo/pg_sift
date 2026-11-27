@@ -302,8 +302,8 @@ def tenant_multidb_bgw_fair(ctx):
 
         busy = ctx.phase({'h': (hot, churn), 'q': (quiet, burst), 'x': (watch, watcher)}, 20.0, lead='x')
         unconv = sum(int(w.val(quiet_sql)) > 0 for w in watch)
-        checks = sum(int(w.val("SELECT count(*) FROM sift.check('acc', true)")) + int(w.val("SELECT count(*) FROM sift.check('ev_ix', true)")) for w in watch)
-        failures = sum(int(w.val('SELECT coalesce(sum(maint_failures), 0) FROM sift.status()')) for w in watch)
+        checks = sum(int(w.val("SELECT count(*) FROM sift.check('acc', true)")) + int(w.val("SELECT count(*) FROM sift.check('ev_ix', true)")) for w in hot + watch)
+        failures = sum(int(w.val('SELECT coalesce(sum(maint_failures), 0) FROM sift.status()')) for w in hot + watch)
         stuck = [f'note: {w.dbname} {r}' for w in watch for r in w.run(QUIET.replace('count(*)', "format('%s dead_pct=%s l0_slabs=%s', relation, dead_pct, l0_slabs)"))] if unconv else []
         for w in [w for w in ctx.open_sessions if w.dbname == DBS[2]]:
             w.close()

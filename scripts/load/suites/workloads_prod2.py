@@ -14,7 +14,7 @@ import time
 sys.dont_write_bytecode = True
 
 from cases import KILLED, PAR, LoadCase  # noqa: E402
-from collect import BM, N, add, base, ctx_kb, engines, hygiene, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, zipf  # noqa: E402
+from collect import BM, N, add, base, checks, ctx_kb, engines, hygiene, kept, mem_delta, multi_kept, nxt, oracle, oracles, p99_ratio, zipf  # noqa: E402
 from suites.common import Limits, fd_delta, fds, twin_do, twin_mismatch  # noqa: E402
 from suites.repl import CAP, CDC, SHAPE, catchup, conninfo, standby  # noqa: E402
 from suites.workloads_next import halves_differ  # noqa: E402
@@ -404,8 +404,7 @@ def repl_inflight_promote_cdc_tier(ctx):
         busy = ctx.phase({'w': (ws, write), 'r': (rs, read), 'p': ([st], promote)}, 2.5)
         f1 = [fds(w.pid, store) for w in rs]
         _, err, _ = st.q('BEGIN; UPDATE pt SET v = v + 1000 WHERE id = 5; UPDATE pt_tw SET v = v + 1000 WHERE id = 5; COMMIT')
-        after = hygiene(st)
-        promoted = int(err is not None) + int(st.val('SELECT pg_is_in_recovery()') == 't') + sum(after[k] for k in ('verify_errors', 'false_quarantines', 'health_errors'))
+        promoted = int(err is not None) + int(st.val('SELECT pg_is_in_recovery()') == 't') + sum(hygiene(st).values())
         drift = sum(cold_twin(st, i, ()) for i in range(0, COLD_ROWS, 256)) + twin_mismatch(st, 'pt', 'pt_tw')
         want, end = db.row(CDC), time.monotonic() + CAP
         while sub.row(CDC) != want and time.monotonic() < end:
@@ -414,7 +413,7 @@ def repl_inflight_promote_cdc_tier(ctx):
         ids = set().union(*(getattr(w, 'ids', set()) for w in ws))
         return base(ctx, busy, 'w', **add(kept(db, 'cdc', ids, 10 ** 6), {'lost_rows': abs(int(want[0]) - int(got[0]))}),
                     oracle_mismatch=int(got != want) + twin_mismatch(db, 'pt', 'pt_tw'), standby_mismatch=lag + drift + sum(w.ledger for w in rs), promoted_errors=promoted,
-                    fd_delta=fd_delta(f0, f1), tiered=moved, standby_reads=busy['r'].ops, conflicts=busy['r'].expected)
+                    fd_delta=fd_delta(f0, f1), tiered=moved, standby_reads=busy['r'].ops, conflicts=busy['r'].expected, **checks(sub))
     finally:
         sub.q('DROP SUBSCRIPTION IF EXISTS load_sub_p')
         ctx.close_sessions()

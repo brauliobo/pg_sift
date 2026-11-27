@@ -11,7 +11,7 @@ import time
 sys.dont_write_bytecode = True
 
 from cases import LoadCase  # noqa: E402
-from collect import AGG, BM, add, base, engines, hygiene, ledger_writes, multi_kept, oracles  # noqa: E402
+from collect import AGG, BM, add, base, checks, engines, hygiene, ledger_writes, multi_kept, oracles  # noqa: E402
 from suites.common import Limits, anon_peak_mb  # noqa: E402
 
 DIGEST = ("SELECT count(*), md5(string_agg(id || ':' || v, ',' ORDER BY id)) FROM load_case.e_tbl", AGG.format(t='load_case.e_col'), BM.format(t='load_case.e_bm'))
@@ -77,8 +77,7 @@ def repl_standby_failover(ctx):
         time.sleep(0.02)
     _, err, _ = st.q("INSERT INTO e_tbl VALUES (99999999, 1, 1, 'wire promoted'); INSERT INTO e_col VALUES (99999999, 1, 1, 'wire promoted'); "
                      "INSERT INTO e_bm VALUES (99999999, 1, 1, 'wire promoted')")
-    after = hygiene(st)
-    m['promoted_errors'] = int(err is not None) + after['verify_errors'] + after['false_quarantines'] + after['health_errors'] + after['maint_failures']
+    m['promoted_errors'] = int(err is not None) + sum(hygiene(st).values())
     ctx.close_sessions()
     ctx.hook('LOAD_RESTANDBY')
     return m
@@ -129,7 +128,7 @@ def repl_logical_cdc_churn(ctx):
             time.sleep(0.05)
         got, n = sub.row(CDC), int(want[0])
         return base(ctx, busy, 'w', lost_rows=abs(n - int(got[0])), oracle_mismatch=int(got != want), rss_mb_delta=None if pub is None else round(pub - ctl, 1), unpublished_mb=ctl,
-                    verify_errors=int(sub.val("SELECT count(*) FROM sift.check('load_case.cdc', true)")), rows=n)
+                    rows=n, **checks(sub))
     finally:
         sub.q('DROP SUBSCRIPTION IF EXISTS load_sub')
         ctx.close_sessions()

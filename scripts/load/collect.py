@@ -7,6 +7,8 @@ and leaks of the server log. The ledger helpers check that the rows a worker com
 """
 from __future__ import annotations
 
+import codecs
+import math
 import os
 import random
 import re
@@ -30,17 +32,28 @@ CTX_KB = "SELECT coalesce(sum(total_bytes), 0) / 1024 FROM pg_backend_memory_con
 IN_CASE = "IN (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname LIKE 'load_case%')"
 SIFT_RELS = f"""SELECT c.oid FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift', 'sift_col', 'sift_table')
   AND c.relkind IN ('r', 'i') AND c.oid {IN_CASE} ORDER BY 1"""
-LEAKS = re.compile(r'TRAP:|PANIC:|terminated by signal|sift leak:|you don\'t own a lock|buffer refcount leak|ERROR: +AddressSanitizer|runtime error:|'
-                   r'cache lookup failed|could not find block containing chunk|was terminated by|ERROR:  XX000')
+LEAKCHECK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'leakcheck.sh')
+
+
+def leak_rules(path: str = LEAKCHECK) -> list:
+    """(regex, sample line) of every row of LEAK_RULES in scripts/leakcheck.sh: the load gate finds what the leak gate finds"""
+    with open(path) as f:
+        rows = re.search(r'^LEAK_RULES=\(\n(.*?)^\)', f.read(), re.M | re.S).group(1)
+    return [codecs.decode(r, 'unicode_escape').split('\t') for r in re.findall(r"^\s*\$'((?:[^'\\]|\\.)*)'$", rows, re.M)]
+
+
+LEAKS = re.compile('|'.join([r for r, _ in leak_rules()] + ['cache lookup failed', 'could not find block containing chunk']))
 
 
 class Observer:
-    """samples the sessions under load in a thread of its own until stop(); `peak` is SQL of one number whose peak the case wants"""
+    """samples the sessions under load in a thread of its own until stop(), which raises the error a sample met on a server that still runs; `peak` is SQL of one
+    number whose peak the case wants"""
 
     def __init__(self, db, peak: str = '', pacer: bool = False):
         self.db, self.peak_sql, self.pacer = db, peak, pacer
         self.samples = self.active = self.lock = self.lwlock = self.esc = self.peak = self.throttled = self.busy = 0
         self.events: dict[str, int] = {}
+        self.error = ''
         self.done = threading.Event()
         self.t = threading.Thread(target=self.loop, daemon=True)
 
@@ -52,7 +65,8 @@ class Observer:
         while not self.done.is_set():
             try:
                 self.sample()
-            except RuntimeError:
+            except RuntimeError as e:
+                self.error = '' if self.db.dead else str(e)
                 return
             self.done.wait(SAMPLE_S)
 
@@ -73,6 +87,8 @@ class Observer:
     def stop(self) -> Observer:
         self.done.set()
         self.t.join()
+        if self.error:
+            raise RuntimeError(f'the sampler: {self.error}')
         return self
 
     def metrics(self) -> dict:
@@ -104,6 +120,9 @@ def p99(lat: list) -> float:
 
 
 def p99_ratio(quiet: list, busy: list, floor_ms: float = 2.0) -> float:
+    """the p99 of BUSY over the p99 of QUIET (at least FLOOR_MS); no statement under load is no measure, and fails the ceiling"""
+    if not busy:
+        return math.inf
     return round(p99(busy) / max(p99(quiet), floor_ms), 2)
 
 
@@ -118,32 +137,49 @@ def sift_rels(db) -> list:
     return db.run(SIFT_RELS)
 
 
-def hygiene(db, damaged: tuple = ()) -> dict:
-    """what a case may not leave: problems found by sift.check, quarantines and errors of sift.health outside DAMAGED (oids), temporary files"""
+def checks(db, damaged: tuple = ()) -> dict:
+    """what a case may not leave in the database of DB: problems found by sift.check, quarantines and errors of sift.health outside DAMAGED (oids), failed maintenance"""
     skip = ','.join(damaged) or '0'
     problems = sum(int(db.val(f"SELECT count(*) FROM sift.check({r}::regclass, true)")) for r in sift_rels(db) if r not in damaged)
     q = int(db.val(f"SELECT count(*) FROM sift.quarantine WHERE index::oid {IN_CASE} AND index::oid NOT IN ({skip})"))
     health = int(db.val(f"SELECT count(*) FROM sift.health() WHERE severity = 'error' AND relation::oid {IN_CASE} AND relation::oid NOT IN ({skip})"))
     failures = int(db.val(f"SELECT coalesce(sum(maint_failures), 0) FROM sift.status() WHERE relation::oid {IN_CASE}"))
-    return {'verify_errors': problems, 'false_quarantines': q, 'health_errors': health, 'maint_failures': failures,
-            'tmp_files_left': int(db.val('SELECT count(*) FROM pg_ls_tmpdir()'))}
+    return {'verify_errors': problems, 'false_quarantines': q, 'health_errors': health, 'maint_failures': failures}
+
+
+def hygiene(db, damaged: tuple = ()) -> dict:
+    """checks() and the temporary files of the cluster: counts that add up"""
+    return dict(checks(db, damaged), tmp_files_left=int(db.val('SELECT count(*) FROM pg_ls_tmpdir()')))
 
 
 class LogScan:
-    """the crash and leak lines the server log gained since mark()"""
+    """the crash and leak lines the server logs PATHS gained since mark(); a log made anew since (a standby cloned again) is read from its start"""
 
-    def __init__(self, path: str):
-        self.path, self.at = path, 0
+    def __init__(self, paths: list):
+        self.paths, self.at = paths, {}
 
     def mark(self):
-        self.at = os.path.getsize(self.path) if self.path and os.path.exists(self.path) else 0
+        self.at = {p: (st.st_ino, st.st_size) for p in self.paths if (st := stat(p))}
+
+    def start(self, path: str, st: os.stat_result) -> int:
+        ino, size = self.at.get(path, (None, 0))
+        return size if st.st_ino == ino and st.st_size >= size else 0
 
     def findings(self) -> list:
-        if not self.path or not os.path.exists(self.path):
-            return []
-        with open(self.path, errors='replace') as f:
-            f.seek(self.at)
-            return [l.strip()[:200] for l in f if LEAKS.search(l)]
+        out = []
+        for p in self.paths:
+            if st := stat(p):
+                with open(p, errors='replace') as f:
+                    f.seek(self.start(p, st))
+                    out += [l.strip()[:200] for l in f if LEAKS.search(l)]
+        return out
+
+
+def stat(path: str) -> os.stat_result | None:
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
 
 
 # The workload and the ledger the cases share: the tables of the three engines from load_base_fact, a writer that keeps what it committed, and the checks of a ledger.
