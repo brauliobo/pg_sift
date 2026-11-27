@@ -4,10 +4,8 @@
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
-
 CREATE TYPE im_lvl3 AS ENUM ('lo', 'ok', 'hi');
 CREATE TABLE im (id int, g int, n38 numeric(38, 6), nf numeric, m money, iv interval, u uuid, b bytea, ip inet, ia int[], t time, e im_lvl3, i4 int) USING sift_table;
-
 CREATE FUNCTION im_rows(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -15,7 +13,6 @@ BEGIN
 	EXECUTE format('SELECT string_agg(x::text, E''\n'' ORDER BY x::text) FROM (%s) x', q) INTO r;
 	RETURN r;
 END $$;
-
 CREATE FUNCTION im_pushed(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
@@ -25,7 +22,6 @@ BEGIN
 	END LOOP;
 	RETURN false;
 END $$;
-
 CREATE TABLE im_q (q text);
 INSERT INTO im_q VALUES
 	('SELECT n38, count(*), sum(i4) FROM im GROUP BY n38'),
@@ -48,7 +44,6 @@ INSERT INTO im_q VALUES
 	('SELECT g, count(*) FROM im WHERE ia @> ARRAY[3] GROUP BY g'),
 	('SELECT g, count(*) FILTER (WHERE m > ''10.00''), count(*) FILTER (WHERE n38 > 100) FROM im GROUP BY g'),
 	('SELECT length(b) AS len, host(ip) AS h, count(*) FROM im GROUP BY 1, 2');
-
 CREATE FUNCTION im_compare(OUT query text, OUT pushed bool, OUT same bool) RETURNS SETOF record LANGUAGE plpgsql AS $$
 BEGIN
 	FOR query IN SELECT q FROM im_q ORDER BY q COLLATE "C" LOOP
@@ -57,7 +52,6 @@ BEGIN
 		RETURN NEXT;
 	END LOOP;
 END $$;
-
 INSERT INTO im SELECT i, i % 7, CASE WHEN i % 11 = 0 THEN NULL ELSE i * 1000000000000000.000001 / 10 END,
 	CASE WHEN i % 13 = 0 THEN 'NaN' WHEN i % 17 = 0 THEN NULL ELSE (i % 50) / 2.0 END,
 	CASE WHEN i % 19 = 0 THEN NULL ELSE ((i % 40) * 1.25)::numeric::money END,
@@ -93,7 +87,6 @@ SELECT * FROM im_compare();
  SELECT t, count(*) FROM im GROUP BY t                                                               | t      | t
  SELECT u, count(*) FROM im GROUP BY u                                                               | t      | t
 (20 rows)
-
 
 -- write buffer rows, tombstones and a segment that predates the columns
 VACUUM im;
@@ -177,7 +170,6 @@ SELECT * FROM im_compare();
  SELECT u, count(*) FROM im GROUP BY u                                                               | t      | t
 (20 rows)
 
-
 ALTER TABLE im ADD COLUMN m2 money DEFAULT '12.00';
 ALTER TABLE im ADD COLUMN u2 uuid DEFAULT '00000000-0000-0000-0000-00000000000a';
 ALTER TABLE im ADD COLUMN t2 time DEFAULT '01:02:03';
@@ -215,7 +207,6 @@ SELECT * FROM im_compare();
  SELECT t2, count(*) FROM im GROUP BY t2                                | t      | t
  SELECT u2, count(*) FROM im GROUP BY u2                                | t      | t
 (6 rows)
-
 
 DROP TABLE im, im_q;
 DROP TYPE im_lvl3;
