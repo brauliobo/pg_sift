@@ -24,7 +24,9 @@
 #include "parser/parser.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/rel.h"
+#include "core/catalog.h"
 #include "core/catname.h"
 #include "core/inspect.h"
 
@@ -73,32 +75,37 @@ index_holds_columns(Relation index, List *conjuncts)
 	return true;
 }
 
-/* The index is one of the table, and the caller may look at the table: a table or an index of another table is no answer for a filter */
+/* The index is a sift_col index of the table, and the caller may look at the table: another relation is no answer for a filter */
 static void
 require_index_of(Relation heap, Relation index)
 {
-	if (index->rd_rel->relkind != RELKIND_INDEX || index->rd_index->indrelid != RelationGetRelid(heap))
-		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not an index of \"%s\"", RelationGetRelationName(index), RelationGetRelationName(heap))));
+	if (index->rd_rel->relkind != RELKIND_INDEX || index->rd_rel->relam != sift_catalog()->col_am || index->rd_index->indrelid != RelationGetRelid(heap))
+		ereport(ERROR, (errcode(ERRCODE_WRONG_OBJECT_TYPE), errmsg("\"%s\" is not a sift_col index of \"%s\"", RelationGetRelationName(index), RelationGetRelationName(heap))));
 	if (!sift_may_inspect_as(GetOuterUserId(), RelationGetRelid(heap)))
 		aclcheck_error(ACLCHECK_NO_PRIV, OBJECT_TABLE, RelationGetRelationName(heap));
 }
 
-/* The filter is the text of a role: the functions it names run with the rights of the owner of the table, as those of an index predicate do, never with those of the caller */
+/* The filter is the text the owner of the table stored in sift.projections: its functions run with the rights of the owner and the search_path of a maintenance command,
+ * as those of an index predicate do. No role but the owner of the extension may call this function (sql/6.0/36-security-hardening.sql). */
 static bool
 served(Relation heap, Relation index, const char *text)
 {
 	Oid			uid;
 	int			sec;
+	int			nest;
 	List	   *pred;
 	List	   *filter;
 	bool		served;
 
 	GetUserIdAndSecContext(&uid, &sec);
 	SetUserIdAndSecContext(heap->rd_rel->relowner, sec | SECURITY_RESTRICTED_OPERATION);
+	nest = NewGUCNestLevel();
+	RestrictSearchPath();
 	pred = RelationGetIndexPredicate(index);
 	filter = filter_conjuncts(heap, text);
 	served = pred == NIL ? index_holds_columns(index, filter) :
 		predicate_implied_by(pred, filter, false) && (predicate_implied_by(filter, pred, false) || index_holds_columns(index, filter));
+	AtEOXact_GUC(false, nest);
 	SetUserIdAndSecContext(uid, sec);
 	return served;
 }

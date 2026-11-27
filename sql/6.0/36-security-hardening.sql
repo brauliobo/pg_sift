@@ -418,3 +418,21 @@ BEGIN
 		EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
 	END LOOP;
 END $$;
+
+-- The filter of sift.projection_filter_served runs with the rights of the owner of the table: only the definer functions that pass the filter the owner stored in sift.projections call it
+REVOKE EXECUTE ON FUNCTION sift.projection_filter_served(regclass, text, regclass) FROM PUBLIC;
+
+-- A definition locked for a change is the owner's: another role neither reads a projection of a table it may not look at nor holds the lock of one it does not own
+CREATE OR REPLACE FUNCTION sift._projection_get(pname text) RETURNS sift.projections
+	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+	p sift.projections;
+BEGIN
+	SELECT * INTO p FROM sift.projections x WHERE x.name = pname AND sift._may_inspect_outer(to_regclass(x.source));
+	IF FOUND THEN
+		PERFORM sift._require_owner(to_regclass(p.source));
+		SELECT * INTO p FROM sift.projections x WHERE x.name = pname FOR UPDATE;
+	END IF;
+	RETURN p;
+END $$;
+COMMENT ON FUNCTION sift._projection_get(text) IS 'Internal: a definition of sift.projections locked for a change, for the owner of its table; a row with no name for a table the caller may not look at';
