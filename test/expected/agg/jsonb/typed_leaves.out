@@ -1,6 +1,6 @@
 -- The `->>` text and the bool cast of a key whose leaf an index of format major 2 keeps as bool: SiftAggV6 reads the booleans from the leaf, and a value of another JSON type (a string, a number,
--- a container) from the exception of its row as `->>` gives it, cast as PostgreSQL casts it, its error raised for a row the statement keeps. The integer cast of the text of an int leaf stays the
--- normal plan: the leaf keeps the number 3.0 as 3, whose text PostgreSQL's int4 refuses. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- a container) from the exception of its row as `->>` gives it, cast as PostgreSQL casts it, its error raised for a row the statement keeps. The int4 cast of the text of an int leaf is read
+-- the same way: the leaf keeps a number with digits after its point (3.0) aside, whose text PostgreSQL's int4 refuses. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
 -- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -79,8 +79,8 @@ FROM (VALUES (1, 'tl'), (2, 'tl_text'), (3, 'tl_obj'), (4, 'tl_frac'), (5, 'tl_f
  tl      |  9 | text min max         | scan same why
  tl      | 10 | bool beside a filter | scan same why
  tl      | 11 | jsonb group key      | plain same
- tl      | 12 | int cast compare     | error: invalid input syntax for type integer: "3.5"
- tl      | 13 | int cast in          | error: invalid input syntax for type integer: "3.5"
+ tl      | 12 | int cast compare     | error: invalid input syntax for type integer: "3.5" why
+ tl      | 13 | int cast in          | error: invalid input syntax for type integer: "3.5" why
  tl      | 14 | int cast range       | error: invalid input syntax for type integer: "3.5"
  tl      | 15 | text of an int leaf  | plain same
  tl_text |  1 | group by text        | scan same why
@@ -94,8 +94,8 @@ FROM (VALUES (1, 'tl'), (2, 'tl_text'), (3, 'tl_obj'), (4, 'tl_frac'), (5, 'tl_f
  tl_text |  9 | text min max         | scan same why
  tl_text | 10 | bool beside a filter | scan same why
  tl_text | 11 | jsonb group key      | plain same
- tl_text | 12 | int cast compare     | error: invalid input syntax for type integer: "maybe"
- tl_text | 13 | int cast in          | error: invalid input syntax for type integer: "maybe"
+ tl_text | 12 | int cast compare     | error: invalid input syntax for type integer: "maybe" why
+ tl_text | 13 | int cast in          | error: invalid input syntax for type integer: "maybe" why
  tl_text | 14 | int cast range       | error: invalid input syntax for type integer: "maybe"
  tl_text | 15 | text of an int leaf  | plain same
  tl_obj  |  1 | group by text        | scan same why
@@ -109,8 +109,8 @@ FROM (VALUES (1, 'tl'), (2, 'tl_text'), (3, 'tl_obj'), (4, 'tl_frac'), (5, 'tl_f
  tl_obj  |  9 | text min max         | scan same why
  tl_obj  | 10 | bool beside a filter | scan same why
  tl_obj  | 11 | jsonb group key      | plain same
- tl_obj  | 12 | int cast compare     | error: invalid input syntax for type integer: "{"z": 1}"
- tl_obj  | 13 | int cast in          | error: invalid input syntax for type integer: "{"z": 1}"
+ tl_obj  | 12 | int cast compare     | error: invalid input syntax for type integer: "{"z": 1}" why
+ tl_obj  | 13 | int cast in          | error: invalid input syntax for type integer: "{"z": 1}" why
  tl_obj  | 14 | int cast range       | error: invalid input syntax for type integer: "{"z": 1}"
  tl_obj  | 15 | text of an int leaf  | plain same
  tl_frac |  1 | group by text        | scan same why
@@ -124,8 +124,8 @@ FROM (VALUES (1, 'tl'), (2, 'tl_text'), (3, 'tl_obj'), (4, 'tl_frac'), (5, 'tl_f
  tl_frac |  9 | text min max         | scan same why
  tl_frac | 10 | bool beside a filter | scan same why
  tl_frac | 11 | jsonb group key      | plain same
- tl_frac | 12 | int cast compare     | error: invalid input syntax for type integer: "3.0"
- tl_frac | 13 | int cast in          | error: invalid input syntax for type integer: "3.0"
+ tl_frac | 12 | int cast compare     | error: invalid input syntax for type integer: "3.0" why
+ tl_frac | 13 | int cast in          | error: invalid input syntax for type integer: "3.0" why
  tl_frac | 14 | int cast range       | error: invalid input syntax for type integer: "3.0"
  tl_frac | 15 | text of an int leaf  | plain same
  tl_f1   |  1 | group by text        | scan same why

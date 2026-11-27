@@ -1,6 +1,6 @@
 -- The `->>` text and the bool cast of a key whose leaf an index of format major 2 keeps as bool: SiftAggV6 reads the booleans from the leaf, and a value of another JSON type (a string, a number,
--- a container) from the exception of its row as `->>` gives it, cast as PostgreSQL casts it, its error raised for a row the statement keeps. The integer cast of the text of an int leaf stays the
--- normal plan: the leaf keeps the number 3.0 as 3, whose text PostgreSQL's int4 refuses. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- a container) from the exception of its row as `->>` gives it, cast as PostgreSQL casts it, its error raised for a row the statement keeps. The int4 cast of the text of an int leaf is read
+-- the same way: the leaf keeps a number with digits after its point (3.0) aside, whose text PostgreSQL's int4 refuses. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
 -- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;

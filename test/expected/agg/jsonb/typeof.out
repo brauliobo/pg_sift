@@ -194,8 +194,8 @@ SELECT * FROM t_compare();
   6 | t    | t      | (11825)
   7 | t    | t      | (1690,13526424)
   8 | t    | t      | (11825)
-  9 | t    | f      | (12689,57268279,16000)
- 10 | t    | f      | 
+  9 | t    | t      | (12689,57268279,16000)
+ 10 | t    | t      | 
  11 | t    | f      | (13655,616156900000000000,0)
  12 | t    | f      | 
  13 | t    | t      | (12900,6480)
@@ -208,7 +208,7 @@ SELECT * FROM t_compare();
  20 | t    | t      | (11825)
  21 | t    | t      | (13403)
  22 | t    | t      | (9377,5293016.875)
- 23 | t    | f      | (15,7.625,61)
+ 23 | t    | t      | (15,7.625,61)
  24 | t    | t      | (1,1543.125)
  25 | t    | t      | (3290)
  26 | t    | f      | (0)
@@ -228,7 +228,7 @@ SELECT * FROM t_compare();
  40 | t    | t      | (56)
  41 | t    | t      | (13836,110700557)
  42 | t    | t      | (12521,6672502.875)
- 43 | t    | f      | 
+ 43 | t    | t      | 
  44 | t    | t      | (2040)
  45 | t    | f      | (4364)
  46 | t    | f      | (1455)
@@ -382,7 +382,7 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  n  |  t_check   
 ----+------------
   1 | same
-  2 | not pushed
+  2 | same
   3 | same
   4 | same
   5 | same
@@ -423,7 +423,7 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
  n  |  t_check   
 ----+------------
   1 | same
-  2 | not pushed
+  2 | same
   3 | same
   8 | same
  12 | same
@@ -437,7 +437,7 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
  n  |  t_check   
 ----+------------
   1 | same
-  2 | not pushed
+  2 | same
   3 | same
   8 | same
  12 | same
@@ -459,7 +459,7 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n
  n  |  t_check   
 ----+------------
   1 | same
-  2 | not pushed
+  2 | same
   3 | same
   8 | same
  12 | same
@@ -492,7 +492,7 @@ SELECT n, t_check(q) FROM u_q ORDER BY n;
  n |  t_check   
 ---+------------
  1 | same
- 2 | not pushed
+ 2 | same
  3 | same
  4 | not pushed
  5 | not pushed
@@ -510,7 +510,7 @@ SELECT n, t_check(q) FROM u_q ORDER BY n;
  n |  t_check   
 ---+------------
  1 | same
- 2 | not pushed
+ 2 | same
  3 | same
  4 | not pushed
  5 | not pushed

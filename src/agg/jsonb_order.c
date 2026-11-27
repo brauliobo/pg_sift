@@ -1,5 +1,5 @@
 /*
- * agg/jsonb_order.c - where the scan may raise the error of `(doc ->> 'key')::float8` (or `::bool`) for a row whose key holds a text that is no number (no boolean) or a container (the leaf of the key cannot
+ * agg/jsonb_order.c - where the scan may raise the error of `(doc ->> 'key')::float8` (or `::bool`, `::int4`) for a row whose key holds a text that is no number (no boolean) or a container (the leaf of the key cannot
  * hold it: the scan reads it from the exception of its chunk and converts it as PostgreSQL does). PostgreSQL raises only for a row that reaches the cast: one that the conditions of the WHERE it tests
  * before, which its own plan orders by cost and then by position, keep. The scan decides its scan keys on every row first and converts the others on the rows they keep, so it raises for the same rows
  * only when no other condition of the statement can drop a row after the cast has run; a format that raises only for the rows its batch quals keep (SiftJsonbOps.raise_after_quals) lets those run too.
@@ -25,7 +25,7 @@ raising_attno(int attno)
 static bool
 raising_col(const SiftV6Col *c)
 {
-	return c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID);
+	return c->jleaf > 0 && !c->jtype && raising_attno(sift_v6_col_input_attno(c));
 }
 
 /* the FILTER of the aggregate is the presence of the one key it reads a value of that raises: a row the FILTER drops has not the key, so no value to convert */
