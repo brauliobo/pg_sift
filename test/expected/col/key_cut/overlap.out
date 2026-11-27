@@ -37,13 +37,15 @@ BEGIN
 	RETURN true;
 END $$;
 CREATE FUNCTION ko_units() RETURNS text LANGUAGE sql AS $$
-	SELECT sift_helpers.plan_units_lines('SELECT count(*), sum(amount) FROM ko WHERE tenant_id = 42') $$;
+	SELECT sift_helpers.plan_granules_lines('SELECT count(*), sum(amount) FROM ko WHERE tenant_id = 42') $$;
+CREATE FUNCTION ko_plan() RETURNS text LANGUAGE sql AS $$
+	SELECT sift_helpers.plan_text('SELECT count(*), sum(amount) FROM ko WHERE tenant_id = 42', true) $$;
 SET enable_seqscan = off; SET enable_bitmapscan = off; SET enable_indexscan = off;
 -- a key is read in a unit of each run, and the rewrite is due though no segment is a small overlay or holds a dead row; the WAL budget of the churn does not hold it
 SELECT ko_units() AS before;
-                      before                      
---------------------------------------------------
-  Units: 4 read, 12 pruned, 4 from pre-aggregates
+                           before                           
+------------------------------------------------------------
+  Granules: scanned=0 pruned_zone=12 pruned_skip=0 preagg=4
 (1 row)
 
 SELECT ko_same() AS same_before;
@@ -72,8 +74,8 @@ SELECT sift.col_verify('ko_idx', true);
 (1 row)
 
 -- a key is in one partition and the read opens that one alone: the units it opens are no more than the units of the largest segment, however the rewrite cut them (the cuts fall at the bytes of the units, which the compressor of the host moves by a unit)
-SELECT m[1]::int AS read, m[1]::int + m[2]::int <= (SELECT max(units) FROM sift.col_segments('ko_idx') WHERE kind = 'immutable') AS one_partition
-FROM (SELECT regexp_match(ko_units(), '(\d+) read, (\d+) pruned') AS m) x;
+SELECT sift_helpers.plan_granules_read(p) AS read, sift_helpers.plan_granules_read(p) + sift_helpers.plan_granules_pruned(p) <= (SELECT max(units) FROM sift.col_segments('ko_idx') WHERE kind = 'immutable') AS one_partition
+FROM ko_plan() p;
  read | one_partition 
 ------+---------------
     1 | t
@@ -98,6 +100,6 @@ SELECT sift.col_maintain('ko_idx') AS rewritten_again;
 (1 row)
 
 DROP TABLE ko;
-DROP FUNCTION ko_same(), ko_units();
+DROP FUNCTION ko_same(), ko_units(), ko_plan();
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

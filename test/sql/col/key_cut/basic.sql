@@ -2,6 +2,7 @@
 -- addresses of their rows. A lookup or a range of the key reads the units of its range whatever the order of the heap; the rows are those of the normal plan after
 -- rows in a write buffer, a promotion, deletes and updates, VACUUM, a merge, a refresh and a REINDEX; a lowered sift.test_col_format_minor writes superblock units again.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 -- Format 1: key_cut segments are Format 1; Format 2.0 ignores key_cut.
 SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
@@ -26,7 +27,7 @@ SELECT kind, format, units <= 20 AS superblock_units FROM sift.col_segments('kc_
 SELECT kind, format FROM sift.col_segments('kp_idx') WHERE kind = 'immutable';
 
 CREATE FUNCTION kchk(step text) RETURNS TABLE (after_step text, shape text, result text) LANGUAGE plpgsql AS $$
-DECLARE r record; a text; b text; u text; l text; q text;
+DECLARE r record; a text; b text; u text; q text;
 BEGIN
 	FOR r IN SELECT * FROM (VALUES
 		('one customer', 'SELECT count(*), sum(amount), min(id) FROM kc WHERE cust = 42'),
@@ -36,10 +37,8 @@ BEGIN
 		('other column', 'SELECT count(*), sum(amount) FROM kc WHERE amount = 5'),
 		('top-N by key', 'SELECT id, cust, d FROM kc ORDER BY cust, d, id LIMIT 5')) v(s, qq)
 	LOOP
-		q := r.qq; u := '';
-		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
-		END LOOP;
+		q := r.qq;
+		u := sift_helpers.plan_granules_lines(q);
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO a;
 		SET LOCAL sift.enable_agg = off;
 		EXECUTE format('SELECT string_agg(x::text, E'';'') FROM (%s) x', q) INTO b;
@@ -52,14 +51,7 @@ END $$;
 
 SELECT * FROM kchk('built');
 -- the same customer in the index with superblock units: the random heap puts its rows in every unit
-CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; u text := '';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' THEN u := u || ' ' || trim(l); END IF;
-	END LOOP;
-	RETURN trim(u);
-END $$;
+CREATE FUNCTION kunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT trim(sift_helpers.plan_granules_lines(q)) $$;
 SELECT kunits('SELECT count(*), sum(amount) FROM kp WHERE cust = 42') AS superblock_units;
 INSERT INTO kc SELECT 200000 + i, 42, date '2026-04-01', 7, 'y' FROM generate_series(1, 30) i;
 SELECT * FROM kchk('write buffer');
@@ -154,4 +146,5 @@ DROP TABLE kw, kn;
 
 DROP FUNCTION kchk(text), kunits(text);
 DROP TABLE kc, kp;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

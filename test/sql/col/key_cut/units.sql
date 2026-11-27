@@ -24,7 +24,8 @@ SELECT sift.col_verify('nk_idx', true);
 -- no more than twice the units of the page cut
 SELECT (SELECT sum(units) FROM sift.col_segments('nk_idx') WHERE kind = 'immutable') <= 2 * (SELECT sum(units) FROM sift.col_segments('nu_idx') WHERE kind = 'immutable') AS units_within_twice;
 
-CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
+-- the granules the engine reads for the statement, also where an index scan costs less (a lookup of one key)
+CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql SET sift.agg_force = on AS $$ SELECT sift_helpers.plan_granules_lines(q) $$;
 
 -- whole-table sum and a group by of a column the cube holds: every unit from the pre-aggregates, in both
 SELECT 'page cut' AS index, nunits('SELECT sum(amt) FROM nu') AS sum_units UNION ALL SELECT 'key cut', nunits('SELECT sum(amt) FROM nk');

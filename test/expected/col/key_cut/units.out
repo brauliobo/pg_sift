@@ -31,20 +31,21 @@ SELECT (SELECT sum(units) FROM sift.col_segments('nk_idx') WHERE kind = 'immutab
  t
 (1 row)
 
-CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_units_lines(q) $$;
+-- the granules the engine reads for the statement, also where an index scan costs less (a lookup of one key)
+CREATE FUNCTION nunits(q text) RETURNS text LANGUAGE sql SET sift.agg_force = on AS $$ SELECT sift_helpers.plan_granules_lines(q) $$;
 -- whole-table sum and a group by of a column the cube holds: every unit from the pre-aggregates, in both
 SELECT 'page cut' AS index, nunits('SELECT sum(amt) FROM nu') AS sum_units UNION ALL SELECT 'key cut', nunits('SELECT sum(amt) FROM nk');
-  index   |                       sum_units                       
-----------+-------------------------------------------------------
- page cut |  Units: 9 read, 9 from pre-aggregates, 2 superunits
- key cut  |  Units: 13 read, 13 from pre-aggregates, 3 superunits
+  index   |                         sum_units                          
+----------+------------------------------------------------------------
+ page cut |  Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=9
+ key cut  |  Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=13
 (2 rows)
 
 SELECT 'page cut' AS index, nunits('SELECT q, count(*), sum(amt) FROM nu GROUP BY 1') AS group_units UNION ALL SELECT 'key cut', nunits('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1');
-  index   |                      group_units                      
-----------+-------------------------------------------------------
- page cut |  Units: 9 read, 9 from pre-aggregates, 2 superunits
- key cut  |  Units: 13 read, 13 from pre-aggregates, 3 superunits
+  index   |                        group_units                         
+----------+------------------------------------------------------------
+ page cut |  Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=9
+ key cut  |  Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=13
 (2 rows)
 
 -- the same answers as the page cut and as the normal plan
@@ -57,15 +58,15 @@ SELECT (SELECT sum(amt) FROM nk) = (SELECT sum(amt) FROM nu) AS sum_same,
 
 -- a lookup of the key reads one unit or two
 SELECT nunits('SELECT count(*), sum(amt) FROM nk WHERE cust = 4242') AS lookup_units;
-                   lookup_units                   
---------------------------------------------------
-  Units: 1 read, 12 pruned, 0 from pre-aggregates
+                   lookup_units                    
+---------------------------------------------------
+  Granules: scanned=1 pruned_zone=12 pruned_skip=0
 (1 row)
 
 SELECT nunits('SELECT count(*), sum(amt) FROM nk WHERE cust IN (7, 9000, 19999)') AS list_units;
-                    list_units                    
---------------------------------------------------
-  Units: 3 read, 10 pruned, 0 from pre-aggregates
+                    list_units                     
+---------------------------------------------------
+  Granules: scanned=3 pruned_zone=10 pruned_skip=0
 (1 row)
 
 SELECT (SELECT count(*) || ' ' || sum(amt) FROM nk WHERE cust = 4242) = (SELECT count(*) || ' ' || sum(amt) FROM nu WHERE cust = 4242) AS lookup_same;
@@ -135,9 +136,9 @@ SELECT (SELECT sum(amt) FROM nk) = (SELECT sum(amt) FROM nu) AS sum_same,
 (1 row)
 
 SELECT nunits('SELECT sum(amt) FROM nk') AS sum_units_after;
-                    sum_units_after                    
--------------------------------------------------------
-  Units: 12 read, 12 from pre-aggregates, 3 superunits
+                      sum_units_after                       
+------------------------------------------------------------
+  Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=12
 (1 row)
 
 DROP FUNCTION nunits(text);

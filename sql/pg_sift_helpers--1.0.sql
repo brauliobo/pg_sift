@@ -284,8 +284,9 @@ BEGIN
 	PERFORM sift_helpers.set_arm(true);
 	RETURN coalesce((SELECT string_agg(trim(l), '' ORDER BY n) FROM regexp_split_to_table(sift_helpers.plan_text(q), E'\n') WITH ORDINALITY t(l, n) WHERE l LIKE '%Group Keys:%'), '');
 END $$;
-CREATE FUNCTION sift_helpers.plan_units_lines(q text) RETURNS text LANGUAGE sql AS $$
-	SELECT coalesce(string_agg(' ' || trim(l), '' ORDER BY n), '') FROM regexp_split_to_table(sift_helpers.plan_text(q, true), E'\n') WITH ORDINALITY t(l, n) WHERE l LIKE '%Units: %' $$;
+-- plan_granules_lines: the Granules lines of the SiftAggV6 nodes of an EXPLAIN ANALYZE (read, pruned and answered from the pre-aggregates), one after the other
+CREATE FUNCTION sift_helpers.plan_granules_lines(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT coalesce(string_agg(' ' || trim(l), '' ORDER BY n), '') FROM regexp_split_to_table(sift_helpers.plan_text(q, true), E'\n') WITH ORDINALITY t(l, n) WHERE l ~ '^ *Granules: ' $$;
 CREATE FUNCTION sift_helpers.plan_units_and_rows_lines(q text) RETURNS SETOF text LANGUAGE sql AS $$
 	SELECT trim(l) FROM regexp_split_to_table(sift_helpers.plan_text(q, true), E'\n') WITH ORDINALITY t(l, n) WHERE l ~ '^ *(Units|Rows):' ORDER BY n $$;
 CREATE FUNCTION sift_helpers.plan_heap_rereads_forced_on(q text) RETURNS bigint LANGUAGE plpgsql AS $$
