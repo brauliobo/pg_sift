@@ -675,6 +675,7 @@ TESTING_REGRESS += core/range
 TESTING_REGRESS += core/ring_wrap
 TESTING_REGRESS += core/scaling_ops_gate
 TESTING_REGRESS += core/shm_ledger
+TESTING_REGRESS += core/shm_ledger_exit
 TESTING_REGRESS += core/shm_manifest
 TESTING_REGRESS += core/shm_vm_uniq_%
 TESTING_REGRESS += core/spool

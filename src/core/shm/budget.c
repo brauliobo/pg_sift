@@ -195,23 +195,30 @@ return_credits(int code, Datum arg)
 		}
 }
 
-static bool
-draw_credit(SiftShmLedger *l, SiftShmPoolId pool, Size bytes)
+/* The credit of the backend grows: by a batch it draws, or by bytes it releases (that another backend may have reserved); the ledger gets it back when the backend exits */
+static int64
+credit(SiftShmPoolId pool, int64 bytes)
 {
-	Size		draw = SIFT_SHM_BATCH_BYTES;
-
 	if (!exit_registered)
 	{
 		before_shmem_exit(return_credits, 0);
 		exit_registered = true;
 	}
+	return local_credit[pool] += bytes;
+}
+
+static bool
+draw_credit(SiftShmLedger *l, SiftShmPoolId pool, Size bytes)
+{
+	Size		draw = SIFT_SHM_BATCH_BYTES;
+
 	if (!ledger_take(l, pool, draw))
 	{
 		draw = bytes - (Size) local_credit[pool];
 		if (!ledger_take(l, pool, draw))
 			return false;
 	}
-	local_credit[pool] += draw;
+	credit(pool, draw);
 	return true;
 }
 
@@ -245,7 +252,7 @@ sift_shm_release(SiftShmPoolId pool, Size bytes)
 		return;
 	if (bytes >= SIFT_SHM_BATCH_BYTES)
 		ledger_give(l, pool, bytes);
-	else if ((local_credit[pool] += bytes) >= 2 * (int64) SIFT_SHM_BATCH_BYTES)
+	else if (credit(pool, bytes) >= 2 * (int64) SIFT_SHM_BATCH_BYTES)
 	{
 		ledger_give(l, pool, local_credit[pool] - SIFT_SHM_BATCH_BYTES);
 		local_credit[pool] = SIFT_SHM_BATCH_BYTES;
