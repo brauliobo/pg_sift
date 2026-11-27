@@ -196,8 +196,8 @@ SELECT * FROM t_compare();
   8 | t    | t      | (11825)
   9 | t    | t      | (12689,57268279,16000)
  10 | t    | t      | 
- 11 | t    | f      | (13655,616156900000000000,0)
- 12 | t    | f      | 
+ 11 | t    | t      | (13655,616156900000000000,0)
+ 12 | t    | t      | 
  13 | t    | t      | (12900,6480)
  14 | t    | t      | (v3,3225)
  15 | t    | t      | 
@@ -400,7 +400,7 @@ SELECT n, t_check(q) FROM e_q ORDER BY n;
  17 | same
  18 | same
  19 | same
- 20 | not pushed
+ 20 | same
  21 | same
  22 | same
  23 | same
@@ -420,28 +420,28 @@ SELECT t_check('SELECT sum((attrs->>''m'')::float8) FROM e WHERE grp = 1') AS un
 -- a deleted row is not selected; a row written after the index was built is in the write buffer, and a row updated into one is
 DELETE FROM e WHERE id = 7001;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |  t_check   
-----+------------
+ n  | t_check 
+----+---------
   1 | same
   2 | same
   3 | same
   8 | same
  12 | same
- 20 | not pushed
+ 20 | same
  21 | same
  24 | same
 (8 rows)
 
 UPDATE e SET attrs = '{"m": "x", "n": 1.5}' WHERE id = 7002;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |  t_check   
-----+------------
+ n  | t_check 
+----+---------
   1 | same
   2 | same
   3 | same
   8 | same
  12 | same
- 20 | not pushed
+ 20 | same
  21 | same
  24 | same
 (8 rows)
@@ -456,14 +456,14 @@ SELECT n, t_check(q) FROM e_q WHERE n IN (1) ORDER BY n;
 DELETE FROM e WHERE id IN (7002, 7003);
 VACUUM e;
 SELECT n, t_check(q) FROM e_q WHERE n IN (1, 2, 3, 8, 12, 20, 21, 24) ORDER BY n;
- n  |  t_check   
-----+------------
+ n  | t_check 
+----+---------
   1 | same
   2 | same
   3 | same
   8 | same
  12 | same
- 20 | not pushed
+ 20 | same
  21 | same
  24 | same
 (8 rows)
@@ -495,7 +495,7 @@ SELECT n, t_check(q) FROM u_q ORDER BY n;
  2 | same
  3 | same
  4 | not pushed
- 5 | not pushed
+ 5 | same
 (5 rows)
 
 SELECT sift.col_verify('u_col', true);
@@ -513,7 +513,7 @@ SELECT n, t_check(q) FROM u_q ORDER BY n;
  2 | same
  3 | same
  4 | not pushed
- 5 | not pushed
+ 5 | same
 (5 rows)
 
 SELECT sift.col_verify('u_col', true);

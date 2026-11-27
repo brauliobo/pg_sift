@@ -206,7 +206,7 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 
 	if (cv->xpay == NULL)
 		return NULL;
-	if (c->cls == SV6C_I64)
+	if (c->cls == SV6C_I64 && !c->jint)
 	{
 		fill_held(s, c, cv, off, n);
 		return NULL;
@@ -220,7 +220,7 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 		if (!is_exception(cv, r) || !((s->bs.mask[i >> 6] >> (i & 63)) & 1))
 			continue;
 		SIFT_INVARIANT(cv->xpay[r] != NULL, "a value a leaf of a JSON key could not hold has its payload");
-		res = sift_v6_json_exception_read(c->cls, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx, &val);
+		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx, &val);
 		if (res == SV6JX_RAISES)
 		{
 			raises = raises != NULL ? raises : MemoryContextAllocZero(s->batch_cx, SIFT_VEC_WORDS * sizeof(uint64));
@@ -233,7 +233,7 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 		else if (c->cls == SV6C_F64)
 			((double *) v->data)[i] = DatumGetFloat8(val.value);
 		else
-			((int64 *) v->data)[i] = c->cls == SV6C_I32 ? DatumGetInt32(val.value) : DatumGetBool(val.value);
+			((int64 *) v->data)[i] = sift_v6_json_int(c->typid, val.value);
 		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
 	}
 	return raises;
@@ -249,7 +249,7 @@ reads_attno(Node *n, void *attno)
 static bool
 quals_read(const V6Scan *s, const V6Col *c)
 {
-	int			attno = sift_v6_jvatt_base(false, c->typid) + c->leaf;
+	int			attno = sift_v6_jvatt_base(false, c->jint, c->typid) + c->leaf;
 
 	return !c->jsonb_cast && reads_attno((Node *) s->spec->vqual, &attno);
 }
@@ -278,7 +278,7 @@ sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, in
 			{
 				const int	r = off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]);
 
-				sift_v6_json_exception_raise(c->cls, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx);
+				sift_v6_json_exception_raise(c->typid, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx);
 			}
 	}
 }

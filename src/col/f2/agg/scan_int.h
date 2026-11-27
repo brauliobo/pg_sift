@@ -31,6 +31,7 @@ typedef struct V6Col
 	bool		json;
 	bool		jtype;			/* json: the column is the JSON type of the key (SiftV6Col.jtype), not its value */
 	bool		jsonb_cast;		/* json: SiftV6Col.jsonb_cast, a value of the exception that is no number raises */
+	bool		jint;			/* json: SiftV6Col.jint, the integer cast of the text of an integer leaf */
 	uint8		jbase;			/* jtype: the SIFT_COLTAG_* of a row that holds a value of the leaf (a number, a string, a boolean) */
 	Oid			typid;
 	SiftV6Class cls;

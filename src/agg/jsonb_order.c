@@ -32,7 +32,7 @@ raising_attno(int attno)
 static int
 raising_read(const SiftV6Spec *s, const SiftV6Col *c)
 {
-	if (c->jleaf > 0 && !c->jtype && raising_attno(sift_v6_col_input_attno(c)))
+	if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID || c->jint))
 		return c->jleaf - 1;
 	return c->src == SV6SRC_ELEM && s->ext != NULL && s->ext->elem.fn == SV6E_KEYS ? SIFT_V6_ELEM_VATT + c->slot : -1;
 }

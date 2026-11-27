@@ -1,6 +1,6 @@
 -- A JSON number with digits after its point (3.0) is no integer to the input function of an integer type: `(e ->> 'qty')::int4` of a member, `value::int4` of jsonb_each_text and an int4
 -- column of jsonb_to_recordset raise 22P02 for it, and the integer leaves of the index do not hold it, on both formats. The cast of the jsonb (jsonb_each) rounds it, as PostgreSQL does, and
--- a number with no digits after its point (1e2) is an integer.
+-- a number with no digits after its point (1e2) is an integer. The integer cast of the `->>` text of an integer key reads the leaf and casts the others from their text.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -23,6 +23,26 @@ INSERT INTO q VALUES
 	(5, $$SELECT sum((e ->> 'qty')::int4) FROM iq t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'parts') e WHERE t.id <> 9001$$);
 SELECT n, left(outcome(sql, true), 60) AS scan, outcome(sql, false) = outcome(sql, true) AS same, runs_in_scan(sql) AS pushed FROM q ORDER BY n;
 
-DROP TABLE q, iq;
+-- `(doc ->> 'k')::int2/int4/int8` of a key with an integer leaf reads the leaf; a row the leaf could not hold (3.0, a string of digits, a string that is no number, 4.5, a boolean, a
+-- number past int4) is cast from its text as PostgreSQL does: an integer where the text is one, the error of the input function where the row is kept, nothing where a condition drops it
+CREATE TABLE ik (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ik SELECT i, i % 7, jsonb_build_object('k', i % 50, 'w', i % 9) FROM generate_series(1, 3000) i;
+INSERT INTO ik VALUES (9001, 7, '{"k": 3.0, "w": 1}'), (9002, 8, '{"k": "12", "w": 2}'), (9003, 9, '{"k": "abc", "w": 3}'), (9004, 10, '{"k": 4.5, "w": 4}'),
+	(9005, 11, '{"k": true, "w": 5}'), (9006, 12, '{"k": null, "w": 6}'), (9007, 13, '{"w": 7}'), (9008, 14, '{"k": 1e2, "w": 30000000000}');
+CREATE INDEX ik_col ON ik USING sift_col (id, g, doc) WITH (paths = 'doc->k int4, doc->w int8');
+VACUUM (FREEZE, ANALYZE) ik;
+TRUNCATE q;
+INSERT INTO q VALUES
+	(1, $$SELECT g, sum((doc ->> 'k')::int4), count((doc ->> 'k')::int) FROM ik WHERE g < 7 OR g IN (8, 12, 13, 14) GROUP BY g$$),
+	(2, $$SELECT (doc ->> 'k')::int8 AS k, count(*) FROM ik WHERE g IN (0, 8, 14) GROUP BY 1$$),
+	(3, $$SELECT sum((doc ->> 'k')::int4) FROM ik WHERE g <> 9$$),
+	(4, $$SELECT sum((doc ->> 'k')::int4) FROM ik WHERE g <> 7$$),
+	(5, $$SELECT sum((doc ->> 'k')::int2) FROM ik WHERE g < 7$$),
+	(6, $$SELECT max((doc ->> 'w')::int8), sum((doc ->> 'w')::int8) FROM ik$$),
+	(7, $$SELECT count(*) FROM ik WHERE (doc ->> 'k')::int4 > 40 AND g NOT IN (7, 9, 10, 11)$$),
+	(8, $$SELECT sum((doc ->> 'k')::int4) FROM ik WHERE g = 11$$);
+SELECT n, left(outcome(sql, true), 60) AS scan, outcome(sql, false) = outcome(sql, true) AS same, runs_in_scan(sql) AS pushed FROM q ORDER BY n;
+
+DROP TABLE q, iq, ik;
 DROP FUNCTION runq(text, bool), pushed(text), outcome(text, bool), runs_in_scan(text);
 DROP EXTENSION pg_sift;

@@ -363,17 +363,32 @@ jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
 	return !SIFT_JSON_NULL_CAST_RAISES && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
 }
 
+static bool
+is_int_type(Oid typid)
+{
+	return typid == INT2OID || typid == INT4OID || typid == INT8OID;
+}
+
+/* the integers of a leaf of the type are integers of the cast's type */
+static bool
+int_leaf_fits(const SiftColDef *d, Oid typid)
+{
+	const int	width = typid == INT2OID ? SIFT_COLT_INT2 : typid == INT4OID ? SIFT_COLT_INT4 : SIFT_COLT_INT8;
+
+	return d->store == SIFT_COLS_INT && d->type >= SIFT_COLT_INT2 && d->type <= width;
+}
+
 /*
- * The leaf holds what the column reads: the strings of a text key, the numbers of a float8 key, the booleans of a bool key, the integers of an int2 or int4 key; the `->>` text of a boolean, its bool
- * cast and the int4 cast of the `->>` text of an integer are read from their leaf only by a format whose scan reads the other values from the exceptions of their rows (a value of another JSON type
- * is one, and so is a number with digits after its point), as `->>` gives them
+ * The leaf holds what the column reads: the strings of a text key, the numbers of a float8 key, the booleans of a bool key, the integers of an integer key (the writer keeps a number whose text is
+ * no integer, 3.0, aside); the `->>` text of a boolean and the bool and integer casts are read only by a format whose scan reads the other values from the exceptions of their rows (a value of
+ * another JSON type is one), as `->>` gives them
  */
 static bool
 leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 {
 	const SiftColDef *d = &sift_v6_rel_leaves(rel)->cols[leaf];
-	const bool	int_leaf = d->store == SIFT_COLS_INT && rel->ops->jsonb->exact_values;
-	const bool	bool_leaf = int_leaf && d->type == SIFT_COLT_BOOL;
+	const bool	exact = rel->ops->jsonb->exact_values;
+	const bool	bool_leaf = d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL && exact;
 
 	switch (typid)
 	{
@@ -381,18 +396,13 @@ leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 			return d->store == SIFT_COLS_F8;
 		case BOOLOID:
 			return bool_leaf;
+		case INT2OID:
 		case INT4OID:
-			return int_leaf && (d->type == SIFT_COLT_INT2 || d->type == SIFT_COLT_INT4);
+		case INT8OID:
+			return exact && int_leaf_fits(d, typid);
 		default:
 			return d->store == SIFT_COLS_STR || bool_leaf;
 	}
-}
-
-/* the type of a cast of the `->>` text a leaf is read as */
-static bool
-text_cast_read(Oid typid)
-{
-	return typid == FLOAT8OID || typid == BOOLOID || typid == INT4OID;
 }
 
 bool
@@ -405,7 +415,8 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 				leaf;
 	Oid			typid = TEXTOID;
 
-	if (cast || (text != NULL && IsA(text, CoerceViaIO) && text_cast_read(((const CoerceViaIO *) text)->resulttype)))
+	if (cast || (text != NULL && IsA(text, CoerceViaIO) && (((const CoerceViaIO *) text)->resulttype == FLOAT8OID || ((const CoerceViaIO *) text)->resulttype == BOOLOID ||
+										  is_int_type(((const CoerceViaIO *) text)->resulttype))))
 	{
 		typid = cast ? FLOAT8OID : ((const CoerceViaIO *) text)->resulttype;
 		text = strip(cast ? linitial(args_of(text)) : (void *) ((const CoerceViaIO *) text)->arg);
@@ -413,7 +424,7 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 	leaf = field_leaf(rel, text, !cast, &att, &key);
 	if (!scalar_leaf(rel, leaf) || !sift_v6_values_exact(rel) || !leaf_reads(rel, leaf, typid))
 		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = cast};
+	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = cast,.jint = is_int_type(typid)};
 	return true;
 }
 
@@ -521,7 +532,7 @@ note_col(JsonLeaves *j, const SiftV6Col *c)
 {
 	if (c->jleaf > 0 && c->jtype && c->typid != BOOLOID)
 		j->type = bms_add_member(j->type, c->jleaf - 1);
-	else if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID))
+	else if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID || c->jint))
 		j->value = bms_add_member(j->value, c->jleaf - 1);
 }
 
@@ -707,38 +718,44 @@ cast_number_text(const char *payload, uint32 len, bool *raises)
 	return scalar && jv.type == jbvNumeric ? DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(jv.val.numeric))) : NULL;
 }
 
-/* the input function of the cast of the `->>` text of a value of the class */
+/* the input function of the cast of the `->>` text to the type */
 static PGFunction
-cast_in(SiftV6Class cls)
+text_cast_in(Oid typid)
 {
-	return cls == SV6C_F64 ? float8in : cls == SV6C_I32 ? int4in : boolin;
+	switch (typid)
+	{
+		case FLOAT8OID:
+			return float8in;
+		case INT2OID:
+			return int2in;
+		case INT4OID:
+			return int4in;
+		case INT8OID:
+			return int8in;
+		default:
+			return boolin;
+	}
 }
 
 SiftV6JsonExc
-sift_v6_json_exception_read(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out)
+sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out)
 {
-	MemoryContext old;
+	MemoryContext old = MemoryContextSwitchTo(cx);
 	ErrorSaveContext escontext = {T_ErrorSaveContext};
 	bool		raises = false;
-	char	   *s;
-	SiftV6JsonExc res;
+	char	   *s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
+	SiftV6JsonExc res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
 
-	if (cls == SV6C_I64)
-		return SV6JX_NULL;
-	old = MemoryContextSwitchTo(cx);
-	s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
-	res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
-
-	if (res == SV6JX_VALUE && cls == SV6C_TEXT)
+	if (res == SV6JX_VALUE && sift_v6_class(typid) == SV6C_TEXT)
 		*out = (SiftV6JsonValue) {.text = s,.tlen = strlen(s)};
-	else if (res == SV6JX_VALUE && !DirectInputFunctionCallSafe(cast_in(cls), s, InvalidOid, -1, (Node *) &escontext, &out->value))
+	else if (res == SV6JX_VALUE && !DirectInputFunctionCallSafe(text_cast_in(typid), s, InvalidOid, -1, (Node *) &escontext, &out->value))
 		res = SV6JX_RAISES;
 	MemoryContextSwitchTo(old);
 	return res;
 }
 
 void
-sift_v6_json_exception_raise(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx)
+sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	char	   *s;
@@ -746,7 +763,7 @@ sift_v6_json_exception_raise(SiftV6Class cls, bool jsonb_cast, const char *paylo
 	if (jsonb_cast)
 		(void) sift_v6_json_cast_exception(payload, len, cx);
 	else if ((s = exception_text(payload, len)) != NULL)
-		(void) DirectFunctionCall1(cast_in(cls), CStringGetDatum(s));
+		(void) DirectFunctionCall1(text_cast_in(typid), CStringGetDatum(s));
 	MemoryContextSwitchTo(old);
 	SIFT_INVARIANT(false, "the conversion of a value of a key that does not convert raises");
 }

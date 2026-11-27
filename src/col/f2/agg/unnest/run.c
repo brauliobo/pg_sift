@@ -8,6 +8,7 @@
 #include "nodes/nodeFuncs.h"
 
 #include "agg/qual/qual.h"
+#include "col/shred/pg.h"
 #include "col/am/preds.h"
 #include "col/f2/agg/unnest/int.h"
 #include "col/f2/agg/unnest/run.h"
@@ -61,12 +62,13 @@ sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool
 	const SiftF2Rel *f = sift_f2_rel(u->index);
 
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].leaf == leaf && u->cols[i].month == month)
+		if (u->cols[i].leaf == leaf && u->cols[i].month == month && u->cols[i].jint == c->jint)
 			return i;
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = c->typid == BPCHAROID ? SV6C_TEXT : sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.read = true};
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = c->typid == BPCHAROID ? SV6C_TEXT : sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.typid = c->typid,
+		.jint = c->jint || sift_v6_vatt_is_int_cast(c->attno),.read = true};
 	if (f->key_leaf[leaf])
 	{
 		u->cols[u->ncols].json = true;
@@ -322,18 +324,25 @@ json_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		for (uint64 bits = bs->mask[w] & ~u->jvalid[i][w]; bits != 0; bits &= bits - 1)
 		{
 			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
-			const char *text = NULL;
-			uint32		tlen = 0,
-						len;
-			double		f = 0;
+			uint32		len;
 			const char *payload = sift_f2_pull_payload(u->pull, i, r, &len);
+			const Oid	typid = u->cols[i].cls == SV6C_TEXT ? TEXTOID : u->cols[i].typid;
+			const bool	held = u->cols[i].cls == SV6C_I64 && !u->cols[i].jint;
+			SiftV6JsonValue val;
+			SiftV6JsonExc res = payload == NULL || held ? SV6JX_NULL : sift_v6_json_exception_read(typid, false, payload, len, u->bcx, &val);
 
-			if (payload == NULL || !sift_v6_json_exception(u->cols[i].cls, payload, len, u->bcx, &text, &tlen, &f))
+			if (res == SV6JX_RAISES)
+				sift_v6_json_exception_raise(typid, false, payload, len, u->bcx);
+			if (held && payload != NULL && sift_shred_held_int(payload, len, &((int64 *) u->jdata[i])[r]))
+				u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+			if (res != SV6JX_VALUE)
 				continue;
 			if (u->cols[i].cls == SV6C_F64)
-				((double *) u->jdata[i])[r] = f;
+				((double *) u->jdata[i])[r] = DatumGetFloat8(val.value);
+			else if (u->cols[i].cls == SV6C_TEXT)
+				((SiftStrView *) u->jdata[i])[r] = sift_vstr_make(val.text, val.tlen);
 			else
-				((SiftStrView *) u->jdata[i])[r] = sift_vstr_make(text, tlen);
+				((int64 *) u->jdata[i])[r] = sift_v6_json_int(typid, val.value);
 			u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
 		}
 	u->fv[i].data = u->jdata[i];

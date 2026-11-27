@@ -188,10 +188,11 @@ exception_member(SiftV1Src *s, int i, uint32 r)
 	return isnull ? NULL : sift_v1_json_member(doc, strVal(linitial(s->col_leaf[i]->path)));
 }
 
-static SiftV6Class
-exception_class(const SiftV1Src *s, int i)
+/* the type the exception of column i is read as: the float8 cast of a float8 vector, else the `->>` text */
+static Oid
+exception_type(const SiftV1Src *s, int i)
 {
-	return s->in.col[i].type == SVEC_F64 ? SV6C_F64 : SV6C_TEXT;
+	return s->in.col[i].type == SVEC_F64 ? FLOAT8OID : TEXTOID;
 }
 
 /* its value as `->>` reads it (and its float8 cast, or the float8 cast of the jsonb of a jsonb_cast column); a value whose cast raises raises at once, or is one of the raises of the batch when the operator raises them (raise_late) */
@@ -199,10 +200,10 @@ static void
 put_exception(SiftV1Src *s, int i, uint32 r, const Jsonb *m)
 {
 	SiftV6JsonValue v;
-	const SiftV6JsonExc x = sift_v6_json_exception_read(exception_class(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v);
+	const SiftV6JsonExc x = sift_v6_json_exception_read(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v);
 
 	if (x == SV6JX_RAISES && !s->in.raise_late)
-		sift_v6_json_exception_raise(exception_class(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
+		sift_v6_json_exception_raise(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
 	s->raises[r >> 6] |= (uint64) (x == SV6JX_RAISES) << (r & 63);
 	s->has_raises |= x == SV6JX_RAISES;
 	if (x != SV6JX_VALUE)
@@ -244,8 +245,8 @@ sift_v1_src_raise(SiftV6Source *base, int row)
 	{
 		const Jsonb *m = s->has_jexc[i] && sift_src_bit(s->jexc[i], row) ? exception_member(s, i, row) : NULL;
 
-		if (m != NULL && sift_v6_json_exception_read(exception_class(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v) == SV6JX_RAISES)
-			sift_v6_json_exception_raise(exception_class(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
+		if (m != NULL && sift_v6_json_exception_read(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v) == SV6JX_RAISES)
+			sift_v6_json_exception_raise(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
 	}
 	SIFT_INVARIANT(false, "row %d of a batch of relation %u has a value whose cast raises", row, s->in.indexoid);
 }

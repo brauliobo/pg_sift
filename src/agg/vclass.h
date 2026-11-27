@@ -36,9 +36,9 @@ sift_v6_attno_found(int attno)
 
 /*
  * The virtual attributes (an INDEX_VAR or scan varattno above every column of an index) of what a statement reads of a key of a jsonb document whose leaf is `leaf`: its JSON type
- * (jsonb_typeof(doc -> 'key')), its `->>` text, the float8, the bool and the int4 cast of that text, whether a document has the key (`doc ? 'key'`, false for a SQL NULL document, which only an
- * aggregate FILTER reads as it reads NULL), and the integer an integer leaf holds (NULL for a value it could not hold: a containment test, which no cast reads). An index holds at most
- * SIFT_F2_MAX_COLS (1024) leaves, so each kind has a range of that many attributes.
+ * (jsonb_typeof(doc -> 'key')), its `->>` text, the float8 and the bool cast of that text, whether a document has the key (`doc ? 'key'`, false for a SQL NULL document, which only an
+ * aggregate FILTER reads as it reads NULL), the integer an integer leaf holds (NULL for a value it could not hold: a containment test, which no cast reads), and the integer cast of the
+ * `->>` text of an integer leaf (the leaf holds the numbers whose text is an integer). An index holds at most SIFT_F2_MAX_COLS (1024) leaves, so each kind has a range of that many attributes.
  */
 #define SIFT_V6_JVIRT_VATT		(3 << 13)
 #define SIFT_V6_JVIRT_SPAN		1024
@@ -46,9 +46,9 @@ sift_v6_attno_found(int attno)
 #define SIFT_V6_JTEXT_VATT		(SIFT_V6_JVIRT_VATT + SIFT_V6_JVIRT_SPAN)
 #define SIFT_V6_JF8_VATT		(SIFT_V6_JVIRT_VATT + 2 * SIFT_V6_JVIRT_SPAN)
 #define SIFT_V6_JB_VATT			(SIFT_V6_JVIRT_VATT + 3 * SIFT_V6_JVIRT_SPAN)
-#define SIFT_V6_JI4_VATT		(SIFT_V6_JVIRT_VATT + 4 * SIFT_V6_JVIRT_SPAN)
-#define SIFT_V6_JPRES_VATT		(SIFT_V6_JVIRT_VATT + 5 * SIFT_V6_JVIRT_SPAN)
-#define SIFT_V6_JHELD_VATT		(SIFT_V6_JVIRT_VATT + 6 * SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_JPRES_VATT		(SIFT_V6_JVIRT_VATT + 4 * SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_JHELD_VATT		(SIFT_V6_JVIRT_VATT + 5 * SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_JINT_VATT		(SIFT_V6_JVIRT_VATT + 6 * SIFT_V6_JVIRT_SPAN)
 
 static inline bool
 sift_v6_vatt_is_json(int attno)
@@ -75,32 +75,28 @@ sift_v6_vatt_is_type(int attno)
 	return (attno >= SIFT_V6_JTYPE_VATT && attno < SIFT_V6_JTEXT_VATT) || sift_v6_vatt_is_presence(attno);
 }
 
-/* the conversion of a value of an exception that raises for a text that is no number or boolean (the float8, the bool and the int4 cast of the `->>` text) */
+/* the conversion of a value of an exception that raises for a text that is no number, boolean or integer (the float8, the bool and the integer cast of the `->>` text) */
 static inline bool
 sift_v6_vatt_raises(int attno)
 {
-	return attno >= SIFT_V6_JF8_VATT && attno < SIFT_V6_JPRES_VATT;
+	return (attno >= SIFT_V6_JF8_VATT && attno < SIFT_V6_JPRES_VATT) || (attno >= SIFT_V6_JINT_VATT && attno < SIFT_V6_JINT_VATT + SIFT_V6_JVIRT_SPAN);
 }
 
-/* the first virtual attribute of what a column of a key reads: jtype with the type bool is the presence of the key */
+static inline bool
+sift_v6_vatt_is_int_cast(int attno)
+{
+	return attno >= SIFT_V6_JINT_VATT && attno < SIFT_V6_JINT_VATT + SIFT_V6_JVIRT_SPAN;
+}
+
+/* the first virtual attribute of what a column of a key reads: jtype with the type bool is the presence of the key, jint the integer cast of its text */
 static inline int
-sift_v6_jvatt_base(bool jtype, Oid typid)
+sift_v6_jvatt_base(bool jtype, bool jint, Oid typid)
 {
 	if (jtype)
 		return typid == BOOLOID ? SIFT_V6_JPRES_VATT : SIFT_V6_JTYPE_VATT;
-	switch (typid)
-	{
-		case FLOAT8OID:
-			return SIFT_V6_JF8_VATT;
-		case BOOLOID:
-			return SIFT_V6_JB_VATT;
-		case INT4OID:
-			return SIFT_V6_JI4_VATT;
-		case INT8OID:
-			return SIFT_V6_JHELD_VATT;
-		default:
-			return SIFT_V6_JTEXT_VATT;
-	}
+	if (jint)
+		return SIFT_V6_JINT_VATT;
+	return typid == FLOAT8OID ? SIFT_V6_JF8_VATT : typid == BOOLOID ? SIFT_V6_JB_VATT : typid == INT8OID ? SIFT_V6_JHELD_VATT : SIFT_V6_JTEXT_VATT;
 }
 
 #endif							/* SIFT_AGG_VCLASS_H */

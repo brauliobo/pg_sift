@@ -133,6 +133,7 @@ typedef struct SiftV6Col
 	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers whose keys lead from the document to the member whose `->>` float8 cast the column is (jleaf is then the leaf of the values of its map); 0: none */
 	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
 	bool		jsonb_cast;		/* with jleaf: the column is (doc -> 'key')::float8, which raises for a value that is no number where the `->>` text is converted */
+	bool		jint;			/* with jleaf: the column is (doc ->> 'key')::int2, int4 or int8 of an integer leaf, which raises for a text that is no integer */
 	SiftV6Src	src;
 	int			dim;			/* SV6SRC_DIM: the dimension */
 	int			slot;			/* SV6SRC_DIM: the payload column of the dimension */
@@ -406,7 +407,7 @@ sift_v6_col_input_attno(const SiftV6Col *c)
 {
 	if (c->jleaf == 0)
 		return c->attno;
-	return sift_v6_jvatt_base(c->jtype, c->typid) + c->jleaf - 1;
+	return sift_v6_jvatt_base(c->jtype, c->jint, c->typid) + c->jleaf - 1;
 }
 
 /* The attribute a batch of the scan holds the column in: a value of a key of a document is the leaf of the key (SIFT_V6_JLEAF_VATT), its type or presence the virtual one of it */
@@ -422,7 +423,7 @@ sift_v6_col_batch_attno(const SiftV6Col *c)
 static inline SiftV6Col
 sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
 {
-	return (SiftV6Col) {.attno = att,.typid = typid,.scale = scale,.jleaf = sift_v6_vatt_leaf(attno) + 1,.jtype = sift_v6_vatt_is_type(attno)};
+	return (SiftV6Col) {.attno = att,.typid = typid,.scale = scale,.jleaf = sift_v6_vatt_leaf(attno) + 1,.jtype = sift_v6_vatt_is_type(attno),.jint = sift_v6_vatt_is_int_cast(attno)};
 }
 /* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
 extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
@@ -448,12 +449,29 @@ typedef struct SiftV6JsonValue
 {
 	const char *text;			/* SV6C_TEXT */
 	uint32		tlen;
-	Datum		value;			/* the float8 or the bool of the cast */
+	Datum		value;			/* the float8, bool or integer of the cast */
 } SiftV6JsonValue;
 
+/* the integer an integer vector holds of the bool or integer value of a cast */
+static inline int64
+sift_v6_json_int(Oid typid, Datum value)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(value);
+		case INT4OID:
+			return DatumGetInt32(value);
+		case INT8OID:
+			return DatumGetInt64(value);
+		default:
+			return DatumGetBool(value);
+	}
+}
+
 /* The value of an exception as a column of class cls reads it (the `->>` text, its float8 or bool cast, or the float8 cast of the jsonb), without raising: the scan raises only for the rows it keeps */
-extern SiftV6JsonExc sift_v6_json_exception_read(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out);
-extern void sift_v6_json_exception_raise(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx);
+extern SiftV6JsonExc sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out);
+extern void sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx);
 /* `doc ? 'k'` of a key whose leaf the scan reads the presence of: the virtual attribute of the presence (InvalidAttrNumber: none) */
 extern int	sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause);
 

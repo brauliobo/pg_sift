@@ -62,7 +62,7 @@ col_init(V6Scan *s, int leaf, const SiftV6Col *c, bool key, bool takes_nan)
 {
 	V6Col	   *n = &s->cols[s->ncols];
 
-	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.jtype = c->jtype,.jsonb_cast = c->jsonb_cast,.jbase = c->jtype ? type_of_leaf_value(s, leaf) : 0,
+	*n = (V6Col) {.leaf = leaf,.attno = c->attno,.scale = c->scale,.json = c->jleaf > 0,.jtype = c->jtype,.jsonb_cast = c->jsonb_cast,.jint = c->jint,.jbase = c->jtype ? type_of_leaf_value(s, leaf) : 0,
 		.typid = c->typid,.cls = sift_v6_col_class(c),.nan_ok = takes_nan,.key_only = key,.is_table = s->is_table && c->jleaf == 0};
 	n->bare = n->is_table && sift_f2_store_open(s->host)->headerless && sift_f2_type_bare_bytes(c->typid);
 	/* MEM[MEM-AGG-05]: SiftV6Scan batch column buffer (SIFT_VEC_LEN * elem + SIFT_VEC_PAD: 8B an element, 16KB a column; 16B, 32KB, only for a text or JSON column; was 32KB for every column) */
@@ -103,7 +103,7 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
-		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].jtype == c.jtype && s->cols[i].jsonb_cast == c.jsonb_cast && s->cols[i].cls == sift_v6_col_class(&c))
+		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].jtype == c.jtype && s->cols[i].jsonb_cast == c.jsonb_cast && s->cols[i].jint == c.jint && s->cols[i].cls == sift_v6_col_class(&c))
 		{
 			s->cols[i].key_only &= key;
 			s->cols[i].nan_ok &= takes_nan || s->cols[i].cls == SV6C_DATUM;

@@ -52,6 +52,8 @@ typedef struct UnCol
 	SiftV6Class cls;
 	bool		month;			/* the month of the date, which PostgreSQL finds through timestamptz and the zone of the session: a date is asked of it once while it holds its slot */
 	bool		json;			/* the leaf of a key of a jsonb document: a row that holds a value of another JSON type than the leaf's has it as the payload of an exception */
+	Oid			typid;			/* json: the type the statement reads the value as (the `->>` text or its cast) */
+	bool		jint;			/* json: SiftV6Col.jint, the integer cast of the text of an integer leaf */
 	bool		read;			/* the statement reads the column itself; it may be only the source of a member (keyed) */
 	AttrNumber	heap_att;
 	const char *key;
