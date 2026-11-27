@@ -18,5 +18,6 @@ extern SiftV6ParTopK *sift_v6_par_topk_new(MemoryContext cx, const SiftV6Spec *s
 extern SiftV6TopKRun *sift_v6_par_topk_heap(const SiftV6ParTopK *t);
 /* The best groups of the participant, best first; the first call runs r to its end */
 extern bool sift_v6_par_topk_next(SiftV6ParTopK *t, SiftV6ParRun *r, Datum *values, bool *isnull);
+extern void sift_v6_par_topk_end(SiftV6ParTopK *t);
 
 #endif							/* SIFT_AGG_V6_PAR_TOPK_H */

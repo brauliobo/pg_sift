@@ -40,3 +40,9 @@ sift_v6_par_topk_next(SiftV6ParTopK *t, SiftV6ParRun *r, Datum *values, bool *is
 	}
 	return sift_v6_topk_run_next(t->run, values, isnull);
 }
+
+void
+sift_v6_par_topk_end(SiftV6ParTopK *t)
+{
+	sift_v6_topk_run_end(t->run);
+}

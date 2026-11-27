@@ -665,6 +665,16 @@ v6_fold_stats(const V6State *st)
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, st->stats.heap_vet_rows + ps.heap_vet_rows);
 }
 
+/* The sorts the heaps of ORDER BY .. LIMIT moved to past work_mem end before their context goes */
+static void
+v6_heaps_end(const V6State *st)
+{
+	if (st->topk != NULL)
+		sift_v6_topk_run_end(st->topk);
+	if (st->rows != NULL)
+		sift_v6_rows_end(st->rows);
+}
+
 static void
 v6_end(CustomScanState *node)
 {
@@ -673,6 +683,7 @@ v6_end(CustomScanState *node)
 	v6_fold_stats(st);
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
+	v6_heaps_end(st);
 	v6_fetch_end(st);
 	sift_v6_gpu_end(&st->gpu);
 	if (st->group != NULL)
@@ -703,6 +714,7 @@ v6_rescan(CustomScanState *node)
 
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
+	v6_heaps_end(st);
 	v6_fetch_end(st);
 	sift_v6_gpu_end(&st->gpu);
 	if (st->group != NULL)

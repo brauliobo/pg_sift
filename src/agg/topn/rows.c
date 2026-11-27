@@ -333,6 +333,12 @@ sift_v6_rows_finish(SiftV6Rows *r)
 	sift_v6_topk_run_finish(r->run);
 }
 
+void
+sift_v6_rows_end(SiftV6Rows *r)
+{
+	sift_v6_topk_run_end(r->run);
+}
+
 SiftV6Group *
 sift_v6_rows_totals_new(MemoryContext cx, const SiftV6Spec *spec)
 {

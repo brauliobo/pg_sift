@@ -8,18 +8,16 @@
 
 #include "postgres.h"
 
-#define SIFT_TOPK_MAX_K		65536
-#define SIFT_TOPK_MAX_ITEMS	8
+#include "agg/engine.h"
 
-/* a < b under the order of sort column item: negative when a sorts first */
-typedef int (*SiftTopKCmp) (int item, Datum a, bool a_null, Datum b, bool b_null, void *arg);
+#define SIFT_TOPK_MAX_K		65536
 /* the value of the sort column item of the row being offered */
 typedef Datum (*SiftTopKValue) (void *ctx, int item, bool *isnull);
 
 typedef struct SiftGTopK SiftGTopK;
 
-/* ncols: the columns of a row; typlen and typbyval of each, for the copies; the sort columns are positions item_pos[0 .. nitems-1] of the row */
-extern SiftGTopK *sift_gtopk_new(MemoryContext cx, uint32 k, int nitems, const int *item_pos, int ncols, const int16 *typlen, const bool *typbyval, SiftTopKCmp cmp, void *cmp_arg);
+/* desc: the columns of a row; items: its sort columns and their order */
+extern SiftGTopK *sift_gtopk_new(MemoryContext cx, uint32 k, TupleDesc desc, int nitems, const SiftV6TopKItem *items);
 /* whether a row with these sort values would stay: the heap is not full, or the row sorts before the worst row held */
 extern bool sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx);
 /* the row (copied) in place of the worst row, or added; only after sift_gtopk_wants said true for it */
@@ -27,9 +25,11 @@ extern void sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull
 /* the rows best first */
 extern void sift_gtopk_finish(SiftGTopK *t);
 extern uint32 sift_gtopk_count(const SiftGTopK *t);
-/* the value of sort column item in the worst row held, when the heap is full */
+/* the value of sort column item in the worst row held, when the heap is full (a heap that moved to a sort has none) */
 extern bool sift_gtopk_worst(const SiftGTopK *t, int item, Datum *value, bool *isnull);
-extern void sift_gtopk_row(const SiftGTopK *t, uint32 i, const Datum **values, const bool **isnull);
-extern void sift_gtopk_free(SiftGTopK *t);
+/* the next row, best first, after sift_gtopk_finish: valid until the next call */
+extern bool sift_gtopk_next(SiftGTopK *t, const Datum **values, const bool **isnull);
+/* the sort the rows moved to, and its files, end; the rest goes with the memory context */
+extern void sift_gtopk_end(SiftGTopK *t);
 
 #endif							/* SIFT_AGG_V6_GROUP_TOPK_H */

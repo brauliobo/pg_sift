@@ -7,7 +7,6 @@
 #include "miscadmin.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/sortsupport.h"
 
 #include "agg/group/int.h"
 #include "agg/group/compact.h"
@@ -23,9 +22,7 @@ struct SiftV6TopKRun
 	const SiftV6Spec *spec;
 	TupleDesc	desc;
 	MemoryContext tmp;
-	SortSupportData ssup[SIFT_V6_MAX_TOPK_ITEMS];
 	SiftGTopK   *heap;
-	uint32		at;
 	int			count_agg;		/* the first sort column is a COUNT: its aggregate's number, else -1 */
 	bool		count_desc;
 	Datum	   *values;
@@ -35,40 +32,16 @@ struct SiftV6TopKRun
 	uint64		put;			/* the candidates it took, some of which a better one pushed out */
 };
 
-static int
-item_cmp(int item, Datum a, bool a_null, Datum b, bool b_null, void *arg)
-{
-	SiftV6TopKRun *r = arg;
-
-	return ApplySortComparator(a, a_null, b, b_null, &r->ssup[item]);
-}
-
 SiftV6TopKRun *
 sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 {
 	SiftV6TopKRun *r = MemoryContextAllocZero(cx, sizeof(SiftV6TopKRun));
 	const int	n = desc->natts;
-	int			pos[SIFT_V6_MAX_TOPK_ITEMS];
-	int16	   *len = palloc(Max(n, 1) * sizeof(int16));
-	bool	   *byval = palloc(Max(n, 1) * sizeof(bool));
 
 	r->spec = spec;
 	r->desc = desc;
 	/* MEM[MEM-AGG-25]: agg transient contexts of this file (sift_mem_allocset_create, 256KB max blocks; was the default allocator with up to 8MB blocks) */
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 top k");
-	for (int i = 0; i < spec->ntopk; i++)
-	{
-		const SiftV6TopKItem *it = &spec->topk_item[i];
-
-		r->ssup[i] = (SortSupportData) {.ssup_cxt = cx,.ssup_collation = it->collid,.ssup_nulls_first = it->nulls_first,.ssup_attno = it->pos + 1};
-		PrepareSortSupportFromOrderingOp(it->sortop, &r->ssup[i]);
-		pos[i] = it->pos;
-	}
-	for (int c = 0; c < n; c++)
-	{
-		len[c] = TupleDescAttr(desc, c)->attlen;
-		byval[c] = TupleDescAttr(desc, c)->attbyval;
-	}
 	r->count_agg = -1;
 	if (spec->ntopk > 0 && spec->topk_item[0].pos >= spec->nkeys && (spec->topk_item[0].sortop == Int8LessOperator || spec->topk_item[0].sortop == INT8_GT_OPERATOR) &&
 		(spec->agg[spec->topk_item[0].pos - spec->nkeys].kind == SV6_COUNT_STAR || spec->agg[spec->topk_item[0].pos - spec->nkeys].kind == SV6_COUNT))
@@ -76,11 +49,9 @@ sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 		r->count_agg = spec->topk_item[0].pos - spec->nkeys;
 		r->count_desc = spec->topk_item[0].sortop == INT8_GT_OPERATOR;
 	}
-	r->heap = sift_gtopk_new(cx, spec->topk, spec->ntopk, pos, n, len, byval, item_cmp, r);
+	r->heap = sift_gtopk_new(cx, spec->topk, desc, spec->ntopk, spec->topk_item);
 	r->values = MemoryContextAlloc(cx, Max(n, 1) * sizeof(Datum));
 	r->isnull = MemoryContextAlloc(cx, Max(n, 1) * sizeof(bool));
-	pfree(len);
-	pfree(byval);
 	return r;
 }
 
@@ -378,9 +349,8 @@ sift_v6_topk_run_next(SiftV6TopKRun *r, Datum *values, bool *isnull)
 	const Datum *v;
 	const bool *n;
 
-	if (r->at >= sift_gtopk_count(r->heap))
+	if (!sift_gtopk_next(r->heap, &v, &n))
 		return false;
-	sift_gtopk_row(r->heap, r->at++, &v, &n);
 	memcpy(values, v, r->desc->natts * sizeof(Datum));
 	memcpy(isnull, n, r->desc->natts * sizeof(bool));
 	return true;
@@ -411,4 +381,10 @@ void
 sift_v6_topk_run_finish(SiftV6TopKRun *r)
 {
 	sift_gtopk_finish(r->heap);
+}
+
+void
+sift_v6_topk_run_end(SiftV6TopKRun *r)
+{
+	sift_gtopk_end(r->heap);
 }

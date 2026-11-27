@@ -236,6 +236,8 @@ sift_v6_par_node_end(SiftV6ParNode *pn)
 		return;
 	sift_v6_par_run_end(pn->run);
 	pn->run = NULL;
+	if (pn->topk != NULL)
+		sift_v6_par_topk_end(pn->topk);
 	pn->topk = NULL;
 	sift_v6_par_engine_end(&pn->eng);
 }

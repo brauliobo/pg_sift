@@ -31,6 +31,8 @@ extern void sift_v6_topk_run_put(SiftV6TopKRun *r, const Datum *values, const bo
 /* The value of sort column item in the worst row held, when the heap is full */
 extern bool sift_v6_topk_run_worst(const SiftV6TopKRun *r, int item, Datum *value, bool *isnull);
 extern void sift_v6_topk_run_finish(SiftV6TopKRun *r);
+/* The sort a heap past work_mem moved to ends with its files; the rest goes with the memory context */
+extern void sift_v6_topk_run_end(SiftV6TopKRun *r);
 /* The candidates offered that are not among the best K: refused, or pushed out by a better one */
 extern uint64 sift_v6_topk_run_dropped(const SiftV6TopKRun *r);
 /* The next best tuple; false after the last */
