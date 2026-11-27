@@ -85,7 +85,7 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT sum(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv WHERE kv.key LIKE ''check%'''
 ]) q;
 
--- Q-03. The tests on the key: lists, patterns, their OR, and what the cubes do not test (the value, a pattern of another form) scans
+-- Q-03. The tests on the key: lists, patterns of any literal shape, their OR, and what the cubes do not test (the value, a pattern with `_`) scans
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT kv.key, count(*) FROM mc o, jsonb_each(o.metrics) kv WHERE kv.key IN (''tip'', ''check_a'') GROUP BY 1',
 	'SELECT kv.key, sum(kv.value::float8) FROM mc o, jsonb_each(o.metrics) kv WHERE kv.key LIKE ''check%'' GROUP BY 1',
