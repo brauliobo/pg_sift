@@ -3,6 +3,8 @@
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the column source API, the refusals and the space it reads are those of Format 1.
+SET sift.test_create_format1 = on;
 
 -- The rows of an index scan (root TIDs) against the visible heap tuples; HOT chains are avoided by changing indexed columns
 CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text, flags int DEFAULT 0) RETURNS text LANGUAGE plpgsql AS $$

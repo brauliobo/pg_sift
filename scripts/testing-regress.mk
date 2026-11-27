@@ -375,6 +375,7 @@ TESTING_REGRESS += col/heapfree/stamp_words
 TESTING_REGRESS += col/heapfree/xmin
 TESTING_REGRESS += col/holes_fuzz
 TESTING_REGRESS += col/index/%
+TESTING_REGRESS += col/index/basic
 TESTING_REGRESS += col/insert_context_lazy
 TESTING_REGRESS += col/ioss_columns
 TESTING_REGRESS += col/ioss_fixed
