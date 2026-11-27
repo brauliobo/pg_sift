@@ -1,7 +1,7 @@
 /*
  * bench_on_tbl_a3.c - the touched rows of a transaction (table/f2/lock/touched.c) against a model: random adds, removals by position (as release_tier1 walks them) and forgets keep the
- * list of the subtransaction, the dense array and the hash of it in step, and the cost per operation does not grow with the rows held. Standalone: the file is included, with the
- * calls of the server it makes provided here; test/bench_on/run.sh builds it with ASan and UBSan.
+ * list of the subtransaction, the dense array and the hash of it in step, and the cost per operation does not grow with the rows held. Standalone: the file is included, with the transaction
+ * calls of the server it makes provided here and the rest in test/bench_on/host.c; test/bench_on/run.sh builds it with ASan and UBSan.
  */
 #include "postgres.h"
 
@@ -34,30 +34,6 @@ GetCurrentTransactionId(void)
 	return 700;
 }
 
-void *
-MemoryContextAlloc(MemoryContext context, Size size)
-{
-	return malloc(size);
-}
-
-void *
-MemoryContextAllocZero(MemoryContext context, Size size)
-{
-	return calloc(1, size);
-}
-
-void *
-repalloc(void *p, Size size)
-{
-	return realloc(p, size);
-}
-
-void
-pfree(void *p)
-{
-	free(p);
-}
-
 uint32
 hash_bytes(const unsigned char *k, int keylen)
 {
@@ -66,25 +42,6 @@ hash_bytes(const unsigned char *k, int keylen)
 	for (int i = 0; i < keylen; i++)
 		h = (h ^ k[i]) * UINT64CONST(1099511628211);
 	return (uint32) (h ^ (h >> 32));
-}
-
-bool
-errstart_cold(int elevel, const char *domain)
-{
-	fprintf(stderr, "FAIL: an error was raised\n");
-	exit(1);
-}
-
-int
-errmsg_internal(const char *fmt,...)
-{
-	return 0;
-}
-
-void
-errfinish(const char *filename, int lineno, const char *funcname)
-{
-	exit(1);
 }
 
 static uint64
@@ -136,7 +93,7 @@ check(void)
 
 		if ((uint32) i >= ntouched || ++seen > ntouched)
 			fail("the list leaves the array");
-		if (!is_touched(&k, 1))
+		if (!is_touched(&k, GetCurrentTransactionId()))
 			fail("an entry of the list is not found by its key");
 		if (ixcap != 0 && touched_ix[ix_slot_of((uint32) i)] != (uint32) i + 1)
 			fail("an entry is not at its slot");
@@ -175,7 +132,7 @@ run(uint32 rows, bool model)
 			SiftRowLockKey k = sift_touched_at(at)->key;
 
 			sift_touched_forget(&k);
-			if (is_touched(&k, 1))
+			if (is_touched(&k, GetCurrentTransactionId()))
 				fail("a forgotten row is still held");
 		}
 		else
@@ -185,7 +142,7 @@ run(uint32 rows, bool model)
 			moved = sift_touched_remove(at);
 			(void) next;
 			(void) moved;
-			if (is_touched(&k, 1))
+			if (is_touched(&k, GetCurrentTransactionId()))
 				fail("a removed row is still held");
 		}
 		ops++;

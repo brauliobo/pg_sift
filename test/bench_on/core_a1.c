@@ -1,6 +1,6 @@
 /*
  * bench_on_core_a1.c - SiftU64Set (core/u64set.h) against the scan it replaces: the answers are the same, and the cost of N lookups in a set of N keys grows with N, not with N squared.
- * Standalone, with the two allocator calls of the header provided here: scripts and make target test/bench_on/run.sh build it with ASan and UBSan.
+ * Standalone: test/bench_on/run.sh builds it with the calls of the server in test/bench_on/host.c, with ASan and UBSan.
  */
 #include "postgres.h"
 
@@ -13,20 +13,8 @@
 
 #include "core/u64set.h"
 
-void *
-palloc(Size size)
-{
-	return malloc(size);
-}
-
-void
-pfree(void *p)
-{
-	free(p);
-}
-
 static double
-now(void)
+clock_ns(void)
 {
 	struct timespec t;
 
@@ -64,12 +52,12 @@ run(uint32 n, bool check)
 	for (uint32 i = 0; i < n; i++)
 		keys[i] = (i % 17 == 0) ? i / 17 : mix(i);
 	sift_u64set_init(&set, n);
-	t0 = now();
+	t0 = clock_ns();
 	for (uint32 i = 0; i < n; i++)
 		(void) sift_u64set_add(&set, keys[i]);
 	for (uint32 i = 0; i < n; i++)
 		hits += sift_u64set_has(&set, i % 2 ? keys[i] : keys[i] + 1);
-	t1 = now();
+	t1 = clock_ns();
 	if (check)
 		for (uint32 i = 0; i < n; i++)
 		{

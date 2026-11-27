@@ -1,6 +1,6 @@
 /*
  * bench_on_v1_a4.c - KeyIdx (table/v1/keyidx.h), the index of the segment lists of a sift_table, against the scan it replaces: the same positions, and the cost of S lookups in S entries
- * grows with S. Standalone, with the allocator calls of the header provided here: test/bench_on/run.sh builds it with ASan and UBSan.
+ * grows with S. Standalone: test/bench_on/run.sh builds it with the calls of the server in test/bench_on/host.c, with ASan and UBSan.
  */
 #include "postgres.h"
 
@@ -13,20 +13,8 @@
 
 #include "table/v1/keyidx.h"
 
-void *
-MemoryContextAlloc(MemoryContext context, Size size)
-{
-	return malloc(size);
-}
-
-void
-pfree(void *p)
-{
-	free(p);
-}
-
 static double
-now(void)
+clock_ns(void)
 {
 	struct timespec t;
 
@@ -53,7 +41,7 @@ run(int n, bool check)
 
 	for (int i = 0; i < n; i++)
 		gen[i] = (uint64) i * 2654435761u + (i % 3 == 0 ? 0 : UINT64CONST(1) << 40);
-	t0 = now();
+	t0 = clock_ns();
 	for (int i = 0; i < n; i++)
 		keyidx_put(NULL, &idx, gen[i], i);
 	for (int i = 0; i < n; i++)
@@ -62,7 +50,7 @@ run(int n, bool check)
 			fprintf(stderr, "FAIL: lookup of entry %d\n", i);
 			exit(1);
 		}
-	t1 = now();
+	t1 = clock_ns();
 	if (check)
 		for (int i = 0; i < n; i++)
 			if (keyidx_find(&idx, gen[i]) != scan_find(gen, n, gen[i]) || keyidx_find(&idx, gen[i] ^ 7) != scan_find(gen, n, gen[i] ^ 7))
