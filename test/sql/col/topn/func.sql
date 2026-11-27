@@ -190,7 +190,7 @@ FROM (VALUES ('stable user function', $q$SELECT id FROM tb ORDER BY tf_stable(g)
 			 ('interval result',      $q$SELECT id FROM tb WHERE t < 'infinity' ORDER BY t - TIMESTAMP '2020-02-01', id LIMIT 5$q$),
 			 ('array result',         $q$SELECT id FROM tb ORDER BY ARRAY[g, 1], id LIMIT 5$q$),
 			 ('jsonb result',         $q$SELECT id FROM tb ORDER BY to_jsonb(g), id LIMIT 5$q$),
-			 ('sub-select',           $q$SELECT id FROM tb ORDER BY length(s) + (SELECT 1), id LIMIT 5$q$),
+			 ('sub-select',           $q$SELECT id FROM tb ORDER BY length(s) + (SELECT x FROM generate_series(1, 1) x), id LIMIT 5$q$),
 			 ('allowed',              $q$SELECT id FROM tb ORDER BY lower(s || v), id LIMIT 5$q$)) q(k, q),
 	 LATERAL sift.explain_why(q.q) w
 ORDER BY k COLLATE "C";

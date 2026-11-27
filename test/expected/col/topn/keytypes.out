@@ -111,7 +111,7 @@ SELECT kt_check('SELECT id FROM kt ORDER BY concat(c, n), id LIMIT 12000');
 (1 row)
 
 RESET work_mem;
--- a volatile function and a sub-select keep the normal plan
+-- a volatile function and a sub-select that may give more than one row keep the normal plan
 EXPLAIN (COSTS OFF) SELECT id FROM kt ORDER BY id % 7 + (random() * 0)::int, id LIMIT 5;
                                      QUERY PLAN                                     
 ------------------------------------------------------------------------------------
@@ -126,12 +126,12 @@ BEGIN
 	RETURN QUERY EXECUTE 'EXPLAIN (COSTS OFF) ' || q;
 END $$;
 SELECT regexp_replace("QUERY PLAN", 'InitPlan (expr_)?1', 'InitPlan 1') AS "QUERY PLAN"
-FROM kt_plan('SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5');
+FROM kt_plan('SELECT id FROM kt ORDER BY CASE WHEN id > (SELECT x FROM generate_series(1, 1) x) THEN 1 ELSE 0 END, id LIMIT 5');
                                      QUERY PLAN                                     
 ------------------------------------------------------------------------------------
  Limit
    InitPlan 1
-     ->  Result
+     ->  Function Scan on generate_series x
    ->  Sort
          Sort Key: (CASE WHEN (kt.id > (InitPlan 1).col1) THEN 1 ELSE 0 END), kt.id
          ->  Index Only Scan using kt_col on kt

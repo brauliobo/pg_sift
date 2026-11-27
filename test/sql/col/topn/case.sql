@@ -148,7 +148,7 @@ ORDER BY tag COLLATE "C";
 SET sift.enable_agg = on;
 SET enable_seqscan = off; SET enable_indexscan = off; SET enable_bitmapscan = off;
 SELECT k, w.used, w.slug, w.reason
-FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT 1) THEN 1 ELSE 0 END, id LIMIT 5$q$),
+FROM (VALUES ('sub-select',  $q$SELECT id FROM tb ORDER BY CASE WHEN g > (SELECT x FROM generate_series(1, 1) x) THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('stable',      $q$SELECT id FROM tb ORDER BY CASE WHEN d > current_date THEN 1 ELSE 0 END, id LIMIT 5$q$),
 			 ('volatile',    $q$SELECT id FROM tb ORDER BY CASE WHEN random() > 2 THEN 1 ELSE g END, id LIMIT 5$q$),
 			 ('allowed',     $q$SELECT id FROM tb ORDER BY CASE WHEN a IS NULL THEN 0 ELSE a END, id LIMIT 5$q$)) q(k, q),

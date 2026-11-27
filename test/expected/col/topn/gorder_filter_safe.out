@@ -41,7 +41,7 @@ INSERT INTO tq SELECT row_number() OVER (), q FROM unnest(ARRAY[
  'SELECT id FROM @ WHERE nb ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE NOT nb ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb IS NOT TRUE ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE nb IS NULL ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb IS FALSE ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE nb = true ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE COALESCE(nb, true) ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE u <> 5 AND gone IS NULL ORDER BY k, id LIMIT 20',
- -- not immutable comparisons of integers: volatile (the scan is refused), a scalar sub-select (a constant of the scan when the walk is cheaper than the units; the price of (SELECT 9000) keeps the sequential scan), a text column (a string against a constant is tested on the heap row when the walk is cheaper than the units)
+ -- not immutable comparisons of integers: volatile (the scan is refused), a scalar sub-select that gives one row at most (a constant of the scan when the walk is cheaper than the units), a text column (a string against a constant is tested on the heap row when the walk is cheaper than the units)
  'SELECT id FROM @ WHERE gone IS NULL AND random() < 2 ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE u < (SELECT 9000) ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE u < (SELECT max(u) FROM tp) - 100 ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE tx = ''v3'' ORDER BY k, id LIMIT 20',
  'SELECT id FROM @ WHERE tx < ''v5'' COLLATE "C" ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE tx LIKE ''v1%'' ORDER BY k, id LIMIT 20', 'SELECT id FROM @ WHERE lower(tx) = ''v2'' ORDER BY k, id LIMIT 20',
@@ -64,7 +64,7 @@ SELECT n, global_order(replace(q, '@', 'tt')) AS global_order, same(q) AS answer
  12 | t            | t
  13 | f            | t
  14 | f            | t
- 15 | f            | t
+ 15 | t            | t
  16 | t            | t
  17 | t            | t
  18 | t            | t
