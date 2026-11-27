@@ -463,6 +463,7 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	List	   *join = lsecond(cs->custom_private);
 
 	st->spec = sift_v6_spec_unpack(linitial(cs->custom_private));
+	sift_v6_bind_params(st->spec, estate->es_param_list_info);
 	st->key = linitial(join);
 	st->resno = intVal(lsecond(join));
 	st->elemtype = (Oid) intVal(lthird(join));
