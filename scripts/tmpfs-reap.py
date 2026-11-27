@@ -154,7 +154,9 @@ def main(argv):
 class Selftest(unittest.TestCase):
     def setUp(self):
         self.t = Path(tempfile.mkdtemp(dir=os.environ.get('TMPDIR', '/tmp')))
-        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        cm = contextlib.redirect_stdout(io.StringIO())
+        cm.__enter__()
+        self.addCleanup(cm.__exit__, None, None, None)
         self.kids = []
 
     def tearDown(self):
