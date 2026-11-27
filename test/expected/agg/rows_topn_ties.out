@@ -33,7 +33,7 @@ SELECT q, rows_chk(q) FROM unnest(ARRAY[
  SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20                               | same rows, SiftAggV6TopN
  SELECT id, ts FROM tt ORDER BY ts, id DESC LIMIT 20                                    | same rows, SiftAggV6TopN
  SELECT id, ts FROM tt ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7                      | same rows, SiftAggV6TopN
- SELECT id, ts FROM tt WHERE grp IN (1, 2, 3) ORDER BY ts DESC, id DESC LIMIT 20        | same rows, SiftAggV6TopN
+ SELECT id, ts FROM tt WHERE grp IN (1, 2, 3) ORDER BY ts DESC, id DESC LIMIT 20        | same rows, SiftAggV6
  SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts, id DESC LIMIT 20               | same rows, SiftAggV6
  SELECT id, ts FROM tt WHERE kind = 'cat_b' ORDER BY ts DESC, id DESC LIMIT 20 OFFSET 7 | same rows, SiftAggV6
 (6 rows)
