@@ -32,6 +32,12 @@ extern SiftRowState sift_row_sysattr_read(Relation rel, uint64 tid, Snapshot sna
 /* The same for a row that is not in the stage of the transaction, without writing the stage or a micro-slab */
 extern SiftRowState sift_row_state_read_settled(Relation rel, uint64 tid);
 
+/*
+ * The row is dead for every snapshot of vistest (*xmax: its deleter): a row on disk whose deleter committed before all of them. A row no part holds may be staged by a running
+ * transaction of any backend, and the orphan an aborted one left is VACUUM's to reap
+ */
+extern bool sift_row_dead_to_all(Relation rel, struct GlobalVisState *vistest, uint64 tid, TransactionId *xmax);
+
 /* TM_Ok for a row the statement may lock, else why not (the deleter and the successor in tmfd) */
 extern TM_Result sift_row_state_result(const SiftRowState *rs, CommandId cid, TM_FailureData *tmfd, uint64 tid);
 

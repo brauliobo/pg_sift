@@ -12,6 +12,7 @@
 
 #include "access/xact.h"
 #include "executor/executor.h"
+#include "storage/procarray.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -21,6 +22,7 @@
 #include "core/damage.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/gcache.h"
+#include "table/f2/row/state.h"
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
 
@@ -296,10 +298,14 @@ fetch_one(SiftTblF2Fetch *f, uint64 tid, Snapshot snapshot, TupleTableSlot *slot
 bool
 sift_tbl_f2_index_fetch_tuple(struct IndexFetchTableData *scan, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *call_again, bool *all_dead)
 {
+	uint64		packed = sift_tbl_tid_pack(tid);
+	bool		found = fetch_one((SiftTblF2Fetch *) scan, packed, snapshot, slot);
+	TransactionId xmax;
+
 	*call_again = false;
 	if (all_dead != NULL)
-		*all_dead = false;
-	return fetch_one((SiftTblF2Fetch *) scan, sift_tbl_tid_pack(tid), snapshot, slot);
+		*all_dead = !found && snapshot->snapshot_type == SNAPSHOT_MVCC && sift_row_dead_to_all(scan->rel, GlobalVisTestFor(scan->rel), packed, &xmax);
+	return found;
 }
 
 uint64

@@ -281,6 +281,16 @@ sift_row_part_count(Relation rel)
 	return sift_col_meta_read(rel).npartitions;
 }
 
+bool
+sift_row_dead_to_all(Relation rel, GlobalVisState *vistest, uint64 tid, TransactionId *xmax)
+{
+	SiftRowState rs = sift_row_state_read_settled(rel, tid);
+
+	*xmax = rs.xmax;
+	return rs.found && TransactionIdIsValid(rs.xmax) && !TransactionIdIsInProgress(rs.xmax) && (!TransactionIdIsNormal(rs.xmax) || TransactionIdDidCommit(rs.xmax)) &&
+		sift_vis_removable_xid(vistest, rs.xmax);
+}
+
 /*
  * Only a row on disk whose deleter committed before every snapshot is known dead: a row no part holds may be staged by a running transaction of any backend (its entry is in the index before
  * the row is written), and the orphan an aborted one left is VACUUM's to reap (table/f2/vm). The rows are read where they are: nothing is written to ask the relation about a row, which
@@ -299,12 +309,12 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
 		TM_IndexStatus *status = &delstate->status[delstate->deltids[i].id];
-		SiftRowState rs = sift_row_state_read_settled(rel, sift_tbl_tid_pack(&delstate->deltids[i].tid));
-		bool		deletable = rs.found && TransactionIdIsValid(rs.xmax) && !TransactionIdIsInProgress(rs.xmax) && (!TransactionIdIsNormal(rs.xmax) || TransactionIdDidCommit(rs.xmax)) &&
-			sift_vis_removable_xid(vistest, rs.xmax);
+		TransactionId xmax;
+		bool		deletable = sift_row_dead_to_all(rel, vistest, sift_tbl_tid_pack(&delstate->deltids[i].tid), &xmax);
+
 		status->knowndeletable |= deletable;
-		if (deletable && TransactionIdIsNormal(rs.xmax) && (!TransactionIdIsValid(horizon) || TransactionIdFollows(rs.xmax, horizon)))
-			horizon = rs.xmax;
+		if (deletable && TransactionIdIsNormal(xmax) && (!TransactionIdIsValid(horizon) || TransactionIdFollows(xmax, horizon)))
+			horizon = xmax;
 		if (status->knowndeletable)
 			final_ndeltids = i + 1;
 	}
