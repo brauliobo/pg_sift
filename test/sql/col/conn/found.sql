@@ -245,6 +245,16 @@ INSERT INTO cols VALUES (1, 'p.c_int2'), (2, 'p.c_int4'), (3, 'p.c_int8'), (4, '
 SELECT c.n, replace(c.expr, 'p.', '') AS read, r.same, r.leaf_reads, r.heap_fetches
 	FROM cols c, LATERAL found_run(format('SELECT %s AS x, count(*) FROM tc JOIN tp p ON p.id = tc.tp_id GROUP BY 1 ORDER BY 1', c.expr)) r ORDER BY c.n;
 
+-- a sift_table holds no fact index whose flags could answer a dimension: the star reads it, and planning does not open the table as an index
+CREATE TABLE tf (id int PRIMARY KEY, p_id int NOT NULL) USING sift_table;
+INSERT INTO tf SELECT i, 1 + i % 60 FROM generate_series(1, 6000) i;
+CREATE TABLE tl (id int PRIMARY KEY, parent_id int NOT NULL, label text NOT NULL, status smallint NOT NULL) USING sift_table;
+INSERT INTO tl SELECT i, 1 + i % 60, 'lbl_' || i % 10, i / 3 % 5 FROM generate_series(1, 24000) i;
+CREATE INDEX tl_parent ON tl (parent_id, status);
+VACUUM (FREEZE, ANALYZE) tf, tl;
+SELECT same, proofs FROM found_run('SELECT l.label, count(*) AS n FROM tf f JOIN tl l ON l.parent_id = f.p_id AND l.status = 0 GROUP BY 1 ORDER BY 1');
+DROP TABLE tf, tl;
+
 DROP TABLE facts_p, dim_p, tc, tp, big_events, dim_big, events, dim_a, facts, dim_c, shapes, shapes2, tshapes, cols CASCADE;
 DROP TABLE c_int2, c_int4, c_int8, p_int2, p_int4, p_int8 CASCADE;
 DROP FUNCTION found_run(text), phase(), phase2(), tphase();
