@@ -22,6 +22,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_index.h"
 
 #include "col/f2/proj/proj.h"
@@ -432,6 +433,19 @@ check_ttl_column(Relation rel, const char *column, const char *what)
 						errhint("Clear the TTL first with SELECT sift.set_ttl('%s'::regclass, '%s', NULL).", RelationGetRelationName(rel), column)));
 }
 
+/* From PostgreSQL 18 the NOT NULL of a column is a constraint too, which DROP CONSTRAINT drops by its name */
+static void
+check_ttl_constraint(Relation rel, const char *conname)
+{
+#if PG_VERSION_NUM >= 180000
+	SiftTtlPolicy ttl;
+	HeapTuple	tup = sift_ttl_policy_of(rel, &ttl) ? findNotNullConstraint(RelationGetRelid(rel), ttl.col) : NULL;
+
+	if (tup != NULL && strcmp(NameStr(((Form_pg_constraint) GETSTRUCT(tup))->conname), conname) == 0)
+		check_ttl_column(rel, ttl.col, "drop NOT NULL of");
+#endif
+}
+
 /* The options of the tables are rows of a catalog of the extension that only its owner writes: the table owner who renames a column is let write the rows that name it */
 static void
 write_catalog(const char *sql, int nargs, const Oid *types, const Datum *values, int expect)
@@ -473,6 +487,9 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 		{
 			case AT_DropNotNull:
 				check_ttl_column(rel, cmd->name, "drop NOT NULL of");
+				break;
+			case AT_DropConstraint:
+				check_ttl_constraint(rel, cmd->name);
 				break;
 			case AT_DropColumn:
 				check_drop_column(rel, &store->opts, cmd->name);

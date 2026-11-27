@@ -36,6 +36,7 @@ typedef struct Xfer
 	ErrorData  *held;
 	long		hdr_status;		/* the status line of the last response header block */
 	long		retry_after_s;	/* the Retry-After of the response, 0 when it has none */
+	uint64		grow_cap;		/* the bytes *r->grow was sized to by this transfer: it doubles, so a listing is copied O(log n) times */
 	bool		overflow;
 } Xfer;
 
@@ -69,7 +70,7 @@ run_guarded(void (*fn) (void *arg), void *arg)
 
 typedef struct GrowArg
 {
-	SiftCurlReq *r;
+	Xfer	   *x;
 	const char *src;
 	uint64		n;
 } GrowArg;
@@ -78,11 +79,17 @@ static void
 grow_append(void *arg)
 {
 	GrowArg    *a = arg;
-	char	  **buf = a->r->grow;
+	SiftCurlReq *r = a->x->r;
+	char	  **buf = r->grow;
+	uint64		need = r->grow_len + a->n + 1;
 
-	*buf = *buf != NULL ? repalloc(*buf, a->r->grow_len + a->n + 1) : palloc(a->n + 1);
-	memcpy(*buf + a->r->grow_len, a->src, a->n);
-	(*buf)[a->r->grow_len + a->n] = '\0';
+	if (need > a->x->grow_cap)
+	{
+		a->x->grow_cap = Min(Max(a->x->grow_cap * 2, need), GROW_MAX + 1);
+		*buf = *buf != NULL ? repalloc(*buf, a->x->grow_cap) : palloc(a->x->grow_cap);
+	}
+	memcpy(*buf + r->grow_len, a->src, a->n);
+	(*buf)[r->grow_len + a->n] = '\0';
 }
 
 SiftTierStatus
@@ -149,7 +156,7 @@ write_cb(char *ptr, size_t size, size_t nmemb, void *ud)
 
 	if (r->grow != NULL)
 	{
-		GrowArg		a = {r, ptr, n};
+		GrowArg		a = {x, ptr, n};
 
 		if (r->grow_len + n > GROW_MAX)
 		{

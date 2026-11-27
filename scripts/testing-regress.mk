@@ -714,6 +714,7 @@ TESTING_REGRESS += table/f2/set_am_tiered
 TESTING_REGRESS += table/f2/temp_shm
 TESTING_REGRESS += table/f2/tid_range
 TESTING_REGRESS += table/f2/ttl_drop_acid
+TESTING_REGRESS += table/f2/ttl_drop_not_null_constraint
 TESTING_REGRESS += table/f2/unified_parity
 TESTING_REGRESS += table/f2/update_indexed
 TESTING_REGRESS += table/fast_paths

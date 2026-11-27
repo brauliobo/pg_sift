@@ -1,6 +1,7 @@
 /*
  * test/unit/col/f2/tier_curl.c - the bound of a transfer of the s3:// backend (col/f2/tier/curl.c): a store that answers one byte a second never trips the low-speed limit, so every request
- * carries a total timeout, a minute and one second more for each 256 KiB of its body, and the maintenance that holds its locks across a transfer waits that long at most.
+ * carries a total timeout, a minute and one second more for each 256 KiB of its body, and the maintenance that holds its locks across a transfer waits that long at most. The body of a
+ * listing grows by doubling, so a long one is copied a logarithmic number of times, not once for each chunk curl hands over.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -15,7 +16,32 @@
 
 #include "test/common/bench.h"
 
+static int	grow_allocs;
+
+static void *
+counted_palloc(Size n)
+{
+	grow_allocs++;
+	return palloc(n);
+}
+
+static void *
+counted_repalloc(void *p, Size n)
+{
+	grow_allocs++;
+	return repalloc(p, n);
+}
+
+#define palloc counted_palloc
+#define repalloc counted_repalloc
+
 #include "col/f2/tier/curl.c"
+
+#undef palloc
+#undef repalloc
+
+sigjmp_buf *PG_exception_stack = NULL;
+ErrorContextCallback *error_context_stack = NULL;
 
 static long timeout_s = -1;
 
@@ -93,9 +119,35 @@ test_every_transfer_has_a_total_timeout(void)
 	SIFT_CHECKF(timeout_of("PUT", UINT64_C(256) << 20) == 60 + 1024, "a PUT of 256 MiB may take a minute and 1024 seconds (%ld)", timeout_of("PUT", UINT64_C(256) << 20));
 }
 
+enum { GROW_CHUNK = 16 << 10, GROW_CHUNKS = 1024 };
+
+static void
+test_listing_grows_geometrically(void)
+{
+	char	   *body = NULL;
+	SiftCurlReq r = {.grow = &body};
+	Xfer		x = {.r = &r};
+	char	   *chunk = palloc(GROW_CHUNK);
+	bool		same = true;
+
+	grow_allocs = 0;
+	for (int i = 0; i < GROW_CHUNKS; i++)
+	{
+		memset(chunk, 'a' + i % 26, GROW_CHUNK);
+		SIFT_CHECKF(write_cb(chunk, 1, GROW_CHUNK, &x) == GROW_CHUNK, "chunk %d is taken", i);
+	}
+	for (int i = 0; i < GROW_CHUNKS && same; i++)
+		same = body[(size_t) i * GROW_CHUNK] == 'a' + i % 26 && body[(size_t) (i + 1) * GROW_CHUNK - 1] == 'a' + i % 26;
+	SIFT_CHECKF(r.grow_len == (uint64) GROW_CHUNK * GROW_CHUNKS && body[r.grow_len] == '\0' && same, "the listing holds every chunk in order");
+	SIFT_CHECKF(grow_allocs <= 16, "%d chunks of a listing were copied %d times, not O(log n)", GROW_CHUNKS, grow_allocs);
+	pfree(chunk);
+	pfree(body);
+}
+
 int
 main(void)
 {
 	test_every_transfer_has_a_total_timeout();
+	test_listing_grows_geometrically();
 	return sift_check_summary();
 }

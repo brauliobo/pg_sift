@@ -67,7 +67,7 @@ statement_relation(Node *parse, LOCKMODE *lock)
 static bool
 cmd_recurses(const AlterTableCmd *cmd)
 {
-	return cmd->subtype == AT_AddColumn || cmd->subtype == AT_DropColumn || cmd->subtype == AT_AlterColumnType || cmd->subtype == AT_DropNotNull;
+	return cmd->subtype == AT_AddColumn || cmd->subtype == AT_DropColumn || cmd->subtype == AT_AlterColumnType || cmd->subtype == AT_DropNotNull || cmd->subtype == AT_DropConstraint;
 }
 
 /* The statement as the server runs it on an inheritor (a partition, a child of INHERITS): its subcommands that recurse; NULL when none does */
