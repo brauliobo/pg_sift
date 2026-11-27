@@ -154,9 +154,16 @@ stage_version(Relation rel, SiftF2Store *store, TupleTableSlot *slot, Transactio
 	slot_getallattrs(slot);
 	sift_tbl_f2_tid_next(rel, store, &tid);
 	packed = sift_tbl_tid_pack(&tid);
-	sift_f2_store_pack_row(rel, store, store->row_cx, &tid, slot->tts_values, slot->tts_isnull, true, cells, elem, key);
-	sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, xmin, cmin, cells, (const SiftCell *const *) elem);
-	MemoryContextReset(store->row_cx);
+	PG_TRY();
+	{
+		sift_f2_store_pack_row(rel, store, store->row_cx, &tid, slot->tts_values, slot->tts_isnull, true, cells, elem, key);
+		sift_stage_add(rel, sift_stage_get(rel, &store->spec), key, packed, xmin, cmin, cells, (const SiftCell *const *) elem);
+	}
+	PG_FINALLY();
+	{
+		MemoryContextReset(store->row_cx);
+	}
+	PG_END_TRY();
 	pfree(cells);
 	if (elem != NULL)
 		pfree(elem);
@@ -192,8 +199,15 @@ key_of_slot(Relation rel, SiftF2Store *store, TupleTableSlot *slot, uint64 tid, 
 
 	slot_getallattrs(slot);
 	sift_tbl_tid_unpack(&ip, tid);
-	sift_f2_store_pack_key(rel, store, store->row_cx, &ip, slot->tts_values, slot->tts_isnull, cells, key);
-	MemoryContextReset(store->row_cx);
+	PG_TRY();
+	{
+		sift_f2_store_pack_key(rel, store, store->row_cx, &ip, slot->tts_values, slot->tts_isnull, cells, key);
+	}
+	PG_FINALLY();
+	{
+		MemoryContextReset(store->row_cx);
+	}
+	PG_END_TRY();
 	pfree(cells);
 }
 
