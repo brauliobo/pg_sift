@@ -657,17 +657,25 @@ sift_v6_scope_spec_unpack(const List *ints)
 	return s;
 }
 
+/*
+ * The aggregate over the join as written, with the columns of the tuple the node leaves (tlist): what the node runs when no read of the summary or scan of the members answers. It is the plan
+ * PostgreSQL makes: hashed only without ordered aggregates, else over the join sorted by the group pathkeys, which hold the order of the aggregates PostgreSQL marked presorted (DISTINCT, ORDER BY)
+ */
 static Path *
-fallback_path(const ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathExtraData *extra, double groups)
+fallback_path(const ScopePlan *p, List *tlist, RelOptInfo *input_rel, RelOptInfo *out, GroupPathExtraData *extra, double groups)
 {
+	PlannerInfo *root = p->root;
 	AggClauseCosts costs = {0};
-	AggStrategy strategy = p->root->processed_groupClause != NIL ? AGG_HASHED : p->root->parse->groupClause != NIL ? AGG_SORTED : AGG_PLAIN;
-	PathTarget *scan = make_pathtarget_from_tlist(p->scan_tlist);
+	const bool	hashed = root->processed_groupClause != NIL && root->numOrderedAggs == 0 && grouping_is_hashable(root->processed_groupClause);
+	AggStrategy strategy = hashed ? AGG_HASHED : root->parse->groupClause != NIL ? AGG_SORTED : AGG_PLAIN;
+	PathTarget *scan = make_pathtarget_from_tlist(tlist);
+	Path	   *in = input_rel->cheapest_total_path;
 
-	get_agg_clause_costs(p->root, AGGSPLIT_SIMPLE, &costs);
-	set_pathtarget_cost_width(p->root, scan);
-	return (Path *) create_agg_path(p->root, out, input_rel->cheapest_total_path, scan, strategy, AGGSPLIT_SIMPLE,
-									p->root->processed_groupClause, (List *) extra->havingQual, &costs, groups);
+	if (!hashed && !pathkeys_contained_in(root->group_pathkeys, in->pathkeys))
+		in = (Path *) create_sort_path(root, input_rel, in, root->group_pathkeys, -1.0);
+	get_agg_clause_costs(root, AGGSPLIT_SIMPLE, &costs);
+	set_pathtarget_cost_width(root, scan);
+	return (Path *) create_agg_path(root, out, in, scan, strategy, AGGSPLIT_SIMPLE, root->processed_groupClause, (List *) extra->havingQual, &costs, groups);
 }
 
 /* The share of the facts the scan of the members of the key reads: the router keeps the granules of the key, which are the share of the facts the join keeps when the parts are sorted by the
@@ -683,10 +691,25 @@ scan_kept(const ScopePlan *p, const RelOptInfo *input_rel)
 	return Min(input_rel->rows / Max(p->fact->rows, 1.0), 1.0);
 }
 
+/* The scan of the members of the keys reads the granules of its keys: the plan keeps its price over every granule, which the node scales by the share the keys of its run route to (scan.c) */
+static void
+scan_price(ScopePlan *p, RelOptInfo *input_rel, double groups, Path *path, List **prices)
+{
+	Cost		open,
+				scan;
+
+	sift_v6_scan_price(p->root, p->fact, p->index, 0, &open, &scan);
+	scan += cpu_operator_cost * p->fact->rows - open;
+	path->startup_cost = open;
+	path->total_cost = open + scan_kept(p, input_rel) * scan + cpu_tuple_cost * groups;
+	*prices = list_make3(makeFloat(psprintf("%.17g", open)), makeFloat(psprintf("%.17g", scan)), makeFloat(psprintf("%.17g", cpu_tuple_cost * groups)));
+}
+
 static void
 add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathExtraData *extra)
 {
 	CustomPath *cp = makeNode(CustomPath);
+	List	   *prices = NIL;
 	const double groups = p->spec.scan ? (p->v6.nkeys == 0 ? 1.0 : clamp_row_est(Min(p->fact->rows, 1000.0))) :
 		clamp_row_est((p->spec.key_array && p->spec.by_key ? 10.0 : p->spec.key_given ? 1.0 : Min(p->pairs->tuples, 1000.0)) * (p->spec.by_month ? 24 : 1));
 
@@ -695,25 +718,16 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	cp->path.pathtarget = out->reltarget;
 	cp->path.rows = groups;
 	if (p->spec.scan)
-	{
-		const double kept = scan_kept(p, input_rel);
-		Cost		open;
-
-		sift_v6_scan_price(p->root, p->fact, p->index, 0, &open, &cp->path.total_cost);
-		cp->path.startup_cost = open;
-		cp->path.total_cost = open + kept * (cp->path.total_cost - open + cpu_operator_cost * p->fact->rows) + cpu_tuple_cost * groups;
-	}
+		scan_price(p, input_rel, groups, &cp->path, &prices);
 	else
 		summary_price(p, groups, &cp->path);
 	cp->methods = &scope_path_methods;
 	p->spec.once = p->once;
+	cp->custom_paths = list_make1(fallback_path(p, p->spec.scan ? p->v6_tlist : p->scan_tlist, input_rel, out, extra, groups));
 	if (p->spec.scan)
-		cp->custom_private = list_make5(sift_v6_scope_spec_pack(&p->spec), p->v6_tlist, extra->havingQual, scope_exprs(p), sift_v6_spec_pack(&p->v6));
+		cp->custom_private = lappend(list_make5(sift_v6_scope_spec_pack(&p->spec), p->v6_tlist, extra->havingQual, scope_exprs(p), sift_v6_spec_pack(&p->v6)), prices);
 	else
-	{
-		cp->custom_paths = list_make1(fallback_path(p, input_rel, out, extra, groups));
 		cp->custom_private = list_make4(sift_v6_scope_spec_pack(&p->spec), p->scan_tlist, extra->havingQual, scope_exprs(p));
-	}
 	sift_v6_force_price(&cp->path);
 	add_path(out, &cp->path);
 }
@@ -789,7 +803,7 @@ scope_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlis
 	cs->scan.scanrelid = 0;
 	cs->flags = best->flags;
 	cs->custom_plans = custom_plans;
-	cs->custom_private = list_length(best->custom_private) > 4 ? list_make2(linitial(best->custom_private), list_nth(best->custom_private, 4)) : list_make1(linitial(best->custom_private));
+	cs->custom_private = list_concat(list_make1(linitial(best->custom_private)), list_copy_tail(best->custom_private, 4));
 	cs->custom_scan_tlist = lsecond(best->custom_private);
 	cs->scan.plan.qual = (List *) lthird(best->custom_private);
 	cs->custom_exprs = lfourth(best->custom_private);
