@@ -16,3 +16,7 @@ LIB_col/gpu_part = col/gpu.c
 TESTS    += agg/gpu/worker
 AUTOSTUB += agg/gpu/worker
 XFLAGS_agg/gpu/worker = -D_GNU_SOURCE -Wno-unused-function
+
+TESTS    += agg/gpu/scan
+AUTOSTUB += agg/gpu/scan
+XFLAGS_agg/gpu/scan = -Wno-unused-function

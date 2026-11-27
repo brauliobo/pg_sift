@@ -815,35 +815,10 @@ typedef struct TopnTake
 	SiftGpuCand *cand;
 	uint32		n;
 	uint32		cap;
+	uint32		k;
 	bool		desc;
 	bool		nulls_first;
 } TopnTake;
-
-static void
-take_cand(Exec *x, const SiftVkResult *res, void *arg)
-{
-	TopnTake   *t = arg;
-
-	for (uint32 i = 0; i < res->ncand; i++)
-	{
-		int64		meta = res->cand[2 * i + 1];
-		SiftGpuCand *c;
-
-		if (t->n == t->cap)
-			t->cand = repalloc(t->cand, (t->cap *= 2) * sizeof(SiftGpuCand));
-		c = &t->cand[t->n++];
-		c->key = res->cand[2 * i];
-		c->isnull = (meta >> 62) & 1;
-		c->row = (uint32) meta & 0x3FFFFFFF;
-		x->plan->ops->locate(x->plan, (uint32) ((uint64) meta >> 32) & 0x3FFFFFFF, &c->part_id, &c->part_gen, &c->granule);
-	}
-}
-
-static const char *
-run_cands(Exec *x, void *arg)
-{
-	return run_all(x, &x->job, take_cand, arg);
-}
 
 static int
 cand_cmp(const void *a, const void *b, void *arg)
@@ -859,12 +834,50 @@ cand_cmp(const void *a, const void *b, void *arg)
 	return (x->key < y->key) == !t->desc ? -1 : 1;
 }
 
+/* the k best of the candidates, the rest dropped: no later batch brings back a row they beat */
+static void
+cand_keep(TopnTake *t)
+{
+	if (t->k > 0)
+		sift_nth(t->cand, t->n, sizeof(SiftGpuCand), t->k - 1, cand_cmp, t);
+	t->n = t->k;
+}
+
+/* the candidates of a batch: a full array of twice the k best keeps only those, so the batches of a scan hold as many as the LIMIT asks for */
+static void
+take_cand(Exec *x, const SiftVkResult *res, void *arg)
+{
+	TopnTake   *t = arg;
+
+	for (uint32 i = 0; i < res->ncand; i++)
+	{
+		int64		meta = res->cand[2 * i + 1];
+		SiftGpuCand *c;
+
+		if (t->n == t->cap && t->n >= 2 * (uint64) t->k)
+			cand_keep(t);
+		else if (t->n == t->cap)
+			t->cand = repalloc(t->cand, (t->cap *= 2) * sizeof(SiftGpuCand));
+		c = &t->cand[t->n++];
+		c->key = res->cand[2 * i];
+		c->isnull = (meta >> 62) & 1;
+		c->row = (uint32) meta & 0x3FFFFFFF;
+		x->plan->ops->locate(x->plan, (uint32) ((uint64) meta >> 32) & 0x3FFFFFFF, &c->part_id, &c->part_gen, &c->granule);
+	}
+}
+
+static const char *
+run_cands(Exec *x, void *arg)
+{
+	return run_all(x, &x->job, take_cand, arg);
+}
+
 bool
 sift_gpu_v6_topn(const SiftGpuQuery *q, uint32 k, bool desc, bool nulls_first, bool prunable, MemoryContext cx, SiftGpuRun **runp, SiftGpuCand **cand, uint32 *ncand)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	Exec		x;
-	TopnTake	t = {.cap = 1024,.desc = desc,.nulls_first = nulls_first};
+	TopnTake	t = {.cap = 1024,.k = k,.desc = desc,.nulls_first = nulls_first};
 	bool		ok;
 
 	begin(&x, q, runp, cx);
@@ -878,12 +891,12 @@ sift_gpu_v6_topn(const SiftGpuQuery *q, uint32 k, bool desc, bool nulls_first, b
 		ok = decline(x.run, "fewer rows than the LIMIT have a sort key, and the rows without one sort last");
 	if (ok)
 	{
-		if (t.n > k && k > 0)
-			sift_nth(t.cand, t.n, sizeof(SiftGpuCand), k - 1, cand_cmp, &t);
-		sift_nth_sort(t.cand, Min(t.n, k), sizeof(SiftGpuCand), cand_cmp, &t);
+		if (t.n > k)
+			cand_keep(&t);
+		sift_nth_sort(t.cand, t.n, sizeof(SiftGpuCand), cand_cmp, &t);
 	}
 	*cand = ok ? t.cand : NULL;
-	*ncand = ok ? Min(t.n, k) : 0;
+	*ncand = ok ? t.n : 0;
 	x.run->used = ok;
 	MemoryContextSwitchTo(old);
 	return ok;

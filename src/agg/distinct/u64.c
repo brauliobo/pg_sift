@@ -3,6 +3,7 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"
 
@@ -432,6 +433,7 @@ buckets_dedup(SiftDu64G *d)
 
 	for (int i = 0; i < DU64G_BUCKETS; i++)
 	{
+		CHECK_FOR_INTERRUPTS();
 		bucket_dedup(d, &d->bk[i]);
 		kept += d->bk[i].n;
 	}
@@ -441,7 +443,8 @@ buckets_dedup(SiftDu64G *d)
 
 /*
  * a pair into its bucket: false, with nothing added, when the bucket must grow, or a group beyond the ones the set has counters for must have one, and the budget does not hold it (once the
- * buckets have been deduplicated, which may leave room): the counts of the groups are made in a dense array of the groups at the end, so a far group is the bytes of all the groups before it
+ * bucket has been deduplicated, which leaves room only when it frees a quarter of it: a bucket kept one pair short of full would be deduplicated again for every pair): the counts of the groups are
+ * made in a dense array of the groups at the end, so a far group is the bytes of all the groups before it
  */
 static bool
 bucket_put(SiftDu64G *d, uint32 gid, uint64 value, uint64 h)
@@ -452,8 +455,9 @@ bucket_put(SiftDu64G *d, uint32 gid, uint64 value, uint64 h)
 
 	if (grow + counters > 0 && sift_du64g_bytes(d) + grow + counters > d->budget)
 	{
-		buckets_dedup(d);
-		if (b->n == b->cap || sift_du64g_bytes(d) + counters > d->budget)
+		if (grow > 0)
+			bucket_dedup(d, b);
+		if (b->n > b->cap - b->cap / 4 || sift_du64g_bytes(d) + counters > d->budget)
 			return false;
 	}
 	bucket_push(d, gid, value, h);
@@ -529,6 +533,7 @@ sift_du64g_add_batch(SiftDu64G *d, const uint32 *gids, const uint64 *vals, uint3
 	{
 		const uint32 m = Min(DU64G_TILE, n - base);
 
+		CHECK_FOR_INTERRUPTS();
 		for (uint32 i = 0; i < m; i++)
 			h[i] = pair_hash(vals[base + i], gids[base + i]);
 		for (uint32 i = 0; d->bk == NULL && i < Min(m, DU64G_AHEAD); i++)

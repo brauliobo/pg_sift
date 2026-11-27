@@ -320,7 +320,7 @@ par_local_load(const void *local)
 {
 	const ParLocal *l = local;
 	const SiftV6Group *g = l->g;
-	uint64		bytes = g->tx.cap + (g->slab != NULL ? sift_strslab_bytes(g->slab) : 0);
+	uint64		bytes = g->tx.cap + (g->slab != NULL ? sift_strslab_bytes(g->slab) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0);
 
 	if (l->scanning)
 		bytes += l->env->lean ? sift_v6_par_dist_load(l->dist_out) : sift_distinct_bytes(l->seen) + v6g_dist_dict_load(g) * SEEN_ENTRY_BYTES;
