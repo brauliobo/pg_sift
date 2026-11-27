@@ -5,6 +5,8 @@
 -- table or of the source table, and of the column of the source, does not stop the writes to the source.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the leaf names of the metapage and of the segments this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;

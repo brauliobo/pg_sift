@@ -2,6 +2,8 @@
 -- read from the heap; CREATE INDEX says how many units hold one. sift.test_limits lowers the dictionary so that a few thousand documents pass it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the key dictionary and the overflow units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -28,7 +30,7 @@ CREATE INDEX jw_col ON jw USING sift_col (id, m) WITH (paths = 'm.* int4');
 VACUUM (FREEZE, ANALYZE) jw;
 SELECT sift.col_verify('jw_col', true);
 
--- the query that reads the keys keeps the normal plan, with the same answer; a query that does not read them is scanned
+-- the query that reads the keys and the one that does not are scanned, with the answers of the normal plan
 SELECT pushed('SELECT e.key, sum(e.value::int) FROM jw, jsonb_each_text(m) e GROUP BY e.key') AS keys_scanned,
 	same('SELECT e.key, sum(e.value::int) FROM jw, jsonb_each_text(m) e GROUP BY e.key');
 SELECT pushed('SELECT id % 7, count(*), sum(id) FROM jw GROUP BY 1') AS ids_scanned, same('SELECT id % 7, count(*), sum(id) FROM jw GROUP BY 1');
