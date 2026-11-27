@@ -98,8 +98,9 @@ extern bool sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri);
 extern int	sift_v6_unnest_rte_col(SiftV6ElemRte *rte, const char *name, Oid type, bool kind);
 /* the array of a row is `array` (a column of the table, an expression of it the index holds as a column, or the key of such a document): its place in rte */
 extern void sift_v6_unnest_array_rte(const Expr *array, SiftV6ElemRte *out);
-/* the type of the member `name` of the objects of the array rte names, as the leaf of the index holds it (text, an integer or a boolean); InvalidOid when the index has no such leaf or holds it otherwise */
-extern Oid	sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name);
+/* the type of the member `name` of the objects of the array rte names, as the leaf of the index holds it (text, an integer or a boolean); InvalidOid when the index has no such leaf or holds it otherwise.
+ * astext: the text leaf holds the text of numbers and booleans too, so its values do not say which were JSON strings */
+extern Oid	sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name, bool *astext);
 
 /* doc ->> 'key' = 'constant' of a shredded text key of a jsonb column of the fact table, as a comparison of the virtual attribute of the key's leaf (agg/qual/jsonb.c); NULL when it is not one */
 extern Expr *sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op);

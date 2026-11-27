@@ -65,14 +65,14 @@ exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
 	return sp;
 }
 
-/* the sub-plan or call c is, under at most one NOT */
+/* the sub-plan or call c is, under at most one NOT; a negated call of doc -> 'key' is no test of the elements (agg/unnest/path.h) */
 static const Node *
 test_node(const Node *c, bool *negated)
 {
 	*negated = IsA(c, BoolExpr) && ((const BoolExpr *) c)->boolop == NOT_EXPR;
 	if (*negated)
 		c = linitial(((const BoolExpr *) c)->args);
-	return IsA(c, SubPlan) || sift_v6_unnest_path_call(c) ? c : NULL;
+	return IsA(c, SubPlan) || (sift_v6_unnest_path_call(c) && !(*negated && sift_v6_unnest_path_keyed(c))) ? c : NULL;
 }
 
 static TestCand *

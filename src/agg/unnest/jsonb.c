@@ -413,7 +413,7 @@ rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
 }
 
 Oid
-sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name)
+sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name, bool *astext)
 {
 	const SiftColRel *r = p->colrel;
 	const char *key;
@@ -423,6 +423,7 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 
 	if (i < 0 || !r->json[i + 1] || (group = sift_v6_unnest_group_of(r, i + 1, key)) < 0 || (leaf = sift_v6_unnest_member_leaf(r, i + 1, group, name)) < 0)
 		return InvalidOid;
+	*astext = (r->schema->cols[leaf].flags & SIFT_COLD_ASTEXT) != 0;
 	return leaf_type(&r->schema->cols[leaf]);
 }
 
