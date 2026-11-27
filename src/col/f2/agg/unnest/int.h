@@ -188,5 +188,7 @@ extern int	sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6C
 extern void sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
 extern void sift_f2_unnest_emit_heap_keys(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
+/* the quals of the table on columns of the index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
+extern void sift_f2_unnest_where_preds(UnRun *u, const SiftColRel *r, Relation index, SiftF2PullSpec *ps);
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_INT_H */
