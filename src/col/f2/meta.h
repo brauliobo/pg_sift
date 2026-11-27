@@ -67,8 +67,8 @@ typedef struct SiftColMetaPageData
 	uint32		vm_all_visible_vblocks;	/* sift_table VM: cached ALL_VISIBLE vblocks */
 	uint32		vm_all_frozen_vblocks;	/* sift_table VM: cached ALL_FROZEN vblocks */
 	uint64		vm_total_vblocks;		/* sift_table VM: high-water vblock watermark */
-	uint64		key_order_change_gen;	/* 0 if all live parts match active key_order; else part_gen threshold */
-	uint32		active_key_order_hash;	/* hash of active (attnum, sort_flags)[0..nsort-1] */
+	uint64		key_order_change_gen;	/* sift_table: every part of this generation or above is in the key of active_key_order_hash (col/f2/key_sig.h) */
+	uint32		active_key_order_hash;	/* sift_table: the key of the last commit that added parts; 0 (and the generation 0): no commit has said, every part is in the key of the table */
 	TransactionId track_xid;			/* SIFT_META_FLAG_DELETES_HEARD: the transaction of the build; a snapshot that began after it ended sees every row the build read as the heap shows it */
 	char		maint_errmsg[SIFT_COL_MAINT_ERR_LEN];
 } SiftColMetaPageData;

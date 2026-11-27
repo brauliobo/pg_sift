@@ -71,6 +71,11 @@ typedef struct Change
 	uint64		tier_dir_gen;
 	bool		set_cd_dir;		/* a partition's column delta anchor names a SIFT_PT_COL_DELTA_DIR: the metapage says so for every reader (SIFT_COMPAT_COL_DELTA_DIR) */
 	FullTransactionId new_min_xid;
+	uint32		key_sig;		/* the key of the parts the change adds (col/f2/key_sig.h), 0: it adds none of a sift_table */
+	bool		key_mixed;		/* it adds parts of two keys */
+	uint64		key_cut;		/* the generation from which the parts are in that key, when the change moves the key of the metapage */
+	int			key_lists;		/* the lists of partitions it writes again, and the least generation of a part they hold (0: a partition it changes and does not list) */
+	uint64		key_least_gen;
 } Change;
 
 #define PLIST(p)	((SiftPartListPageData *) SiftPageGetData(p))
@@ -241,6 +246,12 @@ extern void sift_proj_check(Relation rel, const SiftColMetaPageData *meta, uint6
 extern void sift_mf_build_tier(Relation rel, Tree *t, Change *ch, const SiftManifestEdit *e, const uint64 *expire_gens, int nexpire, BlkVec *created);
 extern void sift_mf_apply_tier(SiftColMetaPageData *m, const Change *ch);
 extern void sift_mf_check_added(Relation rel, const SiftPartitionEntry *e, const SiftPartDesc *p);
+extern void sift_mf_note_key(Relation rel, Change *ch, const SiftManifestEdit *e);
+extern void sift_mf_note_key_sig(Change *ch, uint32 sig);
+extern void sift_mf_note_list(Change *ch, uint64 least_gen);
+extern uint64 sift_mf_least_gen(const SiftPartDesc *parts, int n);
+extern void sift_mf_key_cut(Relation rel, const SiftColMetaPageData *read, Change *ch);
+extern void sift_mf_stamp_key(SiftColMetaPageData *m, const Change *ch);
 
 /* What the blocks a commit releases wait for (release.c) */
 extern bool sift_manifest_unshared(Relation rel);

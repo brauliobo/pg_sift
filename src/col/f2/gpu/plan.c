@@ -378,7 +378,7 @@ key_prune_init(KeyPrune *kp, const SiftGpuQuery *q)
 		preds[n++] = (SiftColPred) {.col = q->leaf[q->in[i].col],.op = SIFT_COLOP_IN,.nvals = (int) q->in[i].n,.vals = in};
 	}
 	sift_f2_key_plan(&kp->f, store_of(q)->schema->cols, preds, n, &kp->plan);
-	kp->possible = sift_f2_key_set(&kp->f, preds, n, &kp->ks) && kp->plan.state != SIFT_KEY_PLAN_EMPTY;
+	kp->possible = sift_f2_key_set(q->rel, &kp->f, preds, n, &kp->ks) && kp->plan.state != SIFT_KEY_PLAN_EMPTY;
 }
 
 /* The granules of the part the key of the index can reach: its marks when it has them, else the zones of the lead column; the whole part for one whose columns are mapped (the key is read by leaf) */

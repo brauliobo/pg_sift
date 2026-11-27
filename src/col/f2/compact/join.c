@@ -5,6 +5,7 @@
 
 #include "col/f2/compact/compact.h"
 #include "col/f2/dv_join.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/kll/kll.h"
 #include "core/page_io.h"
 #include "core/xid_cache.h"
@@ -15,7 +16,7 @@ by_key(const void *a, const void *b)
 	return memcmp((*(const SiftPartDesc *const *) a)->key_lo, (*(const SiftPartDesc *const *) b)->key_lo, SIFT_BOUND_BYTES);
 }
 
-/* Part b can follow part a in a joined part: its keys ascend from a's, or neither has a key (their rows have no order to keep) */
+/* Part b can follow part a in a joined part: its keys ascend from a's, or neither has a key (their rows have no order to keep); the parts are in the key of the commit (they have one schema) */
 static bool
 part_follows(const SiftPartDesc *a, const SiftPartDesc *b)
 {
@@ -90,7 +91,7 @@ sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, i
 		ndead[i] = at[i]->ndead;
 		sorted[i].dv_blk = InvalidBlockNumber;
 	}
-	if (!sift_parts_joinable(rel, src, n) || (spec->preagg && sift_part_section(src[0], SEC_PREAGG) == NULL) || !sift_dv_join_sparse(nrows, ndead, n, sift_dead_rewrite_pct))
+	if (!sift_parts_joinable(rel, src, n) || sift_f2_part_key_sig(rel, src[0]) != sift_f2_spec_key_sig(spec) || (spec->preagg && sift_part_section(src[0], SEC_PREAGG) == NULL) || !sift_dv_join_sparse(nrows, ndead, n, sift_dead_rewrite_pct))
 		return false;
 	res->new_gen = sift_manifest_new_gen(rel, 1);
 	if (spec->kll != NULL && sift_part_section(src[0], SEC_KLL) != NULL && sift_dv_join_keeps_sketch(nrows, ndead, n))

@@ -217,6 +217,7 @@ typedef struct SiftManifestEdit
 	int			ndrop;
 	const SiftPartDesc *add_parts;
 	int			nadd;
+	uint32		key_sig;		/* the key the added parts are in (col/f2/key_sig.h); 0 only for an index */
 	const SiftPartDesc *update_parts;
 	int			nupdate;
 	const SiftPartDesc *expect_parts;	/* NULL, or nupdate descriptors as the caller read them under the partition lock: the commit fails when the manifest holds others */

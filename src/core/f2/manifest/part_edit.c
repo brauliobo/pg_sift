@@ -85,3 +85,72 @@ sift_mf_apply_updates(Relation rel, const SiftPartitionEntry *ent, SiftPartDesc 
 		parts[at] = e->update_parts[i];
 	}
 }
+
+/* Every edit of a sift_table that adds parts names their key */
+void
+sift_mf_note_key(Relation rel, Change *ch, const SiftManifestEdit *e)
+{
+	if (e->nadd == 0)
+		return;
+	SIFT_INVARIANT(e->key_sig != 0 || rel->rd_rel->relkind == RELKIND_INDEX, "sift_table \"%s\": an edit adds parts in no key", RelationGetRelationName(rel));
+	sift_mf_note_key_sig(ch, e->key_sig);
+}
+
+void
+sift_mf_note_key_sig(Change *ch, uint32 sig)
+{
+	if (sig == 0)
+		return;
+	ch->key_mixed |= ch->key_sig != 0 && sig != ch->key_sig;
+	ch->key_sig = sig;
+}
+
+void
+sift_mf_note_list(Change *ch, uint64 least_gen)
+{
+	ch->key_least_gen = ch->key_lists++ == 0 ? least_gen : Min(ch->key_least_gen, least_gen);
+}
+
+uint64
+sift_mf_least_gen(const SiftPartDesc *parts, int n)
+{
+	uint64		least = PG_UINT64_MAX;
+
+	for (int i = 0; i < n; i++)
+		least = Min(least, parts[i].part_gen);
+	return least;
+}
+
+static bool
+key_moves(const SiftColMetaPageData *m, const Change *ch)
+{
+	return ch->key_sig != 0 && (m->active_key_order_hash != ch->key_sig || ch->key_mixed);
+}
+
+/*
+ * The generation a commit that moves the key starts it at, taken once the manifest is read and before Block 0 is locked: the generations are handed out in order, so every part of a commit
+ * before it has a smaller one (a commit that comes in between moves the version, and the publish is done again)
+ */
+void
+sift_mf_key_cut(Relation rel, const SiftColMetaPageData *read, Change *ch)
+{
+	if (key_moves(read, ch) && (read->active_key_order_hash != 0 || ch->key_mixed))
+		ch->key_cut = sift_manifest_new_gen(rel, 1);
+}
+
+/*
+ * A commit that adds parts of another key than the metapage names makes it that key's from its cut on (a first commit says the parts before it are in its key). A commit that writes again
+ * the list of every partition, when each part it lists is of the cut or above, says every part is in the key.
+ */
+void
+sift_mf_stamp_key(SiftColMetaPageData *m, const Change *ch)
+{
+	if (key_moves(m, ch))
+	{
+		SIFT_INVARIANT(ch->key_cut != 0 || (m->active_key_order_hash == 0 && !ch->key_mixed), "the commit moves the key of the parts without a cut");
+		m->key_order_change_gen = ch->key_cut;
+		m->active_key_order_hash = ch->key_sig;
+	}
+	else if (m->key_order_change_gen != 0 && ch->key_lists == (int) m->npartitions && ch->key_least_gen >= m->key_order_change_gen)
+		m->key_order_change_gen = 0;
+}

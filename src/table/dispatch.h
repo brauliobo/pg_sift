@@ -67,6 +67,9 @@ extern void sift_tbl_v2_init(void);
 /* The hook of ALTER TABLE, SET SCHEMA and RENAME COLUMN on a table of a format that has callbacks for them */
 extern void sift_tbl_utility_init(void);
 
+/* The sift_table an ALTER TABLE running now rewrites into rel (the new heap of ATRewriteTable), InvalidOid when rel is no such heap */
+extern Oid	sift_tbl_rewrite_source(Relation rel);
+
 /* The table of the relation, and of a format major */
 extern const SiftTableFormatOps *sift_tbl_ops(Relation rel);
 extern const SiftTableFormatOps *sift_tbl_ops_of_major(uint16 major);

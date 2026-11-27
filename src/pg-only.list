@@ -234,6 +234,8 @@ col/dictshm/test.c
 col/dsmreg.c
 col/dsmreg.h
 col/f2/alloc_test.c
+col/f2/key_sig.c
+col/f2/key_sig.h
 col/f2/meta.c
 col/f2/meta.h
 col/f2/compact/compact.c

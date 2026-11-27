@@ -114,7 +114,8 @@ typedef struct SiftF2KeySet
 {
 	int			n;
 	SiftF2KeyRange range[SIFT_F2_MAX_RANGES];
-	SiftF2KeyRange hull;
+	SiftF2KeyRange hull;			/* of the partitions; unbounded unless every part is in the key (trusted_gen 0) */
+	uint64		trusted_gen;		/* a part of a smaller generation is in another key (col/f2/key_sig.h): its bounds, zones and marks are not of this key */
 } SiftF2KeySet;
 
 /* The integers the predicates allow the time columns (SiftF2Rel.spec.time_cols), as closed ranges; a column no predicate narrows is not used (use[s] false) */

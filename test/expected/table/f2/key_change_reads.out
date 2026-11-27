@@ -1,0 +1,259 @@
+-- Format 2.0 sift_table: the key of a table changes while it has parts (an ALTER TABLE that rewrites it, a primary key added or dropped, key_order set, changed or reset). The parts keep the key
+-- they were written in, and the reads prune by the key only the parts that are in it: every table answers as its heap twin, through the plain scan and SiftAgg, after the change, after
+-- writes under the new key, deletes, a merge and VACUUM FULL. An ALTER TYPE of the column of a TTL keeps it a date or a timestamp.
+CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET client_min_messages = warning;
+SET sift.async_maintenance = off;
+SET max_parallel_workers_per_gather = 0;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+CREATE TABLE kc_twin (id int8 NOT NULL, k int8, ts timestamptz, v int8);
+CREATE TABLE kc_cases (n int GENERATED ALWAYS AS IDENTITY, tbl text, before text, change text);
+INSERT INTO kc_cases (tbl, before, change) VALUES
+	('kc_alter_type', 'ALTER TABLE %I ADD PRIMARY KEY (id)', 'ALTER TABLE %I ALTER COLUMN v TYPE numeric'),
+	('kc_add_pk', 'SELECT 1', 'ALTER TABLE %I ADD PRIMARY KEY (id)'),
+	('kc_drop_pk', 'ALTER TABLE %I ADD CONSTRAINT %1$s_pk PRIMARY KEY (id)', 'ALTER TABLE %I DROP CONSTRAINT %1$s_pk'),
+	('kc_key_order', $$SELECT sift.table_set_option(%L, 'key_order', 'id')$$, $$SELECT sift.table_set_option(%L, 'key_order', 'k')$$),
+	('kc_key_desc', $$SELECT sift.table_set_option(%L, 'key_order', 'k')$$, $$SELECT sift.table_set_option(%L, 'key_order', 'ts desc, k')$$),
+	('kc_key_reset', $$SELECT sift.table_set_option(%L, 'key_order', 'k')$$, $$SELECT sift.table_reset_option(%L, 'key_order')$$);
+CREATE PROCEDURE kc_write(lo int, hi int) LANGUAGE plpgsql AS $$
+DECLARE t text;
+BEGIN
+	INSERT INTO kc_twin SELECT g, 40000 - g, timestamptz '2024-01-01' - g * interval '1 minute', g FROM generate_series(lo, hi) g;
+	FOR t IN SELECT tbl FROM kc_cases LOOP
+		EXECUTE format('INSERT INTO %I SELECT * FROM kc_twin WHERE id BETWEEN %s AND %s', t, lo, hi);
+	END LOOP;
+END $$;
+-- the predicates whose count differs from the heap twin's, NULL when none does
+CREATE FUNCTION kc_wrong(t text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+	q    text;
+	bad  text := '';
+	a    int8;
+	b    int8;
+BEGIN
+	FOREACH q IN ARRAY ARRAY['id BETWEEN 100 AND 199', 'k BETWEEN 30100 AND 30199', 'k IN (30500, 30501, 39999)', 'id > 29990',
+		$q$ts BETWEEN '2023-12-31 20:00' AND '2023-12-31 21:00'$q$, $q$ts < '2023-12-30'$q$, 'v % 7 = 3'] LOOP
+		EXECUTE format('SELECT count(*) FROM %I WHERE %s', t, q) INTO a;
+		EXECUTE format('SELECT count(*) FROM kc_twin WHERE %s', q) INTO b;
+		IF a <> b THEN
+			bad := bad || format('%s: %s, the heap %s; ', q, a, b);
+		END IF;
+	END LOOP;
+	RETURN nullif(bad, '');
+END $$;
+CREATE FUNCTION kc_check(at text) RETURNS TABLE (step text, tbl text, agg text, plain text) LANGUAGE plpgsql AS $$
+BEGIN
+	FOR tbl IN SELECT c.tbl FROM kc_cases c ORDER BY c.n LOOP
+		PERFORM set_config('sift.enable_agg', 'on', true);
+		agg := kc_wrong(tbl);
+		PERFORM set_config('sift.enable_agg', 'off', true);
+		plain := kc_wrong(tbl);
+		step := at;
+		RETURN NEXT;
+	END LOOP;
+END $$;
+SELECT format('CREATE TABLE %I (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table', tbl) FROM kc_cases \gexec
+CREATE TABLE kc_alter_type (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+CREATE TABLE kc_add_pk (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+CREATE TABLE kc_drop_pk (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+CREATE TABLE kc_key_order (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+CREATE TABLE kc_key_desc (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+CREATE TABLE kc_key_reset (id int8 NOT NULL, k int8, ts timestamptz, v int8) USING sift_table
+SELECT format(before, tbl) FROM kc_cases \gexec
+ALTER TABLE kc_alter_type ADD PRIMARY KEY (id)
+SELECT 1
+ ?column? 
+----------
+        1
+(1 row)
+
+ALTER TABLE kc_drop_pk ADD CONSTRAINT kc_drop_pk_pk PRIMARY KEY (id)
+SELECT sift.table_set_option('kc_key_order', 'key_order', 'id')
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('kc_key_desc', 'key_order', 'k')
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('kc_key_reset', 'key_order', 'k')
+ table_set_option 
+------------------
+ 
+(1 row)
+
+CALL kc_write(1, 20000);
+SELECT format('VACUUM %I', tbl) FROM kc_cases \gexec
+VACUUM kc_alter_type
+VACUUM kc_add_pk
+VACUUM kc_drop_pk
+VACUUM kc_key_order
+VACUUM kc_key_desc
+VACUUM kc_key_reset
+SELECT format(change, tbl) FROM kc_cases \gexec
+ALTER TABLE kc_alter_type ALTER COLUMN v TYPE numeric
+ALTER TABLE kc_add_pk ADD PRIMARY KEY (id)
+ALTER TABLE kc_drop_pk DROP CONSTRAINT kc_drop_pk_pk
+SELECT sift.table_set_option('kc_key_order', 'key_order', 'k')
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_set_option('kc_key_desc', 'key_order', 'ts desc, k')
+ table_set_option 
+------------------
+ 
+(1 row)
+
+SELECT sift.table_reset_option('kc_key_reset', 'key_order')
+ table_reset_option 
+--------------------
+ 
+(1 row)
+
+SELECT * FROM kc_check('after the change');
+       step       |      tbl      | agg | plain 
+------------------+---------------+-----+-------
+ after the change | kc_alter_type |     | 
+ after the change | kc_add_pk     |     | 
+ after the change | kc_drop_pk    |     | 
+ after the change | kc_key_order  |     | 
+ after the change | kc_key_desc   |     | 
+ after the change | kc_key_reset  |     | 
+(6 rows)
+
+CALL kc_write(20001, 30000);
+SELECT * FROM kc_check('after writes in the new key');
+            step             |      tbl      | agg | plain 
+-----------------------------+---------------+-----+-------
+ after writes in the new key | kc_alter_type |     | 
+ after writes in the new key | kc_add_pk     |     | 
+ after writes in the new key | kc_drop_pk    |     | 
+ after writes in the new key | kc_key_order  |     | 
+ after writes in the new key | kc_key_desc   |     | 
+ after writes in the new key | kc_key_reset  |     | 
+(6 rows)
+
+DELETE FROM kc_twin WHERE id % 5 = 0;
+SELECT format('DELETE FROM %I WHERE id %% 5 = 0', tbl) FROM kc_cases \gexec
+DELETE FROM kc_alter_type WHERE id % 5 = 0
+DELETE FROM kc_add_pk WHERE id % 5 = 0
+DELETE FROM kc_drop_pk WHERE id % 5 = 0
+DELETE FROM kc_key_order WHERE id % 5 = 0
+DELETE FROM kc_key_desc WHERE id % 5 = 0
+DELETE FROM kc_key_reset WHERE id % 5 = 0
+SELECT * FROM kc_check('after deletes');
+     step      |      tbl      | agg | plain 
+---------------+---------------+-----+-------
+ after deletes | kc_alter_type |     | 
+ after deletes | kc_add_pk     |     | 
+ after deletes | kc_drop_pk    |     | 
+ after deletes | kc_key_order  |     | 
+ after deletes | kc_key_desc   |     | 
+ after deletes | kc_key_reset  |     | 
+(6 rows)
+
+SELECT format('SELECT sift.merge(%L, true)', tbl) FROM kc_cases \gexec
+SELECT sift.merge('kc_alter_type', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT sift.merge('kc_add_pk', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT sift.merge('kc_drop_pk', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT sift.merge('kc_key_order', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT sift.merge('kc_key_desc', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT sift.merge('kc_key_reset', true)
+ merge 
+-------
+     1
+(1 row)
+
+SELECT * FROM kc_check('after a merge');
+     step      |      tbl      | agg | plain 
+---------------+---------------+-----+-------
+ after a merge | kc_alter_type |     | 
+ after a merge | kc_add_pk     |     | 
+ after a merge | kc_drop_pk    |     | 
+ after a merge | kc_key_order  |     | 
+ after a merge | kc_key_desc   |     | 
+ after a merge | kc_key_reset  |     | 
+(6 rows)
+
+SELECT format('VACUUM FULL %I', tbl) FROM kc_cases \gexec
+VACUUM FULL kc_alter_type
+VACUUM FULL kc_add_pk
+VACUUM FULL kc_drop_pk
+VACUUM FULL kc_key_order
+VACUUM FULL kc_key_desc
+VACUUM FULL kc_key_reset
+SELECT * FROM kc_check('after VACUUM FULL');
+       step        |      tbl      | agg | plain 
+-------------------+---------------+-----+-------
+ after VACUUM FULL | kc_alter_type |     | 
+ after VACUUM FULL | kc_add_pk     |     | 
+ after VACUUM FULL | kc_drop_pk    |     | 
+ after VACUUM FULL | kc_key_order  |     | 
+ after VACUUM FULL | kc_key_desc   |     | 
+ after VACUUM FULL | kc_key_reset  |     | 
+(6 rows)
+
+-- the column of a TTL stays a date or a timestamp
+CREATE TABLE kc_ttl (id int, at timestamptz NOT NULL) USING sift_table;
+SELECT sift.set_ttl('kc_ttl', 'at', interval '7 days');
+ set_ttl 
+---------
+ t
+(1 row)
+
+ALTER TABLE kc_ttl ALTER COLUMN at TYPE text;
+ERROR:  cannot change the type of column "at" of table "kc_ttl": its TTL names it
+HINT:  Clear the TTL first with SELECT sift.set_ttl('kc_ttl'::regclass, 'at', NULL).
+ALTER TABLE kc_ttl ALTER COLUMN at TYPE timestamp;
+SELECT atttypid::regtype FROM pg_attribute WHERE attrelid = 'kc_ttl'::regclass AND attname = 'at';
+          atttypid           
+-----------------------------
+ timestamp without time zone
+(1 row)
+
+DROP TABLE kc_ttl;
+SELECT format('DROP TABLE %I', tbl) FROM kc_cases \gexec
+DROP TABLE kc_alter_type
+DROP TABLE kc_add_pk
+DROP TABLE kc_drop_pk
+DROP TABLE kc_key_order
+DROP TABLE kc_key_desc
+DROP TABLE kc_key_reset
+DROP TABLE kc_twin, kc_cases;
+DROP FUNCTION kc_check, kc_wrong;
+DROP PROCEDURE kc_write;
+DROP EXTENSION pg_sift;

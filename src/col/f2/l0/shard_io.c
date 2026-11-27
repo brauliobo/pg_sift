@@ -11,6 +11,7 @@
 
 #include "col/dsmreg.h"
 #include "col/f2/f2.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/l0/href_fetch.h"
 #include "col/f2/store/store.h"
 #include "col/f2/l0/shard_dir.h"
@@ -359,6 +360,7 @@ typedef struct HotFlush
 	const uint8 *key_lo;
 	SiftPartDesc part;
 	bool		has_part;
+	uint32		key_sig;
 } HotFlush;
 
 static void
@@ -375,7 +377,7 @@ flush_publish(void *ctx, BlockNumber anchor)
 	HotFlush   *hf = ctx;
 
 	sift_manifest_commit(hf->rel, &(SiftManifestEdit) {.part_id = hf->part_id,.key_lo = hf->key_lo,.set_l0_slab = true,
-		.new_l0_slab_blk = anchor,.add_parts = &hf->part,.nadd = hf->has_part});
+		.new_l0_slab_blk = anchor,.add_parts = &hf->part,.nadd = hf->has_part,.key_sig = hf->key_sig});
 }
 
 /* No entry of the shared table: no writer goes to the directory, as the caller holds the lock of the partition, and its rows are written out as it is */
@@ -435,7 +437,7 @@ sift_l0_hot_flush(Relation rel, uint64 part_id, const uint8 *key_lo, BlockNumber
 	SiftL0Table *t = table_try();
 	const SiftPartSpec *spec = &sift_f2_store_open(rel)->spec;
 	SiftL0ShardShm *shm = t != NULL ? claim_held(t, rel, part_id) : NULL;
-	HotFlush	hf = {.rel = rel,.part_id = part_id,.key_lo = key_lo};
+	HotFlush	hf = {.rel = rel,.part_id = part_id,.key_lo = key_lo,.key_sig = sift_f2_spec_key_sig(spec)};
 
 	if (shm == NULL)
 		flush_unshared(&hf, spec, anchor);

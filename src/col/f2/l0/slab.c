@@ -10,6 +10,7 @@
 #include "col/f2/cache.h"
 #include "col/f2/vacuum/run.h"
 #include "col/f2/compact/compact.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/l0/href_fetch.h"
 #include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/slab.h"
@@ -883,7 +884,7 @@ sift_l0_slab_publish(Relation rel, uint64 part_id, const uint8 *key_lo, const Si
 {
 	SiftExtent *rel_ext = palloc(Max(npages, 1) * sizeof(SiftExtent));
 	SiftPartDesc d;
-	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = InvalidBlockNumber,.add_parts = &d};
+	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.set_l0_slab = true,.new_l0_slab_blk = InvalidBlockNumber,.add_parts = &d,.key_sig = sift_f2_spec_key_sig(spec)};
 
 	e.nadd = sift_l0_slab_write_part(rel, part_id, spec, rb, &d);
 	for (int i = 0; i < npages; i++)

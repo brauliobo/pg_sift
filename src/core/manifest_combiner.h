@@ -27,18 +27,22 @@ typedef struct SiftManifestExtent
 	uint32		nblocks;
 } SiftManifestExtent;
 
-/* The partition's new SiftPartitionEntry image (192 bytes), the oldest transaction of the parts it added (0: none) and the extents its commit frees */
+/*
+ * The partition's new SiftPartitionEntry image (192 bytes), the oldest transaction of the parts it added (0: none), the key of the parts it added (col/f2/key_sig.h, 0: none of a sift_table), the
+ * least generation of a part of its list (0: the list is not written again) and the extents its commit frees
+ */
 typedef struct SiftManifestEntryDelta
 {
 	uint64		part_id;
 	uint64		min_xid;
+	uint64		key_least_gen;
 	uint32		nrelease;
-	uint32		pad;
+	uint32		key_sig;
 	uint8		entry[SIFT_MC_ENTRY_BYTES];
 	SiftManifestExtent release[SIFT_MC_MAX_RELEASE];
 } SiftManifestEntryDelta;
 
-StaticAssertDecl(sizeof(SiftManifestEntryDelta) == 24 + SIFT_MC_ENTRY_BYTES + 8 * SIFT_MC_MAX_RELEASE,
+StaticAssertDecl(sizeof(SiftManifestEntryDelta) == 32 + SIFT_MC_ENTRY_BYTES + 8 * SIFT_MC_MAX_RELEASE,
 				 "SiftManifestEntryDelta must carry no padding");
 
 typedef struct SiftMcSlotHdr

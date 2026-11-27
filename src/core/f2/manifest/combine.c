@@ -115,6 +115,8 @@ publish_batch(void *ctx, const SiftManifestEntryDelta *const *deltas, uint32 n)
 			*at = after;
 			sift_mf_account(&ch, &before, at);
 			ch.new_min_xid = sift_mf_older_active(ch.new_min_xid, min_xid);
+			sift_mf_note_key_sig(&ch, deltas[i]->key_sig);
+			sift_mf_note_list(&ch, deltas[i]->key_least_gen);
 			for (uint32 j = 0; j < deltas[i]->nrelease; j++)
 				freed[nfreed++] = (SiftExtent) {deltas[i]->release[j].start, deltas[i]->release[j].nblocks};
 		}
@@ -130,7 +132,7 @@ bool
 sift_mf_commit_combined(Relation rel, Change *ch, uint64 part_id, const uint8 *key_lo, uint64 *version)
 {
 	McTable    *t = entry_only(ch) ? mc_get() : NULL;
-	SiftManifestEntryDelta d = {.part_id = part_id,.min_xid = U64FromFullTransactionId(ch->new_min_xid)};
+	SiftManifestEntryDelta d = {.part_id = part_id,.min_xid = U64FromFullTransactionId(ch->new_min_xid),.key_sig = ch->key_sig,.key_least_gen = ch->key_lists > 0 ? ch->key_least_gen : 0};
 
 	if (t == NULL)
 		return false;

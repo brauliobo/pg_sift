@@ -16,6 +16,7 @@
 #include "col/f2/del/delete.h"
 #include "col/f2/del/delvec_delta.h"
 #include "col/f2/dv_join.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/kll/kll.h"
 #include "col/f2/store/store.h"
 #include "core/compat.h"
@@ -857,7 +858,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 				ndelta = 0,
 				capdelta = 0;
 	SiftExtent *rel_ext = palloc(sizeof(SiftExtent));
-	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.drop_gens = gens,.ndrop = ngens};
+	SiftManifestEdit e = {.part_id = part_id,.key_lo = key_lo,.drop_gens = gens,.ndrop = ngens,.key_sig = sift_f2_spec_key_sig(spec)};
 	SiftPartDesc *out = NULL;
 	SiftPendDelRec *delta = NULL;
 	SiftXidHorizonCache hc;

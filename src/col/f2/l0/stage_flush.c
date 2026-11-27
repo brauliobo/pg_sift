@@ -10,6 +10,7 @@
 #include "col/f2/compact/compact.h"
 #include "col/f2/del/delete.h"
 #include "col/f2/f2.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/batch.h"
 #include "col/f2/store/store.h"
 #include "col/f2/vacuum/run.h"
@@ -249,7 +250,7 @@ write_part(Relation rel, SiftTxnStage *st, SiftStagePart *p, const uint8 *key_hi
 		sift_compact_release_outputs(rel, p->part_id, &d, 1);
 		return SIFT_L0_MOVED;
 	}
-	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = p->part_id,.key_lo = p->key_lo,.add_parts = &d,.nadd = 1});
+	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = p->part_id,.key_lo = p->key_lo,.add_parts = &d,.nadd = 1,.key_sig = sift_f2_spec_key_sig(&st->spec)});
 	sift_part_page_unlock(rel, p->part_id, ExclusiveLock);
 	return SIFT_L0_APPENDED;
 }

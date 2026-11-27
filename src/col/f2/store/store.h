@@ -78,7 +78,6 @@ typedef struct SiftF2HostOps
 typedef struct SiftF2StoreOpts
 {
 	char	   *key_order;		/* "" or "auto", "off", or "c1, c2 DESC, ..." */
-	TransactionId key_order_xid;	/* the transaction that gave a sift_table its key_order: a part written by an older one is not in that order; InvalidTransactionId: none given */
 	char	   *paths;
 	char	   *compression;
 	char	   *scope;

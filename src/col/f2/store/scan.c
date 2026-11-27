@@ -592,7 +592,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 	s->offer_decided = MemoryContextAllocZero(cx, Max(o->npreds, 1));
 	s->offer_zones = MemoryContextAllocZero(cx, sizeof(SiftZone *) * Max(o->npreds, 1));
 	s->offer_exceptions = MemoryContextAllocZero(cx, Max(o->npreds, 1));
-	s->possible = sift_f2_key_set(&s->f, o->preds, o->npreds, &s->ks) && sift_f2_time_window(&s->f, o->preds, o->npreds, &s->tw);
+	s->possible = sift_f2_key_set(o->rel, &s->f, o->preds, o->npreds, &s->ks) && sift_f2_time_window(&s->f, o->preds, o->npreds, &s->tw);
 	sift_f2_key_plan(&s->f, o->store->schema->cols, o->preds, o->npreds, &s->plan);
 	s->possible = s->possible && s->plan.state != SIFT_KEY_PLAN_EMPTY;
 	if (!s->possible)

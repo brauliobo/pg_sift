@@ -13,6 +13,7 @@
 #include "common/hashfn.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "parser/parse_type.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/datum.h"
@@ -32,6 +33,7 @@
 #include "core/damage.h"
 #include "core/meta_peek.h"
 #include "core/owner_sql.h"
+#include "table/dispatch.h"
 
 static bool
 is_time_type(Oid t)
@@ -214,21 +216,38 @@ define_leaves_from(Relation rel, SiftF2Store *store, Oid paths_relid)
 	MemoryContextSwitchTo(old);
 }
 
+/* The leaves of the table; the new heap an ALTER TABLE rewrites a table into takes the layout of that table */
 void
 sift_tbl_f2_define_leaves(Relation rel, SiftF2Store *store)
 {
-	define_leaves_from(rel, store, RelationGetRelid(rel));
+	Oid			from = sift_tbl_rewrite_source(rel);
+	Relation	old;
+
+	if (!OidIsValid(from))
+	{
+		define_leaves_from(rel, store, RelationGetRelid(rel));
+		return;
+	}
+	old = relation_open(from, NoLock);
+	sift_tbl_f2_adopt_layout(rel, store, sift_f2_store_open(old));
+	relation_close(old, NoLock);
 }
 
-/* The paths and the key order of the table a rewrite copies from: the new relation has neither its options nor its primary key nor its declarations yet, and its parts must hold the leaves and sort as the old ones do */
+/*
+ * The paths and the key order of the table a rewrite copies from: the new relation has neither its options nor its primary key nor its declarations yet, and its parts must hold the leaves and sort
+ * as the old ones do. The key is taken by attribute, up to a column that has no leaf in the new relation.
+ */
 void
 sift_tbl_f2_adopt_layout(Relation to_rel, SiftF2Store *to, const SiftF2Store *from)
 {
 	define_leaves_from(to_rel, to, from->relid);
-	to->nkey = from->nkey;
-	memcpy(to->key_cols, from->key_cols, sizeof(to->key_cols));
-	memcpy(to->spec.sort_flags, from->spec.sort_flags, sizeof(to->spec.sort_flags));
-	to->spec.nsort = from->nkey;
+	to->nkey = 0;
+	for (int k = 0; k < from->nkey && to->att_first[from->leaf_attno[from->key_cols[k]]] >= 0; k++)
+	{
+		to->spec.sort_flags[k] = from->spec.sort_flags[k];
+		to->key_cols[to->nkey++] = to->att_first[from->leaf_attno[from->key_cols[k]]];
+	}
+	to->spec.nsort = to->nkey;
 }
 
 /* ---- SEC_SCHEMA ---- */
@@ -465,8 +484,12 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 				if (strcmp(cmd->name != NULL ? cmd->name : default_table_access_method, "sift_table") != 0)
 					forget_catalogs(rel);
 				break;
-			case AT_AddColumn:
 			case AT_AlterColumnType:
+				if (!is_time_type(getBaseType(typenameTypeId(NULL, castNode(ColumnDef, cmd->def)->typeName))))
+					check_ttl_column(rel, cmd->name, "change the type of");
+				fence = true;
+				break;
+			case AT_AddColumn:
 			case AT_SetTableSpace:
 			case AT_SetLogged:
 			case AT_SetUnLogged:

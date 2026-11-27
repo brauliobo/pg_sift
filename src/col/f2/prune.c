@@ -9,6 +9,7 @@
 
 #include "col/f2/compact/compact.h"
 #include "col/f2/f2.h"
+#include "col/f2/key_sig.h"
 #include "col/f2/marks.h"
 
 /* The integers the predicates on the lead key column allow, and whether they want the NULLs (which sort after every integer, or before when key_order says NULLS FIRST) or nothing else */
@@ -165,15 +166,15 @@ lead_in_values(const SiftF2Rel *f, const SiftColPred *preds, int npreds, const L
 	return n;
 }
 
-bool
-sift_f2_key_set(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks)
+/* The ranges of the lead key column; the hull of the partitions only when every part is in the key, as the partitions are cut by the key of the rows routed to them */
+static bool
+key_ranges(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks)
 {
 	LeadRange	r = {.lo = PG_INT64_MIN,.hi = PG_INT64_MAX};
 	int64		vals[SIFT_F2_MAX_RANGES];
 	int			nv;
 	unsigned	flags = f->nkey > 0 ? f->spec.sort_flags[0] : 0;
 
-	*ks = (SiftF2KeySet) {0};
 	if (sift_spec_int_keys(&f->spec) == 0)
 	{
 		ks->n = 1;
@@ -199,6 +200,17 @@ sift_f2_key_set(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2
 	return true;
 }
 
+bool
+sift_f2_key_set(Relation rel, const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks)
+{
+	*ks = (SiftF2KeySet) {.trusted_gen = sift_f2_key_trusted_gen(rel, sift_f2_spec_key_sig(&f->spec))};
+	if (!key_ranges(f, preds, npreds, ks))
+		return false;
+	if (ks->trusted_gen != 0)
+		ks->hull = (SiftF2KeyRange) {.ilo = PG_INT64_MIN,.ihi = PG_INT64_MAX};
+	return true;
+}
+
 static bool
 key_range_meets(const SiftPartDesc *d, const SiftF2KeyRange *k)
 {
@@ -208,6 +220,8 @@ key_range_meets(const SiftPartDesc *d, const SiftF2KeyRange *k)
 bool
 sift_f2_part_overlaps(const SiftPartDesc *d, const SiftF2KeySet *ks)
 {
+	if (d->part_gen < ks->trusted_gen)
+		return true;
 	for (int i = 0; i < ks->n; i++)
 		if (key_range_meets(d, &ks->range[i]))
 			return true;
@@ -294,7 +308,8 @@ int
 sift_f2_granule_spans(Relation rel, const SiftPart *part, const SiftF2Rel *f, const SiftF2KeySet *ks, const SiftKeyPlan *plan, uint32 spans[][2])
 {
 	const SiftSecDirEntry *zs = sift_part_section(part, SEC_ZONES);
-	const SiftKeyMarks *km = plan->state == SIFT_KEY_PLAN_RANGES ? sift_part_key_marks(rel, part, f) : NULL;
+	const bool	in_key = part->hdr.part_gen >= ks->trusted_gen;
+	const SiftKeyMarks *km = in_key && plan->state == SIFT_KEY_PLAN_RANGES ? sift_part_key_marks(rel, part, f) : NULL;
 	uint32		ng = part->hdr.ngranules;
 	int			n = 0;
 
@@ -302,7 +317,7 @@ sift_f2_granule_spans(Relation rel, const SiftPart *part, const SiftF2Rel *f, co
 		return 0;
 	if (km != NULL)
 		return sift_key_marks_spans(km, plan, spans);
-	if (sift_spec_int_keys(&f->spec) == 0 || zs == NULL || zs->len != (uint64) part->hdr.ncols * ng * sizeof(SiftZone))
+	if (sift_spec_int_keys(&f->spec) == 0 || !in_key || zs == NULL || zs->len != (uint64) part->hdr.ncols * ng * sizeof(SiftZone))
 	{
 		spans[0][0] = 0;
 		spans[0][1] = ng;

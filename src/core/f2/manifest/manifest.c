@@ -597,6 +597,7 @@ sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *vers
 		rel_ext[nrel++] = ch->proj_release[i];
 
 	safexid = sift_manifest_waits_own_xid(rel, nrel) ? GetTopFullTransactionId() : InvalidFullTransactionId;
+	sift_mf_key_cut(rel, &t->meta, ch);
 	buf0 = sift_col_meta_lock(rel, BUFFER_LOCK_EXCLUSIVE);
 	SIFT_NOTE_BLOCK0_X(SIFT_B0_PUBLISH);
 	m = SIFT_COL_META(BufferGetPage(buf0));
@@ -643,6 +644,7 @@ sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *vers
 	if (ch->set_tier)
 		sift_mf_apply_tier(m, ch);
 	m->oldest_active_xid = sift_mf_older_active(m->oldest_active_xid, ch->new_min_xid);
+	sift_mf_stamp_key(m, ch);
 	sift_meta_seal(p0, m->common.struct_size);
 	committed = *m;
 	sift_fsm_release_in(rel, &x, rel_ext, first_batch, safexid);
@@ -767,6 +769,7 @@ edit_parts(Relation rel, Tree *t, Change *ch, const SiftPartitionEntry *ent, con
 	ep->n = sift_mf_drop_parts(rel, ep->parts, ep->n, e, &ep->expire, &ep->nexpire);
 	sift_gen_map_init(&map, ep->parts, ep->n, e->nadd);
 	sift_mf_apply_updates(rel, ent, ep->parts, &map, e);
+	sift_mf_note_key(rel, ch, e);
 	for (int i = 0; i < e->nadd; i++)
 	{
 		sift_mf_check_added(rel, ent, &e->add_parts[i]);
@@ -797,6 +800,7 @@ write_edited_parts(Relation rel, Change *ch, BlkVec *created, SiftPartitionEntry
 																				 (unsigned long long) e->part_id),
 						errhint("The edit that drops the last part of a partition clears its chain.")));
 	sift_mf_fold_entry(ent, ep->parts, ep->n);
+	sift_mf_note_list(ch, sift_mf_least_gen(ep->parts, ep->n));
 	if (sift_col_delta_anchor_has_chain(&ep->anchor))
 		ent->flags |= SIFT_PARTENTRY_HAS_COL_DELTA;
 	else

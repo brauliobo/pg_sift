@@ -19,7 +19,7 @@ sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const SiftF2PullSp
 	if (pr->npred == 0)
 		return;
 	sift_f2_key_plan(sift_f2_rel(index), sift_col_rel(index)->schema->cols, pr->pred, pr->npred, &pr->plan);
-	pr->possible = sift_f2_key_set(sift_f2_rel(index), pr->pred, pr->npred, &pr->keys) && sift_f2_time_window(sift_f2_rel(index), pr->pred, pr->npred, &pr->win) && pr->plan.state != SIFT_KEY_PLAN_EMPTY;
+	pr->possible = sift_f2_key_set(index, sift_f2_rel(index), pr->pred, pr->npred, &pr->keys) && sift_f2_time_window(sift_f2_rel(index), pr->pred, pr->npred, &pr->win) && pr->plan.state != SIFT_KEY_PLAN_EMPTY;
 }
 
 SiftF2TimeWin

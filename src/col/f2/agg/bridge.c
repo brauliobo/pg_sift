@@ -174,7 +174,7 @@ key_set_init(F2Src *s)
 		}
 	}
 	sift_f2_key_plan(f, s->c->schema->cols, preds, n, &s->keyplan);
-	s->possible = sift_f2_key_set(f, preds, n, &s->keys) && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
+	s->possible = sift_f2_key_set(s->c->index, f, preds, n, &s->keys) && s->keyplan.state != SIFT_KEY_PLAN_EMPTY;
 }
 
 bool

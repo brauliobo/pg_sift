@@ -115,8 +115,8 @@ typedef struct SiftF2ScanStats
 extern SiftF2ScanStats sift_f2_scan_stats;
 #endif
 
-/* The key set of the predicates; false when no row can satisfy them */
-extern bool sift_f2_key_set(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks);
+/* The key set of the predicates on rel; false when no row can satisfy them */
+extern bool sift_f2_key_set(Relation rel, const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2KeySet *ks);
 
 /* The time window of the predicates; false when no row can satisfy them */
 extern bool sift_f2_time_window(const SiftF2Rel *f, const SiftColPred *preds, int npreds, SiftF2TimeWin *w);

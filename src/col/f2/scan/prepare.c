@@ -98,7 +98,7 @@ plan_keys(IndexScanDesc scan, F2Scan *s, const ScanKeyData **rows, int nrows)
 			s->npreds++;
 			s->nrowcmp++;
 		}
-	s->possible = s->possible && sift_f2_key_set(f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
+	s->possible = s->possible && sift_f2_key_set(scan->indexRelation, f, s->preds, s->npreds, &s->keys) && sift_f2_time_window(f, s->preds, s->npreds, &s->time);
 	if (s->possible)
 		sift_f2_key_plan(f, r->schema->cols, s->preds, s->npreds, &s->keyplan);
 	for (int i = 0; i < s->nrowcmp && sift_f2_rel_key_spec(f, &spec); i++)
