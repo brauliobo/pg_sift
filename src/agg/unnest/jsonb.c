@@ -73,13 +73,22 @@ sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *rel, SiftV6E
 	return rel->joininfo == NIL && sift_v6_unnest_rte_joined(root, fact, rel, out);
 }
 
-/* doc -> 'key' of a constant key: the document and the key */
+/* doc -> 'key' or doc['key'] of a constant key: the document and the key */
 static const char *
 field_key(const Expr *e, const Expr **doc)
 {
 	const OpExpr *op = (const OpExpr *) e;
 	const Const *k;
+	const Var  *v;
+	const char *key;
 
+	if (IsA(e, SubscriptingRef))
+	{
+		if (!sift_v6_json_member(e, false, &v, &key))
+			return NULL;
+		*doc = (const Expr *) v;
+		return key;
+	}
 	if (!IsA(e, OpExpr) || get_opcode(op->opno) != F_JSONB_OBJECT_FIELD || list_length(op->args) != 2)
 		return NULL;
 	k = lsecond(op->args);
