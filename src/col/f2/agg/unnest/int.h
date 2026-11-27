@@ -115,6 +115,7 @@ typedef struct UnRun
 	int			ntests;
 	int			outer_slot[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* the column of the batch each comparison of a test is with */
 	AttrNumber	outer_att[SIFT_V6_XTESTS * SIFT_V6_XCMPS];	/* and its column of the heap */
+	int			doc_slot[SIFT_V6_XTESTS];	/* the column of the batch that is the presence of the document of a test (SiftV6XTest.doc_leaf), -1: none */
 	ExprState  *heap_test[SIFT_V6_XTESTS];	/* a jsonpath test: the call a row the leaves cannot hold is decided by */
 	bool		flag_used[SIFT_V6_XTESTS];	/* a FILTER of the statement reads the flag of the test */
 	uint64	   *flag_valid[SIFT_V6_XTESTS];

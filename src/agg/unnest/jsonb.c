@@ -437,6 +437,19 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 }
 
 bool
+sift_v6_unnest_doc_leaf(const V6Plan *p, const SiftV6ElemRte *rte, int *leaf)
+{
+	const char *key = NULL;
+	const int	att = rte->key != NULL ? rte_column(p, rte, &key) + 1 : 0;
+
+	*leaf = -1;
+	for (int c = key != NULL ? p->colrel->first[att] : 0; key != NULL && c < p->colrel->first[att] + p->colrel->nleaves[att]; c++)
+		if (sift_col_def_is_present(&p->colrel->schema->cols[c]))
+			*leaf = c;
+	return rte->key == NULL || *leaf >= 0;
+}
+
+bool
 sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
 {
 	SiftV6Ext  *x = sift_v6_ext_new();

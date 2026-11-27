@@ -578,11 +578,9 @@ sift_v6_json_type_clash(const SiftV6Spec *s)
  * The text of a number, a boolean or a document is what `->>` gives for such a value, which the leaf of a text key does not hold (it holds the strings, and a value of another type is an exception
  * the leaf reads as NULL): a comparison with a constant that no such value can be the text of is decided by the leaf alone.
  */
-static bool
-json_text_unambiguous(const Const *c)
+bool
+sift_v6_json_text_unambiguous(const char *s)
 {
-	char	   *s = TextDatumGetCString(c->constvalue);
-
 	return s[0] != '\0' && strchr("0123456789+-.{[", s[0]) == NULL && strcmp(s, "true") != 0 && strcmp(s, "false") != 0 && strcmp(s, "null") != 0 &&
 		pg_strcasecmp(s, "nan") != 0 && pg_strcasecmp(s, "infinity") != 0;
 }
@@ -606,7 +604,7 @@ sift_v6_json_text_qual(const SiftV6Rel *rel, const OpExpr *op)
 		l = (const Expr *) c;
 		c = (const Const *) t;
 	}
-	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTOID || !json_text_unambiguous(c) || !sift_v6_json_read(rel, l, &col) || col.typid != TEXTOID)
+	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTOID || !sift_v6_json_text_unambiguous(TextDatumGetCString(c->constvalue)) || !sift_v6_json_read(rel, l, &col) || col.typid != TEXTOID)
 		return NULL;
 	q = copyObject((OpExpr *) op);
 	q->args = list_make2(makeVar(INDEX_VAR, SIFT_V6_JTEXT_VATT + col.jleaf - 1, TEXTOID, -1, op->inputcollid, 0), copyObject((Node *) c));

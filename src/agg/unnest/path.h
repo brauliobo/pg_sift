@@ -21,8 +21,6 @@
 extern bool sift_v6_unnest_path_call(const Node *e);
 /* the array the call tests, doc or doc -> 'key'; NULL when e is no such call */
 extern const Expr *sift_v6_unnest_path_array(const Node *e);
-/* the call tests doc -> 'key' ('$.key[*] ? (..)'): that is NULL for a document without the key, where the call is false, so only a test that is not negated reads it alike */
-extern bool sift_v6_unnest_path_keyed(const Node *e);
 /* the quals over the element columns of rte (which gains the members they read) that are true of a row whose document the leaves hold exactly when the call is; false: the leaves do not decide it */
 extern bool sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **quals);
 

@@ -8,7 +8,6 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_opfamily_d.h"
-#include "common/jsonapi.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/builtins.h"
@@ -82,16 +81,6 @@ call_path(const Node *e)
 	return IsA(path, Const) && !((const Const *) path)->constisnull ? DatumGetJsonPathP(((const Const *) path)->constvalue) : NULL;
 }
 
-bool
-sift_v6_unnest_path_keyed(const Node *e)
-{
-	const JsonPath *jp;
-	JsonPathItem any;
-	char	   *key;
-
-	return (call_func(e) == F_JSONB_PATH_EXISTS || call_func(e) == F_JSONB_PATH_EXISTS_OPR) && (jp = call_path(e)) != NULL && path_head(jp, &any, &key) && key != NULL;
-}
-
 const Expr *
 sift_v6_unnest_path_array(const Node *e)
 {
@@ -129,17 +118,9 @@ numeric_int(Numeric num, int64 *out)
 }
 
 /*
- * an astext leaf holds the text of numbers and booleans too, where jsonpath compares a string with them as unknown: only a true `==` with a string that no number or boolean reads as
- * ("1", "true") has the answer of the text
+ * The literal is of the JSON type of a leaf of the type, and one this leaf holds as it is (an integer in its range): its comparisons are two-valued, as the quals need. An astext leaf holds the text of
+ * numbers and booleans too, whose comparison with a string is unknown: only a string that none of them prints as is equal to the value of the leaf exactly when the member is that string.
  */
-static bool
-astext_decides(const Lit *lit, int op, bool neg)
-{
-	return op == SCMP_EQ && !neg && !IsValidJsonNumber(lit->s, lit->len) && !(lit->len == 4 && memcmp(lit->s, "true", 4) == 0) &&
-		!(lit->len == 5 && memcmp(lit->s, "false", 5) == 0);
-}
-
-/* the literal is of the JSON type of a leaf of the type, and one this leaf holds as it is (an integer in its range): its comparisons are two-valued, as the quals need */
 static bool
 lit_fits(Oid type, bool astext, const Lit *lit, int op, bool neg, int64 *iv)
 {
@@ -150,7 +131,7 @@ lit_fits(Oid type, bool astext, const Lit *lit, int op, bool neg, int64 *iv)
 		case 'z':
 			return eq_only;
 		case 's':
-			return type == TEXTOID && eq_only && (!astext || astext_decides(lit, op, neg));
+			return type == TEXTOID && (astext ? op == SCMP_EQ && !neg && sift_v6_json_text_unambiguous(pnstrdup(lit->s, lit->len)) : eq_only);
 		case 'b':
 			return type == BOOLOID && eq_only;
 		case 'n':
@@ -330,7 +311,10 @@ filter_cnf(PathCtx *c, JsonPathItem *v, bool neg)
 	return c->ok ? list_make1(a) : NIL;
 }
 
-/* jsonb_path_exists(doc, '$[*] ? (filter)'[, vars[, silent]]) and doc @? '$[*] ? (filter)', or '$.key[*] ? (filter)' of the array doc -> 'key' */
+/*
+ * jsonb_path_exists(doc, '$[*] ? (filter)'[, vars[, silent]]) and doc @? '$[*] ? (filter)', or '$.key[*] ? (filter)' of the array doc -> 'key'. A strict path that is not silent raises for a
+ * document without the key, whose leaves hold no array as for a NULL one.
+ */
 static List *
 path_clauses(PathCtx *c, const Node *e)
 {
@@ -340,20 +324,21 @@ path_clauses(PathCtx *c, const Node *e)
 				filt,
 				expr;
 	char	   *key;
+	bool		silent = true;
 
 	if (call_func(e) == F_JSONB_PATH_EXISTS)
 	{
-		const Node *silent = list_length(args) == 4 ? strip_relabel(lfourth(args)) : NULL;
+		const Node *arg = list_length(args) == 4 ? strip_relabel(lfourth(args)) : NULL;
 
-		if (silent == NULL || !IsA(silent, Const))
+		if (arg == NULL || !IsA(arg, Const) || ((const Const *) arg)->constisnull)
 			return NIL;
+		silent = DatumGetBool(((const Const *) arg)->constvalue);
 		c->vars = jsonpath_vars(lthird(args), &c->ok);
 	}
 	if (!c->ok || jp == NULL)
 		return NIL;
 	c->strict = !(jp->header & JSONPATH_LAX);
-	/* strict: a document without the key raises, where doc -> 'key' is only NULL */
-	if (!path_head(jp, &any, &key) || (key != NULL && c->strict) || !jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
+	if (!path_head(jp, &any, &key) || (c->strict && key != NULL && !silent) || !jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
 		return NIL;
 	jspGetArg(&filt, &expr);
 	return filter_cnf(c, &expr, false);

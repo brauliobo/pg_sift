@@ -99,12 +99,14 @@ typedef struct SiftV6XCmp
 /*
  * A test of the elements of the array of a row, a boolean of the row: some element passes the quals (test_quals[i]: over the element columns, v6_unnest_jsonb.h) and the comparisons with the columns of the row.
  * A row whose document the leaves cannot hold is decided from the heap. need: the rows the statement keeps (0 all: a FILTER reads the flag as the virtual attribute SIFT_V6_XFLAG_VATT + the test;
- * 1 those where it is true; 2 those where it is false). nullable: a jsonpath is NULL for a row with no document, an EXISTS is false.
+ * 1 those where it is true; 2 those where it is false). nullable: a jsonpath is NULL for a row with no document, an EXISTS is false; doc_leaf: the presence leaf of the document whose key the array
+ * of a jsonpath is, which says the rows with no document (a document without the key has no array either; -1: a NULL array is a NULL document).
  */
 typedef struct SiftV6XTest
 {
 	int			need;
 	bool		nullable;
+	int			doc_leaf;
 	int			ncmps;
 	SiftV6XCmp	cmp[SIFT_V6_XCMPS];
 } SiftV6XTest;

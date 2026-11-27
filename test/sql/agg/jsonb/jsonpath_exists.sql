@@ -1,7 +1,8 @@
 -- doc @? '$.items[*] ? (..)' and jsonb_path_exists(doc, '$.items[*] ? (..)') on an index of format major 2 that keeps the members of the elements of doc.items: SiftAggV6 tests the elements as
 -- it tests those of the array doc -> 'items', and a row the leaves do not hold (a document that is no object, items that is no array, a member of another JSON type) is decided by the call itself, lax
 -- mode, strict mode and errors included. A comparison with a float leaf (the leaf rounds), a filter on a scalar path and Format 1 keep the normal plan. Each statement runs with the scan and without
--- it: `scan` or `plain`, then whether the rows are the same; `why`: an arm the plan uses.
+-- it: `scan` or `plain`, then whether the rows are the same; `why`: an arm the plan uses. NOT of the call is NULL for a NULL document only (the presence leaf of the column tells it from one
+-- without items), and a strict path that is not silent raises for a document without items, so it keeps the normal plan.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -47,16 +48,25 @@ INSERT INTO shapes VALUES
   (11, 'scalar path',         $q$SELECT count(*) FROM $T WHERE doc @? '$.k ? (@ == 42)'$q$),
   (12, 'undeclared member',   $q$SELECT count(*) FROM $T WHERE doc @? '$.items[*] ? (@.zz == 1)'$q$),
   (13, 'undeclared array',    $q$SELECT count(*) FROM $T WHERE doc @? '$.parts[*] ? (@.kind == "k_1")'$q$),
-  (14, 'array of the doc',    $q$SELECT count(*) FROM $T WHERE jsonb_path_exists(doc -> 'items', '$[*] ? (@.kind == "k_1" && @.n >= 8)')$q$);
+  (14, 'array of the doc',    $q$SELECT count(*) FROM $T WHERE jsonb_path_exists(doc -> 'items', '$[*] ? (@.kind == "k_1" && @.n >= 8)')$q$),
+  (15, 'strict, not silent',  $q$SELECT count(*) FILTER (WHERE jsonb_path_exists(doc, 'strict $.items[*] ? (@.kind == "k_1")')) FROM $T WHERE g = 9$q$);
 
 SELECT tbl, n, label, jp_check(replace(q, '$T', tbl)) AS outcome FROM (VALUES (1, 'jp'), (2, 'jp_f1')) t(ord, tbl), shapes ORDER BY ord, n;
+
+-- NOT of the call where the leaves hold every document (objects only): one without items is false, so its row is counted; a NULL one is NULL
+CREATE TABLE jp_nk AS SELECT i AS id, i % 4 AS g, CASE WHEN i % 23 = 0 THEN NULL WHEN i % 10 = 4 THEN '{"other": 1}'::jsonb
+	ELSE jsonb_build_object('items', jsonb_build_array(jsonb_build_object('n', i % 11))) END AS doc FROM generate_series(1, 1200) i;
+CREATE INDEX jp_nk_col ON jp_nk USING sift_col (id, g, doc) WITH (paths = 'doc.items[]{n int4}');
+VACUUM ANALYZE jp_nk;
+SELECT jp_check($q$SELECT g, count(*) FILTER (WHERE NOT (doc @? '$.items[*] ? (@.n == 9)')) FROM jp_nk GROUP BY g$q$) AS not_in_filter,
+	   jp_check($q$SELECT count(*) FROM jp_nk WHERE NOT jsonb_path_exists(doc, '$.items[*] ? (@.n == 9)')$q$) AS not_in_where;
 
 -- the error of a call the heap decides is raised as PostgreSQL raises it
 SET sift.enable_agg = on;
 SELECT count(*) FROM jp WHERE jsonb_path_exists(doc, 'strict $.items[*] ? (@.kind == "k_1")');
 SELECT count(*) FROM jp WHERE doc @? '$.items[*] ? (@.kind == "k_1" && @.n >= 8)';
 
-DROP TABLE shapes, jp, jp_f1;
+DROP TABLE shapes, jp, jp_f1, jp_nk;
 DROP FUNCTION jp_check(text), jp_make(text, bool), jp_doc(int);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;

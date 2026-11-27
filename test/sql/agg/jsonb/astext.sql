@@ -54,9 +54,14 @@ INSERT INTO a_q VALUES
 	('SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>''k1'' = ''7'' GROUP BY 1'),
 	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k1'' IN (''7'', ''true'', ''1.50'')'),
 	('SELECT count(*) FROM a_t d WHERE d.metrics_a->>''k2'' LIKE ''1%'''),
-	-- the tests of JSON values keep the normal plan: "12" and 12 are different there
+	-- the tests of JSON values keep the normal plan where the text cannot tell the type: "12" and 12 are different there, != and ! are unknown for a number
 	('SELECT count(*) FROM a_t d WHERE d.items @> ''[{"score": "7.5"}]'''),
 	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "12")'')'),
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "true")'')'),
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score != "x")'')'),
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (!(@.score == "x"))'')'),
+	-- a string no number or boolean prints as is the string member alone
+	('SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, ''$[*] ? (@.score == "x")'')'),
 	('SELECT count(*) FROM a_t d WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(d.items) e(v) WHERE e.v->>''score'' = ''12'')');
 
 CREATE FUNCTION a_compare(OUT query text, OUT same bool, OUT pushed bool) RETURNS SETOF record LANGUAGE plpgsql AS $$

@@ -65,14 +65,14 @@ exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
 	return sp;
 }
 
-/* the sub-plan or call c is, under at most one NOT; a negated call of doc -> 'key' is no test of the elements (agg/unnest/path.h) */
+/* the sub-plan or call c is, under at most one NOT */
 static const Node *
 test_node(const Node *c, bool *negated)
 {
 	*negated = IsA(c, BoolExpr) && ((const BoolExpr *) c)->boolop == NOT_EXPR;
 	if (*negated)
 		c = linitial(((const BoolExpr *) c)->args);
-	return IsA(c, SubPlan) || (sift_v6_unnest_path_call(c) && !(*negated && sift_v6_unnest_path_keyed(c))) ? c : NULL;
+	return IsA(c, SubPlan) || sift_v6_unnest_path_call(c) ? c : NULL;
 }
 
 static TestCand *
@@ -283,7 +283,7 @@ build_path(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
 		*rte = base;
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
-	return sift_v6_unnest_path_quals(p, rte, e, &b->quals);
+	return sift_v6_unnest_path_quals(p, rte, e, &b->quals) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1);
 }
 
 /* the tests of the plan for the candidates: their columns among those of the elements (rte), and their quals */
@@ -296,7 +296,7 @@ build_tests(V6Plan *p, const List *cands, SiftV6ElemRte *rte)
 
 		b->cand = c;
 		b->index = list_length(p->tests);
-		b->test.need = c->where == NULL ? 0 : c->negated ? 2 : 1;
+		b->test = (SiftV6XTest) {.need = c->where == NULL ? 0 : c->negated ? 2 : 1,.doc_leaf = -1};
 		if (!(c->sp != NULL ? build_exists(p, rte, b) : build_path(p, rte, b)))
 			return false;
 		p->tests = lappend(p->tests, b);

@@ -43,11 +43,11 @@ leaf_of(const SiftColRel *r, const SiftV6Col *c)
 
 static int col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);
 
-/* the column of the batch that is leaf `leaf`, which the statement may not read itself: it is the source of the value of a member that is a column of the index */
+/* the column of the batch that is leaf `leaf`, which the statement may not read itself: the source of the value of a member that is a column of the index, or the presence of a document */
 static int
-source_col(UnRun *u, const SiftColRel *r, int leaf)
+source_col(UnRun *u, const SiftColRel *r, int leaf, Oid typid)
 {
-	const SiftV6Col c = {.attno = 1,.typid = FLOAT8OID,.jleaf = leaf + 1};
+	const SiftV6Col c = {.attno = 1,.typid = typid,.jleaf = leaf + 1};
 	const int	before = u->ncols;
 	const int	i = col_index(u, r, &c, false);
 
@@ -159,6 +159,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
 			col_index(u, r, &spec->fcol[i], false);
 	for (int k = 0; k < u->ntests; k++)
+	{
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 		{
 			const SiftV6XCmp *cmp = &u->x->test[k].cmp[c];
@@ -166,6 +167,8 @@ setup_cols(UnRun *u, const SiftColRel *r)
 
 			u->outer_slot[k * SIFT_V6_XCMPS + c] = col_index(u, r, &outer, false);
 		}
+		u->doc_slot[k] = u->x->test[k].doc_leaf >= 0 ? source_col(u, r, u->x->test[k].doc_leaf, BOOLOID) : -1;
+	}
 }
 
 static SiftF2PullSpec
@@ -388,7 +391,10 @@ decide_tests(UnRun *u, const SiftF2ExtBatch *b)
 	for (int k = 0; k < u->ntests; k++)
 	{
 		const SiftV6XTest *xt = &u->x->test[k];
+		const SiftVec *doc = u->doc_slot[k] >= 0 ? &b->col[u->doc_slot[k]] : NULL;
 
+		for (uint32 w = 0; doc != NULL && w < words; w++)
+			u->known[k][w] = u->held[w] & (doc->all_valid ? ~UINT64CONST(0) : doc->valid[w]);
 		for (uint32 w = 0; w < words; w++)
 		{
 			const uint64 pass = xt->need == 0 ? ~UINT64CONST(0) : xt->need == 1 ? u->yes[k][w] : xt->nullable ? u->known[k][w] & ~u->yes[k][w] : ~u->yes[k][w];
@@ -862,7 +868,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	setup_cols(u, r);
 	setup_clauses(u, r);
 	for (int c = 0; c < u->nel; c++)
-		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, r, u->x->elem.col_leaf[c]) : -1;
+		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, r, u->x->elem.col_leaf[c], FLOAT8OID) : -1;
 	setup_pipe(u, r, g, star);
 	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
