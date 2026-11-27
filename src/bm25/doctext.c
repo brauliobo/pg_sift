@@ -207,6 +207,9 @@ docloc_cmp(const void *a, const void *b)
 	return x->loc != y->loc ? (x->loc > y->loc) - (x->loc < y->loc) : (x->doc > y->doc) - (x->doc < y->doc);
 }
 
+/* The text of a doc of the window that was not read: the window took the memory it may, the doc is read when its turn comes */
+static text unread;
+
 /*
  * The texts of the next docs of the cursor, read in the order the rows lie in the table and kept for the docs in their own order: a table whose rows are laid out by a key and not by their
  * address (a sift_table) reads a granule for each doc when the docs come by address, and each granule once when they come by where the rows are.
@@ -245,6 +248,11 @@ sift_doctext_prime(DocText *d, DocCursor *c)
 		text	   *t;
 
 		CHECK_FOR_INTERRUPTS();
+		if (bytes >= limit)
+		{
+			d->wtext[order[i].doc] = &unread;
+			continue;
+		}
 		sift_key_to_tid(d->wkey[order[i].doc], &tid);
 		t = doctext_read(d, &tid);
 		d->wtext[order[i].doc] = t == NULL ? NULL : MemoryContextAlloc(d->wcx, VARSIZE_ANY(t));
@@ -254,7 +262,7 @@ sift_doctext_prime(DocText *d, DocCursor *c)
 			bytes += VARSIZE_ANY(t);
 		}
 	}
-	d->wmax = bytes > limit ? Max(DOCTEXT_WINDOW_FIRST / 4, d->wmax / 2) : bytes < limit / 2 ? Min(DOCTEXT_WINDOW, d->wmax * 2) : d->wmax;
+	d->wmax = bytes >= limit ? Max(DOCTEXT_WINDOW_FIRST / 4, d->wmax / 2) : bytes < limit / 2 ? Min(DOCTEXT_WINDOW, d->wmax * 2) : d->wmax;
 }
 
 /* The terms of the doc at tid with their position records, as a build analyzes it; false when its row or its text is gone */
@@ -267,9 +275,8 @@ sift_doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms,
 	MemoryContext old;
 	bool		found;
 
-	if (d->wcx != NULL)
+	if (d->wcx != NULL && (t = d->wtext[d->wpos++]) != &unread)
 	{
-		t = d->wtext[d->wpos++];
 		if (t == NULL)
 			return false;
 		*len = VARSIZE_ANY_EXHDR(t);
