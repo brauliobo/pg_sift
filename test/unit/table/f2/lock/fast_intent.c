@@ -1,6 +1,7 @@
 /*
  * test/unit/table/f2/lock/fast_intent.c - a coarse lock reads the slot of a fast intention of another process as one whole: while its owner moves the slot from a transaction of one
  * relation to a transaction of another, sift_fast_intent_conflict for the first relation never returns the xid of the second (a wait on a transaction that holds nothing of the key).
+ * A coarse lock among many processes reads the slots that are held, not the free ones of every process, and takes a cancel while it scans them.
  */
 #define SIFT_S49_STANDALONE 1
 
@@ -13,6 +14,13 @@
 
 #include "test/common/bench.h"
 
+#include "port/atomics.h"
+
+static uint64 slot_reads;
+
+#undef pg_read_barrier
+#define pg_read_barrier() do { __atomic_fetch_add(&slot_reads, 1, __ATOMIC_RELAXED); pg_read_barrier_impl(); } while (0)
+
 #include "table/f2/lock/fast_intent.c"
 
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
@@ -20,7 +28,7 @@ enum { ROUNDS = 200000 };
 #else
 enum { ROUNDS = 2000000 };
 #endif
-enum { XID_T1 = 100, XID_T2 = 200 };
+enum { XID_T1 = 100, XID_T2 = 200, MANY = 256, HOLDERS = 64 };
 
 static const RelFileLocator t1 = {.spcOid = 1663,.dbOid = 5,.relNumber = 16384};
 static const RelFileLocator t2 = {.spcOid = 1663,.dbOid = 5,.relNumber = 16385};
@@ -31,6 +39,14 @@ static pg_atomic_uint32 torn;
 
 int			MaxBackends = 2;
 ProcNumber	MyProcNumber;
+volatile sig_atomic_t InterruptPending = 0;
+static int	interrupts;
+
+void
+ProcessInterrupts(void)
+{
+	interrupts++;
+}
 
 /* An exclusive coarse lock is asked for: every mode a holder has conflicts with it */
 bool
@@ -87,6 +103,36 @@ worker(void *arg pg_attribute_unused(), int w)
 			pg_atomic_fetch_add_u32(&torn, 1);
 }
 
+/* HOLDERS of MANY processes hold an intention of t2, the others none: a coarse lock of t1 reads the held slots, and checks for a cancel for each process */
+static void
+test_scan_reads_held_slots(void)
+{
+	SiftEscModes want = sift_esc_coarse_modes(LockTupleExclusive);
+
+	MaxBackends = MANY;
+	shm = calloc(1, sizeof(SiftRowLockShmLayout) + sift_fast_intent_bytes() + PG_CACHE_LINE_SIZE);
+	sift_fast_intent_init(shm);
+	for (int h = 0; h < HOLDERS; h++)
+	{
+		MyProcNumber = h * (MANY / HOLDERS);
+		top_xid = XID_T2 + h;
+		SIFT_CHECK(sift_fast_intent_set(shm, &t2, SIFT_ESC_PART_ALL, -1, LockTupleExclusive, 0) == 0);
+	}
+	slot_reads = 0;
+	InterruptPending = 1;
+	SIFT_CHECK(sift_fast_intent_conflict(shm, &t1, SIFT_ESC_PART_ALL, want) == InvalidTransactionId);
+	InterruptPending = 0;
+	SIFT_CHECKF(slot_reads <= HOLDERS, "a coarse lock read %llu slots for %d held ones of %d processes", (unsigned long long) slot_reads, HOLDERS, nprocs());
+	SIFT_CHECKF(interrupts >= HOLDERS, "a scan of %d processes checked for a cancel %d times", nprocs(), interrupts);
+	for (int h = 0; h < HOLDERS; h++)
+	{
+		MyProcNumber = h * (MANY / HOLDERS);
+		sift_fast_intent_release_all(shm);
+	}
+	SIFT_CHECK(pg_atomic_read_u32(fast_active(shm, &t2, SIFT_ESC_PART_ALL)) == 0);
+	free(shm);
+}
+
 int
 main(void)
 {
@@ -98,5 +144,6 @@ main(void)
 	unit_run_workers(2, worker, NULL);
 	SIFT_CHECKF(pg_atomic_read_u32(&torn) == 0, "a coarse lock of t1 read the xid of t2 out of a slot that moved: %u times", pg_atomic_read_u32(&torn));
 	free(shm);
+	test_scan_reads_held_slots();
 	return sift_check_summary();
 }

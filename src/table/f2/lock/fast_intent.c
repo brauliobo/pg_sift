@@ -6,6 +6,8 @@
  * stripe of its key first, and then reads the slots: a locker writes its slot, and then reads the count. Each of the two sees the other's write, so a coarse lock never misses an intention that
  * is held, and a locker that finds the count raised takes the page lock, where the coarse lock then is (the barriers are the full ones of an atomic that is written and one that is added to).
  * A locker counts the slot it takes in fast_active of the stripe of its key before it writes it, and a coarse lock that finds that count zero after it raised its own has no slot to read.
+ * A process also sets the bit of the slot in its used mask before it writes the mode, and clears it after the mode is 0: a coarse lock reads the slots of the bits it finds, one load for a
+ * process that holds none.
  *
  * The key and the xid of a slot are written between two raises of its seq, odd while they change: a coarse lock reads them whole, at an even seq that is the same after, or reads again.
  *
@@ -16,6 +18,7 @@
 #include "access/transam.h"
 #include "access/xact.h"
 #include "miscadmin.h"
+#include "port/pg_bitutils.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 
@@ -44,6 +47,7 @@ typedef struct SiftFastSeen
 typedef struct pg_attribute_aligned(PG_CACHE_LINE_SIZE) SiftFastProc
 {
 	SiftFastIntent slot[FAST_PER_PROC];
+	pg_atomic_uint32 used;		/* a bit for each slot whose mode is not 0, written by its process alone: the barriers of the mode order it */
 } SiftFastProc;
 
 StaticAssertDecl(sizeof(SiftFastIntent) == 32, "a slot of a fast intention is 32 bytes");
@@ -66,17 +70,24 @@ fast_active(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id)
 	return &s->esc[sift_esc_stripe_of(loc, part_id)].fast_active;
 }
 
-/* The mode of the slot set to mode (0 frees it), and the count of its stripe with it */
+/* The mode of slot j of the process set to mode (0 frees it), and the count of its stripe and the used mask of the process with it */
 static void
-slot_write(SiftRowLockShmLayout *s, SiftFastIntent *i, uint32 mode)
+slot_write(SiftRowLockShmLayout *s, SiftFastProc *p, int j, uint32 mode)
 {
+	SiftFastIntent *i = &p->slot[j];
 	uint32		before = pg_atomic_read_u32(&i->mode);
 
 	if (before == 0 && mode != 0)
+	{
 		pg_atomic_fetch_add_u32(fast_active(s, &i->locator, i->part_id), 1);
+		pg_atomic_write_u32(&p->used, pg_atomic_read_u32(&p->used) | (UINT32_C(1) << j));
+	}
 	pg_atomic_write_membarrier_u32(&i->mode, mode);
 	if (before != 0 && mode == 0)
+	{
+		pg_atomic_write_u32(&p->used, pg_atomic_read_u32(&p->used) & ~(UINT32_C(1) << j));
 		pg_atomic_fetch_sub_u32(fast_active(s, &i->locator, i->part_id), 1);
+	}
 }
 
 static SiftFastProc *
@@ -104,11 +115,14 @@ void
 sift_fast_intent_init(SiftRowLockShmLayout *s)
 {
 	for (int pn = 0; pn < nprocs(); pn++)
+	{
+		pg_atomic_init_u32(&procs_of(s)[pn].used, 0);
 		for (int j = 0; j < FAST_PER_PROC; j++)
 		{
 			pg_atomic_init_u32(&procs_of(s)[pn].slot[j].mode, 0);
 			pg_atomic_init_u32(&procs_of(s)[pn].slot[j].seq, 0);
 		}
+	}
 }
 
 /* The key and the top transaction of a free slot of this process, between the two raises of its seq: the xid is assigned before, as its assignment may fail */
@@ -153,23 +167,24 @@ sift_fast_intent_set(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 
 	before = pg_atomic_read_u32(&i->mode);
 	if (before == 0)
 		slot_own(i, loc, part_id);
-	slot_write(s, i, mode + 1);
+	slot_write(s, p, slot, mode + 1);
 	if (pg_atomic_read_u32(&s->esc[sift_esc_stripe_of(loc, part_id)].coarse_active) == 0)
 	{
 		pg_read_barrier();
 		if (pg_atomic_read_u32(&s->prepared_epoch) == epoch)
 			return slot;
 	}
-	slot_write(s, i, before);
+	slot_write(s, p, slot, before);
 	return -1;
 }
 
 void
 sift_fast_intent_restore(SiftRowLockShmLayout *s, int slot, int mode)
 {
-	slot_write(s, &mine(s)->slot[slot], mode < 0 ? 0 : mode + 1);
+	slot_write(s, mine(s), slot, mode < 0 ? 0 : mode + 1);
 }
 
+/* The slots of the used masks are read after the full barrier of the read of fast_active, which follows the raise of coarse_active */
 TransactionId
 sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, uint64 part_id, SiftEscModes want)
 {
@@ -178,14 +193,17 @@ sift_fast_intent_conflict(SiftRowLockShmLayout *s, const RelFileLocator *loc, ui
 	if (pg_atomic_read_membarrier_u32(fast_active(s, loc, part_id)) == 0)
 		return InvalidTransactionId;
 	for (int pn = 0; pn < nprocs(); pn++)
-		for (int j = 0; j < FAST_PER_PROC; j++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		for (uint32 used = pg_atomic_read_u32(&procs[pn].used); used != 0; used &= used - 1)
 		{
-			SiftFastSeen i = slot_read(&procs[pn].slot[j]);
+			SiftFastSeen i = slot_read(&procs[pn].slot[pg_rightmost_one_pos32(used)]);
 
 			if (i.mode != 0 && i.part_id == part_id && RelFileLocatorEquals(i.locator, *loc) && !TransactionIdIsCurrentTransactionId(i.xid) &&
 				sift_esc_modes_conflict(want, sift_esc_intent_modes((LockTupleMode) (i.mode - 1))) && TransactionIdIsInProgress(i.xid))
 				return i.xid;
 		}
+	}
 	return InvalidTransactionId;
 }
 
@@ -195,7 +213,7 @@ sift_fast_intent_release_all(SiftRowLockShmLayout *s)
 	SiftFastProc *p = mine(s);
 
 	for (int i = 0; p != NULL && i < FAST_PER_PROC; i++)
-		slot_write(s, &p->slot[i], 0);
+		slot_write(s, p, i, 0);
 }
 
 void

@@ -24,7 +24,7 @@
 
 /* ---- the table in shared memory ---- */
 
-/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2169088 B packed; 256x64x128 B ABI entries, one cache line of header and a grow lock for each stripe, and 1 kB of fast intention slots for each process of the server) */
+/* MEM[MEM-SHM-05]: DSM row lock table sift_rowlock (2169088 B packed; 256x64x128 B ABI entries, one cache line of header and a grow lock for each stripe, and 1088 B of fast intention slots and their used mask for each process of the server) */
 static Size
 table_bytes(void)
 {
@@ -282,24 +282,28 @@ index_lock(uint32 i)
 	lock_ix[p] = i + 1;
 }
 
-/* check-memory: allow the locks of a transaction are the relations and partitions it holds, at most SIFT_ROWLOCK_REL_ROW_CAP and the escalated ones for each relation */
+/*
+ * check-memory: allow the locks of a transaction are the relations and partitions it holds, at most SIFT_ROWLOCK_REL_ROW_CAP and the escalated ones for each relation.
+ * Both arrays are allocated before either replaces the old one: the end of the transaction reads the locks after an allocation that failed.
+ */
 static void
 grow_locks(void)
 {
 	MemoryContext cx = sift_rowlock_txn_cx();
-	SiftLocalLock **old = locks;
-	uint32	   *old_ix = lock_ix;
+	uint32		cap = Max(64, caplocks * 2);
+	SiftLocalLock **grown = MemoryContextAlloc(cx, sizeof(SiftLocalLock *) * cap);
+	uint32	   *ix = MemoryContextAllocZero(cx, sizeof(uint32) * cap * 2);
 
-	caplocks = Max(64, caplocks * 2);
-	ixcap = caplocks * 2;
-	locks = MemoryContextAllocZero(cx, sizeof(SiftLocalLock *) * caplocks);
-	lock_ix = MemoryContextAllocZero(cx, sizeof(uint32) * ixcap);
-	if (old != NULL)
+	if (locks != NULL)
 	{
-		memcpy(locks, old, sizeof(SiftLocalLock *) * nlocks);
-		pfree(old);
-		pfree(old_ix);
+		memcpy(grown, locks, sizeof(SiftLocalLock *) * nlocks);
+		pfree(locks);
+		pfree(lock_ix);
 	}
+	locks = grown;
+	lock_ix = ix;
+	caplocks = cap;
+	ixcap = cap * 2;
 	for (uint32 i = 0; i < nlocks; i++)
 		index_lock(i);
 }
@@ -442,15 +446,19 @@ sub_find(SubTransactionId sub, const RelFileLocator *loc, uint64 part_id)
 	return NULL;
 }
 
-/* check-memory: allow one record for each relation and partition a subtransaction changed, bounded like the locks */
+/* check-memory: allow one record for each relation and partition a subtransaction changed, bounded like the locks. The old chains stand until the new buckets are allocated */
 static void
 grow_sublog(void)
 {
-	capsub = Max(8, capsub * 2);
-	sublog = sublog == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftEscSubRecord) * capsub) : repalloc(sublog, sizeof(SiftEscSubRecord) * capsub);
+	int			cap = Max(8, capsub * 2);
+	uint32	   *buckets;
+
+	sublog = sublog == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftEscSubRecord) * cap) : repalloc(sublog, sizeof(SiftEscSubRecord) * cap);
+	buckets = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * pg_nextpower2_32(cap * 2));
 	if (sub_bucket != NULL)
 		pfree(sub_bucket);
-	sub_bucket = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * pg_nextpower2_32(capsub * 2));
+	sub_bucket = buckets;
+	capsub = cap;
 	for (int i = 0; i < nsub; i++)
 		sub_chain_push(i);
 }

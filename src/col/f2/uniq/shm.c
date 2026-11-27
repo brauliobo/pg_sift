@@ -397,9 +397,17 @@ owned_ensure(void)
 		ereport(ERROR, (errcode(ERRCODE_OUT_OF_MEMORY), errmsg("could not list the unique key entries of the transaction (test)")));
 #endif
 	if (owned == NULL)
-		owned = MemoryContextAlloc(TopTransactionContext, sizeof(Owned) * (capowned = 256));
+	{
+		owned = MemoryContextAlloc(TopTransactionContext, sizeof(Owned) * 256);
+		capowned = 256;
+	}
 	else if (nowned == capowned)
-		owned = repalloc(owned, sizeof(Owned) * (capowned *= 2));
+	{
+		int			cap = capowned * 2;
+
+		owned = repalloc(owned, sizeof(Owned) * cap);
+		capowned = cap;
+	}
 }
 
 /* The entry in the list that owned_ensure made room in */

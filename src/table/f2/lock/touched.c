@@ -90,17 +90,17 @@ ix_delete_slot(uint32 p)
 	}
 }
 
+/* The index sized for n entries, of the ones there are: the old one stands until the new one is allocated */
 static void
-reindex(void)
+reindex(uint32 n)
 {
+	uint32		cap = pg_nextpower2_32(Max(n * 2, 128));
+	uint32	   *ix = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * cap);
+
 	if (touched_ix != NULL)
 		pfree(touched_ix);
-	touched_ix = NULL;
-	ixcap = 0;
-	if (ntouched < TOUCHED_INDEXED_AT)
-		return;
-	ixcap = pg_nextpower2_32(Max(ntouched * 2, 128));
-	touched_ix = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * ixcap);
+	touched_ix = ix;
+	ixcap = cap;
 	for (uint32 i = 0; i < ntouched; i++)
 		ix_put(i);
 }
@@ -141,8 +141,10 @@ sub_list_for_add(SubTransactionId sub)
 	if (nsubs == capsubs)
 	{
 		/* check-memory: allow the subtransactions that hold rows are bounded by the nesting of the transaction, which max_stack_depth bounds */
-		capsubs = Max(8, capsubs * 2);
-		subs = subs == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SubList) * capsubs) : repalloc(subs, sizeof(SubList) * capsubs);
+		uint32		cap = Max(8, capsubs * 2);
+
+		subs = subs == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SubList) * cap) : repalloc(subs, sizeof(SubList) * cap);
+		capsubs = cap;
 	}
 	subs[nsubs] = (SubList) {sub, -1};
 	return &subs[nsubs++];
@@ -187,26 +189,32 @@ relink_moved(uint32 i)
 
 /* ---- the table ---- */
 
+/* Everything that can fail comes before the entry is made: an error leaves the table as it was */
 bool
 sift_touched_add(const SiftRowLockKey *k, uint64 part_id)
 {
 	SubTransactionId sub = GetCurrentSubTransactionId();
+	TransactionId xid;
+	uint32		n = ntouched + 1;
 
 	if (is_touched(k, sub))
 		return false;
+	xid = GetCurrentTransactionId();
 	if (ntouched == captouched)
 	{
 		/* check-memory: allow the rows of a transaction in tier 1 are bounded by SIFT_ROWLOCK_REL_ROW_CAP for each relation, the stripes hold no more */
-		captouched = Max(64, captouched * 2);
-		touched = touched == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftTouched) * captouched) : repalloc(touched, sizeof(SiftTouched) * captouched);
+		uint32		cap = Max(64, captouched * 2);
+
+		touched = touched == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftTouched) * cap) : repalloc(touched, sizeof(SiftTouched) * cap);
+		captouched = cap;
 	}
-	touched[ntouched] = (SiftTouched) {.key = *k,.part_id = part_id,.xid = GetCurrentTransactionId(),.subxid = sub};
+	if ((ixcap == 0 && n >= TOUCHED_INDEXED_AT) || (ixcap != 0 && n * 4 > ixcap * 3))
+		reindex(n);
+	touched[ntouched] = (SiftTouched) {.key = *k,.part_id = part_id,.xid = xid,.subxid = sub};
 	link_front(sub_list_for_add(sub), ntouched);
-	ntouched++;
-	if ((ixcap == 0 && ntouched >= TOUCHED_INDEXED_AT) || (ixcap != 0 && ntouched * 4 > ixcap * 3))
-		reindex();
-	else if (ixcap != 0)
-		ix_put(ntouched - 1);
+	if (ixcap != 0)
+		ix_put(ntouched);
+	ntouched = n;
 	return true;
 }
 
