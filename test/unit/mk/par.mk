@@ -35,3 +35,7 @@ LIB_agg/par/unnest     = $(SINK_LIB) agg/par/unnest.c agg/unnest/unnest.c agg/un
 FX_agg/par/unnest      = $(HOST) $(B)/agg/par/pipe_stubs.o
 LIB_agg/par/win        = core/par/arena.c agg/par/winpart.c $(WINDOW_LIB)
 FX_agg/par/win         = $(HOST)
+
+TESTS    += agg/group/topk
+AUTOSTUB += agg/group/topk
+LIB_agg/group/topk = agg/group/topk.c

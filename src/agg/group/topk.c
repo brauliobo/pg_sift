@@ -3,11 +3,13 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
 
 #include "agg/group/topk.h"
+#include "core/memtrack.h"
 
 /* A held row: its Datums and flags are made once for the slot, and its by-reference values are packed in vbuf, which only grows: a row that replaces the worst allocates nothing once the slot has held a row as large */
 typedef struct TopRow
@@ -31,6 +33,7 @@ struct SiftGTopK
 	SiftTopKCmp cmp;
 	void	   *cmp_arg;
 	TopRow	   *rows;
+	Size		vbytes;			/* the vcap of every slot: the copies of by-reference values, which take work_mem */
 };
 
 SiftGTopK *
@@ -126,10 +129,10 @@ sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx)
 	return false;
 }
 
-/* MEM[MEM-AGG-16]: top-k slot arrays and value buffer in the group context for the query (k slots times ncols times 9 bytes plus one power of two buffer per slot; a slot is refilled in place, never allocated again per row) */
+/* MEM[MEM-AGG-16]: top-k slot arrays and value buffer in the group context for the query (k slots times ncols times 9 bytes plus one power of two buffer per slot within work_mem; a slot is refilled in place, never allocated again per row) */
 /* The row (copied) into the slot r */
 static void
-fill_row(const SiftGTopK *t, TopRow *r, const Datum *values, const bool *isnull)
+fill_row(SiftGTopK *t, TopRow *r, const Datum *values, const bool *isnull)
 {
 	uint64		total = 0;
 	uint32		at = 0;
@@ -142,10 +145,15 @@ fill_row(const SiftGTopK *t, TopRow *r, const Datum *values, const bool *isnull)
 	for (int c = 0; c < t->ncols; c++)
 		if (!isnull[c] && !t->typbyval[c])
 			total += MAXALIGN(datumGetSize(values[c], false, t->typlen[c]));
+	if (total > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of an ORDER BY .. LIMIT of the groups is over 1 GB"),
+						errdetail("A row held by the top K is copied into one allocation."), errhint("Return fewer or shorter columns.")));
 	if (total > r->vcap)
 	{
 		const uint32 cap = (uint32) Min(Max((uint64) 64, pg_nextpower2_64(total)), (uint64) MaxAllocSize);
 
+		t->vbytes += cap - r->vcap;
+		sift_budget_check(t->vbytes, work_mem, "the heap of an ORDER BY .. LIMIT of the groups", "work_mem", "lower the LIMIT");
 		r->vbuf = r->vbuf ? repalloc(r->vbuf, cap) : MemoryContextAlloc(t->cx, cap);
 		r->vcap = cap;
 	}
