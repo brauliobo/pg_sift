@@ -1,0 +1,126 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1b s2b s2i s1max s1w s2c s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT ka_v6() AS v6;
+v6
+--
+t 
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM kb;
+n
+-
+0
+(1 row)
+
+step s2i: INSERT INTO ka VALUES (20001, 30000);
+step s1max: SELECT max(v) AS m FROM ka;
+    m
+-----
+20000
+(1 row)
+
+step s1w: INSERT INTO kb VALUES (1);
+step s2c: COMMIT;
+step s1c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b s2b s2i s1max s1w s1c s2c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT ka_v6() AS v6;
+v6
+--
+t 
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM kb;
+n
+-
+0
+(1 row)
+
+step s2i: INSERT INTO ka VALUES (20001, 30000);
+step s1max: SELECT max(v) AS m FROM ka;
+    m
+-----
+20000
+(1 row)
+
+step s1w: INSERT INTO kb VALUES (1);
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b s2b s2u s1max s1w s2c s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT ka_v6() AS v6;
+v6
+--
+t 
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM kb;
+n
+-
+0
+(1 row)
+
+step s2u: UPDATE ka SET v = 30000 WHERE id = 5;
+step s1max: SELECT max(v) AS m FROM ka;
+    m
+-----
+20000
+(1 row)
+
+step s1w: INSERT INTO kb VALUES (1);
+step s2c: COMMIT;
+step s1c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b s2b s2i s1pct s1w s2c s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT ka_v6() AS v6;
+v6
+--
+t 
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM kb;
+n
+-
+0
+(1 row)
+
+step s2i: INSERT INTO ka VALUES (20001, 30000);
+step s1pct: SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY v) AS p FROM ka;
+    p
+-----
+10000
+(1 row)
+
+step s1w: INSERT INTO kb VALUES (1);
+step s2c: COMMIT;
+step s1c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+
+starting permutation: s1b s2b s2i s1apx s1w s2c s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT ka_v6() AS v6;
+v6
+--
+t 
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) AS n FROM kb;
+n
+-
+0
+(1 row)
+
+step s2i: INSERT INTO ka VALUES (20001, 30000);
+step s1apx: SELECT sift.approx_percentile('ka', 'v', 1) AS p;
+    p
+-----
+20000
+(1 row)
+
+step s1w: INSERT INTO kb VALUES (1);
+step s2c: COMMIT;
+step s1c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions

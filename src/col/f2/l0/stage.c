@@ -8,6 +8,7 @@
 #include "miscadmin.h"
 #include "port/pg_bitutils.h"
 #include "storage/lmgr.h"
+#include "storage/predicate.h"
 #include "utils/hsearch.h"
 #include "utils/relfilenumbermap.h"
 #include "utils/snapmgr.h"
@@ -188,9 +189,12 @@ host_mem_set(SiftTxnStage *st, uint64 bytes)
 	st->host_mem = bytes;
 }
 
+/* The rows reach the readers of the index here, not at their insert: a serializable reader that locked the index since then did not see them */
 static void
 flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
 {
+	if (st->total_rows > 0)
+		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	stage_compact(st);
 	sift_stage_flush_rows(rel, st, at_end);
 	host_mem_set(st, 0);

@@ -16,6 +16,7 @@ agg/partitions	1.8
 agg/preagg_v2_snapshot	2.6
 agg/scalar_overflow	0.3
 agg/share_lookups	0.1
+agg/ssi_write_skew	0.1
 agg/vleaf_overflow	0.2
 bm25/build_progress	0.2
 bm25/cic_insert	0.4
