@@ -1,7 +1,8 @@
--- The dimension map for every kind of column of the parent: an int2, int4, int8, date, timestamp, boolean, text (dictionary), numeric and an expression leaf of its sift_col index,
--- joined by a child whose own filter and group keys are leaves of the child's sift_col index. For each kind, whether the join is served by a map ('new map' made by the statement, 'shared map' made by an earlier one), by the classes of
--- the lookup table ('classes') or loads the rows of the parent ('rows'), and how many heap fetches it made, before and after writes to the parent and to the child, serial and with
--- workers, with and without a connection of the child to the parent's journal (`via map`: nothing is carried). The answers are those of the normal plan.
+-- The Dimension Cache for every kind of column of the parent: an int2, int4, int8, date, timestamp, boolean, text (dictionary), numeric and an expression leaf of its sift_col
+-- index, joined by a child whose own filter and group keys are leaves of the child's sift_col index. For each kind, whether the join is served by a cached table ('new map'
+-- built by the statement, 'shared map' built by an earlier one) or reads the rows of the parent ('rows'), and how many heap fetches it made, before and after writes to the
+-- parent and to the child, serial and with workers, without and with a connection of the child to the parent's journal: only a journaled parent is kept
+-- (docs/ARCHITECTURE.md). The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -25,14 +26,13 @@ INSERT INTO attrs VALUES (1, 'int2', 'pd.c2'), (2, 'int4', 'pd.c4'), (3, 'int8',
 CREATE FUNCTION q(expr text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT 'SELECT ' || expr || ', ch.g, ch.tag, count(*), sum(ch.v) FROM ch JOIN pd ON pd.k = ch.k WHERE ch.v < 50 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3'
 $$;
--- how the scan got the parent's columns, from EXPLAIN ANALYZE: a map, the classes of the lookup table, the rows of it; and the heap fetches it made
+-- how the scan got the parent's columns, from EXPLAIN ANALYZE: a cached table or the rows of it; and the heap fetches it made
 CREATE FUNCTION how(sql text, OUT served text, OUT heap_fetches int) LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	served := 'normal'; heap_fetches := 0;
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN served := 'rows'; END IF;
-		IF l ~ '[1-9]\d* rows classed' AND served = 'rows' THEN served := 'classes'; END IF;
 		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN served := 'shared map'; END IF;
 		IF l ~ 'Dimension Cache: \d+ hit, [1-9]\d* built' THEN served := 'new map'; END IF;
 		IF l ~ '\d+ heap fetches' THEN heap_fetches := substring(l from '(\d+) heap fetches')::int; END IF;
@@ -42,11 +42,11 @@ CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, kind text, same_an
 	SELECT stage, name, sift_helpers.answer(q(expr), true) = sift_helpers.answer(q(expr), false), h.served, h.heap_fetches FROM attrs, LATERAL how(q(expr)) h ORDER BY n
 $$;
 
--- the parent has no journal: a map is the state of its pages
+-- the parent has no journal: nothing is kept
 SELECT * FROM report('first');
 SELECT * FROM report('shared');
 
--- the child written after the maps were made: nothing of the parent changed
+-- the child written
 UPDATE ch SET g = (g + 1) % 5, tag = 'w' || id % 3 WHERE id % 7 = 0;
 INSERT INTO ch SELECT i, i % 5100, i % 5, i % 101, 'u' || i % 4 FROM generate_series(40001, 41000) i;
 SELECT * FROM report('child written');
@@ -59,7 +59,7 @@ VACUUM pd;
 SELECT * FROM report('parent vacuumed');
 SELECT * FROM report('parent vacuumed, shared');
 
--- the workers read the maps from the leader's shared memory, and the lookup tables they make themselves
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

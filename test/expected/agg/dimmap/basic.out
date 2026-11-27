@@ -1,22 +1,20 @@
--- The dimension map: the class of each key of a joined table (one int4 key, a few columns the query reads), read from the leaves of its sift_col index once and kept in
--- shared memory (sift.shared_cache_kb) for every later statement. Whatever happens to the table, the answers are those of the normal plan: a map is read only for the
--- state of the table it was made at, so a write (committed, rolled back, or the reader's own) is a table with no map until it is vacuumed again, a budget too small
--- for a map is a statement that reads the classes itself, and the rows of keys the table has no row for (orphans, NULL keys) are the ones the join gives. A column of
--- the key itself that the query reads is the scanned column in an inner join (shape 4: it has a map) and no class's in a left join (shape 5: loaded row by row, never a map).
--- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the load computes (agg_lookup_tests): its map has a class for each outcome.
+-- The Dimension Cache of SiftAggV6 (docs/ARCHITECTURE.md): the table of a joined dimension whose journal vouches for it (ev_col connects to dim) is built by the first
+-- statement and shared by the next ones, kept in the backend under sift.backend_cache_kb. A write the statement's snapshot sees (the reader's own, or committed since the
+-- stamp) makes the next statement build it again, and a budget too small for it, or none, keeps nothing. dim2 has no journal: its table is never kept (shapes 6 and 7).
+-- Whatever happens to the tables, the answers are those of the normal plan, the rows of keys the table has no row for (orphans, NULL keys) included.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
-CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
 -- 5000 keys in a few classes; the events of keys 5000 to 5099 have no row
 CREATE TABLE dim (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);
 INSERT INTO dim SELECT i, i % 7, i % 3, i % 5 = 0 FROM generate_series(0, 4999) i;
 CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
+CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k)');
 -- 2,820 classes of two columns: a chunk of the scan meets the rare ones for many chunks, and the aggregates that filter on the class resolve the classes they have not seen alone
 CREATE TABLE dim2 (k int PRIMARY KEY, x int, y int) WITH (autovacuum_enabled = false);
 INSERT INTO dim2 SELECT i, i % 60, i % 47 FROM generate_series(0, 4999) i;
@@ -46,17 +44,17 @@ END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, shared bool, built bool) LANGUAGE sql AS $$
 	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), m.shared > 0, m.built > 0 FROM shapes, LATERAL maps(sql) m ORDER BY n
 $$;
--- the first statement of a shape reads the leaves and keeps the map; the next ones share it
+-- the first statement of a shape builds the table and keeps it; the next ones share it
 SELECT * FROM report('first');
  stage | shape | same_answers | shared | built 
 -------+-------+--------------+--------+-------
  first |     1 | t            | f      | t
  first |     2 | t            | f      | t
  first |     3 | t            | f      | t
- first |     4 | t            | t      | f
- first |     5 | t            | f      | f
- first |     6 | t            | f      | t
- first |     7 | t            | t      | f
+ first |     4 | t            | f      | t
+ first |     5 | t            | f      | t
+ first |     6 | t            | f      | f
+ first |     7 | t            | f      | f
  first |     8 | t            | f      | t
 (8 rows)
 
@@ -67,13 +65,13 @@ SELECT * FROM report('shared');
  shared |     2 | t            | t      | f
  shared |     3 | t            | t      | f
  shared |     4 | t            | t      | f
- shared |     5 | t            | f      | f
- shared |     6 | t            | t      | f
- shared |     7 | t            | t      | f
+ shared |     5 | t            | t      | f
+ shared |     6 | t            | f      | f
+ shared |     7 | t            | f      | f
  shared |     8 | t            | t      | f
 (8 rows)
 
--- a write, in the reader's own transaction: no map is the table's, and the answers see the change
+-- a write, in the reader's own transaction: the table is built again, and the answers see the change
 BEGIN;
 UPDATE dim SET a = 6, flag = NULL WHERE k % 31 = 0;
 DELETE FROM dim WHERE k % 53 = 0;
@@ -81,14 +79,14 @@ INSERT INTO dim SELECT i, 1, 1, true FROM generate_series(5000, 5049) i;
 SELECT * FROM report('in the transaction');
        stage        | shape | same_answers | shared | built 
 --------------------+-------+--------------+--------+-------
- in the transaction |     1 | t            | f      | f
- in the transaction |     2 | t            | f      | f
- in the transaction |     3 | t            | f      | f
- in the transaction |     4 | t            | f      | f
- in the transaction |     5 | t            | f      | f
- in the transaction |     6 | t            | t      | f
- in the transaction |     7 | t            | t      | f
- in the transaction |     8 | t            | f      | f
+ in the transaction |     1 | t            | f      | t
+ in the transaction |     2 | t            | f      | t
+ in the transaction |     3 | t            | f      | t
+ in the transaction |     4 | t            | f      | t
+ in the transaction |     5 | t            | f      | t
+ in the transaction |     6 | t            | f      | f
+ in the transaction |     7 | t            | f      | f
+ in the transaction |     8 | t            | f      | t
 (8 rows)
 
 ROLLBACK;
@@ -98,28 +96,28 @@ DELETE FROM dim WHERE k % 61 = 0;
 SELECT * FROM report('committed, not vacuumed');
           stage          | shape | same_answers | shared | built 
 -------------------------+-------+--------------+--------+-------
- committed, not vacuumed |     1 | t            | f      | f
- committed, not vacuumed |     2 | t            | f      | f
- committed, not vacuumed |     3 | t            | f      | f
- committed, not vacuumed |     4 | t            | f      | f
- committed, not vacuumed |     5 | t            | f      | f
- committed, not vacuumed |     6 | t            | t      | f
- committed, not vacuumed |     7 | t            | t      | f
- committed, not vacuumed |     8 | t            | f      | f
+ committed, not vacuumed |     1 | t            | f      | t
+ committed, not vacuumed |     2 | t            | f      | t
+ committed, not vacuumed |     3 | t            | f      | t
+ committed, not vacuumed |     4 | t            | f      | t
+ committed, not vacuumed |     5 | t            | f      | t
+ committed, not vacuumed |     6 | t            | f      | f
+ committed, not vacuumed |     7 | t            | f      | f
+ committed, not vacuumed |     8 | t            | f      | t
 (8 rows)
 
 VACUUM dim;
 SELECT * FROM report('vacuumed');
   stage   | shape | same_answers | shared | built 
 ----------+-------+--------------+--------+-------
- vacuumed |     1 | t            | f      | t
- vacuumed |     2 | t            | f      | t
- vacuumed |     3 | t            | f      | t
+ vacuumed |     1 | t            | t      | f
+ vacuumed |     2 | t            | t      | f
+ vacuumed |     3 | t            | t      | f
  vacuumed |     4 | t            | t      | f
- vacuumed |     5 | t            | f      | f
- vacuumed |     6 | t            | t      | f
- vacuumed |     7 | t            | t      | f
- vacuumed |     8 | t            | f      | t
+ vacuumed |     5 | t            | t      | f
+ vacuumed |     6 | t            | f      | f
+ vacuumed |     7 | t            | f      | f
+ vacuumed |     8 | t            | t      | f
 (8 rows)
 
 SELECT * FROM report('shared again');
@@ -129,16 +127,16 @@ SELECT * FROM report('shared again');
  shared again |     2 | t            | t      | f
  shared again |     3 | t            | t      | f
  shared again |     4 | t            | t      | f
- shared again |     5 | t            | f      | f
- shared again |     6 | t            | t      | f
- shared again |     7 | t            | t      | f
+ shared again |     5 | t            | t      | f
+ shared again |     6 | t            | f      | f
+ shared again |     7 | t            | f      | f
  shared again |     8 | t            | t      | f
 (8 rows)
 
--- a budget too small for the map of a new state of the table: the statement reads the classes itself, and keeps nothing
+-- a budget too small for the table of a new state of the dimension, then none: every statement builds it, and keeps nothing
 UPDATE dim SET a = 5 WHERE k % 67 = 0;
 VACUUM dim;
-SET sift.shared_cache_kb = 5;
+SET sift.backend_cache_kb = 5;
 SELECT * FROM report('budget too small');
       stage       | shape | same_answers | shared | built 
 ------------------+-------+--------------+--------+-------
@@ -146,37 +144,37 @@ SELECT * FROM report('budget too small');
  budget too small |     2 | t            | f      | t
  budget too small |     3 | t            | f      | t
  budget too small |     4 | t            | f      | t
- budget too small |     5 | t            | f      | f
- budget too small |     6 | t            | t      | f
- budget too small |     7 | t            | t      | f
+ budget too small |     5 | t            | f      | t
+ budget too small |     6 | t            | f      | f
+ budget too small |     7 | t            | f      | f
  budget too small |     8 | t            | f      | t
 (8 rows)
 
-SET sift.shared_cache_kb = 0;
+SET sift.backend_cache_kb = 0;
 SELECT * FROM report('budget off');
    stage    | shape | same_answers | shared | built 
 ------------+-------+--------------+--------+-------
- budget off |     1 | t            | f      | f
- budget off |     2 | t            | f      | f
- budget off |     3 | t            | f      | f
- budget off |     4 | t            | f      | f
- budget off |     5 | t            | f      | f
+ budget off |     1 | t            | f      | t
+ budget off |     2 | t            | f      | t
+ budget off |     3 | t            | f      | t
+ budget off |     4 | t            | f      | t
+ budget off |     5 | t            | f      | t
  budget off |     6 | t            | f      | f
  budget off |     7 | t            | f      | f
- budget off |     8 | t            | f      | f
+ budget off |     8 | t            | f      | t
 (8 rows)
 
-RESET sift.shared_cache_kb;
+RESET sift.backend_cache_kb;
 SELECT * FROM report('map made');
   stage   | shape | same_answers | shared | built 
 ----------+-------+--------------+--------+-------
  map made |     1 | t            | f      | t
  map made |     2 | t            | f      | t
  map made |     3 | t            | f      | t
- map made |     4 | t            | t      | f
- map made |     5 | t            | f      | f
- map made |     6 | t            | t      | f
- map made |     7 | t            | t      | f
+ map made |     4 | t            | f      | t
+ map made |     5 | t            | f      | t
+ map made |     6 | t            | f      | f
+ map made |     7 | t            | f      | f
  map made |     8 | t            | f      | t
 (8 rows)
 
@@ -187,13 +185,13 @@ SELECT * FROM report('map shared');
  map shared |     2 | t            | t      | f
  map shared |     3 | t            | t      | f
  map shared |     4 | t            | t      | f
- map shared |     5 | t            | f      | f
- map shared |     6 | t            | t      | f
- map shared |     7 | t            | t      | f
+ map shared |     5 | t            | t      | f
+ map shared |     6 | t            | f      | f
+ map shared |     7 | t            | f      | f
  map shared |     8 | t            | t      | f
 (8 rows)
 
--- the workers read the classes from the leader's shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -206,9 +204,9 @@ SELECT * FROM report('workers');
  workers |     2 | t            | t      | f
  workers |     3 | t            | t      | f
  workers |     4 | t            | t      | f
- workers |     5 | t            | f      | f
- workers |     6 | t            | t      | f
- workers |     7 | t            | t      | f
+ workers |     5 | t            | t      | f
+ workers |     6 | t            | f      | f
+ workers |     7 | t            | f      | f
  workers |     8 | t            | t      | f
 (8 rows)
 

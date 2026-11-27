@@ -1,9 +1,7 @@
--- The dimension map: the class of each key of a joined table (one int4 key, a few columns the query reads), read from the leaves of its sift_col index once and kept in
--- shared memory (sift.shared_cache_kb) for every later statement. Whatever happens to the table, the answers are those of the normal plan: a map is read only for the
--- state of the table it was made at, so a write (committed, rolled back, or the reader's own) is a table with no map until it is vacuumed again, a budget too small
--- for a map is a statement that reads the classes itself, and the rows of keys the table has no row for (orphans, NULL keys) are the ones the join gives. A column of
--- the key itself that the query reads is the scanned column in an inner join (shape 4: it has a map) and no class's in a left join (shape 5: loaded row by row, never a map).
--- A test of the table's columns (shape 8: a FILTER, a CASE) is a boolean column of the lookup table that the load computes (agg_lookup_tests): its map has a class for each outcome.
+-- The Dimension Cache of SiftAggV6 (docs/ARCHITECTURE.md): the table of a joined dimension whose journal vouches for it (ev_col connects to dim) is built by the first
+-- statement and shared by the next ones, kept in the backend under sift.backend_cache_kb. A write the statement's snapshot sees (the reader's own, or committed since the
+-- stamp) makes the next statement build it again, and a budget too small for it, or none, keeps nothing. dim2 has no journal: its table is never kept (shapes 6 and 7).
+-- Whatever happens to the tables, the answers are those of the normal plan, the rows of keys the table has no row for (orphans, NULL keys) included.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -11,13 +9,13 @@ SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
 
-CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
-INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
-CREATE INDEX ev_col ON ev USING sift_col (id, k, v);
 -- 5000 keys in a few classes; the events of keys 5000 to 5099 have no row
 CREATE TABLE dim (k int PRIMARY KEY, a int, b int, flag bool) WITH (autovacuum_enabled = false);
 INSERT INTO dim SELECT i, i % 7, i % 3, i % 5 = 0 FROM generate_series(0, 4999) i;
 CREATE INDEX dim_col ON dim USING sift_col (k, a, b, flag);
+CREATE TABLE ev (id int PRIMARY KEY, k int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO ev SELECT i, CASE WHEN i % 211 = 0 THEN NULL ELSE i % 5100 END, i % 11 FROM generate_series(1, 40000) i;
+CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'k -> dim(k)');
 -- 2,820 classes of two columns: a chunk of the scan meets the rare ones for many chunks, and the aggregates that filter on the class resolve the classes they have not seen alone
 CREATE TABLE dim2 (k int PRIMARY KEY, x int, y int) WITH (autovacuum_enabled = false);
 INSERT INTO dim2 SELECT i, i % 60, i % 47 FROM generate_series(0, 4999) i;
@@ -50,11 +48,11 @@ CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_an
 	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), m.shared > 0, m.built > 0 FROM shapes, LATERAL maps(sql) m ORDER BY n
 $$;
 
--- the first statement of a shape reads the leaves and keeps the map; the next ones share it
+-- the first statement of a shape builds the table and keeps it; the next ones share it
 SELECT * FROM report('first');
 SELECT * FROM report('shared');
 
--- a write, in the reader's own transaction: no map is the table's, and the answers see the change
+-- a write, in the reader's own transaction: the table is built again, and the answers see the change
 BEGIN;
 UPDATE dim SET a = 6, flag = NULL WHERE k % 31 = 0;
 DELETE FROM dim WHERE k % 53 = 0;
@@ -70,18 +68,18 @@ VACUUM dim;
 SELECT * FROM report('vacuumed');
 SELECT * FROM report('shared again');
 
--- a budget too small for the map of a new state of the table: the statement reads the classes itself, and keeps nothing
+-- a budget too small for the table of a new state of the dimension, then none: every statement builds it, and keeps nothing
 UPDATE dim SET a = 5 WHERE k % 67 = 0;
 VACUUM dim;
-SET sift.shared_cache_kb = 5;
+SET sift.backend_cache_kb = 5;
 SELECT * FROM report('budget too small');
-SET sift.shared_cache_kb = 0;
+SET sift.backend_cache_kb = 0;
 SELECT * FROM report('budget off');
-RESET sift.shared_cache_kb;
+RESET sift.backend_cache_kb;
 SELECT * FROM report('map made');
 SELECT * FROM report('map shared');
 
--- the workers read the classes from the leader's shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

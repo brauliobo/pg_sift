@@ -1,7 +1,8 @@
--- The dimension map for every kind of column of the parent: an int2, int4, int8, date, timestamp, boolean, text (dictionary), numeric and an expression leaf of its sift_col index,
--- joined by a child whose own filter and group keys are leaves of the child's sift_col index. For each kind, whether the join is served by a map ('new map' made by the statement, 'shared map' made by an earlier one), by the classes of
--- the lookup table ('classes') or loads the rows of the parent ('rows'), and how many heap fetches it made, before and after writes to the parent and to the child, serial and with
--- workers, with and without a connection of the child to the parent's journal (`via map`: nothing is carried). The answers are those of the normal plan.
+-- The Dimension Cache for every kind of column of the parent: an int2, int4, int8, date, timestamp, boolean, text (dictionary), numeric and an expression leaf of its sift_col
+-- index, joined by a child whose own filter and group keys are leaves of the child's sift_col index. For each kind, whether the join is served by a cached table ('new map'
+-- built by the statement, 'shared map' built by an earlier one) or reads the rows of the parent ('rows'), and how many heap fetches it made, before and after writes to the
+-- parent and to the child, serial and with workers, without and with a connection of the child to the parent's journal: only a journaled parent is kept
+-- (docs/ARCHITECTURE.md). The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -22,14 +23,13 @@ INSERT INTO attrs VALUES (1, 'int2', 'pd.c2'), (2, 'int4', 'pd.c4'), (3, 'int8',
 CREATE FUNCTION q(expr text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
 	SELECT 'SELECT ' || expr || ', ch.g, ch.tag, count(*), sum(ch.v) FROM ch JOIN pd ON pd.k = ch.k WHERE ch.v < 50 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3'
 $$;
--- how the scan got the parent's columns, from EXPLAIN ANALYZE: a map, the classes of the lookup table, the rows of it; and the heap fetches it made
+-- how the scan got the parent's columns, from EXPLAIN ANALYZE: a cached table or the rows of it; and the heap fetches it made
 CREATE FUNCTION how(sql text, OUT served text, OUT heap_fetches int) LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	served := 'normal'; heap_fetches := 0;
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN served := 'rows'; END IF;
-		IF l ~ '[1-9]\d* rows classed' AND served = 'rows' THEN served := 'classes'; END IF;
 		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN served := 'shared map'; END IF;
 		IF l ~ 'Dimension Cache: \d+ hit, [1-9]\d* built' THEN served := 'new map'; END IF;
 		IF l ~ '\d+ heap fetches' THEN heap_fetches := substring(l from '(\d+) heap fetches')::int; END IF;
@@ -38,116 +38,116 @@ END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, kind text, same_answers bool, served text, heap_fetches int) LANGUAGE sql AS $$
 	SELECT stage, name, sift_helpers.answer(q(expr), true) = sift_helpers.answer(q(expr), false), h.served, h.heap_fetches FROM attrs, LATERAL how(q(expr)) h ORDER BY n
 $$;
--- the parent has no journal: a map is the state of its pages
+-- the parent has no journal: nothing is kept
 SELECT * FROM report('first');
- stage |    kind    | same_answers | served  | heap_fetches 
--------+------------+--------------+---------+--------------
- first | int2       | t            | new map |            0
- first | int4       | t            | new map |            0
- first | int8       | t            | new map |            0
- first | date       | t            | new map |            0
- first | timestamp  | t            | new map |            0
- first | boolean    | t            | new map |            0
- first | text       | t            | new map |            0
- first | numeric    | t            | new map |            0
- first | expression | t            | new map |            0
+ stage |    kind    | same_answers | served | heap_fetches 
+-------+------------+--------------+--------+--------------
+ first | int2       | t            | rows   |            0
+ first | int4       | t            | rows   |            0
+ first | int8       | t            | rows   |            0
+ first | date       | t            | rows   |            0
+ first | timestamp  | t            | rows   |            0
+ first | boolean    | t            | rows   |            0
+ first | text       | t            | rows   |            0
+ first | numeric    | t            | rows   |            0
+ first | expression | t            | rows   |            0
 (9 rows)
 
 SELECT * FROM report('shared');
- stage  |    kind    | same_answers |   served   | heap_fetches 
---------+------------+--------------+------------+--------------
- shared | int2       | t            | shared map |            0
- shared | int4       | t            | shared map |            0
- shared | int8       | t            | shared map |            0
- shared | date       | t            | shared map |            0
- shared | timestamp  | t            | shared map |            0
- shared | boolean    | t            | shared map |            0
- shared | text       | t            | shared map |            0
- shared | numeric    | t            | shared map |            0
- shared | expression | t            | shared map |            0
+ stage  |    kind    | same_answers | served | heap_fetches 
+--------+------------+--------------+--------+--------------
+ shared | int2       | t            | rows   |            0
+ shared | int4       | t            | rows   |            0
+ shared | int8       | t            | rows   |            0
+ shared | date       | t            | rows   |            0
+ shared | timestamp  | t            | rows   |            0
+ shared | boolean    | t            | rows   |            0
+ shared | text       | t            | rows   |            0
+ shared | numeric    | t            | rows   |            0
+ shared | expression | t            | rows   |            0
 (9 rows)
 
--- the child written after the maps were made: nothing of the parent changed
+-- the child written
 UPDATE ch SET g = (g + 1) % 5, tag = 'w' || id % 3 WHERE id % 7 = 0;
 INSERT INTO ch SELECT i, i % 5100, i % 5, i % 101, 'u' || i % 4 FROM generate_series(40001, 41000) i;
 SELECT * FROM report('child written');
-     stage     |    kind    | same_answers |   served   | heap_fetches 
----------------+------------+--------------+------------+--------------
- child written | int2       | t            | shared map |            0
- child written | int4       | t            | shared map |            0
- child written | int8       | t            | shared map |            0
- child written | date       | t            | shared map |            0
- child written | timestamp  | t            | shared map |            0
- child written | boolean    | t            | shared map |            0
- child written | text       | t            | shared map |            0
- child written | numeric    | t            | shared map |            0
- child written | expression | t            | shared map |            0
+     stage     |    kind    | same_answers | served | heap_fetches 
+---------------+------------+--------------+--------+--------------
+ child written | int2       | t            | rows   |            0
+ child written | int4       | t            | rows   |            0
+ child written | int8       | t            | rows   |            0
+ child written | date       | t            | rows   |            0
+ child written | timestamp  | t            | rows   |            0
+ child written | boolean    | t            | rows   |            0
+ child written | text       | t            | rows   |            0
+ child written | numeric    | t            | rows   |            0
+ child written | expression | t            | rows   |            0
 (9 rows)
 
 -- the parent written and not vacuumed, then vacuumed
 UPDATE pd SET c2 = (c2 + 1) % 7, c4 = (c4 + 1) % 11, c8 = c8 + 10000000000, cd = cd + 1, cts = cts + interval '1 hour', cb = NOT cb, ct = 'x' || k % 23, cn = cn + 0.01
 	WHERE k % 31 = 0;
 SELECT * FROM report('parent written');
-     stage      |    kind    | same_answers | served  | heap_fetches 
-----------------+------------+--------------+---------+--------------
- parent written | int2       | t            | classes |            0
- parent written | int4       | t            | classes |            0
- parent written | int8       | t            | classes |            0
- parent written | date       | t            | classes |            0
- parent written | timestamp  | t            | classes |            0
- parent written | boolean    | t            | classes |            0
- parent written | text       | t            | classes |            0
- parent written | numeric    | t            | classes |            0
- parent written | expression | t            | classes |            0
+     stage      |    kind    | same_answers | served | heap_fetches 
+----------------+------------+--------------+--------+--------------
+ parent written | int2       | t            | rows   |            0
+ parent written | int4       | t            | rows   |            0
+ parent written | int8       | t            | rows   |            0
+ parent written | date       | t            | rows   |            0
+ parent written | timestamp  | t            | rows   |            0
+ parent written | boolean    | t            | rows   |            0
+ parent written | text       | t            | rows   |            0
+ parent written | numeric    | t            | rows   |            0
+ parent written | expression | t            | rows   |            0
 (9 rows)
 
 VACUUM pd;
 SELECT * FROM report('parent vacuumed');
-      stage      |    kind    | same_answers | served  | heap_fetches 
------------------+------------+--------------+---------+--------------
- parent vacuumed | int2       | t            | new map |            0
- parent vacuumed | int4       | t            | new map |            0
- parent vacuumed | int8       | t            | new map |            0
- parent vacuumed | date       | t            | new map |            0
- parent vacuumed | timestamp  | t            | new map |            0
- parent vacuumed | boolean    | t            | new map |            0
- parent vacuumed | text       | t            | new map |            0
- parent vacuumed | numeric    | t            | new map |            0
- parent vacuumed | expression | t            | new map |            0
+      stage      |    kind    | same_answers | served | heap_fetches 
+-----------------+------------+--------------+--------+--------------
+ parent vacuumed | int2       | t            | rows   |            0
+ parent vacuumed | int4       | t            | rows   |            0
+ parent vacuumed | int8       | t            | rows   |            0
+ parent vacuumed | date       | t            | rows   |            0
+ parent vacuumed | timestamp  | t            | rows   |            0
+ parent vacuumed | boolean    | t            | rows   |            0
+ parent vacuumed | text       | t            | rows   |            0
+ parent vacuumed | numeric    | t            | rows   |            0
+ parent vacuumed | expression | t            | rows   |            0
 (9 rows)
 
 SELECT * FROM report('parent vacuumed, shared');
-          stage          |    kind    | same_answers |   served   | heap_fetches 
--------------------------+------------+--------------+------------+--------------
- parent vacuumed, shared | int2       | t            | shared map |            0
- parent vacuumed, shared | int4       | t            | shared map |            0
- parent vacuumed, shared | int8       | t            | shared map |            0
- parent vacuumed, shared | date       | t            | shared map |            0
- parent vacuumed, shared | timestamp  | t            | shared map |            0
- parent vacuumed, shared | boolean    | t            | shared map |            0
- parent vacuumed, shared | text       | t            | shared map |            0
- parent vacuumed, shared | numeric    | t            | shared map |            0
- parent vacuumed, shared | expression | t            | shared map |            0
+          stage          |    kind    | same_answers | served | heap_fetches 
+-------------------------+------------+--------------+--------+--------------
+ parent vacuumed, shared | int2       | t            | rows   |            0
+ parent vacuumed, shared | int4       | t            | rows   |            0
+ parent vacuumed, shared | int8       | t            | rows   |            0
+ parent vacuumed, shared | date       | t            | rows   |            0
+ parent vacuumed, shared | timestamp  | t            | rows   |            0
+ parent vacuumed, shared | boolean    | t            | rows   |            0
+ parent vacuumed, shared | text       | t            | rows   |            0
+ parent vacuumed, shared | numeric    | t            | rows   |            0
+ parent vacuumed, shared | expression | t            | rows   |            0
 (9 rows)
 
--- the workers read the maps from the leader's shared memory, and the lookup tables they make themselves
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
-  stage  |    kind    | same_answers |   served   | heap_fetches 
----------+------------+--------------+------------+--------------
- workers | int2       | t            | shared map |            0
- workers | int4       | t            | shared map |            0
- workers | int8       | t            | shared map |            0
- workers | date       | t            | shared map |            0
- workers | timestamp  | t            | shared map |            0
- workers | boolean    | t            | shared map |            0
- workers | text       | t            | shared map |            0
- workers | numeric    | t            | shared map |            0
- workers | expression | t            | shared map |            0
+  stage  |    kind    | same_answers | served | heap_fetches 
+---------+------------+--------------+--------+--------------
+ workers | int2       | t            | rows   |            0
+ workers | int4       | t            | rows   |            0
+ workers | int8       | t            | rows   |            0
+ workers | date       | t            | rows   |            0
+ workers | timestamp  | t            | rows   |            0
+ workers | boolean    | t            | rows   |            0
+ workers | text       | t            | rows   |            0
+ workers | numeric    | t            | rows   |            0
+ workers | expression | t            | rows   |            0
 (9 rows)
 
 RESET max_parallel_workers_per_gather;
