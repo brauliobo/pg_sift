@@ -154,7 +154,7 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		{
 			if (sift_cache_room(size))
 			{
-				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, 0);
+				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 
 				e = hash_search(cache, &k, HASH_ENTER, NULL);
 				e->obj = p;

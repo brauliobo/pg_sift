@@ -48,7 +48,7 @@ batch_put(Batch *bt, SiftKey key, uint8 tf, uint16 dl, const uint8 *rec, uint32 
 		bt->plen[bt->n] = len;
 		bt->poslen += len;
 	}
-	if (++bt->n == BATCH)
+	if (++bt->n == BATCH || bt->poslen >= BATCH_POS_KEEP / 2)
 		batch_flush(bt);
 }
 

@@ -273,6 +273,13 @@ doc_slot(const SiftDoc *d, const char *s, int len)
 	}
 }
 
+/* An int for each of n tokens: a doc of 1 GB of text has more than a plain palloc takes */
+static int *
+tok_ints(Size n, int flags)
+{
+	return palloc_extended(n * sizeof(int), MCXT_ALLOC_HUGE | flags);
+}
+
 /* Groups the tokens by distinct term: hash table, per-term chains */
 static void
 doc_group(SiftDoc *d)
@@ -286,12 +293,12 @@ doc_group(SiftDoc *d)
 	while (size < (Size) d->ntok * 2)
 		size <<= 1;
 	d->mask = size - 1;
-	d->slots = palloc0(size * sizeof(int));
-	d->id = palloc(d->ntok * sizeof(int));
-	d->next = palloc(d->ntok * sizeof(int));
-	d->first = palloc(d->ntok * sizeof(int));
-	last = palloc(d->ntok * sizeof(int));
-	d->tf = palloc0(d->ntok * sizeof(int));
+	d->slots = tok_ints(size, MCXT_ALLOC_ZERO);
+	d->id = tok_ints(d->ntok, 0);
+	d->next = tok_ints(d->ntok, 0);
+	d->first = tok_ints(d->ntok, 0);
+	last = tok_ints(d->ntok, 0);
+	d->tf = tok_ints(d->ntok, MCXT_ALLOC_ZERO);
 	d->nterms = 0;
 	for (int t = 0; t < d->ntok; t++)
 	{
@@ -353,6 +360,7 @@ doc_count_tokens(const SiftDoc *d, int field, const SiftQNode *leaf, const char 
 	{
 		const SiftToken *w = &d->tok[t];
 
+		CHECK_FOR_INTERRUPTS();
 		if (field && (d->sec ? d->sec[t] : 0) + 1 != field)
 			continue;
 		if (leaf ? sift_query_leaf_match(leaf, w->str, w->len) : w->len >= len && memcmp(w->str, pre, len) == 0)
@@ -408,6 +416,7 @@ eval_phrase_anchored(SiftDoc *d, const SiftQNode *n)
 					start;
 		int			i = 0;
 
+		CHECK_FOR_INTERRUPTS();
 		if (d->tok[t].pos < off)
 			continue;
 		start = d->tok[t].pos - off;
@@ -484,8 +493,11 @@ eval_node(SiftDoc *d, const SiftQNode *n)
 		default:
 			doc_group(d);
 			for (int t = 0; t < d->nterms; t++)
+			{
+				CHECK_FOR_INTERRUPTS();
 				if (sift_query_leaf_match(n, d->tok[d->first[t]].str, d->tok[d->first[t]].len))
 					return true;
+			}
 			return false;
 	}
 }

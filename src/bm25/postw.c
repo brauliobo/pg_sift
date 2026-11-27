@@ -245,9 +245,7 @@ out_buf(SiftPostingWriter *w, Size len)
 	if (len > w->outcap)
 	{
 		w->outcap = Max(len, Max(4096, w->outcap * 2));
-		if (w->out)
-			pfree(w->out);
-		w->out = MemoryContextAlloc(w->mcxt, w->outcap);
+		w->out = grow(w->mcxt, w->out, w->outcap);
 	}
 	memset(w->out, 0, len);
 	return w->out;
@@ -651,11 +649,12 @@ spool_blocks(SiftPostingWriter *w)
 		uint32		at = w->poslen;
 		Size		to;
 
+		CHECK_FOR_INTERRUPTS();
 		if (b + 1 < nck)
 			BufFileReadExact(sp->ckpt, &next, sizeof(next));
 		to = b + 1 < nck ? next : rawlen;
 		if (to - from > rawcap)
-			SIFT_REGROW_IN(w->mcxt, raw, rawcap = to - from);
+			raw = grow(w->mcxt, raw, rawcap = to - from);
 		BufFileSeek(sp->pos, 0, from, SEEK_SET);
 		BufFileReadExact(sp->pos, raw, to - from);
 		resetStringInfo(&out);
