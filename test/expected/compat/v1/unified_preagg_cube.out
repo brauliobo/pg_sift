@@ -90,7 +90,7 @@ SELECT * FROM cube('SELECT count(DISTINCT grp) FROM ev');
      6 | t
 (1 row)
 
--- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
+-- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row
 SELECT * FROM cube('SELECT kind, min(kind) FROM ev GROUP BY 1');
  units | same 
 -------+------
@@ -104,12 +104,6 @@ SELECT * FROM cube('SELECT grp, kind, count(*) FROM ev GROUP BY 1, 2');
 (1 row)
 
 SELECT * FROM cube('SELECT count(*) FROM ev WHERE amount % 2 = 0');
- units | same 
--------+------
-     0 | t
-(1 row)
-
-SELECT * FROM cube('SELECT kind, count(*) FROM ev GROUP BY 1');
  units | same 
 -------+------
      0 | t

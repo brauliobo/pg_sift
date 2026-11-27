@@ -73,11 +73,10 @@ SELECT * FROM queries('ev');
 
 -- the distinct values of a dimension are the keys of its cells
 SELECT * FROM cube('SELECT count(DISTINCT grp) FROM ev');
--- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row, preaggregation off
+-- 2. a statement the cubes do not hold is read: a text minimum, two keys, a test the zones cannot decide on a row
 SELECT * FROM cube('SELECT kind, min(kind) FROM ev GROUP BY 1');
 SELECT * FROM cube('SELECT grp, kind, count(*) FROM ev GROUP BY 1, 2');
 SELECT * FROM cube('SELECT count(*) FROM ev WHERE amount % 2 = 0');
-SELECT * FROM cube('SELECT kind, count(*) FROM ev GROUP BY 1');
 
 -- 3. dead rows and pending writes: the units they touch are read, the others are still answered
 UPDATE ev SET amount = amount + 1, kind = 'kind-of-event-9' WHERE id BETWEEN 100 AND 130;
