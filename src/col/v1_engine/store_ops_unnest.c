@@ -8,6 +8,8 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "nodes/nodeFuncs.h"
+
 #include "col/source_fold.h"
 #include "col/v1_engine/store_ops_unnest.h"
 #include "core/popcount.h"
@@ -396,14 +398,29 @@ setup_clauses(UnRun *u)
 	sift_v1_unnest_setup_tests(u);
 }
 
-/* the quals of the table as the source decides them, so that it reads no unit their bounds leave out (the batches are filtered by them again, with the others) */
+/* the expression reads a virtual attribute of the scan (a leaf of a key of a document), which no column of the heap row is */
+static bool
+reads_virtual(Node *node, void *host)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, Var) && ((Var *) node)->varno == INDEX_VAR && ((Var *) node)->varattno > RelationGetNumberOfAttributes((Relation) host))
+		return true;
+	return expression_tree_walker(node, reads_virtual, host);
+}
+
+/* the quals of the table over its stored columns as the source decides them, so that it reads no unit their bounds leave out (the batches are filtered by all the quals again) */
 static SiftV6Vexpr *
 source_quals(const UnRun *u, Relation host, SiftV6Input *in)
 {
 	SiftV6Input probe = *in;
 	SiftV6Vexpr *vx = palloc0(sizeof(SiftV6Vexpr));
+	List	   *stored = NIL;
 
-	if (u->x->where == NIL || !sift_v6_vexpr_quals(CurrentMemoryContext, sift_srcfold_heap_quals(host, u->x->where), 1, NULL, &probe, vx))
+	foreach_ptr(Node, q, u->x->where)
+		if (!reads_virtual(q, host))
+			stored = lappend(stored, q);
+	if (stored == NIL || !sift_v6_vexpr_quals(CurrentMemoryContext, sift_srcfold_heap_quals(host, stored), 1, NULL, &probe, vx))
 		return NULL;
 	*in = probe;
 	return vx;

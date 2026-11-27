@@ -1,0 +1,90 @@
+-- Format 1 parity of three shapes Format 2 serves (spec 113, S113-19): doc ? 'k' through the leaf of the key (the documents that are no object read again from the heap), an array column read
+-- whole from its image (@>, cardinality), and an IN list of ids priced by the one unit it searches; and a LATERAL jsonb_to_recordset beside a filter on a leaf of a key, which the source
+-- of the unnest decided as a heap column (0A000). Each shape names the node that runs it, and its rows are the normal plan's (sift.enable_agg off).
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := 'normal';
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	PERFORM set_config('enable_indexonlyscan', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAggV6' THEN r := 'SiftAggV6'; ELSIF l ~ 'Index Only Scan using' AND r = 'normal' THEN r := 'Index Only Scan'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+CREATE FUNCTION rows_of(q text, push bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', push::text, true);
+	PERFORM set_config('enable_indexonlyscan', push::text, true);
+	EXECUTE format('SELECT md5(coalesce(string_agg(t::text, '','' ORDER BY t::text), '''')) || '' '' || count(*) FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+CREATE FUNCTION check_q(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT plan_of(q) || CASE WHEN rows_of(q, true) = rows_of(q, false) THEN ' same rows ' || split_part(rows_of(q, false), ' ', 2) ELSE ' DIFFERENT' END $$;
+-- documents of every JSON type at the root, with the key, without it and with a JSON null
+CREATE TABLE fj (id int, g int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO fj SELECT i, i % 5, (ARRAY['{"channel":"c1","score":3}', '{"channel":null}', '{"other":1}', '["channel"]', '["x"]', '"channel"', '"x"', '7', 'true', 'null', '{}',
+	'{"channel":"c2","score":5.5}'])[1 + i % 12]::jsonb FROM generate_series(1, 6000) i;
+INSERT INTO fj VALUES (6001, 1, NULL);
+CREATE INDEX fj_col ON fj USING sift_col (id, g, doc) WITH (paths = 'doc.channel text, doc.score float8');
+CREATE TABLE fa (id int NOT NULL, status text NOT NULL, tags text[] NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO fa SELECT i, 'st_' || chr(97 + i % 8), ARRAY(SELECT 't_' || ((i::bigint * 7919 + k * 31) % 40) FROM generate_series(1, 1 + i % 4) k) FROM generate_series(1, 6000) i;
+CREATE INDEX fa_col ON fa USING sift_col (id, status, tags);
+CREATE TABLE fs AS SELECT i AS id, i % 1000 AS customer_id, timestamp '2024-01-01' + i * interval '1 minute' AS created_at FROM generate_series(1, 30000) i;
+CREATE INDEX fs_col ON fs USING sift_col (id sift.col_int4_ops, customer_id sift.col_int4_ops, created_at sift.col_timestamp_ops);
+CREATE TABLE fu (id int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO fu SELECT i, CASE WHEN i % 50 = 0 THEN NULL ELSE jsonb_build_object('channel', 'ch_' || i % 5, 'items', jsonb_build_array(jsonb_build_object('kind', 'k_' || i % 3, 'score', 1 + (i * 7) % 10),
+	jsonb_build_object('kind', 'k_' || (i + 1) % 3, 'score', 1 + (i * 5) % 10))) END FROM generate_series(1, 6000) i;
+CREATE INDEX fu_col ON fu USING sift_col (id, doc) WITH (paths = 'doc.channel text, doc.items[]{kind astext, score float8}');
+VACUUM (FREEZE, ANALYZE) fj, fa, fs, fu;
+SELECT count(*) FILTER (WHERE (sift.index_format(r)).major = 1) AS format1 FROM unnest('{fj_col,fa_col,fs_col,fu_col}'::regclass[]) r;
+ format1 
+---------
+       4
+(1 row)
+
+-- the planner's own plan
+SELECT n, check_q(q) FROM (VALUES
+	('key groups',   $$SELECT doc ->> 'channel', count(*), avg((doc ->> 'score')::float8) FROM fj WHERE doc ? 'channel' GROUP BY 1$$),
+	('array',        $$SELECT status, count(*), avg(cardinality(tags)) FROM fa WHERE tags @> ARRAY['t_1'] AND cardinality(tags) >= 2 GROUP BY 1$$),
+	('in list',      $$SELECT id, created_at FROM fs WHERE id IN (1077,1154,1231,1308,1385,1462,1539,1616,1693,1770,1847,1924,2001,2078,2155,2232,2309,2386,2463,2540,2617,2694,2771,2848,2925,
+		3002,3079,3156,3233,3310,3387,3464,3541,3618,3695,3772,3849,3926,4003,4080,4157,4234,4311,4388,4465,4542,4619,4696,4773,4850,4927,5004,5081,5158,5235,5312,5389,5466,5543,5620,5697,5774,
+		5851,5928,6005,6082,6159,6236,6313,6390,6467,6544,6621,6698,6775,6852,6929,7006,7083,7160,7237,7314,7391,7468,7545,7622,7699,7776,7853,7930,8007,8084,8161,8238,8315,8392,8469,8546,8623,8700)$$)
+) v(n, q) ORDER BY n;
+     n      |            check_q            
+------------+-------------------------------
+ array      | SiftAggV6 same rows 3
+ in list    | Index Only Scan same rows 100
+ key groups | SiftAggV6 same rows 3
+(3 rows)
+
+-- the forms of the key test and the unnest beside a leaf filter, forced onto the scan
+SET sift.agg_force = on;
+SELECT n, check_q(q) FROM (VALUES
+	('count',          $$SELECT count(*) FROM fj WHERE doc ? 'channel'$$),
+	('not',            $$SELECT count(*) FROM fj WHERE NOT (doc ? 'channel')$$),
+	('absent key',     $$SELECT count(*) FROM fj WHERE doc ? 'score' AND g = 2$$),
+	('sum',            $$SELECT sum(id), min(id), max(id) FROM fj WHERE doc ? 'channel'$$),
+	('array contains', $$SELECT status, count(*) FROM fa WHERE tags @> ARRAY['t_1'] GROUP BY 1$$),
+	('array length',   $$SELECT status, avg(cardinality(tags)) FROM fa GROUP BY 1$$),
+	('unnest filter',  $$SELECT i.kind, count(*) FROM fu t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE t.doc ->> 'channel' = 'ch_1' GROUP BY 1$$)
+) v(n, q) ORDER BY n;
+       n        |        check_q        
+----------------+-----------------------
+ absent key     | SiftAggV6 same rows 1
+ array contains | SiftAggV6 same rows 3
+ array length   | SiftAggV6 same rows 8
+ count          | SiftAggV6 same rows 1
+ not            | normal same rows 1
+ sum            | SiftAggV6 same rows 1
+ unnest filter  | SiftAggV6 same rows 3
+(7 rows)
+
+DROP FUNCTION check_q(text), rows_of(text, bool), plan_of(text);
+DROP TABLE fj, fa, fs, fu;
+DROP EXTENSION pg_sift;

@@ -81,6 +81,7 @@ TESTING_REGRESS += agg/datum_expr
 TESTING_REGRESS += agg/dict/blocks_lazy
 TESTING_REGRESS += agg/dim_unnest_aggs
 TESTING_REGRESS += agg/distinct/narrow
+TESTING_REGRESS += agg/f1_jsonb_array_parity
 TESTING_REGRESS += agg/f1_jsonb_nonarray_elem
 TESTING_REGRESS += agg/f1_left_cross_dims
 TESTING_REGRESS += agg/f1_outer_join_rows
