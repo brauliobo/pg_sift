@@ -15,7 +15,7 @@ extern void sift_agg_drop_unused_laterals(Query *q);
  */
 extern bool sift_agg_having_to_where(Query *q, bool apply);
 
-/* ... and a scalar sub-select of one aggregate tied to the query by equalities of columns made a LEFT JOIN to the table grouped by them, taken when it costs less */
+/* ... and a scalar sub-select of one aggregate, an EXISTS or a LATERAL sub-select of aggregates tied to the query by equalities of columns made a join to the table grouped by them, taken when it costs less */
 extern bool sift_agg_flat_decorrelate(Query *q, bool apply);
 
 #endif							/* SIFT_AGG_PLAN_FLAT_REWRITE_H */

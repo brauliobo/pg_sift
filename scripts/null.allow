@@ -30,6 +30,7 @@ src/agg/hybrid/plan.c	sift_hybrid_plan_path	list-first	custom_private of the pat
 src/agg/join/join.c	join_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
 src/agg/join/asof_run.c	asof_plan_path	list-first	custom_private of the path is list_make3(ints, vars, sub_attno), built by the path creation of this file
 src/agg/join/asof_run.c	asof_begin	list-first	custom_private is list_make1(ints), built by the plan of this file from the ints of its path
+src/agg/plan/flat_rewrite.c	decorrelate	list-first	group_by_ties gives g a key column for each equality, and decor_subselect kept the sub-select only with one
 src/agg/plan/plan.c	sift_agg_v6_plan_path	list-first	custom_private of the path is list_make3(spec, scan tlist, having), built by the path creation of this file
 src/agg/vexpr.c	sift_v6_plan_scan	list-first	custom_private is the list every caller of sift_v6_add_path passes (stream, window, SIP, top-N): a list of at least three, the scan tlist second
 src/agg/unnest/exists.c	exists_subplan	list-first	sp is a SubPlan of the plan: its plan_id is the 1-based position of its root in glob->subroots
