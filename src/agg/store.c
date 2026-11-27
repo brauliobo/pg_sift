@@ -57,12 +57,12 @@ sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int n)
 }
 
 const SiftCardStatsView *
-sift_v6_rel_card_view(Oid indexoid)
+sift_v6_rel_card_view(Oid reloid, bool is_table)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(indexoid, false);
+	const SiftStoreOps *ops = sift_store_ops_for_oid(reloid, is_table);
 	SiftStoreStats st;
 
-	return ops != NULL && ops->stats(indexoid, false, &st) ? st.card_view : NULL;
+	return ops != NULL && ops->stats(reloid, is_table, &st) ? st.card_view : NULL;
 }
 
 int

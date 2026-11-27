@@ -25,6 +25,17 @@ CREATE TABLE tx (id int, qty int, doc jsonb) USING sift_table;
 INSERT INTO tx SELECT id, qty, doc FROM tj WHERE id <= 3000;
 INSERT INTO tx VALUES (7005, 1, '{"items": [5, {"kind": "k1", "score": "abc"}]}');
 ANALYZE tx;
+-- an array that is the column itself, whose declared list paths keep the lengths of the arrays: the rows its elements make are estimated from them, not at the 100 a call
+-- PostgreSQL assumes, so that a two-level rollup over the elements is no join of 100 times the rows it has
+CREATE TABLE ti (id int, grp int, items jsonb) USING sift_table;
+SELECT sift.table_set_paths('ti', 'items', 'items[]->kind text, items[]->qty int4');
+ table_set_paths 
+-----------------
+ 
+(1 row)
+
+INSERT INTO ti SELECT g, g % 7, (SELECT jsonb_agg(jsonb_build_object('kind', 'k' || (g + j) % 4, 'qty', j)) FROM generate_series(1, 1 + g % 3) j) FROM generate_series(1, 6000) g;
+VACUUM ANALYZE ti;
 CREATE TABLE kinds (kind text);
 INSERT INTO kinds VALUES ('k1'), ('t2');
 ANALYZE kinds;
@@ -66,7 +77,10 @@ INSERT INTO q VALUES
 	(26, $$SELECT count(*) FROM tx t WHERE jsonb_path_exists(t.doc, 'strict $.items[*] ? (@.score == "abc")')$$),
 	-- a dimension joined to the elements of a table is the normal plan's: the pairs of its rows probe no dimension
 	(13, $$SELECT i.kind, count(*) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = i.kind) GROUP BY 1$$),
-	(14, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL unnest(t.tags) v WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = v) GROUP BY 1$$);
+	(14, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL unnest(t.tags) v WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = v) GROUP BY 1$$),
+	-- a two-level rollup over the elements of each row: the inner groups of the order and its kind, and of the order alone
+	(27, $$WITH base AS (SELECT t.id, t.grp, i.kind, i.qty FROM ti t CROSS JOIN LATERAL jsonb_to_recordset(t.items) i(kind text, qty int) WHERE t.grp < 5)
+		SELECT count(DISTINCT id), count(*), sum(units) FROM (SELECT id, kind, sum(qty) AS units FROM base GROUP BY id, kind UNION ALL SELECT id, NULL, sum(qty) FROM base GROUP BY id) x$$);
 -- the plan the scan has over a table of this size where reading its pages costs what the scan does
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
@@ -99,7 +113,8 @@ SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
  24 | same | t    | t
  25 | same | t    | t
  26 | same | t    | t
-(26 rows)
+ 27 | same | t    | t
+(27 rows)
 
 -- the elements of a declared list come from the store of the table: a row is read again by its address only when the leaves cannot hold its array (tx has an element that is no object)
 CREATE FUNCTION reread(q text) RETURNS int8 LANGUAGE plpgsql AS $$
@@ -136,6 +151,6 @@ SELECT n, same(sql), pushed(sql) AS scan FROM q WHERE n IN (1, 3, 7, 11) ORDER B
  11 | same | t
 (4 rows)
 
-DROP TABLE q, tj, tx, kinds;
+DROP TABLE q, tj, tx, ti, kinds;
 DROP FUNCTION used(text), reread(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
 DROP EXTENSION pg_sift;

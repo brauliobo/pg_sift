@@ -256,15 +256,24 @@ known_quals(const RelOptInfo *rel)
 	return known;
 }
 
+/* the lengths leaf of the array the elements come from: the one the scan reads, or of a table whose rows it reads again by their address, the leaf of the declared list of the column */
+static int
+lengths_leaf(const V6Plan *p)
+{
+	const SiftV6XElem *e = &p->xseed->elem;
+
+	return e->group_leaf >= 0 || p->leaves.schema == NULL ? e->group_leaf : sift_v6_unnest_group_of(&p->leaves, e->attno, NULL);
+}
+
 /*
  * the rows the join of a row with its elements makes: PostgreSQL prices a set-returning function at a constant count of rows a call (100 for the jsonb ones), the lengths leaf of the
- * array in the index says how many elements a row has (rows with no array have none)
+ * array in the index or the table says how many elements a row has (rows with no array have none)
  */
 double
 sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel)
 {
-	const SiftCardStatsView *v = p->index != NULL ? sift_v6_rel_card_view(p->index->indexoid) : NULL;
-	const int	gl = p->xseed->elem.group_leaf;
+	const SiftCardStatsView *v = sift_v6_rel_card_view(p->relid, p->is_table);
+	const int	gl = lengths_leaf(p);
 	const SiftColCardStats *cs = v != NULL && gl >= 0 && (uint32) gl < v->ncols ? &v->cols[gl] : NULL;
 	const double mean = cs != NULL && cs->total_rows > 0 ? sift_card_mean(cs) : -1;
 

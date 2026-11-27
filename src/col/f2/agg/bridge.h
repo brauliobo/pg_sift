@@ -227,8 +227,8 @@ extern uint32 sift_f2_v6_eval_rows(F2Eval *e, const F2V6Gran *g, const uint64 *c
 /* The Top-N tournament source over the index (SiftV6TopNOpen of agg/topn/topn.h) */
 extern bool sift_f2_v6_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
 
-/* The statistics of the index folded when its parts were written, cached with the plan snapshot of the index; NULL when it has none (f2_v6_card.c) */
-extern const SiftCardStatsView *sift_f2_v6_card_view(Oid indexoid);
+/* The statistics of the index or the sift_table folded when its parts were written, cached with the plan snapshot of the relation; NULL when it has none (f2_v6_card.c) */
+extern const SiftCardStatsView *sift_f2_v6_card_view(Oid relid, bool is_table);
 
 /*
  * The leaf of the index that holds the key path of a jsonb attribute (doc->>'key' read as a scalar of class cls); false when the index shredded no such leaf. For the operators that read

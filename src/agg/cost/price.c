@@ -33,7 +33,7 @@ index_view(const IndexOptInfo *ix)
 {
 	if (ix == NULL || ix->hypothetical)
 		return NULL;
-	return sift_v6_rel_card_view(ix->indexoid);
+	return sift_v6_rel_card_view(ix->indexoid, false);
 }
 
 void

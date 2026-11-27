@@ -160,6 +160,15 @@ f2_card_leaf(Oid relid, int col)
 	return leaf;
 }
 
+/* the leaf of attribute col + 1 of a sift_table, -1 when it has none */
+static int
+f2_table_card_leaf(Oid relid, int col)
+{
+	const SiftF2Store *s = sift_f2_store_from_oid(relid);
+
+	return col >= 0 && col < s->natts ? s->att_first[col + 1] : -1;
+}
+
 /* The fraction of the rows the heap shows without a visit: the pages its visibility map has all-visible; a sift_table decides visibility in its store, so none needs the heap */
 static double
 allvis_frac(Relation rel, bool is_table)
@@ -184,7 +193,7 @@ f2_stats(Oid relid, bool is_table, SiftStoreStats *out)
 	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
 
 	*out = (SiftStoreStats) {.live_rows = (double) (plan->total_rows - Min(plan->total_dead, plan->total_rows)),.stored_bytes = (uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ,
-		.allvis_frac = allvis_frac(rel, is_table),.card_view = is_table ? NULL : sift_f2_v6_card_view(relid),.card_leaf = is_table ? NULL : f2_card_leaf};
+		.allvis_frac = allvis_frac(rel, is_table),.card_view = sift_f2_v6_card_view(relid, is_table),.card_leaf = is_table ? f2_table_card_leaf : f2_card_leaf};
 	relation_close(rel, AccessShareLock);
 	return true;
 }

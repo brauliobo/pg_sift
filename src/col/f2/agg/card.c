@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/relation.h"
 #include "utils/memutils.h"
 
 #include "col/am.h"
@@ -16,6 +17,7 @@
 #include "col/f2/scope/scope.h"
 #include "col/f2/scope/cache.h"
 #include "col/f2/agg/bridge.h"
+#include "col/f2/store/store.h"
 #include "col/granule/granule.h"
 
 #define SIFT_V6_CARD_PARTS	16
@@ -296,8 +298,16 @@ column_bytes(const SiftPlanSnapshot *plan, const CardPart *chosen, int nchosen)
 	return bytes > 0 ? (uint64) ((double) plan->total_bytes * (1.0 - Min(cubes / bytes, 1.0))) : plan->total_bytes;
 }
 
+/* What the statistics are folded over: the leaves of the relation, whether its partitions are ranges of a time column, and whether it keeps scope summaries */
+typedef struct CardRel
+{
+	int			ncols;
+	bool		timed;
+	bool		scoped;
+} CardRel;
+
 static SiftCardStatsView *
-build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
+build_view(Relation index, const CardRel *f, const SiftPlanSnapshot *plan)
 {
 	/* MEM[MEM-COL-30]: transient card view work ctx (small sizes; the zones of each leaf are freed as they are folded; the view itself lives in plan->cx) */
 	MemoryContext work = AllocSetContextCreateInternal(CurrentMemoryContext, "sift card view", ALLOCSET_SMALL_MINSIZE, ALLOCSET_SMALL_INITSIZE, SIFT_MEM_MAX_BLOCK);
@@ -356,7 +366,7 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 	for (int i = 0; i < plan->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &plan->partitions[i];
-		const bool	timed = f->spec.time_cols[0] > 0;
+		const bool	timed = f->timed;
 
 		((SiftCardPartition *) v->parts)[i] = (SiftCardPartition) {.rows = e->total_rows - e->total_dead,
 		.lo = timed ? e->time_min[0] : INT64_MIN,.hi = timed ? e->time_max[0] : INT64_MAX};
@@ -377,21 +387,37 @@ build_view(Relation index, const SiftF2Rel *f, const SiftPlanSnapshot *plan)
 		for (uint32 s = 0; s < nsample; s++)
 			((SiftCardZone *) v->sample_zones)[(size_t) c * nsample + s] = lf.zones && lf.n == granules ? lf.z[(uint64) s * stride] : (SiftCardZone) {.min = INT64_MIN,.max = INT64_MAX};
 	}
-	if (sift_f2_scoped(index))
+	if (f->scoped)
 		fold_scope(v, index, plan);
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(work);
 	return v;
 }
 
-const SiftCardStatsView *
-sift_f2_v6_card_view(Oid indexoid)
+/* the leaves of an index, or of the store of a sift_table, whose parts are read the same way */
+static CardRel
+card_rel(Relation rel, bool is_table)
 {
-	Relation	index = index_open(indexoid, AccessShareLock);
-	const SiftPlanSnapshot *plan = sift_plan_cache_get(index, CurrentMemoryContext);
+	const SiftF2Store *s = is_table ? sift_f2_store_open(rel) : NULL;
+	const SiftF2Rel *f = is_table ? NULL : sift_f2_rel(rel);
+
+	if (is_table)
+		return (CardRel) {.ncols = s->ncols,.timed = s->spec.time_cols[0] > 0};
+	return (CardRel) {.ncols = f->ncols,.timed = f->spec.time_cols[0] > 0,.scoped = sift_f2_scoped(rel)};
+}
+
+const SiftCardStatsView *
+sift_f2_v6_card_view(Oid relid, bool is_table)
+{
+	Relation	rel = relation_open(relid, AccessShareLock);
+	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
 
 	if (!sift_plan_card_built(plan))
-		sift_plan_card_put(plan, plan->total_rows > plan->total_dead ? build_view(index, sift_f2_rel(index), plan) : NULL);
-	index_close(index, AccessShareLock);
+	{
+		const CardRel cr = card_rel(rel, is_table);
+
+		sift_plan_card_put(plan, plan->total_rows > plan->total_dead ? build_view(rel, &cr, plan) : NULL);
+	}
+	relation_close(rel, AccessShareLock);
 	return sift_plan_card_get(plan);
 }

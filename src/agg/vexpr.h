@@ -36,8 +36,8 @@ extern bool sift_v6_rel_ordered(Oid relid, bool is_table);
 extern bool sift_v6_input_holds(const SiftV6Input *in, int att, SiftV6Class cls);
 /* the parts of the index are sorted by the attributes atts[0 .. n-1], each ascending, NULLs last */
 extern bool sift_v6_rel_sorted_by(Oid relid, bool is_table, const int *atts, int n);
-/* the statistics the index folded when its parts were written (agg/cost/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based), -1 when it has none */
-extern const SiftCardStatsView *sift_v6_rel_card_view(Oid indexoid);
+/* the statistics the index or the sift_table folded when its parts were written (agg/cost/card_est.h), NULL when it has none, and the leaf of them that holds column col (0-based) of an index, -1 when it has none */
+extern const SiftCardStatsView *sift_v6_rel_card_view(Oid reloid, bool is_table);
 extern int	sift_v6_rel_card_leaf(Oid indexoid, int col);
 /* The share of the rows of a sift_table its store keeps as rows, which a scan decodes and vets whatever its quals prune (SiftStoreStats.row_frac) */
 extern double sift_v6_rel_row_frac(Oid relid);

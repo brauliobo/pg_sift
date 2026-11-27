@@ -553,7 +553,7 @@ stream_try(StreamPlan *p)
 	if (!sift_v6_rel_sorted_by(p->src->reloid, p->src->is_table, atts, spec.nkeys))
 		return false;
 	if (!p->src->is_table)
-		view = sift_v6_rel_card_view(p->src->reloid);
+		view = sift_v6_rel_card_view(p->src->reloid, false);
 	groups = sift_v6_card_groups(p->root, p->rel, p->src->ix, view, p->keys, p->rel->rows);
 	if (groups < 0)
 		groups = estimate_num_groups(p->root, p->keys, p->rel->rows, NULL, NULL);

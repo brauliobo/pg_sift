@@ -341,7 +341,7 @@ windows_ranges(const Step *s, int slot, Timestamp min, Timestamp max, SiftV6Rang
 static bool
 column_span(const SiftV6Input *in, int slot, const Step *s, Timestamp *min, Timestamp *max)
 {
-	const SiftCardStatsView *view = in->is_table ? NULL : sift_v6_rel_card_view(in->indexoid);
+	const SiftCardStatsView *view = in->is_table ? NULL : sift_v6_rel_card_view(in->indexoid, false);
 	const int	leaf = view != NULL ? sift_v6_rel_card_leaf(in->indexoid, in->col[slot].attno - 1) : -1;
 	const SiftColCardStats *st = leaf >= 0 && leaf < (int) view->ncols ? &view->cols[leaf] : NULL;
 	struct pg_tm tm;
