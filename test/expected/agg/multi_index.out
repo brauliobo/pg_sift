@@ -87,7 +87,7 @@ SELECT same('SELECT grp, sum(amount), sum((doc ->> $$n$$)::float8) FROM mi GROUP
  same
 (1 row)
 
--- a join to a dimension table keeps its lookup on either index
+-- a join to a dimension table keeps its lookup on either index; a cast of a document key under a join that can drop fact rows keeps the normal plan (agg/scalar/dirty_star), a left join does not
 CREATE TABLE mi_dim (id int PRIMARY KEY, label text);
 INSERT INTO mi_dim SELECT g, 'g' || g FROM generate_series(0, 6) g;
 ANALYZE mi_dim;
@@ -103,13 +103,13 @@ SELECT same('SELECT d.label, sum(m.amount) FROM mi m JOIN mi_dim d ON d.id = m.g
  same
 (1 row)
 
-SELECT used_index('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc;
+SELECT used_index('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m LEFT JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc;
   joined_doc   
 ---------------
  Index: mi_doc
 (1 row)
 
-SELECT same('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc_same;
+SELECT same('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m LEFT JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc_same;
  joined_doc_same 
 -----------------
  same

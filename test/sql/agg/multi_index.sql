@@ -41,14 +41,14 @@ SELECT same('SELECT grp, count(*) FROM mi GROUP BY grp') AS both_hold_same;
 SELECT used_index('SELECT grp, sum(amount), sum((doc ->> $$n$$)::float8) FROM mi GROUP BY grp') AS neither;
 SELECT same('SELECT grp, sum(amount), sum((doc ->> $$n$$)::float8) FROM mi GROUP BY grp') AS neither_same;
 
--- a join to a dimension table keeps its lookup on either index
+-- a join to a dimension table keeps its lookup on either index; a cast of a document key under a join that can drop fact rows keeps the normal plan (agg/scalar/dirty_star), a left join does not
 CREATE TABLE mi_dim (id int PRIMARY KEY, label text);
 INSERT INTO mi_dim SELECT g, 'g' || g FROM generate_series(0, 6) g;
 ANALYZE mi_dim;
 SELECT used_index('SELECT d.label, sum(m.amount) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_amount;
 SELECT same('SELECT d.label, sum(m.amount) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_amount_same;
-SELECT used_index('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc;
-SELECT same('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc_same;
+SELECT used_index('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m LEFT JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc;
+SELECT same('SELECT d.label, sum((m.doc ->> $$n$$)::float8) FROM mi m LEFT JOIN mi_dim d ON d.id = m.grp GROUP BY 1') AS joined_doc_same;
 
 -- rows written after the build, and the index that went away
 INSERT INTO mi SELECT i, i % 7, i % 100, jsonb_build_object('n', i % 13, 'kind', 'k' || i % 3) FROM generate_series(20001, 20500) i;
