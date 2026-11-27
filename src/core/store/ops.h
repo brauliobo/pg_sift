@@ -173,7 +173,8 @@ typedef struct SiftScopeLayout
  * format what the scopes of a relation it owns keep: whether they can be read (readable), their number, the leaves of each, whether the rows where a column is NULL can leave its cubes
  * (excl_ok), whether a column orders a ring of newest rows (ring_col), whether a value of typid reads as a key of a key column of key_type (key_codes); exec runs the plans that read the
  * summary. The scan of the facts of the members of a key is the engine's (agg/scope/scan.c), over zone.scan_run with the members key_members gives a key (a value of key_type) under snap as an array of member_type,
- * and the router of the granules that hold their facts (NULL: the scan reads every granule).
+ * and the router of the granules that hold their facts (NULL: the scan reads every granule). A format that keeps no cubes leaves exec, excl_ok, ring_col and topk_paths NULL: the planner offers
+ * the scan of the facts of the members of a key only; one that does not route leaves one_key, build_router and router_counts NULL.
  */
 struct CustomScanMethods;
 

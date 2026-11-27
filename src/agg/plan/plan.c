@@ -853,7 +853,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	if (stage == UPPERREL_ORDERED)
 	{
 		for (int i = 0; i < sift_store_ops_count(); i++)
-			if (sift_store_ops_at(i)->scope != NULL)
+			if (sift_store_ops_at(i)->scope != NULL && sift_store_ops_at(i)->scope->topk_paths != NULL)
 				sift_store_ops_at(i)->scope->topk_paths(root, input_rel, output_rel);
 		if (sift_enable_agg)
 		{

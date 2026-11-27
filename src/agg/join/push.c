@@ -278,7 +278,7 @@ scope_route(PlannerInfo *root, const PushJoin *j, IndexOptInfo *ix)
 
 	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_oid(ix->indexoid, false) : NULL;
 
-	if (ops == NULL || ops->scope == NULL || !ops->scope->one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
+	if (ops == NULL || ops->scope == NULL || ops->scope->one_key == NULL || !ops->scope->one_key(root, j->fact, j->dim, ix, j->fact_attno, j->dim_var->varattno, &ord, &key))
 		return NIL;
 	return list_make2(makeInteger(ord), copyObject(key));
 }

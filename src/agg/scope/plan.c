@@ -374,7 +374,7 @@ compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	for (int ord = 0; ord < p->scope->nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
-		ok = sift_v6_scope_matches(p, ord) && ((compile_target(p, extra, out) && sift_v6_scope_semi_ok(p)) ||
+		ok = sift_v6_scope_matches(p, ord) && ((p->scope->exec != NULL && compile_target(p, extra, out) && sift_v6_scope_semi_ok(p)) ||
 											   (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)) && sift_v6_scope_semi_ok(p)));
 	}
 	relation_close(p->irel, NoLock);
