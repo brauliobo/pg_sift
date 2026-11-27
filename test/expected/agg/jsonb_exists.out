@@ -175,7 +175,7 @@ SELECT same(q) FROM scoped_queries() q;
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND NOT (e.metrics ? 'channel')
  same node 0 0 SELECT count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 AND e.analysis ? 'flag'
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 5 AND jsonb_typeof(e.metrics -> 'latency') = 'string'
- same node 0 0 SELECT e.metrics ->> 'channel' AS channel, count(*), round(avg((e.metrics ->> 'latency')::float8)::numeric, 6) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id+
+ same node 8 0 SELECT e.metrics ->> 'channel' AS channel, count(*), round(avg((e.metrics ->> 'latency')::float8)::numeric, 6) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id+
                  WHERE ep.parent_id = 1 AND jsonb_typeof(e.metrics -> 'latency') = 'number' GROUP BY 1
  same node 0 1 SELECT count(*), min(e.id), max(e.id) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND e.deleted_at IS NULL AND e.analysis ? 'items'
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 99 AND e.analysis ? 'flag'

@@ -75,7 +75,7 @@ SELECT n, tbl, s.* FROM oc_q, LATERAL oc_same(body) s ORDER BY n, tbl;
   8 | oc_col | SiftHybridScan OR |     8 |    0
   8 | oc_tbl | SiftHybridScan OR |     8 |    0
   9 | oc_col | SiftHybridScan OR |  2857 |    0
-  9 | oc_tbl | none              |  2857 |    0
+  9 | oc_tbl | SiftHybridScan OR |  2857 |    0
  10 | oc_col | SiftHybridScan OR |   208 |    0
  10 | oc_tbl | none              |   208 |    0
  11 | oc_col | SiftHybridScan OR |  6672 |    0
@@ -99,7 +99,7 @@ SELECT n, s.* FROM (VALUES
  n |       node        | rows | diff 
 ---+-------------------+------+------
  1 | SiftHybridScan OR |  400 |    0
- 2 | none              |   20 |    0
+ 2 | SiftHybridScan OR |   20 |    0
  3 | SiftHybridScan OR |    5 |    0
 (3 rows)
 
@@ -134,7 +134,7 @@ SELECT n, tbl, s.* FROM oc_q, LATERAL oc_same(body) s ORDER BY n, tbl;
   8 | oc_col | SiftHybridScan OR |    78 |    0
   8 | oc_tbl | SiftHybridScan OR |    78 |    0
   9 | oc_col | SiftHybridScan OR |  2846 |    0
-  9 | oc_tbl | none              |  2846 |    0
+  9 | oc_tbl | SiftHybridScan OR |  2846 |    0
  10 | oc_col | SiftHybridScan OR |   243 |    0
  10 | oc_tbl | none              |   243 |    0
  11 | oc_col | SiftHybridScan OR |  6715 |    0
