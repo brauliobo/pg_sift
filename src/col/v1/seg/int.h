@@ -636,8 +636,6 @@ extern void sift_cseg_sets_keep(SiftColSegment *seg, int col, MemoryContext cx, 
 
 /* The backend's cache of parsed dictionaries (col/dictcache.c): the dictionary of leaf col of seg, from the cache, else made by load into the memory context it is given */
 typedef SiftCDict *(*SiftCDictLoad) (SiftColSegment *seg, int col, MemoryContext mcxt);
-/* drops what the cache keeps of the segments the directory no longer lists (col/dictcache.c) */
-extern void sift_cdict_retire(Relation index, const SiftDirSnapshot *snap);
 extern SiftCDict *sift_cseg_dict_cached(SiftColSegment *seg, int col, SiftCDictLoad load);
 /* The same without loading: NULL when the cache does not hold it */
 extern SiftCDict *sift_cseg_dict_peek(SiftColSegment *seg, int col);

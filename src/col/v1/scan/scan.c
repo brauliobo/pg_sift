@@ -91,32 +91,41 @@ col_source(Relation heap, Relation store, const SiftColSchema *schema, MemoryCon
 	src->mcxt = mcxt;
 	src->flags = flags;
 	src->schema = schema;
-	src->arena = AllocSetContextCreate(mcxt, "sift_col arena", ALLOCSET_DEFAULT_SIZES);
-	src->scan = AllocSetContextCreate(mcxt, "sift_col scan", ALLOCSET_DEFAULT_SIZES);
+	src->arena = AllocSetContextCreate(mcxt, "sift_col arena", ALLOCSET_START_SMALL_SIZES);
+	src->scan = AllocSetContextCreate(mcxt, "sift_col scan", ALLOCSET_START_SMALL_SIZES);
 	return src;
 }
 
+int64		sift_col_segments_opened;
+
+/* Does the table source of schema read segment i of dir? */
+static bool
+table_seg_read(const SiftDirSnapshot *dir, const SiftColSchema *const *layouts, const SiftColSchema *schema, int i)
+{
+	return dir->segs[i].kind == SIFT_SEG_IMMUTABLE && !(dir->segs[i].flags & SIFT_SEG_SCOPE) && layouts[i]->hash == schema->hash;
+}
+
 SiftColSource *
-sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnapshot *dir, const SiftColVisibility *vis, uint32 heap_sbs,
-					MemoryContext mcxt)
+sift_col_open_table(Relation rel, const SiftColSchema *schema, SiftDirSnapshot *dir, const SiftColSchema *const *layouts,
+					const SiftColVisibility *vis, uint32 heap_sbs, MemoryContext mcxt)
 {
 	SiftColSource *src = col_source(rel, rel, schema, mcxt, SIFT_COLO_NOWBUF | SIFT_COLO_NOCHECKS | COLO_TABLE);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	int			nseg = 0;
 
-	src->dir = sift_dir_copy(dir);
-	src->seg = palloc0(dir->nsegs * sizeof(ColCursor));
 	for (int i = 0; i < dir->nsegs; i++)
-	{
-		SiftColSegment *seg;
+		nseg += table_seg_read(dir, layouts, schema, i);
+	src->dir = dir;
+	src->seg = palloc0(Max(nseg, 1) * sizeof(ColCursor));
+	for (int i = 0; i < dir->nsegs; i++)
+		if (table_seg_read(dir, layouts, schema, i))
+		{
+			SiftColSegment *seg = sift_cseg_open(rel, &dir->segs[i], mcxt);
 
-		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE || (dir->segs[i].flags & SIFT_SEG_SCOPE))
-			continue;
-		seg = sift_cseg_open(rel, &dir->segs[i], mcxt);
-		if (seg->schema->hash == schema->hash)
+			SIFT_INVARIANT(seg->schema->hash == schema->hash, "sift_table: a segment holds another layout than its directory entry names");
 			src->seg[src->nseg++].seg = seg;
-		else
-			sift_cseg_close(seg);
-	}
+		}
+	sift_col_segments_opened += src->nseg;
 	src->visibility = *vis;
 	src->heap_sbs = heap_sbs;
 	src->cnt.segments = src->nseg;
@@ -124,7 +133,6 @@ sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnap
 	return src;
 }
 
-int64		sift_col_segments_opened;
 #ifdef SIFT_TESTING
 bool		sift_test_col_open_all = false;
 #endif

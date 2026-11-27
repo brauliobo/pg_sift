@@ -24,8 +24,6 @@ defaultsizes	col/v1/rowkey.c	1
 defaultsizes	col/v1/scan/gfree.c	2
 defaultsizes	col/v1/scan/gmem.c	2
 defaultsizes	col/v1/scan/gorder.c	2
-defaultsizes	col/v1/scan/prune.c	1
-defaultsizes	col/v1/scan/scan.c	2
 defaultsizes	col/v1/scope/fill.c	1
 defaultsizes	col/v1/scope/floor.c	1
 defaultsizes	col/v1/scope/sample.c	1

@@ -268,6 +268,7 @@ sift_tbl_refresh_full(Relation rel, SiftTblRel *st)
 	sift_dir_reload(rel, &st->dir, st->cxt);
 	if (st->dir->nsegs > 0 && !(st->dir->meta.flags & SIFT_TBL_META_FLAG))	/* flagged with the first segment */
 		corrupt(rel, "The metapage does not carry the sift_table flag (0x%x).", st->dir->meta.flags);
+	sift_cdict_retire(rel, st->dir);
 	st->initialized = true;
 	for (int i = 0; i < st->dir->nsegs; i++)
 		n += is_wbuf(&st->dir->segs[i]);

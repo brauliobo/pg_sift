@@ -567,23 +567,32 @@ row_in(const SiftTblLayout *l, TupleDesc desc, ItemPointer tid, const Datum *val
 	}
 }
 
+/*
+ * The layout segment e was written for, one copy a layout in the cache of the table: the segment is opened in a context of its own, so that what the open reads and the
+ * pin of the head it takes from the dictionary cache (col/dictcache.c) go when the layout is known, not with the cache of the table
+ */
 SiftColSchema *
 schema_of(Relation rel, SiftTblRel *st, const SiftSegEntry *e)
 {
 	struct SiftTblGroupCache *c = gcache_of(st);
+	MemoryContext cx;
 	SiftColSegment *seg;
 	SiftColSchema *schema;
 	int			at = keyidx_find(&c->ent_gen, e->gen);
 
 	if (at >= 0)
 		return c->ent[at].schema;
-	seg = sift_cseg_open(rel, e, st->cxt);
-	schema = (SiftColSchema *) seg->schema;
-	sift_cseg_close(seg);
-	if ((at = keyidx_find(&c->ent_hash, schema->hash)) >= 0)
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift_table segment layout", ALLOCSET_SMALL_SIZES);
+	seg = sift_cseg_open(rel, e, cx);
+	if ((at = keyidx_find(&c->ent_hash, seg->schema->hash)) >= 0)
 		schema = c->ent[at].schema;
 	else
+	{
+		schema = sift_cschema_create(st->cxt, seg->schema->cols, seg->schema->ncols);
 		keyidx_put(st->cxt, &c->ent_hash, schema->hash, c->n);
+	}
+	sift_cseg_close(seg);
+	MemoryContextDelete(cx);
 	if (c->n == c->cap)
 	{
 		c->cap = Max(8, c->cap * 2);

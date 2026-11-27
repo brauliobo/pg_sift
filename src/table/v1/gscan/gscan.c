@@ -45,10 +45,12 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 {
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext, "sift_table group scan", ALLOCSET_DEFAULT_SIZES);
 	MemoryContext old = MemoryContextSwitchTo(cxt);
+	SiftDirSnapshot *own = sift_dir_copy(dir);	/* the sources read it while the scan lives: a fetch scan outlives the directory of the table it was begun on */
 	SiftTblGroupScan *g = palloc0(sizeof(SiftTblGroupScan));
 	VisArg	   *va = palloc(sizeof(VisArg));
 	SiftColVisibility vis = {vis_sb_mask, vis_filter_page, NULL, va};
 	const SiftColSchema **schemas = palloc0(Max(dir->nsegs, 1) * sizeof(SiftColSchema *));
+	const SiftColSchema **layouts = palloc0(Max(dir->nsegs, 1) * sizeof(SiftColSchema *));
 	int			nschemas = 0;
 	uint32		sbs = SIFT_TBL_NEXT_VBLOCK(&dir->meta) / SIFT_SB_PAGES + 1;
 
@@ -78,7 +80,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 
 		if (dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
 			continue;
-		schema = schema_of(rel, st, &dir->segs[i]);
+		schema = layouts[i] = schema_of(rel, st, &dir->segs[i]);
 		for (k = 0; k < nschemas && schemas[k] != schema; k++)
 			;
 		if (k == nschemas)
@@ -88,7 +90,7 @@ sift_tbl_gscan_begin(Relation rel, TupleDesc desc, SiftTblRel *st, const SiftDir
 	for (int k = 0; k < nschemas; k++)
 	{
 		g->s[k].schema = schemas[k];
-		g->s[k].src = sift_col_open_table(rel, schemas[k], dir, &vis, sbs, cxt);
+		g->s[k].src = sift_col_open_table(rel, schemas[k], own, layouts, &vis, sbs, cxt);
 		src_map(&g->s[k], g->desc->natts, cxt);
 	}
 	g->nsrc = nschemas;

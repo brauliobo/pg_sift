@@ -1,0 +1,73 @@
+-- A sift_table whose column segments were written under several layouts (ADD COLUMN between them) is read by one source a layout: each source opens the segments of
+-- its own layout and no other, so a scan, and the fetch scan that serves the fetches of an index into one superblock, open every segment once however many
+-- layouts there are (a source that opened them all kept what it read of the others until the end of the scan, and a fetch scan until the directory changed).
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_test;
+-- Format 1: the column segments of a sift_table are Format 1
+SET sift.test_create_format1 = on;
+CREATE TABLE lo (id int PRIMARY KEY, v int) USING sift_table WITH (autovacuum_enabled = false);
+SELECT format('ALTER TABLE lo ADD COLUMN c%s int DEFAULT %s', i, i), format('INSERT INTO lo (id, v) SELECT g, g FROM generate_series(%s, %s) g', i * 1000, i * 1000 + 999),
+	'VACUUM lo' FROM generate_series(1, 6) i \gexec
+ALTER TABLE lo ADD COLUMN c1 int DEFAULT 1
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(1000, 1999) g
+VACUUM lo
+ALTER TABLE lo ADD COLUMN c2 int DEFAULT 2
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(2000, 2999) g
+VACUUM lo
+ALTER TABLE lo ADD COLUMN c3 int DEFAULT 3
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(3000, 3999) g
+VACUUM lo
+ALTER TABLE lo ADD COLUMN c4 int DEFAULT 4
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(4000, 4999) g
+VACUUM lo
+ALTER TABLE lo ADD COLUMN c5 int DEFAULT 5
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(5000, 5999) g
+VACUUM lo
+ALTER TABLE lo ADD COLUMN c6 int DEFAULT 6
+INSERT INTO lo (id, v) SELECT g, g FROM generate_series(6000, 6999) g
+VACUUM lo
+SELECT count(*) AS segments FROM sift.table_segments('lo') WHERE kind = 'columns';
+ segments 
+----------
+        6
+(1 row)
+
+SELECT sift._test_col_segments_opened(true) >= 0 AS reset;
+ reset 
+-------
+ t
+(1 row)
+
+SELECT count(*), sum(c1), sum(c6) FROM lo;
+ count | sum  |  sum  
+-------+------+-------
+  6000 | 6000 | 36000
+(1 row)
+
+SELECT sift._test_col_segments_opened(true) = (SELECT count(*) FROM sift.table_segments('lo') WHERE kind = 'columns') AS scan_opens_each_once;
+ scan_opens_each_once 
+----------------------
+ t
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT id, v, c1, c6 FROM lo WHERE id IN (3500, 3501, 3502) ORDER BY id;
+  id  |  v   | c1 | c6 
+------+------+----+----
+ 3500 | 3500 |  1 |  6
+ 3501 | 3501 |  1 |  6
+ 3502 | 3502 |  1 |  6
+(3 rows)
+
+SELECT sift._test_col_segments_opened(true) = (SELECT count(*) FROM sift.table_segments('lo') WHERE kind = 'columns') AS fetches_open_each_once;
+ fetches_open_each_once 
+------------------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET sift.test_create_format1;
+DROP TABLE lo;
+DROP EXTENSION pg_sift_test, pg_sift;

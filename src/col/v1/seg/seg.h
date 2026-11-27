@@ -640,13 +640,17 @@ extern void sift_cseg_live_audit(SiftColSegment *seg, SiftLiveAudit *a);
 extern void sift_cseg_live_repair(SiftColSegment *seg, SiftLiveAudit *a);
 extern void sift_cseg_live_verify(SiftColSegment *seg);
 
+/* drops what the backend's dictionary cache keeps of the segments the directory no longer lists (col/dictcache.c) */
+extern void sift_cdict_retire(Relation index, const SiftDirSnapshot *snap);
+
 /*
- * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/v1/scan/scan.c): dir is the caller's directory copy (no snapshot is
- * registered, the caller keeps its own for as long as the source lives), only segments written for schema are read, the visibility is the
- * table's (vis), heap_sbs the superblocks of the table now. No write buffers: the table feeds its delta rows with sift_col_add_batches.
+ * The source over the column segments of a sift_table (docs/COL-TAM.md section 6; col/v1/scan/scan.c): dir is the caller's directory copy, which it keeps for as long as
+ * the source lives and shares between the sources of its layouts (no snapshot is registered, the caller keeps its own), only the segments whose layout (layouts[i], the schema each immutable entry of dir was
+ * written for) is schema are opened, the visibility is the table's (vis), heap_sbs the superblocks of the table now. No write buffers: the table feeds its delta
+ * rows with sift_col_add_batches.
  */
-extern SiftColSource *sift_col_open_table(Relation rel, const SiftColSchema *schema, const SiftDirSnapshot *dir, const SiftColVisibility *vis,
-										  uint32 heap_sbs, MemoryContext mcxt);
+extern SiftColSource *sift_col_open_table(Relation rel, const SiftColSchema *schema, SiftDirSnapshot *dir, const SiftColSchema *const *layouts,
+										  const SiftColVisibility *vis, uint32 heap_sbs, MemoryContext mcxt);
 
 #ifdef SIFT_TESTING
 /* The counts of sift_test_cube_damage (col/v1/test/core.c) over the cube blobs it was given */

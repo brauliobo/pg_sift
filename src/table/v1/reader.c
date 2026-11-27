@@ -67,10 +67,11 @@ part_col(const TblPart *p, const SiftColDef *want)
 }
 
 static void
-part_open(SiftV1Tbl *t, TblPart *p, const SiftColSchema *schema, const SiftColSchema *cur, const SiftColVisibility *vis, uint32 sbs)
+part_open(SiftV1Tbl *t, TblPart *p, const SiftColSchema *schema, const SiftColSchema *cur, const SiftColSchema *const *layouts, const SiftColVisibility *vis,
+		  uint32 sbs)
 {
 	p->schema = schema;
-	p->src = sift_col_open_table(t->rel, schema, t->dir, vis, sbs, t->cxt);
+	p->src = sift_col_open_table(t->rel, schema, t->dir, layouts, vis, sbs, t->cxt);
 	p->col = palloc(t->lay->nleaves * sizeof(int));
 	p->leaf_of_col = palloc(schema->ncols * sizeof(int));
 	memset(p->leaf_of_col, -1, schema->ncols * sizeof(int));
@@ -158,6 +159,7 @@ sift_v1_tbl_init(SiftV1Tbl *t, Relation heap, Snapshot snapshot, MemoryContext m
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftTblRel *st = sift_tbl_rel(heap);
 	const SiftColSchema *cur;
+	const SiftColSchema **layouts;
 	SiftColVisibility vis = {tbl_sb_mask, tbl_filter_page, NULL, t};
 	uint32		sbs;
 
@@ -181,19 +183,21 @@ sift_v1_tbl_init(SiftV1Tbl *t, Relation heap, Snapshot snapshot, MemoryContext m
 	sbs = SIFT_TBL_NEXT_VBLOCK(&t->dir->meta) / SIFT_SB_PAGES + 1;
 	cur = sift_tbl_layout_schema(heap, st);
 	t->part = palloc0((t->dir->nsegs + 1) * sizeof(TblPart));
-	part_open(t, &t->part[t->nparts++], cur, cur, &vis, sbs);
+	layouts = palloc0(Max(t->dir->nsegs, 1) * sizeof(SiftColSchema *));
+	for (int i = 0; i < t->dir->nsegs; i++)
+		if (t->dir->segs[i].kind == SIFT_SEG_IMMUTABLE)
+			layouts[i] = sift_tbl_seg_schema(heap, st, &t->dir->segs[i]);
+	part_open(t, &t->part[t->nparts++], cur, cur, layouts, &vis, sbs);
 	for (int i = 0; i < t->dir->nsegs; i++)
 	{
-		const SiftColSchema *schema;
 		int			k;
 
-		if (t->dir->segs[i].kind != SIFT_SEG_IMMUTABLE)
+		if (layouts[i] == NULL)
 			continue;
-		schema = sift_tbl_seg_schema(heap, st, &t->dir->segs[i]);
-		for (k = 0; k < t->nparts && t->part[k].schema->hash != schema->hash; k++)
+		for (k = 0; k < t->nparts && t->part[k].schema->hash != layouts[i]->hash; k++)
 			;
 		if (k == t->nparts)
-			part_open(t, &t->part[t->nparts++], schema, cur, &vis, sbs);
+			part_open(t, &t->part[t->nparts++], layouts[i], cur, layouts, &vis, sbs);
 	}
 	MemoryContextSwitchTo(old);
 	SIFT_COL_OPEN_GATE();

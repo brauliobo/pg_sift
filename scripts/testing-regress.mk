@@ -733,6 +733,7 @@ TESTING_REGRESS += table/hot_sift_index
 TESTING_REGRESS += table/hot_update
 TESTING_REGRESS += table/key
 TESTING_REGRESS += table/key_order
+TESTING_REGRESS += table/layouts_open
 TESTING_REGRESS += table/limits
 TESTING_REGRESS += table/limits_lowered
 TESTING_REGRESS += table/maintain

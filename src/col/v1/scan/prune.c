@@ -344,7 +344,7 @@ scan_keep_cached(SiftColSource *src, const SiftColPred *preds, int npreds, const
 	if (src->sig_gen > 0 && src->sigzone == zones && sig_same(src, preds, npreds))
 		return true;
 	if (src->sigcx == NULL)
-		src->sigcx = AllocSetContextCreate(src->mcxt, "sift column keep cache", ALLOCSET_DEFAULT_SIZES);
+		src->sigcx = AllocSetContextCreate(src->mcxt, "sift column keep cache", ALLOCSET_START_SMALL_SIZES);
 	else
 		MemoryContextReset(src->sigcx);
 	src->sig = MemoryContextAlloc(src->sigcx, Max(npreds, 1) * sizeof(SiftColPred));
