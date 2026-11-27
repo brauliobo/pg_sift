@@ -33,7 +33,7 @@
 #   --quick|--full the sizes of the stages: quick (default) one seed, the quick tiers; full the whole plan shapes, the full tiers, four seeds
 #   --root DIR     a root a build staged (scripts/ci-build.sh, with its .flavor). Default: SIFT_PREBUILT_ROOT, SIFT_PREBUILT_RELEASE for release, SIFT_ROOT when its flavor fits,
 #                  else the tree is built and installed (scripts/pgtest.sh install; a developer's incremental build)
-#   --keep         keeps the scratch directory, which holds the log of each step (a failure keeps it)
+#   --keep         keeps the scratch directory, which holds the log of each step (a failure keeps the logs of $WORK/out, not the clusters, the builds or the tree)
 #   --dry-run      prints the paths, the areas, the regression tests, the lanes and the commands and runs none of them (no PostgreSQL, a tenth of a second)
 #
 # A harness is given --format F when its usage has it, and --table, --fast, --ddl or the multi-glob `--only GLOB|GLOB` when it has them: a stage whose harness has not got what the
@@ -42,6 +42,7 @@
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 set -uo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+source "$REPO/scripts/ci/procs.sh"
 
 usage() { awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "$0"; }
 AREAS="star clickbench coexist jsonb col table bm25 gpu sql smoke all"
@@ -415,7 +416,11 @@ summary() {
 	return $bad
 }
 
-cleanup() { [[ -n $KEEP || -n ${FAILED:-} ]] || rm -rf "$WORK"; }
+cleanup() {
+	stop_postmasters "$WORK"
+	[[ -z $KEEP ]] || return 0
+	if [[ -n ${FAILED:-} ]]; then rm -rf "$WORK"/lane*/data "$WORK/initdb" "$WORK/tree" "$WORK/install/build"; else rm -rf "$WORK"; fi
+}
 run_all() {
 	local k pids=()
 	if [[ -z ${FAST_GATE_NO_CLUSTER:-} ]]; then
@@ -549,6 +554,12 @@ selftest() {
 	  (( rc == 1 )) || { echo "FAIL: a failed step does not fail the run (rc $rc)"; exit 1; }
 	  [[ $out == *'bad '*FAIL* && $out == *'boom'* && $out == *'skipped '*SKIP*'not yet'* && $out == *'ok1 '*ok* ]] || { echo "FAIL: the summary does not show ok, FAIL with its log and SKIP: $out"; exit 1; } ) || bad=1
 	(( SECONDS - tmp < 3 )) || fail "the lanes do not run side by side ($((SECONDS - tmp)) s for two 1 s steps)"
+	# the cleanup: a failure keeps the logs only, a pass keeps nothing, --keep keeps everything
+	local heavy=(lane1/data initdb tree install/build)
+	( WORK=$d/c FAILED=1 KEEP=; mkdir -p "$WORK/out" "${heavy[@]/#/$WORK/}"; cleanup; [[ -d $WORK/out && -z $(find "$WORK" -mindepth 1 ! -path "$WORK/out*" ! -path "$WORK/lane1" ! -path "$WORK/install") ]] ) \
+		|| fail "a failure keeps more than the logs: $(find "$d/c" -mindepth 1)"
+	( WORK=$d/p FAILED= KEEP=; mkdir -p "$WORK/out" "$WORK/initdb"; cleanup; [[ ! -e $WORK ]] ) || fail "a pass keeps its scratch directory"
+	( WORK=$d/k FAILED=1 KEEP=1; mkdir -p "$WORK/out" "$WORK/initdb"; cleanup; [[ -d $WORK/initdb ]] ) || fail "--keep does not keep the scratch directory"
 	(( bad )) || echo "fast-gate: the arguments, the plan of each format, the skips and the lanes of the runner"
 	return $bad
 }
