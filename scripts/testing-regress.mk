@@ -541,6 +541,7 @@ TESTING_REGRESS += col/shred/%
 TESTING_REGRESS += col/skip_index_option
 TESTING_REGRESS += col/skip_map
 TESTING_REGRESS += col/slice_aligned
+TESTING_REGRESS += col/space_shift
 TESTING_REGRESS += col/stage_expr_fn
 TESTING_REGRESS += col/stmt_cid
 TESTING_REGRESS += col/stmt_cid_bm25

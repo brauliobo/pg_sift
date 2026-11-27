@@ -1,6 +1,8 @@
 -- The space step of VACUUM moves the highest runs of a segment larger than sift.vacuum_rewrite_limit down into the free blocks below it, a round at a time,
 -- and cuts the file: a merge writes its one segment above the blocks of the segments it replaced, and the file stays twice the live bytes until then.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments, sections and space step it counts are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -23,9 +25,11 @@ CREATE FUNCTION sh_state() RETURNS TABLE (segments int, file_x100 int, answers b
 -- one segment, the file about twice its bytes
 SELECT segments, file_x100 > 170 AS file_twice_the_segment, answers FROM sh_state();
 
--- a VACUUM with a one-megabyte allowance: the segment is a dozen times larger, it cannot move whole, it shifts
+-- VACUUMs with a one-megabyte allowance: the segment is a dozen times larger, it cannot move whole, it shifts a megabyte a VACUUM
 SET sift.vacuum_rewrite_limit = 1;
-VACUUM sh;
+\set ECHO none
+SELECT 'VACUUM sh' FROM generate_series(1, 24) \gexec
+\set ECHO all
 SELECT segments, file_x100 < 115 AS file_near_the_segment, answers FROM sh_state();
 SELECT sift.col_verify('sh_idx', true);
 
@@ -51,7 +55,9 @@ SELECT sift.col_promote('sh2_idx') >= 0 AS small_segment_in_the_hole;
 SELECT count(*) AS segments, (SELECT (100 * relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('sh2_idx') WHERE section <> 'free'))::int > 170 FROM sift.col_index_info('sh2_idx')) AS file_twice_the_bytes
   FROM sift.col_segments('sh2_idx') WHERE kind = 'immutable';
 SET sift.vacuum_rewrite_limit = 1;
-VACUUM sh2;
+\set ECHO none
+SELECT 'VACUUM sh2' FROM generate_series(1, 24) \gexec
+\set ECHO all
 SELECT (SELECT (100 * relation_blocks * 8192 / (SELECT sum(bytes) FROM sift.col_sections('sh2_idx') WHERE section <> 'free'))::int < 115 FROM sift.col_index_info('sh2_idx')) AS file_near_the_bytes;
 SELECT sift.col_verify('sh2_idx', true);
 SELECT (SELECT count(*) FROM sh2) = 120200 AS answers;
