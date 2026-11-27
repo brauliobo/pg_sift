@@ -86,5 +86,6 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_exists = true,
 	.exact_values = true,
 	.raise_after_quals = true,
+	.streams = true,
 	.unnest_run = sift_v6_unnest_run
 };

@@ -17,6 +17,7 @@
 
 #define SIFT_V6_XELEM_COLS	16		/* the columns of an element: at most SIFT_F2_PULL_MAX_CHILD */
 #define SIFT_V6_XTESTS		16		/* the tests of the elements of an array a statement makes of a row (EXISTS, jsonpath): each is a boolean of the row */
+#define SIFT_V6_XSTREAMS	4		/* the arrays of a row whose elements one statement reads: the one its pairs come from and those its tests read */
 
 /* the column is the flag of a test (the virtual attribute SIFT_V6_XFLAG_VATT + the test a FILTER reads it by), no column of the table */
 static inline bool
@@ -117,6 +118,7 @@ typedef struct SiftV6XTest
 {
 	int			need;
 	bool		nullable;
+	int			stream;			/* the array whose elements the test reads (sift_v6_ext_stream) */
 	int			doc_leaf;
 	int			ncmps;
 	SiftV6XCmp	cmp[SIFT_V6_XCMPS];
@@ -134,7 +136,10 @@ typedef struct SiftV6Ext
 	int			nrcol;
 	SiftV6Col	rcol[SIFT_V6_RESID_COLS];
 	bool		unnest;
-	SiftV6XElem elem;
+	bool		row_tests;		/* the statement has no lateral relation: each row is one pair, and its tests are its flags */
+	SiftV6XElem elem;			/* stream 0: the array the lateral relation takes apart, or the first one the tests read */
+	int			nstreams;		/* the other arrays the tests read, streams[0 .. nstreams): the scan reads elements of 1 + nstreams arrays */
+	SiftV6XElem streams[SIFT_V6_XSTREAMS - 1];
 	List	   *where;			/* unnest: the quals of the fact table over INDEX_VAR attributes, which the scan evaluates on its batches (it has no index keys) */
 	List	   *elem_where;		/* unnest: the quals of the element in the order the executor of the statement runs them (agg/unnest/test.h): a comparison the scan decides, over the virtual attributes of its
 								 * columns (v6_unnest_jsonb.h), or a clause PostgreSQL evaluates as (the clause over the inputs of SIFT_V6_PGX_RELID, the slot and type of each input) */
@@ -144,6 +149,8 @@ typedef struct SiftV6Ext
 								 * disjunctions: of each, the arms over the element columns that are no comparison with the row (SiftV6XCmp.group) */
 	List	   *elem_names;		/* recordset: the name of each column, as String nodes */
 	List	   *elem_array;		/* unnest: the array of a row as an expression of the table's columns when it is not the column of elem.attno itself (doc -> 'key', or an expression of the index), which the rows read from the heap evaluate; NIL otherwise */
+	List	   *stream_names;	/* of each stream after the first: the elem_names of its array */
+	List	   *stream_arrays;	/* of each stream after the first: its array as an expression of the table's columns, which the rows read from the heap evaluate */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */
 	List	   *pair_where;		/* SV6E_KEYS: the quals over the values of the keys (the virtual attributes of v6_unnest_jsonb.h), which the scan evaluates on the rows it gives to the groups */
 	List	   *col_expr;		/* SV6E_KEYS: the expression of the statement each column is, which a row read from the heap is given the value of */
@@ -151,6 +158,25 @@ typedef struct SiftV6Ext
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);
+
+/* The array s of the elements the scan reads, with the names of its recordset columns and, when it is no column of the table itself, its expression (NULL: the column of attno) */
+static inline const SiftV6XElem *
+sift_v6_ext_stream(const SiftV6Ext *x, int s)
+{
+	return s == 0 ? &x->elem : &x->streams[s - 1];
+}
+
+static inline const List *
+sift_v6_ext_stream_names(const SiftV6Ext *x, int s)
+{
+	return s == 0 ? x->elem_names : list_nth(x->stream_names, s - 1);
+}
+
+static inline const Expr *
+sift_v6_ext_stream_array(const SiftV6Ext *x, int s)
+{
+	return s == 0 ? (x->elem_array != NIL ? linitial(x->elem_array) : NULL) : list_nth(x->stream_arrays, s - 1);
+}
 /* SV6E_KEYS, EXPLAIN: the members of documents the columns of the scan read, as `attname['key'] type, ..` (index_desc: the attributes of the index) */
 extern char *sift_v6_mapkey_text(const SiftV6Ext *x, TupleDesc index_desc);
 /* The column the probing side has key k of dimension d in: what the scan or the unnest maps to a slot of its pipe */

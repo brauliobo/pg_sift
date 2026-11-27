@@ -23,7 +23,7 @@ elem_var(const V6Plan *p, const Node *n, bool pairs)
 {
 	SiftV6Col	col;
 
-	if (n == NULL || !sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) || col.src != SV6SRC_ELEM || (!pairs && sift_v6_elem_late(&p->xseed->elem, col.slot)))
+	if (n == NULL || !sift_v6_unnest_column((V6Plan *) p, (const Expr *) n, &col) || col.src != SV6SRC_ELEM || (!pairs && sift_v6_elem_late(sift_v6_ext_stream(p->xseed, p->elem_stream), col.slot)))
 		return NULL;
 	return (Expr *) makeVar(INDEX_VAR, SIFT_V6_ELEM_VATT + col.slot, exprType(n), exprTypmod(n), exprCollation(n), 0);
 }

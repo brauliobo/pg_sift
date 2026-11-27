@@ -324,6 +324,7 @@ keep_cmps(SiftV6RowTests *t, int k, const SiftVec *ev, const SiftVec *const *out
 	}
 }
 
+/* the row of the batch each element of the layout belongs to */
 static void
 parents_of(SiftV6RowTests *t, const SiftArrayLayout *lay)
 {
@@ -335,28 +336,28 @@ parents_of(SiftV6RowTests *t, const SiftArrayLayout *lay)
 }
 
 void
-sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftArrayLayout *lay, const uint64 *doc_valid, const SiftVec *ev, const SiftVec *col, const int *outer, const uint64 *rows,
-					   uint64 yes[][SIFT_VEC_WORDS], uint64 known[][SIFT_VEC_WORDS])
+sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftV6StreamIn *in, const SiftVec *col, const int *outer, const uint64 *rows, uint64 yes[][SIFT_VEC_WORDS], uint64 known[][SIFT_VEC_WORDS])
 {
-	const uint32 lo = lay->offsets[0],
-				hi = lay->offsets[lay->n_parents];
-	bool		have_par = false;
+	int			par_of = -1;
 
-	reserve(t, lay->n_elems);
 	for (int k = 0; k < t->x->ntests; k++)
 	{
 		const SiftV6XTest *xt = &t->x->test[k];
-
+		const SiftV6StreamIn *st = &in[xt->stream];
+		const uint32 lo = st->lay->offsets[0],
+					hi = st->lay->offsets[st->lay->n_parents];
 		const SiftVec *cols[SIFT_V6_XCMPS];
 
-		keep_quals(t, k, ev, lo, hi);
-		if (xt->ncmps > 0 && !have_par)
-			parents_of(t, lay);
-		have_par |= xt->ncmps > 0;
+		reserve(t, st->lay->n_elems);
+		keep_quals(t, k, st->ev, lo, hi);
+		if (xt->ncmps > 0 && par_of != xt->stream)
+			parents_of(t, st->lay);
+		if (xt->ncmps > 0)
+			par_of = xt->stream;
 		for (int c = 0; c < xt->ncmps; c++)
 			cols[c] = &col[outer[k * SIFT_V6_XCMPS + c]];
-		keep_cmps(t, k, ev, cols, t->par, lo, hi);
-		sift_unnest_any(lay, t->keep, rows, doc_valid, yes[k], known[k]);
+		keep_cmps(t, k, st->ev, cols, t->par, lo, hi);
+		sift_unnest_any(st->lay, t->keep, rows, st->doc_valid, yes[k], known[k]);
 	}
 }
 

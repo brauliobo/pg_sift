@@ -285,14 +285,28 @@ exists_quals(V6Plan *p, TestBuilt *b)
 	return true;
 }
 
-/* the declared columns of an EXISTS among the columns of the elements of the plan, which they join */
+/*
+ * The stream of the plan whose elements a test of kind fn over array reads: the one of the tests before it over the same array, or a new one (the first nfixed are the plan's own, which no test
+ * joins); NULL when the source reads no more arrays of a row
+ */
+static SiftV6ElemRte *
+stream_of(const V6Plan *p, SiftV6TestStreams *st, const Expr *array, SiftV6ElemFn fn, int *at)
+{
+	for (*at = st->nfixed; *at < st->n; (*at)++)
+		if (st->rte[*at].fn == fn && equal(st->rte[*at].array, array))
+			return &st->rte[*at];
+	if (st->n == SIFT_V6_XSTREAMS || (st->n > 0 && (p->ops->jsonb == NULL || !p->ops->jsonb->streams)))
+		return NULL;
+	st->rte[st->n] = (SiftV6ElemRte) {0};
+	return &st->rte[st->n++];
+}
+
+/* the declared columns of an EXISTS among the columns of the elements of its stream, which they join */
 static bool
 merge_declared(SiftV6ElemRte *rte, const SiftV6ElemRte *one, TestBuilt *b)
 {
 	int			c = 0;
 
-	if (rte->fn == SV6E_PATH || (rte->array != NULL && !equal(rte->array, one->array)))
-		return false;
 	if (rte->array == NULL)
 		*rte = (SiftV6ElemRte) {.fn = SV6E_RECORDSET,.array = one->array,.base = one->base,.key = one->key};
 	foreach_node(String, n, one->names)
@@ -307,40 +321,37 @@ merge_declared(SiftV6ElemRte *rte, const SiftV6ElemRte *one, TestBuilt *b)
 }
 
 static bool
-build_exists(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
+build_exists(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 {
 	const TestCand *c = b->cand;
 	SiftV6ElemRte one;
+	SiftV6ElemRte *rte;
 
 	b->elem_rel = c->sub->simple_rel_array[1];
-	return b->elem_rel != NULL && sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) && sift_v6_unnest_array_ok(p->root, p->rel, one.array) && merge_declared(rte, &one, b);
+	return b->elem_rel != NULL && sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) && sift_v6_unnest_array_ok(p->root, p->rel, one.array) &&
+		(rte = stream_of(p, st, one.array, SV6E_RECORDSET, &b->test.stream)) != NULL && merge_declared(rte, &one, b);
 }
 
-/* a jsonpath or containment test: over an index the quals of the elements of the one array the tests share, over a table the call itself, whatever array it reads, decides each row */
+/* a jsonpath or containment test: over an index the quals of the elements of its array, over a table the call itself decides each row */
 static bool
-build_path(V6Plan *p, SiftV6ElemRte *rte, TestBuilt *b)
+build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 {
 	const Node *e = b->cand->node;
 	const Expr *array = sift_v6_unnest_path_array(e);
-	SiftV6ElemRte base;
+	SiftV6ElemRte *rte;
 
-	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array))
+	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array) || (rte = stream_of(p, st, array, SV6E_PATH, &b->test.stream)) == NULL)
 		return false;
-	sift_v6_unnest_array_rte(array, &base);
+	if (rte->array == NULL)
+		sift_v6_unnest_array_rte(array, rte);
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
-	if (rte->array == NULL)
-		*rte = base;
-	if (p->is_table)
-		return true;
-	if (rte->fn == SV6E_RECORDSET || !equal(rte->array, array))
-		return false;
-	return sift_v6_unnest_path_quals(p, rte, e, &b->quals) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1);
+	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->quals) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
 }
 
-/* the tests of the plan for the candidates: their columns among those of the elements (rte), and their quals */
+/* the tests of the plan for the candidates: their streams, their columns among those of the elements of the stream, and their quals */
 static bool
-build_tests(V6Plan *p, const List *cands, SiftV6ElemRte *rte)
+build_tests(V6Plan *p, const List *cands, SiftV6TestStreams *st)
 {
 	foreach_ptr(TestCand, c, cands)
 	{
@@ -349,14 +360,33 @@ build_tests(V6Plan *p, const List *cands, SiftV6ElemRte *rte)
 		b->cand = c;
 		b->index = list_length(p->tests);
 		b->test = (SiftV6XTest) {.need = c->where == NULL ? 0 : c->negated ? 2 : 1,.doc_leaf = -1};
-		if (!(c->sp != NULL ? build_exists(p, rte, b) : build_path(p, rte, b)))
+		if (!(c->sp != NULL ? build_exists(p, st, b) : build_path(p, st, b)))
 			return false;
 		p->tests = lappend(p->tests, b);
 	}
 	return true;
 }
 
-/* the quals of the sub-selects, which need the Ext of the plan for the columns of the elements */
+/* the streams of the tests after the plan's own, seeded into its Ext */
+static bool
+seed_streams(V6Plan *p, const SiftV6TestStreams *st)
+{
+	SiftV6Ext  *x = p->xseed;
+
+	for (int s = Max(st->nfixed, 1); s < st->n; s++)
+	{
+		List	   *names;
+
+		if (!sift_v6_unnest_elem_seed(p, &st->rte[s], false, &x->streams[x->nstreams], &names))
+			return false;
+		x->stream_names = lappend(x->stream_names, names);
+		x->stream_arrays = lappend(x->stream_arrays, copyObject(unconstify(Expr *, st->rte[s].array)));
+		x->nstreams++;
+	}
+	return true;
+}
+
+/* the quals of the sub-selects, which need the Ext of the plan for the columns of the elements of their stream */
 static bool
 build_exists_quals(V6Plan *p)
 {
@@ -364,11 +394,13 @@ build_exists_quals(V6Plan *p)
 	{
 		p->elem_rel = b->elem_rel;
 		p->elem_map = b->map;
+		p->elem_stream = b->test.stream;
 		if (b->cand->sp != NULL && !exists_quals(p, b))
 			return false;
 	}
 	p->elem_rel = NULL;
 	p->elem_map = NULL;
+	p->elem_stream = 0;
 	return true;
 }
 
@@ -424,12 +456,13 @@ try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraDa
 {
 	V6Plan		p = {.root = root,.rel = rel,.out = out};
 	Relation	source = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
-	SiftV6ElemRte rte = {0};
+	SiftV6TestStreams st = {0};
 	bool		ok;
 
-	ok = sift_v6_plan_bind(&p, src, source) && build_tests(&p, cands, &rte) && sift_v6_unnest_seed(&p, NULL, &rte, false) && build_exists_quals(&p);
+	ok = sift_v6_plan_bind(&p, src, source) && build_tests(&p, cands, &st) && sift_v6_unnest_seed(&p, NULL, &st.rte[0], false) && seed_streams(&p, &st) && build_exists_quals(&p);
 	if (ok)
 	{
+		p.xseed->row_tests = true;
 		store_tests(&p);
 		ok = sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
 	}

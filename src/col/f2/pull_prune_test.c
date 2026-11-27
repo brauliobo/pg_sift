@@ -185,7 +185,6 @@ setup(Test *t, const SiftColRel *r, ArrayType *preds, int group_att, ArrayType *
 	int			n = texts_of(preds, &txt);
 	int			nv = 0;
 
-	t->spec.group_leaf = -1;
 	for (int i = 0; i < n; i++)
 	{
 		int			att;
@@ -204,15 +203,16 @@ setup(Test *t, const SiftColRel *r, ArrayType *preds, int group_att, ArrayType *
 		int			nc = children != NULL ? ArrayGetNItems(ARR_NDIM(children), ARR_DIMS(children)) : 0;
 		const int32 *ords = children != NULL ? (const int32 *) ARR_DATA_PTR(children) : NULL;
 
-		t->spec.group_leaf = group;
+		t->spec.ngroups = 1;
+		t->spec.group[0].leaf = group;
 		for (int c = 0; c < nc; c++)
 		{
 			const int	leaf = leaf_of_child(r, group_att, group, ords[c]);
 
-			t->spec.child[t->spec.nchild++] = (SiftF2PullCol) {.leaf = leaf,.type = vec_type_of(&r->schema->cols[leaf])};
-			if (t->first_int_child < 0 && t->spec.child[c].type == SVEC_I64)
+			t->spec.group[0].child[t->spec.group[0].nchild++] = (SiftF2PullCol) {.leaf = leaf,.type = vec_type_of(&r->schema->cols[leaf])};
+			if (t->first_int_child < 0 && t->spec.group[0].child[c].type == SVEC_I64)
 				t->first_int_child = c;
-			if (t->spec.child[c].type == SVEC_DICT32 && t->ncodes < 2)
+			if (t->spec.group[0].child[c].type == SVEC_DICT32 && t->ncodes < 2)
 				t->code_child[t->ncodes++] = c;
 		}
 		n = texts_of(epreds, &txt);
@@ -225,7 +225,7 @@ setup(Test *t, const SiftColRel *r, ArrayType *preds, int group_att, ArrayType *
 			t->et[t->net].slot = child;
 			t->et[t->net].val = val;
 			t->vals[nv].v.i = val;
-			t->epred[t->net] = (SiftColPred) {.col = t->spec.child[child].leaf,.op = t->et[t->net].op,.nvals = 1,.vals = &t->vals[nv++]};
+			t->epred[t->net] = (SiftColPred) {.col = t->spec.group[0].child[child].leaf,.op = t->et[t->net].op,.nvals = 1,.vals = &t->vals[nv++]};
 			t->net++;
 		}
 	}
@@ -543,7 +543,7 @@ sift_test_f2_pull(PG_FUNCTION_ARGS)
 	t->first_int_child = -1;
 	setup(t, sift_col_rel(index), PG_ARGISNULL(3) ? NULL : PG_GETARG_ARRAYTYPE_P(3), PG_GETARG_INT32(4), PG_ARGISNULL(5) ? NULL : PG_GETARG_ARRAYTYPE_P(5),
 		  PG_ARGISNULL(6) ? NULL : PG_GETARG_ARRAYTYPE_P(6), PG_GETARG_BOOL(2));
-	if (strncmp(mode, "weights", 7) == 0 && t->spec.nchild > 0)
+	if (strncmp(mode, "weights", 7) == 0 && t->spec.group[0].nchild > 0)
 		elog(ERROR, "weights read no element column");
 	if (strcmp(mode, "codes") == 0 && t->ncodes == 0)
 		elog(ERROR, "codes count at least one text child");

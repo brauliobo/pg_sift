@@ -184,16 +184,28 @@ setup_cols(UnRun *u, const SiftColRel *r)
 	}
 }
 
+/* the leaves of the pull of stream s: the lengths of its array and its element columns (the keys and the values of the map when keyed) */
+static SiftF2PullGroup
+pull_group(const UnRun *u, int s)
+{
+	const UnStream *st = &u->st[s];
+	SiftF2PullGroup g = {.leaf = st->el->group_leaf,.nchild = st->nchild};
+
+	for (int c = 0; c < st->nchild; c++)
+		g.child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? st->el->key_leaf : st->el->val_leaf) : st->el->col_leaf[c],.type = st->ctype[c],
+									  .kind = !u->keyed && st->el->col_kind[c]};
+	return g;
+}
+
 static SiftF2PullSpec
 pull_spec(const UnRun *u)
 {
-	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = 0,.group_leaf = u->x->elem.group_leaf,.nchild = u->nchild,.poison_rows = u->keyed};
+	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = 0,.ngroups = u->x->elem.group_leaf >= 0 ? u->nst : 0,.poison_rows = u->keyed};
 
 	for (int i = 0; i < u->ncols; i++)
 		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = vec_type(u->cols[i].cls)};
-	for (int c = 0; c < u->nchild; c++)
-		ps.child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? u->x->elem.key_leaf : u->x->elem.val_leaf) : u->x->elem.col_leaf[c],.type = u->ctype[c],
-									   .kind = !u->keyed && u->x->elem.col_kind[c]};
+	for (int s = 0; s < ps.ngroups; s++)
+		ps.group[s] = pull_group(u, s);
 	return ps;
 }
 
@@ -225,7 +237,7 @@ setup_pipe(UnRun *u, const SiftColRel *r, SiftV6Group *g, const SiftV6StarRun *s
 	for (int i = 0; i < u->ncols; i++)
 		type[i] = u->attr_slot != NULL ? u->ftype[i] : vec_type(u->cols[i].cls);
 	for (int c = 0; c < u->nel; c++)
-		type[u->ncols + c] = u->etype[c];
+		type[u->ncols + c] = u->st[0].etype[c];
 	for (int k = 0; k < spec->nderive; k++)
 		type[u->ncols + u->nel + k] = spec->derive[k].kind == SVD_PG_EXPR ? sift_v6_pgexpr_vec_type(spec, &spec->derive[k]) : SVEC_F64;
 	for (int k = 0; k < u->ntests; k++)
@@ -379,28 +391,33 @@ restrict_where(UnRun *u, const SiftF2ExtBatch *b)
 		bs->mask[w] &= keep[w] | b->elem->poison[w];
 }
 
+/* the element columns of stream s of the batch */
 static void
-elem_vecs(const UnRun *u, const SiftF2ElemStream *es, SiftVec *ev)
+elem_vecs(const UnRun *u, int s, const SiftF2ElemStream *es, SiftVec *ev)
 {
-	for (int c = 0; c < u->nchild; c++)
-		ev[c] = (SiftVec) {.type = u->ctype[c],.data = (void *) es->child_data[c],.valid = (uint64 *) es->child_valid[c],.all_valid = false};
+	for (int c = 0; c < u->st[s].nchild; c++)
+		ev[c] = (SiftVec) {.type = u->st[s].ctype[c],.data = (void *) es->child_data[c],.valid = (uint64 *) es->child_valid[c],.all_valid = false};
 }
 
-/* the tests of the rows of the batch the layout holds, and the rows of those that fail one the statement keeps its rows by leave the batch; the others are the heap's */
+/* the tests of the rows of the batch the layouts hold, and the rows of those that fail one the statement keeps its rows by leave the batch; the others are the heap's */
 static void
 decide_tests(UnRun *u, const SiftF2ExtBatch *b)
 {
-	const SiftF2ElemStream *es = b->elem;
 	const uint32 words = (b->n + 63) / 64;
-	SiftVec		ev[SIFT_V6_XELEM_COLS];
+	SiftVec		ev[SIFT_V6_XSTREAMS][SIFT_V6_XELEM_COLS];
+	SiftV6StreamIn in[SIFT_V6_XSTREAMS];
 
 	memset(u->held, 0, sizeof(u->held));
-	if (es->layout.n_parents < (uint32) b->n)
-		return;
+	for (int s = 0; s < u->nst; s++)
+	{
+		if (b->elem[s].layout.n_parents < (uint32) b->n)
+			return;
+		elem_vecs(u, s, &b->elem[s], ev[s]);
+		in[s] = (SiftV6StreamIn) {.lay = &b->elem[s].layout,.doc_valid = b->elem[s].doc_valid,.ev = ev[s]};
+	}
 	for (uint32 w = 0; w < words; w++)
-		u->held[w] = u->bs.mask[w] & ~es->poison[w];
-	elem_vecs(u, es, ev);
-	sift_v6_row_tests_eval(u->tests, &es->layout, es->doc_valid, ev, b->col, u->outer_slot, u->held, u->yes, u->known);
+		u->held[w] = u->bs.mask[w] & ~b->elem->poison[w];
+	sift_v6_row_tests_eval(u->tests, in, b->col, u->outer_slot, u->held, u->yes, u->known);
 	for (int k = 0; k < u->ntests; k++)
 	{
 		const SiftV6XTest *xt = &u->x->test[k];
@@ -487,7 +504,7 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 	u->stats->rows += bs->n_active;
 	MemoryContextReset(u->bcx);
 	compute_columns(u, b, bs);
-	elem_vecs(u, es, ev);
+	elem_vecs(u, 0, es, ev);
 	if (u->keyed && u->x->elem.group_leaf < 0)
 		sift_f2_unnest_run_keyed(u, b, NULL, fallback);
 	else if (u->ntests > 0)
@@ -632,7 +649,7 @@ par_elem_keep(void *arg, const SiftF2ExtBatch *b)
 	uint64	   *out;
 	SiftVec		ev[SIFT_V6_XELEM_COLS];
 
-	elem_vecs(u, es, ev);
+	elem_vecs(u, 0, es, ev);
 	if ((keep = batch_keep(u, b, ev)) == NULL)
 		return NULL;
 	out = MemoryContextAllocZero(u->bcx, ((nelems + 63) / 64 + 1) * sizeof(uint64));
@@ -654,7 +671,7 @@ par_fold_pairs(void *arg, const SiftF2ExtBatch *b, const uint64 *mask)
 	SiftVec		ev[SIFT_V6_XELEM_COLS];
 	uint64		none[SIFT_VEC_WORDS];
 
-	elem_vecs(u, es, ev);
+	elem_vecs(u, 0, es, ev);
 	in.elem_mask = batch_keep(u, b, ev);
 	while (!sift_unnest_done(&in, &cur))
 	{
@@ -740,6 +757,27 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 	}
 }
 
+/* stream s: the columns of its elements, and how a row read from the heap gives them */
+static void
+stream_init(UnRun *u, int s, AttrNumber heap_att)
+{
+	UnStream   *st = &u->st[s];
+	const SiftV6XElem *el = sift_v6_ext_stream(u->x, s);
+	const bool	keyed = el->fn == SV6E_KEYS;
+
+	st->el = el;
+	st->nchild = keyed ? (el->group_leaf >= 0 ? 2 : 0) : el->ncols;
+	for (int c = 0; c < el->ncols; c++)
+		st->etype[c] = vec_type(sift_v6_class(el->col_type[c]));
+	for (int c = 0; c < st->nchild; c++)
+		st->ctype[c] = keyed ? (c == 0 ? SVEC_STRVIEW : SVEC_F64) : st->etype[c];
+	st->heap_att = keyed ? 0 : heap_att;
+	if (el->fn == SV6E_UNNEST)
+		get_typlenbyvalalign(el->type, &st->typlen, &st->typbyval, &st->typalign);
+	else if (!keyed && el->fn != SV6E_PATH)
+		st->rec = sift_v6_recfn_new(CurrentMemoryContext, el, sift_v6_ext_stream_names(u->x, s));
+}
+
 static void
 unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *stats, AttrNumber heap_att)
 {
@@ -750,30 +788,23 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 	u->index = index;
 	u->keyed = u->x->elem.fn == SV6E_KEYS;
 	u->nel = u->x->elem.ncols;
-	u->nchild = u->keyed ? (u->x->elem.group_leaf >= 0 ? 2 : 0) : u->nel;
 	u->ntests = u->x->ntests;
-	for (int c = 0; c < u->nel; c++)
-		u->etype[c] = vec_type(sift_v6_class(u->x->elem.col_type[c]));
-	for (int c = 0; c < u->nchild; c++)
-		u->ctype[c] = u->keyed ? (c == 0 ? SVEC_STRVIEW : SVEC_F64) : u->etype[c];
-	if (!u->keyed)
-		u->heap_att = heap_att;
-	if (u->x->elem.fn == SV6E_UNNEST)
-		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
-	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
-		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
+	u->nst = 1 + u->x->nstreams;
+	for (int s = 0; s < u->nst; s++)
+		stream_init(u, s, s == 0 ? heap_att : 0);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest batch");
 	sift_mem_init(&u->rmt, "agg_unnest_heap_row", CurrentMemoryContext, true, SIFT_BUDGET_WORK_MEM, 1, 1);
 	u->ccx = sift_mem_allocset_create(u->rmt.root_cx, "sift agg v6 unnest heap chunk");
-	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0 || u->rec != NULL)
+	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0 || u->st[0].rec != NULL)
 	{
 		MemoryContext old = CurrentMemoryContext;
 
 		u->estate = CreateExecutorState();
 		MemoryContextSwitchTo(u->estate->es_query_cxt);
 		u->hqual = u->x->heap_where != NIL ? ExecPrepareQual(u->x->heap_where, u->estate) : NULL;
-		u->arr = u->x->elem_array != NIL ? ExecPrepareExpr(linitial(u->x->elem_array), u->estate) : NULL;
-		u->probe = u->rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->rec) : NULL;
+		for (int s = 0; s < u->nst; s++)
+			u->st[s].arr = sift_v6_ext_stream_array(u->x, s) != NULL ? ExecPrepareExpr(unconstify(Expr *, sift_v6_ext_stream_array(u->x, s)), u->estate) : NULL;
+		u->probe = u->st[0].rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->st[0].rec) : NULL;
 		for (int c = 0; u->keyed && c < u->nel; c++)
 			u->cexpr[c] = ExecPrepareExpr(list_nth(u->x->col_expr, c), u->estate);
 		u->econtext = CreateExprContext(u->estate);
@@ -820,8 +851,9 @@ unrun_end(UnRun *u)
 	sift_v6_vet_end(&u->vet);
 	if (u->estate != NULL)
 		FreeExecutorState(u->estate);
-	if (u->rec != NULL)
-		sift_v6_recfn_free(u->rec);
+	for (int s = 0; s < u->nst; s++)
+		if (u->st[s].rec != NULL)
+			sift_v6_recfn_free(u->st[s].rec);
 	MemoryContextDelete(u->bcx);
 	sift_mem_end(&u->rmt);
 }

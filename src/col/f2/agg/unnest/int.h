@@ -65,6 +65,21 @@ typedef struct UnArith
 	bool		f64[SIFT_V6_MAX_CASE + 1];
 } UnArith;
 
+/* An array of the rows whose elements the run reads (a stream of SiftV6Ext): the element columns of the pull, and how a row read from the heap is taken apart */
+typedef struct UnStream
+{
+	const SiftV6XElem *el;
+	int			nchild;			/* the element columns of the pull and how each is decoded: those of the statement, or the keys and the values of the map when keyed */
+	SiftVecType ctype[SIFT_V6_XELEM_COLS];
+	SiftVecType etype[SIFT_V6_XELEM_COLS];	/* the columns of the element as the pairs and the tests read them */
+	AttrNumber	heap_att;		/* the array column of the table */
+	ExprState  *arr;			/* the array of a row of the heap when it is an expression (SiftV6Ext.elem_array), else NULL: the column heap_att */
+	int16		typlen;
+	bool		typbyval;
+	char		typalign;
+	SiftV6RecFn *rec;
+} UnStream;
+
 typedef struct UnRun
 {
 	const SiftV6Spec *spec;
@@ -81,18 +96,12 @@ typedef struct UnRun
 	SiftV6PgExpr *pg[SIFT_V6_MAX_DERIVE];	/* an SVD_PG_EXPR derivation: its evaluator, the vector of the pairs each of its inputs is, and its result */
 	int			pgslot[SIFT_V6_MAX_DERIVE][SIFT_V6_MAX_COLS];
 	SiftVxOut	pgout[SIFT_V6_MAX_DERIVE];
-	int			nel;			/* the columns of the element */
+	int			nel;			/* the columns of the element of the pairs (stream 0) */
 	int			row_slot;		/* the slot of the number of the row of each pair, for an EXISTS over the elements (-1: none) */
-	SiftVecType etype[SIFT_V6_XELEM_COLS];
 	bool		eused[SIFT_V6_XELEM_COLS];	/* the statement reads the column; the others are read for the values their leaf cannot hold */
-	AttrNumber	heap_att;		/* the array column of the table */
-	int16		typlen;
-	bool		typbyval;
-	char		typalign;
-	SiftV6RecFn *rec;
+	int			nst;
+	UnStream	st[SIFT_V6_XSTREAMS];	/* st[0]: the array of the pairs, or the first one the tests read */
 	bool		keyed;			/* SV6E_KEYS: a row of the table is one pair, the members its keys name */
-	int			nchild;			/* the element columns of the pull and how each is decoded: those of the statement, or the keys and the values of the map when keyed */
-	SiftVecType ctype[SIFT_V6_XELEM_COLS];
 	FmgrInfo	jtext;			/* jsonb_object_field_text: the text of the key of a document read from the heap */
 	ExprState  *cexpr[SIFT_V6_XELEM_COLS];	/* keyed: the expression each column is, with which a row of the heap is given its value */
 	uint32	   *kidx[SIFT_V6_XELEM_COLS];	/* keyed: the member of the map each column of the pair has (SIFT_GATHER_NONE: none) */
@@ -107,7 +116,6 @@ typedef struct UnRun
 	ExprContext *econtext;
 	ExprState  *hqual;
 	SiftV6LateProbe *probe;		/* the expressions that read a member whose cast raised (SiftV6Ext.late_probe) */
-	ExprState  *arr;			/* the array of a row of the heap when it is an expression (SiftV6Ext.elem_array), else NULL: the column heap_att */
 	SiftClause	where;
 	bool		has_where;
 	SiftVec   **wvecs;

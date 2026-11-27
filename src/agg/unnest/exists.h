@@ -15,6 +15,15 @@
 #include "nodes/pathnodes.h"
 
 #include "agg/plan/int.h"
+#include "agg/unnest/jsonb.h"
+
+/* The arrays whose elements the tests of a plan read: rte[s] is stream s of its Ext (sift_v6_ext_stream), the first nfixed of them the plan's own (a lateral relation's), which no test joins */
+typedef struct SiftV6TestStreams
+{
+	int			n;
+	int			nfixed;
+	SiftV6ElemRte rte[SIFT_V6_XSTREAMS];
+} SiftV6TestStreams;
 
 /* The path of the scan of the statement over one table when a qual of the table or a FILTER is such a test; nothing when the statement is not of that shape */
 extern void sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs);

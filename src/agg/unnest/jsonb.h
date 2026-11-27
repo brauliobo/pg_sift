@@ -47,6 +47,8 @@ extern bool sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *s
 extern bool sift_v6_unnest_array_ok(PlannerInfo *root, const RelOptInfo *fact, const Expr *e);
 /* The Ext of the unnest, p->xseed: the leaves of the column of the index the function takes apart, false when the index does not keep all of them as columns */
 extern bool sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left);
+/* The element stream e of the array of rte (its leaves, or the columns the function of a table gives) and the names of its recordset columns; false when the source reads no such array */
+extern bool sift_v6_unnest_elem_seed(V6Plan *p, const SiftV6ElemRte *rte, bool left, SiftV6XElem *e, List **names);
 /* The WHERE clauses of the lateral relation as the elem_where of p->xseed; false when the scan cannot decide one */
 extern bool sift_v6_unnest_elem_quals(V6Plan *p);
 /* A comparison, an IN list or a null test of a column of the element with constants, over the virtual attribute of the column; NULL when the clause is not one */
@@ -137,7 +139,7 @@ typedef struct SiftV6RecFn
 	Datum	   *key;			/* the key of jsonb_each */
 } SiftV6RecFn;
 
-extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x);
+extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names);
 /* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many */
 extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev);
 /* The same a chunk at a time: open calls the function on doc, its rows in a tuplestore of cx (spilled past work_mem); next gives the following max of them as ev in cx, fewer at the end */

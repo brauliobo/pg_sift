@@ -50,6 +50,7 @@ typedef struct V6Plan
 	const RestrictInfo *sub_qual;	/* the EXISTS over the elements of an array that the scan joins the dimensions of its elements for and decides itself (v6_exists_plan.h): no clause of the table is compiled for it */
 	List	   *tests;			/* the tests of the elements of an array (EXISTS, jsonpath) that the scan decides itself (v6_unnest_exists.h): no clause of the table is compiled for those of a WHERE, a FILTER reads their flags */
 	const int  *elem_map;		/* the element column of the union of the tests' (SiftV6ElemRte) that column i of the relation of the test being built is; NULL: its own */
+	int			elem_stream;	/* the stream of the Ext (sift_v6_ext_stream) whose elements are the columns of elem_rel */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */

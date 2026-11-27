@@ -122,6 +122,7 @@ SIFT_EPQ_ACK_SLOTS	slots of a fixed internal table or shared array: a capacity o
 SIFT_F2_DIFF_MAX_LEAVES	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_F2_PULL_MAX_CHILD	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_F2_PULL_MAX_COLS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
+SIFT_F2_PULL_MAX_GROUPS	the arrays of a row one pull decodes (SIFT_V6_XSTREAMS of the engine): a statement that reads more keeps the normal plan, no error a user meets
 SIFT_F2_PULL_MAX_MASKS	bound of an on-disk or shared-memory record or of a decoder: a layout constant and a corruption check, not a limit a user can reach
 SIFT_GJOIN_MAX_LEVEL	tuning bound of an algorithm (memory, batch or radix size, load factor): it changes the speed or memory of a plan, not its rows
 SIFT_GPU_SLOTS	slots of a fixed internal table or shared array: a capacity of the implementation that a full table handles by waiting or falling back, not a limit on a statement

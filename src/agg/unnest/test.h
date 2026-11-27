@@ -34,12 +34,20 @@ extern Expr *sift_v6_unnest_or_arms(List *arms);
 typedef struct SiftV6RowTests SiftV6RowTests;
 
 extern SiftV6RowTests *sift_v6_row_tests_open(MemoryContext cx, const SiftV6Ext *x);
+/* The elements of one stream of a batch (SiftV6Ext: an array of the rows): its layout, the rows that have the array, and the element columns of the granule */
+typedef struct SiftV6StreamIn
+{
+	const SiftArrayLayout *lay;
+	const uint64 *doc_valid;
+	const SiftVec *ev;
+} SiftV6StreamIn;
+
 /*
- * The tests of the parents of the layout that are in rows: yes[k] bit r is whether test k is true of row r, known[k] whether the row has a document (a test of a NULL document is not true). ev: the
- * element columns of the granule; col: the columns of the batch, outer[k * SIFT_V6_XCMPS + c] the one comparison c of test k is with.
+ * The tests of the rows of the batch that are in rows, each on the elements of its stream (in[stream]): yes[k] bit r is whether test k is true of row r, known[k] whether the row has a document (a
+ * test of a NULL document is not true). col: the columns of the batch, outer[k * SIFT_V6_XCMPS + c] the one comparison c of test k is with.
  */
-extern void sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftArrayLayout *lay, const uint64 *doc_valid, const SiftVec *ev, const SiftVec *col, const int *outer, const uint64 *rows,
-								   uint64 yes[][SIFT_VEC_WORDS], uint64 known[][SIFT_VEC_WORDS]);
+extern void sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftV6StreamIn *in, const SiftVec *col, const int *outer, const uint64 *rows, uint64 yes[][SIFT_VEC_WORDS],
+								   uint64 known[][SIFT_VEC_WORDS]);
 /* Test k of one row whose nel elements are ev, with the one value outer[c] each comparison c is with */
 extern bool sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer);
 

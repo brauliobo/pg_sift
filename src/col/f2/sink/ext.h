@@ -6,7 +6,8 @@
  *
  * The consumer may tell the pull what its rows must satisfy (SiftF2PullSpec.pred, elem_pred): the partitions, parts and granules that hold no such row (by the key ranges, the time bounds, the key marks
  * and the zones of the leaves, col/f2/pull_prune.h) are not read at all. That is a hint: the batches of the granules that are read carry every row of them, and the consumer tests its rows.
- * A spec that names the lengths of an array (group_leaf) and no element column reads no element chunk: the layout is all the consumer gets.
+ * A spec may name several array columns of a row (one group each), each read as its own layout and element columns. A group that names the lengths of an array and no element column reads no
+ * element chunk: the layout is all the consumer gets.
  *
  * Visibility of the heap is the consumer's: live is what the index structures know, and a row of it may be a version the heap has since ended (a delete or an update is the index's only at the next VACUUM).
  */
@@ -27,6 +28,7 @@
 #define SIFT_F2_PULL_MAX_COLS	SIFT_VEXPR_MAX_REGS
 #define SIFT_F2_PULL_MAX_MASKS	SIFT_VEXPR_MAX_MASKS
 #define SIFT_F2_PULL_MAX_CHILD	16
+#define SIFT_F2_PULL_MAX_GROUPS	4
 
 /* A leaf the consumer wants: its decoding. An element leaf of text may ask for SVEC_DICT32: the codes of its dictionary where the granule holds it as one, its strings (SVEC_STRVIEW) where it does not */
 typedef struct SiftF2PullCol
@@ -43,18 +45,25 @@ typedef struct SiftF2PullMask
 	int			leaf;
 } SiftF2PullMask;
 
+/* An array column: the leaf of its lengths (SIFT_CENC_LIST_LEN) and its element leaves */
+typedef struct SiftF2PullGroup
+{
+	int			leaf;
+	int			nchild;
+	SiftF2PullCol child[SIFT_F2_PULL_MAX_CHILD];
+} SiftF2PullGroup;
+
 typedef struct SiftF2PullSpec
 {
 	int			ncols;
 	SiftF2PullCol col[SIFT_F2_PULL_MAX_COLS];
 	int			nmasks;
 	SiftF2PullMask mask[SIFT_F2_PULL_MAX_MASKS];
-	int			group_leaf;		/* an array column: the leaf of its lengths (SIFT_CENC_LIST_LEN), -1: none */
+	int			ngroups;
+	SiftF2PullGroup group[SIFT_F2_PULL_MAX_GROUPS];
 	bool		poison_rows;	/* with no array column too: the rows of a granule that holds a value a leaf of ncols cannot hold are poison (the consumer reads them from the heap), and the slab's are, as with one */
-	int			nchild;
-	SiftF2PullCol child[SIFT_F2_PULL_MAX_CHILD];	/* its element leaves */
 	/*
-	 * What the rows the consumer keeps satisfy, ANDed, on the leaves of the rows (npred) and on the element leaves of the group (nelem_pred, on the same element). The arrays are the consumer's and
+	 * What the rows the consumer keeps satisfy, ANDed, on the leaves of the rows (npred) and on the element leaves of group 0 (nelem_pred, on the same element). The arrays are the consumer's and
 	 * live as long as the pull. elem_pred only when a row none of whose elements passes gives the consumer nothing (an inner join, EXISTS), not for a left join: a granule in which no element
 	 * can pass is not read, or is read with no element for the rows the elements cannot hold (the consumer reads their arrays from the heap).
 	 */
@@ -70,8 +79,8 @@ typedef struct SiftF2PullSpec
 /*
  * The elements of the rows of a slice. layout is of the slice (its parents are the rows of the slice, its offsets those of the elements of the granule); a child column has a value for each
  * element of the granule: child[c] is the column of the spec, data and valid as of a SiftVec of n_elems values (valid: n_elems bits, NULL: all valid). child_type[c] is how it is decoded: the type of
- * the spec, but SVEC_STRVIEW for a column that asked for SVEC_DICT32 and whose chunk of this granule is not a dictionary; child_dict[c] is then NULL. poison: the rows of the slice whose array the
- * columns cannot hold (the document was not an array, a list longer than the index keeps, or the rows come from the slab, which keeps no layout): the consumer reads them from the heap.
+ * the spec, but SVEC_STRVIEW for a column that asked for SVEC_DICT32 and whose chunk of this granule is not a dictionary; child_dict[c] is then NULL. poison: the rows of the slice one of whose
+ * arrays the columns cannot hold (the document was not an array, a list longer than the index keeps, or the rows come from the slab, which keeps no layout): the consumer reads them from the heap.
  */
 typedef struct SiftF2ElemStream
 {
@@ -92,7 +101,7 @@ typedef struct SiftF2ExtBatch
 	const SiftVexprMaskIn *masks;
 	const uint64 *tid;
 	const uint64 *live;
-	const SiftF2ElemStream *elem;	/* NULL unless the spec names a group or asks for poison_rows (then its layout is empty) */
+	const SiftF2ElemStream *elem;	/* one for each group of the spec (or one with an empty layout when it names none and asks for poison_rows); NULL for neither */
 } SiftF2ExtBatch;
 
 /* What the predicates of the spec left of the index, and how the element columns were decoded */

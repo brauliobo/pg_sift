@@ -308,6 +308,7 @@ typedef struct SiftJsonbOps
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes;
 								 * its unnest reads any column of the table beside the elements (without it, the typed leaves only: no whole document, no numeric read as datums) */
 	bool		raise_after_quals;	/* the scan raises the error of the cast of a value of an exception (to float8, to bool) only for the rows its batch quals keep, as PostgreSQL's WHERE does */
+	bool		streams;		/* its unnest reads the elements of several arrays of a row (SiftV6Ext.nstreams) */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;

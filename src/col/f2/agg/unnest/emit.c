@@ -186,14 +186,14 @@ emit_keyed(UnRun *u, const SiftVec *fact, const SiftVec *vals, uint32 m)
 
 /* the next elements of the array the iterator reads, at most SIFT_VEC_LEN, as columns in cx: unnest(array) of a NULL or empty array has none */
 static uint32
-array_elems(UnRun *u, ArrayIterator it, SiftVec *ev, MemoryContext cx)
+array_elems(const UnStream *st, ArrayIterator it, SiftVec *ev, MemoryContext cx)
 {
-	const size_t w = sift_gather_width(u->etype[0]);
+	const size_t w = sift_gather_width(st->etype[0]);
 	uint32		k = 0;
 	Datum		d;
 	bool		isnull;
 
-	ev[0] = (SiftVec) {.type = u->etype[0],.all_valid = false};
+	ev[0] = (SiftVec) {.type = st->etype[0],.all_valid = false};
 	ev[0].data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * w + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 	ev[0].valid = MemoryContextAllocZero(cx, (SIFT_VEC_WORDS + 1) * sizeof(uint64));
 	for (; k < SIFT_VEC_LEN && array_iterate(it, &d, &isnull); k++)
@@ -201,14 +201,14 @@ array_elems(UnRun *u, ArrayIterator it, SiftVec *ev, MemoryContext cx)
 		if (isnull)
 			continue;
 		ev[0].valid[k >> 6] |= UINT64CONST(1) << (k & 63);
-		if (u->etype[0] == SVEC_STRVIEW)
+		if (st->etype[0] == SVEC_STRVIEW)
 		{
 			struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(d));
 
 			((SiftStrView *) ev[0].data)[k] = sift_vstr_make(VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
 		}
 		else
-			((int64 *) ev[0].data)[k] = u->x->elem.type == INT2OID ? DatumGetInt16(d) : u->x->elem.type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
+			((int64 *) ev[0].data)[k] = st->el->type == INT2OID ? DatumGetInt16(d) : st->el->type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
 	}
 	return k;
 }
@@ -294,25 +294,27 @@ heap_row_kept(UnRun *u, uint64 tid)
 	return u->hqual == NULL || ExecQual(u->hqual, u->econtext);
 }
 
-/* the elements of the array of the row read from the heap as the function gives them, a chunk at a time (heap_next), NULL and empty arrays included, errors included */
+/* the elements of an array of the row read from the heap as the function gives them, a chunk at a time (heap_next), NULL and empty arrays included, errors included */
 typedef struct HeapElems
 {
-	ArrayIterator it;			/* an array; NULL: the rows of the function of u->rec */
+	const UnStream *st;			/* the stream of the array */
+	ArrayIterator it;			/* an array; NULL: the rows of the function of st->rec */
 	bool		done;
 } HeapElems;
 
 static void
-heap_open(UnRun *u, HeapElems *h)
+heap_open(UnRun *u, int s, HeapElems *h)
 {
+	const UnStream *st = &u->st[s];
 	bool		isnull;
-	const Datum d = u->arr != NULL ? ExecEvalExprSwitchContext(u->arr, u->econtext, &isnull) : slot_getattr(u->vet.slot, u->heap_att, &isnull);
-	ArrayMetaState meta = {.element_type = u->x->elem.type,.typlen = u->typlen,.typbyval = u->typbyval,.typalign = u->typalign};
+	const Datum d = st->arr != NULL ? ExecEvalExprSwitchContext(st->arr, u->econtext, &isnull) : slot_getattr(u->vet.slot, st->heap_att, &isnull);
+	ArrayMetaState meta = {.element_type = st->el->type,.typlen = st->typlen,.typbyval = st->typbyval,.typalign = st->typalign};
 
-	*h = (HeapElems) {.done = isnull};
+	*h = (HeapElems) {.st = st,.done = isnull};
 	if (isnull)
 		return;
-	if (u->rec != NULL)
-		sift_v6_recfn_open(u->rec, d, u->rmt.root_cx);
+	if (st->rec != NULL)
+		sift_v6_recfn_open(st->rec, d, u->rmt.root_cx);
 	else
 		h->it = array_create_iterator(DatumGetArrayTypeP(d), 0, &meta);
 }
@@ -328,7 +330,7 @@ heap_next(UnRun *u, HeapElems *h, SiftVec *ev)
 	CHECK_FOR_INTERRUPTS();
 	if (h->done)
 		return 0;
-	n = u->rec != NULL ? sift_v6_recfn_next(u->rec, u->ccx, ev, SIFT_VEC_LEN) : array_elems(u, h->it, ev, u->ccx);
+	n = h->st->rec != NULL ? sift_v6_recfn_next(h->st->rec, u->ccx, ev, SIFT_VEC_LEN) : array_elems(h->st, h->it, ev, u->ccx);
 	h->done = n < SIFT_VEC_LEN;
 	return n;
 }
@@ -344,10 +346,10 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 	uint32		nel;
 
 	for (int c = 0; c < u->nel; c++)
-		ev[c].type = u->etype[c];
+		ev[c].type = u->st[0].etype[c];
 	if (heap_row_kept(u, tid))
 	{
-		heap_open(u, &h);
+		heap_open(u, 0, &h);
 		MemoryContextSwitchTo(u->ccx);
 		while ((nel = heap_next(u, &h, ev)) > 0)
 		{
@@ -359,10 +361,10 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 				keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
 				sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
 			}
-			if (u->rec != NULL)
+			if (u->st[0].rec != NULL)
 			{
 				late = palloc0_array(ErrorData *, nel);
-				sift_v6_recfn_values(u->rec, keep, u->ccx, ev, nel, late);
+				sift_v6_recfn_values(u->st[0].rec, keep, u->ccx, ev, nel, late);
 			}
 			kept += emit_chunk(u, fact, ev, keep, nel, row, late);
 		}
@@ -402,17 +404,30 @@ heap_outer(UnRun *u, int k, int c, HeapCell *cell, uint64 *valid)
 	return (SiftVec) {.data = cell,.valid = valid,.len = 1,.all_valid = false,.dense = true,.type = type == FLOAT8OID ? SVEC_F64 : SVEC_I64};
 }
 
-/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements the function gives, a chunk at a time */
+/* the tests of stream s of the heap row that its elements decide (an EXISTS): the elements the function gives, a chunk at a time */
+static void
+heap_stream_flags(UnRun *u, int s, const bool *elems, SiftVec (*outer)[SIFT_V6_XCMPS], bool *yes)
+{
+	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
+	HeapElems	h;
+	uint32		nel;
+
+	heap_open(u, s, &h);
+	while ((nel = heap_next(u, &h, ev)) > 0)
+		for (int k = 0; k < u->ntests; k++)
+			if (elems[k] && u->x->test[k].stream == s && !yes[k])
+				yes[k] = sift_v6_row_test_one(u->tests, k, ev, nel, outer[k]);
+}
+
+/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements of its stream */
 static void
 heap_flags(UnRun *u, bool *yes, bool *known)
 {
-	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	SiftVec		outer[SIFT_V6_XTESTS][SIFT_V6_XCMPS];
 	HeapCell	cell[SIFT_V6_XTESTS][SIFT_V6_XCMPS];
 	uint64		valid[SIFT_V6_XTESTS][SIFT_V6_XCMPS];
-	bool		elems = false;
-	HeapElems	h;
-	uint32		nel;
+	bool		elems[SIFT_V6_XTESTS] = {0};
+	bool		streams[SIFT_V6_XSTREAMS] = {0};
 
 	for (int k = 0; k < u->ntests; k++)
 	{
@@ -428,17 +443,13 @@ heap_flags(UnRun *u, bool *yes, bool *known)
 			yes[k] = !isnull && DatumGetBool(d);
 			continue;
 		}
-		elems = true;
+		elems[k] = streams[u->x->test[k].stream] = true;
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[k][c] = heap_outer(u, k, c, &cell[k][c], &valid[k][c]);
 	}
-	if (!elems)
-		return;
-	heap_open(u, &h);
-	while ((nel = heap_next(u, &h, ev)) > 0)
-		for (int k = 0; k < u->ntests; k++)
-			if (u->heap_test[k] == NULL && !yes[k])
-				yes[k] = sift_v6_row_test_one(u->tests, k, ev, nel, outer[k]);
+	for (int s = 0; s < u->nst; s++)
+		if (streams[s])
+			heap_stream_flags(u, s, elems, outer, yes);
 }
 
 static bool

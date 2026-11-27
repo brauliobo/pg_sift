@@ -215,6 +215,35 @@ sift_v6_ext_new(void)
 	return palloc0(sizeof(SiftV6Ext));
 }
 
+static List *
+pack_elem(List *ints, const SiftV6XElem *e)
+{
+	ints = list_concat(ints, list_make4_int((int) e->fn, e->attno, (int) e->type, e->group_leaf));
+	ints = list_concat(ints, list_make5_int(e->left, e->semi, (int) e->vread, e->key_leaf, e->val_leaf));
+	ints = lappend_int(ints, e->ncols);
+	for (int c = 0; c < e->ncols; c++)
+		ints = list_concat(ints, list_make4_int(e->col_leaf[c], (int) e->col_type[c], e->col_kind[c], e->col_att[c]));
+	return ints;
+}
+
+static void
+unpack_elem(const List *ints, int *at, SiftV6XElem *e)
+{
+	const int	a = *at;
+
+	*e = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, a),.attno = list_nth_int(ints, a + 1),.type = (Oid) list_nth_int(ints, a + 2),.group_leaf = list_nth_int(ints, a + 3),
+	.left = list_nth_int(ints, a + 4),.semi = list_nth_int(ints, a + 5),.vread = (SiftV6ValueRead) list_nth_int(ints, a + 6),.key_leaf = list_nth_int(ints, a + 7),
+	.val_leaf = list_nth_int(ints, a + 8),.ncols = list_nth_int(ints, a + 9)};
+	*at = a + 10;
+	for (int c = 0; c < e->ncols; c++, *at += 4)
+	{
+		e->col_leaf[c] = list_nth_int(ints, *at);
+		e->col_type[c] = (Oid) list_nth_int(ints, *at + 1);
+		e->col_kind[c] = list_nth_int(ints, *at + 2) != 0;
+		e->col_att[c] = list_nth_int(ints, *at + 3);
+	}
+}
+
 List *
 sift_v6_ext_pack(const SiftV6Ext *x)
 {
@@ -241,26 +270,21 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	ints = lappend_int(ints, x->nrcol);
 	for (int c = 0; c < x->nrcol; c++)
 		ints = put_col(ints, &x->rcol[c]);
-	ints = lappend_int(ints, x->unnest);
-	ints = list_concat(ints, list_make4_int((int) x->elem.fn, x->elem.attno, (int) x->elem.type, x->elem.group_leaf));
-	ints = list_concat(ints, list_make5_int(x->elem.left, x->elem.semi, (int) x->elem.vread, x->ntests, x->elem.ncols));
-	for (int c = 0; c < x->elem.ncols; c++)
-		ints = list_concat(ints, list_make3_int(x->elem.col_leaf[c], (int) x->elem.col_type[c], x->elem.col_kind[c]));
+	ints = list_concat(ints, list_make4_int(x->unnest, x->row_tests, x->nstreams, x->ntests));
+	for (int s = 0; s <= x->nstreams; s++)
+		ints = pack_elem(ints, sift_v6_ext_stream(x, s));
 	for (int t = 0; t < x->ntests; t++)
 	{
 		const SiftV6XTest *xt = &x->test[t];
 
-		ints = list_concat(ints, list_make4_int(xt->need, xt->nullable, xt->doc_leaf, xt->ncmps));
+		ints = list_concat(ints, list_make5_int(xt->need, xt->nullable, xt->stream, xt->doc_leaf, xt->ncmps));
 		for (int c = 0; c < xt->ncmps; c++)
 			ints = list_concat(ints, list_make5_int(xt->cmp[c].op, xt->cmp[c].elem, xt->cmp[c].outer, (int) xt->cmp[c].outer_type, xt->cmp[c].group));
 	}
-	ints = list_concat(ints, list_make2_int(x->elem.key_leaf, x->elem.val_leaf));
-	for (int c = 0; c < x->elem.ncols; c++)
-		ints = lappend_int(ints, x->elem.col_att[c]);
 	for (int d = 0; d < x->ndims; d++)
 		on = lappend(on, x->on[d]);
 	return list_concat(lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr),
-					   list_make5(x->pair_where, x->col_expr, x->test_quals, on, x->late_probe));
+					   lappend(list_make5(x->pair_where, x->col_expr, x->test_quals, on, x->late_probe), list_make2(x->stream_names, x->stream_arrays)));
 }
 
 SiftV6Ext *
@@ -305,33 +329,25 @@ sift_v6_ext_unpack(const List *l)
 	x->nrcol = list_nth_int(ints, at++);
 	for (int c = 0; c < x->nrcol; c++)
 		x->rcol[c] = take_col(ints, &at);
-	x->unnest = list_nth_int(ints, at++);
-	x->elem = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, at),.attno = list_nth_int(ints, at + 1),.type = (Oid) list_nth_int(ints, at + 2),
-	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),
-	.vread = (SiftV6ValueRead) list_nth_int(ints, at + 6),.ncols = list_nth_int(ints, at + 8)};
-	x->ntests = list_nth_int(ints, at + 7);
-	at += 9;
-	for (int c = 0; c < x->elem.ncols; c++, at += 3)
-	{
-		x->elem.col_leaf[c] = list_nth_int(ints, at);
-		x->elem.col_type[c] = (Oid) list_nth_int(ints, at + 1);
-		x->elem.col_kind[c] = list_nth_int(ints, at + 2) != 0;
-	}
+	x->unnest = list_nth_int(ints, at);
+	x->row_tests = list_nth_int(ints, at + 1);
+	x->nstreams = list_nth_int(ints, at + 2);
+	x->ntests = list_nth_int(ints, at + 3);
+	at += 4;
+	unpack_elem(ints, &at, &x->elem);
+	for (int s = 0; s < x->nstreams; s++)
+		unpack_elem(ints, &at, &x->streams[s]);
 	for (int t = 0; t < x->ntests; t++)
 	{
 		SiftV6XTest *xt = &x->test[t];
 
-		*xt = (SiftV6XTest) {.need = list_nth_int(ints, at),.nullable = list_nth_int(ints, at + 1) != 0,.doc_leaf = list_nth_int(ints, at + 2),.ncmps = list_nth_int(ints, at + 3)};
-		at += 4;
+		*xt = (SiftV6XTest) {.need = list_nth_int(ints, at),.nullable = list_nth_int(ints, at + 1) != 0,.stream = list_nth_int(ints, at + 2),.doc_leaf = list_nth_int(ints, at + 3),
+		.ncmps = list_nth_int(ints, at + 4)};
+		at += 5;
 		for (int c = 0; c < xt->ncmps; c++, at += 5)
 			xt->cmp[c] = (SiftV6XCmp) {.op = list_nth_int(ints, at),.elem = list_nth_int(ints, at + 1),.outer = list_nth_int(ints, at + 2),.outer_type = (Oid) list_nth_int(ints, at + 3),
 			.group = list_nth_int(ints, at + 4)};
 	}
-	x->elem.key_leaf = list_nth_int(ints, at);
-	x->elem.val_leaf = list_nth_int(ints, at + 1);
-	at += 2;
-	for (int c = 0; c < x->elem.ncols; c++)
-		x->elem.col_att[c] = list_nth_int(ints, at++);
 	x->where = lsecond(l);
 	x->elem_where = lthird(l);
 	x->elem_names = lfourth(l);
@@ -345,6 +361,8 @@ sift_v6_ext_unpack(const List *l)
 	for (int d = 0; d < x->ndims; d++)
 		x->on[d] = list_nth(list_nth(l, 11), d);
 	x->late_probe = list_nth(l, 12);
+	x->stream_names = linitial(list_nth(l, 13));
+	x->stream_arrays = lsecond(list_nth(l, 13));
 	return x;
 }
 

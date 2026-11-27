@@ -62,7 +62,8 @@ BEGIN
 	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
 END $$;
 
--- jsonpath in a WHERE: != and == on a text member (a JSON null differs from a literal, a missing key from none), ! of them, a null literal, variables, strict mode without !
+-- jsonpath in a WHERE: != and == on a text member (a JSON null differs from a literal, a missing key from none), ! of them, a null literal, variables, strict mode without !, and
+-- tests of two arrays of the row, each read as its own stream of elements
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind == "gift")'') GROUP BY 1',
@@ -83,7 +84,9 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.qty >= 2 && !(@.kind == "gift" || @.qty > 3))'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'', ''{}'', true) AND o.grp < 5 GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE NOT jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1',
-	'SELECT o.grp, sum(o.r4), count(DISTINCT o.id) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1'
+	'SELECT o.grp, sum(o.r4), count(DISTINCT o.id) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1',
+	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') AND jsonb_path_exists(o.doc, ''$[*] ? (@.q == 1)'') GROUP BY 1',
+	'SELECT o.grp, count(*) FILTER (WHERE o.items @> ''[{"kind": null}]''), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4)) FROM @T o GROUP BY 1'
 ]) q;
 
 -- containment of a JSON null member and of values
@@ -103,13 +106,12 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT count(*), count(*) FILTER (WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind == null)'')) AS eq_null, count(*) FILTER (WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != null)'')) AS ne_null FROM @T o'
 ]) q;
 
--- a literal of another JSON type than the member's, a number the leaf does not hold, !() in strict mode, a second array and a second element of the pattern keep the normal plan
+-- a literal of another JSON type than the member's, a number the leaf does not hold, !() in strict mode and a second element of the pattern keep the normal plan
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.qty == "3")'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != 3)'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.qty > 1.5)'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.arr, ''strict $[*] ? (!(@.kind == "gift"))'') GROUP BY 1',
-	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') AND jsonb_path_exists(o.doc, ''$[*] ? (@.q == 1)'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"kind": "gift"}, {"qty": null}]'' GROUP BY 1'
 ]) q;
 

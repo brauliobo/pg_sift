@@ -472,7 +472,7 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	if (u->x->elem.fn == SV6E_UNNEST)
 		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
 	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
-		u->rec = sift_v6_recfn_new(CurrentMemoryContext, u->x);
+		u->rec = sift_v6_recfn_new(CurrentMemoryContext, &u->x->elem, u->x->elem_names);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 unnest heap rows");
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));

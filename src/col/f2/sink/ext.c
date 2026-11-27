@@ -23,6 +23,19 @@
 #include "core/xid_cache.h"
 #include "agg/vexpr/str.h"
 
+/* the elements of one array column of the granule being read (a group of the spec) */
+typedef struct PullGroup
+{
+	bool		has_layout;
+	SiftArrayLayout lay;
+	uint64	   *doc_valid;
+	void	   *child_data[SIFT_F2_PULL_MAX_CHILD];
+	uint64	   *child_valid[SIFT_F2_PULL_MAX_CHILD];
+	SiftVecType child_type[SIFT_F2_PULL_MAX_CHILD];
+	SiftGranuleDict *child_dict[SIFT_F2_PULL_MAX_CHILD];
+	uint32		n_elems;
+} PullGroup;
+
 struct SiftF2Pull
 {
 	Relation	index;
@@ -62,18 +75,11 @@ struct SiftF2Pull
 	SiftRowBuf *rb;
 	const uint64 *tids;
 	uint64	   *live;
-	bool		has_layout;
-	SiftArrayLayout lay;
 	uint64	   *poison;
-	uint64	   *doc_valid;
-	void	   *child_data[SIFT_F2_PULL_MAX_CHILD];
-	uint64	   *child_valid[SIFT_F2_PULL_MAX_CHILD];
-	SiftVecType child_type[SIFT_F2_PULL_MAX_CHILD];
-	SiftGranuleDict *child_dict[SIFT_F2_PULL_MAX_CHILD];
-	uint32		n_elems;
+	PullGroup	grp[SIFT_F2_PULL_MAX_GROUPS];
 	SiftGranVecCursor cur[SIFT_F2_PULL_MAX_COLS];	/* the cursor of each column of the granule, opened by its first slice: the chunk is opened once for all of them */
 	bool		cur_on[SIFT_F2_PULL_MAX_COLS];
-	SiftGranVecCursor child_cur[SIFT_F2_PULL_MAX_CHILD];	/* the strings of an element column live as long as its cursor */
+	SiftGranVecCursor child_cur[SIFT_F2_PULL_MAX_GROUPS * SIFT_F2_PULL_MAX_CHILD];	/* the strings of an element column live as long as its cursor */
 	int			nchild_cur;
 
 	SiftVec		vec[SIFT_F2_PULL_MAX_COLS];
@@ -81,7 +87,7 @@ struct SiftF2Pull
 	int64	   *bools[SIFT_F2_PULL_MAX_COLS];	/* a text column of a bool leaf: the booleans of the slice its `->>` texts are made of (NULL: any other column) */
 	SiftVexprMaskIn masks[SIFT_F2_PULL_MAX_MASKS];
 	uint64	   *mbits[SIFT_F2_PULL_MAX_MASKS];
-	SiftF2ElemStream es;
+	SiftF2ElemStream es[SIFT_F2_PULL_MAX_GROUPS];
 	SiftF2ExtBatch out;
 	uint16		slice_off;		/* the first row of the slice in the granule or the slab */
 	uint8	   *xtag[SIFT_F2_PULL_MAX_COLS];	/* the JSON type each row of the granule holds of a leaf of a key of a document, read when a payload is asked of the column */
@@ -226,8 +232,8 @@ head_chunks(const SiftF2Pull *p, int *chunks)
 	int			nc = 0;
 
 	chunks[nc++] = SIFT_COL_TID_IDX;
-	if (p->spec.group_leaf >= 0)
-		chunks[nc++] = p->spec.group_leaf + 1;
+	for (int g = 0; g < p->spec.ngroups; g++)
+		chunks[nc++] = p->spec.group[g].leaf + 1;
 	return nc;
 }
 
@@ -241,8 +247,9 @@ body_chunks(const SiftF2Pull *p, int *chunks)
 		chunks[nc++] = p->spec.col[i].leaf + 1;
 	for (int m = 0; m < p->spec.nmasks; m++)
 		chunks[nc++] = p->spec.mask[m].leaf + 1;
-	for (int c = 0; p->n_elems > 0 && c < p->spec.nchild; c++)
-		chunks[nc++] = p->spec.child[c].leaf + 1;
+	for (int g = 0; g < p->spec.ngroups; g++)
+		for (int c = 0; p->grp[g].n_elems > 0 && c < p->spec.group[g].nchild; c++)
+			chunks[nc++] = p->spec.group[g].child[c].leaf + 1;
 	return nc;
 }
 
@@ -272,7 +279,7 @@ poison_granule(SiftF2Pull *p)
 static void
 unholdable(SiftF2Pull *p)
 {
-	if (p->spec.group_leaf < 0 && !p->spec.poison_rows)
+	if (p->spec.ngroups == 0 && !p->spec.poison_rows)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 				errhint("Read the column through a scan that decodes exceptions.")));
 	poison_granule(p);
@@ -360,98 +367,105 @@ patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
 
 /* an element column held as a dictionary in this granule: its codes, whole, and the dictionary they name; false when the chunk is no dictionary */
 static bool
-decode_child_codes(SiftF2Pull *p, int c)
+decode_child_codes(SiftF2Pull *p, int g, int c)
 {
-	const uint32 n = p->n_elems;
+	PullGroup  *gr = &p->grp[g];
+	const uint32 n = gr->n_elems;
 	uint32	   *codes = MemoryContextAllocAligned(p->gcx, Max((Size) n * sizeof(uint32), 1) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
 	bool	   *isnull = palloc(Max(n, 1));
 	SiftGranuleDict *dict = palloc(sizeof(SiftGranuleDict));
 
-	if (!sift_granule_str_codes(&p->gv, p->spec.child[c].leaf, codes, isnull, dict))
+	if (!sift_granule_str_codes(&p->gv, p->spec.group[g].child[c].leaf, codes, isnull, dict))
 		return false;
-	p->child_valid[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
+	gr->child_valid[c] = palloc0(((n + 63) / 64 + 1) * sizeof(uint64));
 	for (uint32 e = 0; e < n; e++)
-		p->child_valid[c][e >> 6] |= (uint64) !isnull[e] << (e & 63);
-	p->child_data[c] = codes;
-	p->child_dict[c] = dict;
-	p->child_type[c] = SVEC_DICT32;
+		gr->child_valid[c][e >> 6] |= (uint64) !isnull[e] << (e & 63);
+	gr->child_data[c] = codes;
+	gr->child_dict[c] = dict;
+	gr->child_type[c] = SVEC_DICT32;
 	return true;
 }
 
 /* an element column decoded batch by batch into whole-granule arrays of the cells of its type */
 static void
-decode_child_vec(SiftF2Pull *p, int c, SiftVecType type)
+decode_child_vec(SiftF2Pull *p, int g, int c, SiftVecType type)
 {
+	PullGroup  *gr = &p->grp[g];
 	const Size	es = esize(type);
-	const uint32 words = (p->n_elems + 63) / 64 + 1;
-	SiftVec		tmp = {.type = type,.scale = p->spec.child[c].scale};
+	const uint32 words = (gr->n_elems + 63) / 64 + 1;
+	SiftVec		tmp = {.type = type,.scale = p->spec.group[g].child[c].scale};
 	uint64		tv[SIFT_VEC_WORDS];
 
 	tmp.data = palloc_aligned(SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	tmp.valid = tv;
-	sift_vec_cursor_open(&p->gv, p->spec.child[c].leaf, type, &p->child_cur[p->nchild_cur++]);
-	p->child_data[c] = palloc(Max((Size) p->n_elems * es, 1) + SIFT_VEC_PAD);
-	p->child_valid[c] = palloc0(words * sizeof(uint64));
-	p->child_type[c] = type;
-	for (uint32 at = 0; at < p->n_elems; at += SIFT_VEC_LEN)
+	sift_vec_cursor_open(&p->gv, p->spec.group[g].child[c].leaf, type, &p->child_cur[p->nchild_cur++]);
+	gr->child_data[c] = palloc(Max((Size) gr->n_elems * es, 1) + SIFT_VEC_PAD);
+	gr->child_valid[c] = palloc0(words * sizeof(uint64));
+	gr->child_type[c] = type;
+	for (uint32 at = 0; at < gr->n_elems; at += SIFT_VEC_LEN)
 	{
-		const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, p->n_elems - at);
+		const uint16 cnt = (uint16) Min(SIFT_VEC_LEN, gr->n_elems - at);
 		const SiftVariantExcStream *exc = NULL;
 
 		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], at, cnt, &tmp, &exc);
 		if (exc != NULL)
 			poison_granule(p);
-		memcpy((char *) p->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
+		memcpy((char *) gr->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
 		for (uint16 i = 0; i < cnt; i++)
 			if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
-				p->child_valid[c][(at + i) >> 6] |= UINT64CONST(1) << ((at + i) & 63);
+				gr->child_valid[c][(at + i) >> 6] |= UINT64CONST(1) << ((at + i) & 63);
 	}
 }
 
 /* the value column of the leaf of the kind column c, decoded before it: what is not a value is a JSON null where the chunk keeps that kind, else missing */
 static void
-decode_child_kinds(SiftF2Pull *p, int c)
+decode_child_kinds(SiftF2Pull *p, int g, int c)
 {
-	const uint32 n = p->n_elems;
-	const int	leaf = p->spec.child[c].leaf;
+	PullGroup  *gr = &p->grp[g];
+	const SiftF2PullGroup *sg = &p->spec.group[g];
+	const uint32 n = gr->n_elems;
+	const int	leaf = sg->child[c].leaf;
 	int64	   *kind = palloc_aligned(Max((Size) n * sizeof(int64), 1) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	uint8	   *tag = palloc(Max(n, 1));
 	const uint64 *value = NULL;
 
 	for (int v = 0; v < c; v++)
-		if (p->spec.child[v].leaf == leaf && !p->spec.child[v].kind)
-			value = p->child_valid[v];
+		if (sg->child[v].leaf == leaf && !sg->child[v].kind)
+			value = gr->child_valid[v];
 	SIFT_INVARIANT(value != NULL, "the column of the values of an element leaf precedes its kinds");
 	sift_granule_tags(&p->gv, leaf, tag);
 	for (uint32 e = 0; e < n; e++)
 		kind[e] = ((value[e >> 6] >> (e & 63)) & 1) ? SIFT_ELEM_KIND_VALUE : tag[e] == SIFT_COLTAG_JNULL ? SIFT_ELEM_KIND_JNULL : SIFT_ELEM_KIND_ABSENT;
-	p->child_data[c] = kind;
-	p->child_valid[c] = palloc_aligned(((n + 63) / 64 + 1) * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
-	memset(p->child_valid[c], 0xff, ((n + 63) / 64) * sizeof(uint64));
-	p->child_type[c] = SVEC_I64;
+	gr->child_data[c] = kind;
+	gr->child_valid[c] = palloc_aligned(((n + 63) / 64 + 1) * sizeof(uint64), SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	memset(gr->child_valid[c], 0xff, ((n + 63) / 64) * sizeof(uint64));
+	gr->child_type[c] = SVEC_I64;
 }
 
 static void
-decode_children(SiftF2Pull *p)
+decode_children(SiftF2Pull *p, int g)
 {
-	for (int c = 0; c < p->spec.nchild; c++)
-	{
-		const bool	dict = p->spec.child[c].type == SVEC_DICT32;
+	PullGroup  *gr = &p->grp[g];
+	const SiftF2PullGroup *sg = &p->spec.group[g];
 
-		p->child_dict[c] = NULL;
-		if (p->n_elems == 0)
+	for (int c = 0; c < sg->nchild; c++)
+	{
+		const bool	dict = sg->child[c].type == SVEC_DICT32;
+
+		gr->child_dict[c] = NULL;
+		if (gr->n_elems == 0)
 		{
-			p->child_type[c] = dict ? SVEC_STRVIEW : p->spec.child[c].type;
-			p->child_data[c] = palloc0(SIFT_VEC_PAD);
-			p->child_valid[c] = palloc0(sizeof(uint64));
+			gr->child_type[c] = dict ? SVEC_STRVIEW : sg->child[c].type;
+			gr->child_data[c] = palloc0(SIFT_VEC_PAD);
+			gr->child_valid[c] = palloc0(sizeof(uint64));
 		}
-		else if (p->spec.child[c].kind)
-			decode_child_kinds(p, c);
-		else if (dict && decode_child_codes(p, c))
+		else if (sg->child[c].kind)
+			decode_child_kinds(p, g, c);
+		else if (dict && decode_child_codes(p, g, c))
 			p->stats.child_dict_granules++;
 		else
 		{
-			decode_child_vec(p, c, dict ? SVEC_STRVIEW : p->spec.child[c].type);
+			decode_child_vec(p, g, c, dict ? SVEC_STRVIEW : sg->child[c].type);
 			p->stats.child_str_granules += dict;
 		}
 	}
@@ -484,27 +498,28 @@ static void
 begin_rows(SiftF2Pull *p)
 {
 	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
-	p->doc_valid = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
-	memset(p->doc_valid, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
-	p->has_layout = false;
-	p->n_elems = 0;
+	p->grp[0].doc_valid = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
+	memset(p->grp[0].doc_valid, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
+	p->grp[0].has_layout = false;
+	p->grp[0].n_elems = 0;
 }
 
+/* the layout of array column g: a row is poison when the granule keeps no layout of it, or the row's document holds no array there */
 static void
-begin_layout(SiftF2Pull *p)
+begin_group(SiftF2Pull *p, int g)
 {
-	const int	gl = p->spec.group_leaf;
+	PullGroup  *gr = &p->grp[g];
+	const int	gl = p->spec.group[g].leaf;
 	int64	   *lens = palloc(p->n * sizeof(int64));
 	bool	   *isnull = palloc(p->n);
 	uint8	   *tag = palloc(p->n);
 
-	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
-	p->doc_valid = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
-	p->has_layout = sift_granule_array_layout(&p->gv, gl, &p->lay);
-	if (!p->has_layout)
+	gr->doc_valid = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
+	gr->has_layout = sift_granule_array_layout(&p->gv, gl, &gr->lay);
+	gr->n_elems = 0;
+	if (!gr->has_layout)
 	{
-		memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
-		p->n_elems = 0;
+		poison_granule(p);
 		return;
 	}
 	sift_granule_ints(&p->gv, gl, lens, isnull);
@@ -512,9 +527,17 @@ begin_layout(SiftF2Pull *p)
 	for (uint32 r = 0; r < p->n; r++)
 	{
 		p->poison[r >> 6] |= (uint64) (tag[r] != 0) << (r & 63);
-		p->doc_valid[r >> 6] |= (uint64) !isnull[r] << (r & 63);
+		gr->doc_valid[r >> 6] |= (uint64) !isnull[r] << (r & 63);
 	}
-	p->n_elems = p->lay.n_elems;
+	gr->n_elems = gr->lay.n_elems;
+}
+
+static void
+begin_layout(SiftF2Pull *p)
+{
+	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
+	for (int g = 0; g < p->spec.ngroups; g++)
+		begin_group(p, g);
 }
 
 static void
@@ -548,17 +571,20 @@ live_poison(const SiftF2Pull *p)
 static bool
 elems_ruled_out(const SiftF2Pull *p)
 {
-	return p->spec.nelem_pred > 0 && p->has_layout && sift_f2_pull_prune_elems(&p->prune, p->g, p->n_elems);
+	return p->spec.nelem_pred > 0 && p->grp[0].has_layout && sift_f2_pull_prune_elems(&p->prune, p->g, p->grp[0].n_elems);
 }
 
-/* no element: every row has an empty array, and the elements are not read; the rows the layout cannot hold are still the consumer's */
+/* no element: every row has empty arrays, and the elements are not read; the rows a layout cannot hold are still the consumer's */
 static void
 empty_layout(SiftF2Pull *p)
 {
 	const uint32 *zeros = palloc0((p->n + 2) * sizeof(uint32));
 
-	p->lay = (SiftArrayLayout) {.n_parents = p->n,.n_elems = 0,.block_elem_off = zeros,.lengths = zeros,.offsets = zeros};
-	p->n_elems = 0;
+	for (int g = 0; g < p->spec.ngroups; g++)
+	{
+		p->grp[g].lay = (SiftArrayLayout) {.n_parents = p->n,.n_elems = 0,.block_elem_off = zeros,.lengths = zeros,.offsets = zeros};
+		p->grp[g].n_elems = 0;
+	}
 }
 
 /*
@@ -568,7 +594,7 @@ empty_layout(SiftF2Pull *p)
 static bool
 begin_granule(SiftF2Pull *p)
 {
-	int			chunks[3 + SIFT_F2_PULL_MAX_COLS + SIFT_F2_PULL_MAX_MASKS + SIFT_F2_PULL_MAX_CHILD];
+	int			chunks[2 + SIFT_F2_PULL_MAX_GROUPS + SIFT_F2_PULL_MAX_COLS + SIFT_F2_PULL_MAX_MASKS + SIFT_F2_PULL_MAX_GROUPS * SIFT_F2_PULL_MAX_CHILD];
 	const SiftDvGran *dg = p->dv != NULL ? sift_dv_granule(p->dv, p->g) : NULL;
 	uint64		dead[SIFT_DV_MASK_WORDS];
 	bool		any_dead = false;
@@ -595,7 +621,7 @@ begin_granule(SiftF2Pull *p)
 	if (dg != NULL)
 		any_dead = sift_dv_mask64(dg, p->snap, dead) > 0;
 	finish_live(p, any_dead ? dead : NULL);
-	if (p->spec.group_leaf >= 0)
+	if (p->spec.ngroups > 0)
 		begin_layout(p);
 	else if (p->spec.poison_rows)
 		begin_rows(p);
@@ -612,11 +638,14 @@ begin_granule(SiftF2Pull *p)
 		p->stats.granules_elem_elided++;
 	}
 	sift_lazy_granule_load(p->index, &p->lg, chunks, body_chunks(p, chunks));
-	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
+	if (p->spec.ngroups > 0 || p->spec.poison_rows)
 		poison_key_rows(p);
-	p->stats.child_chunks += p->n_elems > 0 ? p->spec.nchild : 0;
-	if (p->spec.group_leaf >= 0 && p->has_layout)
-		decode_children(p);
+	for (int g = 0; g < p->spec.ngroups; g++)
+	{
+		p->stats.child_chunks += p->grp[g].n_elems > 0 ? p->spec.group[g].nchild : 0;
+		if (p->grp[g].has_layout)
+			decode_children(p, g);
+	}
 	p->stats.granules_read++;
 	MemoryContextSwitchTo(old);
 	return true;
@@ -643,11 +672,10 @@ begin_slab(SiftF2Pull *p)
 	p->off = 0;
 	p->tids = p->rb->tid;
 	finish_live(p, NULL);
-	p->has_layout = false;
 	p->poison = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
 	memset(p->poison, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
-	p->doc_valid = p->poison;
-	p->n_elems = 0;
+	for (int g = 0; g < Max(p->spec.ngroups, 1); g++)
+		p->grp[g] = (PullGroup) {.doc_valid = p->poison};
 	MemoryContextSwitchTo(old);
 }
 
@@ -854,25 +882,26 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 }
 
 static void
-fill_elems(SiftF2Pull *p, uint16 off, uint16 cnt)
+fill_elems(SiftF2Pull *p, int g, uint16 off, uint16 cnt)
 {
 	static const uint32 zero_offsets[2] = {0, 0};
-	SiftF2ElemStream *es = &p->es;
+	const PullGroup *gr = &p->grp[g];
+	SiftF2ElemStream *es = &p->es[g];
 
-	if (p->has_layout)
-		es->layout = (SiftArrayLayout) {.n_parents = cnt,.n_elems = p->lay.n_elems,.block_elem_off = p->lay.block_elem_off + off / 64,.lengths = p->lay.lengths + off,.offsets = p->lay.offsets + off};
+	if (gr->has_layout)
+		es->layout = (SiftArrayLayout) {.n_parents = cnt,.n_elems = gr->lay.n_elems,.block_elem_off = gr->lay.block_elem_off + off / 64,.lengths = gr->lay.lengths + off,.offsets = gr->lay.offsets + off};
 	else
 		es->layout = (SiftArrayLayout) {.n_parents = 0,.n_elems = 0,.block_elem_off = zero_offsets,.lengths = zero_offsets,.offsets = zero_offsets};
-	es->n_elems = p->n_elems;
-	for (int c = 0; p->has_layout && c < p->spec.nchild; c++)
+	es->n_elems = gr->n_elems;
+	for (int c = 0; gr->has_layout && c < p->spec.group[g].nchild; c++)
 	{
-		es->child_data[c] = p->child_data[c];
-		es->child_valid[c] = p->child_valid[c];
-		es->child_type[c] = p->child_type[c];
-		es->child_dict[c] = p->child_dict[c];
+		es->child_data[c] = gr->child_data[c];
+		es->child_valid[c] = gr->child_valid[c];
+		es->child_type[c] = gr->child_type[c];
+		es->child_dict[c] = gr->child_dict[c];
 	}
 	es->poison = p->poison + off / 64;
-	es->doc_valid = p->doc_valid + off / 64;
+	es->doc_valid = gr->doc_valid + off / 64;
 }
 
 static bool
@@ -926,10 +955,11 @@ sift_f2_pull_next(SiftF2Pull *p)
 	p->slice_off = off;
 	fill_slice(p, off, cnt);
 	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
-	if (p->spec.group_leaf >= 0 || p->spec.poison_rows)
+	if (p->spec.ngroups > 0 || p->spec.poison_rows)
 	{
-		fill_elems(p, off, cnt);
-		p->out.elem = &p->es;
+		for (int g = 0; g < Max(p->spec.ngroups, 1); g++)
+			fill_elems(p, g, off, cnt);
+		p->out.elem = p->es;
 	}
 	return &p->out;
 }

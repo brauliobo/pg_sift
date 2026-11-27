@@ -47,7 +47,7 @@ decide_tests(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 	for (uint32 w = 0; w < words; w++)
 		u->held[w] = u->bs.mask[w] & ~eb->poison[w];
 	elem_vecs(u, eb, ev);
-	sift_v6_row_tests_eval(u->tests, &eb->layout, eb->doc_valid, ev, b->col, u->outer_slot, u->held, u->yes, u->known);
+	sift_v6_row_tests_eval(u->tests, &(SiftV6StreamIn) {.lay = &eb->layout,.doc_valid = eb->doc_valid,.ev = ev}, b->col, u->outer_slot, u->held, u->yes, u->known);
 	for (int k = 0; k < u->ntests; k++)
 	{
 		const SiftV6XTest *xt = &u->x->test[k];

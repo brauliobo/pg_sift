@@ -453,24 +453,28 @@ sift_v6_unnest_doc_leaf(const V6Plan *p, const SiftV6ElemRte *rte, int *leaf)
 }
 
 bool
-sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
+sift_v6_unnest_elem_seed(V6Plan *p, const SiftV6ElemRte *rte, bool left, SiftV6XElem *e, List **names)
 {
-	SiftV6Ext  *x = sift_v6_ext_new();
-	List	   *names = NIL;
 	const char *key = NULL;
 	const int	i = p->is_table ? 0 : rte_column(p, rte, &key);
 
-	if (i < 0)
+	*e = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
+	*names = NIL;
+	return i >= 0 && (p->is_table ? sift_v6_table_elems_seed(p, e, rte, names) :
+					  (rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, e, rte, key, i + 1, names) :
+					  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, e, rte, i + 1) :
+					  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, e, key, i + 1, names) :
+					  rte->fn == SV6E_MEMBERS ? sift_v6_members_seed(p->colrel, e, key, i + 1) : seed_each(p, e, key, i + 1));
+}
+
+bool
+sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left)
+{
+	SiftV6Ext  *x = sift_v6_ext_new();
+
+	if (!sift_v6_unnest_elem_seed(p, rte, left, &x->elem, &x->elem_names))
 		return false;
 	x->unnest = true;
-	x->elem = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
-	if (p->is_table ? !sift_v6_table_elems_seed(p, &x->elem, rte, &names) :
-		!((rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, &x->elem, rte, key, i + 1, &names) :
-		  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, &x->elem, rte, i + 1) :
-		  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, &x->elem, key, i + 1, &names) :
-		  rte->fn == SV6E_MEMBERS ? sift_v6_members_seed(p->colrel, &x->elem, key, i + 1) : seed_each(p, &x->elem, key, i + 1)))
-		return false;
-	x->elem_names = names;
 	x->elem_array = IsA(rte->array, Var) ? NIL : list_make1(copyObject(unconstify(Expr *, rte->array)));
 	p->xseed = x;
 	p->elem_rel = elem_rel;
@@ -538,39 +542,31 @@ value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
-/* the column of the element that column v of the relation of the lateral function or of the sub-select of an EXISTS is */
-static int
-elem_slot(const V6Plan *p, const Var *v)
-{
-	return p->elem_map != NULL ? p->elem_map[v->varattno - 1] : v->varattno - 1;
-}
-
 bool
 sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
 	const Var  *v = (const Var *) e;
-	const SiftV6Ext *x = p->xseed;
+	const SiftV6XElem *el = p->xseed != NULL ? sift_v6_ext_stream(p->xseed, p->elem_stream) : NULL;
 	SiftV6Class cls;
 	int			slot;
 
-	if (x != NULL && x->elem.fn == SV6E_KEYS)
+	if (el != NULL && el->fn == SV6E_KEYS)
 		return sift_v6_mapkey_column(p, e, out);
-	if (p->elem_rel == NULL || x == NULL)
+	if (p->elem_rel == NULL || el == NULL)
 		return false;
-	if (x->elem.fn == SV6E_MEMBERS)
+	if (el->fn == SV6E_MEMBERS)
 		return sift_v6_members_column(p, e, out);
-	if (x->elem.fn >= SV6E_EACH && !IsA(e, Var))
+	if (el->fn >= SV6E_EACH && !IsA(e, Var))
 		return value_column(p, e, out);
-	if (!IsA(e, Var) || v->varno != p->elem_rel->relid || v->varlevelsup != 0 || v->varattno < 1 || v->varattno > x->elem.ncols ||
-		(x->elem.fn >= SV6E_EACH && v->varattno != 1))
+	if (!IsA(e, Var) || v->varno != p->elem_rel->relid || v->varlevelsup != 0 || v->varattno < 1 || v->varattno > el->ncols || (el->fn >= SV6E_EACH && v->varattno != 1))
 		return false;
 	cls = sift_v6_class(v->vartype);
 	if (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL && cls != SV6C_TEXT && cls != SV6C_F64)
 		return false;
-	slot = elem_slot(p, v);
-	if (sift_v6_class(x->elem.col_type[slot]) != cls || (cls == SV6C_I32 && x->elem.col_type[slot] != v->vartype))
+	slot = p->elem_map != NULL ? p->elem_map[v->varattno - 1] : v->varattno - 1;
+	if (sift_v6_class(el->col_type[slot]) != cls || (cls == SV6C_I32 && el->col_type[slot] != v->vartype))
 		return false;
-	*out = (SiftV6Col) {.attno = x->elem.attno,.typid = v->vartype,.src = SV6SRC_ELEM,.slot = slot};
+	*out = (SiftV6Col) {.attno = el->attno,.typid = v->vartype,.src = SV6SRC_ELEM,.slot = slot};
 	return true;
 }
 
@@ -612,43 +608,43 @@ jsonb_cast_fn(Oid type)
 
 /* the columns of the members of jsonb_each and jsonb_each_text: the key and the value, as the function gives them */
 static void
-each_columns(TupleDesc desc, const SiftV6Ext *x)
+each_columns(TupleDesc desc, const SiftV6XElem *e)
 {
 	TupleDescInitEntry(desc, 1, "key", TEXTOID, -1, 0);
-	TupleDescInitEntry(desc, 2, "value", x->elem.fn == SV6E_EACH ? JSONBOID : TEXTOID, -1, 0);
+	TupleDescInitEntry(desc, 2, "value", e->fn == SV6E_EACH ? JSONBOID : TEXTOID, -1, 0);
 }
 
 SiftV6RecFn *
-sift_v6_recfn_new(MemoryContext cx, const SiftV6Ext *x)
+sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	SiftV6RecFn *f = palloc0(sizeof(SiftV6RecFn));
 	int			c = 0;
 	Oid			typinput;
 
-	f->ncols = x->elem.ncols;
-	f->fn = x->elem.fn;
-	f->vread = x->elem.vread;
+	f->ncols = e->ncols;
+	f->fn = e->fn;
+	f->vread = e->vread;
 	f->desc = CreateTemplateTupleDesc(f->fn == SV6E_MEMBERS ? 1 : f->ncols);
-	if (x->elem.fn >= SV6E_EACH)
-		each_columns(f->desc, x);
-	if (x->elem.fn == SV6E_MEMBERS)
+	if (e->fn >= SV6E_EACH)
+		each_columns(f->desc, e);
+	if (e->fn == SV6E_MEMBERS)
 		TupleDescInitEntry(f->desc, 1, "value", JSONBOID, -1, 0);
-	foreach_node(String, n, x->elem_names)
+	foreach_node(String, n, names)
 	{
 		if (f->fn == SV6E_MEMBERS)
 			f->member[c] = cstring_to_text(strVal(n));
 		else
 		{
-			TupleDescInitEntry(f->desc, c + 1, strVal(n), x->elem.col_type[c], -1, 0);
-			TupleDescInitEntryCollation(f->desc, c + 1, sift_v6_class(x->elem.col_type[c]) == SV6C_TEXT ? DEFAULT_COLLATION_OID : InvalidOid);
+			TupleDescInitEntry(f->desc, c + 1, strVal(n), e->col_type[c], -1, 0);
+			TupleDescInitEntryCollation(f->desc, c + 1, sift_v6_class(e->col_type[c]) == SV6C_TEXT ? DEFAULT_COLLATION_OID : InvalidOid);
 		}
 		c++;
 	}
 	for (c = 0; c < f->ncols; c++)
 	{
-		f->type[c] = x->elem.col_type[c];
-		if (!sift_v6_elem_late(&x->elem, c))
+		f->type[c] = e->col_type[c];
+		if (!sift_v6_elem_late(e, c))
 			continue;
 		getTypeInputInfo(f->type[c], &typinput, &f->vio[c]);
 		fmgr_info(typinput, &f->vin[c]);
