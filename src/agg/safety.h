@@ -26,6 +26,8 @@ extern bool agg_query_has_rls(PlannerInfo *root);
 
 /* A PARAM_EXTERN is in the tree: a generic plan keeps it, so no plan-time value, zone proof or constant may stand for it */
 extern bool agg_node_has_extern_param(const Node *node);
+/* A Param of any kind is in the tree: an expression the scan evaluates by itself has no value for it */
+extern bool agg_node_has_param(const Node *node);
 
 /* The expression calls a function that raises for some values of its input (a zero divisor, a negative root, a text that is no number): a plan that evaluates it for rows PostgreSQL's plan never reaches may raise where it does not */
 extern bool agg_node_may_raise(Node *n);

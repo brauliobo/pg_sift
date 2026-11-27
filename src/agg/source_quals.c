@@ -10,21 +10,16 @@
 #include "rewrite/rewriteManip.h"
 
 #include "agg/qual/bqual.h"
+#include "agg/safety.h"
 #include "agg/source_quals.h"
 #include "core/sift.h"
-
-static bool
-has_param(Node *n, void *context)
-{
-	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
-}
 
 static bool
 text_clause(const Node *clause, Index relid)
 {
 	List	   *vars = pull_var_clause((Node *) clause, 0);
 
-	if (vars == NIL || contain_volatile_functions((Node *) clause) || has_param((Node *) clause, NULL))
+	if (vars == NIL || contain_volatile_functions((Node *) clause) || agg_node_has_param((Node *) clause))
 		return false;
 	foreach_ptr(Var, v, vars)
 		if (v->varno != relid || v->varlevelsup != 0 || (v->vartype != TEXTOID && v->vartype != VARCHAROID))

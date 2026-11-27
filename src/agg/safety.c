@@ -114,6 +114,18 @@ agg_node_has_extern_param(const Node *node)
 	return param_walker((Node *) node, NULL);
 }
 
+static bool
+any_param_walker(Node *n, void *context)
+{
+	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, any_param_walker, context));
+}
+
+bool
+agg_node_has_param(const Node *node)
+{
+	return any_param_walker((Node *) node, NULL);
+}
+
 bool
 agg_eflags_rescannable(int eflags)
 {

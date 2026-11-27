@@ -349,7 +349,14 @@ compile_lowered(V6Plan *p, const List *tests)
 	return true;
 }
 
-/* a clause of the WHERE that is none of the special ones: a scan key, a key of the JSON leaves, a batch qual, or tests of the leaves of a document */
+/* the scan of an unnest of a table reads every row it keeps from the heap, where the quals of the statement decide it (sift_v6_unnest_where): a clause the executor evaluates alone needs no scan key there */
+static bool
+heap_decides(const V6Plan *p, const Expr *clause)
+{
+	return p->is_table && p->xseed != NULL && p->xseed->unnest && !contain_subplans((Node *) clause) && !agg_node_has_param((const Node *) clause);
+}
+
+/* a clause of the WHERE that is none of the special ones: a scan key, a key of the JSON leaves, a batch qual, tests of the leaves of a document, or one the heap decides */
 static bool
 compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 {
@@ -362,7 +369,7 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 	else if (jq != NIL)
 		p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
 	else if (!qual_batch(p, ri))
-		return !ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests);
+		return heap_decides(p, ri->clause) || (!ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests));
 	return true;
 }
 

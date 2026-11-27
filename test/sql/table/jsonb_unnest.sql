@@ -40,12 +40,17 @@ INSERT INTO q VALUES
 	(8, $$SELECT i.kind, count(*) FROM tx t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) GROUP BY 1$$),
 	(9, $$SELECT e ->> 'kind', sum((e ->> 'score')::float8) FROM tx t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e GROUP BY 1$$),
 	(10, $$SELECT e ->> 'kind', count(*) FROM tx t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'items') e GROUP BY 1$$),
-	-- an expression of a column of the table and one of the element, and a key of the document, are the normal plan's
+	-- expressions of the columns of the table and of the element are computed on the pairs, and the heap row each pair comes from decides any condition of the table
 	(11, $$SELECT t.qty, sum(t.qty * i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) GROUP BY 1$$),
 	(12, $$SELECT i.kind, sum(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE t.doc ->> 'channel' = 'ch_1' GROUP BY 1$$),
+	(15, $$SELECT coalesce(t.doc ->> 'channel', '-') || '/' || i.kind, count(*), sum(i.score * t.qty) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8)
+		WHERE t.doc ->> 'channel' IN ('ch_1', 'ch_2') OR t.qty IS NULL GROUP BY 1$$),
 	-- a dimension joined to the elements of a table is the normal plan's: the pairs of its rows probe no dimension
 	(13, $$SELECT i.kind, count(*) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = i.kind) GROUP BY 1$$),
 	(14, $$SELECT v, count(*) FROM tj t CROSS JOIN LATERAL unnest(t.tags) v WHERE EXISTS (SELECT 1 FROM kinds k WHERE k.kind = v) GROUP BY 1$$);
+-- the plan the scan has over a table of this size where reading its pages costs what the scan does
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
 SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
 
 DROP TABLE q, tj, tx, kinds;

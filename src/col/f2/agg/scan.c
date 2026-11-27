@@ -43,6 +43,7 @@
 #include "col/f2/store/schema.h"
 #include "core/memtrack.h"
 #include "col/f2/agg/scan_int.h"
+#include "col/f2/agg/unnest/run.h"
 
 /* The JSON type a row holds when the leaf holds its value: a boolean leaf a boolean, a text leaf a string, any other a number */
 static uint8
@@ -96,6 +97,8 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 
 	if (c.derive > 0)
 		c = s->spec->derive[c.derive - 1].src;
+	if (sift_v6_vatt_is_json(c.attno))
+		c = sift_v6_vatt_col(c.attno, c.attno, c.typid, c.scale);
 	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
@@ -292,11 +295,8 @@ static const SiftVec *
 input_col(void *arg, const SiftV6InCol *c, bool takes_nan)
 {
 	const BqCols *b = arg;
-	SiftV6Col	col = {.attno = c->attno,.typid = c->typid,.scale = c->scale};
 
-	if (sift_v6_vatt_is_json(c->attno))
-		col = sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale);
-	return &col_for(b->s, b->first, col, false, takes_nan)->vec;
+	return &col_for(b->s, b->first, (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale}, false, takes_nan)->vec;
 }
 
 static const SiftVec *
@@ -328,18 +328,14 @@ setup_bq(V6Scan *s, const int *first)
 	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols, s->spec->exec);
 }
 
-void
-sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
+/* the keys, arguments, derivations, quals and bins of the spec over the columns of the relation */
+static void
+setup_spec(V6Scan *s, const int *first)
 {
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
 
-	s->defs = defs;
-	s->first = first;
-	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
-	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
-	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < spec->nkeys; i++)
 		if (reads_fact(&spec->key[i]))
 			s->keyvec[i] = &col_for(s, first, spec->key[i], x == NULL && !spec->rows, spec->rows)->vec;
@@ -362,10 +358,6 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 		if (s->derived[k].d->kind == SVD_PG_EXPR)
 			s->derived[k].pg = sift_v6_pgexpr_bind(CurrentMemoryContext, spec, s->derived[k].d, pg_col, &(BqCols) {s, first}, s->derived[k].pgin);
 	for (int i = 0; i < s->ncols; i++)
-		if ((s->cols[i].json || s->cols[i].cls == SV6C_DATUM) && s->batch_cx == NULL)
-			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
-			s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
-	for (int i = 0; i < s->ncols; i++)
 		s->cols[i].by_code = s->cols[i].cls == SV6C_TEXT && !s->cols[i].json && read_by_code_only(spec, s->cols[i].attno);
 	s->bins = palloc0(Max(spec->nbins, 1) * sizeof(V6Bin));
 	for (int b = 0; b < spec->nbins; b++)
@@ -379,6 +371,36 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 		bn->out = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		s->keyvec[bn->key] = &bn->vec;
 	}
+}
+
+static void
+pair_col(void *arg, const SiftV6Col *c, bool month)
+{
+	const BqCols *b = arg;
+
+	col_for(b->s, b->first, *c, false, false);
+}
+
+void
+sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
+{
+	const SiftV6Spec *spec = s->spec;
+	const SiftV6Ext *x = spec->ext;
+	const int	nvec = sift_v6_spec_nvec(spec);
+
+	s->defs = defs;
+	s->first = first;
+	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
+	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
+	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
+	if (x != NULL && x->unnest)
+		sift_v6_unnest_attr_cols(spec, pair_col, &(BqCols) {s, first});
+	else
+		setup_spec(s, first);
+	for (int i = 0; i < s->ncols; i++)
+		if ((s->cols[i].json || s->cols[i].cls == SV6C_DATUM) && s->batch_cx == NULL)
+			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
+			s->batch_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 json exceptions");
 	for (int i = 0; i < s->ncols; i++)
 	{
 		V6Col	   *c = &s->cols[i];
@@ -409,7 +431,7 @@ derive_rows(void *arg, int k, const SiftBatchSel *bs)
 void
 sift_f2_v6_derive_columns(V6Scan *s)
 {
-	const bool	to_group = s->emit == NULL && s->unnest == NULL && s->pipe == NULL;
+	const bool	to_group = s->emit == NULL && s->pipe == NULL;
 
 	sift_v6_derive_batch(to_group ? s->group : NULL, s->nderived, &s->bs, s->argvec, derive_rows, s);
 	if (s->spec->affine)
@@ -548,13 +570,17 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 			return;
 	}
 	sift_f2_v6_refuse_nans(s);
+	if (s->unnest != NULL)
+	{
+		s->stats->rows += s->bs.n_active;
+		sift_v6_unnest_rows_run(s->unnest, s->fact, &s->bs, tid + off);
+		return;
+	}
 	sift_f2_v6_derive_columns(s);
 	sift_f2_v6_bin_keys(s);
 	s->stats->rows += s->bs.n_active;
 	if (s->emit != NULL)
 		s->emit(s->emit_arg, &s->bs, s->keyvec, s->argvec);
-	else if (s->unnest != NULL)
-		sift_v6_unnest_rows_run(s->unnest, s->fact, &s->bs, tid + off);
 	else if (s->pipe != NULL)
 	{
 		if (s->rows != NULL)

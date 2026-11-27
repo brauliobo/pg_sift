@@ -116,35 +116,35 @@ slot_of(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month)
 	return u->attr_slot != NULL ? u->attr_slot(u->attr_arg, c) : col_index(u, r, c, month);
 }
 
-static void
-setup_cols(UnRun *u, const SiftColRel *r)
+void
+sift_v6_unnest_attr_cols(const SiftV6Spec *spec, SiftV6UnnestColFn fn, void *arg)
 {
-	const SiftV6Spec *spec = u->spec;
+	const SiftV6Ext *x = spec->ext;
 
 	for (int i = 0; i < spec->nkeys; i++)
 		if (spec->key[i].src == SV6SRC_ATTR && spec->key[i].derive == 0)
-			col_index(u, r, &spec->key[i], key_is_month(spec, i));
+			fn(arg, &spec->key[i], key_is_month(spec, i));
 	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
 		if (sift_v6_vec_col(spec, v) != NULL && sift_v6_vec_col(spec, v)->src == SV6SRC_ATTR && sift_v6_vec_col(spec, v)->derive == 0 && !is_flag(sift_v6_vec_col(spec, v)))
-			col_index(u, r, sift_v6_vec_col(spec, v), false);
-	for (int d = 0; d < u->x->ndims; d++)
-		for (int k = 0; k < u->x->dim[d].nkeys; k++)
-			if (sift_v6_xdim_key_is_col(&u->x->dim[d], k) && u->x->dim[d].fsrc[k] == SV6SRC_ATTR)
+			fn(arg, sift_v6_vec_col(spec, v), false);
+	for (int d = 0; d < x->ndims; d++)
+		for (int k = 0; k < x->dim[d].nkeys; k++)
+			if (sift_v6_xdim_key_is_col(&x->dim[d], k) && x->dim[d].fsrc[k] == SV6SRC_ATTR)
 			{
-				const SiftV6Col key = sift_v6_xdim_key_col(&u->x->dim[d], k);
+				const SiftV6Col key = sift_v6_xdim_key_col(&x->dim[d], k);
 
-				col_index(u, r, &key, false);
+				fn(arg, &key, false);
 			}
-	for (int i = 0; i < u->x->nrcol; i++)
-		if (u->x->rcol[i].src == SV6SRC_ATTR)
-			col_index(u, r, &u->x->rcol[i], false);
+	for (int i = 0; i < x->nrcol; i++)
+		if (x->rcol[i].src == SV6SRC_ATTR)
+			fn(arg, &x->rcol[i], false);
 	for (int k = 0; k < spec->nderive; k++)
 	{
 		const SiftV6Derive *d = &spec->derive[k];
 
 		for (int c = 0; c <= d->ncond; c++)
 			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
-				col_index(u, r, c == 0 ? &d->src : &d->cond[c - 1], false);
+				fn(arg, c == 0 ? &d->src : &d->cond[c - 1], false);
 		if (d->kind == SVD_PG_EXPR)
 		{
 			SiftV6PgItem it;
@@ -152,12 +152,32 @@ setup_cols(UnRun *u, const SiftColRel *r)
 			sift_v6_pgexpr_item(spec, d, &it);
 			for (int c = 0; c < it.nin; c++)
 				if (it.col[c].src == SV6SRC_ATTR)
-					col_index(u, r, &it.col[c], false);
+					fn(arg, &it.col[c], false);
 		}
 	}
-	for (int i = 0; u->x->where != NIL && i < spec->nfcols; i++)
+	for (int i = 0; x->where != NIL && i < spec->nfcols; i++)
 		if (spec->fcol[i].src == SV6SRC_ATTR && !is_flag(&spec->fcol[i]))
-			col_index(u, r, &spec->fcol[i], false);
+			fn(arg, &spec->fcol[i], false);
+}
+
+typedef struct ColsOf
+{
+	UnRun	   *u;
+	const SiftColRel *r;
+} ColsOf;
+
+static void
+add_col(void *arg, const SiftV6Col *c, bool month)
+{
+	const ColsOf *co = arg;
+
+	col_index(co->u, co->r, c, month);
+}
+
+static void
+setup_cols(UnRun *u, const SiftColRel *r)
+{
+	sift_v6_unnest_attr_cols(u->spec, add_col, &(ColsOf) {u, r});
 	for (int k = 0; k < u->ntests; k++)
 	{
 		for (int c = 0; c < u->x->test[k].ncmps; c++)

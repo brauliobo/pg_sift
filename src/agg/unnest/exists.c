@@ -19,6 +19,8 @@
 #include "core/compat.h"
 #include "agg/plan/int.h"
 #include "agg/ext.h"
+#include "agg/safety.h"
+#include "agg/source_rel.h"
 #include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/unnest/path.h"
@@ -204,12 +206,6 @@ outer_cmp(V6Plan *p, const TestBuilt *b, const OpExpr *op, SiftV6XCmp *out)
 	return true;
 }
 
-static bool
-has_param(Node *n, void *context)
-{
-	return n != NULL && (IsA(n, Param) || expression_tree_walker(n, has_param, context));
-}
-
 /* the quals of the sub-select of an EXISTS over the columns of the elements, and its comparisons with the columns of the row */
 static bool
 exists_quals(V6Plan *p, TestBuilt *b)
@@ -220,7 +216,7 @@ exists_quals(V6Plan *p, TestBuilt *b)
 
 		if (ri->pseudoconstant)
 			return false;
-		if (has_param((Node *) ri->clause, NULL))
+		if (agg_node_has_param((Node *) ri->clause))
 		{
 			SiftV6XCmp	cmp;
 

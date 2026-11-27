@@ -22,6 +22,10 @@ extern void sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation 
  */
 typedef struct UnRun SiftV6UnnestRows;
 
+/* Each column of the table the pairs of spec read (a key with month: its month is the key) */
+typedef void (*SiftV6UnnestColFn) (void *arg, const SiftV6Col *c, bool month);
+extern void sift_v6_unnest_attr_cols(const SiftV6Spec *spec, SiftV6UnnestColFn fn, void *arg);
+
 extern SiftV6UnnestRows *sift_v6_unnest_rows_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Snapshot snap, SiftV6ScanStats *stats, int nfact, const SiftVecType *fact_type,
 												   int (*attr_slot) (void *arg, const SiftV6Col *c), void *attr_arg);
 extern void sift_v6_unnest_rows_run(SiftV6UnnestRows *u, SiftVec *const *fact, const SiftBatchSel *bs, const uint64 *tid);

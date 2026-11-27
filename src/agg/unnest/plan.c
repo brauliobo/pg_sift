@@ -82,11 +82,11 @@ cheapest_first(PlannerInfo *root, List *infos)
 	return ordered;
 }
 
-/* a sift_table's rows reach the pairs as the vectors of its scan, which hold the native classes: no datum, no binning and nothing computed on the pairs */
+/* a sift_table's rows reach the pairs as the vectors of its scan, which hold the native classes: no datum and no binning */
 static bool
 table_rows_ok(const SiftV6Spec *s)
 {
-	if (s->nbins > 0 || s->nderive > 0)
+	if (s->nbins > 0)
 		return false;
 	for (int i = 0; i < s->nkeys; i++)
 		if (s->key[i].src == SV6SRC_ATTR && sift_v6_col_class(&s->key[i]) == SV6C_DATUM)
