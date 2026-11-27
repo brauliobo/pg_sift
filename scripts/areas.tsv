@@ -33,7 +33,7 @@
 ^(sql/|pg_sift[^/]*\.control$|src/core/(guc|sql/)|src/col/am/options)	{fg_sql}
 
 # the whole build and every harness: a change here can break anything
-^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk|dev-targets\.mk))	.
+^(Makefile|BUILD_ID|\.gitattributes|scripts/(build-id|code-id)\.sh|pg_sift[^/]*\.control|sql/pg_sift[^/]*\.sql|src/(core/|compat/|areas\.mk)|scripts/(lsan\.supp|harden\.mk|dev-targets\.mk|testing-regress\.mk))	.
 # the CI machinery: it runs every job, and builds nothing the focused performance gate measures
 ^(scripts/(ci/|(ci|ci-build|pgtest|ccache-env|tap|leakcheck|cpu_time|simd_level|pressure|ci_stats|areas|sha256)\.|leftovers\.(sql|allow)$)|test/t/(lib\.bash|lib_|lib/(common|sql|conc|col|compat|docker|names|twohop|upgrade)\.bash|lib/SiftTest\.pm|SiftTest)|\.github/workflows/ci\.yml|\.github/workflows/ci-pg\.yml)	.|{perf}
 ^test/fixtures/	^tap-shell-(compat/2x_fixture)|{ci}
