@@ -172,7 +172,7 @@ extern SiftTblRel *sift_tbl_rel(Relation rel);
 extern void sift_tbl_refresh(Relation rel, SiftTblRel *st);
 extern void sift_tbl_refresh_full(Relation rel, SiftTblRel *st);
 extern SiftTblSeg *sift_tbl_wbuf_copy(const SiftTblSeg *wbuf, int n, MemoryContext cxt);
-extern bool sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait);
+extern bool sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait, TransactionId oldest);
 /* Lays the relation out when it is empty (idempotent, any backend); a writer calls it before its first access */
 extern void sift_tbl_ensure_init(Relation rel);
 extern uint64 sift_tbl_nvblocks(Relation rel);

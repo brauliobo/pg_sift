@@ -15,6 +15,7 @@
 #include "storage/ipc.h"
 #include "core/cachebudget.h"
 #include "core/maint/maint.h"
+#include "core/wal_conflict.h"
 #include "core/extlock.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -313,13 +314,21 @@ sift_tbl_refresh(Relation rel, SiftTblRel *st)
 	sift_tbl_refresh_full(rel, st);
 }
 
-/* The maintenance lock, and the directory as it is once the lock is held: whoever held it before may have promoted or merged the segments the cache lists */
+/*
+ * The maintenance lock, and the directory as it is once the lock is held: whoever held it before may have promoted or merged the segments the cache lists.
+ * The pass then freezes insertions and drops deletions older than oldest, which a standby snapshot that is not past them still reads otherwise: its replay
+ * ends those snapshots first, as the freeze horizon of a heap VACUUM does (core/wal_conflict.h)
+ */
 bool
-sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait)
+sift_tbl_maint_lock(Relation rel, SiftTblRel *st, bool wait, TransactionId oldest)
 {
+	FullTransactionId horizon = FullTransactionIdFromAllowableAt(ReadNextFullTransactionId(), oldest);
+
 	if (!sift_maint_lock(rel, wait))
 		return false;
 	sift_tbl_refresh(rel, st);
+	FullTransactionIdRetreat(&horizon);
+	(void) sift_wal_snapshot_conflict(rel, InvalidBlockNumber, horizon);
 	return true;
 }
 

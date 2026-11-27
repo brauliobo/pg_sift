@@ -221,7 +221,7 @@ sift_tbl_promote(Relation rel, SiftTblRel *st, TransactionId oldest, bool vacuum
 {
 	int			promoted;
 
-	if (!sift_tbl_maint_lock(rel, st, vacuum))
+	if (!sift_tbl_maint_lock(rel, st, vacuum, oldest))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, vacuum);
 	sift_maint_unlock(rel);
@@ -242,7 +242,7 @@ sift_tbl_settle(Relation rel, SiftTblRel *st, TransactionId oldest, bool wait, i
 {
 	int			promoted;
 
-	if (!sift_tbl_maint_lock(rel, st, wait))
+	if (!sift_tbl_maint_lock(rel, st, wait, oldest))
 		return 0;
 	promoted = promote_sealed(rel, st, oldest, false);
 	(void) sift_tbl_freeze_groups(rel, st, oldest);
