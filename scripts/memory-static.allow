@@ -61,6 +61,7 @@ huge	agg/distinct/distinct.c	1
 huge	bm25/doctext.c	1
 huge	bm25/liveness.c	1
 huge	bm25/postw.c	1
+huge	bm25/wbind.c	2
 huge	bm25/wread.c	4
 huge	col/granule/part/write.c	1
 huge	col/keystore/run.c	1

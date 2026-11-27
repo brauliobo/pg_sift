@@ -243,6 +243,7 @@ doc_hits(SiftPlan *p, const WbufTab *tab, const SiftWbufDoc *d, DocHits *h)
 	{
 		int			li = tab->nexact > 0 ? wbuf_tab_find(p, tab, d->hash[j], t, d->len[j]) : -1;
 
+		CHECK_FOR_INTERRUPTS();
 		for (int k = li; k >= 0; k = tab->next[k])
 		{
 			h->hit[k] = true;
@@ -350,7 +351,7 @@ bind_wbuf(SiftPlan *p)
 			if (p->nmhit == cap)
 			{
 				cap = Max(64, 2 * cap);
-				SIFT_REGROW_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
+				SIFT_REGROW_HUGE_IN(p->mcxt, p->mhit, cap * sizeof(WbufHit));
 			}
 			p->mhit[p->nmhit++] = (WbufHit) {sift_key_from_tid(&doc.tid), 0, p->scoring ? wbuf_tfs(p->mcxt, &doc, &h) : NULL};
 		}
@@ -453,7 +454,7 @@ import_wbuf(SiftPlan *p, const SharedBind *h)
 	p->wbuf_fdocs = h->wbuf_fdocs;
 	memcpy(p->wbuf_fsum, h->wbuf_fsum, sizeof(p->wbuf_fsum));
 	p->nmhit = h->nmhit;
-	p->mhit = MemoryContextAlloc(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
+	p->mhit = MemoryContextAllocHuge(p->mcxt, Max(h->nmhit, 1) * sizeof(WbufHit));
 	for (int64 i = 0; i < h->nmhit; i++, at += sizeof(SharedHit))
 	{
 		SharedHit	sh;
