@@ -153,9 +153,11 @@ typedef struct SiftV1Scan
 struct SiftV6Spec;
 extern SiftV1Scan sift_v1_spec_scan(const SiftV1Scan *scan, const struct SiftV6Spec *spec);
 
-/* The cube reader of an aggregate scan (col/v1_engine/store_ops_preagg.c): NULL when the statement is not one the stored cubes answer or the scan reads fewer rows than a unit's; it lives in cx */
+/* The cube reader of an aggregate scan (col/v1_engine/store_ops_preagg.c): NULL when the statement is not one the stored cubes answer or the scan reads fewer rows than a unit's; it lives in cx.
+ * It folds the units it answers into a->group, or, for a participant of a parallel scan, into the group sift_v1_cube_set_group gives it before each morsel */
 struct SiftSrcFoldArgs;
 extern SiftV1UnitSink *sift_v1_cube_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx);
+extern void sift_v1_cube_set_group(SiftV1UnitSink *sink, struct SiftV6Group *g);
 
 /* The JSON type tests of the scan keys of an index scan (the other keys are the quals sift_srcfold_scankey_quals gives) */
 extern SiftV1Scan sift_v1_key_scan(Relation index, ScanKey keys, int nkeys);

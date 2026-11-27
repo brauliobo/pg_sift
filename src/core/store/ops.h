@@ -286,7 +286,7 @@ typedef struct SiftDictOps
 
 /*
  * 9. Parallel scan: the leader lists the units of the scan once (plan, in memory a DSM chunk holds), the participants read runs of the granules of a unit. begin makes a scan that is
- * not run apart; morsel_begin and morsel are a participant's.
+ * not run apart; morsel_begin and morsel are a participant's. morsel folds what a store answers without rows (its pre-aggregates) into into; with into NULL every row goes to the emit.
  */
 typedef struct SiftStoreParOps
 {

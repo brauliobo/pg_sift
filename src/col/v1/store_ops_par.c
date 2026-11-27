@@ -32,6 +32,7 @@ typedef struct V1ParScan
 	const void *view;
 	SiftSrcFold *fold;
 	SiftV1Scan	key_scan;		/* the JSON type and key tests of the scan keys, which every morsel applies as the serial scan does */
+	SiftV1UnitSink *cube;		/* answers the units of the morsels from their pre-aggregates into the participant's group (NULL: every unit is read) */
 } V1ParScan;
 
 static struct SiftV6Scan *
@@ -80,14 +81,18 @@ par_morsel_begin(struct SiftV6Scan *scan, const uint64 *view, uint32 nview)
 	SiftSrcFoldArgs a = {.spec = s->spec,.stats = s->stats,.emit = s->emit,.emit_arg = s->emit_arg,.host = is_table ? s->heap : s->index,.is_table = is_table,
 		.quals = is_table ? s->quals->clauses : sift_srcfold_scankey_quals(s->index, s->keys, s->nkeys),.estate = is_table ? s->quals->estate : NULL};
 
+	const SiftV1Scan ks = sift_v1_spec_scan(&s->key_scan, s->spec);
+
 	s->view = nview > 0 ? view : NULL;
 	s->fold = sift_srcfold_new(&a, sift_mem_allocset_create(s->cx, "sift v1 parallel fold"));
+	s->cube = sift_v1_cube_begin(&(SiftSrcFoldArgs) {.spec = a.spec,.stats = a.stats,.host = a.host,.is_table = is_table,.quals = a.quals,.estate = a.estate}, &ks, s->cx);
 }
 
 typedef struct V1Morsel
 {
 	const V1ParScan *s;
 	SiftV1Range range;
+	const SiftV1UnitSink *cube;	/* NULL: the morsel has no group, every row goes to the emit of the scan */
 } V1Morsel;
 
 static SiftV6Source *
@@ -98,6 +103,7 @@ open_morsel(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const st
 
 	scan.range = &m->range;
 	scan.texts = texts;
+	scan.cube = m->cube;
 	scan = sift_v1_spec_scan(&scan, m->s->spec);
 
 	return sift_v1_source_open(m->s->cx, m->s->snap, in, quals, &scan);
@@ -107,8 +113,10 @@ static void
 par_morsel(struct SiftV6Scan *scan, struct SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n)
 {
 	V1ParScan  *s = (V1ParScan *) scan;
-	V1Morsel	m = {.s = s,.range = {.view = s->view,.sb_lo = ref->g_base + first,.sb_hi = ref->g_base + first + n}};
+	V1Morsel	m = {.s = s,.range = {.view = s->view,.sb_lo = ref->g_base + first,.sb_hi = ref->g_base + first + n},.cube = into != NULL ? s->cube : NULL};
 
+	if (m.cube != NULL)
+		sift_v1_cube_set_group(s->cube, into);
 	sift_srcfold_run(s->fold, open_morsel, &m);
 }
 

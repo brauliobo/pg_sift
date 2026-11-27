@@ -773,7 +773,7 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	const SiftSrcLayout *lay;
 	SiftV1Cube *c;
 
-	if (a->group == NULL || a->emit != NULL || a->star != NULL || a->gate != NULL || a->stats == NULL || a->spec->nkeys > 1 || !sift_v6_spec_cubeable(a->spec) ||
+	if (a->emit != NULL || a->star != NULL || a->gate != NULL || a->stats == NULL || a->spec->nkeys > 1 || !sift_v6_spec_cubeable(a->spec) ||
 		(scan != NULL && (scan->keep != NULL || scan->bridge != NULL || scan->ntypes > 0 || scan->tid_range)))
 		return NULL;
 	rd = sift_v1_reader_of(a->host->rd_index == NULL);
@@ -793,4 +793,10 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 		return NULL;
 	hist_of(c, lay);
 	return &c->sink;
+}
+
+void
+sift_v1_cube_set_group(SiftV1UnitSink *sink, SiftV6Group *g)
+{
+	((SiftV1Cube *) sink->arg)->group = g;
 }
