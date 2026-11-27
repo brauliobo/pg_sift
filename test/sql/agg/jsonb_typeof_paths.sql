@@ -146,6 +146,11 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',
 	'SELECT count(*) FROM @T WHERE jsonb_typeof(doc->''m'') IS NULL OR grp = 1'
 ]) q;
+-- the text of a key as the argument of a generic aggregate: the scan reads the leaf and PostgreSQL's own function folds the value it gives
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT jsonb_typeof(doc->''a'') AS ty, sum((doc->>''a'')::numeric), max((doc->>''a'')::numeric) FROM @T WHERE jsonb_typeof(doc->''a'') = ''number'' GROUP BY 1',
+	'SELECT grp, string_agg(doc->>''s'', '','' ORDER BY id), array_agg(DISTINCT doc->>''a'') FROM @T GROUP BY grp'
+]) q;
 VACUUM jc;
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT jsonb_typeof(doc->''m'') AS ty, count(*) FROM @T GROUP BY 1',

@@ -949,10 +949,14 @@ sift_v6_gen_compile(V6Plan *p, Aggref *a, SiftV6Agg *out)
 		if (contain_var_clause(d) || !stable_arg((Expr *) d))
 			return NULL;
 	*out = (SiftV6Agg) {.kind = a->aggkind == AGGKIND_NORMAL ? SV6_GEN_PG : SV6_OSA,.restype = a->aggtype};
-	foreach_node(TargetEntry, te, a->args)
+	ref = copyObject(a);
+	foreach_node(TargetEntry, te, ref->args)
+	{
 		if (!stable_arg(te->expr))
 			return NULL;
-	foreach_node(Var, v, argument_vars(a))
+		te->expr = sift_v6_plan_json_vars(p, te->expr, true);
+	}
+	foreach_node(Var, v, argument_vars(ref))
 	{
 		if (col == V6GEN_MAX_COLS || !sift_v6_plan_read_column(p, (Expr *) v, true, col == 0 ? &out->arg : col == 1 ? &out->arg2 : &out->xcol[col - 2]))
 			return NULL;
@@ -961,7 +965,6 @@ sift_v6_gen_compile(V6Plan *p, Aggref *a, SiftV6Agg *out)
 	if (col == 0)
 		return NULL;
 	out->nxcols = Max(col - 2, 0);
-	ref = copyObject(a);
 	foreach_node(TargetEntry, te, ref->args)
 		te->expr = (Expr *) attribute_of((Node *) te->expr, &p->gen_vars);
 	record_plan_function_dependency(p->root, a->aggfnoid);
