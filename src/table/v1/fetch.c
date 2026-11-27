@@ -322,13 +322,13 @@ sift_tbl_filter_page(IndexFetchTableData *fetch, Snapshot snapshot, BlockNumber 
 	return sift_tbl_filter_page_vers(fetch->rel, &f->ss, vblock, offmask, true);
 }
 
-bool
-sift_tbl_has_chains(Relation rel)
+const SiftTombLog *
+sift_tbl_chains(Relation rel)
 {
 	SiftTblRel *st = sift_tbl_rel(rel);
 
 	sift_tomb_sync(rel, &st->tomb);
-	return sift_tomb_has_hot(&st->tomb);
+	return sift_tomb_has_hot(&st->tomb) ? &st->tomb : NULL;
 }
 
 void

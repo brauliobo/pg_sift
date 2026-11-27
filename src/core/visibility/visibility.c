@@ -571,7 +571,7 @@ page_cache_entry(SiftVis *v, BlockNumber blk, bool *found)
 bool
 sift_vis_has_chains(Relation heap)
 {
-	return sift_tbl_is_table(heap) && sift_tbl_has_chains(heap);
+	return sift_tbl_is_table(heap) && sift_tbl_chains(heap) != NULL;
 }
 
 void

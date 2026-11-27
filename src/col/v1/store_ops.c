@@ -596,28 +596,6 @@ batch_fill(SiftV1Src *s)
 	return n;
 }
 
-/* only the rows the bridge holds, the scores of its hits in the score column */
-static bool
-bridge_narrow(SiftV1Src *s, SiftV6Batch *b)
-{
-	const int	words = (b->n + 63) / 64;
-	uint64		live[SIFT_VEC_WORDS];
-
-	memset(live, 0xFF, words * sizeof(uint64));
-	if (b->n & 63)
-		live[words - 1] = (UINT64CONST(1) << (b->n & 63)) - 1;
-	if (sift_tidbridge_probe_vec(s->bridge, b->tag, live, b->n, s->kept, s->score) == 0)
-		return false;
-	if (s->score_col >= 0)
-	{
-		for (int r = 0; r < b->n; r++)
-			((double *) s->data[s->score_col])[r] = s->score[r];
-		memcpy(s->valid[s->score_col], live, words * sizeof(uint64));
-	}
-	b->mask = s->kept;
-	return true;
-}
-
 /* the elements of the rows the batch keeps, from the leaves of the unit it is of (a batch of a source that reads elements never spans two) */
 static void
 fill_elems(SiftV1Src *s, const SiftV6Batch *b)
@@ -637,7 +615,7 @@ next_batch(SiftV1Src *s, SiftV6Batch *out)
 	while ((n = batch_fill(s)) > 0)
 	{
 		*out = (SiftV6Batch) {.n = (uint16) n,.col = s->vec,.masks = s->masks,.tag = s->tag};
-		if (s->bridge != NULL && !bridge_narrow(s, out))
+		if (s->bridge != NULL && !sift_v1_src_bridge_narrow(s, out))
 			continue;
 		if (s->quals != NULL)
 		{
@@ -929,12 +907,12 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->batch_cx = sift_mem_allocset_create(cx, "sift v1 source batch");
 	s->in = *in;
 	s->snap = snap;
-	s->bridge = scan->bridge;
 	s->cube = scan->cube;
 	s->tid_range = scan->tid_range;
 	s->tid_lo = scan->tid_lo;
 	s->tid_hi = scan->tid_hi;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
+	sift_v1_src_bridge_begin(s, scan->bridge);
 	s->rd = sift_v1_reader_of(in->is_table);
 	s->lay = s->rd->layout(in->is_table ? s->rels.heap : s->rels.rel);
 	bind_columns(s);

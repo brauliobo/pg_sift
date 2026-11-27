@@ -206,27 +206,14 @@ batch_live(const SiftV6Batch *b, uint64 *live)
 		live[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
 }
 
-static const uint64 *
-batch_tids(const HybScan *h, const SiftV6Batch *b)
-{
-	uint64	   *root;
-
-	if (h->hot == NULL)
-		return b->tag;
-	root = palloc(Max(b->n, 1) * sizeof(uint64));
-	for (int r = 0; r < b->n; r++)
-		for (root[r] = b->tag[r]; sift_tomb_hot_pred(h->hot, root[r], &root[r]);)
-			;
-	return root;
-}
-
 static void
 scan_batch(const HybScan *h, const SiftV6Batch *b, void (*sink) (void *arg, const SiftHybridBatch *batch), void *arg)
 {
 	uint64		live[SIFT_VEC_WORDS],
 				kept[SIFT_VEC_WORDS];
 	float4		score[SIFT_VEC_LEN];
-	SiftHybridBatch hb = {.tid = batch_tids(h, b),.live = live,.n = b->n,.exact_vis = true};
+	uint64		root[SIFT_VEC_LEN];
+	SiftHybridBatch hb = {.tid = sift_tomb_hot_roots(h->hot, b->tag, b->n, root),.live = live,.n = b->n,.exact_vis = true};
 
 	batch_live(b, live);
 	if (h->s->bridge != NULL)
@@ -257,8 +244,7 @@ hybrid_scan(const SiftHybridScan *s, void (*sink) (void *arg, const SiftHybridBa
 	scan_columns(&h, lay);
 	scan_quals(&h, cx);
 	src = sift_v1_source_open(cx, s->snap, &h.in, h.source_quals ? &h.quals : NULL, NULL);
-	if (s->index == NULL && sift_tomb_has_hot(&sift_tbl_rel(r.rel)->tomb))
-		h.hot = &sift_tbl_rel(r.rel)->tomb;
+	h.hot = s->index == NULL ? sift_tbl_chains(r.rel) : NULL;
 	while (src->next(src, &b))
 	{
 		MemoryContextSwitchTo(batch_cx);

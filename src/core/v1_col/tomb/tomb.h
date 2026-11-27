@@ -286,6 +286,18 @@ extern bool sift_tomb_any(const SiftTombLog *t, uint64 lo, uint64 hi);
 /* Is the version a member of a chain (the next of a HOT update: no index has an entry for it); *pred: the version the update was of */
 extern bool sift_tomb_hot_pred(const SiftTombLog *t, uint64 key, uint64 *pred);
 #define sift_tomb_hot_member(t, key)	sift_tomb_hot_pred((t), (key), NULL)
+
+/* The n tags as the indexes of the table name their rows, the root of the HOT chain a row is a version of (in out): tag itself without a log of chains */
+static inline const uint64 *
+sift_tomb_hot_roots(const SiftTombLog *t, const uint64 *tag, int n, uint64 *out)
+{
+	if (t == NULL)
+		return tag;
+	for (int r = 0; r < n; r++)
+		for (out[r] = tag[r]; sift_tomb_hot_pred(t, out[r], &out[r]);)
+			;
+	return out;
+}
 /*
  * The offsets of the rows of block a HOT update entry names, as bits (SIFT_OFFMASK_WORDS words). pos: two indexes (the main and the recent array of the log)
  * of a walk over ascending blocks, zeroed at its start; NULL looks each block up alone

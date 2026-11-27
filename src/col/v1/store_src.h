@@ -13,6 +13,7 @@
 #include "col/v1/reader.h"
 #include "col/v1/store_ops.h"
 #include "core/tidbridge.h"
+#include "core/v1_col/tomb/tomb.h"
 #include "table/v1/rel.h"
 
 /* A text qual of the fold over a dictionary leaf: pass holds, for the strings of dictionary dict, whether each passes it */
@@ -74,6 +75,7 @@ typedef struct SiftV1Src
 	int			pos;
 	SiftV6Vexpr *quals;
 	const SiftTidBridge *bridge;
+	const SiftTombLog *hot;		/* a sift_table with HOT chains: the bridge holds a row by the TID of its chain's root */
 	const SiftV1UnitSink *cube;
 	bool		tid_range;		/* SiftV1Scan.tid_range */
 	uint64		tid_lo;
@@ -113,6 +115,11 @@ extern bool sift_v1_src_fetch(SiftV6Source *base, uint64 tag, const AttrNumber *
 
 /* The heap row of tag into fslot: the version the snapshot sees of the chain an index entry names, or the row of a sift_table; false when it sees none */
 extern bool sift_v1_src_fetch_row(SiftV1Src *s, uint64 tag);
+
+/* The text bridge of the scan, which names a row of a sift_table by the root of its HOT chain (col/v1_engine/store_ops_bridge.c) */
+extern void sift_v1_src_bridge_begin(SiftV1Src *s, const SiftTidBridge *bridge);
+/* Narrows the mask of b to the rows the bridge holds, the scores of its hits in the score column; false when none is left */
+extern bool sift_v1_src_bridge_narrow(SiftV1Src *s, SiftV6Batch *b);
 
 /* Narrows the mask of b to the rows whose heap row's ctid is in the range of the scan; false when none is left */
 extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);

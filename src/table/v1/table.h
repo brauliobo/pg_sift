@@ -249,8 +249,8 @@ extern bool sift_tbl_load_vblock_in(Relation rel, SiftTblSeg *segs, int nsegs, B
 extern void sift_tbl_rowver(SiftTblRowVer *rv, ItemPointer tid, const SiftTblRec *rec);
 extern void sift_tbl_rowver_tuple(Relation rel, SiftTblRowVer *rv, const SiftTblRec *rec, uint64 gen, ItemPointer tid);
 /* Clears the bits of offmask (bit i: offset i + 1, SIFT_OFFMASK_WORDS words of 64) whose row is not visible to snapshot; returns the bits left */
-/* Does the table have HOT chains (as the log this backend has read tells) */
-extern bool sift_tbl_has_chains(Relation rel);
+/* The log of the table's HOT chains as this backend has read it, NULL when it holds none */
+extern const SiftTombLog *sift_tbl_chains(Relation rel);
 typedef void (*SiftTblKeyFn) (void *arg, uint64 key);
 /* Calls fn with the key of every member of the HOT chain of each row of vblock that offmask names: a search match is the root's, the table's own scans see the members. pos: as sift_tomb_hot_offsets, for the vblocks of a search in ascending order */
 extern void sift_tbl_chain_members(Relation rel, uint32 *pos, BlockNumber blk, const uint64 *offmask, SiftTblKeyFn fn, void *arg);

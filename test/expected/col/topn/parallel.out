@@ -328,9 +328,9 @@ SELECT * FROM pw_fuzz('table', 26, 14, 'pwt');
 UPDATE pwt SET k_rand = -3, k_band = 999999 WHERE id % 1500 = 0;
 INSERT INTO pwt (g, k_clu, k_band, k_rand, k_mix, f, memo) SELECT i % 5, 200000 + i, i, i, i % 50, i, 'beta red' FROM generate_series(1, 120) i;
 SELECT * FROM pw_fuzz('table, written', 27, 14, 'pwt');
-     stage      | queries | different | mostly_parallel |                                      first_different                                      
-----------------+---------+-----------+-----------------+-------------------------------------------------------------------------------------------
- table, written |      14 |         1 | f               | SELECT k_clu FROM pwt WHERE memo @@> 'beta' ORDER BY k_clu NULLS FIRST LIMIT 100 OFFSET 0
+     stage      | queries | different | mostly_parallel | first_different 
+----------------+---------+-----------+-----------------+-----------------
+ table, written |      14 |         0 | f               | 
 (1 row)
 
 DROP TABLE pwt, pw;
