@@ -46,8 +46,6 @@ typedef struct TopSrc
 	TopPartition *partitions;
 	int			nleaves;
 	int			leaves[SIFT_V6_MAX_COLS + SIFT_V6_MAX_MASKS + 2 * SIFT_KEY_ORDER_MAX + SIFT_TOURN_MAX_KEYS];
-	uint64		cand[SIFT_GRANULE_ROWS / 64 + 1];
-	uint64		pass[SIFT_GRANULE_ROWS / 64 + 1];
 } TopSrc;
 
 static const SiftTournBound unknown_bound;
@@ -339,7 +337,7 @@ key_of(const ColView *v, int r)
 
 /* A row whose leading key is worse than theta cannot be among the winners */
 static void
-drop_worse_than_theta(TopSrc *s, SiftTournament *t, const F2V6Gran *g)
+drop_worse_than_theta(TopSrc *s, SiftTournament *t, const F2V6Gran *g, uint64 *cand)
 {
 	const ColView *v = &g->views[s->key_leaf[0]];
 	const SiftTournKey *o = &s->spec.order[0];
@@ -350,14 +348,14 @@ drop_worse_than_theta(TopSrc *s, SiftTournament *t, const F2V6Gran *g)
 		return;
 	for (int r = 0; r < g->n; r++)
 		if (!v->isnull[r] && (o->desc ? key_of(v, r) < th : key_of(v, r) > th))
-			s->cand[r >> 6] &= ~(UINT64CONST(1) << (r & 63));
+			cand[r >> 6] &= ~(UINT64CONST(1) << (r & 63));
 }
 
 static void
-offer(TopSrc *s, SiftTournament *t, const F2V6Gran *g, uint32 slot, uint32 granule)
+offer(TopSrc *s, SiftTournament *t, const F2V6Gran *g, const uint64 *pass, uint32 slot, uint32 granule)
 {
 	for (int w = 0; w < (g->n + 63) / 64; w++)
-		for (uint64 bits = s->pass[w]; bits != 0; bits &= bits - 1)
+		for (uint64 bits = pass[w]; bits != 0; bits &= bits - 1)
 		{
 			const int	r = w * 64 + __builtin_ctzll(bits);
 			SiftTopNWinRow row = {.tid = g->tid[r],.part_slot = slot,.local_g = (uint16) granule,.row_ord = (uint16) r};
@@ -379,6 +377,7 @@ top_scan(void *src, SiftTournament *t, const SiftTopNSchedTok *tok)
 	TopSrc	   *s = src;
 	MemoryContext old;
 	F2V6Gran	g;
+	uint64	   *pass;
 
 	MemoryContextReset(s->gcx);
 	old = MemoryContextSwitchTo(s->gcx);
@@ -386,10 +385,10 @@ top_scan(void *src, SiftTournament *t, const SiftTopNSchedTok *tok)
 		f2v6_slab(s->c, &s->c->plan->partitions[tok->part_slot], partition_of(s, tok->part_slot)->px, false, s->leaves, s->nleaves, &g);
 	else
 		f2v6_granule(s->c, part_of(s, tok->part_slot, tok->part_idx)->part, tok->local_g, s->leaves, s->nleaves, &g);
-	memcpy(s->cand, g.live, (g.n + 63) / 64 * sizeof(uint64));
-	drop_worse_than_theta(s, t, &g);
-	if (sift_f2_v6_eval_rows(s->ev, &g, s->cand, s->pass) > 0)
-		offer(s, t, &g, tok->part_slot, tok->kind == STOK_L0_SLAB ? 0 : tok->local_g);
+	pass = palloc((g.n + 63) / 64 * sizeof(uint64));
+	drop_worse_than_theta(s, t, &g, g.live);
+	if (sift_f2_v6_eval_rows(s->ev, &g, g.live, pass) > 0)
+		offer(s, t, &g, pass, tok->part_slot, tok->kind == STOK_L0_SLAB ? 0 : tok->local_g);
 	MemoryContextSwitchTo(old);
 }
 
