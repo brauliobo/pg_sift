@@ -1,7 +1,6 @@
--- = <> IN and NOT IN of a uuid, bytea, inet, cidr, macaddr, macaddr8, bit or varbit column are tests of the stored image, run in the source like the
--- numeric and money ones (a unit whose dictionary lacks the constant is skipped): the rows are those of the normal plan, with duplicates, NULLs, the empty and
--- the zero byte values, a mask length that makes two values of one address, both families, constants of a list that are NULL or absent. An OR, an ordering
--- operator and an array of an image type stay with the executor.
+-- = <> IN and NOT IN of a uuid, bytea, inet, cidr, macaddr, macaddr8, bit or varbit column, an OR, a NULL test, an ordering operator, an array of an image type
+-- and a cast are filters of SiftAggV6: the rows are those of the normal plan, with duplicates, NULLs, the empty and the zero byte values, a mask length that makes
+-- two values of one address, both families, constants of a list that are NULL or absent.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -67,35 +66,24 @@ SELECT name FROM im_q WHERE outcome(q, true) <> outcome(q, false) ORDER BY name;
 ------
 (0 rows)
 
--- the conjuncts are tests of the source ("Wide Filters In Source"), and so are the branches of an OR (the source gives the rows each passes); a test of a NULL, an ordering operator, an array column and a cast stay with the executor
-CREATE FUNCTION source_tests(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0;
+-- SiftAggV6 answers every statement and lists its condition under Filters
+CREATE FUNCTION filtered(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; scan bool := false; f bool := false;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ '(\d+) wide filters in source' THEN n := substring(l from '(\d+) wide filters in source')::int; END IF;
+		scan := scan OR l ~ 'Custom Scan \(SiftAggV6';
+		f := f OR l ~ '^ *Filters: ';
 	END LOOP;
-	RETURN n;
+	RETURN scan AND f;
 END $$;
-SELECT name FROM im_q WHERE name ~ ' (eq|ne|commuted|and|in one|not in one|in null|not in null)$' AND source_tests(q) <> 1
-   OR name IN ('u in list', 'u not in list', 'u in array', 'u absent', 'b empty', 'b in empty and zero', 'i family 6', 'i mask', 'bt wrong length') AND source_tests(q) <> 1
-   OR name = 'two images' AND source_tests(q) <> 2 ORDER BY name;
+SELECT name FROM im_q WHERE NOT filtered(q) ORDER BY name;
  name 
 ------
 (0 rows)
 
-SELECT name FROM im_q WHERE name ~ '^[a-z0-9]+ or$' AND source_tests(q) <> 1 ORDER BY name;
- name 
-------
-(0 rows)
-
-SELECT name FROM im_q WHERE (name ~ '^[a-z0-9]+ null$' OR name IN ('uuid array column', 'ordering', 'timetz-free text compare')) AND source_tests(q) <> 0 ORDER BY name;
- name 
-------
-(0 rows)
-
-DROP FUNCTION source_tests(text);
+DROP FUNCTION filtered(text);
 DROP FUNCTION outcome(text, bool), pushed(text), runq(text, bool), runs_in_scan(text);
 DROP TABLE im_q, im;
 DROP EXTENSION pg_sift;
