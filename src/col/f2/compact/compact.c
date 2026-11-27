@@ -111,44 +111,58 @@ bits_dead(const DeadBits bits, uint32 g, uint16 row)
 	return bits != NULL && bits[g] != NULL && ((bits[g][row >> 6] >> (row & 63)) & 1) != 0;
 }
 
-/* settle: the rows whose deleter committed before the horizon are dead plain (raising *stripped), those whose deleter aborted are alive, and a deleter that is not settled stops it (*unsettled) */
+/* Sets the bits of the dead rows of dg; settle: the rows whose deleter committed before the horizon are dead plain (raising *stripped), those whose deleter aborted are alive, and a
+ * deleter that is not settled stops it (false) */
+static bool
+gran_bits(const SiftDvGran *dg, DeadBits bits, const uint16 *grows, bool settle, SiftXidHorizonCache *hc, FullTransactionId *stripped)
+{
+	for (int r = 0; r < dg->ndead; r++)
+	{
+		TransactionId x = dg->xmax[r].xmax;
+
+		if (settle && TransactionIdIsValid(x))
+		{
+			if (!sift_xid_horizon_older(hc, x))
+				return false;
+			switch (sift_xid_horizon_status(hc, x))
+			{
+				case SIFT_H_COMMITTED_OLD:
+					*stripped = sift_fxid_max(*stripped, sift_xid_fxid_at(hc->next, x));
+					break;
+				case SIFT_H_ABORTED:
+					continue;
+				default:
+					return false;
+			}
+		}
+		if (bits[dg->granule_id] == NULL)	/* check-memory: allow one bit for each row of one granule, at most 8192 rows */
+			bits[dg->granule_id] = palloc0(((grows[dg->granule_id] + 63) / 64) * sizeof(uint64));
+		bits[dg->granule_id][dg->rows[r] >> 6] |= UINT64CONST(1) << (dg->rows[r] & 63);
+	}
+	return true;
+}
+
+/* The bits of the vector of part d read a granule at a time: its stream and one granule are held (measured in mem, may be NULL), not its rows; *unsettled: a deleter stopped it */
 static DeadBits
-bits_of(const SiftDv *dv, uint32 ngranules, const uint16 *grows, bool settle, SiftXidHorizonCache *hc, FullTransactionId *stripped, bool *unsettled)
+bits_of(Relation rel, const SiftPartDesc *d, uint32 ngranules, const uint16 *grows, bool settle, SiftXidHorizonCache *hc, FullTransactionId *stripped, bool *unsettled,
+		SiftMemTracker *mem)
 {
 	DeadBits	bits = palloc0(Max(ngranules, 1) * sizeof(uint64 *));
+	SiftDvWalk	w;
+	SiftDvGran	dg;
+	bool		settled = true;
 
-	for (int i = 0; i < dv->ndirty; i++)
+	sift_dv_walk_begin(&w, rel, d, grows);
+	while (settled && sift_dv_walk_next(&w, &dg))
 	{
-		const SiftDvGran *dg = &dv->gran[i];
-
-		for (int r = 0; r < dg->ndead; r++)
-		{
-			TransactionId x = dg->xmax[r].xmax;
-
-			if (settle && TransactionIdIsValid(x))
-			{
-				if (!sift_xid_horizon_older(hc, x))
-				{
-					*unsettled = true;
-					return bits;
-				}
-				switch (sift_xid_horizon_status(hc, x))
-				{
-					case SIFT_H_COMMITTED_OLD:
-						*stripped = sift_fxid_max(*stripped, sift_xid_fxid_at(hc->next, x));
-						break;
-					case SIFT_H_ABORTED:
-						continue;
-					default:
-						*unsettled = true;
-						return bits;
-				}
-			}
-			if (bits[dg->granule_id] == NULL)	/* check-memory: allow one bit for each row of one granule, at most 8192 rows */
-				bits[dg->granule_id] = palloc0(((grows[dg->granule_id] + 63) / 64) * sizeof(uint64));
-			bits[dg->granule_id][dg->rows[r] >> 6] |= UINT64CONST(1) << (dg->rows[r] & 63);
-		}
+		settled = gran_bits(&dg, bits, grows, settle, hc, stripped);
+		if (mem != NULL)
+			(void) sift_mem_used(mem);
+		sift_dv_gran_free(&dg);
 	}
+	sift_dv_walk_end(&w);
+	if (!settled)
+		*unsettled = true;
 	return bits;
 }
 
@@ -397,15 +411,9 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		grows[g] = dir[g].nrows;
 	if (d->dv_blk != InvalidBlockNumber)
 	{
-		MemoryContext vector_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact vector");
-		MemoryContext keep = MemoryContextSwitchTo(vector_cx);
-		SiftDv	   *dv = sift_dv_read(rel, d, part_id, grows);
 		bool		unsettled = false;
 
-		(void) sift_mem_used(sink->mem);
-		MemoryContextSwitchTo(keep);
-		dead = bits_of(dv, part->hdr.ngranules, grows, true, hc, &res->stripped, &unsettled);
-		MemoryContextDelete(vector_cx);
+		dead = bits_of(rel, d, part->hdr.ngranules, grows, true, hc, &res->stripped, &unsettled, sink->mem);
 		if (unsettled)
 		{
 			MemoryContextDelete(granule_cx);
@@ -527,15 +535,7 @@ read_inputs(Relation rel, uint64 part_id, const SiftPartDesc *parts, int nparts,
 			in[i].remap = store->host->build_col_remap(store, rel, part, CurrentMemoryContext);
 		MemoryContextDelete(icx);
 		if (found->dv_blk != InvalidBlockNumber)
-		{
-			MemoryContext vector_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact vector");
-			MemoryContext keep = MemoryContextSwitchTo(vector_cx);
-			SiftDv	   *dv = sift_dv_read(rel, found, (uint32) part_id, in[i].grows);
-
-			MemoryContextSwitchTo(keep);
-			in[i].dead = bits_of(dv, in[i].ngranules, in[i].grows, false, NULL, NULL, NULL);
-			MemoryContextDelete(vector_cx);
-		}
+			in[i].dead = bits_of(rel, found, in[i].ngranules, in[i].grows, false, NULL, NULL, NULL, NULL);
 	}
 	sift_part_gen_idx_free(&by_gen);
 	return in;

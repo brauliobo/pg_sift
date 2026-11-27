@@ -171,6 +171,31 @@ extern SiftDv *sift_dv_deserialize(Relation rel, const char *bytes, uint32 len, 
 extern SiftDv *sift_dv_settle(const SiftDv *dv, FullTransactionId horizon, FullTransactionId *stripped);
 
 /*
+ * The dead rows of the vector of a part one granule at a time, ascending, the delta tail merged: what a reader that needs each granule once holds is the stream and one granule, not
+ * the rows of the part. next fills g (its rows and deleters the caller's: sift_dv_gran_free) and says the entry of the stream it came from (ent, NULL for a granule of the tail alone) and
+ * whether the tail added rows (patched); false once every granule was given.
+ */
+typedef struct SiftDvWalk
+{
+	Relation	rel;
+	const SiftPartDesc *desc;
+	const uint16 *granule_rows;
+	const char *bytes;
+	uint32		len;
+	uint32		base_len;
+	uint32		e;
+	int			t;
+	SiftDv	   *tail;
+	const SiftDvGranuleEntry *ent;
+	bool		patched;
+} SiftDvWalk;
+
+extern void sift_dv_walk_begin(SiftDvWalk *w, Relation rel, const SiftPartDesc *desc, const uint16 *granule_rows);
+extern bool sift_dv_walk_next(SiftDvWalk *w, SiftDvGran *g);
+extern void sift_dv_walk_end(SiftDvWalk *w);
+extern void sift_dv_gran_free(SiftDvGran *g);
+
+/*
  * The vector of a part as the stream it was read from, a granule decoded when asked: what a delete merges its marks into, so that what it holds is the stream (a few bytes for a granule that
  * is all dead or has one deleter) and not the rows it stands for. The rows of an aborted delete are alive in it (a delete that follows marks them again): *unaborted says whether there were any.
  */

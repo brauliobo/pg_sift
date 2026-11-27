@@ -454,11 +454,73 @@ gran_unabort(SiftDvGran *g, SiftXidHorizonCache *hc)
 	return true;
 }
 
-static void
-gran_free(SiftDvGran *g)
+void
+sift_dv_gran_free(SiftDvGran *g)
 {
 	pfree(g->rows);
 	pfree(g->xmax);
+}
+
+/* ---- one granule at a time ---- */
+
+void
+sift_dv_walk_begin(SiftDvWalk *w, Relation rel, const SiftPartDesc *desc, const uint16 *granule_rows)
+{
+	SiftDvHorizon hz;
+	const char *why;
+
+	*w = (SiftDvWalk) {.rel = rel,.desc = desc,.granule_rows = granule_rows,.tail = palloc0(sizeof(SiftDv))};
+	w->bytes = read_stream(rel, desc, &w->len);
+	w->tail->gran = palloc0(sizeof(SiftDvGran));
+	why = sift_dvd_check_stream(w->bytes, w->len, desc->part_gen, desc->dv_gen, &w->base_len);
+	if (why == NULL && w->base_len < w->len)
+	{
+		sift_dvd_horizon_open(&hz);
+		why = sift_dvd_read_tail(w->tail, w->bytes, w->base_len, w->len, granule_rows, ((const SiftDvHeaderData *) w->bytes)->ngranules, &hz.ops);
+	}
+	if (why != NULL)
+		SIFT_SEG_CORRUPT(rel, desc->part_gen, "The deletion vector %llu is damaged: %s.", (unsigned long long) desc->dv_gen, why);
+}
+
+bool
+sift_dv_walk_next(SiftDvWalk *w, SiftDvGran *g)
+{
+	const SiftDvHeaderData *h = (const SiftDvHeaderData *) w->bytes;
+	const SiftDvGranuleEntry *ent = (const SiftDvGranuleEntry *) (w->bytes + sizeof(*h));
+	const SiftDv *tail = w->tail;
+	uint32		e = w->e,
+				gid;
+	int			t = w->t;
+	const char *why = NULL;
+
+	if (e == h->ndirty_granules && t == tail->ndirty)
+		return false;
+	gid = e == h->ndirty_granules ? tail->gran[t].granule_id : t == tail->ndirty ? ent[e].granule_id : Min(ent[e].granule_id, tail->gran[t].granule_id);
+	w->ent = e < h->ndirty_granules && ent[e].granule_id == gid ? &ent[w->e++] : NULL;
+	w->patched = t < tail->ndirty && tail->gran[t].granule_id == gid;
+	*g = (SiftDvGran) {.granule_id = gid,.granule_rows = w->granule_rows[gid],.rows = palloc(1),.xmax = palloc(1)};
+	if (w->ent != NULL)
+	{
+		pfree(g->rows);
+		pfree(g->xmax);
+		why = sift_dvd_read_granule(g, w->ent, w->ent > ent ? w->ent - 1 : NULL, h, w->bytes, w->base_len, w->granule_rows);
+	}
+	if (why != NULL)
+		SIFT_SEG_CORRUPT(w->rel, w->desc->part_gen, "The deletion vector %llu is damaged: %s.", (unsigned long long) w->desc->dv_gen, why);
+	if (w->patched)
+		sift_dvd_gran_union(g, &tail->gran[w->t++]);
+	return true;
+}
+
+void
+sift_dv_walk_end(SiftDvWalk *w)
+{
+	for (int i = 0; i < w->tail->ndirty; i++)
+		sift_dv_gran_free(&w->tail->gran[i]);
+	pfree(w->tail->gran);
+	pfree(w->tail);
+	if (w->bytes != NULL)
+		pfree((char *) w->bytes);
 }
 
 /* The granule, one at a time, so that what is held is the stream, a few bytes for a granule that is all dead or has one deleter, and not the rows it stands for: the granules that the delta tail names
@@ -467,65 +529,29 @@ SiftDvImage *
 sift_dv_image_read(Relation rel, const SiftPartDesc *desc, const uint16 *granule_rows, bool *unaborted)
 {
 	SiftDvImage *img = palloc0(sizeof(SiftDvImage));
-	SiftDv	   *tail = palloc0(sizeof(SiftDv));
-	SiftDvHorizon hz;
 	SiftXidHorizonCache hc;
-	uint32		len,
-				e = 0;
-	int			t = 0;
-	const char *why;
+	SiftDvWalk	w;
+	SiftDvGran	g;
 
-	img->bytes = read_stream(rel, desc, &len);
-	why = sift_dvd_check_stream(img->bytes, len, desc->part_gen, desc->dv_gen, &img->base_len);
-	if (why == NULL)
+	sift_dv_walk_begin(&w, rel, desc, granule_rows);
+	sift_xid_horizon_init(&hc, InvalidFullTransactionId);
+	img->bytes = w.bytes;
+	img->base_len = w.base_len;
+	img->g = palloc((((const SiftDvHeaderData *) w.bytes)->ndirty_granules + w.tail->ndirty + 1) * sizeof(ImageGran));
+	*unaborted = false;
+	while (sift_dv_walk_next(&w, &g))
 	{
-		const SiftDvHeaderData *h = (const SiftDvHeaderData *) img->bytes;
-		const SiftDvGranuleEntry *ent = (const SiftDvGranuleEntry *) (img->bytes + sizeof(*h));
+		bool		dropped = gran_unabort(&g, &hc),
+					whole = !w.patched && !dropped;
 
-		sift_dvd_horizon_open(&hz);
-		sift_xid_horizon_init(&hc, InvalidFullTransactionId);
-		tail->gran = palloc0(sizeof(SiftDvGran));
-		if (img->base_len < len)
-			why = sift_dvd_read_tail(tail, img->bytes, img->base_len, len, granule_rows, h->ngranules, &hz.ops);
-		img->g = palloc((h->ndirty_granules + tail->ndirty + 1) * sizeof(ImageGran));
-		*unaborted = false;
-		while (why == NULL && (e < h->ndirty_granules || t < tail->ndirty))
-		{
-			const uint32 gid = e == h->ndirty_granules ? tail->gran[t].granule_id : t == tail->ndirty ? ent[e].granule_id : Min(ent[e].granule_id, tail->gran[t].granule_id);
-			const SiftDvGranuleEntry *en = e < h->ndirty_granules && ent[e].granule_id == gid ? &ent[e++] : NULL;
-			const SiftDvGran *tg = t < tail->ndirty && tail->gran[t].granule_id == gid ? &tail->gran[t++] : NULL;
-			SiftDvGran	g = {.granule_id = gid,.granule_rows = granule_rows[gid]};
-			bool		dropped,
-						whole;
-
-			if (en != NULL)
-			{
-				why = sift_dvd_read_granule(&g, en, en > ent ? en - 1 : NULL, h, img->bytes, img->base_len, granule_rows);
-				if (why != NULL)
-					break;
-			}
-			else
-			{
-				g.rows = palloc(1);
-				g.xmax = palloc(1);
-			}
-			if (tg != NULL)
-				sift_dvd_gran_union(&g, tg);
-			dropped = gran_unabort(&g, &hc);
-			whole = tg == NULL && !dropped;
-			*unaborted |= dropped;
-			if (g.ndead > 0)
-				img->g[img->n++] = whole ? (ImageGran) {gid, en, {0}} : (ImageGran) {gid, NULL, g};
-			if (g.ndead == 0 || whole)
-				gran_free(&g);
-		}
+		*unaborted |= dropped;
+		if (g.ndead > 0)
+			img->g[img->n++] = whole ? (ImageGran) {g.granule_id, w.ent, {0}} : (ImageGran) {g.granule_id, NULL, g};
+		if (g.ndead == 0 || whole)
+			sift_dv_gran_free(&g);
 	}
-	if (why != NULL)
-		SIFT_SEG_CORRUPT(rel, desc->part_gen, "The deletion vector %llu is damaged: %s.", (unsigned long long) desc->dv_gen, why);
-	for (int i = 0; i < tail->ndirty; i++)
-		gran_free(&tail->gran[i]);
-	pfree(tail->gran);
-	pfree(tail);
+	w.bytes = NULL;
+	sift_dv_walk_end(&w);
 	return img;
 }
 
@@ -604,9 +630,9 @@ merge_granule(SiftDvBuilder *b, const SiftDvImage *img, const ImageGran *s, cons
 	}
 	merge_rows(&g, bg, run, m);
 	sift_dvb_gran(b, &g);
-	gran_free(&g);
+	sift_dv_gran_free(&g);
 	if (base.rows != NULL)
-		gran_free(&base);
+		sift_dv_gran_free(&base);
 }
 
 char *
