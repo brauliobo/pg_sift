@@ -2,6 +2,8 @@
 -- section 2): GROUP BY with min and max over whole units reads no row. The calendar cells of a date or timestamp column hold none (their bytes fit the share of the unit
 -- without them). Written by every writer of the groups; the answers are the heap plan's, with deletes, updates and rows of the write buffer in between.
 CREATE EXTENSION pg_sift;
+-- Format 1: the min and max of the groups (minor 7) of a sift_table are Format 1 storage.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

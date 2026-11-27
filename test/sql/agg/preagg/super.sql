@@ -4,6 +4,8 @@
 -- pre-aggregates, and by the plain plan (sift.enable_agg off). `pre` says how many units the first one answered from metadata and `sup` whether
 -- a group of them did: none for an index without the option, a group some page of which was written since the last VACUUM, or a shape the summary lacks.
 CREATE EXTENSION pg_sift;
+-- Format 1: superunits (minor 12) are Format 1 storage.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

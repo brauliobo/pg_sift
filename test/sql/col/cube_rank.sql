@@ -2,6 +2,8 @@
 -- values in a unit has no histogram there, so the columns that fit come first (the option preagg is written as 'auto: a, b', which a rebuild keeps), and
 -- the answers are the plain plan's. Without the option the columns keep their order.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: preagg = 'auto' ranks the columns of the 16-dimension cube of Format 1.
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;

@@ -9,6 +9,8 @@
 -- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the calendar cells (minor 8) of a sift_table are Format 1 storage.
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

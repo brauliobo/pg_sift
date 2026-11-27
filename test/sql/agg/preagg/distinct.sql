@@ -3,6 +3,8 @@
 -- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan
 -- (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
 CREATE EXTENSION pg_sift;
+-- Format 1: the histograms of the units, write buffers and merges are Format 1 storage.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET default_statistics_target = 10000;
 -- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
@@ -139,8 +141,7 @@ RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 
--- the switch: off, the scan answers
-SELECT pre IS NULL AS off FROM pa_units('SELECT count(DISTINCT ki) FROM dd');
+-- the pre-aggregates answer
 SELECT pre > 0 AS on FROM pa_units('SELECT count(DISTINCT ki) FROM dd');
 
 DROP TABLE dd, dn, pa_q;

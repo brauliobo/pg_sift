@@ -2,6 +2,8 @@
 -- an index of 15 columns whose 8 dimensions have 50 values keeps every dimension in every unit that is not the small last one, where the 2% of the
 -- first three measures kept two. The query of the last dimension is answered from the units' histograms, as the scan and the plain plan give it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the byte budget of the 16-dimension cube of a unit is Format 1 storage (Format 2 cubes have their own, agg/preagg_v2).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

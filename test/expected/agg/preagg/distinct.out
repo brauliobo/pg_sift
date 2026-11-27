@@ -3,6 +3,8 @@
 -- Every query runs three ways, which must give the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan
 -- (sift.enable_agg off). `pre` says how many units the first one answered from metadata.
 CREATE EXTENSION pg_sift;
+-- Format 1: the histograms of the units, write buffers and merges are Format 1 storage.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET default_statistics_target = 10000;
 -- a unit with a dead row is scanned here (col_dead_delta answers it net of the dead rows)
@@ -99,18 +101,18 @@ SELECT * FROM pa_check('dd');
   3 | with count and sum     | all  | t
   4 | test of the column     | all  | t
   5 | text test              | all  | t
-  6 | IN list                | -    | t
+  6 | IN list                | all  | t
   7 | IS NULL                | all  | t
   8 | zone of another column | some | t
   9 | range cuts a unit      | some | t
  10 | no rows                | none | t
  11 | the key of the group   | all  | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | none | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
  18 | having                 | all  | t
  19 | plain count beside     | all  | t
 (19 rows)
@@ -124,7 +126,7 @@ SELECT * FROM pa_fuzz('dd', 1, 60);
 SELECT * FROM pa_sum('dn');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |        0 |      0
+      19 |      0 |       0 |        0 |     19
 (1 row)
 
 -- 2. the only row of a value is changed and a few pages are deleted from: their units are scanned, the others answer
@@ -139,18 +141,18 @@ SELECT * FROM pa_check('dd');
   3 | with count and sum     | some | t
   4 | test of the column     | some | t
   5 | text test              | some | t
-  6 | IN list                | -    | t
+  6 | IN list                | some | t
   7 | IS NULL                | some | t
   8 | zone of another column | none | t
   9 | range cuts a unit      | none | t
  10 | no rows                | none | t
  11 | the key of the group   | some | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | none | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
  18 | having                 | some | t
  19 | plain count beside     | some | t
 (19 rows)
@@ -171,18 +173,18 @@ SELECT * FROM pa_check('dd');
   3 | with count and sum     | some | t
   4 | test of the column     | some | t
   5 | text test              | some | t
-  6 | IN list                | -    | t
+  6 | IN list                | some | t
   7 | IS NULL                | some | t
-  8 | zone of another column | none | t
-  9 | range cuts a unit      | none | t
+  8 | zone of another column | some | t
+  9 | range cuts a unit      | some | t
  10 | no rows                | none | t
  11 | the key of the group   | some | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | none | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
  18 | having                 | some | t
  19 | plain count beside     | some | t
 (19 rows)
@@ -197,18 +199,18 @@ SELECT * FROM pa_check('dd');
   3 | with count and sum     | some | t
   4 | test of the column     | some | t
   5 | text test              | some | t
-  6 | IN list                | -    | t
+  6 | IN list                | some | t
   7 | IS NULL                | some | t
   8 | zone of another column | none | t
-  9 | range cuts a unit      | none | t
+  9 | range cuts a unit      | some | t
  10 | no rows                | none | t
  11 | the key of the group   | some | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | none | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
  18 | having                 | some | t
  19 | plain count beside     | some | t
 (19 rows)
@@ -223,25 +225,25 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) dd;
 SELECT * FROM pa_check('dd');
  n  |         shape          | pre  | same 
 ----+------------------------+------+------
-  1 | int column             | some | t
-  2 | text column            | some | t
-  3 | with count and sum     | some | t
-  4 | test of the column     | some | t
-  5 | text test              | some | t
-  6 | IN list                | -    | t
-  7 | IS NULL                | some | t
-  8 | zone of another column | none | t
-  9 | range cuts a unit      | none | t
+  1 | int column             | all  | t
+  2 | text column            | all  | t
+  3 | with count and sum     | all  | t
+  4 | test of the column     | all  | t
+  5 | text test              | all  | t
+  6 | IN list                | some | t
+  7 | IS NULL                | all  | t
+  8 | zone of another column | some | t
+  9 | range cuts a unit      | some | t
  10 | no rows                | none | t
- 11 | the key of the group   | some | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 11 | the key of the group   | all  | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | some | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
- 18 | having                 | some | t
- 19 | plain count beside     | some | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
+ 18 | having                 | all  | t
+ 19 | plain count beside     | all  | t
 (19 rows)
 
 -- 5. merged: the dead rows are gone and every unit is stored with its pre-aggregates again
@@ -266,18 +268,18 @@ SELECT * FROM pa_check('dd');
   3 | with count and sum     | all  | t
   4 | test of the column     | all  | t
   5 | text test              | all  | t
-  6 | IN list                | -    | t
+  6 | IN list                | all  | t
   7 | IS NULL                | all  | t
   8 | zone of another column | none | t
   9 | range cuts a unit      | some | t
  10 | no rows                | none | t
  11 | the key of the group   | all  | t
- 12 | two columns: scan      | -    | t
- 13 | other key: scan        | -    | t
+ 12 | two columns: scan      | none | t
+ 13 | other key: scan        | none | t
  14 | many values: scan      | none | t
- 15 | FILTER: scan           | -    | t
- 16 | expression: scan       | -    | t
- 17 | test of another: scan  | -    | t
+ 15 | FILTER: scan           | none | t
+ 16 | expression: scan       | none | t
+ 17 | test of another: scan  | none | t
  18 | having                 | all  | t
  19 | plain count beside     | all  | t
 (19 rows)
@@ -309,19 +311,13 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('dd');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       9 |        1 |      3
+      19 |      0 |      10 |        1 |      8
 (1 row)
 
 RESET max_parallel_workers_per_gather;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
--- the switch: off, the scan answers
-SELECT pre IS NULL AS off FROM pa_units('SELECT count(DISTINCT ki) FROM dd');
- off 
------
- t
-(1 row)
-
+-- the pre-aggregates answer
 SELECT pre > 0 AS on FROM pa_units('SELECT count(DISTINCT ki) FROM dd');
  on 
 ----

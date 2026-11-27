@@ -3,6 +3,8 @@
 -- pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
 -- answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use, '-': no SiftAgg).
 CREATE EXTENSION pg_sift;
+-- Format 1: the units of a sift_table and their pre-aggregates are Format 1 storage.
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;

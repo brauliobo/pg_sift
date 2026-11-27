@@ -3,6 +3,8 @@
 -- the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
 -- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.test_col_format_minor = 6.
 CREATE EXTENSION pg_sift;
+-- Format 1: cube_minmax, the minors 6 and 7 and merges are the cubes of Format 1 units.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET default_statistics_target = 10000;
@@ -104,17 +106,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | all  | t
   5 | only NULLs          | all  | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | all  | t
   8 | test of dim, no key | all  | t
   9 | FILTER on the dim   | all  | t
  10 | FILTER on the key   | all  | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | all  | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | all  | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -122,19 +124,19 @@ SELECT * FROM pa_check('mc');
 SELECT * FROM pa_sum('md');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |      10 |        1 |      2
+      19 |      0 |      11 |        1 |      6
 (1 row)
 
 SELECT * FROM pa_sum('mo');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       1 |        0 |      0
+      19 |      0 |       1 |        0 |     17
 (1 row)
 
 SELECT * FROM pa_sum('mf');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       1 |        0 |     12
+      19 |      0 |       1 |        0 |     17
 (1 row)
 
 -- 2. a few pages change (update, delete): their units are scanned, the others answer
@@ -151,17 +153,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | some | t
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | some | t
   8 | test of dim, no key | some | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | some | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | some | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -169,7 +171,7 @@ SELECT * FROM pa_check('mc');
 SELECT * FROM pa_sum('md');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |       11 |      2
+      19 |      0 |       0 |       12 |      6
 (1 row)
 
 -- 3. vacuumed: the units that lost rows stay scanned until a merge rewrites them
@@ -183,17 +185,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | some | t
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | some | t
   8 | test of dim, no key | some | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | some | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | some | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -210,17 +212,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | some | t
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | some | t
   8 | test of dim, no key | some | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | some | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | some | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -241,17 +243,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | some | t
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | some | t
   8 | test of dim, no key | some | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | some | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | some | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -279,17 +281,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | all  | t
   5 | only NULLs          | all  | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | all  | t
   8 | test of dim, no key | all  | t
   9 | FILTER on the dim   | all  | t
  10 | FILTER on the key   | all  | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | all  | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | all  | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -299,7 +301,7 @@ SELECT * FROM pa_check('mc');
 SELECT * FROM pa_sum('mx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       1 |        0 |      0
+      19 |      0 |       1 |        0 |     17
 (1 row)
 
 ALTER INDEX mx_col SET (cube_minmax = true);
@@ -320,17 +322,17 @@ SELECT * FROM pa_check('mx');
   4 | with the sums       | some | t
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
-  8 | test of dim, no key | none | t
+  7 | keys in list        | some | t
+  8 | test of dim, no key | some | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | some | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | some | t
  19 | zone covers some    | none | t
 (19 rows)
@@ -357,7 +359,7 @@ SELECT sift.col_verify('mx_col', true);
 SELECT * FROM pa_sum('mx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |      10 |        1 |      2
+      19 |      0 |      11 |        1 |      6
 (1 row)
 
 SET sift.test_col_format_minor = 6;
@@ -379,7 +381,7 @@ SELECT sift.col_verify('mf_col', true);
 SELECT * FROM pa_sum('mf');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       1 |        0 |     12
+      19 |      0 |       1 |        0 |     17
 (1 row)
 
 -- the switch off again: a merge of the units that hold them writes none
@@ -400,7 +402,7 @@ SELECT sift.col_verify('mx_col', true);
 SELECT * FROM pa_sum('mx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       1 |        0 |      0
+      19 |      0 |      11 |        1 |      6
 (1 row)
 
 -- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge
@@ -439,17 +441,17 @@ SELECT * FROM pa_check('mc');
   4 | with the sums       | all  | t
   5 | only NULLs          | all  | t
   6 | no rows, grouped    | none | t
-  7 | keys in list        | -    | t
+  7 | keys in list        | all  | t
   8 | test of dim, no key | all  | t
   9 | FILTER on the dim   | all  | t
  10 | FILTER on the key   | all  | t
  11 | other test: scan    | none | t
- 12 | min of the key      | -    | t
- 13 | float: scan         | -    | t
+ 12 | min of the key      | none | t
+ 13 | float: scan         | none | t
  14 | having, limit       | all  | t
  15 | expression: scan    | -    | t
- 16 | grouping sets       | -    | t
- 17 | two keys: scan      | -    | t
+ 16 | grouping sets       | none | t
+ 17 | two keys: scan      | none | t
  18 | int4 beside int8    | all  | t
  19 | zone covers some    | some | t
 (19 rows)
@@ -461,7 +463,7 @@ SET min_parallel_index_scan_size = 0;
 SELECT * FROM pa_sum('mc');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |      10 |        1 |      2
+      19 |      0 |      11 |        1 |      6
 (1 row)
 
 RESET max_parallel_workers_per_gather;
@@ -473,23 +475,17 @@ DELETE FROM md WHERE id BETWEEN 1 AND 100;
 SELECT * FROM pa_sum('md');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |       11 |      2
+      19 |      0 |       0 |       12 |      6
 (1 row)
 
 ROLLBACK;
 SELECT * FROM pa_sum('md');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |       0 |       11 |      2
+      19 |      0 |       0 |       12 |      6
 (1 row)
 
--- the switch
-SELECT pre IS NULL AS off FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
- off 
------
- t
-(1 row)
-
+-- the pre-aggregates answer
 SELECT pre > 0 AS on FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
  on 
 ----

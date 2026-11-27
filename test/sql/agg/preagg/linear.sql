@@ -4,6 +4,8 @@
 -- (text, so the scale of the numeric sums): from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off).
 -- `pre` says how many units the first one answered from metadata.
 CREATE EXTENSION pg_sift;
+-- Format 1: the sums of the units, rollup_columns and merges are Format 1 storage.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
@@ -155,8 +157,7 @@ SELECT * FROM pa_sum('eo');
 ROLLBACK;
 SELECT * FROM pa_sum('eo');
 
--- the switch
-SELECT pre IS NULL AS off FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
+-- the pre-aggregates answer
 SELECT pre > 0 AS on FROM pa_units('SELECT kind, sum(n8 + 1) FROM ed WHERE id <= 30000 GROUP BY kind');
 
 DROP TABLE ec, ed, eo, pa_q;

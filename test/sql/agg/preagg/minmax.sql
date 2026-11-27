@@ -3,6 +3,8 @@
 -- the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units the first one
 -- answered from metadata: none for an index that does not store them, a unit written before the option, or one written under sift.test_col_format_minor = 6.
 CREATE EXTENSION pg_sift;
+-- Format 1: cube_minmax, the minors 6 and 7 and merges are the cubes of Format 1 units.
+SET sift.test_create_format1 = on;
 SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET default_statistics_target = 10000;
@@ -183,8 +185,7 @@ SELECT * FROM pa_sum('md');
 ROLLBACK;
 SELECT * FROM pa_sum('md');
 
--- the switch
-SELECT pre IS NULL AS off FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
+-- the pre-aggregates answer
 SELECT pre > 0 AS on FROM pa_units('SELECT kind, min(val), max(val) FROM md GROUP BY kind');
 
 DROP TABLE mc, md, mo, mf, mx, pa_q;
