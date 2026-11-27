@@ -80,10 +80,10 @@ SELECT units_of(q) AS plan, agg_rows(q, true) = agg_rows(q, false) AS same FROM 
          plan          | same 
 -----------------------+------
  SiftAgg, units pruned | t
- SiftAgg, none pruned  | t
  SiftAgg, units pruned | t
- SiftAgg, none pruned  | t
- SiftAgg, none pruned  | t
+ SiftAgg, units pruned | t
+ SiftAgg, units pruned | t
+ SiftAgg, units pruned | t
  SiftAgg, units pruned | t
  SiftAgg, units pruned | t
  SiftAgg, units pruned | t
