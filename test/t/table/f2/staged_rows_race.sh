@@ -4,10 +4,11 @@
 #   1 the cleanup of a full btree page by another writer keeps the entry of a row that a running update staged: after its commit the index finds the row
 #   2 the check of a unique index that missed a staged row on disk and finds its inserter gone looks on disk again: the row the inserter wrote is a duplicate
 #   3 a lock taken after the row was read reads it again: a foreign key check and an update do not take a row whose delete committed in between
-# 2-3 stop a backend at an injection point (PostgreSQL built with them only).
+#   4 the load of the pending deletes of a partition that writers keep appending to gives up its cache after a few tries instead of spinning
+# 2-4 stop a backend at an injection point (PostgreSQL built with them only).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 6
+plan 7
 node_init sr 2 "autovacuum = off
 sift.async_maintenance = off
 sift.test_create_format1 = off"
@@ -21,7 +22,10 @@ sql sr "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE p (id int PRIMARY KEY, n int NOT NULL) USING sift_table" \
 	"CREATE TABLE c (pid int REFERENCES p)" \
 	"INSERT INTO p SELECT g, 0 FROM generate_series(1, 400) g" \
-	"CREATE TABLE u (id int PRIMARY KEY, v int NOT NULL) USING sift_table" >/dev/null || bail "setup failed"
+	"CREATE TABLE u (id int PRIMARY KEY, v int NOT NULL) USING sift_table" \
+	"CREATE TABLE q (id int PRIMARY KEY, n int NOT NULL) USING sift_table" \
+	"INSERT INTO q SELECT g, 0 FROM generate_series(1, 1000) g" \
+	"DELETE FROM q WHERE id = 1" >/dev/null || bail "setup failed"
 
 sess_open sr a
 sess_say a "BEGIN; UPDATE p SET n = -1 WHERE id = 200; \\echo staged"
@@ -64,9 +68,22 @@ if pg_config --configure | grep -q -- --enable-injection-points; then
 	check "a foreign key check that locks a parent deleted since it read it leaves no orphan" test "$out" == 0
 	out=$(sql sr "SELECT count(*) FROM p WHERE id IN (7, 8)")
 	check "an update that locks a row deleted since it read it does not bring it back" test "$out" == 0
+
+	arm b sift-pend-del-loaded
+	sess_say b "UPDATE q SET n = n + 1 WHERE id = 500; SELECT injection_points_detach('sift-pend-del-loaded'); \\echo loaded"
+	stopped="SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'sift-pend-del-loaded'"
+	for i in $(seq 2 40); do
+		wait_for "grep -q '^loaded\$' $D/b.out || [[ \$(sql sr \"$stopped\") == 1 ]]" 30 || bail "the reader neither stopped nor ended"
+		grep -q '^loaded$' "$D/b.out" && break
+		sql sr "DELETE FROM q WHERE id = $i" >/dev/null || bail "the delete $i failed"
+		wake sift-pend-del-loaded
+	done
+	out=$(grep -c '^loaded$' "$D/b.out")
+	check "a reader of pending deletes that grow under every load goes on" test "$out" == 1
+	[[ $out == 1 ]] || { sql sr "SELECT injection_points_detach('sift-pend-del-loaded')" >/dev/null; wake sift-pend-del-loaded; }
 	sess_close b
 else
-	skip 4 "PostgreSQL without injection points (scripts/pg-assert.sh --inject)"
+	skip 5 "PostgreSQL without injection points (scripts/pg-assert.sh --inject)"
 fi
 sess_close a
 finish

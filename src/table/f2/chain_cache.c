@@ -13,6 +13,7 @@
 #include "utils/rel.h"
 
 #include "core/cachebudget.h"
+#include "core/compat.h"
 #include "core/f2/meta.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -295,20 +296,29 @@ pd_key(const SiftPendDelRec *r)
 	return r->tid & SIFT_PD_TID_MASK;
 }
 
-/* The records, then the stamp of the last page, then the count of the records the pages hold: when it is the count read nothing was appended since the records were, so the stamp is the one of the records */
-static void
+#define PD_LOAD_TRIES	4
+
+/*
+ * The records, then the stamp of the last page, then the count of the records the pages hold: when it is the count read nothing was appended since the records were, so the stamp is the one of
+ * the records. Writers that append at every try leave the records of the last one, whole for this read but not the ones of its stamp: false, the slot is not found again.
+ */
+static bool
 pd_load(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 {
 	SiftPendDelLog *l = &s->log.pd;
 	BlockNumber *pages;
 	int			npages;
+	bool		settled = false;
 
-	for (;;)
+	for (int tries = 1;; tries++)
 	{
+		CHECK_FOR_INTERRUPTS();
 		l->recs = sift_pend_del_read(rel, entry->part_id, entry->pend_del_blk, &l->n, &pages, &npages);
 		s->stamp = stamp_read(rel, pages[npages - 1]);
 		pfree(pages);
-		if (sift_pend_del_stamp(rel, entry->part_id, entry->pend_del_blk).count == (uint32) l->n)
+		SIFT_POINT("sift-pend-del-loaded");
+		settled = sift_pend_del_stamp(rel, entry->part_id, entry->pend_del_blk).count == (uint32) l->n;
+		if (settled || tries == PD_LOAD_TRIES)
 			break;
 		pfree(l->recs);
 	}
@@ -318,6 +328,7 @@ pd_load(Relation rel, const SiftPartitionEntry *entry, Slot *s)
 			index_add(&l->ix, i, pd_key(&l->recs[i]));
 		else
 			l->ix.prev[i] = -1;
+	return settled;
 }
 
 const SiftPendDelLog *
@@ -344,9 +355,8 @@ sift_pend_del_log(Relation rel, const SiftPartitionEntry *entry)
 	}
 	s = slot_open(rel, true, entry->part_id);
 	old = MemoryContextSwitchTo(s->cx);
-	pd_load(rel, entry, s);
+	s->head_blk = pd_load(rel, entry, s) ? entry->pend_del_blk : InvalidBlockNumber;
 	MemoryContextSwitchTo(old);
-	s->head_blk = entry->pend_del_blk;
 	s->tick = sift_cache_tick();
 	(void) sift_cache_commit();
 	return &s->log.pd;
