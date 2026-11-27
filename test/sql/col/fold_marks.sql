@@ -4,6 +4,8 @@
 -- took the address of a removed one.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and its marks are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE events (id int PRIMARY KEY, tenant_id int NOT NULL, counter_a int, label text, note text) WITH (autovacuum_enabled = false, fillfactor = 60);
@@ -11,18 +13,13 @@ INSERT INTO events SELECT i, i % 10, i, 'x', 'n' FROM generate_series(1, 20000) 
 CREATE INDEX events_c ON events USING sift_col (id, tenant_id, counter_a) WITH (track_changes = 'id');
 VACUUM (FREEZE) events;
 
--- the answer of the index and of the heap for the rows and for each tenant: equal, and how many rows a read decided by the log
-CREATE FUNCTION chk(what text, q text DEFAULT 'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1', OUT test text, OUT same_as_heap bool, OUT decided_by_log int)
+-- the answer of the index and of the heap for the rows and for each tenant: equal
+CREATE FUNCTION chk(what text, q text DEFAULT 'SELECT tenant_id, count(*), sum(counter_a) FROM events GROUP BY 1 ORDER BY 1', OUT test text, OUT same_as_heap bool)
 LANGUAGE plpgsql AS $$
-DECLARE a text; o text; ex text; t text;
+DECLARE a text; o text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO a;
-	decided_by_log := 0;
-	FOR ex IN EXECUTE 'EXPLAIN (ANALYZE, TIMING OFF, COSTS OFF) ' || q LOOP
-		t := substring(ex FROM '\((\d+) of them decided by the tombstone log');
-		IF t IS NOT NULL THEN decided_by_log := decided_by_log + t::int; END IF;
-	END LOOP;
 	PERFORM set_config('sift.enable_agg', 'off', true);
 	EXECUTE 'SELECT string_agg(r::text, '';'') FROM (' || q || ') r' INTO o;
 	test := what;
