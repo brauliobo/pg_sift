@@ -115,13 +115,14 @@ sift_v6_rels_have_index(PlannerInfo *root, Relids relids)
 	if (!sift_db_has_extension() || !sift_store_ops_any())
 		return false;
 	pr = plan_rels_of(root);
-	while ((i = bms_next_member(relids, i)) >= 0)
-	{
-		RelOptInfo *r = root->simple_rel_array[i];
+	if (!bms_is_subset(relids, pr->decided))
+		while ((i = bms_next_member(relids, i)) >= 0)
+		{
+			RelOptInfo *r = root->simple_rel_array[i];
 
-		if (r != NULL && decidable(r) && !bms_is_member(i, pr->decided))
-			decide_rel(pr, i, r);
-	}
+			if (r != NULL && decidable(r) && !bms_is_member(i, pr->decided))
+				decide_rel(pr, i, r);
+		}
 	return bms_overlap(relids, pr->owned);
 }
 

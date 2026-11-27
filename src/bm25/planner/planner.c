@@ -150,20 +150,58 @@ has_scan_path(RelOptInfo *rel)
 	return false;
 }
 
+/*
+ * The base rels of one planning that have a SiftScan path. A join search asks for every pair of rels it builds, after the paths of the base rels are final:
+ * they are looked at once, at the first join, and again only when a subquery's planning took the slot.
+ */
+typedef struct ScanRels
+{
+	MemoryContextCallback gone;
+	PlannerInfo *root;
+	List	   *rels;
+} ScanRels;
+
+static ScanRels *scan_rels;
+
+static void
+scan_rels_gone(void *arg)
+{
+	if (scan_rels == arg)
+		scan_rels = NULL;
+}
+
+static List *
+scan_rels_of(PlannerInfo *root)
+{
+	MemoryContext old;
+
+	if (scan_rels != NULL && scan_rels->root == root)
+		return scan_rels->rels;
+	old = MemoryContextSwitchTo(root->planner_cxt);
+	scan_rels = palloc0(sizeof(ScanRels));
+	scan_rels->root = root;
+	scan_rels->gone = (MemoryContextCallback) {.func = scan_rels_gone,.arg = scan_rels};
+	MemoryContextRegisterResetCallback(root->planner_cxt, &scan_rels->gone);
+	for (int i = 1; i < root->simple_rel_array_size; i++)
+	{
+		RelOptInfo *rel = root->simple_rel_array[i];
+
+		if (rel != NULL && rel->reloptkind == RELOPT_BASEREL && has_scan_path(rel))
+			scan_rels->rels = lappend(scan_rels->rels, rel);
+	}
+	MemoryContextSwitchTo(old);
+	return scan_rels->rels;
+}
+
 /* The scores the query reads of the rels under a join that a SiftScan produces */
 static List *
 join_scores(PlannerInfo *root, RelOptInfo *joinrel)
 {
 	List	   *scores = NIL;
-	int			relid = -1;
 
-	while ((relid = bms_next_member(joinrel->relids, relid)) >= 0)
-	{
-		RelOptInfo *rel = root->simple_rel_array[relid];
-
-		if (rel != NULL && rel->reloptkind == RELOPT_BASEREL && has_scan_path(rel))
+	foreach_ptr(RelOptInfo, rel, scan_rels_of(root))
+		if (bms_is_member(rel->relid, joinrel->relids))
 			scores = list_concat_unique(scores, score_exprs(root, rel));
-	}
 	return scores;
 }
 
