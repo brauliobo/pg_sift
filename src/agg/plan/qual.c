@@ -370,6 +370,9 @@ static bool
 compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 {
 	Expr	   *q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
+
+	if (q == NULL && !ri->pseudoconstant)
+		q = sift_v6_tests_or_qual(p, ri->clause);
 	List	   *jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(rel, ri->clause);
 	List	   *tests;
 

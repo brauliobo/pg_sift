@@ -131,9 +131,25 @@ filter_cands(PlannerInfo *root, Node *clause, List *cands)
 	return cands;
 }
 
-/* the tests the WHERE and the FILTERs of the statement have */
+/* the tests of the arms of an OR of the WHERE: the calls alone, which a row read from the heap evaluates with the whole clause (a sub-plan has no parent plan there) */
 static List *
-collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra)
+where_or_cands(PlannerInfo *root, Node *clause, List *cands)
+{
+	foreach_ptr(TestCand, c, filter_cands(root, clause, NIL))
+	{
+		bool		seen = c->sp != NULL;
+
+		foreach_ptr(TestCand, o, cands)
+			seen |= o->where == NULL && equal(o->node, c->node);
+		if (!seen)
+			cands = lappend(cands, c);
+	}
+	return cands;
+}
+
+/* the tests the WHERE and the FILTERs of the statement have: a WHERE that is a test, and the tests of the arms of an OR of the WHERE where the scan reads their flags (agg/plan/filter.c) */
+static List *
+collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms)
 {
 	List	   *cands = NIL;
 	FilterWalk	w = {0};
@@ -144,6 +160,8 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 
 		if (c != NULL)
 			cands = lappend(cands, c);
+		else if (or_arms && !ri->pseudoconstant && is_orclause(ri->clause))
+			cands = where_or_cands(root, (Node *) ri->clause, cands);
 	}
 	collect_filters((Node *) out->reltarget->exprs, &w);
 	collect_filters(extra->havingQual, &w);
@@ -345,10 +363,13 @@ build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	const Expr *array = sift_v6_unnest_path_array(e);
 	SiftV6ElemRte *rte;
 
-	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array) || (rte = stream_of(p, st, array, SV6E_PATH, &b->test.stream)) == NULL)
+	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array) || (rte = stream_of(p, st, array, sift_v6_unnest_path_fn(e), &b->test.stream)) == NULL)
 		return false;
 	if (rte->array == NULL)
+	{
 		sift_v6_unnest_array_rte(array, rte);
+		rte->fn = sift_v6_unnest_path_fn(e);
+	}
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
 	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->parts) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
@@ -424,13 +445,33 @@ store_tests(V6Plan *p)
 	return true;
 }
 
-bool
+/* the source reads the elements of several arrays of a row (SiftV6Ext.nstreams) */
+static bool
+source_streams(const V6Plan *p)
+{
+	return p->ops->jsonb != NULL && p->ops->jsonb->streams;
+}
+
+/* the batches of the source give the WHERE the flags of the tests to read (a table decides its quals in the scan of its store, which reads no flag) */
+static bool
+where_flags(const V6Plan *p)
+{
+	return source_streams(p) && !p->is_table;
+}
+
+void
 sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra)
 {
 	SiftV6TestStreams st = {.n = 1,.nfixed = 1,.rte = {*own}};
-	const List *cands = collect_cands(p->root, p->rel, out, extra);
+	const bool	streams = source_streams(p);
+	const List *cands = collect_cands(p->root, p->rel, out, extra, where_flags(p));
+	SiftV6Ext  *x = p->xseed;
 
-	return cands == NIL || (p->ops->jsonb != NULL && p->ops->jsonb->streams && build_tests(p, cands, &st) && seed_streams(p, &st) && build_exists_quals(p) && store_tests(p));
+	if (cands == NIL || (streams && build_tests(p, cands, &st) && seed_streams(p, &st) && build_exists_quals(p) && store_tests(p)))
+		return;
+	p->tests = NIL;
+	x->nstreams = x->ntests = 0;
+	x->stream_names = x->stream_arrays = x->test_quals = NIL;
 }
 
 Expr *
@@ -469,14 +510,15 @@ exists_cost(const RelOptInfo *rel)
 }
 
 static void
-try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, const SiftV6RelSource *src, const List *cands)
+try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, const SiftV6RelSource *src)
 {
 	V6Plan		p = {.root = root,.rel = rel,.out = out};
 	Relation	source = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
 	SiftV6TestStreams st = {0};
+	const List *cands;
 	bool		ok;
 
-	ok = sift_v6_plan_bind(&p, src, source) && build_tests(&p, cands, &st) && sift_v6_unnest_seed(&p, NULL, &st.rte[0], false) && seed_streams(&p, &st) && build_exists_quals(&p);
+	ok = sift_v6_plan_bind(&p, src, source) && (cands = collect_cands(root, rel, out, extra, where_flags(&p))) != NIL && build_tests(&p, cands, &st) && sift_v6_unnest_seed(&p, NULL, &st.rte[0], false) && seed_streams(&p, &st) && build_exists_quals(&p);
 	if (ok)
 	{
 		p.xseed->row_tests = true;
@@ -491,13 +533,12 @@ try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraDa
 void
 sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs)
 {
-	List	   *cands;
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!sift_v6_plan_fact_ok(root, rel) || (cands = collect_cands(root, rel, out, extra)) == NIL)
+	if (!sift_v6_plan_fact_ok(root, rel) || collect_cands(root, rel, out, extra, true) == NIL)
 		return;
 	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
-		try_source(root, rel, out, extra, group_exprs, &src[i], cands);
+		try_source(root, rel, out, extra, group_exprs, &src[i]);
 }

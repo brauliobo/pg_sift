@@ -184,19 +184,7 @@ setup_cols(UnRun *u, const SiftColRel *r)
 	}
 }
 
-/* the leaves of the pull of stream s: the lengths of its array and its element columns (the keys and the values of the map when keyed) */
-static SiftF2PullGroup
-pull_group(const UnRun *u, int s)
-{
-	const UnStream *st = &u->st[s];
-	SiftF2PullGroup g = {.leaf = st->el->group_leaf,.nchild = st->nchild};
-
-	for (int c = 0; c < st->nchild; c++)
-		g.child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? st->el->key_leaf : st->el->val_leaf) : st->el->col_leaf[c],.type = st->ctype[c],
-									  .kind = !u->keyed && st->el->col_kind[c]};
-	return g;
-}
-
+/* the leaves the pull reads: the columns, and of each stream the lengths of its array and its element columns (the keys and the values of the map when keyed) */
 static SiftF2PullSpec
 pull_spec(const UnRun *u)
 {
@@ -205,7 +193,14 @@ pull_spec(const UnRun *u)
 	for (int i = 0; i < u->ncols; i++)
 		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = vec_type(u->cols[i].cls)};
 	for (int s = 0; s < ps.ngroups; s++)
-		ps.group[s] = pull_group(u, s);
+	{
+		const UnStream *st = &u->st[s];
+
+		ps.group[s] = (SiftF2PullGroup) {.leaf = st->el->group_leaf,.nchild = st->nchild};
+		for (int c = 0; c < st->nchild; c++)
+			ps.group[s].child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? st->el->key_leaf : st->el->val_leaf) : st->el->col_leaf[c],.type = st->ctype[c],
+													.kind = !u->keyed && st->el->col_kind[c]};
+	}
 	return ps;
 }
 
@@ -385,7 +380,8 @@ restrict_where(UnRun *u, const SiftF2ExtBatch *b)
 	uint64		keep[SIFT_VEC_WORDS];
 
 	for (int i = 0; i < u->spec->nfcols; i++)
-		u->wvecs[i] = u->wcol[i] < 0 ? NULL : (SiftVec *) &b->col[u->wcol[i]];
+		if (u->wcol[i] >= 0)
+			u->wvecs[i] = (SiftVec *) &b->col[u->wcol[i]];
 	sift_clause_eval(&u->where, u->wvecs, b->n, keep);
 	for (int w = 0; w < (b->n + 63) / 64; w++)
 		bs->mask[w] &= keep[w] | b->elem->poison[w];
@@ -494,18 +490,19 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 	memcpy(bs->mask, b->live, words * sizeof(uint64));
 	if (n & 63)
 		bs->mask[words - 1] &= (UINT64CONST(1) << (n & 63)) - 1;
+	if (u->ntests > 0)
+	{
+		decide_tests(u, b);
+		fill_flags(u, b->n);
+	}
 	if (u->has_where)
 		restrict_where(u, b);
-	if (u->ntests > 0)
-		decide_tests(u, b);
 	if (sift_v6_vet_mask(&u->vet, b->tid, 0, false, n, bs) == 0)
 		return;
 	u->stats->rows += bs->n_active;
 	MemoryContextReset(u->bcx);
 	compute_columns(u, b, bs);
 	elem_vecs(u, 0, es, ev);
-	if (u->ntests > 0)
-		fill_flags(u, b->n);
 	if (u->keyed && u->x->elem.group_leaf < 0)
 		sift_f2_unnest_run_keyed(u, b, NULL, fallback);
 	else if (u->x->row_tests)
@@ -730,10 +727,19 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 		u->has_where = true;
 		bound = sift_v6_clause_bind(CurrentMemoryContext, u->x->where, spec, &u->where);
 		SIFT_INVARIANT(bound, "the WHERE clause of the aggregate scan of an unnest compiled when it was planned");
-		u->wvecs = palloc(Max(spec->nfcols, 1) * sizeof(SiftVec *));
+		u->wvecs = palloc0(Max(spec->nfcols, 1) * sizeof(SiftVec *));
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
-			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !sift_v6_col_is_flag(&spec->fcol[i]) ? col_index(u, r, &spec->fcol[i], false) : -1;
+		{
+			const bool	flag = sift_v6_col_is_flag(&spec->fcol[i]);
+
+			u->wcol[i] = spec->fcol[i].src == SV6SRC_ATTR && !flag ? col_index(u, r, &spec->fcol[i], false) : -1;
+			if (flag)
+			{
+				u->flag_used[spec->fcol[i].attno - SIFT_V6_XFLAG_VATT] = true;
+				u->wvecs[i] = &u->flagv[spec->fcol[i].attno - SIFT_V6_XFLAG_VATT];
+			}
+		}
 	}
 	if (u->x->pair_where != NIL)
 	{
@@ -859,18 +865,22 @@ unrun_end(UnRun *u)
 	sift_mem_end(&u->rmt);
 }
 
-/* a qual of the table on a column of the index (a comparison, an IN list or a null test with constants) as the key an index scan has of it; false for a virtual column */
+/* a qual of the table on a column of the index (a comparison, an IN list or a null test with constants) as the key an index scan has of it; false for a virtual column and an OR */
 static bool
 where_key(Relation index, const Node *q, ScanKeyData *k)
 {
-	const Node *arg = IsA(q, NullTest) ? (const Node *) ((const NullTest *) q)->arg : linitial(IsA(q, OpExpr) ? ((const OpExpr *) q)->args : ((const ScalarArrayOpExpr *) q)->args);
-	const AttrNumber att = ((const Var *) arg)->varattno;
+	const Node *arg;
+	AttrNumber	att;
 	const Oid	opno = IsA(q, OpExpr) ? ((const OpExpr *) q)->opno : IsA(q, ScalarArrayOpExpr) ? ((const ScalarArrayOpExpr *) q)->opno : InvalidOid;
 	const Const *c;
 	int			strategy;
 	Oid			lefttype,
 				righttype;
 
+	if (!IsA(q, NullTest) && !IsA(q, OpExpr) && !IsA(q, ScalarArrayOpExpr))
+		return false;
+	arg = IsA(q, NullTest) ? (const Node *) ((const NullTest *) q)->arg : linitial(IsA(q, OpExpr) ? ((const OpExpr *) q)->args : ((const ScalarArrayOpExpr *) q)->args);
+	att = ((const Var *) arg)->varattno;
 	if (att < 1 || att > IndexRelationGetNumberOfKeyAttributes(index))
 		return false;
 	*k = (ScanKeyData) {.sk_attno = att};

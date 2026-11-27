@@ -87,6 +87,19 @@ conjunct_qual(V6Plan *p, Expr *conjunct)
 	return is_orclause(c) ? or_qual(p, (const BoolExpr *) c) : filter_qual(p, c);
 }
 
+Expr *
+sift_v6_tests_or_qual(V6Plan *p, Expr *clause)
+{
+	Expr	   *q;
+
+	if (p->tests == NIL || !is_orclause(clause))
+		return NULL;
+	p->in_filter = true;
+	q = or_qual(p, (const BoolExpr *) clause);
+	p->in_filter = false;
+	return q;
+}
+
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)

@@ -27,9 +27,9 @@ typedef struct SiftV6TestStreams
 
 /*
  * The tests among the quals of the table and the FILTERs of a statement whose lateral relation p seeded (own, its stream 0): each reads a stream of its own after it, its flags the columns of
- * the pairs of its row; true with none, false when one is such a test that the scan cannot decide
+ * the pairs of its row. When one of them is no test the scan decides, there are none: such a clause stays the table's, which the compile of the statement takes or refuses
  */
-extern bool sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra);
+extern void sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra);
 /* The path of the scan of the statement over one table when a qual of the table or a FILTER is such a test; nothing when the statement is not of that shape */
 extern void sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs);
 

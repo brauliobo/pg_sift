@@ -68,6 +68,8 @@ extern int	sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key
  */
 extern bool sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
 extern bool sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names);
+/* the text leaf of the elements of group (a list of scalars: the child the list itself names; an array of objects has one child per key instead), -1: none */
+extern int	sift_v6_elems_leaf(const SiftColRel *r, int att, int group);
 extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
 
 /*
@@ -102,7 +104,10 @@ extern bool sift_v6_mapkey_pair_qual(V6Plan *p, RestrictInfo *ri);
 extern int	sift_v6_unnest_rte_col(SiftV6ElemRte *rte, const char *name, Oid type, bool kind);
 /* the array of a row is `array` (a column of the table, an expression of it the index holds as a column, or the key of such a document): its place in rte */
 extern void sift_v6_unnest_array_rte(const Expr *array, SiftV6ElemRte *out);
-/* the type of the member `name` of the objects of the array rte names, as the leaf of the index holds it (text, an integer or a boolean) and whether it is an astext leaf; InvalidOid when the index has no such leaf or holds it otherwise */
+/*
+ * the type of the member `name` of the objects of the array rte names (NULL: of the elements of a list of scalars), as the leaf of the index holds it (text, an integer or a boolean) and whether
+ * it is an astext leaf; InvalidOid when the index has no such leaf or holds it otherwise
+ */
 extern Oid	sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name, bool *astext);
 /*
  * The leaf that says which rows have no document when the array of rte is a key of it (a jsonpath of such a row is NULL, of a document without the key false): the presence leaf of the column,

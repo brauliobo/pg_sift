@@ -43,12 +43,14 @@ SELECT i, i % 7, CASE WHEN i % 9 = 0 THEN NULL ELSE i % 6 END, CASE WHEN i % 11 
 		'q8', (i + j - 1) % 6 + CASE WHEN (i * 2 + j) % 13 = 0 THEN 3000000000 ELSE 0 END, 'f', ((i + j - 1) % 6) * 0.5) - CASE WHEN (i * 5 + j * 3) % 11 = 0 THEN 'q' ELSE '' END ORDER BY j)
 		FROM generate_series(1, i % 5) j), '[]') END
 FROM generate_series(1, 2400) i;
-ALTER TABLE sh ADD arr jsonb;
-UPDATE sh SET arr = CASE WHEN items IS NULL THEN NULL WHEN jsonb_typeof(items) = 'array' THEN items ELSE '[]' END;
+ALTER TABLE sh ADD arr jsonb, ADD tags jsonb;
+UPDATE sh SET arr = CASE WHEN items IS NULL THEN NULL WHEN jsonb_typeof(items) = 'array' THEN items ELSE '[]' END,
+	tags = CASE id % 11 WHEN 0 THEN NULL WHEN 1 THEN '["a", ["c"]]' WHEN 2 THEN '["c", {"a": 1}]' WHEN 3 THEN '["a", 1]' WHEN 4 THEN '["b", null]' WHEN 5 THEN '[]'
+		ELSE jsonb_build_array((ARRAY['a', 'b', 'c'])[id % 3 + 1], (ARRAY['b', 'c'])[id % 2 + 1]) END;
 CREATE TABLE sc (LIKE sh INCLUDING INDEXES);
 INSERT INTO sc SELECT * FROM sh WHERE id <= 2000;
-CREATE INDEX sc_col ON sc USING sift_col (id, grp, r4, r8, rf, items, doc, arr)
-	WITH (paths = 'items[]{kind text, qty int4, flag bool}, doc[]{q int4, q8 int8, f float8}, arr[]{kind text, qty int4}');
+CREATE INDEX sc_col ON sc USING sift_col (id, grp, r4, r8, rf, items, doc, arr, tags)
+	WITH (paths = 'items[]{kind text, qty int4, flag bool}, doc[]{q int4, q8 int8, f float8}, arr[]{kind text, qty int4}, tags[] text');
 INSERT INTO sc SELECT * FROM sh WHERE id > 2000;
 ANALYZE sh;
 ANALYZE sc;
@@ -64,7 +66,7 @@ END $$;
 
 -- jsonpath in a WHERE: != and == on a text member (a JSON null differs from a literal, a missing key from none), ! of them, a null literal, variables, strict mode without !, and
 -- tests of two arrays of the row, each read as its own stream of elements, EXISTS over jsonb_array_elements read by the members of the element, and tests beside the
--- unnest of an array in FROM, whose pairs take the flags of their row
+-- unnest of an array in FROM, whose pairs take the flags of their row; doc ? 'key' of a list of strings, in an OR of the WHERE too
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind == "gift")'') GROUP BY 1',
@@ -91,7 +93,9 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> ''kind'' = ''gift'')),
 		count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> ''kind'' IS NULL)) FROM @T o GROUP BY 1',
 	'SELECT o.grp, d.q, count(*), count(*) FILTER (WHERE o.items @> ''[{"kind": "gift"}]'') FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.doc) AS d(q int)
-		WHERE jsonb_path_exists(o.arr, ''$[*] ? (@.qty != 3)'') AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q8 bigint) WHERE i.q8 > o.r8) GROUP BY 1, 2'
+		WHERE jsonb_path_exists(o.arr, ''$[*] ? (@.qty != 3)'') AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q8 bigint) WHERE i.q8 > o.r8) GROUP BY 1, 2',
+	'SELECT o.grp, count(*) FILTER (WHERE o.tags ? ''a''), count(*) FILTER (WHERE NOT o.tags ? ''b'') FROM @T o WHERE o.tags ? ''c'' OR o.r4 = 1 GROUP BY 1',
+	'SELECT o.grp, t, count(*) FROM @T o CROSS JOIN LATERAL jsonb_array_elements_text(o.tags) AS t WHERE o.tags ? ''a'' OR o.grp = 1 GROUP BY 1, 2'
 ]) q;
 
 -- containment of a JSON null member and of values, and of several objects (each by some element, the same one or not)

@@ -433,7 +433,7 @@ sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char
 	int			group,
 				leaf;
 
-	if (i < 0 || !r->json[i + 1] || (group = sift_v6_unnest_group_of(r, i + 1, key)) < 0 || (leaf = sift_v6_unnest_member_leaf(r, i + 1, group, name)) < 0)
+	if (i < 0 || !r->json[i + 1] || (group = sift_v6_unnest_group_of(r, i + 1, key)) < 0 || (leaf = name != NULL ? sift_v6_unnest_member_leaf(r, i + 1, group, name) : sift_v6_elems_leaf(r, i + 1, group)) < 0)
 		return InvalidOid;
 	*astext = (r->schema->cols[leaf].flags & SIFT_COLD_ASTEXT) != 0;
 	return leaf_type(&r->schema->cols[leaf]);

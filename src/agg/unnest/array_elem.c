@@ -21,9 +21,8 @@ sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out
 	return exprType((const Node *) v) == JSONBOID && rtf->funccolcount == 1;
 }
 
-/* the text leaf of the elements of the group: the scalar child the list itself names (an array of objects has one child per key instead) */
-static int
-elem_leaf(const SiftColRel *r, int att, int group)
+int
+sift_v6_elems_leaf(const SiftColRel *r, int att, int group)
 {
 	const SiftColDef *g = &r->schema->cols[group];
 
@@ -40,7 +39,7 @@ elem_leaf(const SiftColRel *r, int att, int group)
 bool
 sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names)
 {
-	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0 || (e->col_leaf[0] = elem_leaf(r, att, e->group_leaf)) < 0)
+	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0 || (e->col_leaf[0] = sift_v6_elems_leaf(r, att, e->group_leaf)) < 0)
 		return false;
 	e->col_type[0] = TEXTOID;
 	e->ncols = 1;

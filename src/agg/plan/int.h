@@ -141,6 +141,8 @@ extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, 
 extern bool sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
 /* plan_filter.c: the FILTER clause of an aggregate, as the id (1 on) of a clause of the scan; false when the scan cannot decide it */
 extern bool sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause);
+/* An OR of the WHERE one of whose arms is a test of the elements of the row (p->tests): the OR of the flag of the test and the quals of the other arms, as a FILTER has them (NULL: none) */
+extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
 
 /* the expression with each placeholder replaced by what it holds: the value the scan computes where the expression is read */
 extern Node *sift_v6_placeholder_contents(Node *n, void *context);

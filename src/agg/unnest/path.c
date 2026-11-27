@@ -47,7 +47,13 @@ sift_v6_unnest_path_call(const Node *e)
 {
 	const Oid	fid = call_func(e);
 
-	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED;
+	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED || fid == F_JSONB_EXISTS;
+}
+
+SiftV6ElemFn
+sift_v6_unnest_path_fn(const Node *e)
+{
+	return call_func(e) == F_JSONB_EXISTS ? SV6E_ELEMS_TEXT : SV6E_PATH;
 }
 
 /* the array whose elements the filter of a jsonpath tests: $[*] of the document, or $.key[*] of doc -> 'key', which is the array on a document that is an object (the call decides any other row) */
@@ -93,7 +99,7 @@ sift_v6_unnest_path_array(const Node *e)
 	if (!sift_v6_unnest_path_call(e))
 		return NULL;
 	args = func_args(unconstify(Node *, e));
-	if (call_func(e) == F_JSONB_CONTAINS || call_func(e) == F_JSONB_CONTAINED)
+	if (call_func(e) == F_JSONB_CONTAINS || call_func(e) == F_JSONB_CONTAINED || call_func(e) == F_JSONB_EXISTS)
 		return (const Expr *) strip_relabel(call_func(e) == F_JSONB_CONTAINED ? lsecond(args) : linitial(args));
 	if ((jp = call_path(e)) == NULL || !path_head(jp, &any, &key))
 		return NULL;
@@ -407,12 +413,24 @@ part_quals(const List *clauses)
 	return quals;
 }
 
+/* doc ? 'key' of a list of strings: an element is the string (the leaf holds the strings alone, not the text of other scalars as an astext leaf does) */
+static List *
+exists_clauses(PathCtx *c, const Node *e)
+{
+	const Node *key = strip_relabel(lsecond(func_args(unconstify(Node *, e))));
+	bool		astext = false;
+
+	if (!IsA(key, Const) || ((const Const *) key)->constisnull || sift_v6_unnest_member_type(c->p, c->rte, NULL, &astext) != TEXTOID || astext)
+		return NIL;
+	return list_make1(list_make1(cmp_pred(0, TEXTOID, SCMP_EQ, ((const Const *) key)->constvalue)));
+}
+
 bool
 sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **parts)
 {
 	PathCtx		c = {.p = p,.rte = rte,.ok = true};
 	const Oid	fid = call_func(e);
-	List	   *clauses = fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED ? contains_parts(&c, e) : list_make1(path_clauses(&c, e));
+	List	   *clauses = fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED ? contains_parts(&c, e) : list_make1(fid == F_JSONB_EXISTS ? exists_clauses(&c, e) : path_clauses(&c, e));
 
 	if (!c.ok || clauses == NIL || list_member(clauses, NIL))
 		return false;
