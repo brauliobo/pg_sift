@@ -275,7 +275,7 @@ SELECT * FROM sh('{"n":[3,3.0,3.5,1e2,-0,1E+2,12345678901234567890,9223372036854
  kind | path | parent | ord | key |  state   |         val          
 ------+------+--------+-----+-----+----------+----------------------
  col  | n[]  |      0 |   0 |     | value    | 3
- col  | n[]  |      0 |   1 |     | value    | 3
+ col  | n[]  |      0 |   1 |     | overflow | 
  col  | n[]  |      0 |   2 |     | overflow | 
  col  | n[]  |      0 |   3 |     | value    | 100
  col  | n[]  |      0 |   4 |     | value    | 0
@@ -302,10 +302,10 @@ SELECT * FROM sh('{"n":[0,32767,32768,-32768,-32769,0.0000,1e0]}', 'n[] int2');
  col  | n[]  |      0 |   2 |     | overflow | 
  col  | n[]  |      0 |   3 |     | value    | -32768
  col  | n[]  |      0 |   4 |     | overflow | 
- col  | n[]  |      0 |   5 |     | value    | 0
+ col  | n[]  |      0 |   5 |     | overflow | 
  col  | n[]  |      0 |   6 |     | value    | 1
  list | n[]  |      0 |   0 |     | value    | 7
- ovf  | n[]  |        |     |     | overflow | 4
+ ovf  | n[]  |        |     |     | overflow | 6
 (9 rows)
 
 SELECT * FROM sh('{"n":[2147483647,2147483648,-2147483648,-2147483649]}', 'n[] int4');
@@ -326,7 +326,7 @@ SELECT * FROM sh('{"n":[10000000000000000000000000000000000000000000000000000000
  col  | n[]  |      0 |   1 |     | overflow | 
  col  | n[]  |      0 |   2 |     | value    | 1
  list | n[]  |      0 |   0 |     | value    | 3
- ovf  | n[]  |        |     |     | overflow | 4
+ ovf  | n[]  |        |     |     | overflow | 6
 (5 rows)
 
 -- floats: the value of the decimal text rounded like float4in / float8in, out of range is an overflow
