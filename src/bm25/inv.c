@@ -326,6 +326,19 @@ grow_slots(SiftInvBuf *b)
 	b->mask = mask;
 }
 
+/* The bytes of the terms past INV_MAX_BUDGET: one doc that has more spills the buffer once added, up to the 1 GB of an array */
+static void
+grow_term_bytes(SiftInvBuf *b, Size need)
+{
+	if (need > MaxAllocSize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift: the distinct terms of a document exceed 1 GB"),
+				 errhint("Split the document into several rows.")));
+	b->tcap = Min(b->tcap * 2, MaxAllocSize);
+	b->tbytes = repalloc(b->tbytes, b->tcap);
+}
+
 static InvTerm *
 term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 {
@@ -346,10 +359,7 @@ term_get(SiftInvBuf *b, const SiftTermFreq *tf)
 		b->terms = repalloc(b->terms, (Size) b->maxterms * sizeof(InvTerm));
 	}
 	if (b->tlen + tf->len > b->tcap)
-	{
-		b->tcap = Min(b->tcap * 2, INV_MAX_BUDGET);
-		b->tbytes = repalloc(b->tbytes, b->tcap);
-	}
+		grow_term_bytes(b, b->tlen + tf->len);
 	t = &b->terms[b->nterms];
 	memset(t, 0, sizeof(InvTerm));
 	t->hash = tf->hash;
