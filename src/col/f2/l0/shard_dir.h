@@ -197,8 +197,9 @@ extern void sift_l0_flush_publish(SiftL0Flush *f, SiftL0AnchorFn publish, void *
 /* The most references one slot of the group commit holds: a statement with more goes to the lock of the partition (a directory is flushed to a part first) */
 #define SIFT_L0_HOT_MAX_REFS		(SIFT_L0_GC_MAX_BYTES / sizeof(SiftL0HeapRef))
 
-/* The result of a hot submit when the partition has no directory writers go to (SIFT_L0_GC_APPLIED and SIFT_L0_GC_STALE are the others) */
+/* The results of a hot submit when the partition has no directory writers go to, or one of the other kind (SIFT_L0_GC_APPLIED and SIFT_L0_GC_STALE are the others) */
 #define SIFT_L0_NOT_HOT				2U
+#define SIFT_L0_OTHER_KIND			3U
 
 /* Where a writer that holds the lock of the partition goes on: the cold chain, the directory (it leaves the lock and submits), or nowhere (the shared table is full) */
 typedef enum SiftL0Route
@@ -210,7 +211,8 @@ typedef enum SiftL0Route
 
 /*
  * Places the references, or the batch records, through the group commit of the partition's directory, with no lock of the partition: *applied of them are placed on return. SIFT_L0_GC_APPLIED when all
- * are, SIFT_L0_GC_STALE when a flush changed the directory (the caller goes on past *applied), SIFT_L0_NOT_HOT when the partition has none.
+ * are, SIFT_L0_GC_STALE when a flush changed the directory (the caller goes on past *applied), SIFT_L0_NOT_HOT when the partition has none. sift_l0_hot_refs gives SIFT_L0_OTHER_KIND
+ * when the directory takes batch records: the references go there as rows, and the lock of the partition would only say so.
  */
 extern uint32 sift_l0_hot_refs(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0HeapRef *refs, uint32 n, uint32 *applied);
 extern uint32 sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0BatchHeader *const *recs, uint32 nrecs, uint32 *applied);

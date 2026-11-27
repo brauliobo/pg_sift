@@ -494,12 +494,16 @@ sift_l0_href_append(Relation rel, uint64 part_id, const uint8 *key_lo, const uin
 
 	for (;;)
 	{
-		uint32		applied;
+		uint32		applied,
+					hot;
 		bool		busy;
 
 		CHECK_FOR_INTERRUPTS();
-		if (hot_ok && sift_l0_hot_refs(rel, part_id, key_lo, refs, n, &applied) == SIFT_L0_GC_APPLIED)
+		hot = hot_ok ? sift_l0_hot_refs(rel, part_id, key_lo, refs, n, &applied) : SIFT_L0_NOT_HOT;
+		if (hot == SIFT_L0_GC_APPLIED)
 			return SIFT_L0_APPENDED;
+		if (hot == SIFT_L0_OTHER_KIND)
+			return SIFT_L0_NO_ROOM;
 		busy = sift_l0_lock_busy(rel, part_id);
 		if (!sift_l0_lock_range(rel, part_id, key_lo, key_hi, &e))
 			return SIFT_L0_MOVED;

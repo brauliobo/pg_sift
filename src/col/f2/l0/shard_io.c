@@ -119,15 +119,16 @@ my_shard(void)
 	return sift_l0_shard_of(sift_shm_my_procno(), SIFT_L0_SHARD_ABS_MAX);
 }
 
-/* The entry of the partition, held, when its writers go to a directory of that kind */
+/* The entry of the partition, held, when its writers go to a directory of that kind; *other when they go to one of the other kind */
 static SiftL0ShardShm *
-hot_entry(SiftL0Table *t, Relation rel, uint64 part_id, bool href, BlockNumber *dir)
+hot_entry(SiftL0Table *t, Relation rel, uint64 part_id, bool href, BlockNumber *dir, bool *other)
 {
 	SiftL0ShardShm *shm = find_held(t, rel, part_id);
 
 	*dir = shm != NULL ? pg_atomic_read_u32(&shm->dir_blk) : NO_BLOCK;
 	pg_read_barrier();
-	if (*dir != NO_BLOCK && (pg_atomic_read_u32(&shm->heapref) != 0) == href)
+	*other = *dir != NO_BLOCK && (pg_atomic_read_u32(&shm->heapref) != 0) != href;
+	if (*dir != NO_BLOCK && !*other)
 		return shm;
 	if (shm != NULL)
 		unhold(shm);
@@ -151,14 +152,15 @@ sift_l0_hot_refs(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftL0
 {
 	SiftL0Table *t = table_try();
 	BlockNumber dir;
-	SiftL0ShardShm *shm = hot_entry(t, rel, part_id, true, &dir);
+	bool		other;
+	SiftL0ShardShm *shm = hot_entry(t, rel, part_id, true, &dir, &other);
 	SiftHrefIo	h;
 	SiftL0ShardCtx c;
 	uint32		result;
 
 	*applied = 0;
 	if (shm == NULL)
-		return SIFT_L0_NOT_HOT;
+		return other ? SIFT_L0_OTHER_KIND : SIFT_L0_NOT_HOT;
 	sift_href_io_init(&h, rel, (uint32) part_id);
 	c = (SiftL0ShardCtx) {.io = &h.io,.shm = shm};
 	PG_TRY();
@@ -180,7 +182,8 @@ sift_l0_hot_batches(Relation rel, uint64 part_id, const uint8 *key_lo, const Sif
 {
 	SiftL0Table *t = table_try();
 	BlockNumber dir;
-	SiftL0ShardShm *shm = hot_entry(t, rel, part_id, false, &dir);
+	bool		other;
+	SiftL0ShardShm *shm = hot_entry(t, rel, part_id, false, &dir, &other);
 	SiftHrefIo	h;
 	SiftL0ShardCtx c;
 	uint32		result = SIFT_L0_GC_APPLIED;
