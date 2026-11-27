@@ -63,7 +63,7 @@ kept_in(Relids l, Relids rest)
 
 /* the special join of the statement as a dimension: a left join to a relation, the relation a RIGHT or FULL join keeps, the relations under a semi or anti join; false for any other */
 static bool
-special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
+special_dim(PlannerInfo *root, SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 {
 	Relids		fact = bms_make_singleton(sh->fact->relid);
 	Relids		l = sj->min_lefthand,
@@ -87,10 +87,22 @@ special_dim(SiftV6JoinShape *sh, const SpecialJoinInfo *sj, Relids rest)
 			return bms_equal(r, fact) && kept_in(l, rest) && sift_v6_join_add_dim(sh, l, SV6J_FULL_EQUI);
 		case JOIN_SEMI:
 		case JOIN_ANTI:
-			return bms_is_subset(r, rest) && sift_v6_join_add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);
+			return bms_is_subset(bms_difference(r, root->outer_join_rels), rest) && sift_v6_join_add_dim(sh, r, sj->jointype == JOIN_SEMI ? SV6J_SEMI_EQUI : SV6J_ANTI_EQUI);
 		default:
 			return false;
 	}
+}
+
+/* a join under the right side of a semi or anti join: the plan of that dimension makes it */
+static bool
+under_semi(const SpecialJoinInfo *sj, const List *joins)
+{
+	Relids		rels = bms_union(sj->min_lefthand, sj->min_righthand);
+
+	foreach_node(SpecialJoinInfo, o, joins)
+		if (o != sj && (o->jointype == JOIN_SEMI || o->jointype == JOIN_ANTI) && bms_is_subset(rels, o->min_righthand))
+			return true;
+	return false;
 }
 
 /* the dimensions in the order the pipe probes them: a join of inner relations, then the others in the order the statement joins them, each probing columns of the relations before it */
@@ -114,7 +126,7 @@ make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 				return false;
 			sh->elem_left = true;
 		}
-		else if (!special_dim(sh, sj, rest))
+		else if (!under_semi(sj, root->join_info_list) && !special_dim(root, sh, sj, rest))
 			return false;
 	}
 	for (int i = 0; i < sh->nd; i++)
