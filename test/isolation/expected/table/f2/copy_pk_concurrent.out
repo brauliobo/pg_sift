@@ -1,0 +1,54 @@
+Parsed test spec with 4 sessions
+
+starting permutation: h_hold s1_begin s1_copy s2_insert h_release s1_commit s3_read
+step h_hold: SELECT pg_advisory_lock(114, 3);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_copy: COPY iso_copy_pk FROM PROGRAM 'seq 1 1001 | sed ''s/$/\tcopy/'''; <waiting ...>
+step s2_insert: INSERT INTO iso_copy_pk VALUES (1, 'insert'); <waiting ...>
+step h_release: SELECT pg_advisory_unlock(114, 3);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1_copy: <... completed>
+step s1_commit: COMMIT;
+step s2_insert: <... completed>
+ERROR:  duplicate key value violates unique constraint "iso_copy_pk_pkey"
+step s3_read: SELECT count(*) AS rows, count(*) FILTER (WHERE id = 1) AS key_1, string_agg(v, ',') FILTER (WHERE id = 1) AS v_1 FROM iso_copy_pk;
+rows|key_1|v_1 
+----+-----+----
+1001|    1|copy
+(1 row)
+
+
+starting permutation: h_hold s1_begin s1_copy s2_insert h_release s1_abort s3_read
+step h_hold: SELECT pg_advisory_lock(114, 3);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1_begin: BEGIN;
+step s1_copy: COPY iso_copy_pk FROM PROGRAM 'seq 1 1001 | sed ''s/$/\tcopy/'''; <waiting ...>
+step s2_insert: INSERT INTO iso_copy_pk VALUES (1, 'insert'); <waiting ...>
+step h_release: SELECT pg_advisory_unlock(114, 3);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1_copy: <... completed>
+step s1_abort: ROLLBACK;
+step s2_insert: <... completed>
+step s3_read: SELECT count(*) AS rows, count(*) FILTER (WHERE id = 1) AS key_1, string_agg(v, ',') FILTER (WHERE id = 1) AS v_1 FROM iso_copy_pk;
+rows|key_1|v_1   
+----+-----+------
+   1|    1|insert
+(1 row)
+

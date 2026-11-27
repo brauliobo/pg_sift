@@ -225,7 +225,11 @@ sift_tbl_f2_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, Comma
 
 	CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 	if (sift_batch_route(nslots, published, has_row_triggers(rel)) == SIFT_BATCH_DIRECT)
+	{
 		sift_tbl_f2_bulk_insert(rel, store, slots, nslots, cid, frozen);
+		for (int i = 0; i < nslots; i++)
+			publish_staged(rel, store, sift_tbl_tid_pack(&slots[i]->tts_tid), 0);
+	}
 	else
 		for (int i = 0; i < nslots; i++)
 		{
