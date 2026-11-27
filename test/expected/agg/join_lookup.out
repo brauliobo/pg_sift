@@ -1,6 +1,6 @@
 -- The joins of Custom Scan (SiftAggV6) that look a key up in a relation that may hold it more than once or be any plan: every statement runs on the node and with sift.enable_agg = off,
 -- and the rows must be the same. inner, left, right, full, semi and anti joins, an inequality beside the key, VALUES, CTE, sub-select and join-tree dimensions, a composite key,
--- and the same dimensions under the unnest of a jsonb array.
+-- and the same dimensions under the unnest of a jsonb array; keys and arguments that are expressions of the columns of the joined rows.
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
@@ -60,7 +60,13 @@ INSERT INTO stmts VALUES
 (17, 'SELECT i.category, count(*), count(m.tag) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) LEFT JOIN m ON m.category = i.category WHERE m.tag IS NULL OR m.tag <> ''x'' GROUP BY i.category'),
 (18, 'SELECT i.category, count(*), sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) WHERE EXISTS (SELECT 1 FROM m WHERE m.category = i.category AND m.tag IS NOT NULL) GROUP BY i.category'),
 (19, 'SELECT i.category, count(*), count(DISTINCT f.id) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) WHERE NOT EXISTS (SELECT 1 FROM m WHERE m.category = i.category) GROUP BY i.category'),
-(20, 'SELECT d.t, count(*) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) JOIN d ON d.k = f.k JOIN m ON m.category = i.category AND m.tag = d.t GROUP BY d.t');
+(20, 'SELECT d.t, count(*) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) JOIN d ON d.k = f.k JOIN m ON m.category = i.category AND m.tag = d.t GROUP BY d.t'),
+-- keys and arguments of the joined rows: expressions of the columns of a dimension, of the fact table and of the element, computed on each joined row (the NULLs of an unmatched dimension too)
+(21, 'SELECT d.w % 3, count(*), sum(f.v) FROM f JOIN d ON d.k = f.k GROUP BY 1'),
+(22, 'SELECT coalesce(d.t, ''-'') || f.g, count(*), sum(coalesce(d.w, -1) + f.v) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1'),
+(23, 'SELECT coalesce(m.tag, ''-''), count(*), count(DISTINCT i.category) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) LEFT JOIN m ON m.category = i.category GROUP BY 1'),
+(24, 'SELECT g.n % 4, count(*) FROM f JOIN generate_series(1, 12) AS g(n) ON f.k = g.n GROUP BY 1'),
+(25, 'SELECT f.g, count(*) FILTER (WHERE d.w > 10), sum(f.v) FILTER (WHERE d.t = ''t1'' OR f.v < 5), count(*) FILTER (WHERE coalesce(d.w, 0) + f.v > 30) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1');
 SELECT id, (same(q)).* FROM stmts ORDER BY id;
  id |  engine   | result_rows | vs_heap 
 ----+-----------+-------------+---------
@@ -84,7 +90,12 @@ SELECT id, (same(q)).* FROM stmts ORDER BY id;
  18 | SiftAggV6 |           4 |       0
  19 | SiftAggV6 |           1 |       0
  20 | SiftAggV6 |           3 |       0
-(20 rows)
+ 21 | SiftAggV6 |           3 |       0
+ 22 | SiftAggV6 |          16 |       0
+ 23 | SiftAggV6 |           7 |       0
+ 24 | SiftAggV6 |           4 |       0
+ 25 | SiftAggV6 |           4 |       0
+(25 rows)
 
 -- the arms of a statement that join the same table (the same columns and conditions, the same keys) read it once: the second node uses the first one's table
 CREATE FUNCTION arms(q text) RETURNS TABLE (nodes bigint, shared_dimensions bigint, vs_heap bigint) LANGUAGE plpgsql AS $$

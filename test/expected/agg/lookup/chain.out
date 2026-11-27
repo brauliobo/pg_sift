@@ -1,5 +1,5 @@
 -- A lookup join keyed by columns of an earlier lookup's table (entities of the same type, with NULLs): the rows are the same as the normal plan's.
--- SiftAggV6 keeps the normal plan for a second lookup keyed by the first (explain_why: where).
+-- SiftAggV6 groups by an expression of the second lookup's columns (the coalesce of an unmatched row) on the joined rows.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -27,24 +27,16 @@ VACUUM (FREEZE, ANALYZE) maps;
 \set chain_expression 'SELECT coalesce(m.label, ''none'') || coalesce(e.kind, ''?'') || coalesce(e.tier::text, ''?'') AS ty, e.score * 2 AS s2, count(*) AS n FROM facts f LEFT JOIN ents e ON e.id = f.ent_id LEFT JOIN maps m ON m.kind = e.kind AND m.tier = e.tier AND m.cat = f.cat GROUP BY 1, 2'
 CREATE FUNCTION explain_lines(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY EXECUTE 'EXPLAIN (COSTS OFF) ' || q; END $$;
 EXPLAIN (COSTS OFF) :chain_label;
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
- GroupAggregate
-   Group Key: (COALESCE(m.label, 'none'::text))
-   ->  Sort
-         Sort Key: (COALESCE(m.label, 'none'::text))
-         ->  Hash Left Join
-               Hash Cond: ((e.kind = m.kind) AND (e.tier = m.tier) AND (f.cat = m.cat))
-               ->  Nested Loop Left Join
-                     ->  Seq Scan on facts f
-                     ->  Memoize
-                           Cache Key: f.ent_id
-                           Cache Mode: logical
-                           ->  Index Scan using ents_pkey on ents e
-                                 Index Cond: (id = f.ent_id)
-               ->  Hash
-                     ->  Seq Scan on maps m
-(15 rows)
+                 QUERY PLAN                 
+--------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: facts_col
+   Pushed Aggregates: count(*), sum(amount)
+   Star Dimensions: 2
+   Lookup Joins: ents (left), maps (left)
+   ->  Seq Scan on ents e
+   ->  Seq Scan on maps m
+(7 rows)
 
 EXPLAIN (COSTS OFF) :chain_expression;
                                                                              QUERY PLAN                                                                             

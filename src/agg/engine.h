@@ -141,6 +141,14 @@ typedef struct SiftV6Col
 	Oid			collid;			/* a key: the collation its type is grouped under (the interner of a generic key, v6_datum.h) */
 } SiftV6Col;
 
+/* the two columns are one column of the scan: the same read of the same source */
+static inline bool
+sift_v6_col_same(const SiftV6Col *a, const SiftV6Col *b)
+{
+	return a->attno == b->attno && a->typid == b->typid && a->jleaf == b->jleaf && a->jmember == b->jmember && a->jtype == b->jtype && a->jsonb_cast == b->jsonb_cast &&
+		a->jint == b->jint && a->src == b->src && a->dim == b->dim && a->slot == b->slot && a->derive == b->derive;
+}
+
 /* How the scan decodes the column: SV6C_DATUM for a column the planner marked to be read as datums (v6_datum.h) and for a whole jsonb document */
 static inline SiftV6Class
 sift_v6_col_class(const SiftV6Col *c)

@@ -1,5 +1,5 @@
 -- A lookup join keyed by columns of an earlier lookup's table (entities of the same type, with NULLs): the rows are the same as the normal plan's.
--- SiftAggV6 keeps the normal plan for a second lookup keyed by the first (explain_why: where).
+-- SiftAggV6 groups by an expression of the second lookup's columns (the coalesce of an unmatched row) on the joined rows.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

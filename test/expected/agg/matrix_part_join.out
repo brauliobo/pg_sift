@@ -132,7 +132,7 @@ SELECT name, plan_has(q, 'Custom Scan (SiftAggV6') AS served_by_agg_v6 FROM case
  computed key                                | t
  computed key of a full join                 | t
  computed key of an inner join               | t
- computed key that is not NULL on NULL       | f
+ computed key that is not NULL on NULL       | t
  dimension full                              | t
  dimension left                              | t
  dimension right                             | t
@@ -171,7 +171,7 @@ SELECT name, plan_has(q, 'Partitions: ') AS reads_the_partitions FROM cases WHER
  computed key                                | t
  computed key of a full join                 | t
  computed key of an inner join               | t
- computed key that is not NULL on NULL       | f
+ computed key that is not NULL on NULL       | t
  dimension full                              | t
  dimension left                              | t
  dimension right                             | t

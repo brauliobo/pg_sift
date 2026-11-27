@@ -155,7 +155,7 @@ SELECT id, (same(q)).* FROM stmts ORDER BY id;
  49 | SiftAggV6 |           5 |       0
  50 | SiftAggV6 |           5 |       0
  51 | normal    |           1 |       0
- 52 | normal    |           5 |       0
+ 52 | SiftAggV6 |           5 |       0
 (51 rows)
 
 -- a dimension the transaction changed, and an empty one

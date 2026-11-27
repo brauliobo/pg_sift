@@ -261,11 +261,11 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = ''a'') FROM sf, unnest(sf.tags) u(e) GROUP BY 1',
 	'SELECT d1.name, count(*) FILTER (WHERE sf.doc->>''t'' = ''x'') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1'
 ]) q;
-                                                                   same                                                                    
--------------------------------------------------------------------------------------------------------------------------------------------
+                                                                  same                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------
  same normal SELECT g, sum((doc->>'a')::float8) FILTER (WHERE v > 20), count(doc->>'t') FILTER (WHERE g > 2) FROM sf GROUP BY g
  same node SELECT doc->>'t', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1
- same normal SELECT d1.name, sum(sf.v) FILTER (WHERE d1.w > 1), count(*) FILTER (WHERE sf.g = 2) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
+ same node SELECT d1.name, sum(sf.v) FILTER (WHERE d1.w > 1), count(*) FILTER (WHERE sf.g = 2) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
  same node SELECT u.e, count(*) FILTER (WHERE sf.v > 20), sum(sf.v) FILTER (WHERE u.e = 'a') FROM sf, unnest(sf.tags) u(e) GROUP BY 1
  same node SELECT d1.name, count(*) FILTER (WHERE sf.doc->>'t' = 'x') FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1
 (5 rows)

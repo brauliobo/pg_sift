@@ -310,22 +310,25 @@ add_derive(V6Plan *p, const SiftV6Derive *d)
 	return ++p->spec.nderive;
 }
 
-/* the derivations the pipe of a join carries are those of PostgreSQL's evaluator (v6_pg_expr.h) over columns of the fact table: the pipe has a vector for each, which the rows of a RIGHT or FULL join's
- * dimension that no fact row matched have NULL, as an expression that is NULL on NULL inputs has them */
+/*
+ * the derivations the scan computes before the pipe of a join are those of PostgreSQL's evaluator (v6_pg_expr.h) over columns of the fact table and of the element of its unnest: the pipe has a vector
+ * for each, which the rows of a RIGHT or FULL join's dimension that no fact row matched have NULL, as an expression that is NULL on NULL inputs has them. Any other is one of the joined rows
+ * (sift_v6_star_joined_col)
+ */
 static bool
 join_derive_ok(const V6Plan *p, const Expr *e)
 {
 	const SiftV6Ext *x = p->xseed;
 	bool		preserved = false;
 
-	if (x == NULL || x->unnest)
+	if (x == NULL)
 		return true;
 	for (int d = 0; d < x->ndims; d++)
 		preserved |= sift_star_preserves_dim(x->dim[d].mode);
 	if (preserved && contain_nonstrict_functions((Node *) e))
 		return false;
 	foreach_ptr(Var, v, pull_var_clause((Node *) e, PVC_RECURSE_PLACEHOLDERS))
-		if (v->varno != p->rel->relid)
+		if (v->varno != p->rel->relid && (p->elem_rel == NULL || v->varno != p->elem_rel->relid))
 			return false;
 	return true;
 }
@@ -382,7 +385,9 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true);
-	if (!join_derive_ok(p, e) || !sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
+	if (!join_derive_ok(p, e))
+		return sift_v6_star_joined_col(p, e, key, col);
+	if (!sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
 		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};

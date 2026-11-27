@@ -5,7 +5,8 @@
  * v6_unnest_run.c with its pairs of (row, element).
  *
  * The vectors of a batch are numbered: the slots of the fact side (the columns of the scan, and the element of an unnest) first, then the payload columns of the dimensions in the order of the
- * spec. A key or an argument of the spec is one of them (key_slot, arg_slot; -1: none, a count(*)).
+ * spec, then the expressions of the joined rows (SiftV6Ext.jexpr), which PostgreSQL's evaluator computes after the last dimension. A key or an argument of the spec is one of them (key_slot,
+ * arg_slot; -1: none, a count(*)).
  */
 #ifndef SIFT_AGG_V6_PIPE_H
 #define SIFT_AGG_V6_PIPE_H
@@ -38,7 +39,9 @@ typedef struct SiftV6Pipe
 	uint32		part[SIFT_STAR_MAX_DIMS];	/* the part of the key the current pass joins */
 	int			fslot[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the slots of the fact keys of each dimension */
 	SiftV6KeyExpr *kexpr[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the keys that are expressions (NULL: the slot of fslot) */
-	int			pay_slot[SIFT_STAR_MAX_DIMS];	/* the first payload slot of each dimension */
+	int			pay_slot[SIFT_STAR_MAX_DIMS + 1];	/* the first payload slot of each dimension, and of the expressions of the joined rows (SIFT_V6_JOINED_DIM) */
+	int			njoined;
+	SiftV6KeyExpr **joined;		/* [njoined] the expressions of the joined rows */
 	SiftVecType *type;			/* [nslots] */
 	int16	   *typlen;			/* [nslots]: of a payload slot of SVEC_DATUM, its type's length and passing */
 	bool	   *typbyval;
@@ -64,7 +67,7 @@ extern SiftV6Pipe *sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, Si
 extern SiftV6Pipe *sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, void *sink_arg);
 /* The column the vector v of a batch is: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second, then the columns of the COUNT(DISTINCT ..) rows and those of the FILTER clauses; NULL for none */
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
-/* The slot of the payload column of a dimension */
+/* The slot of the payload column of a dimension, or of an expression of the joined rows (SIFT_V6_JOINED_DIM) */
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
 /* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset */
 extern void sift_v6_pipe_semi(SiftV6Pipe *p, int slot);

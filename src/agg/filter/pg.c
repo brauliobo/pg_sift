@@ -398,22 +398,19 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 	return true;
 }
 
-/* a clause PostgreSQL evaluates over the datums of its columns (the planner's derivation, whose number is the constant of the test): the rows where the derived boolean is true */
+/* a clause PostgreSQL evaluates over the datums of its columns (a derivation, or an expression of the joined rows): the constant of the test is 1 + the column of the boolean, the rows where it is true */
 static bool
 pred_derived(Build *b, const BooleanTest *bt, SiftPred *p)
 {
-	int			derive;
+	int			vec;
 
 	if (bt->booltesttype != IS_TRUE || !IsA(bt->arg, Const))
 		return false;
-	derive = DatumGetInt32(((const Const *) bt->arg)->constvalue);
-	for (int i = 0; i < *b->nfcols; i++)
-		if (b->fcol[i].derive == derive)
-		{
-			*p = (SiftPred) {.op = SPO_EQ,.kind = SPK_INT,.vec = i,.i = 1};
-			return true;
-		}
-	return false;
+	vec = DatumGetInt32(((const Const *) bt->arg)->constvalue) - 1;
+	if (vec < 0 || vec >= *b->nfcols)
+		return false;
+	*p = (SiftPred) {.op = SPO_EQ,.kind = SPK_INT,.vec = vec,.i = 1};
+	return true;
 }
 
 static bool
@@ -429,12 +426,9 @@ static void
 canon_pred(Build *b, const SiftPred *p)
 {
 	const uint8 head[3] = {(uint8) p->op, (uint8) p->kind, (uint8) p->like};
-	const int	attno = b->fcol[p->vec].attno;
-	const int	derive = b->fcol[p->vec].derive;
 
 	canon_put(b, head, sizeof(head));
-	canon_put(b, &attno, sizeof(attno));
-	canon_put(b, &derive, sizeof(derive));
+	canon_put(b, &p->vec, sizeof(p->vec));
 	canon_put(b, &p->i, sizeof(p->i));
 	canon_put(b, &p->f, sizeof(p->f));
 	canon_put(b, &p->s.len, sizeof(p->s.len));

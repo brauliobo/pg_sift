@@ -80,7 +80,9 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 		at += x->dim[d].npay;
 		p->nparts[d] = 1;
 	}
-	p->nslots = at;
+	p->pay_slot[SIFT_V6_JOINED_DIM] = at;
+	p->njoined = x != NULL ? list_length(x->jexpr) : 0;
+	p->nslots = at + p->njoined;
 	p->type = MemoryContextAlloc(cx, p->nslots * sizeof(SiftVecType));
 	p->typlen = MemoryContextAllocZero(cx, p->nslots * sizeof(int16));
 	p->typbyval = MemoryContextAllocZero(cx, p->nslots * sizeof(bool));
@@ -98,6 +100,18 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 			if (p->type[s] == SVEC_DATUM)
 				get_typlenbyval(typid, &p->typlen[s], &p->typbyval[s]);
 		}
+	p->joined = MemoryContextAlloc(cx, Max(p->njoined, 1) * sizeof(SiftV6KeyExpr *));
+	for (int j = 0; j < p->njoined; j++)
+	{
+		const int	s = p->pay_slot[SIFT_V6_JOINED_DIM] + j;
+
+		p->joined[j] = key_expr_new(p, list_nth(x->jexpr, j));
+		const Oid	restype = p->joined[j]->x->restype;
+
+		p->type[s] = sift_v6_type_native(restype) ? sift_v6_result_vec_type(restype) : SVEC_DATUM;
+		if (p->type[s] == SVEC_DATUM)
+			get_typlenbyval(restype, &p->typlen[s], &p->typbyval[s]);
+	}
 	p->key_slot = MemoryContextAlloc(cx, Max(spec->nkeys, 1) * sizeof(int));
 	p->arg_slot = MemoryContextAlloc(cx, Max(sift_v6_spec_nvec(spec), 1) * sizeof(int));
 	p->keyvec = MemoryContextAlloc(cx, Max(spec->nkeys, 1) * sizeof(SiftVec *));
@@ -433,6 +447,8 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 			if (bs->n_active == 0)
 				return;
 		}
+		for (int j = 0; j < p->njoined; j++)
+			b->vec[p->pay_slot[SIFT_V6_JOINED_DIM] + j] = *key_expr_vec(p, p->joined[j], b);
 		update_groups(p, b);
 		return;
 	}

@@ -37,7 +37,7 @@ bool
 sift_par_star_shape(const SiftV6Spec *sp, SiftParWordShape *sh)
 {
 	*sh = (SiftParWordShape) {0};
-	if (sp->ext == NULL || sp->ext->unnest || sp->ext->ndims < 1 || sp->ext->kexpr != NIL || sp->ext->resid != NIL || sp->nfcols != 0)
+	if (sp->ext == NULL || sp->ext->unnest || sp->ext->ndims < 1 || sp->ext->kexpr != NIL || sp->ext->jexpr != NIL || sp->ext->resid != NIL || sp->nfcols != 0)
 		return false;
 	for (int d = 0; d < sp->ext->ndims; d++)
 		if ((sp->ext->dim[d].mode != SV6J_INNER_EQUI && sp->ext->dim[d].mode != SV6J_LEFT_EQUI) || sp->ext->on[d] != NIL)

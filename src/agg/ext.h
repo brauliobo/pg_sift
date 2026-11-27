@@ -29,6 +29,9 @@ sift_v6_col_is_flag(const SiftV6Col *c)
 #define SIFT_V6_XPARTS		8		/* the parts of one test, each passed by some element of the row (the objects of the pattern of a containment) */
 
 /* A dimension of a star join: the fact attributes and the columns of the plan of the dimension its keys and payload are */
+/* the dim of the columns of SiftV6Ext.jexpr: a stage after the dimensions, whose payload the pipe computes */
+#define SIFT_V6_JOINED_DIM	SIFT_STAR_MAX_DIMS
+
 typedef struct SiftV6XDim
 {
 	SiftV6JoinMode mode;
@@ -133,6 +136,8 @@ typedef struct SiftV6Ext
 	int			ndims;
 	SiftV6XDim	dim[SIFT_STAR_MAX_DIMS];
 	List	   *kexpr;			/* the probing sides of the keys that are expressions (lower(i.category), o.k + i.n - 3), over the virtual attributes 1.. of rcol like resid: PostgreSQL's evaluator gives their vectors before the dimension is probed */
+	List	   *jexpr;			/* the keys and arguments of the joined rows (coalesce(m.tag, '-'), s.kind || o.source), over the same attributes: PostgreSQL's evaluator gives their vectors after the
+								 * last dimension, the columns of SIFT_V6_JOINED_DIM */
 	List	   *resid;			/* the conditions of the join that no key says (an inequality, a WHERE over the columns of a left join), over the virtual attributes 1.. of rcol (v6_join_lookup.h); a pair that fails one leaves the join */
 	List	   *on[SIFT_STAR_MAX_DIMS];	/* the conditions of the ON clause of dimension d that no key says, over the same virtual attributes: a pair that fails one is no match (a fact row of a left or full join is kept without the dimension row, a row of a right or full join's dimension stays unmatched) */
 	int			nrcol;

@@ -132,14 +132,14 @@ derived_filter_quals(V6Plan *p, Expr *filter)
 
 	if (exprType((Node *) filter) != BOOLOID || !sift_v6_pg_derived_col(p, filter, false, &col))
 		return NIL;
-	while (i < p->spec.nfcols && p->spec.fcol[i].derive != col.derive)
+	while (i < p->spec.nfcols && !sift_v6_col_same(&p->spec.fcol[i], &col))
 		i++;
 	if (i == p->spec.nfcols && p->spec.nfcols == SIFT_V6_MAX_FCOLS)
 		return NIL;
 	p->spec.fcol[i] = col;
 	p->spec.nfcols = Max(p->spec.nfcols, i + 1);
 	bt = makeNode(BooleanTest);
-	bt->arg = (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(col.derive), false, true);
+	bt->arg = (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(i + 1), false, true);
 	bt->booltesttype = IS_TRUE;
 	return list_make1(bt);
 }
