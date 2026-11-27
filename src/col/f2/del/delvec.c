@@ -4,6 +4,8 @@
 #include "core/host.h"
 
 #include "access/transam.h"
+#include "access/xact.h"
+#include "storage/predicate.h"
 #include "storage/procarray.h"
 
 #include "col/f2/del/delvec.h"
@@ -248,6 +250,26 @@ sift_dv_visible_rows(const SiftDvGran *g, Snapshot snap, uint16 *out, uint16 max
 			n++;
 		}
 	return n;
+}
+
+void
+sift_dv_conflict_out(const SiftDvGran *g, Relation rel, Snapshot snap)
+{
+	TransactionId last = InvalidTransactionId;
+	SiftXidCache xc;
+
+	if (g->xmax == NULL)
+		return;
+	sift_xid_cache_init(&xc, snap);
+	for (int i = 0; i < g->ndead; i++)
+	{
+		TransactionId xmax = g->xmax[i].xmax;
+
+		if (xmax == last || !TransactionIdIsNormal(xmax) || dv_row_seen(g, i, snap, &xc) || TransactionIdIsCurrentTransactionId(xmax))
+			continue;
+		CheckForSerializableConflictOut(rel, xmax, snap);
+		last = xmax;
+	}
 }
 
 char *

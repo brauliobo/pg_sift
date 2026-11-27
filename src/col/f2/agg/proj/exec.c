@@ -20,6 +20,7 @@
 #include "col/f2/agg/proj/key.h"
 #include "col/am.h"
 #include "core/errctx.h"
+#include "core/memtrack.h"
 #include "miscadmin.h"
 
 /* The aggregate as a measure of a projection, with its FILTER: false for what a projection cannot answer, and never with a FILTER left out */
@@ -216,16 +217,20 @@ fill_result(const SiftF2Store *store, const SiftV6Spec *spec, SiftProjCube *cube
 	const int	ngroups = sift_proj_cube_ngroups(cube);
 	const int	n = Max(ngroups, spec->nkeys == 0);
 	SiftProjGroup empty = {.st = palloc0(Max(spec->naggs, 1) * sizeof(SiftProjMState))};
+	Size		cells;
 
 	out->natts = spec->nkeys + spec->naggs;
 	out->nrows = n;
-	out->values = palloc(Max(n * out->natts, 1) * sizeof(Datum));
-	out->isnull = palloc(Max(n * out->natts, 1) * sizeof(bool));
+	cells = Max((Size) n * out->natts, 1);
+	out->values = palloc(cells * sizeof(Datum));
+	out->isnull = palloc(cells * sizeof(bool));
 	for (int i = 0; i < n; i++)
 	{
 		const SiftProjGroup *g = i < ngroups ? sift_proj_cube_group(cube, i) : &empty;
 		Datum	   *v = out->values + (size_t) i * out->natts;
 		bool	   *nl = out->isnull + (size_t) i * out->natts;
+
+		CHECK_FOR_INTERRUPTS();
 
 		for (int k = 0; k < spec->nkeys; k++)
 			v[k] = key_datum(store, &spec->key[k], &g->key[k], &nl[k]);
@@ -265,7 +270,7 @@ rest_leaves(const SiftV6ProjQuery *q, int *leaves)
 	return n;
 }
 
-/* The cube of the statement: the cells of every part the projection stands for, the dead rows of those taken away, the rows of the rest added; false when it cannot be exact */
+/* The cube of the statement: the cells of every part the projection stands for, the dead rows of those taken away, the rows of the rest added; false when it cannot be exact or outgrows work_mem */
 static bool
 fold_sources(const SiftV6ProjCtx *c, const SiftV6ProjSource *src, const SiftProjRollup *map, const SiftV6ProjQuery *q, const SiftProjSpec *qspec, SiftProjFold **out, SiftProjResult *res)
 {
@@ -277,15 +282,20 @@ fold_sources(const SiftV6ProjCtx *c, const SiftV6ProjSource *src, const SiftProj
 				nleaves = rest_leaves(q, leaves),
 				nskip;
 	uint64	   *skip = sift_v6_proj_served_gens(c, src, &nskip);
+	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift proj part");
 
 	sift_proj_part_spec(h->store, &src->def->spec, &c->cols, pps);
-	f = sift_proj_fold_new(qspec, &src->def->spec, pps->lay, pps->nlay, map, h->preds, h->npreds, h->store->ncols, &c->cols, (int64) work_mem * 1024 / 128);
+	f = sift_proj_fold_new(qspec, &src->def->spec, pps->lay, pps->nlay, map, h->preds, h->npreds, h->store->ncols, &c->cols);
 	io = (FoldIO) {f, palloc(Max(Max(pps->nlay, h->store->ncols), 1) * sizeof(SiftCell))};
 	*out = f;
-	for (int i = 0; i < c->base.n; i++)
+	for (int i = 0; i < c->base.n && f->ok; i++)
 	{
+		MemoryContext old;
+
 		if (src->serve[i].serve == SPS_BASE)
 			continue;
+		CHECK_FOR_INTERRUPTS();
+		old = MemoryContextSwitchTo(pcx);
 		sift_proj_scan_part(h->rel, sift_v6_proj_part_of(src, src->serve[i].proj_gen), SIFT_PROJ_PART_ID, &pps->spec, false, stored_row, &io);
 		res->nparts++;
 		if (src->serve[i].serve == SPS_OVERLAY)
@@ -293,9 +303,12 @@ fold_sources(const SiftV6ProjCtx *c, const SiftV6ProjSource *src, const SiftProj
 			sift_v6_host_overlay_rows(h, &c->base, i, sift_proj_link_of(&src->parts, c->base.part[i].part_gen), dead_row, &io);
 			res->nsubtracted++;
 		}
+		MemoryContextSwitchTo(old);
+		MemoryContextReset(pcx);
 	}
+	MemoryContextDelete(pcx);
 	res->nbase = c->base.n - nskip;
-	if (!sift_v6_host_scan_rest(h, c->plan, skip, nskip, leaves, nleaves, live_row, f))
+	if (!f->ok || !sift_v6_host_scan_rest(h, c->plan, skip, nskip, leaves, nleaves, live_row, f))
 		return false;
 	res->nrest_rows = f->nlive;
 	return sift_proj_fold_finish(f);

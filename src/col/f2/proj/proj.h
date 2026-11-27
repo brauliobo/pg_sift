@@ -217,7 +217,6 @@ extern bool sift_proj_spec_preds_pass(const SiftProjSpecPred *p, int n, const Si
 extern bool sift_proj_spec_preds_decidable(const SiftProjSpecPred *p, int n, const SiftCell *row);
 
 extern SiftProjCube *sift_proj_cube_new(const SiftProjSpec *s, const SiftProjColumns *cols);
-extern void sift_proj_cube_free(SiftProjCube *c);
 
 /* A row of the relation (one cell per column) added (sign 1) or taken away (sign -1: the group goes when its rows are 0); false, nothing changed, when a row cannot be taken away */
 extern bool sift_proj_cube_add(SiftProjCube *c, const SiftCell *row, int sign);

@@ -44,6 +44,7 @@ col/conn/lock	0.1
 col/f2/compact_snapshot	1.0	quiet
 col/f2/preagg_table_snapshot	3.5
 col/f2/proj_ddl_locks	0.1
+col/f2/ssi_proj_dv	0.3	quiet
 col/f2/ssi_scans	0.8
 col/f2/ssi_table_agg	0.1
 col/f2/stage_rollback_commit	0.0

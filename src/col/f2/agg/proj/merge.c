@@ -6,6 +6,7 @@
 #include <math.h>
 
 #include "col/f2/agg/proj/merge.h"
+#include "core/memtrack.h"
 
 static int
 f8_cmp(double a, double b)
@@ -156,6 +157,8 @@ typedef struct Kept
 
 struct SiftProjTopK
 {
+	SiftMemTracker mem;			/* the rows kept and their strings, held to work_mem */
+	bool		over;			/* the rows kept went past it */
 	const SiftProjSpec *spec;
 	const SiftProjColumns *cols;
 	int			ncols;
@@ -173,6 +176,7 @@ sift_proj_topk_new(const SiftProjSpec *spec, const SiftProjColumns *cols, int nc
 	SiftProjTopK *t = palloc0(sizeof(SiftProjTopK));
 
 	*t = (SiftProjTopK) {.spec = spec,.cols = cols,.ncols = ncols,.limit = limit};
+	sift_mem_init(&t->mem, "proj_sort_rest", CurrentMemoryContext, true, SIFT_BUDGET_WORK_MEM, 1, 1);
 	return t;
 }
 
@@ -187,7 +191,7 @@ kept_cmp(const SiftProjTopK *t, const Kept *a, const Kept *b)
 static Kept
 kept_copy(const SiftProjTopK *t, uint64 tid, const SiftCell *row)
 {
-	Kept		k = {.tid = tid,.cell = palloc(Max(t->ncols, 1) * sizeof(SiftCell))};
+	Kept		k = {.tid = tid,.cell = MemoryContextAlloc(t->mem.root_cx, Max(t->ncols, 1) * sizeof(SiftCell))};
 
 	memcpy(k.cell, row, t->ncols * sizeof(SiftCell));
 	for (int c = 0; c < t->ncols; c++)
@@ -198,12 +202,12 @@ kept_copy(const SiftProjTopK *t, uint64 tid, const SiftCell *row)
 			k.nstr++;
 	}
 	/* check-memory: allow the strings are the constants of one qual */
-	k.str = palloc(Max(k.nstr, 1) * sizeof(char *));
+	k.str = MemoryContextAlloc(t->mem.root_cx, Max(k.nstr, 1) * sizeof(char *));
 	k.nstr = 0;
 	for (int c = 0; c < t->ncols; c++)
 		if (!row[c].isnull && row[c].s != NULL)
 		{
-			char	   *p = palloc(Max(row[c].slen, 1));
+			char	   *p = MemoryContextAlloc(t->mem.root_cx, Max(row[c].slen, 1));
 
 			memcpy(p, row[c].s, row[c].slen);
 			k.cell[c].s = p;
@@ -244,14 +248,9 @@ sift_down(SiftProjTopK *t, int i)
 	}
 }
 
-void
-sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row)
+static void
+keep(SiftProjTopK *t, uint64 tid, const SiftCell *row)
 {
-	Kept		k;
-
-	Assert(!t->sorted);
-	if (t->limit == 0)
-		return;
 	if (t->limit >= 0 && t->n == t->limit)
 	{
 		Kept		probe = {.tid = tid,.cell = (SiftCell *) row};
@@ -266,10 +265,9 @@ sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row)
 	if (t->n == t->cap)
 	{
 		t->cap = t->cap == 0 ? 16 : t->cap * 2;
-		t->kept = t->kept == NULL ? palloc(t->cap * sizeof(Kept)) : repalloc(t->kept, t->cap * sizeof(Kept));
+		t->kept = t->kept == NULL ? MemoryContextAlloc(t->mem.root_cx, (Size) t->cap * sizeof(Kept)) : repalloc(t->kept, (Size) t->cap * sizeof(Kept));
 	}
-	k = kept_copy(t, tid, row);
-	t->kept[t->n] = k;
+	t->kept[t->n] = kept_copy(t, tid, row);
 	for (int i = t->n++; i > 0 && kept_cmp(t, &t->kept[i], &t->kept[(i - 1) / 2]) > 0; i = (i - 1) / 2)
 	{
 		Kept		tmp = t->kept[i];
@@ -277,6 +275,17 @@ sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row)
 		t->kept[i] = t->kept[(i - 1) / 2];
 		t->kept[(i - 1) / 2] = tmp;
 	}
+}
+
+bool
+sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row)
+{
+	Assert(!t->sorted);
+	if (t->over || t->limit == 0)
+		return !t->over;
+	keep(t, tid, row);
+	t->over = sift_mem_pressure(&t->mem, false) == SIFT_MEM_HARD;
+	return !t->over;
 }
 
 int
@@ -317,9 +326,6 @@ sift_proj_topk_stream(SiftProjTopK *t)
 void
 sift_proj_topk_free(SiftProjTopK *t)
 {
-	for (int i = 0; i < t->n; i++)
-		kept_free(&t->kept[i]);
-	if (t->kept != NULL)
-		pfree(t->kept);
+	sift_mem_end(&t->mem);
 	pfree(t);
 }

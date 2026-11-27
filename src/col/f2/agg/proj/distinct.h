@@ -20,7 +20,6 @@ typedef struct SiftProjDistinct SiftProjDistinct;
  * measure: the statement's measure it answers (its FILTER, tested on the group columns of the stored rows and on the columns of the rows); max_pairs: the bound.
  */
 extern SiftProjDistinct *sift_proj_distinct_new(const SiftProjSpec *query, const SiftProjSpec *src, const SiftProjColumns *cols, const SiftProjRollup *map, int measure, int64 max_pairs);
-extern void sift_proj_distinct_free(SiftProjDistinct *d);
 
 /* A stored row of the projection (layout lay): its multiplicity goes to its (group, value); filter_ok: the FILTER of the measure holds on the row's group columns */
 extern void sift_proj_distinct_stored(SiftProjDistinct *d, const SiftProjLayoutCol *lay, int nlay, const SiftCell *stored, bool filter_ok);

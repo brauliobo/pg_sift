@@ -157,6 +157,9 @@ extern uint16 sift_dv_mask64(const SiftDvGran *g, Snapshot snap, uint64 *words12
 /* The rows of the granule whose deletion the snapshot sees, ascending, the first max of them in out; returns the number of all of them, which may be more than max */
 extern uint16 sift_dv_visible_rows(const SiftDvGran *g, Snapshot snap, uint16 *out, uint16 max);
 
+/* Reports to SERIALIZABLE the deleters of the granule the snapshot does not see: a reader that takes the rows of the vector as they are for it has read past their deletes */
+extern void sift_dv_conflict_out(const SiftDvGran *g, Relation rel, Snapshot snap);
+
 /* The serialized form and back (the checksum of the stream is checked) */
 extern char *sift_dv_serialize(const SiftDv *dv, uint32 *len);
 extern SiftDv *sift_dv_deserialize(Relation rel, const char *bytes, uint32 len, uint64 part_gen, uint64 dv_gen, const uint16 *granule_rows);

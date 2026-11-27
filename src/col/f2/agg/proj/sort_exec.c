@@ -10,6 +10,7 @@
 #include "col/f2/agg/proj/in_seek.h"
 #include "col/am.h"
 #include "col/f2/proj/overlay.h"
+#include "miscadmin.h"
 
 /* What has died in a part since its projection part was written: the addresses the deletion vector has dead and the pending deletes that may name a row of it, and the heap blocks whose rows the heap may have changed */
 typedef struct PartDead
@@ -95,6 +96,7 @@ struct SiftV6SortScan
 	PartStream *streams;
 	int			nstreams;
 	SiftProjTopK *rest;
+	bool		rest_over;		/* the rows of the rest went past work_mem: the statement sorts the relation */
 	SiftProjMerge *merge;
 	SiftV6SortVetFn vet;
 	void	   *vet_arg;
@@ -113,7 +115,7 @@ rest_row(void *arg, uint64 tid, const SiftCell *row)
 
 	if (needs_vet(s->vet_all, s->preds, s->npreds, row) && !s->vet(s->vet_arg, tid))
 		return;
-	sift_proj_topk_add(s->rest, tid, row);
+	s->rest_over |= !sift_proj_topk_add(s->rest, tid, row);
 	s->nrest_rows++;
 }
 
@@ -263,7 +265,7 @@ open_part_streams(SiftV6SortScan *s, int i, const SiftV6ProjQuery *q, const Sift
 	}
 }
 
-/* false: the rest of the relation could not be read as cells */
+/* false: the rest of the relation could not be read as cells, or its rows would not fit in work_mem */
 static bool
 open_streams(SiftV6SortScan *s, const SiftV6ProjQuery *q)
 {
@@ -287,9 +289,12 @@ open_streams(SiftV6SortScan *s, const SiftV6ProjQuery *q)
 	s->merge = sift_proj_merge_new(&ospec, &s->ctx.cols, q->limit);
 	for (int i = 0; i < s->ctx.base.n; i++)
 		if (s->src->serve[i].serve != SPS_BASE)
+		{
+			CHECK_FOR_INTERRUPTS();
 			open_part_streams(s, i, q, &ospec);
+		}
 	s->nbase = s->ctx.base.n - nskip;
-	if (!sift_v6_host_scan_rest(h, s->ctx.plan, skip, nskip, leaves, nleaves, rest_row, s))
+	if (!sift_v6_host_scan_rest(h, s->ctx.plan, skip, nskip, leaves, nleaves, rest_row, s) || s->rest_over)
 		return false;
 	sift_proj_merge_add(s->merge, sift_proj_topk_stream(s->rest));
 	return true;

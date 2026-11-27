@@ -10,6 +10,7 @@
 
 #include "col/f2/agg/proj/pred.h"
 #include "col/f2/proj/proj.h"
+#include "core/memtrack.h"
 
 /* Where the stored columns of a measure are in the layout of the part a row is absorbed from: found once for the layout, not for each row */
 typedef struct StoredCols
@@ -23,6 +24,7 @@ typedef struct StoredCols
 
 struct SiftProjCube
 {
+	MemoryContext cx;			/* everything of the cube, whatever context its caller is in */
 	SiftProjSpec spec;
 	const SiftProjColumns *cols;
 	int			ngroups;		/* in g, dead ones (rows 0) included until settle */
@@ -98,35 +100,15 @@ key_equal(const SiftProjSpec *s, const SiftCell *a, const SiftCell *b)
 SiftProjCube *
 sift_proj_cube_new(const SiftProjSpec *s, const SiftProjColumns *cols)
 {
-	SiftProjCube *c = palloc0(sizeof(SiftProjCube));
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift proj cube");
+	SiftProjCube *c = MemoryContextAllocZero(cx, sizeof(SiftProjCube));
 
+	c->cx = cx;
 	c->spec = *s;
 	c->cols = cols;
 	c->settled = true;
-	sift_str_arena_init(&c->strs, CurrentMemoryContext);
+	sift_str_arena_init(&c->strs, cx);
 	return c;
-}
-
-void
-sift_proj_cube_free(SiftProjCube *c)
-{
-	for (int i = 0; i < c->ngroups; i++)
-	{
-		pfree(c->g[i].key);
-		pfree(c->g[i].st);
-	}
-	sift_str_arena_free(&c->strs);
-	if (c->g != NULL)
-		pfree(c->g);
-	if (c->hash != NULL)
-		pfree(c->hash);
-	if (c->tab != NULL)
-		pfree(c->tab);
-	if (c->rows_out != NULL)
-		pfree(c->rows_out);
-	if (c->scratch != NULL)
-		pfree(c->scratch);
-	pfree(c);
 }
 
 static void
@@ -135,7 +117,7 @@ rehash(SiftProjCube *c, int tabcap)
 	if (c->tab != NULL)
 		pfree(c->tab);
 	c->tabcap = tabcap;
-	c->tab = palloc0(tabcap * sizeof(int32));
+	c->tab = MemoryContextAllocZero(c->cx, (Size) tabcap * sizeof(int32));
 	for (int i = 0; i < c->ngroups; i++)
 	{
 		uint32		at = (uint32) c->hash[i] & (tabcap - 1);
@@ -162,18 +144,18 @@ group_for(SiftProjCube *c, const SiftCell *key)
 	if (c->ngroups == c->cap)
 	{
 		c->cap = c->cap == 0 ? 64 : c->cap * 2;
-		c->g = c->g == NULL ? palloc(c->cap * sizeof(SiftProjGroup)) : repalloc(c->g, c->cap * sizeof(SiftProjGroup));
-		c->hash = c->hash == NULL ? palloc(c->cap * sizeof(uint64)) : repalloc(c->hash, c->cap * sizeof(uint64));
+		c->g = c->g == NULL ? MemoryContextAlloc(c->cx, (Size) c->cap * sizeof(SiftProjGroup)) : repalloc(c->g, (Size) c->cap * sizeof(SiftProjGroup));
+		c->hash = c->hash == NULL ? MemoryContextAlloc(c->cx, (Size) c->cap * sizeof(uint64)) : repalloc(c->hash, (Size) c->cap * sizeof(uint64));
 	}
 	g = &c->g[c->ngroups];
 	/* check-memory: allow the keys of a group are those of one projection spec */
-	g->key = palloc(Max(c->spec.nkeys, 1) * sizeof(SiftCell));
+	g->key = MemoryContextAlloc(c->cx, Max(c->spec.nkeys, 1) * sizeof(SiftCell));
 	memcpy(g->key, key, c->spec.nkeys * sizeof(SiftCell));
 	for (int i = 0; i < c->spec.nkeys; i++)
 		if (!key[i].isnull && key[i].s != NULL)
 			g->key[i].s = sift_str_arena_copy(&c->strs, key[i].s, key[i].slen);
 	g->rows = 0;
-	g->st = palloc0(Max(c->spec.nmeas, 1) * sizeof(SiftProjMState));
+	g->st = MemoryContextAllocZero(c->cx, Max(c->spec.nmeas, 1) * sizeof(SiftProjMState));
 	c->hash[c->ngroups++] = h;
 	c->tab[at] = c->ngroups;
 	if (c->ngroups * 2 > c->tabcap)
@@ -392,7 +374,7 @@ static bool
 stored_filter_passes(SiftProjCube *c, const SiftProjLayoutCol *layout, int n, const SiftProjMeasure *m, const SiftCell *stored)
 {
 	if (c->scratch == NULL)
-		c->scratch = palloc0(Max(c->cols->n, 1) * sizeof(SiftCell));
+		c->scratch = MemoryContextAllocZero(c->cx, Max(c->cols->n, 1) * sizeof(SiftCell));
 	for (int i = 0; i < n; i++)
 		if (layout[i].role == SPR_KEY)
 			c->scratch[layout[i].leaf] = stored[i];
@@ -547,7 +529,7 @@ sift_proj_cube_rows(SiftProjCube *c, const SiftCell **out, int *ncols)
 	qsort_arg(sorted, c->ngroups, sizeof(SiftProjGroup), group_cmp, &c->spec);
 	if (c->rows_out != NULL)
 		pfree(c->rows_out);
-	c->rows_out = palloc0(Max(c->ngroups, 1) * nl * sizeof(SiftCell));
+	c->rows_out = MemoryContextAllocZero(c->cx, (Size) Max(c->ngroups, 1) * nl * sizeof(SiftCell));
 	for (int r = 0; r < c->ngroups; r++)
 	{
 		SiftCell   *at = c->rows_out + (size_t) r * nl;

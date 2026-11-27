@@ -433,6 +433,7 @@ TESTING_REGRESS += col/preagg/%
 TESTING_REGRESS += col/proj/analytics_parity
 TESTING_REGRESS += col/proj/live_churn
 TESTING_REGRESS += col/proj/tail_reclaim
+TESTING_REGRESS += col/proj/work_mem
 TESTING_REGRESS += col/range_count
 TESTING_REGRESS += col/range_count_dirty
 TESTING_REGRESS += col/range_order

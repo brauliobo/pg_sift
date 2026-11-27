@@ -31,11 +31,12 @@ extern void sift_proj_merge_add(SiftProjMerge *m, SiftProjStream s);
 extern bool sift_proj_merge_next(SiftProjMerge *m, uint64 *tid, const SiftCell **row);
 extern void sift_proj_merge_free(SiftProjMerge *m);
 
-/* The rows of unordered sources kept in the order of spec: the first limit of them (all when limit < 0), each copied with the bytes of its strings */
+/* The rows of unordered sources kept in the order of spec: the first limit of them (all when limit < 0), each copied with the bytes of its strings, within work_mem */
 typedef struct SiftProjTopK SiftProjTopK;
 
 extern SiftProjTopK *sift_proj_topk_new(const SiftProjSpec *spec, const SiftProjColumns *cols, int ncols, int64 limit);
-extern void sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row);
+/* false: the rows kept are past work_mem, and the heap keeps no more of them */
+extern bool sift_proj_topk_add(SiftProjTopK *t, uint64 tid, const SiftCell *row);
 extern int	sift_proj_topk_count(const SiftProjTopK *t);
 
 /* The rows kept, in order, as a source (the first call sorts them; nothing may be added after it) */

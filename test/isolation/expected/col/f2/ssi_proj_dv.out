@@ -1,0 +1,133 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s2b s2d s2c s3v s1agg s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2d: DELETE FROM iso_pd WHERE id = 8;
+step s2c: COMMIT;
+step s3v: VACUUM iso_pd;
+step s1agg: SELECT iso_pd_node($$SELECT k, count(*), sum(v) FROM iso_pd GROUP BY k$$) AS node; SELECT k, count(*), sum(v) FROM iso_pd GROUP BY k ORDER BY k;
+node                         
+-----------------------------
+SiftAggV6, Projection: pd_agg
+(1 row)
+
+k|count| sum
+-+-----+----
+0| 1500|6000
+1| 1500|7500
+2| 1500|6000
+3| 1500|7500
+(4 rows)
+
+step s1w: INSERT INTO iso_pw VALUES (1);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s2b s2d s2c s3v s1sort s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2d: DELETE FROM iso_pd WHERE id = 8;
+step s2c: COMMIT;
+step s3v: VACUUM iso_pd;
+step s1sort: SELECT iso_pd_node($$SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pd WHERE v = 8 ORDER BY v, id LIMIT 2;
+node                                 
+-------------------------------------
+SiftProjSortScan, Projection: pd_sort
+(1 row)
+
+id
+--
+ 8
+18
+(2 rows)
+
+step s1w: INSERT INTO iso_pw VALUES (1);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s2b s2cd s2c s3cv s1cagg s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2cd: DELETE FROM iso_pc WHERE id = 8;
+step s2c: COMMIT;
+step s3cv: VACUUM iso_pc;
+step s1cagg: SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SELECT iso_pd_node($$SELECT k, count(*), sum(v) FROM iso_pc GROUP BY k$$) AS node; SELECT k, count(*), sum(v) FROM iso_pc GROUP BY k ORDER BY k;
+node                         
+-----------------------------
+SiftAggV6, Projection: pc_agg
+(1 row)
+
+k|count| sum
+-+-----+----
+0| 1500|6000
+1| 1500|7500
+2| 1500|6000
+3| 1500|7500
+(4 rows)
+
+step s1w: INSERT INTO iso_pw VALUES (1);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;
+
+starting permutation: s1b s2b s2cd s2c s3cv s1csort s1w s1c
+step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE; SELECT count(*) FROM iso_pw;
+count
+-----
+    0
+(1 row)
+
+step s2cd: DELETE FROM iso_pc WHERE id = 8;
+step s2c: COMMIT;
+step s3cv: VACUUM iso_pc;
+step s1csort: SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off; SELECT iso_pd_node($$SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2$$) AS node; SELECT id FROM iso_pc WHERE v = 8 ORDER BY v, id LIMIT 2;
+node                                 
+-------------------------------------
+SiftProjSortScan, Projection: pc_sort
+(1 row)
+
+id
+--
+ 8
+18
+(2 rows)
+
+step s1w: INSERT INTO iso_pw VALUES (1);
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s1c: COMMIT;

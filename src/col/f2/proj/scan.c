@@ -12,6 +12,7 @@
 #include "col/f2/part/format.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
+#include "miscadmin.h"
 
 #define SIFT_PROJ_SEC_KEY_MARKS	0x020D
 #define PROJ_WIN_FIRST			64
@@ -40,6 +41,7 @@ struct SiftProjCursor
 	const bool *want;
 	int64		key_lo;
 	int64		key_hi;
+	MemoryContext gcx;			/* the record and the view of the granule in hand, reset for the next one */
 	SiftGranuleView view;		/* the granule in hand */
 	uint32		g;
 	uint16		gn;				/* its rows */
@@ -63,6 +65,7 @@ sift_proj_cursor_open(Relation rel, const SiftPartDesc *d, uint32 part_id, const
 	c->dv = d->dv_blk != InvalidBlockNumber ? sift_dv_read(rel, d, part_id, grows) : NULL;
 	c->spec = spec;
 	c->dead_only = dead_only;
+	c->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift proj granule");
 	sift_proj_spans_whole(&c->spans, c->part->hdr.ngranules);
 	return c;
 }
@@ -144,9 +147,14 @@ static void
 open_granule(SiftProjCursor *c, uint32 g)
 {
 	SiftGranuleDesc gd;
-	char	   *rec = sift_part_read_granule_cols(c->rel, c->part, g, c->want, &gd);
+	MemoryContext old;
+	char	   *rec;
 
+	MemoryContextReset(c->gcx);
+	old = MemoryContextSwitchTo(c->gcx);
+	rec = sift_part_read_granule_cols(c->rel, c->part, g, c->want, &gd);
 	c->view = sift_granule_open_part(c->rel, c->part, rec, gd.data_len, &gd);
+	MemoryContextSwitchTo(old);
 	c->g = g;
 	c->gn = gd.nrows;
 	c->hi = 0;
@@ -286,6 +294,7 @@ load_next(SiftProjCursor *c)
 	const bool	windows = c->progressive && !c->keyed;
 	uint32		g;
 
+	CHECK_FOR_INTERRUPTS();
 	if (windows && c->hi < c->gn)
 		load_window(c, c->hi, Min(c->gn, c->hi + win_width(c)));
 	else if (sift_proj_spans_next(&c->spans, &g))
@@ -334,12 +343,15 @@ sift_proj_cursor_close(SiftProjCursor *c)
 {
 	if (c->one != NULL)
 		sift_rowbuf_free(c->one);
+	MemoryContextDelete(c->gcx);
 	pfree(c);
 }
 
 void
 sift_proj_scan_granule(Relation rel, const SiftPart *part, uint32 g, const SiftPartSpec *spec, const uint64 *mask, SiftProjRowFn fn, void *arg)
 {
+	MemoryContext gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift proj granule");
+	MemoryContext old = MemoryContextSwitchTo(gcx);
 	SiftGranuleDesc gd;
 	char	   *rec = sift_part_read_granule(rel, part, g, &gd);
 	SiftGranuleView v = sift_granule_open_part(rel, part, rec, gd.data_len, &gd);
@@ -347,10 +359,11 @@ sift_proj_scan_granule(Relation rel, const SiftPart *part, uint32 g, const SiftP
 	SiftRowBuf *rows = sift_rowbuf_new(spec);
 
 	sift_rowbuf_add_granule(rows, &v, NULL, spec, NULL);
+	MemoryContextSwitchTo(old);
 	for (int r = 0; r < rows->n; r++)
 		if ((mask[r / 64] >> (r % 64)) & 1)
 			fn(arg, rows, r);
-	sift_rowbuf_free(rows);
+	MemoryContextDelete(gcx);
 }
 
 void

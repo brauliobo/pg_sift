@@ -45,13 +45,6 @@ sift_proj_distinct_new(const SiftProjSpec *query, const SiftProjSpec *src, const
 	return d;
 }
 
-void
-sift_proj_distinct_free(SiftProjDistinct *d)
-{
-	sift_proj_cube_free(d->cube);
-	pfree(d);
-}
-
 static void
 check_bound(SiftProjDistinct *d)
 {

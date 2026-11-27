@@ -11,8 +11,11 @@
 #include "access/heapam.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
+#include "access/xact.h"
 #include "executor/tuptable.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "storage/predicate.h"
 
 #include "col/f2/agg/colstat.h"
 #include "col/f2/agg/proj/host.h"
@@ -151,6 +154,15 @@ heap_row_visible(void *arg, uint64 tid)
 	return table_index_fetch_tuple(hv->fetch, &ip, hv->h->snap, hv->slot, &again, &dead);
 }
 
+/* The relation a SERIALIZABLE read of the host conflicts on, as its scan does (col/f2/agg/source_rel.c locks the same); NULL outside SERIALIZABLE */
+static Relation
+ssi_rel(const SiftV6ProjHost *h)
+{
+	Relation	rel = h->heap != NULL ? h->heap : h->rel;
+
+	return IsolationIsSerializable() && CheckForSerializableConflictOutNeeded(rel, h->snap) ? rel : NULL;
+}
+
 void
 sift_v6_host_overlay_rows(const SiftV6ProjHost *h, const SiftV6BaseParts *b, int i, const SiftProjLink *link, SiftProjRowFn fn, void *arg)
 {
@@ -160,6 +172,7 @@ sift_v6_host_overlay_rows(const SiftV6ProjHost *h, const SiftV6BaseParts *b, int
 	bool		unchanged = sift_proj_dv_unchanged(d, link),
 				pend = sift_proj_part_meets_pend(d, px);
 	HeapVisible hv = {.h = h};
+	Relation	ssi = ssi_rel(h);
 	SiftPart   *part;
 	SiftGranuleDesc *dir;
 	SiftDv	   *dv = NULL;
@@ -198,6 +211,9 @@ sift_v6_host_overlay_rows(const SiftV6ProjHost *h, const SiftV6BaseParts *b, int
 					mask[SIFT_DV_MASK_WORDS];
 		SiftProjOverlayIn in = {.nrows = dir[g].nrows,.pend = pend ? px : NULL,.dirty = dirty,.visible = heap_row_visible,.arg = &hv};
 
+		CHECK_FOR_INTERRUPTS();
+		if (dg != NULL && !unchanged && ssi != NULL)
+			sift_dv_conflict_out(dg, ssi, h->snap);
 		if (!sift_proj_overlay_granule_hit(dg != NULL && !unchanged, in.pend, &dirty, tix != NULL ? &tix[g] : &none))
 			continue;
 		if (dg != NULL && !unchanged && sift_dv_mask64(dg, h->snap, dv_dead) > 0)
@@ -208,6 +224,8 @@ sift_v6_host_overlay_rows(const SiftV6ProjHost *h, const SiftV6BaseParts *b, int
 			in.tids = sift_part_read_tids(h->rel, part, dir, g);
 		if (sift_proj_overlay_mask(&in, mask) > 0)
 			sift_proj_scan_granule(h->rel, part, g, &h->store->spec, mask, fn, arg);
+		if (in.tids != NULL)
+			pfree((void *) in.tids);
 	}
 	if (hv.fetch != NULL)
 	{
@@ -236,9 +254,13 @@ sift_v6_host_dv_dead(const SiftV6ProjHost *h, const SiftV6BaseParts *b, int i)
 		uint16		nr = sift_dv_visible_rows(&dv->gran[k], h->snap, rows, SIFT_GRANULE_ROWS);
 		uint64	   *tids = nr > 0 ? sift_part_read_tids(h->rel, part, dir, dv->gran[k].granule_id) : NULL;
 
+		CHECK_FOR_INTERRUPTS();
 		for (int r = 0; r < nr; r++)
 			dead[n++] = tids[rows[r]];
+		if (tids != NULL)
+			pfree(tids);
 	}
+	pfree(grows);
 	return n > 0 ? sift_pdel_idx_build(dead, n) : NULL;
 }
 
