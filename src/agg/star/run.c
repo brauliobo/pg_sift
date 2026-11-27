@@ -444,14 +444,12 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 			if (share != NULL)
 				sift_v6_shared_dim_abort(share);
 			share = NULL;
-			if (r->x->dim[d].mode == SV6J_INNER_EQUI)
-			{
-				plan_chunks(r, d, r->nparts[d], r->part[d]);
-				r->chunk[d] = 0;
-				fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
-			}
-			else
-				fits = read_dim(r, d, r->nparts[d], r->part[d], 0, UINT32_MAX, UINT64_MAX);
+			if (r->x->dim[d].mode != SV6J_INNER_EQUI)
+				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of a star join that is not an inner equi-join does not fit work_mem"),
+								errdetail("Only the dimension of an inner join is read in chunks."), errhint("Increase work_mem.")));
+			plan_chunks(r, d, r->nparts[d], r->part[d]);
+			r->chunk[d] = 0;
+			fits = read_dim(r, d, r->nparts[d], r->part[d], chunk_from(r, d), chunk_to(r, d), r->budget);
 		}
 		settled = fits && last;
 		if (keep && fits && whole)
