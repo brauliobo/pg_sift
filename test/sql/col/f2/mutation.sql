@@ -20,7 +20,8 @@ ROLLBACK TO a;
 SELECT sift._test_f2_stage_rows('t_idx');
 ROLLBACK;
 SELECT sift._test_f2_stage_rows('t_idx');
-SELECT pg_current_wal_insert_lsn() = :'lsn0' AS no_wal;
+SELECT pg_current_wal_insert_lsn() AS lsn1 \gset
+SELECT :'lsn1'::pg_lsn = :'lsn0' AS no_wal;
 SELECT part_id, nparts, total_rows, has_slab FROM sift._test_f2_partitions('t_idx');
 
 -- A commit writes the rows that survived: the released savepoint's rows are kept, the rolled back ones are not

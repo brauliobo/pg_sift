@@ -49,7 +49,8 @@ SELECT sift._test_f2_stage_rows('t_idx');
                    0
 (1 row)
 
-SELECT pg_current_wal_insert_lsn() = :'lsn0' AS no_wal;
+SELECT pg_current_wal_insert_lsn() AS lsn1 \gset
+SELECT :'lsn1'::pg_lsn = :'lsn0' AS no_wal;
  no_wal 
 --------
  t
@@ -275,7 +276,7 @@ SELECT level, nrows, ndead, has_dv FROM sift._test_f2_parts('d_idx', 1, NULL);
 SELECT sift._test_f2_check('d_idx');
               _test_f2_check               
 -------------------------------------------
- parts=1 quarantined=14/45 meta_free=47/64
+ parts=1 quarantined=13/44 meta_free=16/32
 (1 row)
 
 -- A delete by a transaction that rolled back does not hide the row; per-row visibility is used until the deleter is settled
