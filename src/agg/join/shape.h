@@ -54,5 +54,7 @@ extern bool sift_v6_join_add_key(SiftV6JoinDim *d, const Node *probe, const Var 
 /* the same with a key that an expression of the dimension computes */
 extern bool sift_v6_join_add_expr_key(SiftV6JoinDim *d, const Node *probe, const Var *key, const Node *kexpr, Oid inputcollid);
 extern bool sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode);
+/* the dimensions in the order the pipe probes them: a join of inner relations, then the others in the order the statement joins them, each probing columns of the relations before it */
+extern bool sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh);
 
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */
