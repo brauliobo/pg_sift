@@ -379,8 +379,8 @@ plan_chunks(SiftV6StarRun *r, int d, uint32 nparts, uint32 part)
 			sift_star_dim_free(&dim);
 			sift_star_dim_init(&dim, &sh.shape);
 			if (!sift_star_dim_add(&dim, &row))
-				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a dimension of the star join does not fit work_mem"),
-								errhint("Increase work_mem.")));
+				ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a dimension of the star join does not fit one allocation"),
+								errhint("Run the statement with sift.enable_agg = off.")));
 		}
 		at++;
 	}

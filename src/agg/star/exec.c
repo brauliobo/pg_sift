@@ -181,7 +181,9 @@ hash_add(SiftStarDim *d, const SiftStarRow *row)
 		const uint64 need = TYPEALIGN(MAXIMUM_ALIGNOF, d->arena_used) + strs + (uint64) ncols_of(sh) * MAXIMUM_ALIGNOF;
 		const uint64 arena = need <= d->arena_cap ? d->arena_cap : Max(d->arena_cap * 2, Max(need, 1024));
 
-		if (table_bytes(sh, cap, d->nrows + 1, arena) > Min(sh->budget, MaxAllocSize))
+		const uint64 bytes = table_bytes(sh, cap, d->nrows + 1, arena);
+
+		if (bytes > MaxAllocSize || (d->nrows > 0 && bytes > sh->budget))
 			return false;
 	}
 	if (d->nrows == d->cap)
