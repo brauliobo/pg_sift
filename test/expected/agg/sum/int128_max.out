@@ -43,7 +43,7 @@ BEGIN
 	SET LOCAL sift.enable_agg = on;
 	SET LOCAL sift.agg_force = on;
 	EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO j;
-	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
+	scan := CASE WHEN jsonb_path_exists(j, '$.** ? (@."Custom Plan Provider" like_regex "^SiftAgg")') THEN 'SiftAgg' ELSE 'normal' END;
 	EXECUTE format('CREATE TEMP TABLE on_rows ON COMMIT DROP AS SELECT row_to_json(r)::text AS t FROM (%s) r', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE off_rows ON COMMIT DROP AS SELECT row_to_json(r)::text AS t FROM (%s) r', q);
