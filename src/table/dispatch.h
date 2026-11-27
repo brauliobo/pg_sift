@@ -67,14 +67,14 @@ extern void sift_tbl_v2_init(void);
 /* The hook of ALTER TABLE, SET SCHEMA and RENAME COLUMN on a table of a format that has callbacks for them */
 extern void sift_tbl_utility_init(void);
 
-/* The sift_table an ALTER TABLE running now rewrites into rel (the new heap of ATRewriteTable), InvalidOid when rel is no such heap */
+/* The sift_table that an ALTER TABLE, VACUUM FULL or CLUSTER running now rewrites into rel (the new heap of make_new_heap), InvalidOid when rel is no such heap */
 extern Oid	sift_tbl_rewrite_source(Relation rel);
 
 /* The table of the relation, and of a format major */
 extern const SiftTableFormatOps *sift_tbl_ops(Relation rel);
 extern const SiftTableFormatOps *sift_tbl_ops_of_major(uint16 major);
 
-/* The table of the relations a CREATE TABLE, TRUNCATE or rewrite makes (core/meta_peek.h: sift_new_relation_format_major) */
+/* The table of the relations a CREATE TABLE or TRUNCATE makes (core/meta_peek.h: sift_new_relation_format_major) */
 extern const SiftTableFormatOps *sift_tbl_ops_for_new(void);
 
 extern const TableAmRoutine *sift_tbl_routine(void);

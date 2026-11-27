@@ -28,22 +28,33 @@
 
 static ProcessUtility_hook_type prev_utility;
 
-/* The sift_tables of the ALTER TABLE that runs now: one that the statement rewrites is copied into a new heap that has none of its options, paths or primary key */
-static List *altered = NIL;
+/* A statement that copies tables into new heaps runs now: ALTER TABLE, VACUUM FULL, CLUSTER */
+static bool rewriting = false;
+
+static bool
+rewrites_tables(Node *parse)
+{
+#if PG_VERSION_NUM >= 190000
+	return IsA(parse, AlterTableStmt) || IsA(parse, VacuumStmt) || IsA(parse, RepackStmt);
+#else
+	return IsA(parse, AlterTableStmt) || IsA(parse, VacuumStmt) || IsA(parse, ClusterStmt);
+#endif
+}
 
 /* The new heap of a rewrite is named after the table it replaces (make_new_heap), in its schema: nothing else of the catalog ties the two while the rows are copied */
 Oid
 sift_tbl_rewrite_source(Relation rel)
 {
-	foreach_oid(relid, altered)
-	{
-		char		name[NAMEDATALEN];
+	const char *name = RelationGetRelationName(rel);
+	char		heap[NAMEDATALEN];
+	Oid			relid;
 
-		snprintf(name, sizeof(name), "pg_temp_%u", relid);
-		if (strcmp(RelationGetRelationName(rel), name) == 0 && RelationGetNamespace(rel) == get_rel_namespace(relid))
-			return relid;
-	}
-	return InvalidOid;
+	if (!rewriting || sscanf(name, "pg_temp_%u", &relid) != 1)
+		return InvalidOid;
+	snprintf(heap, sizeof(heap), "pg_temp_%u", relid);
+	if (strcmp(name, heap) != 0 || get_rel_namespace(relid) != RelationGetNamespace(rel) || !sift_relid_is_sift_table(relid))
+		return InvalidOid;
+	return relid;
 }
 
 /* The table the statement names, NULL when it is not a statement on a table the format has to see */
@@ -358,7 +369,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	Oid			named;
 	List	   *relids = statement_tables(parse, &lock, &named);
 	int			workers = sift_vacuum_parallel_workers;
-	List	   *outer = altered;
+	bool		outer = rewriting;
 	List	   *formats = formats_of(relids);
 	List	   *rebuilt = named_indexes(parse);
 
@@ -366,8 +377,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	PG_TRY();
 	{
 		sift_vacuum_parallel_workers = vacuum_parallel(parse);
-		if (IsA(parse, AlterTableStmt))
-			altered = relids;
+		rewriting = rewriting || rewrites_tables(parse);
 		if (prev_utility != NULL)
 			prev_utility(pstmt, query, readonly, context, params, env, dest, qc);
 		else
@@ -376,7 +386,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	PG_FINALLY();
 	{
 		sift_vacuum_parallel_workers = workers;
-		altered = outer;
+		rewriting = outer;
 	}
 	PG_END_TRY();
 	check_new_partitions(parse);

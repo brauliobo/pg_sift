@@ -1,4 +1,5 @@
--- A Format 1 sift_table (the 5.x layout) rewritten by VACUUM FULL or CLUSTER while new relations take Format 2.0 comes out as Format 2.0 with every row.
+-- A Format 1 sift_table (the 5.x layout) rewritten by VACUUM FULL or CLUSTER while new relations take Format 2.0 comes out as Format 2.0 with every row;
+-- a Format 2.0 table rewritten while new relations take Format 1 stays Format 2.0.
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = on;
 CREATE TABLE r1 (id int PRIMARY KEY, g int NOT NULL, s text NOT NULL) USING sift_table;
@@ -52,5 +53,54 @@ SELECT count(*) FROM r1;
   2701
 (1 row)
 
-DROP TABLE r1, r2;
+SET enable_seqscan = off;
+SELECT count(*), sum(g) FROM r2 WHERE id BETWEEN 100 AND 200;
+ count | sum 
+-------+-----
+    90 | 270
+(1 row)
+
+RESET enable_seqscan;
+CREATE TABLE r3 (id int PRIMARY KEY, g int NOT NULL, s text NOT NULL) USING sift_table;
+INSERT INTO r3 SELECT i, i % 7, 'k' || i % 11 FROM generate_series(1, 3000) i;
+DELETE FROM r3 WHERE id % 10 = 0;
+UPDATE r3 SET g = g + 100 WHERE id % 9 = 0;
+SET sift.test_create_format1 = on;
+VACUUM FULL r3;
+SELECT f.major || '.' || f.minor AS format FROM sift.index_format('r3') f;
+ format 
+--------
+ 2.0
+(1 row)
+
+CLUSTER r3 USING r3_pkey;
+SELECT f.major || '.' || f.minor AS format FROM sift.index_format('r3') f;
+ format 
+--------
+ 2.0
+(1 row)
+
+SELECT count(*), sum(g), min(id), max(id) FROM r3;
+ count |  sum  | min | max  
+-------+-------+-----+------
+  2700 | 38095 |   1 | 2999
+(1 row)
+
+SET enable_seqscan = off;
+SELECT count(*), sum(g) FROM r3 WHERE id BETWEEN 100 AND 200;
+ count | sum  
+-------+------
+    90 | 1270
+(1 row)
+
+RESET enable_seqscan;
+INSERT INTO r3 VALUES (3001, 1, 'new');
+SELECT count(*) FROM r3;
+ count 
+-------
+  2701
+(1 row)
+
+RESET sift.test_create_format1;
+DROP TABLE r1, r2, r3;
 DROP EXTENSION pg_sift;

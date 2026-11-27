@@ -341,10 +341,26 @@ tbl_finish_bulk_insert(Relation rel, SiftTamOptions options)
 }
 
 /* The storage of a new relation is the one of the format a new relation takes: the old one may be of another */
+/* The new heap of a rewrite keeps the format of the table it replaces unless new relations take a newer one: a Format 1 table is rewritten as Format 2.0, never the reverse */
+static const SiftTableFormatOps *
+new_file_ops(Relation rel)
+{
+	Oid			from = sift_tbl_rewrite_source(rel);
+	uint16		major = sift_new_relation_format_major();
+	Relation	old;
+
+	if (!OidIsValid(from))
+		return sift_tbl_ops_of_major(major);
+	old = relation_open(from, NoLock);
+	major = Max(major, sift_tbl_ops(old)->format_major);
+	relation_close(old, NoLock);
+	return sift_tbl_ops_of_major(major);
+}
+
 static void
 tbl_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence, TransactionId *freezeXid, MultiXactId *minmulti)
 {
-	sift_tbl_ops_for_new()->tam->relation_set_new_filelocator(rel, newrlocator, persistence, freezeXid, minmulti);
+	new_file_ops(rel)->tam->relation_set_new_filelocator(rel, newrlocator, persistence, freezeXid, minmulti);
 }
 
 static void
@@ -359,7 +375,7 @@ tbl_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 	REL_TAM(rel)->relation_copy_data(rel, newrlocator);
 }
 
-/* The rows are written by the format of the new relation, which is the one a new relation takes: a Format 1 table is rewritten as Format 2.0 */
+/* The rows are written by the format of the new relation, which reads a table of an older format through its scan */
 static void
 tbl_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort, TransactionId OldestXmin,
 							  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed,
