@@ -9,7 +9,8 @@
 #                                                     (scripts/budget.sh prune), the dead perf gate runs and stale templates, the orphaned PostgreSQL DSM segments (scripts/tmpfs-reap.py);
 #                                                     past 45% of /dev/shm used, the compiler cache is trimmed to its cap (at most every 30 minutes)
 #   scripts/wt-tmpfs.sh auto-prune                    a prune in the background when /tmp or /dev/shm is past 45% used, at most every 10 minutes: create and scripts/pgtest.sh install run it
-#   scripts/wt-tmpfs.sh timer                         installs and starts the user systemd timer that prunes every 15 minutes (sift-tmpfs-prune.timer)
+#   scripts/wt-tmpfs.sh timer                         installs and starts the user systemd timer that prunes every 15 minutes (sift-tmpfs-prune.timer) with the script of
+#                                                     the main checkout of this repository: a throwaway worktree does not outlive the tmpfs
 #   scripts/wt-tmpfs.sh --selftest
 # SIFT_WT_ROOT, SIFT_PG_ROOT, SIFT_BUILD_ROOT and SIFT_SHM_ROOT move the four directories (default /tmp/sift-wt, /tmp/sift-pg, /tmp/sift-build, /dev/shm).
 set -euo pipefail
@@ -103,10 +104,12 @@ auto_prune() {
 }
 
 timer() {
-	local dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+	local dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user main
 	systemctl --user show-environment >/dev/null 2>&1 || die "timer: no systemd user manager runs here"
+	main=$(dirname "$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)")
+	[[ -x $main/scripts/wt-tmpfs.sh ]] || die "timer: $main has no scripts/wt-tmpfs.sh"
 	mkdir -p "$dir"
-	printf '[Unit]\nDescription=Remove the tmpfs leftovers of the sift runs\n\n[Service]\nType=oneshot\nNice=10\nIOSchedulingClass=idle\nExecStart=%s prune\n' "$HERE/wt-tmpfs.sh" >"$dir/sift-tmpfs-prune.service"
+	printf '[Unit]\nDescription=Remove the tmpfs leftovers of the sift runs\n\n[Service]\nType=oneshot\nNice=10\nIOSchedulingClass=idle\nExecStart=%s prune\n' "$main/scripts/wt-tmpfs.sh" >"$dir/sift-tmpfs-prune.service"
 	printf '[Unit]\nDescription=Remove the tmpfs leftovers of the sift runs every 15 minutes\n\n[Timer]\nOnBootSec=5min\nOnUnitActiveSec=15min\n\n[Install]\nWantedBy=timers.target\n' >"$dir/sift-tmpfs-prune.timer"
 	systemctl --user daemon-reload
 	systemctl --user enable --now sift-tmpfs-prune.timer
@@ -140,6 +143,12 @@ selftest() {
 	touch -d '-2 min' "$t/wt/.auto-prune"; SIFT_PRUNE_PCT=0 "$0" auto-prune
 	[[ -n $(find "$t/wt/.auto-prune" -mmin +1) ]] || die "selftest: auto-prune ran twice in 10 minutes"
 	flock "$t/wt/.prune.lock" true
+	mkdir -p "$t/bin"; printf '#!/bin/sh\necho "$*" >>"%s/systemctl.log"\n' "$t" >"$t/bin/systemctl"; chmod +x "$t/bin/systemctl"
+	mkdir -p "$t/repo/scripts"; cp "$0" "$t/repo/scripts/"
+	PATH=$t/bin:$PATH XDG_CONFIG_HOME=$t/config "$0" timer >/dev/null
+	[[ $(<"$t/config/systemd/user/sift-tmpfs-prune.service") == *"ExecStart=$t/repo/scripts/wt-tmpfs.sh prune"* \
+		&& $(<"$t/config/systemd/user/sift-tmpfs-prune.timer") == *'OnUnitActiveSec=15min'* && $(<"$t/systemctl.log") == *'--user enable --now sift-tmpfs-prune.timer'* ]] \
+		|| die "selftest: timer does not install and start a 15 minute timer that prunes with the main checkout"
 	[[ ! -e $t/pg/gone && ! -e $t/build/gone-89abcdef && -d $t/pg/a && -d $t/pg/b && -d $t/build/a-0123abcd ]] || die "selftest: prune removed what a checkout still has, or left what none has"
 	"$0" clean a
 	[[ ! -e $t/wt/a && ! -e $t/pg/a && ! -e $t/build/a-0123abcd && -d $t/wt/b && -d $t/pg/b && -d $t/build/b-0123abcd ]] \
