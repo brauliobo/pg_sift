@@ -5,7 +5,7 @@
 #   scripts/check-compat-calls.sh [DIR]   check the tree under DIR (default: the repo)
 #   scripts/check-compat-calls.sh --selftest   a raw call is found, the macro and the comment are not
 set -uo pipefail
-RAW='table_beginscan|table_beginscan_parallel|table_index_fetch_begin|index_beginscan|subquery_planner|GlobalVisTestIsRemovableXid|pgstat_report_vacuum|HandleParallelMessages|ProcessParallelMessages|TupleDescFinalize|lc_collate_is_c'
+RAW='table_beginscan|table_beginscan_parallel|table_index_fetch_begin|index_beginscan|subquery_planner|GlobalVisTestIsRemovableXid|pgstat_report_vacuum|HandleParallelMessages|ProcessParallelMessages|TupleDescFinalize|lc_collate_is_c|make_partition_pruneinfo|numeric_int4_opt_error|numeric_int8_opt_error|numeric_mul_opt_error|ExecAllocTableSlot'
 # the word boundary keeps sift_table_index_fetch_begin( out; a comment line is not a call
 scan() { # DIR [SOURCE_DIR]: the raw calls under DIR/SOURCE_DIR (default: the sources)
 	(cd "$1" && grep -rnE --include='*.c' --include='*.h' "\\b($RAW)\\(|\\b(de)?construct_array_builtin\\(.*\\bFLOAT8OID\\b" "${2:-src}" | grep -v '/core/compat\.h:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(/?\*|//)')
