@@ -1414,6 +1414,56 @@ SELECT same(q, w) FROM (VALUES
  same node18 error 22023 cannot cast jsonb boolean to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1
 (9 rows)
 
+-- Q-11. The `->>` text of a boolean key beside a member read by key: the leaf holds booleans, the key is their text ('true', 'false'), before and after the rows change
+CREATE TABLE mb (id int PRIMARY KEY, attributes jsonb, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mb SELECT i, CASE i % 10 WHEN 0 THEN '{"channel": "web"}'::jsonb WHEN 1 THEN NULL ELSE jsonb_build_object('channel', CASE i % 3 WHEN 0 THEN 'web' ELSE 'app' END, 'normalized', i % 10 < 7) END,
+	jsonb_build_object('m_total', i % 9 + 0.5)
+FROM generate_series(1, 3000) i;
+CREATE INDEX mb_col ON mb USING sift_col (id, attributes, metrics) WITH (paths = 'attributes->channel text, attributes->normalized bool, metrics.* float8');
+ANALYZE mb;
+SELECT attributes ->> 'channel' AS channel, attributes ->> 'normalized' AS normalized, count(*) AS n, avg((metrics ->> 'm_total')::float8) AS m_total FROM mb GROUP BY 1, 2 ORDER BY 1, 2 NULLS FIRST;
+ channel | normalized |  n   | m_total 
+---------+------------+------+---------
+ app     | false      |  600 |       5
+ app     | true       | 1000 |   5.006
+ web     |            |  300 |    4.48
+ web     | false      |  300 |    3.47
+ web     | true       |  500 |   3.518
+         |            |  300 |    4.48
+(6 rows)
+
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node'),
+	('SELECT attributes ->> ''normalized'', sum((metrics[''m_total''])::float8) FROM mb GROUP BY 1', 'node')
+) t(q, w);
+                                                                      same                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+ same node ok SELECT attributes ->> 'normalized', sum((metrics['m_total'])::float8) FROM mb GROUP BY 1
+(2 rows)
+
+UPDATE mb SET attributes = attributes || '{"normalized": false}' WHERE id % 50 = 3;
+UPDATE mb SET attributes = attributes || '{"normalized": "yes"}' WHERE id % 70 = 4;
+INSERT INTO mb SELECT 3000 + i, jsonb_build_object('channel', 'pos', 'normalized', i % 2 = 0), jsonb_build_object('m_total', i) FROM generate_series(1, 200) i;
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node'),
+	('SELECT attributes ->> ''normalized'', sum((metrics[''m_total''])::float8) FROM mb GROUP BY 1', 'node')
+) t(q, w);
+                                                                      same                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+ same node ok SELECT attributes ->> 'normalized', sum((metrics['m_total'])::float8) FROM mb GROUP BY 1
+(2 rows)
+
+VACUUM mb;
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node')
+) t(q, w);
+                                                                      same                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+(1 row)
+
 DROP FUNCTION same(text, text), answer(text), plan_of(text);
-DROP TABLE mk, mn, md, mx, ms;
+DROP TABLE mk, mn, md, mx, ms, mb;
 DROP EXTENSION pg_sift;

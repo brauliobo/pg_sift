@@ -78,6 +78,7 @@ struct SiftF2Pull
 
 	SiftVec		vec[SIFT_F2_PULL_MAX_COLS];
 	uint64	   *valid[SIFT_F2_PULL_MAX_COLS];
+	int64	   *bools[SIFT_F2_PULL_MAX_COLS];	/* a text column of a bool leaf: the booleans of the slice its `->>` texts are made of (NULL: any other column) */
 	SiftVexprMaskIn masks[SIFT_F2_PULL_MAX_MASKS];
 	uint64	   *mbits[SIFT_F2_PULL_MAX_MASKS];
 	SiftF2ElemStream es;
@@ -134,6 +135,8 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 		p->vec[i].data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		p->valid[i] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
 		p->vec[i].valid = p->valid[i];
+		if (spec->col[i].type == SVEC_STRVIEW && sift_f2_rel(index)->kinds[spec->col[i].leaf] == SIFT_CELL_INT)
+			p->bools[i] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
 	for (int m = 0; m < spec->nmasks; m++)
 		p->mbits[m] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
@@ -275,9 +278,17 @@ unholdable(SiftF2Pull *p)
 	poison_granule(p);
 }
 
-static void
-put_patch(SiftF2Pull *p, SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
+/* the `->>` text of a boolean of a bool leaf */
+static SiftStrView
+bool_text(int64 b)
 {
+	return b != 0 ? sift_vstr_make("true", 4) : sift_vstr_make("false", 5);
+}
+
+static void
+put_patch(SiftF2Pull *p, int col, uint16 j, const SiftColDeltaPatch *pt)
+{
+	SiftVec    *v = &p->vec[col];
 	const bool	isnull = (pt->flags & SIFT_CDCOL_IS_NULL) != 0;
 	const int64 i = isnull ? 0 : pt->val.i;
 
@@ -299,7 +310,7 @@ put_patch(SiftF2Pull *p, SiftVec *v, uint16 j, const SiftColDeltaPatch *pt)
 			((double *) v->data)[j] = isnull ? 0 : pt->val.f;
 			break;
 		case SVEC_STRVIEW:
-			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : sift_vstr_make(pt->val.s, pt->vlen);
+			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : p->bools[col] != NULL ? bool_text(i) : sift_vstr_make(pt->val.s, pt->vlen);
 			break;
 		default:
 			unholdable(p);
@@ -343,7 +354,7 @@ patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
 			continue;
 		if (v->all_valid || v->valid != p->valid[i])
 			own_valid(p, i, cnt);
-		put_patch(p, v, pt->row_ordinal - off, pt);
+		put_patch(p, i, pt->row_ordinal - off, pt);
 	}
 }
 
@@ -719,7 +730,7 @@ fill_slab_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
 				((double *) v->data)[j] = p->rb->f[c][off + j];
 				break;
 			case SVEC_STRVIEW:
-				((SiftStrView *) v->data)[j] = ok ? sift_vstr_make(p->rb->s[c][off + j], p->rb->slen[c][off + j]) : (SiftStrView) {0};
+				((SiftStrView *) v->data)[j] = !ok ? (SiftStrView) {0} : p->bools[i] != NULL ? bool_text(p->rb->i[c][off + j]) : sift_vstr_make(p->rb->s[c][off + j], p->rb->slen[c][off + j]);
 				break;
 			default:
 				((int64 *) v->data)[j] = p->rb->i[c][off + j];
@@ -780,6 +791,29 @@ patch_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
 	}
 }
 
+/* the rows [off, off + cnt) of column i of the granule: a text column of a bool leaf is decoded as its booleans, which make its texts */
+static void
+decode_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt, const SiftVariantExcStream **exc)
+{
+	SiftVec    *v = &p->vec[i];
+	SiftVec		b = *v;
+
+	if (p->bools[i] == NULL)
+	{
+		sift_vec_cursor_decode(&p->cur[i], off, cnt, v, exc);
+		return;
+	}
+	b.type = SVEC_I64;
+	b.data = p->bools[i];
+	sift_vec_cursor_decode(&p->cur[i], off, cnt, &b, exc);
+	for (uint16 j = 0; j < cnt; j++)
+		((SiftStrView *) v->data)[j] = b.all_valid || ((b.valid[j >> 6] >> (j & 63)) & 1) ? bool_text(p->bools[i][j]) : (SiftStrView) {0};
+	memset((SiftStrView *) v->data + cnt, 0, SIFT_VEC_PAD);
+	b.type = v->type;
+	b.data = v->data;
+	*v = b;
+}
+
 static void
 fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 {
@@ -796,11 +830,11 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 			{
 				MemoryContext old = MemoryContextSwitchTo(p->gcx);
 
-				sift_vec_cursor_open(&p->gv, p->spec.col[i].leaf, p->vec[i].type, &p->cur[i]);
+				sift_vec_cursor_open(&p->gv, p->spec.col[i].leaf, p->bools[i] != NULL ? SVEC_I64 : p->vec[i].type, &p->cur[i]);
 				MemoryContextSwitchTo(old);
 				p->cur_on[i] = true;
 			}
-			sift_vec_cursor_decode(&p->cur[i], off, cnt, &p->vec[i], &exc);
+			decode_col(p, i, off, cnt, &exc);
 			if (exc != NULL && !(p->spec.poison_rows && key_leaf_col(p, i)))
 				unholdable(p);
 			patch_col(p, i, off, cnt);
