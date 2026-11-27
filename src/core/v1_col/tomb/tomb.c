@@ -76,11 +76,12 @@ cmp_tomb(const void *a, const void *b)
 	return SIFT_CMP3(x->seq, y->seq);
 }
 
-void
-tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
+/* The log of generation gen with nothing read yet: what was counted of it for a fold stays (col/v1/maint/fold.c), since its entries only become clearable */
+static void
+tomb_unread(SiftTombLog *t, uint64 gen, BlockNumber hdr)
 {
-	t->gen = e ? e->gen : 0;
-	t->hdr = e ? e->header_blk : InvalidBlockNumber;
+	t->gen = gen;
+	t->hdr = hdr;
 	t->synced = 0;
 	t->last = InvalidBlockNumber;
 	t->lastcnt = 0;
@@ -90,8 +91,6 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 	memset(&t->keys, 0, sizeof(t->keys));
 	t->keys_cover = false;
 	t->nents = t->nrecent = 0;
-	t->foldable = t->foldable_dv = 0;
-	t->fold_due = false;
 	t->dvecs = 0;
 	t->dv_oldest = InvalidTransactionId;
 	sift_srun_reset(&t->spilled);
@@ -101,6 +100,14 @@ tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
 		hash_destroy(t->hotm);
 		t->hotm = NULL;
 	}
+}
+
+void
+tomb_reset(SiftTombLog *t, const SiftSegEntry *e)
+{
+	tomb_unread(t, e ? e->gen : 0, e ? e->header_blk : InvalidBlockNumber);
+	t->foldable = t->foldable_dv = 0;
+	t->fold_due = false;
 }
 
 /*
@@ -973,5 +980,5 @@ void
 sift_tomb_xact_end(SiftTombLog *t)
 {
 	if (t->spilled.nruns > 0 || t->hotspilled.nruns > 0)
-		tomb_reset(t, NULL);
+		tomb_unread(t, t->gen, t->hdr);
 }

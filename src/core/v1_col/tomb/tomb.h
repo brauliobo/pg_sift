@@ -187,7 +187,7 @@ extern const SiftSegEntry *sift_tomb_find_seg(const SiftDirSnapshot *dir);
 extern SiftSegEntry sift_tomb_new_segment(Relation rel, SiftSegKind kind, uint8 format);
 /* Forgets what was read (the cache of the log follows the log of the directory now) */
 extern void sift_tomb_forget(SiftTombLog *t);
-/* The end of a transaction: a log longer than a backend keeps in memory (its older entries in runs on temp files) is forgotten, so that no temporary file outlives the transaction that read it */
+/* The end of a transaction: a log longer than a backend keeps in memory (its older entries in runs on temp files) is read again from its first entry, so that no temporary file outlives the transaction that read it */
 extern void sift_tomb_xact_end(SiftTombLog *t);
 extern void sift_tomb_sync(Relation rel, SiftTombLog *t);
 /* ... the generation, completeness and key journal records of the header only: no entry is read, so the memory of the log stays what it was (for what asks what the log vouches for, not what it holds) */
