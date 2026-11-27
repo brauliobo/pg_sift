@@ -47,6 +47,7 @@ SELECT slug, class FROM sift.refusal_slugs() ORDER BY slug;
  aggregate  | semantic
  cost       | semantic
  format     | semantic
+ join       | semantic
  json_order | semantic
  jsonb      | semantic
  key        | semantic
