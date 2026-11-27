@@ -203,7 +203,7 @@ sift_touched_add(const SiftRowLockKey *k, uint64 part_id)
 		return false;
 	if (ntouched == captouched)
 	{
-		/* check-memory: allow the rows of a transaction in tier 1 are bounded by SIFT_ROWLOCK_REL_ROW_CAP for each relation, the stripes hold no more */
+		/* check-memory: allow the rows of a transaction in tier 1 are bounded by rel_row_cap() of esc.c (work_mem) for each relation, the stripes hold no more */
 		uint32		cap = Max(64, captouched * 2);
 
 		touched = touched == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(SiftTouched) * cap) : repalloc(touched, sizeof(SiftTouched) * cap);

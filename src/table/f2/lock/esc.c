@@ -21,6 +21,7 @@
 #include "core/part_lock.h"
 #include "table/f2/lock/2pc.h"
 #include "table/f2/lock/esc.h"
+#include "table/f2/lock/int.h"
 
 /* ---- the table in shared memory ---- */
 
@@ -283,7 +284,7 @@ index_lock(uint32 i)
 }
 
 /*
- * check-memory: allow the locks of a transaction are the relations and partitions it holds, at most SIFT_ROWLOCK_REL_ROW_CAP and the escalated ones for each relation.
+ * check-memory: allow the locks of a transaction are the relations and partitions it holds, at most rel_row_cap() and the escalated ones for each relation.
  * Both arrays are allocated before either replaces the old one: the end of the transaction reads the locks after an allocation that failed.
  */
 static void
@@ -751,6 +752,16 @@ sift_esc_before_row_lock(Relation rel, uint64 part_id, LockTupleMode mode, LockW
 	return r == TM_Ok ? take_intent(pl, mode, wait_policy, reread, tmfd) : r;
 }
 
+/*
+ * The rows of a relation the transaction holds one by one: each is an entry of the backend (touched.c: the dense array and up to four slots of its index), and both arrays double, so the
+ * entries of a statement at the cap fill at most work_mem. A bulk statement holds the partition or the relation once it is there, and holds as much at any size of the table.
+ */
+static uint32
+rel_row_cap(void)
+{
+	return (uint32) Min(SIFT_ROWLOCK_REL_ROW_CAP, (uint64) work_mem * 1024 / (2 * (sizeof(SiftTouched) + 4 * sizeof(uint32))));
+}
+
 bool
 sift_esc_should_escalate(const RelFileLocator *loc, uint64 part_id, LockTupleMode mode, bool stripe_full)
 {
@@ -762,7 +773,7 @@ sift_esc_should_escalate(const RelFileLocator *loc, uint64 part_id, LockTupleMod
 	if ((rl->esc_mode >= 0 && (int) mode > rl->esc_mode) || (pl->esc_mode >= 0 && (int) mode > pl->esc_mode))
 		return true;
 	return (pl->tier1_rows >= SIFT_ROWLOCK_ESCALATE_AT && pl->tier1_rows >= pl->retry_at) ||
-		(rl->tier1_rows >= SIFT_ROWLOCK_REL_ROW_CAP && rl->tier1_rows >= rl->retry_at);
+		(rl->tier1_rows >= rel_row_cap() && rl->tier1_rows >= rl->retry_at);
 }
 
 /* ---- holding a partition or a relation ---- */

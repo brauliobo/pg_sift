@@ -32,7 +32,7 @@ StaticAssertDecl(SIFT_LOCK_PART_KEY_BASE + SIFT_LOCK_PART_ESC_SLOTS <= SIFT_LOCK
 StaticAssertDecl(SIFT_LOCK_REL_KEY_BLKNO >= 0xFFFF0000U, "the key blocks are above the blocks of a relation");
 
 #define SIFT_ROWLOCK_ESCALATE_AT	32768	/* rows of one partition a transaction locks one by one before it holds the partition */
-#define SIFT_ROWLOCK_REL_ROW_CAP	32768	/* rows of one relation, over all its partitions, before the heaviest partition is held */
+#define SIFT_ROWLOCK_REL_ROW_CAP	32768	/* rows of one relation, over all its partitions, before the heaviest partition is held, fewer where work_mem is small */
 #define SIFT_ROWLOCK_PART_TO_REL_AT	16		/* partitions of one relation held before the relation is */
 #define SIFT_ROWLOCK_RETRY_ROWS		256		/* rows a NOWAIT or SKIP LOCKED request goes on one by one after the partition was refused before it asks again */
 
