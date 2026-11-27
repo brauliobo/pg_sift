@@ -81,7 +81,7 @@ sift_v1_elem_spec(const SiftSrcLayout *lay, int group_leaf, int nchild, const in
 	if (group_leaf < 0 || group_leaf >= lay->nleaves || nchild < 1 || nchild > SIFT_V1_MAX_ELEM_COLS)
 		return false;
 	g = &lay->leaf[group_leaf];
-	if ((g->kind != SCL_ARRAY && g->kind != SCL_OBJECT) || g->parent >= 0 || g->path != NIL)
+	if ((g->kind != SCL_ARRAY && g->kind != SCL_OBJECT) || g->parent >= 0)
 		return false;
 	*out = (SiftV1ElemSpec) {.group_leaf = group_leaf,.nchild = nchild};
 	for (int c = 0; c < nchild; c++)

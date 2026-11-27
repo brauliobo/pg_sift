@@ -338,6 +338,23 @@ decode_child_codes(SiftF2Pull *p, int g, int c)
 	return true;
 }
 
+/* the rows of the granule whose array holds an element the exceptions of its column name: the consumer reads those from the heap, the others from the leaves */
+static void
+poison_parents(SiftF2Pull *p, const PullGroup *gr, const SiftVariantExcStream *exc)
+{
+	uint32		r = 0;
+
+	for (uint32 w = 0; w < (gr->n_elems + 63) / 64; w++)
+		for (uint64 bits = exc->exc_mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint32 e = w * 64 + (uint32) __builtin_ctzll(bits);
+
+			while (gr->lay.offsets[r + 1] <= e)
+				r++;
+			p->poison[r >> 6] |= UINT64CONST(1) << (r & 63);
+		}
+}
+
 /* an element column decoded batch by batch into whole-granule arrays of the cells of its type */
 static void
 decode_child_vec(SiftF2Pull *p, int g, int c, SiftVecType type)
@@ -360,8 +377,8 @@ decode_child_vec(SiftF2Pull *p, int g, int c, SiftVecType type)
 		const SiftVariantExcStream *exc = NULL;
 
 		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], at, cnt, &tmp, &exc);
-		if (exc != NULL)
-			sift_f2_pull_poison_granule(p);
+		if (exc != NULL && at == 0)
+			poison_parents(p, gr, exc);
 		memcpy((char *) gr->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
 		for (uint16 i = 0; i < cnt; i++)
 			if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))

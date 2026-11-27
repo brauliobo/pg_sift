@@ -84,12 +84,12 @@ ORDER BY r.name;
  string x       | same ERR 22P02 invalid input syntax for type double precision: "x"
 (13 rows)
 
--- a list that is a JSON null or holds a scalar is flagged by no unit: the clean path of the scan reads it as before, and answers where the normal plan raises
-SELECT answers(iq('t.id = 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_of_numbers,
-       answers(iq('t.id = 1202', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_null;
-         list_of_numbers          |            list_null             
-----------------------------------+----------------------------------
- answers (the normal plan raises) | answers (the normal plan raises)
+-- a list that is a JSON null or holds a scalar is one the leaves cannot hold: the scan reads it from the heap and raises as the normal plan does
+SELECT same(iq('t.id = 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_of_numbers,
+       same(iq('t.id = 1202', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_null;
+                              list_of_numbers                              |                          list_null                           
+---------------------------------------------------------------------------+--------------------------------------------------------------
+ same ERR 22023 argument of jsonb_to_recordset must be an array of objects | same ERR 22023 cannot call jsonb_to_recordset on a non-array
 (1 row)
 
 SELECT r.name, same(iq(r.rng, 'NOT ' || ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS not_exists
@@ -266,7 +266,8 @@ SELECT same(iq('t.id BETWEEN 495 AND 1010', ex('p.kind = $$cat_a$$ AND p.score >
 
 DELETE FROM items WHERE id IN (1000, 4002);
 VACUUM items;
-SELECT same(iq('t.id BETWEEN 495 AND 1300', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_vacuum;
+-- the JSON null list of 1202 raises too: a HOT update left its row first in the heap, so the range stops before it
+SELECT same(iq('t.id BETWEEN 495 AND 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_vacuum;
                            after_vacuum                            
 -------------------------------------------------------------------
  same ERR 22P02 invalid input syntax for type double precision: ""

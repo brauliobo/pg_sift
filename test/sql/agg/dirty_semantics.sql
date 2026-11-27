@@ -62,9 +62,9 @@ FROM (VALUES ('clean', 't.id < 90'), ('other element', 't.id BETWEEN 90 AND 110'
              ('nested array', 't.id = 900'), ('string x', 't.id = 1000'), ('bool', 't.id = 1100'), ('list a string', 't.id = 1200'),
              ('beyond', 't.id > 1300')) r(name, rng)
 ORDER BY r.name;
--- a list that is a JSON null or holds a scalar is flagged by no unit: the clean path of the scan reads it as before, and answers where the normal plan raises
-SELECT answers(iq('t.id = 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_of_numbers,
-       answers(iq('t.id = 1202', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_null;
+-- a list that is a JSON null or holds a scalar is one the leaves cannot hold: the scan reads it from the heap and raises as the normal plan does
+SELECT same(iq('t.id = 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_of_numbers,
+       same(iq('t.id = 1202', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS list_null;
 SELECT r.name, same(iq(r.rng, 'NOT ' || ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS not_exists
 FROM (VALUES ('clean', 't.id < 90'), ('other element', 't.id BETWEEN 90 AND 110'), ('string 4', 't.id = 500'), ('empty', 't.id = 700'),
              ('null', 't.id = 800'), ('string x', 't.id = 1000')) r(name, rng)
@@ -105,7 +105,8 @@ SELECT sift.col_merge('items_col', true) >= 0 AS merged;
 SELECT same(iq('t.id BETWEEN 495 AND 1010', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_merge;
 DELETE FROM items WHERE id IN (1000, 4002);
 VACUUM items;
-SELECT same(iq('t.id BETWEEN 495 AND 1300', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_vacuum;
+-- the JSON null list of 1202 raises too: a HOT update left its row first in the heap, so the range stops before it
+SELECT same(iq('t.id BETWEEN 495 AND 1201', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_vacuum;
 SELECT same(iq('t.id BETWEEN 495 AND 1010', ex('p.kind = $$cat_a$$ AND p.score > 3'))) AS after_vacuum_other;
 
 -- workers
