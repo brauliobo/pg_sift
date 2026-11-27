@@ -10,6 +10,7 @@
 #define PGSHIM_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 /* The SQLSTATE (0: an elog(ERROR) has none), message and source line of the last error */
 extern int	pgshim_sqlstate;
@@ -25,6 +26,8 @@ extern void (*pgshim_error_hook) (void);
 /* Everything palloc'd so far (the set-up of a target) stays; pgshim_reset frees what comes after */
 extern void pgshim_keep(void);
 extern void pgshim_reset(void);
+/* The bytes palloc'd and not freed (the chunks pgshim_keep made permanent excluded) */
+extern size_t pgshim_live_bytes(void);
 /* The harness links no storage layer: aborts with the symbol that was reached */
 extern void pgshim_unreached(const char *what) __attribute__((noreturn));
 

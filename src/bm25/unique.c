@@ -21,6 +21,7 @@
 #include "utils/hsearch.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "utils/typcache.h"
 
@@ -215,7 +216,7 @@ candidates(Relation index, uint64 key, SegFilter *f, MemoryContext cx)
 }
 
 
-/* The key as BuildIndexValueDescription writes it, which cannot write a column of a class of any type; for the columns the user may read */
+/* The key as BuildIndexValueDescription writes it, which cannot write a column of a class of any type; for a user who may read the table and whom no row-level security policy limits */
 static char *
 key_detail(Relation heap, Relation index, const Datum *values, const bool *isnull)
 {
@@ -223,7 +224,8 @@ key_detail(Relation heap, Relation index, const Datum *values, const bool *isnul
 				vals;
 	char	   *d;
 
-	if (pg_class_aclcheck(RelationGetRelid(heap), GetUserId(), ACL_SELECT) != ACLCHECK_OK)
+	if (check_enable_rls(RelationGetRelid(heap), InvalidOid, true) == RLS_ENABLED ||
+		pg_class_aclcheck(RelationGetRelid(heap), GetUserId(), ACL_SELECT) != ACLCHECK_OK)
 		return NULL;
 	initStringInfo(&cols);
 	initStringInfo(&vals);

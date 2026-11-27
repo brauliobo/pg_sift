@@ -139,6 +139,19 @@ facet_budget(const Facets *f, Size vals)
 					  work_mem, "sift.facets", "work_mem", "facet a keyword index with fewer distinct values, or narrow the query");
 }
 
+/* p grown to bytes (a new array zeroed), once the budget holds it and extra: a work_mem past 1 GB still allocates no array past MaxAllocSize */
+static void *
+facet_grow(const Facets *f, void *p, Size bytes, Size extra)
+{
+	facet_budget(f, extra);
+	if (bytes > MaxAllocSize)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("sift.facets needs %zu kB in one array, more than one allocation holds (%zu kB)", (size_t) (bytes / 1024), (size_t) (MaxAllocSize / 1024)),
+				 errhint("Facet a keyword index with fewer distinct values, or narrow the query.")));
+	return p ? repalloc(p, bytes) : MemoryContextAllocZero(f->mcxt, bytes);
+}
+
 static void
 add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 {
@@ -152,8 +165,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 		if (f->nqsb == f->qsbcap)
 		{
 			f->qsbcap = Max(64, 2 * f->qsbcap);
-			facet_budget(f, 0);
-			SIFT_REGROW_IN(f->mcxt, f->qsb, f->qsbcap * sizeof(QSb));
+			f->qsb = facet_grow(f, f->qsb, f->qsbcap * sizeof(QSb), 0);
 		}
 		f->qsb[f->nqsb++] = (QSb) {.sb = sb,.row = f->nrows};
 	}
@@ -162,8 +174,7 @@ add_page(void *arg, BlockNumber blk, const uint64 *offmask)
 	if (f->nrows == f->rowcap)
 	{
 		f->rowcap = Max(256, 2 * f->rowcap);
-		facet_budget(f, 0);
-		SIFT_REGROW_IN(f->mcxt, f->rows, f->rowcap * ROW_BYTES);
+		f->rows = facet_grow(f, f->rows, f->rowcap * ROW_BYTES, 0);
 	}
 	memcpy(f->rows[f->nrows++], offmask, ROW_BYTES);
 }
@@ -218,7 +229,7 @@ collect_matches(Facets *f, const char *query, int len)
 	ExecDropSingleTupleTableSlot(f->slot);
 	FreeExecutorState(f->estate);
 
-	f->grp = MemoryContextAlloc(f->mcxt, Max(f->nqsb, 1) * sizeof(sift_grp));
+	f->grp = facet_grow(f, NULL, Max(f->nqsb, 1) * sizeof(sift_grp), 0);
 	for (int i = 0; i < f->nqsb; i++)
 	{
 		f->grp[i] = (sift_grp) {.gid = f->qsb[i].sb,.w = ROW_BYTES,.off = (const uint8 *) f->rows[f->qsb[i].row]};
@@ -310,27 +321,18 @@ seg_view(Facets *f, FacetSeg *fs, int i)
 	return fs->view[i];
 }
 
-static Entry *
-ents_regrow(Facets *f, Entry *ents, Size cap)
-{
-	SIFT_REGROW_IN(f->mcxt, ents, cap * sizeof(Entry));
-	return ents;
-}
-
 static void
 add_entry(Facets *f, const char *term, int len, int seg, const SiftTermInfo *info)
 {
 	if (f->nent == f->entcap)
 	{
 		f->entcap = Max(256, 2 * f->entcap);
-		facet_budget(f, 0);
-		f->ent = ents_regrow(f, f->ent, f->entcap);
+		f->ent = facet_grow(f, f->ent, f->entcap * sizeof(Entry), 0);
 	}
 	if (f->nterms + len > f->termcap)
 	{
 		f->termcap = Max(4096, 2 * f->termcap + len);
-		facet_budget(f, 0);
-		SIFT_REGROW_IN(f->mcxt, f->terms, f->termcap);
+		f->terms = facet_grow(f, f->terms, f->termcap, 0);
 	}
 	memcpy(f->terms + f->nterms, term, len);
 	f->ent[f->nent++] = (Entry) {.off = f->nterms,.len = len,.seg = seg,.info = *info};
@@ -408,9 +410,9 @@ collect_entries(Facets *f, SiftIndexState *st)
 			fs->dirty = (entry->flags & SIFT_SEG_DIRTY) != 0;
 			if (fs->dirty)
 			{
-				fs->view = MemoryContextAllocZero(f->mcxt, f->nqsb * sizeof(sift_grp *));
-				fs->viewed = MemoryContextAllocZero(f->mcxt, f->nqsb);
 				f->viewbytes += (Size) f->nqsb * (sizeof(sift_grp *) + 1);
+				fs->view = facet_grow(f, NULL, f->nqsb * sizeof(sift_grp *), 0);
+				fs->viewed = facet_grow(f, NULL, f->nqsb, 0);
 			}
 			sift_dict_scan(fs->seg->dict, NULL, 0, NULL, 0, dict_visit, &v);
 			sift_sr_release(&fs->seg->sr);
@@ -470,6 +472,7 @@ count_postings(Facets *f, FacetSeg *fs, const SiftTermInfo *info)
 		const sift_grp *g = sift_seek(cur, f->qsb[i].sb);
 		const sift_grp *q;
 
+		CHECK_FOR_INTERRUPTS();
 		if (g == NULL)
 			break;
 		i = q_lower(f, i, g->gid);
@@ -553,8 +556,7 @@ res_add(Facets *f, Res r)
 	if (f->nres == f->rescap && (!f->bounded || f->nres < f->lim))
 	{
 		f->rescap = Max(16, Min(2 * f->rescap, f->bounded ? f->lim : PG_INT64_MAX));
-		facet_budget(f, 0);
-		SIFT_REGROW_IN(f->mcxt, f->res, f->rescap * sizeof(Res));
+		f->res = facet_grow(f, f->res, f->rescap * sizeof(Res), 0);
 	}
 	if (!f->bounded)
 		f->res[f->nres++] = r;
@@ -644,6 +646,8 @@ sort_entries(Facets *f)
 	int64		n = 0;
 
 	for (int64 i = 0; i < f->nent; i++)
+	{
+		CHECK_FOR_INTERRUPTS();
 		if (i == 0 || ent_cmp(&f->ent[i - 1], &f->ent[i], f) > 0)
 		{
 			if (nruns == f->nseg + 1)
@@ -656,6 +660,7 @@ sort_entries(Facets *f)
 				runs[nruns - 1].end = i;
 			runs[nruns++].at = i;
 		}
+	}
 	if (nruns <= 1)
 	{
 		pfree(runs);
@@ -663,8 +668,7 @@ sort_entries(Facets *f)
 	}
 	runs[nruns - 1].end = f->nent;
 	heap = palloc(nruns * sizeof(int));
-	facet_budget(f, f->entcap * sizeof(Entry));
-	out = ents_regrow(f, NULL, f->entcap);
+	out = facet_grow(f, NULL, f->entcap * sizeof(Entry), f->entcap * sizeof(Entry));
 	for (int i = 0; i < nruns; i++)
 		heap[i] = i;
 	nheap = nruns;
@@ -674,6 +678,7 @@ sort_entries(Facets *f)
 	{
 		EntRun	   *r = &runs[heap[0]];
 
+		CHECK_FOR_INTERRUPTS();
 		out[n++] = f->ent[r->at++];
 		if (r->at == r->end)
 			heap[0] = heap[--nheap];
@@ -693,12 +698,12 @@ collect_values(Facets *f, int64 *nvals)
 	int64		n = 0;
 
 	sort_entries(f);
-	facet_budget(f, Max(f->nent, 1) * sizeof(Value));
-	vals = MemoryContextAlloc(f->mcxt, Max(f->nent, 1) * sizeof(Value));
+	vals = facet_grow(f, NULL, Max(f->nent, 1) * sizeof(Value), Max(f->nent, 1) * sizeof(Value));
 	for (int64 i = 0, j; i < f->nent; i = j)
 	{
 		uint64		bound = 0;
 
+		CHECK_FOR_INTERRUPTS();
 		for (j = i; j < f->nent && same_term(f, &f->ent[i], &f->ent[j]); j++)
 			bound += f->ent[j].info.df;
 		vals[n++] = (Value) {.e = &f->ent[i],.n = j - i,.bound = Min(bound, f->total)};
@@ -800,6 +805,7 @@ emit_results(ReturnSetInfo *rsinfo, Facets *f)
 		Datum		values[2];
 		bool		nulls[2] = {f->res[i].term == NULL, false};
 
+		CHECK_FOR_INTERRUPTS();
 		values[0] = nulls[0] ? (Datum) 0 : PointerGetDatum(cstring_to_text_with_len(f->res[i].term, f->res[i].len));
 		values[1] = Int64GetDatum(f->res[i].n);
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);

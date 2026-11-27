@@ -4,7 +4,6 @@
 #include "postgres.h"
 
 #include "catalog/pg_type_d.h"
-#include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -63,20 +62,17 @@ sift_bm25_doc_keys(Relation index, SiftDocKeys *keys, MemoryContext cx)
 		keys_hash(index, keys, cx);
 }
 
-/* The key column k as a text: text and varchar as they are, any other type as its output function writes it */
+/* The key column k as a text in the current context: text and varchar as they are (detoasted), any other type as its output function writes it */
 static text *
-column_text(SiftDocKeys *keys, int k, Datum d, MemoryContext cx)
+column_text(SiftDocKeys *keys, int k, Datum d)
 {
 	char	   *s;
 	text	   *t;
-	MemoryContext old;
 
 	if (!OidIsValid(keys->out[k].fn_oid))
 		return DatumGetTextPP(d);
 	s = OutputFunctionCall(&keys->out[k], d);
-	old = MemoryContextSwitchTo(cx);
 	t = cstring_to_text(s);
-	MemoryContextSwitchTo(old);
 	pfree(s);
 	return t;
 }
@@ -87,35 +83,63 @@ keeps_null_key(Relation index)
 	return index->rd_index->indisunique && index->rd_index->indnullsnotdistinct;
 }
 
+/* The sections of several key columns: each column's text is freed once it is copied, so a row holds its columns and its doc at most */
+static text *
+sections_doc(SiftDocKeys *keys, const Datum *values, const bool *isnull, int nkey)
+{
+	text	   *cols[INDEX_MAX_KEYS] = {0};
+	Size		len = nkey - 1;
+	text	   *doc;
+	char	   *p;
+
+	for (int k = 0; k < nkey; k++)
+		if (!isnull[k])
+		{
+			cols[k] = column_text(keys, k, values[k]);
+			len += VARSIZE_ANY_EXHDR(cols[k]);
+		}
+	if (len > MaxAllocSize - VARHDRSZ)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("the document of a row of index \"%s\" needs %zu kB, more than a text holds (%zu kB)",
+						RelationGetRelationName(keys->index), (size_t) (len / 1024), (size_t) ((MaxAllocSize - VARHDRSZ) / 1024)),
+				 errhint("Index fewer or shorter columns.")));
+	doc = palloc(VARHDRSZ + len);
+	SET_VARSIZE(doc, VARHDRSZ + len);
+	p = VARDATA(doc);
+	for (int k = 0; k < nkey; k++)
+	{
+		if (k > 0)
+			*p++ = SIFT_FIELD_SEP;
+		if (cols[k] == NULL)
+			continue;
+		memcpy(p, VARDATA_ANY(cols[k]), VARSIZE_ANY_EXHDR(cols[k]));
+		p += VARSIZE_ANY_EXHDR(cols[k]);
+		if ((Pointer) cols[k] != DatumGetPointer(values[k]))
+			pfree(cols[k]);
+	}
+	return doc;
+}
+
 text *
 sift_bm25_keys_doc(SiftDocKeys *keys, const Datum *values, const bool *isnull, MemoryContext cx)
 {
 	int			nkey = IndexRelationGetNumberOfKeyAttributes(keys->index);
-	StringInfoData buf;
 	MemoryContext old;
+	text	   *doc;
 	bool		any = false;
 
 	for (int k = 0; k < nkey; k++)
 		any |= !isnull[k];
-	if (!any)
-		return keeps_null_key(keys->index) ? cstring_to_text_with_len("", 0) : NULL;
-	if (nkey == 1)
-		return column_text(keys, 0, values[0], cx);
 	old = MemoryContextSwitchTo(cx);
-	initStringInfo(&buf);
-	for (int k = 0; k < nkey; k++)
-	{
-		if (k > 0)
-			appendStringInfoChar(&buf, SIFT_FIELD_SEP);
-		if (!isnull[k])
-		{
-			text	   *t = column_text(keys, k, values[k], cx);
-
-			appendBinaryStringInfo(&buf, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
-		}
-	}
+	if (!any)
+		doc = keeps_null_key(keys->index) ? cstring_to_text_with_len("", 0) : NULL;
+	else if (nkey == 1)
+		doc = column_text(keys, 0, values[0]);
+	else
+		doc = sections_doc(keys, values, isnull, nkey);
 	MemoryContextSwitchTo(old);
-	return cstring_to_text_with_len(buf.data, buf.len);
+	return doc;
 }
 
 text *
@@ -182,9 +206,12 @@ sift_bm25_unique_terms(SiftAnalyzer *an, const SiftTermFreq *terms, int nterms, 
 	k.hash = sift_term_hash(k.term, k.len);
 	while (at < nterms && (terms[at].hash < k.hash || (terms[at].hash == k.hash && memcmp(terms[at].term, k.term, Min(terms[at].len, k.len)) < 0)))
 		at++;
-	memcpy(merged, terms, at * sizeof(SiftTermFreq));
+	if (nterms > 0)
+	{
+		memcpy(merged, terms, at * sizeof(SiftTermFreq));
+		memcpy(merged + at + 1, terms + at, (nterms - at) * sizeof(SiftTermFreq));
+	}
 	merged[at] = k;
-	memcpy(merged + at + 1, terms + at, (nterms - at) * sizeof(SiftTermFreq));
 	*dl = Max(*dl, 1);
 	*out = merged;
 	return nterms + 1;

@@ -76,7 +76,7 @@ sift_facet_rls_begin(Relation heap, Snapshot snapshot, MemoryContext mcxt, SiftF
 	r->out = out;
 	r->arg = arg;
 	r->slot = table_slot_create(heap, NULL);
-	r->query = MemoryContextStrdup(mcxt, psprintf("SELECT ctid FROM ONLY %s WHERE ctid = ANY ($1)",
+	r->query = MemoryContextStrdup(mcxt, psprintf("SELECT ctid FROM ONLY %s WHERE ctid OPERATOR(pg_catalog.=) ANY ($1)",
 												  quote_qualified_identifier(get_namespace_name(RelationGetNamespace(heap)), RelationGetRelationName(heap))));
 	sift_vis_begin(&r->vis, heap, snapshot, NULL, 0);
 	return r;

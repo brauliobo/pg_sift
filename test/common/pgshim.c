@@ -86,6 +86,16 @@ pgshim_keep(void)
 	arena.next = arena.prev = &arena;	/* what exists now is permanent; the chunks keep their stale links and are never freed */
 }
 
+size_t
+pgshim_live_bytes(void)
+{
+	size_t		n = 0;
+
+	for (Chunk *c = arena.next; c != &arena; c = c->next)
+		n += c->size;
+	return n;
+}
+
 void
 pgshim_reset(void)
 {
