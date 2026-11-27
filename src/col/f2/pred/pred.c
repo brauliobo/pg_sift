@@ -264,13 +264,13 @@ sift_f2_str_verdict(const SiftColPred *p, const char *s, uint32 len)
 	}
 }
 
-/* The operators of the hybrid scan the stored bytes decide: an array operator on the head of an array that keeps its image, compared by its bytes or a deterministic collation, a case folded prefix or equality under the C collation (whose lower() folds the ASCII capitals and no other character) */
+/* The operators of the hybrid scan the stored bytes decide: an array operator on the head of an array that keeps its image, compared by its bytes or a deterministic collation, a case folded prefix or equality under a collation whose lower() folds the ASCII capitals and no other character */
 static bool
 ext_decided(const SiftColDef *d, const SiftColPred *p)
 {
 	if (p->op == SIFT_COLOP_ARR_OVERLAP || p->op == SIFT_COLOP_ARR_CONTAINS)
 		return sift_col_def_arrlen_head(d) && !(d->flags & SIFT_COLD_NOIMAGE) && (p->collid == InvalidOid || sift_collation_deterministic(p->collid));
-	return d->store == SIFT_COLS_STR && !sift_col_def_is_wide(d) && d->lane == 0 && p->collid != InvalidOid && sift_collate_is_c(p->collid);
+	return d->store == SIFT_COLS_STR && !sift_col_def_is_wide(d) && d->lane == 0 && p->collid != InvalidOid && sift_ctype_is_c(p->collid);
 }
 
 /* A value the leaf holds in a form the test cannot judge (a wide number, the image of an array or a range, a pattern that folds case under a collation other than C, a string the bytes of a collation do not order): the heap decides */
@@ -282,6 +282,6 @@ sift_f2_undecided(const SiftColDef *d, const SiftColPred *p)
 	if (d->type == SIFT_COLT_OTHER)
 		return p->op != SIFT_COLOP_ISNULL && p->op != SIFT_COLOP_NOTNULL;	/* the image of a datum says whether it is NULL and nothing else */
 	return sift_col_def_is_wide(d) || (d->lane > 0 && !sift_f2_card_lane(d)) || (d->flags & SIFT_COLD_LOSSY) || d->type == SIFT_COLT_VARLENA || d->type == SIFT_COLT_TIMETZ || p->op == SIFT_COLOP_SHAPE ||
-		(p->op == SIFT_COLOP_ICONTAINS && (p->collid == InvalidOid || !sift_collate_is_c(p->collid))) || (d->store == SIFT_COLS_STR && sift_f2_collation_undecided(p));
+		(p->op == SIFT_COLOP_ICONTAINS && (p->collid == InvalidOid || !sift_ctype_is_c(p->collid))) || (d->store == SIFT_COLS_STR && sift_f2_collation_undecided(p));
 }
 

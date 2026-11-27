@@ -145,6 +145,15 @@ folded_column(IndexOptInfo *ix, Node *l)
 	return -1;
 }
 
+/* The collation that folds the case of the operator's left side: the one of lower() for lower(col), else the operator's own (ILIKE) */
+static Oid
+fold_collation(OpExpr *op)
+{
+	Node	   *l = linitial(op->args);
+
+	return IsA(l, FuncExpr) && ((FuncExpr *) l)->funcid == F_LOWER_TEXT ? ((FuncExpr *) l)->inputcollid : op->inputcollid;
+}
+
 static OpExpr *
 commuted(OpExpr *op)
 {
@@ -194,9 +203,10 @@ op_pushable(IndexOptInfo *ix, Relation indexrel, OpExpr *op0, SiftHybQual *qual,
 		return false;
 	if ((col = folded_column(ix, l)) >= 0 && is_text(exprType(strip(linitial(((FuncExpr *) l)->args)))))
 	{
-		Oid			collid = op->inputcollid;
+		Oid			collid = fold_collation(op);
 
-		if (!runtime_value(r) || !OidIsValid(collid) || !sift_collate_is_c(collid) || (op->opno != OID_TEXT_LIKE_OP && op->opno != TextEqualOperator))
+		if (!runtime_value(r) || !OidIsValid(collid) || !sift_ctype_is_c(collid) || !OidIsValid(op->inputcollid) || !get_collation_isdeterministic(op->inputcollid) ||
+			(op->opno != OID_TEXT_LIKE_OP && op->opno != TextEqualOperator))
 			return false;
 		*qual = (SiftHybQual) {op->opno == TextEqualOperator ? SHQ_IEQ : SHQ_IPREFIX, col, false};
 		*norm = (Expr *) op0;
@@ -208,7 +218,7 @@ op_pushable(IndexOptInfo *ix, Relation indexrel, OpExpr *op0, SiftHybQual *qual,
 		Oid			collid = op->inputcollid;
 
 		typid = exprType(strip(l));
-		if (op->opno == OID_TEXT_ICLIKE_OP && is_text(typid) && runtime_value(r) && OidIsValid(collid) && sift_collate_is_c(collid))
+		if (op->opno == OID_TEXT_ICLIKE_OP && is_text(typid) && runtime_value(r) && OidIsValid(collid) && sift_ctype_is_c(collid))
 		{
 			*qual = (SiftHybQual) {SHQ_IPREFIX, col, true};
 			*norm = (Expr *) op;
@@ -295,7 +305,7 @@ sift_hybrid_ext_init(PlanState *ps, const SiftHybQual *q, Expr *clause, int leaf
 
 	e->qual = *q;
 	e->leaf = leaf;
-	e->collid = op->inputcollid;
+	e->collid = q->kind == SHQ_IEQ || q->kind == SHQ_IPREFIX ? fold_collation(commuted(op)) : op->inputcollid;
 	e->akind = lt == INT4ARRAYOID ? SIFT_ARR_INT4 : lt == INT8ARRAYOID ? SIFT_ARR_INT8 : SIFT_ARR_TEXT;
 	e->op = q->kind == SHQ_CARD ? btree_op(opfamily_strategy(op->opno, int_family())) : 0;
 	e->rhs = ExecInitExpr(lsecond(op->args), ps);

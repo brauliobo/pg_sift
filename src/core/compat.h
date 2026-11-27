@@ -567,6 +567,13 @@ sift_op_strategies(Oid opno)
 #define sift_collate_is_c(collid) lc_collate_is_c(collid)
 #endif
 
+/* Does the collation fold case as C does (lower() and ILIKE change the ASCII capitals and no other character)? The builtin C.UTF-8 orders by bytes and folds every letter */
+#if PG_VERSION_NUM >= 180000
+#define sift_ctype_is_c(collid) (pg_newlocale_from_collation(collid)->ctype_is_c)
+#else
+#define sift_ctype_is_c(collid) lc_ctype_is_c(collid)
+#endif
+
 /* Is the collation deterministic? 17 gives no locale (NULL) for the default collation of the libc provider, 18 and later always one */
 static inline bool
 sift_collation_deterministic(Oid collid)

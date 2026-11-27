@@ -216,7 +216,7 @@ unstable_walker(Node *n, void *ctx)
 	return expression_tree_walker(n, unstable_walker, ctx);
 }
 
-/* a filter that two statements may not read the same: a parameter, a sub-select, or a function that is not immutable */
+/* a filter or a computed column that two statements may not read the same: a parameter, a sub-select, or a function that is not immutable */
 static bool
 unstable(List *filters)
 {
@@ -282,7 +282,8 @@ sift_dimcache_try(PlanState *ps, const SiftV6XDim *xd, const SiftStarShape *sh, 
 	Oid			ioid;
 	bool		stamped;
 
-	if (!plain_scan(ps, &s) || unstable(s.filters[0]) || unstable(s.filters[1]) || check_enable_rls(RelationGetRelid(s.heap), InvalidOid, true) != RLS_NONE)
+	if (!plain_scan(ps, &s) || unstable(s.filters[0]) || unstable(s.filters[1]) || unstable(ps->plan->targetlist) ||
+		check_enable_rls(RelationGetRelid(s.heap), InvalidOid, true) != RLS_NONE)
 		return NULL;
 	if (!OidIsValid(ioid = journal_index(s.heap)))
 		return NULL;
