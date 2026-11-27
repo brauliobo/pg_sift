@@ -5,15 +5,13 @@
 #include "postgres.h"
 
 #include "access/tupdesc.h"
-#include "catalog/pg_type_d.h"
 #include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "utils/builtins.h"
 #include "utils/memutils.h"
 
+#include "agg/datum.h"
 #include "agg/join/lookup.h"
-#include "agg/vexpr/str.h"
 #include "core/compat.h"
 #include "core/explain.h"
 #include "core/memtrack.h"
@@ -116,42 +114,6 @@ sift_v6_resid_free(SiftV6Resid *r)
 	FreeExecutorState(r->estate);
 }
 
-static inline bool
-cell_valid(const SiftVec *v, uint32 row)
-{
-	return v->all_valid || ((v->valid[row >> 6] >> (row & 63)) & 1);
-}
-
-/* the value of a cell as the Datum of the type PostgreSQL's expression reads; a string is made in the current memory context */
-static Datum
-cell_datum(const SiftVec *v, Oid typid, uint32 row)
-{
-	if (v->type == SVEC_STRVIEW)
-	{
-		const SiftStrView *s = &((const SiftStrView *) v->data)[row];
-
-		return PointerGetDatum(cstring_to_text_with_len(sift_vstr_bytes(s), (int) s->len));
-	}
-	if (v->type == SVEC_F64)
-	{
-		const double f = ((const double *) v->data)[row];
-
-		return typid == FLOAT4OID ? Float4GetDatum((float4) f) : Float8GetDatum(f);
-	}
-	switch (typid)
-	{
-		case INT2OID:
-			return Int16GetDatum((int16) ((const int64 *) v->data)[row]);
-		case INT4OID:
-		case DATEOID:
-			return Int32GetDatum((int32) ((const int64 *) v->data)[row]);
-		case BOOLOID:
-			return BoolGetDatum(((const int64 *) v->data)[row] != 0);
-		default:
-			return Int64GetDatum(((const int64 *) v->data)[row]);
-	}
-}
-
 void
 sift_v6_resid_filter(SiftV6Resid *r, int dim, const SiftVec *const *cols, SiftBatchSel *bs)
 {
@@ -172,8 +134,7 @@ sift_v6_resid_filter(SiftV6Resid *r, int dim, const SiftVec *const *cols, SiftBa
 			memset(r->slot->tts_isnull, true, r->ncols * sizeof(bool));
 			while ((i = bms_next_member(used, i)) >= 0)
 			{
-				r->slot->tts_isnull[i] = !cell_valid(cols[i], row);
-				r->slot->tts_values[i] = r->slot->tts_isnull[i] ? (Datum) 0 : cell_datum(cols[i], r->col[i].typid, row);
+				r->slot->tts_values[i] = sift_v6_vec_datum(cols[i], (uint16) row, r->col[i].typid, r->col[i].scale, &r->slot->tts_isnull[i]);
 			}
 			ExecStoreVirtualTuple(r->slot);
 			keep = ExecQual(qual, r->econtext);
