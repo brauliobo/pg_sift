@@ -11,6 +11,7 @@ Manifests (no PostgreSQL, no build):
   - a regression test never sorts by a constant (`ORDER BY 1::text` casts the number 1, it names no column): its rows come out in scan order;
   - a `# tap: pooled` shell test (test/t) that runs CREATE DATABASE pins no sift. setting in node_init: the pool sets it on the database of the node alone, never on the ones the test creates.
   - a `# tap: pooled` shell test connects through $(node_sock NAME), never $(dir NAME)/sock: a pooled node is a database of the cluster of the lane, its directory holds no socket.
+  - a test/t compare never calls a SQL function after set_config in the same call: the function runs the plan it cached under the settings before (EXECUTE the query text).
 High-level harnesses (test/{corpus,col,plan,fuzz,matrix}/, scripts/{corpus,coldiff,plangate,coverage,fast-gate}.sh) run on Format 1, Format 2.0 and the release library:
   - a plan node is matched by its prefix (`Custom Scan (SiftAgg` or "SiftAgg), never `Custom Scan (SiftAgg)` or "SiftAgg", which SiftAggV6, SiftAggV6Sip, SiftAggV6TopN... are not;
   - the maintenance and the explanation go through the public 6.0 API (sift.promote, sift.merge, sift.maintain, sift.explain_why), never through the retired
@@ -93,9 +94,9 @@ POOLED_PIN = re.compile(r'node_init \S+ \d+ "([^"]*)"')
 POOLED_SOCK = re.compile(r'\$\(dir [^)]+\)/sock')
 
 
-def tap_scripts(root):
+def tap_scripts(root, suffixes=('.sh',)):
     for r, _, files in os.walk(os.path.join(root, 'test/t')):
-        for f in sorted(x for x in files if x.endswith('.sh')):
+        for f in sorted(x for x in files if x.endswith(suffixes)):
             rel = os.path.relpath(os.path.join(r, f), root)
             with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as fh:
                 yield rel, fh.read()
@@ -118,6 +119,13 @@ def check_pooled_taps(root):
                             "drop `# tap: pooled`, so the setting is the server's")
     return sorted(errs)
 
+
+SETTING_THEN_CALL = re.compile(r"set_config\([^)]*\);\s*\w+ := \w+\(\)")
+
+
+def check_cached_compares(root):
+    return sorted(f"{rel}:{line_of(text, m)}: a SQL function called after set_config runs the plan it cached under the settings before, so the compare reads one plan twice: "
+                  "EXECUTE the query text after each setting" for rel, text in tap_scripts(root, ('.sh', '.pl')) for m in SETTING_THEN_CALL.finditer(text))
 
 
 CONSTANT_ORDER = re.compile(r'\bORDER BY \d+::', re.I)
@@ -175,7 +183,7 @@ def check_harnesses(root, strict):
 
 def run(root, strict):
     tests = sql_tests(root)
-    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root) + check_pooled_taps(root) + check_constant_order(root)
+    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root) + check_pooled_taps(root) + check_cached_compares(root) + check_constant_order(root)
     h_errs, notes = check_harnesses(root, strict)
     return errs + h_errs, notes
 
@@ -235,6 +243,11 @@ def selftest():
          ['test/t/x.sh:3: a pooled node has no socket in its directory']),
         ('a pooled test that connects through node_sock is fine', {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\npsql -h "$(node_sock rd)" -p "$(port rd)"\n'}, False, {}, []),
         ('a server of its own may use the socket of its directory', {'test/t/x.sh': '#!/bin/bash\npsql -h "$(dir rd)/sock"\n'}, False, {}, []),
+        ('a compare that calls a SQL function after set_config',
+         {'test/t/x.sh': "#!/bin/bash\nq \"BEGIN\n PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); END\"\n"}, False, {},
+         ['test/t/x.sh:3: a SQL function called after set_config runs the plan it cached']),
+        ('a compare that EXECUTEs the query text after set_config is fine',
+         {'test/t/x.sh': "#!/bin/bash\nq \"BEGIN\n PERFORM set_config('sift.enable_agg', 'off', true); EXECUTE q INTO n; END\"\n"}, False, {}, []),
         ('a sort by a constant', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1::text;\n'}, False, {}, ['test/sql/a.sql:1: ORDER BY a cast number']),
         ('a sort by a column is fine', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1, r::text COLLATE "C";\n'}, False, {}, []),
         ('an exact SiftAgg node in a harness', {'test/col/run.sql': "SELECT 1 WHERE p LIKE '%Custom Scan (SiftAgg)%';\n"}, False, {}, ['test/col/run.sql:1: an exact SiftAgg plan node']),

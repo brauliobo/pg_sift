@@ -27,9 +27,8 @@ ANSWERS="SELECT md5(concat_ws('|',
 sql primary "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = off)" \
 	"CREATE INDEX a_ix ON a USING sift_col (id, g, v)" \
-	"CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS \$\$ $ANSWERS \$\$" \
-	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
-		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true); s := answers(); RETURN n = s; END \$\$" >/dev/null || bail "setup failed"
+	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; q text := \$q\$ $ANSWERS \$q\$; BEGIN
+		PERFORM set_config('sift.enable_agg', 'off', true); EXECUTE q INTO n; PERFORM set_config('sift.enable_agg', 'on', true); PERFORM set_config('sift.agg_force', 'on', true); EXECUTE q INTO s; RETURN n = s; END \$\$" >/dev/null || bail "setup failed"
 
 # a connected child (the foreign key is a column of its index) whose parent changes: the found flag and the join are the normal plan's, with its rows in the buffer as references
 sql primary "CREATE TABLE dim (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = off)" \

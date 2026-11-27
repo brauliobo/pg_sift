@@ -23,9 +23,8 @@ ANSWERS="SELECT md5(concat_ws('|',
 sql fz "CREATE EXTENSION pg_sift_test CASCADE" \
 	"CREATE TABLE a (id int PRIMARY KEY, g int NOT NULL, v int, pad text) WITH (autovacuum_enabled = off)" \
 	"CREATE INDEX a_ix ON a USING sift_col (id, g, v)" \
-	"CREATE FUNCTION answers() RETURNS text LANGUAGE sql AS \$\$ $ANSWERS \$\$" \
-	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; BEGIN
-		PERFORM set_config('sift.enable_agg', 'off', true); n := answers(); PERFORM set_config('sift.enable_agg', 'on', true); s := answers(); RETURN n = s; END \$\$" \
+	"CREATE FUNCTION same_as_heap() RETURNS boolean LANGUAGE plpgsql AS \$\$ DECLARE n text; s text; q text := \$q\$ $ANSWERS \$q\$; BEGIN
+		PERFORM set_config('sift.enable_agg', 'off', true); EXECUTE q INTO n; PERFORM set_config('sift.enable_agg', 'on', true); EXECUTE q INTO s; RETURN n = s; END \$\$" \
 	>/dev/null || bail "setup failed"
 rebuilt() { sql fz "SELECT rows_rebuilt FROM sift._test_col_arena_status()"; }
 
