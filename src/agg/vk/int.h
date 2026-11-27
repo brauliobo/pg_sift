@@ -166,7 +166,7 @@ struct SiftVk
 	bool		verify_tabs;	/* test: a hit is compared with the chunks */
 	bool		no_fast;		/* test: every job runs the expression machine */
 	Buf			arena, res, rinit, rhost, ht, out, hout;
-	uint64_t	ht_cap, out_cap, hout_cap;
+	bool		unbound;		/* ht or out was made again and the descriptor sets do not name it yet */
 	uint64_t	res_words;		/* the words res, rinit and rhost hold */
 	void	   *rbuf;			/* a result larger than hout, gathered from it in chunks */
 	uint64_t	rbuf_cap;

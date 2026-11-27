@@ -249,3 +249,5 @@ SIFT_COMB_MAX_SLOTS	slots of all shards of the shared combiner pool (core/shm/co
 SIFT_L0_GC_MAX_SHARDS	shards (8) of a hot partition's L0 group-commit directory (col/f2/l0/group_commit.h): a concurrency width of the shared table, the rows are the same
 SIFT_L0_HOT_MAX_REFS	heap references one group-commit slot holds (col/f2/l0/shard_dir.h): a statement with more falls back to the partition lock; the rows are the same
 SIFT_LEASE_SLOTS	slots (4096) of the shared relation lease table (core/shm/lease.h): a relation without a slot falls back to Block 0 directly; no count is refused
+SIFT_U64SET_MAX_KEYS	the most keys of one id set (core/u64set.h), half its slots: the OR of SiftHybridAgg remembers at most this many store rows and reads the others from the heap, with the same rows
+SIFT_U64SET_MAX_SLOTS	the slots of the table of one id set (core/u64set.h) that one palloc holds: an allocation bound behind SIFT_U64SET_MAX_KEYS

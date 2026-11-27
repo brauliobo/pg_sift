@@ -150,7 +150,6 @@ slots_alloc(SiftVk *vk)
 	if ((!vk->ht.b && !buf_new(vk, &vk->ht, 1 << 20, st | tsrc | tdst, K_DEVICE)) || (!vk->out.b && !buf_new(vk, &vk->out, 1 << 20, st | tsrc | tdst, K_DEVICE)) ||
 		(!vk->hout.b && !buf_new(vk, &vk->hout, 1 << 20, tdst, K_READBACK)))
 		return false;
-	vk->ht_cap = vk->out_cap = vk->hout_cap = 1 << 20;
 	for (int k = 0; k < NSLOT; k++)
 	{
 		Slot	   *s = &vk->slot[k];
@@ -187,7 +186,7 @@ slots_release(SiftVk *vk)
 	free(vk->rbuf);
 	vk->rbuf = NULL;
 	vk->rbuf_cap = 0;
-	vk->res_words = vk->ht_cap = vk->out_cap = vk->hout_cap = 0;
+	vk->res_words = 0;
 }
 
 bool

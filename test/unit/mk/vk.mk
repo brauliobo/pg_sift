@@ -4,11 +4,12 @@ CFLAGS += -DSIFT_VULKAN
 
 VK_LAYER = agg/vk/run.c agg/vk/mem.c agg/vk/job.c agg/vk/tab.c agg/vk/cache.c agg/vk/pipe.c agg/vk/fast.c agg/vk/dev.c agg/vk/test.c agg/vk/fin.c agg/vk/seat.c
 
-TESTS += agg/vk/local agg/vk/seat agg/vk/wait agg/vk/sums agg/vk/cache col/gpu_part
+TESTS += agg/vk/local agg/vk/seat agg/vk/wait agg/vk/sums agg/vk/cache agg/vk/bufs col/gpu_part
 LIB_agg/vk/local = agg/gpu/local.c agg/vk/seat.c
 LIB_agg/vk/seat  = agg/vk/seat.c
 LIB_agg/vk/wait  = $(VK_LAYER)
 LIB_agg/vk/cache = $(VK_LAYER)
+LIB_agg/vk/bufs  = $(VK_LAYER)
 LIB_agg/vk/sums  = agg/vk/fin.c
 LIB_col/gpu_part = col/gpu.c
 

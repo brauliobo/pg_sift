@@ -297,40 +297,31 @@ finish_batch(RunCtx *rc, Batch *b)
 	return batch_check(vk, b);
 }
 
-/* MEM[MEM-VK-05]: vk ht + out + hout (ht and out in VRAM grow to the job and are freed above 16MiB and 8MiB when it ends; hout pinned host is at most HOUT_CHUNK=8MiB, was up to 2.25GiB) */
+/* b holds at least bytes, else it is made again (a buffer that could not be made holds none: buf_new leaves it empty) */
 static bool
+ensure_buf(SiftVk *vk, Buf *b, uint64_t bytes, VkBufferUsageFlags usage, int kind)
+{
+	if (bytes <= b->size)
+		return true;
+	buf_free(vk, b);
+	return buf_new(vk, b, bytes, usage, kind);
+}
+
+/* MEM[MEM-VK-05]: vk ht + out + hout (ht and out in VRAM grow to the job and are freed above 16MiB and 8MiB when it ends; hout pinned host is at most HOUT_CHUNK=8MiB, was up to 2.25GiB) */
+bool
 ensure_buffers(SiftVk *vk, const Plan *p)
 {
 	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 	const uint64_t hout = p->out_bytes < HOUT_CHUNK ? p->out_bytes : HOUT_CHUNK;
-	bool		rebind = false;
 
 	if (!ensure_res(vk, (uint64_t) SIFT_VK_RES_ACC_OFF + p->acc_words))
 		return false;
-	if (p->ht_bytes > vk->ht_cap)
-	{
-		buf_free(vk, &vk->ht);
-		if (!buf_new(vk, &vk->ht, p->ht_bytes, u, K_DEVICE))
-			return false;
-		vk->ht_cap = p->ht_bytes;
-		rebind = true;
-	}
-	if (p->out_bytes > vk->out_cap)
-	{
-		buf_free(vk, &vk->out);
-		if (!buf_new(vk, &vk->out, p->out_bytes, u, K_DEVICE))
-			return false;
-		vk->out_cap = p->out_bytes;
-		rebind = true;
-	}
-	if (hout > vk->hout_cap)
-	{
-		buf_free(vk, &vk->hout);
-		if (!buf_new(vk, &vk->hout, hout, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
-			return false;
-		vk->hout_cap = hout;
-	}
-	return !rebind || bind_buffers(vk);
+	vk->unbound |= p->ht_bytes > vk->ht.size || p->out_bytes > vk->out.size;
+	if (!ensure_buf(vk, &vk->ht, p->ht_bytes, u, K_DEVICE) || !ensure_buf(vk, &vk->out, p->out_bytes, u, K_DEVICE) ||
+		!ensure_buf(vk, &vk->hout, hout, VK_BUFFER_USAGE_TRANSFER_DST_BIT, K_READBACK))
+		return false;
+	vk->unbound = vk->unbound && !bind_buffers(vk);
+	return !vk->unbound;
 }
 
 /* when a job ends, the hash table and the result buffer that went over what the device keeps between jobs are freed (the gathered result stays until the next job: the caller reads it) */
@@ -338,24 +329,16 @@ void
 trim_job_buffers(SiftVk *vk)
 {
 	const VkBufferUsageFlags u = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-	bool		rebind = false;
 
 	if (vk->inflight || vk->released || vk->trimmed)
 		return;
-	if (vk->ht_cap > HT_RETAIN_MAX)
-	{
+	if (vk->ht.size > HT_RETAIN_MAX)
 		buf_free(vk, &vk->ht);
-		vk->ht_cap = buf_new(vk, &vk->ht, 1 << 20, u, K_DEVICE) ? 1 << 20 : 0;
-		rebind = true;
-	}
-	if (vk->out_cap > OUT_RETAIN_MAX)
-	{
+	if (vk->out.size > OUT_RETAIN_MAX)
 		buf_free(vk, &vk->out);
-		vk->out_cap = buf_new(vk, &vk->out, 1 << 20, u, K_DEVICE) ? 1 << 20 : 0;
-		rebind = true;
-	}
-	if (rebind)
-		bind_buffers(vk);
+	vk->unbound |= vk->ht.size == 0 || vk->out.size == 0;
+	if (vk->unbound && ensure_buf(vk, &vk->ht, 1 << 20, u, K_DEVICE) && ensure_buf(vk, &vk->out, 1 << 20, u, K_DEVICE))
+		vk->unbound = !bind_buffers(vk);
 }
 
 /* the job went over every granule: its descriptor table is kept for the next job with its key (the device having no room for it is no failure of the job), or (tests) the one it used is checked */
@@ -471,7 +454,7 @@ read_result(RunCtx *rc, uint64_t bytes)
 	SiftVk	   *vk = rc->vk;
 	uint64_t	off = 0;
 
-	if (bytes <= vk->hout_cap)
+	if (bytes <= vk->hout.size)
 		return read_out(rc, 0, bytes, rc->cancelled) ? vk->hout.map : NULL;
 	if (vk->rbuf_cap < bytes)
 	{
@@ -484,7 +467,7 @@ read_result(RunCtx *rc, uint64_t bytes)
 	}
 	while (off < bytes)
 	{
-		const uint64_t n = bytes - off < vk->hout_cap ? bytes - off : vk->hout_cap;
+		const uint64_t n = bytes - off < vk->hout.size ? bytes - off : vk->hout.size;
 
 		if (!read_out(rc, off, n, rc->cancelled))
 			return NULL;

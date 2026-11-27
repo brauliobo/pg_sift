@@ -1,0 +1,49 @@
+-- A text match ORed with structured quals under an aggregate (SIFT_HYB_OR) keeps the keys of the rows the store folded in a set that starts small and grows with them, under a share of
+-- work_mem that one allocation bounds: a large work_mem neither makes a table larger than an allocation holds (an error on a table of 1 row) nor wraps the size of the table to a few
+-- slots that the rows of the store fill (a loop that never ends). Each result is compared with the plan the hybrid node refuses (a volatile qual is added).
+SET client_min_messages = warning;
+CREATE EXTENSION pg_sift;
+CREATE TABLE ow (id int PRIMARY KEY, tenant int NOT NULL, price float8 NOT NULL, body text NOT NULL);
+INSERT INTO ow VALUES (1, 5, 1.5, 'seven tok');
+CREATE INDEX ow_text ON ow USING sift (body);
+CREATE INDEX ow_col ON ow USING sift_col (tenant, id, price);
+ANALYZE ow;
+VACUUM (FREEZE) ow;
+RESET client_min_messages;
+SET effective_cache_size = '8kB';
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET max_parallel_workers_per_gather = 0;
+
+CREATE FUNCTION ow_check(q text, OUT node text, OUT n bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	node := 'none';
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Hybrid Direction: OR' THEN node := 'SiftHybridAgg OR'; END IF;
+	END LOOP;
+	EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	EXECUTE 'CREATE TEMP TABLE r_off AS ' || regexp_replace(q, 'WHERE ', 'WHERE random() < 2 AND ');
+	SELECT count(*) INTO n FROM r_off;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+END $$;
+
+-- 1 row, then 300 rows the store takes for sure (more than the slots a wrapped size left)
+SET work_mem = '4GB';
+SELECT * FROM ow_check($$SELECT count(*), sum(price) FROM ow WHERE (body @@> 'seven' OR tenant = 5)$$);
+SET work_mem = '64GB';
+SELECT * FROM ow_check($$SELECT count(*), sum(price) FROM ow WHERE (body @@> 'seven' OR tenant = 5)$$);
+INSERT INTO ow SELECT i, 5, i, 'tok' || i FROM generate_series(2, 300) i;
+VACUUM (FREEZE, ANALYZE) ow;
+SET work_mem = '128GB';
+SELECT * FROM ow_check($$SELECT count(*), sum(price) FROM ow WHERE (body @@> 'seven' OR tenant = 5)$$);
+SET work_mem = '4GB';
+SELECT * FROM ow_check($$SELECT count(*), sum(price) FROM ow WHERE (body @@> 'seven' OR tenant = 5)$$);
+SET work_mem = '64kB';
+SELECT * FROM ow_check($$SELECT count(*), sum(price) FROM ow WHERE (body @@> 'tok7' OR tenant = 5)$$);
+RESET work_mem;
+
+DROP FUNCTION ow_check;
+DROP TABLE ow;
+DROP EXTENSION pg_sift;

@@ -1,0 +1,49 @@
+-- An equi-join of two columns of one family and two types (float8 = float4, int4 = int8) in SiftAggV6Join reads the key of each side as the type of that side: the rows are those of the
+-- normal plan, with the float4 side promoted to float8 and the int4 side to int8 as PostgreSQL compares them, whichever side is built.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_nestloop = off;
+SET work_mem = '64kB';
+
+CREATE TABLE ct_a (id int, f8 float8, f4 float4, i4 int4);
+CREATE TABLE ct_b (id int, f8 float8, f4 float4, i8 int8);
+INSERT INTO ct_a SELECT i, i * 0.5, CASE WHEN i % 2 = 0 THEN 0 ELSE 0.1 END, i FROM generate_series(1, 2500) i;
+INSERT INTO ct_b SELECT i, i, i * 0.5, (1::int8 << 32) + i FROM generate_series(1, 2500) i;
+INSERT INTO ct_b VALUES (0, 0.1, 0.1, 7);
+CREATE INDEX ct_a_col ON ct_a USING sift_col (id, f8, f4, i4);
+CREATE INDEX ct_b_col ON ct_b USING sift_col (id, f8, f4, i8);
+VACUUM (FREEZE, ANALYZE) ct_a, ct_b;
+
+-- the rows of the join with the node and with the normal plan: whether the node ran it, how many rows, how many differ
+CREATE FUNCTION ct_check(q text, OUT node boolean, OUT n bigint, OUT diff bigint) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	node := false;
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		node := node OR l LIKE '%SiftAggV6Join%';
+	END LOOP;
+	EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	SET LOCAL sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	SET LOCAL sift.enable_agg = on;
+	SELECT count(*) INTO n FROM r_off;
+	SELECT count(*) INTO diff FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+END $$;
+
+SELECT q, c.* FROM (VALUES
+	('SELECT a.id, b.id AS bid FROM ct_a a JOIN ct_b b ON a.f8 = b.f4'),
+	('SELECT a.id, b.id AS bid FROM ct_b b JOIN ct_a a ON b.f4 = a.f8'),
+	('SELECT a.id, b.id AS bid FROM ct_a a JOIN ct_b b ON a.f4 = b.f8'),
+	('SELECT a.id, b.id AS bid FROM ct_b b JOIN ct_a a ON b.f8 = a.f4'),
+	('SELECT a.id, b.id AS bid FROM ct_a a JOIN ct_b b ON a.i4 = b.i8'),
+	('SELECT a.id, b.id AS bid FROM ct_b b JOIN ct_a a ON b.i8 = a.i4'),
+	('SELECT a.id FROM ct_a a WHERE EXISTS (SELECT 1 FROM ct_b b WHERE b.f4 = a.f8)'),
+	('SELECT a.id FROM ct_a a WHERE NOT EXISTS (SELECT 1 FROM ct_b b WHERE b.i8 = a.i4)')
+) v(q), ct_check(q) c;
+
+DROP FUNCTION ct_check;
+DROP TABLE ct_a, ct_b;
+DROP EXTENSION pg_sift;

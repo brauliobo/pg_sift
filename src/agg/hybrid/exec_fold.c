@@ -58,7 +58,6 @@ typedef struct HybridAggState
 	uint64		pm_bits;
 	SiftU64Set	taken;				/* OR: the keys of the rows the store folded for sure */
 	uint32		taken_max;
-	uint32		taken_n;
 } HybridAggState;
 
 static void
@@ -343,9 +342,9 @@ or_sink(void *arg, const SiftHybridBatch *b)
 	HybridAggState *st = arg;
 
 	fold_sink(arg, b);
-	for (int r = 0; r < b->n && st->taken_n < st->taken_max; r++)
-		if ((b->live[r / 64] >> (r % 64) & 1) && !st->recheck_all && !(b->maybe != NULL && (b->maybe[r / 64] >> (r % 64) & 1)) && sift_u64set_add(&st->taken, b->tid[r]))
-			st->taken_n++;
+	for (int r = 0; r < b->n && st->taken.n < st->taken_max; r++)
+		if ((b->live[r / 64] >> (r % 64) & 1) && !st->recheck_all && !(b->maybe != NULL && (b->maybe[r / 64] >> (r % 64) & 1)))
+			(void) sift_u64set_add(&st->taken, b->tid[r]);
 }
 
 /* OR: the matches the store did not take, read from the heap: visible, and not taken by the structured quals */
@@ -413,12 +412,13 @@ fold_or(HybridAggState *st, const SiftV6FoldCol *cols, int ncols)
 	st->recheck_all = !sift_hybrid_rows_exact(h);
 	h->store.exact_quals = h->exact_quals;
 	h->scan_columns = true;
-	st->taken_max = Max((uint64) work_mem * 1024 / 4 / 16, 1024);
-	sift_u64set_init(&st->taken, st->taken_max);
+	st->taken_max = Min(Max((uint64) work_mem * 1024 / 4 / 16, 1024), SIFT_U64SET_MAX_KEYS);
+	sift_u64set_init(&st->taken, 0);
 	sift_vis_begin(&h->vis, h->heap, estate->es_snapshot, h->text_index, sift_plan_dir_version(h->plan));
 	h->vis_open = true;
 	h->store.scan_quals(h->store.arg, or_sink, st);
 	fold_or_matches(st, cols, ncols, pc);
+	sift_u64set_free(&st->taken);
 }
 
 static void
@@ -580,7 +580,6 @@ agg_rescan(CustomScanState *node)
 	h->run = NULL;
 	st->ran = false;
 	st->point_rows = false;
-	st->taken_n = 0;
 	st->fstats = (SiftV6ScanStats) {0};
 	st->a_stats = (SiftHybridStats) {0};
 	ExecScanReScan(&node->ss);

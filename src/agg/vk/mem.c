@@ -159,7 +159,6 @@ buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 	VkResult	r;
 
 	memset(b, 0, sizeof(*b));
-	b->size = size;
 	if (vk->split_queues)
 	{
 		bi.sharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -219,6 +218,7 @@ buf_new(SiftVk *vk, Buf *b, uint64_t size, VkBufferUsageFlags usage, int kind)
 		buf_free(vk, b);
 		return fail(vk, "binding a buffer", r);
 	}
+	b->size = size;
 	b->host = !(vk->mp.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 	if (b->host)
 		account(vk, (int64_t) b->size);

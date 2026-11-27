@@ -309,7 +309,7 @@ sift_agg_v6_join_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 
 /*
  * The private list of the plan, all ints: the join type and the bytes the planner expects the build side to take (two halves), the number of keys, for each its column in the outer child, its column in
- * the inner child and its type; the number of columns of the scan tuple and, for each, 0 or 1 (the outer or inner child) and its column in that child.
+ * the inner child, its type in the outer child and its type in the inner child; the number of columns of the scan tuple and, for each, 0 or 1 (the outer or inner child) and its column in that child.
  */
 static Plan *
 join_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
@@ -328,7 +328,8 @@ join_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist
 		const Var  *ok = lfirst(ol);
 		const Var  *ik = lfirst(il);
 
-		ints = list_concat(ints, list_make3_int(sift_v6_child_resno(op->targetlist, ok), sift_v6_child_resno(ip->targetlist, ik), (int) exprType((Node *) ok)));
+		ints = list_concat(ints, list_make4_int(sift_v6_child_resno(op->targetlist, ok), sift_v6_child_resno(ip->targetlist, ik), (int) exprType((Node *) ok),
+												(int) exprType((Node *) ik)));
 	}
 	ints = lappend_int(ints, list_length(tlist));
 	foreach_node(TargetEntry, te, tlist)
@@ -356,9 +357,8 @@ typedef struct V6Join
 	SiftJoinType type;
 	uint64		est_build_bytes;
 	int			nkeys;
-	AttrNumber	okey[JOIN_MAX_KEYS];
-	AttrNumber	ikey[JOIN_MAX_KEYS];
-	Oid			ktyp[JOIN_MAX_KEYS];
+	AttrNumber	key[2][JOIN_MAX_KEYS];	/* of the outer child, then of the inner one: a key's two columns may be of two types of one family */
+	Oid			ktyp[2][JOIN_MAX_KEYS];
 	int			nout;
 	bool	   *inner;			/* of each column of the scan tuple: its child is the inner one */
 	AttrNumber *resno;
@@ -399,12 +399,12 @@ join_begin(CustomScanState *node, EState *estate, int eflags)
 	st->type = (SiftJoinType) list_nth_int(ints, 0);
 	st->est_build_bytes = ((uint64) (uint32) list_nth_int(ints, 2) << 32) | (uint32) list_nth_int(ints, 1);
 	st->nkeys = list_nth_int(ints, 3);
-	for (int k = 0; k < st->nkeys; k++, at += 3)
-	{
-		st->okey[k] = (AttrNumber) list_nth_int(ints, at);
-		st->ikey[k] = (AttrNumber) list_nth_int(ints, at + 1);
-		st->ktyp[k] = (Oid) list_nth_int(ints, at + 2);
-	}
+	for (int k = 0; k < st->nkeys; k++, at += 4)
+		for (int side = 0; side < 2; side++)
+		{
+			st->key[side][k] = (AttrNumber) list_nth_int(ints, at + side);
+			st->ktyp[side][k] = (Oid) list_nth_int(ints, at + 2 + side);
+		}
 	st->nout = list_nth_int(ints, at++);
 	st->inner = palloc(Max(st->nout, 1) * sizeof(bool));
 	st->resno = palloc(Max(st->nout, 1) * sizeof(AttrNumber));
@@ -457,7 +457,7 @@ join_emit(void *arg, const uint8 *probe, uint32 plen, const uint8 *build, uint32
 
 /* the key of the tuple in the slot as bytes: true when a column of it is NULL, which no key equals */
 static bool
-key_of(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols)
+key_of(V6Join *st, TupleTableSlot *slot, int side)
 {
 	Datum		d[JOIN_MAX_KEYS];
 	bool		n[JOIN_MAX_KEYS];
@@ -465,7 +465,7 @@ key_of(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols)
 
 	for (int k = 0; k < st->nkeys; k++)
 	{
-		d[k] = slot_getattr(slot, cols[k], &n[k]);
+		d[k] = slot_getattr(slot, st->key[side][k], &n[k]);
 		any_null |= n[k];
 	}
 	if (any_null)
@@ -474,17 +474,17 @@ key_of(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols)
 		sift_dkey_null(&st->kb);
 	}
 	else
-		sift_distinct_row_key(&st->kb, st->nkeys, st->ktyp, d, n);
+		sift_distinct_row_key(&st->kb, st->nkeys, st->ktyp[side], d, n);
 	return any_null;
 }
 
 /* the tuple of the child as a row of the join: the build side into the table, the probe side joined to it (what it matches is made into rows by join_emit); the key and the copy of the tuple die with the row, what the join allocates (the files of its partitions) lives with the join */
 static void
-take_row(V6Join *st, TupleTableSlot *slot, const AttrNumber *cols, bool build)
+take_row(V6Join *st, TupleTableSlot *slot, bool build)
 {
 	MemoryContext old = MemoryContextSwitchTo(st->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 	bool		free_mt;
-	const bool	key_null = key_of(st, slot, cols);
+	const bool	key_null = key_of(st, slot, build ? 1 : 0);
 	MinimalTuple mt = ExecFetchSlotMinimalTuple(slot, &free_mt);
 
 	MemoryContextSwitchTo(st->cx);
@@ -519,7 +519,7 @@ join_start(V6Join *st, EState *estate)
 	for (slot = ExecProcNode(st->ips); !TupIsNull(slot); slot = ExecProcNode(st->ips))
 	{
 		CHECK_FOR_INTERRUPTS();
-		take_row(st, slot, st->ikey, true);
+		take_row(st, slot, true);
 	}
 	sift_gjoin_build_done(st->gj);
 	st->started = true;
@@ -555,7 +555,7 @@ join_fill(V6Join *st)
 		else
 		{
 			CHECK_FOR_INTERRUPTS();
-			take_row(st, slot, st->okey, false);
+			take_row(st, slot, false);
 		}
 	}
 	st->rd = st->wr;
