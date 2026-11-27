@@ -3,6 +3,9 @@
 -- that stays in order and for one with stray rows (every 50th row has the k of a far unit, as between two pg_repack runs: each stray row keeps its unit alive
 -- for a request on its k, and nothing more). A page holds one row, so unit n holds the rows 256 * n .. 256 * n + 255 (k = n, except the stray rows).
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the units, superblocks and small-set summaries it counts are those of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
@@ -19,16 +22,7 @@ CREATE INDEX sm_z_idx ON sm_z USING sift_col (k sift.col_int4_ops, id sift.col_i
 CREATE INDEX sm_o_idx ON sm_o USING sift_col (k sift.col_int4_ops, id sift.col_int4_ops, f sift.col_float8_ops);
 VACUUM (FREEZE, ANALYZE) sm, sm_o, sm_z;
 
-CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal'; read text; pruned text := '0';
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
-		IF l ~ 'Units: (\d+)' THEN read := substring(l from 'Units: (\d+)'); END IF;
-		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
-	END LOOP;
-	RETURN CASE WHEN r = 'normal' THEN r ELSE format('%s read %s pruned %s', r, read, pruned) END;
-END $$;
+CREATE FUNCTION units_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.agg_units_read(q) $$;
 
 CREATE FUNCTION same(tbl text, agg text, cond text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 DECLARE q text := format('SELECT k %% 3 AS g, count(*) AS n, %s AS a FROM %s WHERE %s GROUP BY 1', agg, tbl, cond);
@@ -53,4 +47,5 @@ SELECT t, a, n, cond, s.* FROM (VALUES ('sm_o'), ('sm'), ('sm_z')) tt(t), (VALUE
 
 DROP FUNCTION same(text, text, text), units_of(text);
 DROP TABLE sm_q, sm, sm_o, sm_z;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

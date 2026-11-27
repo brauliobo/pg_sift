@@ -4,6 +4,8 @@
 -- the normal plan. A page holds one row, so unit n holds the rows 256 * n .. 256 * n + 255 (k = n, j = n % 17 and NULL in every third unit).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the 130 units of one segment it counts are those of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

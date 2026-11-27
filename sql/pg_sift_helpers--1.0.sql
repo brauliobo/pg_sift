@@ -297,9 +297,10 @@ CREATE FUNCTION sift_helpers.agg_heap_rereads(q text) RETURNS bigint LANGUAGE pl
 BEGIN RETURN sift_helpers.plan_heap_rereads_forced_on(q); EXCEPTION WHEN others THEN RETURN -1; END $$;
 CREATE FUNCTION sift_helpers.agg_arms_in_one_pass(q text) RETURNS int LANGUAGE sql AS $$
 	SELECT coalesce(max(m[1]::int), 0) FROM regexp_matches(sift_helpers.plan_text(q, true), 'Fused Arms: (\d+)', 'g') m $$;
+-- agg_units_read: 'normal', or the granules the SiftAggV6 nodes of the plan read (scanned or answered from the pre-aggregates)
 CREATE FUNCTION sift_helpers.agg_units_read(q text) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE WHEN NOT sift_helpers.plan_pushed(p) THEN 'normal'
-		ELSE format('SiftAgg read %s pruned %s', sift_helpers.plan_last(p, 'Units: (\d+)'), coalesce(sift_helpers.plan_last(p, '(\d+) pruned'), '0')) END
+		ELSE format('SiftAgg read %s', coalesce((SELECT sum(m[1]::int) FROM regexp_matches(p, '(?:scanned|preagg)=(\d+)', 'g') m), 0)) END
 	FROM (SELECT sift_helpers.plan_text(q, true) p) x $$;
 CREATE FUNCTION sift_helpers.agg_units_kept_share(q text) RETURNS numeric LANGUAGE plpgsql AS $$
 DECLARE p text; line text; kept numeric; pruned numeric;
