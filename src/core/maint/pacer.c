@@ -384,5 +384,7 @@ sift_pacer_test_reset(void)
 	SiftPacerTelemetry *t = telemetry();
 
 	SIFT_DSM_INIT_CALL(telemetry_init, t);
+	fg_recorded_at = 0;
+	fg_scans = 0;
 }
 #endif

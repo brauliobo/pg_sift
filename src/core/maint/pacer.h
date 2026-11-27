@@ -124,7 +124,7 @@ extern PGDLLIMPORT BufferAccessStrategy sift_maint_ring;
 extern void sift_maint_ring_open(void);
 
 #ifdef SIFT_TESTING
-/* The telemetry as the tests read and reset it */
+/* The telemetry as the tests read and reset it; a reset also starts the feed of this backend over, so that what a test runs after it is recorded */
 extern void sift_pacer_test_state(uint64 *ewma_us, uint64 *base_us);
 extern void sift_pacer_test_note_foreground(int64 usecs);
 extern void sift_pacer_test_reset(void);
