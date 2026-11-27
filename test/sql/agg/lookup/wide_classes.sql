@@ -1,6 +1,5 @@
--- A joined table's uuid, interval, numeric of many digits, bytea and inet columns are read from the leaves of its index as classes of the values they take
--- (agg_lookup_dense), not from the heap row by row: a group by, a filter and a distinct count over them give the normal plan's answers, NULLs and numerics of other scales
--- included. A column with more values than a table of classes holds is read from the heap as before.
+-- A joined table's uuid, interval, numeric of many digits, bytea and inet columns are the columns of a lookup join of SiftAggV6: a group by, a filter and a
+-- distinct count over them give the normal plan's answers, NULLs and numerics of other scales included, however many values a column takes.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET work_mem = '256MB';
@@ -35,12 +34,12 @@ INSERT INTO shapes VALUES
  (8, $q$SELECT count(DISTINCT d.u), count(DISTINCT d.iv), count(DISTINCT d.big) FROM wf f JOIN wd d ON d.id = f.d$q$),
  (9, $q$SELECT d.many, count(*) FROM wf f JOIN wd d ON d.id = f.d GROUP BY 1$q$);
 
--- how the scan got the lookup table: 'classed' when it made the classes, 'heap' when the rows came from the heap, else 'loaded'
+-- 'lookup' when SiftAggV6 joins the table, else 'normal'
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'loaded'; BEGIN
+DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '[1-9]\d* rows classed' THEN r := 'classed'; ELSIF l ~ 'Lookup Heap Reason' THEN r := 'heap'; END IF;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ 'Lookup Joins: wd' THEN r := 'lookup'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;

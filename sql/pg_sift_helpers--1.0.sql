@@ -270,7 +270,7 @@ CREATE FUNCTION sift_helpers.plan_siftagg_nodes(q text) RETURNS int LANGUAGE sql
 	SELECT count(*)::int FROM regexp_matches(sift_helpers.plan_text(q), 'Custom Scan \(SiftAgg', 'g') $$;
 CREATE FUNCTION sift_helpers.plan_siftagg_nodes_cached_tables(q text) RETURNS text LANGUAGE sql AS $$
 	SELECT format('%s SiftAgg nodes, %s cached tables', (SELECT count(*) FROM regexp_matches(p, 'Custom Scan \(SiftAgg', 'g')),
-		(SELECT coalesce(sum(m[1]::int), 0) FROM regexp_matches(p, '(\d+) cached tables', 'g') m)) FROM (SELECT sift_helpers.plan_text(q, true) p) x $$;
+		(SELECT coalesce(sum(m[1]::int), 0) FROM regexp_matches(p, 'Dimension Cache: (\d+) hit', 'g') m)) FROM (SELECT sift_helpers.plan_text(q, true) p) x $$;
 CREATE FUNCTION sift_helpers.plan_limit_hint(q text) RETURNS int LANGUAGE sql AS $$
 	SELECT coalesce(substring(sift_helpers.plan_text(q) from 'Limit Hint: (\d+)')::int, 0) $$;
 CREATE FUNCTION sift_helpers.plan_reads_global_order(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_text(q, true) LIKE '%Global Order: true%' $$;

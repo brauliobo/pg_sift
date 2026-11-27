@@ -1,12 +1,11 @@
--- The byte table of a semi, anti or inner join by an integer key (agg_semi_lut) is kept with the rows of the joined table, which a statement after it reads again
--- when the table did not change. Each statement runs twice in a row (the second reads the kept table), after the rows of the table change (the table is made again), and with a key
--- that repeats in the table (an inner join repeats a tuple, so only a semi join may use the table): the rows must be those of the normal plan, and the table is used or not as the join needs it.
+-- A semi, anti or inner join by an integer key is a lookup of SiftAggV6 that loads the rows of the joined table its condition keeps. Each statement runs twice in a
+-- row, after the rows of the table change, and with a key that repeats in the table (an inner join repeats a tuple, a semi join does not): the rows must be those
+-- of the normal plan, and the lookup loads the rows of the table the statement sees.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
--- the scan's key filter tests every key of a semi join the table would test (agg_join_key_types): left out, the table is built and kept
 
 CREATE TABLE ev (id int, dim_a_id int, amount numeric(10, 2)) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, 1 + (i::bigint * 7919) % 3000, i % 100 FROM generate_series(1, 60000) i;
@@ -17,15 +16,15 @@ INSERT INTO dim_b SELECT 2, 2 + i * 5, CASE WHEN i % 4 = 0 THEN now() END FROM g
 VACUUM (FREEZE, ANALYZE) ev, dim_b;
 
 CREATE FUNCTION run(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg(q, push) $$;
-CREATE FUNCTION tables_of(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; n int := 0; kept int := 0;
+CREATE FUNCTION lookup_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; node text := 'normal'; loaded text := '0';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '(\d+) semi tables' THEN n := substring(l from '(\d+) semi tables')::int; END IF;
-		IF l ~ '(\d+) cached tables' THEN kept := substring(l from '(\d+) cached tables')::int; END IF;
+		IF l ~ 'Custom Scan \((SiftAgg\w*)\)' THEN node := substring(l from 'Custom Scan \((SiftAgg\w*)\)'); END IF;
+		IF l ~ '(\d+) rows loaded' THEN loaded := substring(l from '(\d+) rows loaded'); END IF;
 	END LOOP;
-	RETURN format('%s byte table, %s rows of the table kept', n, kept);
+	RETURN format('%s, %s rows loaded', node, loaded);
 END $$;
 CREATE TABLE q (n int PRIMARY KEY, shape text, sql text);
 INSERT INTO q VALUES
@@ -35,21 +34,21 @@ INSERT INTO q VALUES
 	(4, 'inner, group 2 live', 'SELECT count(*), sum(amount) FROM ev e JOIN dim_b m ON m.dim_a_id = e.dim_a_id AND m.group_id = 2 AND m.deleted_at IS NULL'),
 	(5, 'inner, group 1 after the others', 'SELECT count(*), sum(amount) FROM ev e JOIN dim_b m ON m.dim_a_id = e.dim_a_id AND m.group_id = 1');
 
--- the statements of the table: twice in a row, the answer of the pushed plan against the normal plan's, and whether the byte table was used
-CREATE FUNCTION check_all(which text) RETURNS TABLE (stage text, n int, shape text, round1 bool, round2 bool, tables text) LANGUAGE plpgsql AS $$
+-- the statements of the table: twice in a row, the answer of the pushed plan against the normal plan's, and the rows the lookup loaded
+CREATE FUNCTION check_all(which text) RETURNS TABLE (stage text, n int, shape text, round1 bool, round2 bool, lookup text) LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN QUERY SELECT check_all.which, q.n, q.shape, run(q.sql, true) = run(q.sql, false), run(q.sql, true) = run(q.sql, false), tables_of(q.sql) FROM q ORDER BY q.n;
+	RETURN QUERY SELECT check_all.which, q.n, q.shape, run(q.sql, true) = run(q.sql, false), run(q.sql, true) = run(q.sql, false), lookup_of(q.sql) FROM q ORDER BY q.n;
 END $$;
 SELECT * FROM check_all('built');
 
--- rows deleted and added (a vacuumed table is kept again): the byte table is made again
+-- rows deleted and added
 DELETE FROM dim_b WHERE group_id = 1 AND dim_a_id < 200;
 INSERT INTO dim_b SELECT 1, 10000 + i, NULL FROM generate_series(1, 50) i;
 UPDATE dim_b SET deleted_at = NULL WHERE group_id = 2 AND dim_a_id < 100;
 VACUUM dim_b;
 SELECT * FROM check_all('changed');
 
--- a key that repeats: the inner join repeats a tuple per row of its key, so it is not a membership test; the semi join still is
+-- a key that repeats: the inner join repeats a tuple per row of its key, the semi join does not
 INSERT INTO dim_b VALUES (1, 301, NULL), (1, 301, NULL);
 VACUUM dim_b;
 SELECT * FROM check_all('repeated');
@@ -57,7 +56,7 @@ DELETE FROM dim_b WHERE group_id = 1 AND dim_a_id = 301;
 VACUUM dim_b;
 SELECT * FROM check_all('unique again');
 
-DROP FUNCTION check_all(text), run(text, bool), tables_of(text);
+DROP FUNCTION check_all(text), run(text, bool), lookup_of(text);
 DROP TABLE q, ev, dim_b;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

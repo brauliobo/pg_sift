@@ -140,9 +140,7 @@ RESET client_min_messages;
 CREATE SCHEMA s3;
 GRANT USAGE ON SCHEMA s3 TO PUBLIC;
 SET search_path = s3, public;
--- A lookup table that the scan answers from a byte table of its keys (a semi, anti or inner join by an int4 leaf, agg_semi_lut) is loaded without the dictionary of its
--- keys and the chains of its rows: they are made by the first use that is a lookup of the table (a repeated key of an inner join, a span past the byte table, the
--- cache of the next query, the workers' copy). Every statement is run with the scan (the table loaded, read again from the cache, shared with workers) and with
+-- A semi, anti or inner join by an int4 key (a repeated key of an inner join, a span of keys) is run with the scan (twice, and with workers) and with
 -- sift.enable_agg = off: the rows must be the same.
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
@@ -256,9 +254,9 @@ RESET client_min_messages;
 CREATE SCHEMA s5;
 GRANT USAGE ON SCHEMA s5 TO PUBLIC;
 SET search_path = s5, public;
--- The rows a Custom Scan (SiftAgg) loads from a joined table are kept by the backend for the next query ("Cached Lookup Tables" of EXPLAIN ANALYZE) while
--- the table is what it was: every page visible to all transactions (vacuumed) and not written to since. Every statement is run with the cache, with
--- sift.backend_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the table in between.
+-- A joined table no journal vouches for is read by every statement: the Dimension Cache of SiftAggV6 keeps only a journaled parent (docs/ARCHITECTURE.md).
+-- Every statement is run with the cache, with sift.backend_cache_kb = 0 and with sift.enable_agg = off: the rows must be the same, whatever happened to the
+-- table in between.
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -274,7 +272,7 @@ CREATE TABLE ents (id int, country int, tier int, label text) WITH (autovacuum_e
 INSERT INTO ents SELECT i, i % 30, i % 4, 'e' || i FROM generate_series(1, 3000) i;
 VACUUM (FREEZE, ANALYZE) ents;
 
--- the tables the node of an EXPLAIN ANALYZE took from an earlier query
+-- the dimensions the node of an EXPLAIN ANALYZE took from the Dimension Cache
 CREATE FUNCTION cached(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_nodes_cached_tables(q) $$;
 
 CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigint, vs_normal_plan bigint) LANGUAGE sql AS $$ SELECT * FROM sift_helpers.agg_lookup_cache_differences(q) $$;
@@ -282,7 +280,7 @@ CREATE FUNCTION same(q text) RETURNS TABLE (result_rows bigint, vs_uncached bigi
 \set tier_label_lt10 'SELECT e.tier, e.label, count(*) AS n, sum(amount)::bigint AS total FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 10 GROUP BY 1, 2'
 \set tier_lt5 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country < 5 GROUP BY 1'
 
--- the first query loads the table, the next ones use it; another condition is another table
+-- a statement and the same statement again; another condition
 SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
@@ -290,7 +288,7 @@ SELECT cached(:'tier_lt5');
 SELECT cached(:'tier_lt5');
 SELECT cached(:'tier_label_lt10');
 
--- a write to the table: the rows are loaded again, from pages that are no longer all visible, and not kept until it is vacuumed
+-- a write to the table, then vacuumed
 INSERT INTO ents VALUES (7, 7, 3, 'new');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
@@ -330,7 +328,7 @@ SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
 SELECT * FROM same(:'tier_label_lt10');
 
--- rewritten table: another file, whose pages are visible to all once it is vacuumed
+-- a rewritten table, then vacuumed
 VACUUM FULL ents;
 SELECT cached(:'tier_label_lt10');
 VACUUM ents;
@@ -338,7 +336,7 @@ SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
 
--- off: nothing is kept
+-- the cache off
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 SELECT cached(:'tier_label_lt10');

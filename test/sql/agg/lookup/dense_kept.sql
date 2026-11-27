@@ -1,5 +1,5 @@
--- A lookup table kept as classes of its keys (agg_lookup_dense) is kept for the next query like any other: the first query classes it, the next ones read it from the
--- cache, whatever the settings of the caches, and a query that cannot read the classes (the key as a column) neither takes nor replaces the classed table.
+-- A joined table no journal vouches for (no index connects to it) is read again by every statement, settled, written, with workers or with the caches off: the
+-- Dimension Cache of SiftAggV6 keeps only a journaled parent (docs/ARCHITECTURE.md), and the answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -23,12 +23,13 @@ INSERT INTO shapes VALUES
  (2, $q$SELECT dd.lvl, count(*) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (3, $q$SELECT dd.lvl, sum(dd.k), count(DISTINCT dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
--- how the scan got the lookup table: 'classed' when it made the classes, 'cached' when it read a kept table, 'loaded' when it loaded the rows
+-- how the scan got the joined table: 'cached' when the Dimension Cache had it, 'loaded' when it read it, 'normal' without the scan
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'loaded'; BEGIN
+DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '[1-9]\d* rows classed' THEN r := 'classed'; ELSIF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
+		IF l ~ 'Lookup Joins: dd' THEN r := 'loaded'; END IF;
+		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN r := 'cached'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -39,17 +40,16 @@ DECLARE s record; BEGIN
 	END LOOP;
 END $$;
 
--- the shape that reads the key (of the table, not of the scan: a left join) goes first: the table it loads row by row is not the classes the others take
 SELECT * FROM report('settled');
 SELECT * FROM report('kept');
 
--- a committed write: the kept tables are those of the old rows, the next run makes new ones
+-- a committed write
 UPDATE dd SET lvl = 2, grade = 3 WHERE k % 31 = 0;
 DELETE FROM dd WHERE k % 53 = 0;
 VACUUM dd;
 SELECT * FROM report('written');
 
--- the workers read the classes from the shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -57,7 +57,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
--- the caches off: the classes are made by every statement, as before
+-- the caches off
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 SELECT * FROM report('caches off');

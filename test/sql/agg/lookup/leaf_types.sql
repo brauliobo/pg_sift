@@ -1,6 +1,5 @@
--- The columns of a joined table are read from the leaves of its sift_col index for every type whose leaf the load decodes: float4, float8 and time besides the integers, dates, timestamps, booleans,
--- numerics and texts. The values are those of the heap, the specials of the floats included (NaN, the infinities, -0, a denormal, NULL); a column of a type the load does not decode (uuid) is read
--- from the heap and EXPLAIN (VERBOSE) says which column and why.
+-- The float4, float8, time and uuid columns of a joined table are those of a lookup join of SiftAggV6. The values are those of the heap, the specials of the floats
+-- included (NaN, the infinities, -0, a denormal, NULL), serial, with workers and after writes.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -36,14 +35,12 @@ INSERT INTO shapes VALUES
  (7, $q$SELECT count(*) FROM pc JOIN pf p ON p.id = pc.pid WHERE p.f8 IS NULL OR p.f4 < 0 OR p.t = '00:00:00'$q$),
  (8, $q$SELECT p.u IS NULL, count(*) FROM pc LEFT JOIN pf p ON p.id = pc.pid GROUP BY 1 ORDER BY 1$q$);
 
--- how the scan read the joined table: 'leaves' (column loads), 'heap' (read, and the reason EXPLAIN gives when it has one), 'normal' without the scan
+-- 'lookup' when SiftAggV6 joins the table, 'normal' without the scan
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'heap'; END IF;
-		IF l ~ '[1-9]\d* column loads' THEN r := 'leaves'; END IF;
-		IF l ~ 'Lookup Heap Reason: ' THEN r := r || ' (' || regexp_replace(l, '^ *Lookup Heap Reason: ', '') || ')'; END IF;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
+		IF l ~ 'Lookup Joins: ' THEN r := 'lookup'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -58,7 +55,7 @@ SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 SELECT * FROM report('serial');
 
--- the leader loads the table and the workers read it from the shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;

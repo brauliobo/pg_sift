@@ -1,6 +1,6 @@
--- A lookup table whose join columns a sift_col index of it holds is loaded from the leaves of the index, where it was read from the heap: the rows are those of the
--- snapshot (a row changed by the transaction, a dead row and a row of the write buffer included), the answers are those of the normal plan, and a table the index
--- does not cover is read from the heap as before.
+-- A joined table of text, varchar, date, timestamp, timestamptz, int2, bigint, bool and numeric columns (a NaN included) is a lookup join of SiftAggV6, whether
+-- its sift_col index covers the columns or not: the rows are those of the snapshot (a row changed by the transaction, a dead row and a row of the write buffer
+-- included) and the answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -21,11 +21,11 @@ INSERT INTO dm SELECT i, CASE WHEN i % 17 = 0 THEN NULL ELSE 'kind' || i % 9 END
 	(i % 20 - 5)::int2, i::bigint * 100000, i % 3 = 0, CASE WHEN i % 101 = 0 THEN 'NaN'::numeric WHEN i % 19 = 0 THEN NULL ELSE (i % 1000) / 4.0 END, i % 7
 FROM generate_series(0, 3199) i;
 CREATE INDEX dm_col ON dm USING sift_col (k, t, vc, d, ts, tz, i2, i8, b, n, grp);
--- an index that leaves the grouping column out: the table is read from the heap
+-- an index that leaves the grouping column out
 CREATE TABLE dn (k int PRIMARY KEY, t text, grp int) WITH (autovacuum_enabled = false);
 INSERT INTO dn SELECT i, 'kind' || i % 9, i % 7 FROM generate_series(0, 3199) i;
 CREATE INDEX dn_col ON dn USING sift_col (k, t);
--- the same rows without a NaN, a value the leaf of a numeric cannot hold as a number: its units overflow, and the table is read from the heap
+-- the same rows without a NaN
 CREATE TABLE dp (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dp SELECT * FROM dm WHERE n IS NULL OR n <> 'NaN';
 CREATE INDEX dp_col ON dp USING sift_col (k, t, vc, d, ts, tz, i2, i8, b, n, grp);
@@ -44,17 +44,17 @@ INSERT INTO shapes VALUES
  (10, $q$SELECT dp.n, count(*) FROM ev JOIN dp ON dp.k = ev.k AND dp.i8 > 100000000 GROUP BY 1 ORDER BY 1 LIMIT 20$q$),
  (8, $q$SELECT dn.grp, count(*), sum(ev.v) FROM ev JOIN dn ON dn.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
--- the rows of the answer, and whether the load read the leaves of an index
-CREATE FUNCTION column_loads(sql text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; r int := 0; BEGIN
+-- the rows of the answer, and whether SiftAggV6 joins the table
+CREATE FUNCTION lookup(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '(\d+) column loads' THEN r := substring(l from '(\d+) column loads')::int; END IF;
+		IF l ~ 'Lookup Joins: ' THEN RETURN true; END IF;
 	END LOOP;
-	RETURN r;
+	RETURN false;
 END $$;
-CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, column_loads int, not_empty bool) LANGUAGE sql AS $$
-	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), column_loads(sql), sift_helpers.answer(sql, true) <> '' FROM shapes ORDER BY n
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, lookup bool, not_empty bool) LANGUAGE sql AS $$
+	SELECT stage, n, sift_helpers.answer(sql, true) = sift_helpers.answer(sql, false), lookup(sql), sift_helpers.answer(sql, true) <> '' FROM shapes ORDER BY n
 $$;
 
 SELECT * FROM report('settled');
@@ -79,7 +79,7 @@ SELECT * FROM report('committed, not vacuumed');
 VACUUM dm, dp;
 SELECT * FROM report('vacuumed');
 
-DROP FUNCTION report(text), column_loads(text);
+DROP FUNCTION report(text), lookup(text);
 DROP TABLE shapes, ev, dm, dn, dp;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

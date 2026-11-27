@@ -1,5 +1,5 @@
 -- The Custom Scan (SiftAgg) nodes of one statement (UNION ALL arms, an inlined CTE read several times) that join the same table with the same columns and
--- conditions share the rows the first one loaded (sift.agg_share_lookups; "Shared Lookup Tables" of EXPLAIN ANALYZE). The rows are the statement's snapshot,
+-- conditions share the rows the first one loaded (sift.agg_share_lookups; "Shared Dimensions" of EXPLAIN ANALYZE). The rows are the statement's snapshot,
 -- never kept for another statement. Every statement is run shared, with sift.agg_share_lookups = off and with sift.enable_agg = off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
@@ -27,7 +27,7 @@ DECLARE l text; nodes int := 0; shared int := 0;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN nodes := nodes + 1; END IF;
-		IF l ~ '(\d+) shared tables' THEN shared := shared + substring(l from '(\d+) shared tables')::int; END IF;
+		IF l ~ 'Shared Dimensions: (\d+)' THEN shared := shared + substring(l from 'Shared Dimensions: (\d+)')::int; END IF;
 	END LOOP;
 	RETURN format('%s SiftAgg nodes, %s shared tables', nodes, shared);
 END $$;

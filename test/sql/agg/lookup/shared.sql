@@ -1,6 +1,6 @@
--- The rows a Custom Scan (SiftAgg) loads from a joined table can be kept in shared memory (sift.shared_cache_kb) for the queries of other backends: this test
--- turns the cache of the backend off (sift.backend_cache_kb = 0), so that every "Cached Lookup Tables" is a segment of the shared cache, read in place. The rows
--- must be those of the normal plan, whatever happened to the table in between; the isolation spec agg_lookup_shared has the second backend.
+-- A joined table no journal vouches for (no index connects to it) is read by every statement whatever sift.shared_cache_kb and sift.backend_cache_kb say: the
+-- Dimension Cache of SiftAggV6 keeps only a journaled parent, in the backend (docs/ARCHITECTURE.md). The rows must be those of the normal plan, whatever happened
+-- to the table in between (writes, a rollback, a rewrite, another role).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
@@ -44,7 +44,7 @@ END $$;
 -- a text key
 \set text_key_join 'SELECT e.tier, count(*) AS n FROM ev JOIN ents e ON e.code = ''c'' || ev.dim_a_id GROUP BY 1'
 
--- the first query loads the table and keeps it, the next ones read it; another condition is another table
+-- a statement and the same statement again; another condition
 SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
@@ -55,7 +55,7 @@ SELECT cached(:'text_key_join');
 SELECT cached(:'text_key_join');
 SELECT * FROM same(:'text_key_join');
 
--- a write: the rows are loaded again from pages that are not all visible, and kept again once vacuumed
+-- a write: pages that are not all visible, then vacuumed
 INSERT INTO ents VALUES (7, 7, 3, 'new', 'cnew');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
@@ -92,7 +92,7 @@ SELECT * FROM same(:'tier_label_lt10');
 ROLLBACK;
 SELECT * FROM same(:'tier_label_lt10');
 
--- a rewritten table is another file
+-- a rewritten table
 VACUUM FULL ents;
 SELECT cached(:'tier_label_lt10');
 VACUUM ents;
@@ -100,7 +100,7 @@ SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
 SELECT * FROM same(:'tier_label_lt10');
 
--- the rows of one role are not read by another
+-- another role
 CREATE ROLE lookshm_other;
 GRANT SELECT ON ev, ents TO lookshm_other;
 SET ROLE lookshm_other;
@@ -118,34 +118,25 @@ SET sift.shared_cache_kb = 0;
 RESET ROLE;
 DROP ROLE lookshm_plain;
 
--- off: nothing is read and nothing is kept
+-- the shared cache off
 SET sift.shared_cache_kb = 0;
 SELECT cached(:'tier_label_lt10');
 SELECT cached(:'tier_label_lt10');
 SET sift.shared_cache_kb = 4096;
--- a table of more than half of the budget is loaded for its query alone, and kept once the budget is larger
+-- budgets smaller than the table, then two of three tables of the same size
 \set qa 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 0 GROUP BY 1, 2'
 \set qb 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 1 GROUP BY 1, 2'
 \set qc 'SELECT e.tier, e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.tier = 2 GROUP BY 1, 2'
 SET sift.shared_cache_kb = 200;
 SELECT cached(:'qa');
-SELECT cached(:'qa');
 SELECT * FROM same(:'qa');
-SET sift.shared_cache_kb = 4096;
-SELECT cached(:'qa');
-SELECT cached(:'qa');
--- a budget for two of three tables of the same size: the one that was used least goes when another is kept
 SET sift.shared_cache_kb = 600;
 SELECT cached(:'qb');
 SELECT cached(:'qc');
-SELECT cached(:'qb');
-SELECT cached(:'qa');
-SELECT cached(:'qb');
-SELECT cached(:'qc');
-SELECT cached(:'qa');
 SELECT * FROM same(:'qa');
 SELECT * FROM same(:'qb');
--- the cache of the backend first, when it is on: the same rows
+SELECT * FROM same(:'qc');
+-- the cache of the backend on
 SET sift.shared_cache_kb = 4096;
 RESET sift.backend_cache_kb;
 SELECT cached(:'text_key_join');

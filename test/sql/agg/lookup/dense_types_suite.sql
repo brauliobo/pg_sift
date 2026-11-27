@@ -6,8 +6,7 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
 SET search_path = s1, public;
--- A table kept as classes of its keys whose keys outgrow the cache (more than 524,288 of them) is read with the line of each key asked for ahead: the answers are those of the
--- normal plan, NULL keys and keys the table does not have included, and the table is classed.
+-- A joined table of more than 524,288 keys is joined by SiftAggV6Join: the answers are those of the normal plan, NULL keys and keys the table does not have included.
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
@@ -35,18 +34,18 @@ DECLARE r text; BEGIN
 	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
 	RETURN r;
 END $$;
-CREATE FUNCTION classed(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+CREATE FUNCTION node(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; BEGIN
 	PERFORM set_config('sift.agg_force', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ 'Lookup: .*[1-9][0-9]* (rows classed|cached tables)' THEN RETURN true; END IF;
+		IF l ~ 'Custom Scan \(SiftAgg' THEN RETURN substring(l from 'Custom Scan \((SiftAgg\w*)\)'); END IF;
 	END LOOP;
-	RETURN false;
+	RETURN 'normal';
 END $$;
 
-SELECT n, classed(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
+SELECT n, node(sql), answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY n;
 
-DROP FUNCTION answer(text, bool), classed(text);
+DROP FUNCTION answer(text, bool), node(text);
 DROP TABLE shapes, far_fact, far_dim;
 RESET ALL;
 SET client_min_messages = warning;
@@ -77,9 +76,9 @@ INSERT INTO dm SELECT i, CASE WHEN i % 23 = 0 THEN NULL ELSE 'c' || md5((i % 200
 SET client_min_messages = warning;
 CREATE INDEX dm_col ON dm USING sift_col (k, county, kind);
 RESET client_min_messages;
+SET client_min_messages = warning;
 CREATE TABLE dm2 (LIKE dm INCLUDING ALL) WITH (autovacuum_enabled = false);
 INSERT INTO dm2 SELECT * FROM dm;
-SET client_min_messages = warning;
 CREATE INDEX dm2_col ON dm2 USING sift_col (k, county, kind);
 RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev, dm, dm2;
@@ -105,8 +104,8 @@ RESET client_min_messages;
 CREATE SCHEMA s3;
 GRANT USAGE ON SCHEMA s3 TO PUBLIC;
 SET search_path = s3, public;
--- The numeric values a lookup table is loaded from the leaves of its index are made for each row and copied into the table: they end with the unit that was read, so the
--- table keeps only its rows and fits the cache that its rows fit, however many rows it has.
+-- A joined table of 200,000 numeric rows no journal vouches for is read by each statement (the Dimension Cache keeps only a journaled parent): the answers are
+-- those of the normal plan.
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -138,7 +137,7 @@ CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'loaded'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
+		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN r := 'cached'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -158,9 +157,8 @@ RESET client_min_messages;
 CREATE SCHEMA s4;
 GRANT USAGE ON SCHEMA s4 TO PUBLIC;
 SET search_path = s4, public;
--- The rows of a joined table are kept by the ids of their key values and of their column values (one copy of each distinct value). Whatever the
--- types, the repeated keys, the NULLs and the number of distinct values (the tables that find them grow), the rows of a join must be the same
--- loaded for the query, taken from the cache and read by the normal plan.
+-- Whatever the types, the repeated keys, the NULLs and the number of distinct values, the rows of a join must be the same read by SiftAggV6, read with the
+-- caches off and read by the normal plan. No journal vouches for the joined table, so the Dimension Cache never has it.
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
@@ -228,17 +226,17 @@ SELECT * FROM same(:'in_subselect');
 SELECT nodes(:'not_exists');
 SELECT * FROM same(:'not_exists');
 
--- arms that read other columns of a table share its kept rows: one entry holds the columns of them all, and a query that reads one of them takes it
+-- statements that read other columns of a table: no dimension is kept for an unjournaled table
 \set group_label 'SELECT d.label AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
 \set group_num_text 'SELECT d.num::text AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
 \set group_label_concat 'SELECT d.label || coalesce(d.num::text, ''-'') AS g, count(*) AS n FROM ev JOIN dims d ON d.n8 = ev.n8 GROUP BY 1'
-SELECT count(*) AS entries_before FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table' \gset
+SELECT count(*) AS entries_before FROM pg_backend_memory_contexts WHERE name = 'sift cache v6 dimension' \gset
 SELECT nodes(:'group_label');
 SELECT nodes(:'group_num_text');
 SELECT nodes(:'group_label_concat');
 SELECT nodes(:'group_label');
 SELECT nodes(:'group_num_text');
-SELECT count(*) - :entries_before AS new_entries FROM pg_backend_memory_contexts WHERE name = 'sift cache lookup table';
+SELECT count(*) - :entries_before AS new_entries FROM pg_backend_memory_contexts WHERE name = 'sift cache v6 dimension';
 SELECT * FROM same(:'group_label');
 SELECT * FROM same(:'group_num_text');
 SELECT * FROM same(:'group_label_concat');

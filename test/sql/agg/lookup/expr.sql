@@ -1,7 +1,6 @@
--- An expression of the columns of a lookup table that a sift_col index of the table holds (a presence mask of its text columns) is one column of the table: the load reads
--- its leaf, where it read the columns the expression reads and the expression was evaluated for each distinct tuple of them. Without such an index the expression is
--- evaluated for each row loaded. The answers are those of the normal plan in both (NULL, blank and unmatched values, a left join, which does not read the
--- leaf: the expression of a row nothing matched is not NULL, rows the transaction changed, workers).
+-- An expression of the columns of a joined table (a presence mask of its text columns), whether a sift_col index of the table holds it or not, is computed by
+-- SiftAggV6. The answers are those of the normal plan (NULL, blank and unmatched values, a left join, where the expression of a row nothing matched is not NULL,
+-- rows the transaction changed, workers).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -25,7 +24,7 @@ INSERT INTO dm SELECT i, CASE i % 4 WHEN 0 THEN NULL WHEN 1 THEN '  ' ELSE 'a' |
 CREATE TABLE dh (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO dh SELECT * FROM dm;
 ALTER TABLE dh ADD PRIMARY KEY (k);
--- the same, never analyzed: the classes of the mask are priced from the index
+-- the same, never analyzed
 CREATE TABLE df (LIKE dm) WITH (autovacuum_enabled = false);
 INSERT INTO df SELECT * FROM dm;
 ALTER TABLE df ADD PRIMARY KEY (k);
@@ -66,19 +65,11 @@ INSERT INTO shapes VALUES
  (14, $q$SELECT fe.id % 5, count(DISTINCT dq.k) FILTER (WHERE dq.a IS NOT NULL AND dq.c IS NOT NULL), count(DISTINCT dq.k) FILTER (WHERE dq.a IS NULL OR dq.c IS NULL)
 		FROM fe JOIN dq ON dq.k = fe.k GROUP BY 1 ORDER BY 1$q$);
 
--- the rows of the answer, and what the load of the table read
+-- the rows of the answer, and whether SiftAggV6 answers
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
 	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
-	RETURN r;
-END $$;
-CREATE FUNCTION loads(sql text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; r int := 0; BEGIN
-	PERFORM set_config('sift.enable_agg', 'true', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '(\d+) column loads' THEN r := substring(l from '(\d+) column loads')::int; END IF;
-	END LOOP;
 	RETURN r;
 END $$;
 CREATE FUNCTION scanned(sql text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -89,8 +80,8 @@ DECLARE l text; r bool := false; BEGIN
 	END LOOP;
 	RETURN r;
 END $$;
-CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, from_leaves bool, scan bool, not_empty bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), loads(sql) > 0, scanned(sql), answer(sql, true) <> '' FROM shapes ORDER BY n
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, scan bool, not_empty bool) LANGUAGE sql AS $$
+	SELECT stage, n, answer(sql, true) = answer(sql, false), scanned(sql), answer(sql, true) <> '' FROM shapes ORDER BY n
 $$;
 
 SELECT * FROM report('settled');
@@ -123,7 +114,7 @@ SELECT * FROM report('workers');
 
 SELECT * FROM report('lookup columns off');
 
-DROP FUNCTION report(text), scanned(text), loads(text), answer(text, bool);
+DROP FUNCTION report(text), scanned(text), answer(text, bool);
 DROP TABLE shapes, ev, dm, dh, df, fe, dq;
 DROP FUNCTION presence(text, text, int);
 DROP EXTENSION pg_sift;

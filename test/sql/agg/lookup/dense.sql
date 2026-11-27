@@ -1,8 +1,6 @@
--- A lookup table of one int4 key whose other columns are integer leaves of a sift_col index and take few distinct tuples of values is kept as classes of its keys:
--- a table over the keys, one row for each class. The answers are those of the normal plan (keys the table has no row for, NULL columns, rows the transaction
--- changed, a left join, a distinct count by a column of the table, workers), and a table that is not one of those (a key twice, a negative key, too many tuples,
--- a column of the key itself that a left join reads) is loaded row by row as before; a text column is classes too. An inner join reads the key as the scanned column it equals (shape 10); shape 11 is
--- a left join, and shape 12 reads the key of one.
+-- A joined table of one int4 key is a lookup join of SiftAggV6 whatever its columns take: few or many tuples of values, a key twice, a negative key, a text column,
+-- the key itself read by an inner join (shape 10) or a left join (shapes 11 and 12). The answers are those of the normal plan (keys the table has no row for, NULL
+-- columns, rows the transaction changed, a left join, a distinct count by a column of the table, workers).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -53,23 +51,23 @@ INSERT INTO shapes VALUES
  (11, $q$SELECT dd.lvl, count(DISTINCT dd.k), count(DISTINCT dd.k) FILTER (WHERE dd.grade = 1) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$),
  (12, $q$SELECT dd.lvl, count(*), sum(dd.k) FROM ev LEFT JOIN dd ON dd.k = ev.k GROUP BY 1 ORDER BY 1$q$);
 
--- the rows of the answer, and the rows the load made classes of
+-- the rows of the answer, and whether SiftAggV6 joins the table
 CREATE FUNCTION answer(sql text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN
 	PERFORM set_config('sift.enable_agg', scan::text, true);
 	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
 	RETURN r;
 END $$;
-CREATE FUNCTION classed(sql text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; r int := 0; BEGIN
+CREATE FUNCTION lookup(sql text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '(\d+) rows classed' THEN r := substring(l from '(\d+) rows classed')::int; END IF;
+		IF l ~ 'Lookup Joins: ' THEN RETURN true; END IF;
 	END LOOP;
-	RETURN r;
+	RETURN false;
 END $$;
-CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, classed bool, not_empty bool) LANGUAGE sql AS $$
-	SELECT stage, n, answer(sql, true) = answer(sql, false), classed(sql) > 0, answer(sql, true) <> '' FROM shapes ORDER BY n
+CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, lookup bool, not_empty bool) LANGUAGE sql AS $$
+	SELECT stage, n, answer(sql, true) = answer(sql, false), lookup(sql), answer(sql, true) <> '' FROM shapes ORDER BY n
 $$;
 
 SELECT * FROM report('settled');
@@ -90,7 +88,7 @@ SELECT * FROM report('committed, not vacuumed');
 VACUUM dd;
 SELECT * FROM report('vacuumed');
 
--- the workers read the classes from the leader's shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -98,9 +96,6 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
--- switched off with the load from the leaves: the rows are loaded one by one
-SELECT * FROM report('lookup columns off');
-
-DROP FUNCTION report(text), classed(text), answer(text, bool);
+DROP FUNCTION report(text), lookup(text), answer(text, bool);
 DROP TABLE shapes, ev, dd, dr, dn, dw, dt;
 DROP EXTENSION pg_sift;

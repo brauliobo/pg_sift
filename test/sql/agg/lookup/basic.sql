@@ -1,6 +1,6 @@
--- A test of the columns of a joined table (a FILTER, a CASE, a group key, a condition) is one boolean column of the lookup table: the load computes it for each row of the
--- table, from the leaves of its index, and the table is kept as classes of its keys by the outcomes (a few) however many tuples of values its columns take (7,000 here).
--- The answers are those of the normal plan; a test that may raise an error, a table a preserving join leaves unmatched rows of, and the ON clause of the table stay as they were.
+-- A test of the columns of a joined table (a FILTER, a CASE, a group key, a condition), alone or with a column of the scan, is computed by a lookup join of SiftAggV6
+-- however many tuples of values its columns take (7,000 here), settled, after writes, in the transaction, with workers and with the caches off. No journal
+-- vouches for the table, so the Dimension Cache never has it (docs/ARCHITECTURE.md). The answers are those of the normal plan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET work_mem = '256MB';
@@ -46,13 +46,13 @@ DECLARE r text; BEGIN
 	EXECUTE 'SELECT string_agg(t::text, '';'' ORDER BY t::text) FROM (' || sql || ') t' INTO r;
 	RETURN r;
 END $$;
--- how the scan got the lookup table: 'classed' when it made the classes, 'cached' when it read a kept table, 'loaded' when it loaded the rows, 'normal' without the scan
+-- how the scan got the joined table: 'cached' when the Dimension Cache had it, 'loaded' when it read it, 'normal' without the scan
 CREATE FUNCTION got(sql text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'loaded'; END IF;
-		IF l ~ '[1-9]\d* rows classed' THEN r := 'classed'; ELSIF l ~ '[1-9]\d* cached tables' THEN r := 'cached'; END IF;
+		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN r := 'cached'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
@@ -66,7 +66,7 @@ END $$;
 SELECT * FROM report('settled');
 SELECT * FROM report('kept');
 
--- committed writes: the kept tables are those of the old rows, the next run makes new ones
+-- committed writes
 UPDATE dd SET a = 1, b = 3 WHERE k % 11 = 0;
 DELETE FROM dd WHERE k % 53 = 0;
 INSERT INTO dd SELECT i, NULL, NULL, NULL, NULL FROM generate_series(10000, 10099) i;
@@ -81,7 +81,7 @@ SELECT * FROM report('in the transaction');
 ROLLBACK;
 VACUUM dd;
 
--- the workers read the classes from the shared memory
+-- workers
 SET max_parallel_workers_per_gather = 2;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -89,7 +89,7 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SELECT * FROM report('workers');
 
--- the caches off: the classes are made by every statement
+-- the caches off
 SET sift.backend_cache_kb = 0;
 SET sift.shared_cache_kb = 0;
 SELECT * FROM report('caches off');

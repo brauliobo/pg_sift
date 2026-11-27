@@ -5,10 +5,9 @@ CREATE EXTENSION pg_sift;
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
 SET search_path = s1, public;
--- A lookup table whose join columns are in two sift_col indexes, none of them holding all, is loaded from the leaves of both (the units of the two have the same rows, so the
--- leaves of the second are read as the first's own), not from the heap: as classes of its keys when it is a dense table, as rows when its keys are sparse. Rows inserted
--- since give the two indexes other units, and the load reads the heap then. The answers are those of the normal plan in every case, for a filter on a column of each index,
--- a text column of the second, a LEFT JOIN, NULLs, and rows changed after the indexes were made.
+-- A joined table whose columns are in two sift_col indexes, none of them holding all, is a lookup join of SiftAggV6, by its key or by a sparse key. The answers
+-- are those of the normal plan in every case, for a filter on a column of each index, a text column of the second, a LEFT JOIN, NULLs, rows changed after the
+-- indexes were made and an index made again.
 SET work_mem = '256MB';
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -39,26 +38,26 @@ DECLARE r text; BEGIN
 	RETURN r;
 END $$;
 
--- how the lookup table was loaded: from the leaves of indexes, or from the heap
+-- 'lookup' when SiftAggV6 joins the table, else 'normal'
 CREATE FUNCTION loaded(sql text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'heap'; BEGIN
+DECLARE l text; r text := 'normal'; BEGIN
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	PERFORM set_config('sift.agg_force', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
-		IF l ~ 'Lookup: .*column loads' THEN r := 'index leaves'; END IF;
+		IF l ~ 'Lookup Joins: ' THEN r := 'lookup'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
 
 SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
 
--- rows added, changed and deleted after the indexes were made: both indexes took the same rows into units of the same rows
+-- rows added, changed and deleted after the indexes were made
 INSERT INTO ti_parent SELECT g, g % 7, g % 11, 'w', g * 1000 FROM generate_series(20001, 20500) g;
 UPDATE ti_parent SET a = 5, tag = 'u' WHERE id % 97 = 0;
 DELETE FROM ti_parent WHERE id % 211 = 0;
 SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
 
--- an index made after those rows has other units than the one made before: the heap is read, the answers hold
+-- an index made after those rows
 DROP INDEX ti_parent_col_b;
 CREATE INDEX ti_parent_col_b ON ti_parent USING sift_col (id, b, tag);
 SELECT slug, loaded(sql) AS load, answer(sql, true) = answer(sql, false) AS same_answers FROM shapes ORDER BY slug;
@@ -259,7 +258,9 @@ SELECT i, CASE WHEN i % 41 = 0 THEN NULL WHEN i % 3 = 0 THEN i % 20 ELSE (i * 13
        CASE WHEN i % 23 = 0 THEN NULL ELSE 50 + (i * 31) % 300 END, i % 4 <> 0, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN 'eur' ELSE 'usd' END
 FROM generate_series(1, 30000) i;
 CREATE INDEX ev_entity_day ON ev (dim_a_id, day);
+SET client_min_messages = warning;
 CREATE INDEX ev_col ON ev USING sift_col (id, dim_a_id, unit_id, foreign_id, day, price, latest, ccy);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) ev;
 ANALYZE units; ANALYZE dim_c; ANALYZE links;
 \ir test/common/sql/agg/base.sql
