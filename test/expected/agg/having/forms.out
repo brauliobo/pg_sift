@@ -148,7 +148,7 @@ SELECT p.idea, p.name, c.* FROM pairs p, LATERAL having_same(p.a, p.b, p.expect)
  sub-select = WHERE  | an empty table                                                  | t        | t        | same    | t           | t          |  0
  sub-select = WHERE  | a lookup join key                                               | t        | t        | same    | t           | t          |  3
  sub-select = WHERE  | as a join to the list (the list has unique ids)                 | t        | t        | same    | t           | t          |  7
- sub-select = WHERE  | a volatile function in the sub-select                           | t        | f        | same    | t           | t          |  9
+ sub-select = WHERE  | a volatile function in the sub-select                           | t        | t        | same    | t           | t          |  9
  key = WHERE         | greater than                                                    | t        | t        | same    | t           | t          |  8
  key = WHERE         | IS NULL                                                         | t        | t        | same    | t           | t          |  1
  key = WHERE         | IS NOT NULL on a text                                           | t        | t        | same    | t           | t          |  5
@@ -168,7 +168,7 @@ SELECT p.idea, p.name, c.* FROM pairs p, LATERAL having_same(p.a, p.b, p.expect)
  stays on the groups | no GROUP BY, the condition fails                                | t        | t        | same    | t           | t          |  0
  stays on the groups | no GROUP BY, the condition holds                                | t        | t        | same    | t           | t          |  1
  differs by design   | ROLLUP: a WHERE first changes the totals                        | t        | t        | differs | t           | t          | 14
- differs by design   | no GROUP BY: a WHERE that drops every row still gives one group | t        | f        | differs | t           | t          |  0
+ differs by design   | no GROUP BY: a WHERE that drops every row still gives one group | t        | t        | differs | t           | t          |  0
 (37 rows)
 
 -- A sub-select that reads a function of the key that the rows of a group may not agree on (numeric groups 1.0 with 1.00, whose scales differ) tests the group, not each of its
