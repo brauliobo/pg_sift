@@ -320,7 +320,8 @@ SHOWN = (('ops', 'ops', 'd'), ('lost_rows', 'lost', 'd'), ('dup_rows', 'dup', 'd
          ('rss_mb_delta', 'rss', '.1f'), ('shm_used_after', 'shm', 'd'), ('shm_refusals', 'shmref', 'd'), ('tmp_files_left', 'tmp', 'd'), ('deadlocks', 'dl', 'd'),
          ('peak', 'peak', 'd'), ('l0_per_kop', 'l0k', '.1f'), ('pending_after', 'pend', 'd'), ('quarantine_missed', 'qmiss', 'd'), ('not_restarted', 'norestart', 'd'), ('meta_corrupt', 'meta', 'd'), ('unconverged', 'unconv', 'd'), ('maint_failures', 'mf', 'd'), ('drop_in_use', 'dropbusy', 'd'), ('rowlock_left', 'rowlk', 'd'), ('blocks_kept', 'blk', 'd'), ('traps_and_leaks', 'trap', 'd'),
          ('prepared_left', 'prep', 'd'), ('write_skew', 'skew', 'd'), ('unpriv_waits', 'uwait', 'd'), ('standby_mismatch', 'sbm', 'd'), ('promoted_errors', 'perr', 'd'),
-         ('fault_unseen', 'unseen', 'd'), ('wedged', 'wedged', 'd'), ('fd_delta', 'fd', 'd'), ('par_workers_peak', 'parw', 'd'))
+         ('fault_unseen', 'unseen', 'd'), ('wedged', 'wedged', 'd'), ('fd_delta', 'fd', 'd'), ('par_workers_peak', 'parw', 'd'),
+         ('acl_leaks', 'acl', 'd'), ('prepared_lost', 'preplost', 'd'), ('lock_unenforced', 'unlocked', 'd'), ('prepared_overlock', 'overlock', 'd'))
 
 
 def line(case: LoadCase, ctx: Ctx, m: dict | None, verdict: str, over: list, secs: float = 0.0) -> str:
@@ -377,7 +378,7 @@ def selftest():
     for name, (cases, classes) in suites.SUITES.items():
         expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
     every = suites.cases('all')
-    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 45, 'the suites share no id: 17 core, 23 workloads, 5 repl')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 51, 'the suites share no id: 17 core, 28 workloads, 6 repl')
     suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
@@ -466,7 +467,7 @@ def main() -> int:
         db.run('CREATE EXTENSION IF NOT EXISTS pg_sift_test')
     else:
         print('LOAD_INFO release build: the sub-checks of the testing library are skipped')
-    ctx.db.run(f'\\set rows {catalog.N}\n\\i {HERE}/fixtures.sql')
+    ctx.db.run(f'\\set rows {catalog.N}\n\\i {HERE}/fixtures.sql\n\\set ON_ERROR_STOP off')
     log = collect.LogScan(a.log)
     try:
         runs = [sweep(ctx, selected, log)]
