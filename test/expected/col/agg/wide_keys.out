@@ -165,13 +165,29 @@ DEALLOCATE ALL;
 -- the write buffer, a deleted row, an updated one and a merged index
 INSERT INTO wa SELECT 30000 + i, i % 7, i % 100, CASE WHEN i % 7 = 0 THEN 'NaN' ELSE i * 1234567.1234567891 END, i / 3.0,
 	   CASE WHEN i % 5 = 0 THEN 'NaN' ELSE round(i / 7.0, i % 9) END, 100, (i * 17 || '.' || i % 100)::money, make_interval(months => i % 14, days => i % 40) FROM generate_series(1, 3000) i;
-CREATE FUNCTION shapes(tag text) RETURNS text LANGUAGE sql AS $$
+-- an UPDATE of Format 2 keeps the row at its place in its part with its new heap address, so the index reads it before rows the heap holds ahead of its new version: a group of
+-- equal values spelled differently (1.0 and 1.00) may then show another spelling than the normal plan, which SQL leaves open. After the updates the rows compare as typed values
+CREATE FUNCTION chk_typed(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE a bigint; pushed boolean;
+BEGIN
+	SET sift.enable_agg = on;
+	pushed := sift_helpers.plan_pushed(sift_helpers.plan_text(q));
+	EXECUTE 'CREATE TEMP TABLE r_on AS ' || q;
+	SET sift.enable_agg = off;
+	EXECUTE 'CREATE TEMP TABLE r_off AS ' || q;
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) x;
+	DROP TABLE r_on, r_off;
+	RETURN (CASE WHEN pushed THEN 'scan ' ELSE 'plain ' END) || CASE WHEN a = 0 THEN 'same' ELSE 'DIFF ' || a END;
+END $$;
+CREATE FUNCTION shape(q text, typed bool) RETURNS text LANGUAGE sql AS $$ SELECT CASE WHEN typed THEN chk_typed(q) ELSE chk(q) END $$;
+CREATE FUNCTION shapes(tag text, typed bool DEFAULT false) RETURNS text LANGUAGE sql AS $$
 	SELECT concat_ws(' ', tag,
-		chk('SELECT n38 AS k, count(*) AS c FROM wa GROUP BY n38'),
-		chk('SELECT img AS k, count(*) AS c, min(img) AS a, max(img) AS b FROM wa GROUP BY img'),
-		chk('SELECT iv AS k, count(*) AS c, min(iv) AS a, max(iv) AS b FROM wa GROUP BY iv'),
-		chk('SELECT grp AS g, sum(n19) AS s, avg(n19) AS a, count(DISTINCT n38) AS d FROM wa GROUP BY grp'),
-		chk('SELECT grp AS g, count(*) FILTER (WHERE n38 > 100 OR iv > ''1 mon'') AS c FROM wa GROUP BY grp'))
+		shape('SELECT n38 AS k, count(*) AS c FROM wa GROUP BY n38', typed),
+		shape('SELECT img AS k, count(*) AS c, min(img) AS a, max(img) AS b FROM wa GROUP BY img', typed),
+		shape('SELECT iv AS k, count(*) AS c, min(iv) AS a, max(iv) AS b FROM wa GROUP BY iv', typed),
+		shape('SELECT grp AS g, sum(n19) AS s, avg(n19) AS a, count(DISTINCT n38) AS d FROM wa GROUP BY grp', typed),
+		shape('SELECT grp AS g, count(*) FILTER (WHERE n38 > 100 OR iv > ''1 mon'') AS c FROM wa GROUP BY grp', typed))
 $$;
 SELECT shapes('buffered');
                            shapes                           
@@ -182,7 +198,7 @@ SELECT shapes('buffered');
 DELETE FROM wa WHERE id % 5 = 1;
 UPDATE wa SET n38 = round(n38 / 2, 10), m = m / 2, iv = iv + interval '1 day'
 WHERE id % 11 = 2 AND id % 71 <> 0 AND id % 73 <> 0 AND id % 79 <> 0 AND id % 83 <> 0 AND id % 101 <> 0 AND id % 103 <> 0;
-SELECT shapes('updated');
+SELECT shapes('updated', true);
                           shapes                           
 -----------------------------------------------------------
  updated scan same scan same scan same scan same scan same
@@ -222,6 +238,6 @@ SELECT chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s, min(iv) AS a FROM wa
 (1 row)
 
 DROP TABLE wa;
-DROP FUNCTION chk(text), shapes(text);
+DROP FUNCTION chk(text), chk_typed(text), shape(text, bool), shapes(text, bool);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
