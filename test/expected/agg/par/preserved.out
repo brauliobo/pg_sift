@@ -69,11 +69,11 @@ FROM shapes s ORDER BY s.n;
  matches nothing   | none     | t       | t       | t       | t
  global            | parallel | t       | t       | t       | t
  distinct          | parallel | t       | t       | t       | t
- distinct lookup   | none     | t       | t       | t       | t
+ distinct lookup   | parallel | t       | t       | t       | t
  distinct left     | serial   | t       | t       | t       | t
  distinct global   | serial   | t       | t       | t       | t
  chained lookups   | serial   | t       | t       | t       | t
- chained preserved | none     | t       | t       | t       | t
+ chained preserved | serial   | t       | t       | t       | t
  cte lookup        | serial   | t       | t       | t       | t
  distinct filter   | serial   | t       | t       | t       | t
 (15 rows)
