@@ -1,7 +1,7 @@
 -- The element rollups of the units (docs/COL-PREAGG.md sections 2 and 6) under forced parallel plans: a query over the elements of an array must plan as a Gather
 -- over a partial Custom Scan (SiftAgg) with two workers, answer the exact units from their cubes and scan the units that are not, and give the rows of the
 -- normal plan (sift.enable_agg off) and of the scan of every unit (sift.agg_preagg off).
--- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: units answered from the cubes (a partial scan counts its own).
+-- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: granules answered from the cubes (the preagg count of the Granules line).
 -- A table whose units are all exact is serial on purpose (starting workers costs more than the answer), so the units that are not come from updates
 -- after the VACUUM; `dirty` is a table with no VACUUM at all: every unit is scanned.
 CREATE EXTENSION pg_sift;
@@ -53,7 +53,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		gather := gather OR l LIKE '%Workers Planned: 2%';
 		agg := agg OR l LIKE '%Custom Scan (SiftAgg%';
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
+		pre := CASE WHEN l ~ '^\s*Granules: ' THEN coalesce(pre, 0) + coalesce(substring(l from ' preagg=(\d+)')::int, 0) ELSE pre END;
 	END LOOP;
 	mode := CASE WHEN agg AND gather THEN 'parallel' WHEN agg THEN 'serial' ELSE 'none' END;
 END $$;
