@@ -65,6 +65,7 @@
 #define COL_SCAN_RESCAN		0.9		/* a probe whose key a parent query passes down (a correlated subplan) costs at least this share of the sequential scan of the table: see rescan_floor */
 
 #define COL_SCAN_KEY		20.0	/* a key of an IN list past the first that is not looked up in a directory of addresses (the units that may hold it are read, or the sorted keys are sought for it): the units that may hold it are searched for it, 2.5 us measured a key (60 to 500 keys of 300,000 and 1,000,000 rows, 0.16 to 1.15 ms) where the b-tree's probe takes 0.8 us and is priced 7: the price of a b-tree's cached probe is 9 units to the microsecond, and a scan that is priced by its microseconds would take the lookup of 500 keys from it for twice the time */
+#define COL_SCAN_KEY_UNITS	8.0		/* ... in the units those keys were searched in: a key is sought in each kept unit, so a list over fewer units pays that share of it (100 keys of 30,000 rows in one unit: 0.25 to 0.6 us a key, 0.5 ms against 2.4 for the Seq Scan) */
 #define COL_SCAN_FETCH		0.5		/* the heap row of each tuple an index scan (not a bitmap) hands over, for the probes of a scan repeated for the rows of a join: PostgreSQL's price of the page falls with the loops (the pages stay in the cache) and the tuple stays 1.2 us (124 rows a probe, 200 us measured, priced 94 units) */
 #define COL_SCAN_FETCH_ROW	0.1		/* ... and for the rows of a scan that is not repeated, the heap row beside the index tuple: PostgreSQL prices the pages (sequential or cached) and 10 ns the tuple */
 #define COL_SCAN_IOS_PROBE	15.0	/* the tuple of the columns an index-only scan forms for the row of each probe of a scan repeated for the rows of a join, whose unit it decodes: 17 to 26 us a probe (1,000 probes of 100,000 to 1,000,000 rows, 100 of 20,000) where the plain index scan hands over the address and the heap reads the row, 1.4 to 9.5 */
@@ -274,7 +275,7 @@ col_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *in
 		+ (nprobes > 0 ? 1.0 - tid : 1.0) * (scale * (repeat > 1.0 ? Min(kept_units, 1.0) * COL_SCAN_UNIT_RESCAN + Max(kept_units - 1.0, 0.0) * COL_SCAN_UNIT : kept_units * COL_SCAN_UNIT) +
 											  kept_units * Min(COL_SCAN_UNIT_PAGES, Max(1.0, index->pages / units)) * seq_page_cost)
 		+ (nprobes > 0 ? idx_rows * (1.0 - tid) : kept * index->rel->tuples) * row_cost * scale
-		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * scale : 0.0)
+		+ (nprobes == 0 || extra > 0.0 ? Max(costs.num_sa_scans / redundant - 1.0, 0.0) * COL_SCAN_KEY * Min(kept_units / COL_SCAN_KEY_UNITS, 1.0) * scale : 0.0)
 		+ index->pages * cpu_tuple_cost / repeat
 		+ (path->path.pathtype == T_IndexScan ? idx_rows * (repeat > 1.0 ? COL_SCAN_FETCH : COL_SCAN_FETCH_ROW) * scale : (repeat > 1.0 ? COL_SCAN_IOS_PROBE * scale : 0.0))
 		+ idx_rows * (scale * (path->path.pathtype == T_IndexOnlyScan ? COL_SCAN_EMIT_IOS + COL_SCAN_EMIT_IOS_COL * index->nkeycolumns + COL_SCAN_EMIT_IOS_VAR * ios_var_columns(index) : COL_SCAN_EMIT) + cpu_index_tuple_cost);
