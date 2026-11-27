@@ -677,7 +677,13 @@ static void
 v6g_dist_free_set(V6Set *set)
 {
 	if (set->dist != NULL)
+	{
+		const SiftDistinctStats *st = sift_distinct_stats(set->dist);
+
+		set->owner->dist_spill_puts += st->spilled_records;
+		set->owner->dist_spill_bytes += st->spilled_bytes;
 		sift_distinct_free(set->dist);
+	}
 	set->dist = NULL;
 	for (int k = 0; set->flat != NULL && k < set->owner->ndist; k++)
 		if (set->flat[k] != NULL)

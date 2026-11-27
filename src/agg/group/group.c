@@ -887,7 +887,8 @@ sift_v6_group_bytes(const SiftV6Group *g)
 void
 sift_v6_group_spill_stats(const SiftV6Group *g, uint64 *puts, uint64 *bytes)
 {
-	*puts = *bytes = 0;
+	*puts = g->dist_spill_puts;
+	*bytes = g->dist_spill_bytes;
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].spill != NULL)
 		{

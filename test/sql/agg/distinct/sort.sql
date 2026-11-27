@@ -16,7 +16,7 @@ CREATE FUNCTION sets_spilled(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l ~ '(\d+) distinct sets spilled' THEN n := n + substring(l FROM '(\d+) distinct sets spilled')::int; END IF;
+    IF l ~ 'spills=\d+' THEN n := n + substring(l FROM 'spills=(\d+)')::int; END IF;
   END LOOP;
   RETURN n;
 END $$;

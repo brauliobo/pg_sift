@@ -114,6 +114,8 @@ struct SiftV6Group
 	bool		dist_done;		/* the sets of pairs are finished and have handed their counts to the groups */
 	int		   *dslot;			/* the slot of each aggregate in a distinct set (-1 for the others) */
 	uint64		dist_budget;	/* of budget: what the distinct sets of all the sets of keys may hold; the groups have the rest */
+	uint64		dist_spill_puts;	/* the records and bytes the distinct sets wrote to temporary files, kept when the sets are freed */
+	uint64		dist_spill_bytes;
 	uint64		budget;
 	SiftMemTracker mt;			/* the memory of cx, held to the budget the groups spill against (v6g_mem_begin) */
 	int			pct_kb;			/* the sort of each percentile_cont of a set of no keys: work_mem shared by them (v6_pct.h) */

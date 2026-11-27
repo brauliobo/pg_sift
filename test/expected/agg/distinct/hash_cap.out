@@ -1,6 +1,5 @@
--- count(DISTINCT x) with a great deal of hash memory: a hash set that grows past the cache hands its pairs to the sort (which a set of many pairs does
--- faster), whose array is stripped of repeats when it first reaches a million pairs (a column of repeats) or left to grow (a column of unique values).
--- The counts are the plain plan's for both.
+-- count(DISTINCT x) with a great deal of hash memory: the exact set holds every pair of a column of repeats and of a column of unique values in memory,
+-- with no spill. The counts are the plain plan's for both.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -12,18 +11,18 @@ CREATE INDEX ev_col ON ev USING sift_col (grp, rep, uniq);
 VACUUM (FREEZE, ANALYZE) ev;
 SET work_mem = '1GB';
 SET sift.agg_force = on;
-CREATE FUNCTION sets_spilled(q text) RETURNS int LANGUAGE plpgsql AS $$
+CREATE FUNCTION spills_of(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l ~ '(\d+) distinct sets spilled' THEN n := n + substring(l FROM '(\d+) distinct sets spilled')::int; END IF;
+    IF l ~ 'spills=\d+' THEN n := n + substring(l FROM 'spills=(\d+)')::int; END IF;
   END LOOP;
   RETURN n;
 END $$;
-SELECT sets_spilled($q$ SELECT grp, count(DISTINCT rep), count(DISTINCT uniq) FROM ev GROUP BY grp $q$) > 0 AS spilled;
- spilled 
----------
- t
+SELECT spills_of($q$ SELECT grp, count(DISTINCT rep), count(DISTINCT uniq) FROM ev GROUP BY grp $q$) AS spills;
+ spills 
+--------
+      0
 (1 row)
 
 CREATE TABLE got AS SELECT grp, count(DISTINCT rep) AS r, count(DISTINCT uniq) AS u FROM ev GROUP BY grp;
@@ -36,6 +35,6 @@ SELECT (SELECT count(*) FROM got) AS groups, (SELECT count(*) FROM (SELECT * FRO
       4 |       0 |     0 |  100000 |  375000
 (1 row)
 
-DROP FUNCTION sets_spilled(text);
+DROP FUNCTION spills_of(text);
 DROP TABLE got, want, ev;
 DROP EXTENSION pg_sift;
