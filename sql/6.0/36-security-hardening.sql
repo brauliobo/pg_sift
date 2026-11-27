@@ -32,16 +32,18 @@ CREATE OR REPLACE FUNCTION sift._follow_drop(pairs regclass, source regclass) RE
 	DELETE FROM sift.scope_follows s WHERE s.pairs = $1 AND ($2 IS NULL OR s.source = $2) RETURNING s.*
 $$;
 CREATE OR REPLACE FUNCTION sift._follows_expiring(pairs regclass) RETURNS SETOF sift.scope_follows
-	LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
-	SELECT s.* FROM sift.scope_follows s WHERE s.pairs = $1 AND s.expires IS NOT NULL AND sift._may_inspect_outer(s.pairs) ORDER BY s.source FOR UPDATE
-$$;
+	LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+BEGIN
+	PERFORM sift._require_owner(pairs);
+	RETURN QUERY SELECT s.* FROM sift.scope_follows s WHERE s.pairs = $1 AND s.expires IS NOT NULL ORDER BY s.source FOR UPDATE;
+END $$;
 CREATE OR REPLACE FUNCTION sift._follow_swept(f sift.scope_follows) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
 	UPDATE sift.scope_follows s SET swept_at = now() WHERE s.pairs = f.pairs AND s.source = f.source AND s.source_column = f.source_column;
 END $$;
 COMMENT ON FUNCTION sift._follow_put(sift.scope_follows) IS 'Internal: writes a row of sift.scope_follows as the owner of the extension; the guard trigger checks the caller owns the tables it names';
 COMMENT ON FUNCTION sift._follow_drop(regclass, regclass) IS 'Internal: deletes the rows of sift.scope_follows of a pair table (and one source) as the owner of the extension; the guard trigger checks the caller owns the tables';
-COMMENT ON FUNCTION sift._follows_expiring(regclass) IS 'Internal: the locked rows of the sources of a pair table that have an expires column, for a caller that may look at the pairs';
+COMMENT ON FUNCTION sift._follows_expiring(regclass) IS 'Internal: the locked rows of the sources of a pair table that have an expires column, for the owner of the pairs';
 COMMENT ON FUNCTION sift._follow_swept(sift.scope_follows) IS 'Internal: records the sweep of a followed table as the owner of the extension; the guard trigger checks the caller owns the tables';
 
 -- What a change of the rows of a followed table refreshes: everything (a TRUNCATE) or what the rows name

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# What a role reaches through the definer functions of the extension: no statement of its own runs when a superuser makes the index of its projection.
-# The statement of each check is the attack; the check is what the server must answer.
+# What a role reaches through the definer functions of the extension: no statement of its own runs when a superuser makes the index of its projection, no row of
+# sift.scope_follows of another role is read or locked, and a rename of its own table locks no index of another role. The statement of each check is the attack; the check is what the
+# server must answer.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
 
-plan 4
+plan 8
 node_init da 4 "autovacuum = off"
 node_start da || bail "start failed"
 D=$(dir da)
@@ -35,5 +36,30 @@ check "no statement of the role ran as the superuser" test "$(as postgres <<<"SE
 as postgres <<<"DELETE FROM sift.projections WHERE name = 'px'" >/dev/null
 as atk <<<"SELECT sift.projection_create('ok', 'public.pt', ARRAY['id', '(kind + 1)'], filter => 'kind > 0')" >/dev/null
 check "a definition of columns, an expression and a filter is stored" test "$(as postgres <<<"SELECT sift.projection_index('oki', ARRAY['ok']); SELECT count(*) FROM pg_index WHERE indexrelid = 'oki'::regclass" | tail -n 1)" == 1
+
+# --- the followed tables of a role are read and locked by their owner only
+as own <<'SQL' >/dev/null || bail "scope setup failed"
+CREATE TABLE src (member int, tenant int, ends date);
+INSERT INTO src VALUES (1, 1, current_date + 1);
+CREATE TABLE pairs (member int, tenant int, UNIQUE (member, tenant));
+CREATE VIEW pairs_v AS SELECT member, tenant FROM src;
+SELECT * FROM sift.scope_follow_pairs('pairs', 'pairs_v', 'src', 'member', 'member', 'ends');
+GRANT SELECT ON pairs TO rd;
+SQL
+out=$(as rd <<<"BEGIN; SELECT count(*) FROM sift._follows_expiring('pairs'); SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND relation = 'sift.scope_follows'::regclass AND mode = 'RowShareLock'; ROLLBACK")
+check "a role that may read the pairs neither reads nor locks the rows of their followed tables" test "$(grep -c 'must be owner' <<<"$out")" == 1
+check "the owner of the pairs still sweeps them" test "$(as own <<<"SELECT inserted >= 0 FROM sift.scope_expire_pairs('pairs')" | tail -n 1)" == t
+
+# --- a rename of a table of a role locks no index of another role that names other tables
+as own <<'SQL' >/dev/null || bail "connect setup failed"
+CREATE TABLE dim (id int PRIMARY KEY);
+CREATE INDEX dim_col ON dim USING sift_col (id);
+CREATE TABLE ev (id int, dim_id int, v int);
+CREATE INDEX ev_col ON ev USING sift_col (id, dim_id, v) WITH (connect = 'dim_id -> dim(id)');
+SQL
+out=$(as atk <<<"CREATE TABLE mine (id int); BEGIN; ALTER TABLE mine RENAME TO mine2; SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND relation = 'ev_col'::regclass; ROLLBACK")
+check "the rename of a table of a role leaves the indexes of the others unlocked" test "$(tail -n 1 <<<"$out")" == 0
+out=$(as own <<<"ALTER TABLE dim RENAME TO dim2; SELECT sift.projection_option('ev_col'::regclass, 'connect')")
+check "the rename of a table that an index names still follows into the index" test "$out" == 'dim_id -> dim2(id)'
 
 finish

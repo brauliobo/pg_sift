@@ -28,6 +28,7 @@ src/col/v1/maint/funcs.c	sift_col_v1_maintenance_status	guarded	the heap of an i
 src/col/names.c	follow_attribute	guarded	the index OID comes from RelationGetIndexList of the renamed table, which the ALTER TABLE holds with AccessExclusiveLock, or from referring_indexes() (a catalog scan whose indexes are locked here); an index dropped in between does not exist for the locked table
 src/col/names.c	follow_column	guarded	heapoid is the table being altered (event trigger of ALTER TABLE .. RENAME COLUMN) or a partition of it, under the lock of the command; its index list is read from the open relation
 src/col/names.c	follow_references	guarded	referring_indexes() is a catalog scan inside the event trigger of the command; the indexes are opened with a lock and the list is of valid index OIDs of that snapshot
+src/col/names.c	names_change	guarded	referring_indexes() is a catalog scan inside the event trigger of the command; the list is of valid index OIDs of that snapshot, opened with a lock as follow_references opens them
 src/col/names.c	rename_attribute	unreachable	the OID is the constant of a system catalog, which cannot be dropped
 src/col/v1/order/units.c	sift_colk_aim_rows	guarded	SearchSysCache1 is tested (tp != NULL) in the same condition; the relation is the heap of an open index
 src/col/v1/pagg.c	pagg_open	guarded	the heap of an index this function holds open with a lock: DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held

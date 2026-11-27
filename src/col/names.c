@@ -187,15 +187,30 @@ referring_indexes(void)
 	return out;
 }
 
-/* The connect and scope options of every index, which name the table, its columns or its indexes as text */
+/* Whether an option of the index names what changed: read under a lock that is let go at once, so that the rename of a table of a role holds no index of another */
+static bool
+names_change(Oid indexoid, const SiftNameChange *c)
+{
+	Relation	index = index_open(indexoid, AccessShareLock);
+	bool		named = sift_names_renamed_options(index, c) != NIL;
+
+	index_close(index, AccessShareLock);
+	return named;
+}
+
+/* The connect and scope options of every index, which name the table, its columns or its indexes as text: only an index that names what changed is locked to be written */
 static void
 follow_references(const SiftNameChange *c)
 {
 	foreach_oid(indexoid, referring_indexes())
 	{
-		Relation	index = index_open(indexoid, ShareUpdateExclusiveLock);
-		List	   *renamed = sift_names_renamed_options(index, c);
+		Relation	index;
+		List	   *renamed;
 
+		if (!names_change(indexoid, c))
+			continue;
+		index = index_open(indexoid, ShareUpdateExclusiveLock);
+		renamed = sift_names_renamed_options(index, c);
 		if (renamed != NIL)
 			sift_col_set_options(index, renamed);
 		index_close(index, NoLock);
