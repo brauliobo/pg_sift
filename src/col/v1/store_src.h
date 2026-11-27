@@ -26,6 +26,7 @@ typedef struct SiftV1Src
 	const SiftV1ReaderOps *rd;
 	void	   *src;
 	uint64		units_read;		/* the units whose leaves the source decoded */
+	uint64		rows_read;		/* ... and their rows */
 	SiftV6Input in;
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];
@@ -54,7 +55,9 @@ typedef struct SiftV1Src
 	const SiftV1ElemBatch *elem_batch;
 	SiftSrcUnit unit;
 	bool		in_unit;
-	uint64	   *bits;			/* the rows of the unit the snapshot sees and nothing has been taken of */
+	bool		vet_unit;		/* the unit has rows on a heap page that is not all-visible: its rows end the batch, which checks the ones its quals keep (sift_v1_src_vet) */
+	int			vet_from;		/* the first row of the batch that is of the unit */
+	uint64	   *bits;			/* the rows of the unit the tombstones leave and nothing has been taken of */
 	int			pos;
 	SiftV6Vexpr *quals;
 	const SiftTidBridge *bridge;
@@ -98,6 +101,9 @@ extern bool sift_v1_src_fetch_row(SiftV1Src *s, uint64 tag);
 
 /* Narrows the mask of b to the rows whose heap row's ctid is in the range of the scan; false when none is left */
 extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);
+
+/* Narrows the mask of b to the rows of the unit (from vet_from) the snapshot sees, read from the heap for the pages that are not all-visible (col/v1_engine/store_ops_vet.c); false when none is left */
+extern bool sift_v1_src_vet(SiftV1Src *s, SiftV6Batch *b);
 
 /* The columns of a batch that the leaves cannot hold, read from the heap row of each row the batch keeps (col/v1_engine/store_ops_heap.c): jsonb documents, values of keys, members of maps */
 extern void sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b);

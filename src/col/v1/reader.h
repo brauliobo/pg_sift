@@ -35,7 +35,7 @@ typedef struct SiftV1ReaderOps
 	Size		(*view_size) (void *impl);
 	void		(*view_export) (void *impl, void *buf);
 	void		(*close) (void *impl);
-	/* adds the units its zones and set summaries ruled out to out */
+	/* adds the units its zones and set summaries ruled out, and the rows it checked against the heap, to out */
 	void		(*pruned) (void *impl, SiftV6GranCounts *out);
 	const SiftSrcLayout *(*source_layout) (const void *impl);
 	uint32		(*nsb) (void *impl);
@@ -63,7 +63,7 @@ typedef struct SiftV1ReaderOps
 extern const SiftV1ReaderOps sift_v1_idx_reader;
 extern const SiftV1ReaderOps sift_v1_tbl_reader;
 
-/* Adds the units the zones and the set summaries of a column source ruled out to out */
+/* Adds the units the zones and the set summaries of a column source ruled out, and the rows it checked against the heap, to out */
 extern void sift_v1_units_pruned(const SiftColSource *src, SiftV6GranCounts *out);
 
 /* The leaf of column def i of a shredded attribute (a sift_col index, or the declared paths of a sift_table): its place in the group tree, its path below the attribute, its kind and vector type; desc names the attribute and gives its type */

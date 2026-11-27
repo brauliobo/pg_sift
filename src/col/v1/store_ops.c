@@ -362,8 +362,7 @@ unit_next(SiftV1Src *s)
 		nw = (s->unit.nrow + 63) / 64;
 		s->bits = MemoryContextAllocZero(s->unit_cx, SIFT_COL_NWORDS(s->unit.nrow) * sizeof(uint64));
 		s->rd->live(s->src, &s->unit, s->bits);
-		if (s->rd->vet_needed(s->src, &s->unit))
-			s->rd->vet(s->src, &s->unit, s->bits);
+		s->vet_unit = s->rd->vet_needed(s->src, &s->unit);
 		if (!types_pass(s))
 			continue;
 		for (int w = 0; w < nw; w++)
@@ -375,6 +374,7 @@ unit_next(SiftV1Src *s)
 					else if (s->jkind[i] == SIFT_V1_JSON_PRESENT)
 						sift_v1_src_read_presence(s, i);
 				s->units_read++;
+				s->rows_read += s->unit.nrow;
 				for (int k = 0; k < s->nread; k++)
 					s->rd->read(s->src, &s->unit, s->read_leaf[k], &s->read_vec[k]);
 				for (int i = 0; i < s->in.ncols; i++)
@@ -563,6 +563,7 @@ batch_fill(SiftV1Src *s)
 		const int	cap = SIFT_VEC_LEN - n;
 		const int	k = unit_take(s, cap);
 
+		s->vet_from = n;
 		s->rd->tids(s->src, &s->unit, s->ords, k, s->tids);
 		for (int j = 0; j < k; j++)
 		{
@@ -581,7 +582,7 @@ batch_fill(SiftV1Src *s)
 		}
 		n += k;
 		s->in_unit = k == cap;
-		if (s->elems != NULL)
+		if (n > 0 && (s->elems != NULL || s->vet_unit))
 			break;
 	}
 	for (int i = 0; i < s->in.ncols; i++)
@@ -642,6 +643,8 @@ next_batch(SiftV1Src *s, SiftV6Batch *out)
 		}
 		if (s->tid_range && !sift_v1_src_tid_narrow(s, out))
 			continue;
+		if (s->vet_unit && !sift_v1_src_vet(s, out))
+			continue;
 		sift_v1_src_fill_heap(s, out);
 		if (s->elems != NULL)
 			fill_elems(s, out);
@@ -688,6 +691,7 @@ v1_granules(SiftV6Source *base, SiftV6GranCounts *out)
 	SiftV1Src	   *s = (SiftV1Src *) base;
 
 	out->read += s->units_read;
+	out->rows += s->rows_read;
 	s->rd->pruned(s->src, out);
 }
 

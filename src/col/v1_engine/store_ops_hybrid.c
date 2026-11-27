@@ -296,6 +296,7 @@ typedef struct HybFold
 {
 	SiftSrcFold *f;
 	MemoryContext cx;
+	SiftV6ScanStats *stats;
 	bool		(*recheck) (void *arg, uint64 key);
 	void	   *recheck_arg;
 	int			ncols;
@@ -318,6 +319,7 @@ hybrid_fold_begin(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation
 	const SiftV6Input *in;
 
 	vf->cx = cx;
+	vf->stats = stats;
 	vf->recheck = recheck;
 	vf->recheck_arg = recheck_arg;
 	vf->f = sift_srcfold_new(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.host = index != NULL ? index : heap,.is_table = index == NULL}, sift_mem_allocset_create(cx, "sift v1 fold"));
@@ -414,6 +416,7 @@ fold_slice(HybFold *vf, const uint64 *tid, const uint64 *live, const uint64 *may
 		mask[n / 64] &= (UINT64CONST(1) << (n & 63)) - 1;
 	for (int i = 0; i < vf->ncols; i++)
 		fill_vec(&vf->vec[i], in->col[i].attno == SIFT_V6_SCORE_ATTNO ? NULL : &cols[vf->leaf[i]], vf->scale[i], score, off, n, in->col[i].attno == SIFT_V6_SCORE_ATTNO);
+	vf->stats->rows += n;
 	sift_srcfold_batch(vf->f, &b);
 }
 

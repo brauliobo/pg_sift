@@ -475,7 +475,6 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 	if (f->count_only)
 	{
 		sift_v6_group_add_rows(f->a.group, bs->n_active);
-		f->a.stats->rows += bs->n_active;
 		return;
 	}
 	for (int i = 0; i < f->nfold; i++)
@@ -494,7 +493,6 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 		return;
 	derive_columns(f);
 	bin_keys(f);
-	f->a.stats->rows += bs->n_active;
 	if (f->a.emit != NULL)
 		f->a.emit(f->a.emit_arg, bs, f->keyvec, f->argvec);
 	else if (f->pipe != NULL)
@@ -532,6 +530,8 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 	f->a.stats->grans += grans.read;
 	f->a.stats->grans_pruned_zone += grans.pruned_zone;
 	f->a.stats->grans_pruned_skip += grans.pruned_skip;
+	f->a.stats->rows += grans.rows;
+	f->a.stats->heap_vet_rows += grans.vetted;
 	src->close(src);
 }
 

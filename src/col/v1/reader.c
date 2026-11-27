@@ -90,6 +90,7 @@ sift_v1_units_pruned(const SiftColSource *src, SiftV6GranCounts *out)
 
 	out->pruned_zone += c->units_pruned - c->units_set;
 	out->pruned_skip += c->units_set;
+	out->vetted += c->rows_vetted;
 }
 
 static void

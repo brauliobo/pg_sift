@@ -45,7 +45,8 @@ extern void sift_srcfold_finish(SiftSrcFold *f);
 extern void sift_srcfold_free(SiftSrcFold *f);
 /* A text-hit chunk of the scan: the statistics count it and its TIDs */
 extern void sift_srcfold_count_chunk(struct SiftV6ScanStats *stats, const struct SiftTidBridge *bridge);
-/* The columns the fold reads (the score of a text hit among them, as SIFT_V6_SCORE_ATTNO) and the folding of a batch whose vectors are those, in that order: for a caller that has the rows already */
+/* The columns the fold reads (the score of a text hit among them, as SIFT_V6_SCORE_ATTNO) and the folding of a batch whose vectors are those, in that order: for a caller that has the rows already
+ * (and counts them in the statistics: a run counts the rows of the granules its source read) */
 extern const SiftV6Input *sift_srcfold_input(const SiftSrcFold *f);
 extern void sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b);
 /* The heap addresses of the rows of the batch the fold is folding: what its emit reads to tell the rows it keeps */
