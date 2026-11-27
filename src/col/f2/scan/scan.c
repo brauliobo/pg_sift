@@ -875,8 +875,6 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 		}
 		if (want_px)
 			px = sift_f2_pending_index(rel, e, snap, staged_px);
-		if (e->l0_slab_blk != InvalidBlockNumber && !s->survey)
-			fn(s, rel, &(F2Unit) {e, NULL, px}, arg);
 		for (int p = 0; p < list->nparts; p++)
 		{
 			if (!sift_f2_part_overlaps(&list->parts[p], &s->keys) || part_skipped(s, list->parts[p].part_gen) || sift_f2_scan_bridge_part_skip(s, e, &list->parts[p]))
@@ -886,6 +884,8 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 			else
 				fn(s, rel, &(F2Unit) {e, &list->parts[p], px}, arg);
 		}
+		if (e->l0_slab_blk != InvalidBlockNumber && !s->survey)
+			fn(s, rel, &(F2Unit) {e, NULL, px}, arg);
 		if (px != NULL)
 			sift_pdel_idx_release(px, staged_px);
 	}
