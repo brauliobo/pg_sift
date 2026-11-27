@@ -293,8 +293,8 @@ sift_row_dead_to_all(Relation rel, GlobalVisState *vistest, uint64 tid, Transact
 
 /*
  * Only a row on disk whose deleter committed before every snapshot is known dead: a row no part holds may be staged by a running transaction of any backend (its entry is in the index before
- * the row is written), and the orphan an aborted one left is VACUUM's to reap (table/f2/vm). The rows are read where they are: nothing is written to ask the relation about a row, which
- * at every index page the btree tries to clean made a part of the stage or of a micro-slab.
+ * the row is written), and the orphan an aborted one left is VACUUM's to reap (table/f2/vm). A row the transaction staged itself is alive and is not read, as a read of it writes the stage out;
+ * the others are read where they are: nothing is written to ask the relation about a row, which at every index page the btree tries to clean made a part of the stage or of a micro-slab.
  *
  * What the btree reads back (access/tableam.h): an entry its caller marked deletable stays deletable, and the array ends at the last deletable entry, so that no deletable entry at all is
  * an empty array, which only a bottom-up caller may get.
@@ -309,8 +309,9 @@ sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate)
 	for (int i = 0; i < delstate->ndeltids; i++)
 	{
 		TM_IndexStatus *status = &delstate->status[delstate->deltids[i].id];
-		TransactionId xmax;
-		bool		deletable = sift_row_dead_to_all(rel, vistest, sift_tbl_tid_pack(&delstate->deltids[i].tid), &xmax);
+		uint64		tid = sift_tbl_tid_pack(&delstate->deltids[i].tid);
+		TransactionId xmax = InvalidTransactionId;
+		bool		deletable = !sift_stage_holds_in(rel, tid, tid) && sift_row_dead_to_all(rel, vistest, tid, &xmax);
 
 		status->knowndeletable |= deletable;
 		if (deletable && TransactionIdIsNormal(xmax) && (!TransactionIdIsValid(horizon) || TransactionIdFollows(xmax, horizon)))
