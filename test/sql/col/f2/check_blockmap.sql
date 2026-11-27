@@ -25,12 +25,13 @@ SELECT problems('ix_idx', '%is named twice%');
 SELECT dec_own('tb', 0);
 SELECT problems('tb', '%is named twice%');
 
--- an extent that was allocated and that nothing names
+-- an extent that was allocated and that nothing names, once the first check of this server swept what a crash could have left
 CREATE TABLE ix2 (id int, v text);
 INSERT INTO ix2 SELECT i, md5(i::text) FROM generate_series(1, 200) i;
 CREATE INDEX ix2_idx ON ix2 USING sift_col (id, v);
 CREATE TABLE tb2 (id int, n bigint) USING sift_table WITH (autovacuum_enabled = false);
 INSERT INTO tb2 SELECT i, i * 7 FROM generate_series(1, 20000) i;
+SELECT problems('ix2_idx', '%'), problems('tb2', '%');
 SELECT dec_own('ix2_idx', 1);
 SELECT problems('ix2_idx', '%named by no part%');
 SELECT dec_own('tb2', 1);
