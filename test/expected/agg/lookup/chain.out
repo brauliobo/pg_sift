@@ -39,24 +39,16 @@ EXPLAIN (COSTS OFF) :chain_label;
 (7 rows)
 
 EXPLAIN (COSTS OFF) :chain_expression;
-                                                                             QUERY PLAN                                                                             
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
- GroupAggregate
-   Group Key: (((COALESCE(m.label, 'none'::text) || COALESCE(e.kind, '?'::text)) || COALESCE((e.tier)::text, '?'::text))), ((e.score * '2'::double precision))
-   ->  Sort
-         Sort Key: (((COALESCE(m.label, 'none'::text) || COALESCE(e.kind, '?'::text)) || COALESCE((e.tier)::text, '?'::text))), ((e.score * '2'::double precision))
-         ->  Hash Left Join
-               Hash Cond: ((e.kind = m.kind) AND (e.tier = m.tier) AND (f.cat = m.cat))
-               ->  Nested Loop Left Join
-                     ->  Seq Scan on facts f
-                     ->  Memoize
-                           Cache Key: f.ent_id
-                           Cache Mode: logical
-                           ->  Index Scan using ents_pkey on ents e
-                                 Index Cond: (id = f.ent_id)
-               ->  Hash
-                     ->  Seq Scan on maps m
-(15 rows)
+                QUERY PLAN                
+------------------------------------------
+ Custom Scan (SiftAggV6)
+   Index: facts_col
+   Pushed Aggregates: count(*)
+   Star Dimensions: 2
+   Lookup Joins: ents (left), maps (left)
+   ->  Seq Scan on ents e
+   ->  Seq Scan on maps m
+(7 rows)
 
 CREATE TEMP TABLE r1_on AS :chain_label;
 CREATE TEMP TABLE r2_on AS :chain_expression;

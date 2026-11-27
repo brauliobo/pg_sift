@@ -253,7 +253,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT sf.g, u.e, count(*), sum(sf.x) FROM sf CROSS JOIN LATERAL unnest(sf.tags) AS u(e) GROUP BY 1, 2
 (8 rows)
 
--- Q-F01. FILTER over the fact table's columns, shredded scalars and the columns of an unnest is the node's; a FILTER over a dimension or a jsonb qual stays with the table
+-- Q-F01. FILTER over the fact table's columns, shredded scalars and the columns of an unnest is the node's; a FILTER over a dimension is computed on the pairs of the join; a jsonb qual stays with the table
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, sum((doc->>''a'')::float8) FILTER (WHERE v > 20), count(doc->>''t'') FILTER (WHERE g > 2) FROM sf GROUP BY g',
 	'SELECT doc->>''t'', count(*) FILTER (WHERE v > 20), sum(v) FILTER (WHERE x > 5) FROM sf GROUP BY 1',
