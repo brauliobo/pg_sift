@@ -44,6 +44,18 @@ filter_qual(V6Plan *p, Expr *c)
 	return (q = presence_qual(p, c)) != NULL ? q : sift_v6_index_qual(p, sift_v6_plan_json_vars(p, c, false));
 }
 
+/* a boolean column, or NOT of one, as its comparison with true or false: the forms the quals of a scan take (a NULL passes neither) */
+static Expr *
+bool_compare(Expr *c)
+{
+	const bool	negated = is_notclause(c);
+	Expr	   *arg = negated ? get_notclausearg(c) : c;
+
+	if (!IsA(arg, Var) || ((const Var *) arg)->vartype != BOOLOID)
+		return c;
+	return make_opclause(BooleanEqualOperator, BOOLOID, false, arg, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
+}
+
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)
@@ -51,8 +63,9 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	List	   *quals = NIL;
 
 	p->in_filter = true;
-	foreach_ptr(Expr, c, make_ands_implicit(filter))
+	foreach_ptr(Expr, conjunct, make_ands_implicit(filter))
 	{
+		Expr	   *c = bool_compare(conjunct);
 		Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
 
 		if (q == NULL)

@@ -562,7 +562,7 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 		(x->elem.fn >= SV6E_EACH && v->varattno != 1))
 		return false;
 	cls = sift_v6_class(v->vartype);
-	if (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_TEXT && cls != SV6C_F64)
+	if (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL && cls != SV6C_TEXT && cls != SV6C_F64)
 		return false;
 	slot = elem_slot(p, v);
 	if (sift_v6_class(x->elem.col_type[slot]) != cls || (cls == SV6C_I32 && x->elem.col_type[slot] != v->vartype))

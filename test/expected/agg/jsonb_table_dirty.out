@@ -180,9 +180,9 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.k, o.ok, count(*), sum(o.v), sum(o.n) FROM @T d CROSS JOIN LATERAL jsonb_to_recordset(d.doc -> ''l'') AS o(k text, v float8, n int4, ok bool) WHERE d.m IN (6, 7, 8) GROUP BY 1, 2',
 	'SELECT d.grp, count(*), sum(o.v) FROM @T d CROSS JOIN LATERAL jsonb_to_recordset(d.doc -> ''l'') AS o(k text, v float8) WHERE d.m IN (6, 7, 8) AND o.v > 100 GROUP BY 1'
 ]) q;
-                                                                                                 same                                                                                                  
--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- same normal SELECT o.k, o.ok, count(*), sum(o.v), sum(o.n) FROM @T d CROSS JOIN LATERAL jsonb_to_recordset(d.doc -> 'l') AS o(k text, v float8, n int4, ok bool) WHERE d.m IN (6, 7, 8) GROUP BY 1, 2
+                                                                                                same                                                                                                 
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node SELECT o.k, o.ok, count(*), sum(o.v), sum(o.n) FROM @T d CROSS JOIN LATERAL jsonb_to_recordset(d.doc -> 'l') AS o(k text, v float8, n int4, ok bool) WHERE d.m IN (6, 7, 8) GROUP BY 1, 2
  same node SELECT d.grp, count(*), sum(o.v) FROM @T d CROSS JOIN LATERAL jsonb_to_recordset(d.doc -> 'l') AS o(k text, v float8) WHERE d.m IN (6, 7, 8) AND o.v > 100 GROUP BY 1
 (2 rows)
 
