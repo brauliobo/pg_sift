@@ -984,7 +984,8 @@ static const SiftStoreOps v1_store_ops = {
 	.preagg = &v1_preagg_ops,
 	.jsonb = &v1_jsonb_ops,
 	.hybrid = &v1_hybrid_ops,
-	.conn = &sift_v1_conn_ops
+	.conn = &sift_v1_conn_ops,
+	.scope = &sift_v1_scope_ops
 };
 
 void

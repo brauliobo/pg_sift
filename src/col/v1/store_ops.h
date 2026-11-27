@@ -50,6 +50,7 @@ extern const SiftPreaggOps v1_preagg_ops;
 extern const SiftJsonbOps v1_jsonb_ops;
 extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 extern const SiftHybridOps v1_hybrid_ops;
+extern const SiftScopeOps sift_v1_scope_ops;
 
 /* The predicates of a scan of a sift_table: the clauses of the statement's index quals over its attributes, and the executor whose parameters they read */
 struct SiftStoreQuals
