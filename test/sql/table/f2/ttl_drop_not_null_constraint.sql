@@ -1,4 +1,4 @@
--- sift_table: the NOT NULL of the TTL column stays when it is dropped as a constraint (PostgreSQL 18 catalogs it as one), on the table and through the partitioned table above it: a row
+-- sift_table: the NOT NULL of the TTL column stays when it is dropped as a constraint (PostgreSQL 18 catalogs it as one; 17 drops it with ALTER COLUMN), on the table and through the partitioned table above it: a row
 -- without a time would be dropped with an expired part. The NOT NULL of another column still drops. Every check prints t.
 CREATE EXTENSION IF NOT EXISTS pg_sift;
 DO $$ BEGIN PERFORM set_config('sift.test_create_format1', 'off', false); EXCEPTION WHEN OTHERS THEN NULL; END $$;
@@ -16,6 +16,13 @@ BEGIN
 			NULL;
 		END;
 	END LOOP;
+	IF NOT FOUND THEN
+		BEGIN
+			EXECUTE format('ALTER TABLE %s ALTER COLUMN %I DROP NOT NULL', rel, col);
+		EXCEPTION WHEN dependent_objects_still_exist THEN
+			NULL;
+		END;
+	END IF;
 END $$;
 CREATE FUNCTION not_null(rel regclass, col name) RETURNS bool LANGUAGE sql AS $$ SELECT attnotnull FROM pg_attribute WHERE attrelid = rel AND attname = col $$;
 
