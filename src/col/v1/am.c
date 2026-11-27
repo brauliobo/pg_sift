@@ -303,8 +303,6 @@ stmt_note(QueryDesc *queryDesc, bool late)
 	bool		writing = ps->commandType != CMD_SELECT || ps->hasModifyingCTE;
 	bool		ending = updating || ps->commandType == CMD_DELETE || ps->hasModifyingCTE;
 
-	if (ps->parallelModeNeeded)
-		sift_col_v1_flush_held();
 	foreach_ptr(Plan, sub, ps->subplans)
 	{
 		speculative |= sub != NULL && IsA(sub, ModifyTable) && ((ModifyTable *) sub)->onConflictAction != ONCONFLICT_NONE;

@@ -1,6 +1,6 @@
 /*
- * col/am/exec_hooks.c - the executor hooks of the sift_col access method: a statement that writes is noted when it starts and when it ends (col/am.h), and the
- * index-only scans of its plan are told which columns they read (col/am/ioss.c).
+ * col/am/exec_hooks.c - the executor hooks of the sift_col access method: a statement that writes is noted when it starts and when it ends (col/am.h), the
+ * index-only scans of its plan are told which columns they read (col/am/ioss.c), and a parallel plan finds the rows the transaction holds back in the index.
  */
 #include "postgres.h"
 
@@ -22,6 +22,8 @@ col_executor_start(QueryDesc *queryDesc, int eflags)
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY) && sift_db_has_extension())
 	{
 		sift_col_ioss_want(queryDesc);
+		if (queryDesc->plannedstmt->parallelModeNeeded)
+			sift_col_flush_held();
 		sift_col_stmt_start(queryDesc);
 	}
 }
