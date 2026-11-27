@@ -103,6 +103,9 @@ extern bool sift_v6_cmp_op_of(const char *name, int *op);
 /* The value this execution gives the parameter; false while the path is made (no parameters) or when it is not of the type the plan was made for */
 extern bool sift_v6_param_value(ParamListInfo params, const Param *p, Datum *value, bool *isnull);
 
+/* The clauses with the values this execution gives their parameters ($n) as constants: what the batch quals of a generic plan run with (a node started only to be explained has none) */
+extern List *sift_v6_bind_params(List *clauses, ParamListInfo params);
+
 /* Adds to bound[0 .. *n - 1] the bounds a conjunct gives (at most SIFT_V6_MAX_BOUNDS), the columns it reads added to in */
 extern void sift_v6_bounds_of(const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, int *n, SiftV6Bound *bound);
 

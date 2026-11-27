@@ -6,9 +6,11 @@
 
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "utils/array.h"
+#include "utils/datum.h"
 #include "utils/lsyscache.h"
 
 #include "agg/vexpr.h"
@@ -39,6 +41,29 @@ sift_v6_param_value(ParamListInfo params, const Param *p, Datum *value, bool *is
 	return true;
 }
 
+
+static Node *
+bind_param(Node *n, void *context)
+{
+	const Param *p = (const Param *) n;
+	Datum		value;
+	bool		isnull;
+	int16		typlen;
+	bool		byval;
+
+	if (n == NULL || !IsA(n, Param) || p->paramkind != PARAM_EXTERN)
+		return expression_tree_mutator(n, bind_param, context);
+	if (!sift_v6_param_value(context, p, &value, &isnull))
+		return copyObject(n);
+	get_typlenbyval(p->paramtype, &typlen, &byval);
+	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, typlen, isnull ? (Datum) 0 : datumCopy(value, byval, typlen), isnull, byval);
+}
+
+List *
+sift_v6_bind_params(List *clauses, ParamListInfo params)
+{
+	return (List *) bind_param((Node *) clauses, params);
+}
 
 /* ---- the bounds the conjuncts put on the columns, for the source to leave granules unread ---- */
 

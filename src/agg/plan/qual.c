@@ -273,7 +273,7 @@ batch_clause(V6Plan *p, Expr *where)
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || contain_volatile_functions((Node *) where) || agg_node_has_extern_param((Node *) where))
+	if (!p->batch_ok || contain_volatile_functions((Node *) where))
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
