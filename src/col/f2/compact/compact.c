@@ -871,6 +871,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	sift_xid_horizon_init(&hc, horizon);
 	if (!ConditionalLockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock))
 		return false;
+	sift_fsm_meta_pool_drain(rel);
 	mr = sift_manifest_read_range(rel, key_lo, NULL);
 	if (mr.n == 0 || mr.entries[0].part_id != part_id)
 		ereport(ERROR, (errcode(ERRCODE_NO_DATA_FOUND), errmsg("sift: partition %llu is not in the manifest", (unsigned long long) part_id)));
