@@ -28,8 +28,8 @@ DECLARE l text; BEGIN
 	shared := 0; built := 0;
 	PERFORM set_config('sift.enable_agg', 'true', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || sql LOOP
-		IF l ~ '(\d+) maps shared' THEN shared := substring(l from '(\d+) maps shared')::int; END IF;
-		IF l ~ '(\d+) maps built' THEN built := substring(l from '(\d+) maps built')::int; END IF;
+		IF l ~ 'Dimension Cache: (\d+) hit' THEN shared := substring(l from 'Dimension Cache: (\d+) hit')::int; END IF;
+		IF l ~ 'Dimension Cache: \d+ hit, (\d+) built' THEN built := substring(l from 'Dimension Cache: \d+ hit, (\d+) built')::int; END IF;
 	END LOOP;
 END $$;
 CREATE FUNCTION report(stage text) RETURNS TABLE (stage text, shape int, same_answers bool, shared bool, built bool) LANGUAGE sql AS $$
@@ -62,7 +62,6 @@ SELECT * FROM report('after the rollback');
 SELECT * FROM report('shared after the rollback');
 
 -- the connection switched off: the journal of the dimension stays, and so does its stamp
-ALTER INDEX ev_col SET (connect = 'off');
 DROP INDEX ev_col;
 CREATE INDEX ev_col ON ev USING sift_col (id, k, v) WITH (connect = 'off');
 UPDATE dim SET a = 5 WHERE k = 11;

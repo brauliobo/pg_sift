@@ -33,8 +33,8 @@ DECLARE l text; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN served := 'rows'; END IF;
 		IF l ~ '[1-9]\d* rows classed' AND served = 'rows' THEN served := 'classes'; END IF;
-		IF l ~ '[1-9]\d* maps shared' THEN served := 'shared map'; END IF;
-		IF l ~ '[1-9]\d* maps built' THEN served := 'new map'; END IF;
+		IF l ~ 'Dimension Cache: [1-9]\d* hit' THEN served := 'shared map'; END IF;
+		IF l ~ 'Dimension Cache: \d+ hit, [1-9]\d* built' THEN served := 'new map'; END IF;
 		IF l ~ '\d+ heap fetches' THEN heap_fetches := substring(l from '(\d+) heap fetches')::int; END IF;
 	END LOOP;
 END $$;
@@ -70,7 +70,6 @@ RESET max_parallel_workers_per_gather;
 SET max_parallel_workers_per_gather = 0;
 
 -- the child connected to the parent's journal (via map: nothing is carried): a write to the parent is a new map without a vacuum
-ALTER INDEX ch_col SET (connect = 'k -> pd(k)');
 DROP INDEX ch_col;
 CREATE INDEX ch_col ON ch USING sift_col (id, k, g, v, tag) WITH (connect = 'k -> pd(k)');
 SELECT * FROM report('connected');

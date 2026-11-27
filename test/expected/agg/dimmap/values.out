@@ -39,7 +39,7 @@ DECLARE l text; r text := 'normal'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP
 		IF l ~ 'Custom Scan \(SiftAgg' THEN r := 'rows'; END IF;
 		IF l ~ '[1-9]\d* rows classed' AND r = 'rows' THEN r := 'classes'; END IF;
-		IF l ~ '[1-9]\d* maps (shared|built)' THEN r := 'map'; END IF;
+		IF l ~ 'Dimension Cache: ([1-9]\d* hit|\d+ hit, [1-9]\d* built)' THEN r := 'map'; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
