@@ -285,6 +285,31 @@ SELECT * FROM check_par('numeric key', $q$ SELECT v, n, count(*) FROM gk_c GROUP
  numeric key | t    | t    | t
 (1 row)
 
+-- ---- rows of single-row commits wait in the micro-slabs of a sift_table: the leader of a plan with workers writes them out before it lists the units ----
+CREATE TABLE sl_t (id int8 PRIMARY KEY, grp int, v int8) USING sift_table;
+INSERT INTO sl_t SELECT i, i % 16, i FROM generate_series(1, 8192) i;
+CREATE PROCEDURE sl_rows(n int) LANGUAGE plpgsql AS $$
+BEGIN
+	FOR i IN 1..n LOOP
+		INSERT INTO sl_t VALUES (100000 + i, i % 16, 1);
+		COMMIT;
+	END LOOP;
+END $$;
+CALL sl_rows(20);
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SELECT * FROM check_par('table micro-slabs', $q$ SELECT grp, count(*), sum(v) FROM sl_t GROUP BY 1 $q$);
+       label       | same | node | nonempty 
+-------------------+------+------+----------
+ table micro-slabs | t    | t    | t
+(1 row)
+
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+DROP PROCEDURE sl_rows(int);
+DROP TABLE sl_t;
 DROP FUNCTION check_par(text, text), node_of(text), outcome(text, bool), runs_in_scan(text), pushed(text), runq(text, bool);
 DROP TABLE ts_t, st_f, st_d1, st_p, st_d2, un_t, bq_t, bq_c, tx_t, gk_c;
 DROP EXTENSION pg_sift;

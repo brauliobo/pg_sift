@@ -31,6 +31,7 @@
 #include "col/f2/part/vis.h"
 #include "col/f2/del/pend.h"
 #include "col/f2/pin_win.h"
+#include "col/f2/slab_view.h"
 #include "core/memtrack.h"
 #include "core/tidbridge.h"
 #include "table/f2/blob.h"
@@ -687,8 +688,10 @@ add_part_units(SiftStoreScan *s, UnitList *u, const SiftPartitionEntry *e, const
 	SiftParPartRef ref = {.desc = *d,.part_id = e->part_id,.l0_slab_blk = InvalidBlockNumber,.pend_del_blk = e->pend_del_blk,.entry_flags = e->flags,.manifest_gen = e->manifest_gen,
 	.manifest_blk = e->manifest_blk};
 	uint32		spans[SIFT_F2_MAX_RANGES][2];
-	int			nspans = sift_f2_granule_spans(s->o->rel, sift_part_open_desc(s->o->rel, d, (uint32) e->part_id), &s->f, &s->ks, &s->plan, spans);
+	SiftF2PartPin *pin = sift_f2_pin_open_header(s->o->rel, s->store, d, (uint32) e->part_id);
+	int			nspans = sift_f2_granule_spans(s->o->rel, pin->part, &s->f, &s->ks, &s->plan, spans);
 
+	sift_f2_pin_release(pin);
 	if (u->out->nrefs + nspans > u->cap)
 		u->out->refs = repalloc(u->out->refs, (u->cap = Max(2 * u->cap, u->out->nrefs + nspans)) * sizeof(SiftParPartRef));
 	for (int i = 0; i < nspans; i++)
@@ -706,7 +709,9 @@ sift_f2_store_par_plan(SiftStoreScan *s, SiftF2ParPlan *out)
 	int			nstaged;
 
 	*out = (SiftF2ParPlan) {.refs = palloc(u.cap * sizeof(SiftParPartRef))};
-	for (int i = 0; s->possible && i < scan_view(s)->npartitions; i++)
+	if (s->view == NULL)
+		s->view = s->o->plan != NULL ? s->o->plan : sift_f2_parallel_view(s->o->rel, s->store, s->cx);
+	for (int i = 0; s->possible && i < s->view->npartitions; i++)
 	{
 		const SiftPartitionEntry *e = &s->view->partitions[i];
 		bool		dirty[SIFT_MANIFEST_TIME_COLS] = {false};
