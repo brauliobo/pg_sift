@@ -56,7 +56,7 @@ wait "${holders[@]}"
 
 sql am "CREATE TABLE slow (id int, a int, b text) USING sift_table" "CREATE INDEX slow_a ON slow (a)" "INSERT INTO slow SELECT g, g, repeat('x', 40) FROM generate_series(1, 60000) g" \
 	"DELETE FROM slow WHERE id % 3 = 0" >/dev/null
-sql am "SET vacuum_cost_delay = 2" "SET vacuum_cost_limit = 4" "SET track_cost_delay_timing = on" "VACUUM slow" >/dev/null 2>&1 &
+sql am "SET vacuum_cost_delay = 20" "SET vacuum_cost_limit = 4" "SET track_cost_delay_timing = on" "VACUUM slow" >/dev/null 2>&1 &
 vac=$!
 printf '%s\n' "SELECT phase, heap_blks_total, heap_blks_scanned, heap_blks_vacuumed, delay_time FROM pg_stat_progress_vacuum;" '\watch 0.005' |
 	psql -X -At -q -h "$D/sock" -p "$(port am)" -U postgres -d postgres >"$D/progress" 2>&1 &
