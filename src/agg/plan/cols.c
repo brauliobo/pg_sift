@@ -387,8 +387,8 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	e = sift_v6_json_vars(&rel, e, true);
 	if (!join_derive_ok(p, e))
 		return sift_v6_star_joined_col(p, e, key, col);
-	if (!sift_v6_pgexpr_derive_of(p->batch_ok ? p->root : NULL, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
-		!(sift_v6_type_native(restype) || (p->xseed == NULL && key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
+	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
+		!(sift_v6_type_native(restype) || (key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
 		return false;
 	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};
 	return true;

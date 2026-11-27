@@ -254,7 +254,7 @@ sift_v6_pgexpr_vec_type(const SiftV6Spec *s, const SiftV6Derive *d)
 	SiftV6PgItem it;
 
 	sift_v6_pgexpr_item(s, d, &it);
-	return sift_v6_result_vec_type(it.restype);
+	return sift_v6_type_native(it.restype) ? sift_v6_result_vec_type(it.restype) : SVEC_DATUM;
 }
 
 void
@@ -297,13 +297,10 @@ sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
 SiftVecType
 sift_v6_derive_vec_type(const SiftV6Spec *s, const SiftV6Derive *d)
 {
-	SiftV6PgItem it;
-
 	switch (d->kind)
 	{
 		case SVD_PG_EXPR:
-			sift_v6_pgexpr_item(s, d, &it);
-			return sift_v6_result_vec_type(it.restype);
+			return sift_v6_pgexpr_vec_type(s, d);
 		case SVD_URL_HOST:
 		case SVD_CASE_STR:
 			return SVEC_STRVIEW;

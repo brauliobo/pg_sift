@@ -170,8 +170,7 @@ bind_pg(UnRun *u, int k)
 		u->pgslot[k][c] = slot_of(u, &it.col[c], false);
 		pin[c] = (SiftV6PgIn) {.typid = it.col[c].typid,.scale = it.col[c].scale};
 	}
-	u->pg[k] = sift_v6_pgexpr_open(CurrentMemoryContext, NULL, it.expr, it.nin, pin);
-	u->pg[k]->restype = it.restype;
+	u->pg[k] = sift_v6_pgexpr_of(CurrentMemoryContext, u->spec, &u->spec->derive[k], &it, pin);
 	sift_vx_out_init(&u->pgout[k], CurrentMemoryContext);
 }
 

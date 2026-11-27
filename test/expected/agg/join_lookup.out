@@ -66,7 +66,10 @@ INSERT INTO stmts VALUES
 (22, 'SELECT coalesce(d.t, ''-'') || f.g, count(*), sum(coalesce(d.w, -1) + f.v) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1'),
 (23, 'SELECT coalesce(m.tag, ''-''), count(*), count(DISTINCT i.category) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) LEFT JOIN m ON m.category = i.category GROUP BY 1'),
 (24, 'SELECT g.n % 4, count(*) FROM f JOIN generate_series(1, 12) AS g(n) ON f.k = g.n GROUP BY 1'),
-(25, 'SELECT f.g, count(*) FILTER (WHERE d.w > 10), sum(f.v) FILTER (WHERE d.t = ''t1'' OR f.v < 5), count(*) FILTER (WHERE coalesce(d.w, 0) + f.v > 30) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1');
+(25, 'SELECT f.g, count(*) FILTER (WHERE d.w > 10), sum(f.v) FILTER (WHERE d.t = ''t1'' OR f.v < 5), count(*) FILTER (WHERE coalesce(d.w, 0) + f.v > 30) FROM f LEFT JOIN d ON d.k = f.k GROUP BY 1'),
+-- keys of the rows of an unnest that the groups take by their values (a jsonb), and one a hashed sub-plan computes, which the node prepares for the scan of the unnest
+(26, 'SELECT jsonb_build_object(''g'', f.g), count(*), sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) GROUP BY 1'),
+(27, 'SELECT CASE WHEN f.v IN (SELECT w FROM d) THEN jsonb_build_object(''v'', f.v % 3) END, i.category, sum(i.qty) FROM f CROSS JOIN LATERAL jsonb_to_recordset(f.items) AS i(category text, qty int) GROUP BY 1, 2');
 SELECT id, (same(q)).* FROM stmts ORDER BY id;
  id |  engine   | result_rows | vs_heap 
 ----+-----------+-------------+---------
@@ -95,7 +98,9 @@ SELECT id, (same(q)).* FROM stmts ORDER BY id;
  23 | SiftAggV6 |           7 |       0
  24 | SiftAggV6 |           4 |       0
  25 | SiftAggV6 |           4 |       0
-(25 rows)
+ 26 | SiftAggV6 |           4 |       0
+ 27 | SiftAggV6 |          20 |       0
+(27 rows)
 
 -- the arms of a statement that join the same table (the same columns and conditions, the same keys) read it once: the second node uses the first one's table
 CREATE FUNCTION arms(q text) RETURNS TABLE (nodes bigint, shared_dimensions bigint, vs_heap bigint) LANGUAGE plpgsql AS $$
