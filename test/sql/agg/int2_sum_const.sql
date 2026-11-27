@@ -24,17 +24,17 @@ BEGIN
 	DROP TABLE r_on, r_off;
 	RETURN d;
 END $$;
--- the rows the scan read of the table: 0 when the sums of the units answered
-CREATE FUNCTION rows_scanned(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+-- the granules the scan read of the table: 0 when the sums of the granules answered
+CREATE FUNCTION granules_scanned(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
 	SET LOCAL sift.agg_force = on;
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-	RETURN (SELECT max((n ->> 'Rows Scanned')::bigint) FROM jsonb_path_query(j, 'strict $.**') n WHERE jsonb_typeof(n) = 'object' AND n ? 'Rows Scanned');
+	RETURN (SELECT max((n -> 'Granules' ->> 'Scanned')::bigint) FROM jsonb_path_query(j, 'strict $.**') n WHERE jsonb_typeof(n) = 'object' AND n ? 'Granules');
 END $$;
 
 -- the shapes that run in the scan without the generic aggregate, over NULLs and the two extremes of smallint
-SELECT q, differences(q) AS differences, rows_scanned(q) = 0 AS from_the_sums FROM (VALUES
+SELECT q, differences(q) AS differences, granules_scanned(q) = 0 AS from_the_sums FROM (VALUES
 	('SELECT sum(x + 1) AS a, sum(x - 1) AS b, sum(1 - x) AS c, sum(x * 3) AS d, avg(x + 100000) AS e, avg(x * -65535) AS f FROM w'),
 	('SELECT sum(2147450879 + x) AS a, sum(x - 2147450879) AS b, sum(-2147450879 + x) AS c FROM w'),
 	('SELECT g, sum(x + 5) AS a, avg(x - 5) AS b, count(*) AS n FROM w GROUP BY g'),
@@ -49,14 +49,15 @@ SELECT differences('SELECT sum(x + 1) AS a, avg(x + 1) AS b FROM w WHERE id < 0'
 CREATE TABLE w2 AS SELECT * FROM w WHERE x IS NULL OR x BETWEEN -2000 AND 2000;
 CREATE INDEX w2_col ON w2 USING sift_col (id, g, x, y);
 VACUUM (FREEZE, ANALYZE) w2;
--- out of the range of the proof, a smallint constant or an integer column: the generic aggregate reads the rows (and raises where PostgreSQL does)
-SELECT rows_scanned('SELECT sum(x + 2147450881) FROM w2') > 0 AS over_range, rows_scanned('SELECT sum(x * 65536) FROM w2') > 0 AS product_over_range,
-       rows_scanned('SELECT sum(x + 1::int2) FROM w2') > 0 AS smallint_constant, rows_scanned('SELECT sum(y + 1) FROM w2') > 0 AS integer_column;
+-- out of the range of the static proof, a smallint constant or an integer column: the zone of each granule bounds its values, so the sums of granules whose bounds cannot
+-- overflow answer (a granule that holds a value that overflows raises where PostgreSQL does, below)
+SELECT granules_scanned('SELECT sum(x + 2147450881) FROM w2') = 0 AS over_range, granules_scanned('SELECT sum(x * 65536) FROM w2') = 0 AS product_over_range,
+       granules_scanned('SELECT sum(x + 1::int2) FROM w2') = 0 AS smallint_constant, granules_scanned('SELECT sum(y + 1) FROM w2') = 0 AS integer_column;
 SET sift.enable_agg = off;
 SELECT sum(x + 2147483647) FROM w WHERE id IN (6);
 SET sift.enable_agg = on;
 SET sift.agg_force = on;
 SELECT sum(x + 2147483647) FROM w WHERE id IN (6);
-DROP FUNCTION differences(text), rows_scanned(text);
+DROP FUNCTION differences(text), granules_scanned(text);
 DROP TABLE w, w2;
 DROP EXTENSION pg_sift;
