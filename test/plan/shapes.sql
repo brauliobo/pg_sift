@@ -296,7 +296,6 @@ SELECT e.kind, count(*) AS n FROM events e
 WHERE NOT EXISTS (SELECT 1 FROM facts f WHERE f.parent_id = e.parent_id AND f.val > 11) AND e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: elements_counted
--- gap: S113-12
 -- area: jsonb
 SELECT p.kind, count(*) AS n FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') p(kind text, score float8)
 WHERE p.score > 5 AND e.deleted_at IS NULL AND e.ts >= date '2024-03-01' AND e.ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -682,7 +681,6 @@ SELECT reg_id, count(*) AS n, sum(amount) AS total, min(day) AS first_day, max(d
 SELECT doc ->> 'channel' AS channel, count(*) AS n, sum((doc ->> 'score')::float8) AS total FROM sf_events WHERE doc ->> 'flag' = 'ok' GROUP BY 1 ORDER BY 1;
 
 -- name: jsonb_unnest_agg
--- gap: S113-13
 -- area: jsonb
 -- parallel: yes
 SELECT elem ->> 'kind' AS kind, count(*) AS n, sum((elem ->> 'score')::float8) AS total FROM sf_events e
@@ -733,7 +731,6 @@ WITH s AS (SELECT parent_id, kind, count(*) AS n, sum(amount) AS a FROM events W
 SELECT (SELECT sum(a) FROM s) AS total, (SELECT count(*) FROM s WHERE n > 100) AS big;
 
 -- name: bench_list_elements
--- gap: S113-12
 -- area: bench
 -- node: ^SiftAggV6
 SELECT p.kind, count(*) AS n FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') p(kind text, score float8)
@@ -785,7 +782,7 @@ SELECT count(*) AS n FROM sf_events WHERE doc IS NOT NULL;
 
 -- name: bench_subscript_group
 -- area: bench jsonb
--- gap: S113-09
+-- gap: S113-08
 -- node: ^SiftAggV6
 SELECT doc['flag'] AS flag, count(*) AS n FROM sf_events GROUP BY 1 ORDER BY 1;
 
@@ -809,7 +806,7 @@ SELECT status, count(*) AS n FROM sf_events WHERE jsonb_path_exists(doc, '$.item
 
 -- name: bench_filter_key_exists
 -- area: bench jsonb
--- gap: S113-07
+-- gap: S113-14
 -- node: ^SiftAggV6
 SELECT sum((doc ->> 'score')::float8) FILTER (WHERE doc ? 'flag') AS total, count(*) FILTER (WHERE doc ? 'flag') AS n FROM sf_events;
 
@@ -823,20 +820,17 @@ CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(kind text, score float
 
 -- name: bench_window_rank_unordered
 -- area: bench
--- gap: S113-06
 -- node: ^SiftAggV6Window$
 -- forbid: Seq Scan on events
 SELECT max(r) AS top FROM (SELECT rank() OVER (ORDER BY parent_id) r FROM events) s;
 
 -- name: bench_window_first_rows_sorted
 -- area: bench
--- gap: S113-01
 -- node: SiftAggV6Window
 SELECT * FROM (SELECT parent_id, id, row_number() OVER (PARTITION BY parent_id ORDER BY ts DESC, id) rn FROM events) s WHERE rn <= 3 ORDER BY parent_id, rn;
 
 -- name: bench_window_rows_verbose
 -- area: bench
--- gap: S113-01
 -- node: SiftAggV6Window
 SELECT parent_id, count(*) AS n, sum(rn) AS rn_sum FROM (SELECT parent_id, row_number() OVER (PARTITION BY parent_id ORDER BY ts DESC, id) rn FROM events) s GROUP BY 1 ORDER BY 1;
 

@@ -1,7 +1,6 @@
 -- doc @> '{...}' on a jsonb attribute whose paths are leaves of the index: the members of the object are tests of the leaves
 -- label: `count(*) WHERE doc @> '{"k": 42, "o": {"a": 3}}'`, two scalar members, one in a nested object; the variant `gin` is a heap copy with `GIN (doc jsonb_path_ops)`
 -- ordered: yes
--- gap: sift WS-113-4 (S113-03: doc @> object)
 -- forbid: Seq Scan on orders\b
 --@ setup
 ALTER TABLE orders ADD COLUMN doc jsonb;
