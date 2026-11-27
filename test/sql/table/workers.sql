@@ -12,7 +12,7 @@ INSERT INTO tw SELECT i, i % 10, i FROM generate_series(1, 5000) i;
 INSERT INTO tp SELECT i, i % 10 FROM generate_series(1, 100) i;
 
 SELECT index, kind, segments >= 1 AS has_segments, sealed >= 0 AS has_sealed, failures, failed_at, next_retry, error_code, last_error, due
-FROM sift.workers ORDER BY 1::text;
+FROM sift.workers ORDER BY index::text COLLATE "C";
 SELECT segments = (SELECT count(*) FROM sift.table_segments('tw')) AS same_segments FROM sift.worker_state('tw');
 SELECT * FROM sift.worker_state('pg_class');
 SELECT * FROM sift.worker_state('tp');

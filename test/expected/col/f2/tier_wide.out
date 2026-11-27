@@ -32,7 +32,7 @@ SELECT sift.set_tier_policy('narrow', 'file://' || :'tierdir', '30 days') AS nar
 (1 row)
 
 VACUUM wide, narrow;
-SELECT relation, count(*) AS tiered FROM sift.tier_status GROUP BY relation ORDER BY 1::text;
+SELECT relation, count(*) AS tiered FROM sift.tier_status GROUP BY relation ORDER BY relation::text COLLATE "C";
  relation | tiered 
 ----------+--------
  narrow   |      1

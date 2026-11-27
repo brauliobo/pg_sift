@@ -25,7 +25,7 @@ SELECT idx,
        part(idx, 'postings: position records') > 0 AS pos_records,
        part(idx, 'postings: position checkpoints') > 0 AS pos_ckpt,
        part(idx, 'dict: inline positions') > 0 AS pos_inline
-FROM (VALUES ('d_pos'::regclass), ('d_off'::regclass)) v(idx) ORDER BY 1::text;
+FROM (VALUES ('d_pos'::regclass), ('d_off'::regclass)) v(idx) ORDER BY idx::text COLLATE "C";
 SELECT (SELECT bytes FROM sift._test_segment_parts('d_pos') WHERE part = 'segment total') > (SELECT bytes FROM sift._test_segment_parts('d_off') WHERE part = 'segment total') AS positions_cost_bytes;
 
 DROP TABLE d;

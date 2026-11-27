@@ -17,7 +17,7 @@ SELECT count(*) AS rows, sum(length(body)) = 300 * 12800 AS bytes_kept FROM wide
 SELECT sift.set_tier_policy('wide', 'file://' || :'tierdir', '30 days') AS wide_policy;
 SELECT sift.set_tier_policy('narrow', 'file://' || :'tierdir', '30 days') AS narrow_policy;
 VACUUM wide, narrow;
-SELECT relation, count(*) AS tiered FROM sift.tier_status GROUP BY relation ORDER BY 1::text;
+SELECT relation, count(*) AS tiered FROM sift.tier_status GROUP BY relation ORDER BY relation::text COLLATE "C";
 SELECT count(*) AS rows, sum(length(body)) = 300 * 12800 AS bytes_kept FROM wide;
 SELECT count(*) AS problems FROM sift.check('wide');
 

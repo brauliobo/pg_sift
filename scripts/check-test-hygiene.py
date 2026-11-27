@@ -8,6 +8,7 @@ Manifests (no PostgreSQL, no build):
   - scripts/regress-times.tsv names no test that test/sql no longer has, and no test twice;
   - every TESTING_REGRESS line of scripts/testing-regress.mk names a test (or a pattern with %) that test/sql has;
   - scripts/weights-*.tsv, scratch.tsv name no job twice (the loader keeps the last row, so the first one lied);
+  - a regression test never sorts by a constant (`ORDER BY 1::text` casts the number 1, it names no column): its rows come out in scan order;
   - a `# tap: pooled` shell test (test/t) that runs CREATE DATABASE pins no sift. setting in node_init: the pool sets it on the database of the node alone, never on the ones the test creates.
 High-level harnesses (test/{corpus,col,plan,fuzz,matrix}/, scripts/{corpus,coldiff,plangate,coverage,fast-gate}.sh) run on Format 1, Format 2.0 and the release library:
   - a plan node is matched by its prefix (`Custom Scan (SiftAgg` or "SiftAgg), never `Custom Scan (SiftAgg)` or "SiftAgg", which SiftAggV6, SiftAggV6Sip, SiftAggV6TopN... are not;
@@ -106,6 +107,21 @@ def check_pooled_taps(root):
     return sorted(errs)
 
 
+CONSTANT_ORDER = re.compile(r'\bORDER BY \d+::', re.I)
+
+
+def check_constant_order(root):
+    errs = []
+    d = os.path.join(root, 'test/sql')
+    for r, _, files in os.walk(d):
+        for f in sorted(x for x in files if x.endswith('.sql')):
+            rel = os.path.relpath(os.path.join(r, f), root)
+            with open(os.path.join(root, rel), encoding='utf-8', errors='replace') as fh:
+                errs += [f"{rel}:{n}: ORDER BY a cast number sorts by a constant, so the rows come in scan order: sort by the column itself "
+                         "(e.g. `ORDER BY idx::text COLLATE \"C\"`)" for n, line in enumerate(fh, 1) if CONSTANT_ORDER.search(line)]
+    return sorted(errs)
+
+
 def harness_files(root):
     out = [f for f in HARNESS_FILES if os.path.isfile(os.path.join(root, f))]
     for d in HARNESS_DIRS:
@@ -146,7 +162,7 @@ def check_harnesses(root, strict):
 
 def run(root, strict):
     tests = sql_tests(root)
-    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root) + check_pooled_taps(root)
+    errs = check_regress_times(root, tests) + check_testing_regress(root, tests) + check_weights(root) + check_pooled_taps(root) + check_constant_order(root)
     h_errs, notes = check_harnesses(root, strict)
     return errs + h_errs, notes
 
@@ -202,6 +218,8 @@ def selftest():
         ('a server of its own may pin and create databases', {'test/t/x.sh': '#!/bin/bash\nnode_init r 3 "sift.test_create_format1 = on"\nq "CREATE DATABASE d"\n'}, False, {}, []),
         ('a pooled test that creates databases without a pin is fine',
          {'test/t/x.sh': '#!/bin/bash\n# tap: pooled\nnode_init r 3 "autovacuum = off"\nq "CREATE DATABASE d"\n'}, False, {}, []),
+        ('a sort by a constant', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1::text;\n'}, False, {}, ['test/sql/a.sql:1: ORDER BY a cast number']),
+        ('a sort by a column is fine', {'test/sql/a.sql': 'SELECT r::regclass FROM t ORDER BY 1, r::text COLLATE "C";\n'}, False, {}, []),
         ('an exact SiftAgg node in a harness', {'test/col/run.sql': "SELECT 1 WHERE p LIKE '%Custom Scan (SiftAgg)%';\n"}, False, {}, ['test/col/run.sql:1: an exact SiftAgg plan node']),
         ('an exact JSON SiftAgg node', {'test/plan/run.sql': "j::text LIKE '%\"SiftAgg\"%'\n"}, False, {}, ['test/plan/run.sql:1: an exact SiftAgg plan node']),
         ('a retired call in a fuzzer', {'test/fuzz/x.py': "q('SELECT sift.col_merge(i)')\n"}, False, {}, ['test/fuzz/x.py:1: a retired SQL name']),

@@ -63,7 +63,7 @@ CREATE UNIQUE INDEX u_ab ON u USING sift_col (a, b) INCLUDE (pad);
 CREATE UNIQUE INDEX u_n ON u USING sift_col (n);
 CREATE UNIQUE INDEX u_u ON u USING sift_col (u);
 CREATE UNIQUE INDEX u_ts ON u USING sift_col (ts);
-SELECT indexrelid::regclass AS idx, indisunique, indnullsnotdistinct, indnatts, indnkeyatts FROM pg_index WHERE indrelid = 'u'::regclass ORDER BY 1::text;
+SELECT indexrelid::regclass AS idx, indisunique, indnullsnotdistinct, indnatts, indnkeyatts FROM pg_index WHERE indrelid = 'u'::regclass ORDER BY indexrelid::regclass::text COLLATE "C";
 
 -- a duplicate in the table is refused, whichever column or columns make the key
 CREATE TABLE ud AS SELECT g AS id, g % 100 AS a, 'b' || (g % 30) AS b, g::numeric AS n FROM generate_series(1, 1000) g;

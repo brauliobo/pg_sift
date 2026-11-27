@@ -12,7 +12,7 @@ CREATE UNIQUE INDEX CONCURRENTLY facts_id ON facts (id);
 REINDEX INDEX CONCURRENTLY facts_id;
 CREATE INDEX CONCURRENTLY facts_value ON facts (value_num);
 RESET maintenance_work_mem;
-SELECT indexrelid::regclass AS index, indisvalid FROM pg_index WHERE indrelid = 'facts'::regclass ORDER BY 1::text;
+SELECT indexrelid::regclass AS index, indisvalid FROM pg_index WHERE indrelid = 'facts'::regclass ORDER BY indexrelid::regclass::text COLLATE "C";
     index    | indisvalid 
 -------------+------------
  facts_id    | t

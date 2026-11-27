@@ -11,7 +11,7 @@ CREATE UNIQUE INDEX CONCURRENTLY facts_id ON facts (id);
 REINDEX INDEX CONCURRENTLY facts_id;
 CREATE INDEX CONCURRENTLY facts_value ON facts (value_num);
 RESET maintenance_work_mem;
-SELECT indexrelid::regclass AS index, indisvalid FROM pg_index WHERE indrelid = 'facts'::regclass ORDER BY 1::text;
+SELECT indexrelid::regclass AS index, indisvalid FROM pg_index WHERE indrelid = 'facts'::regclass ORDER BY indexrelid::regclass::text COLLATE "C";
 SET enable_seqscan = off;
 SELECT count(*) AS by_value FROM facts WHERE value_num = 3;
 SELECT value_num FROM facts WHERE id = 250;

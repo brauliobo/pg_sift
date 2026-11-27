@@ -15,7 +15,7 @@ CREATE VIEW heard AS SELECT tgrelid::regclass AS "table", count(*) AS triggers F
 CREATE FUNCTION partitions_read(t regclass) RETURNS TABLE (leaf regclass, heap_free bool, heap_pages bigint, differing bigint) LANGUAGE sql AS $$
 	SELECT c.oid::regclass, (SELECT k.heap_free FROM sift.col_tracking(i.indexrelid) k), sift_helpers.grouped_read_heap_pages(c.oid), sift_helpers.groups_differences_sift_vs_heap(c.oid)
 	FROM pg_partition_tree(t) pt JOIN pg_class c ON c.oid = pt.relid JOIN pg_index i ON i.indrelid = c.oid JOIN pg_class ic ON ic.oid = i.indexrelid AND ic.relam = (SELECT oid FROM pg_am WHERE amname = 'sift_col')
-	WHERE pt.isleaf ORDER BY 1::text $$;
+	WHERE pt.isleaf ORDER BY c.oid::regclass::text COLLATE "C" $$;
 
 -- the index made through the partitioned parent
 CREATE TABLE pt (id int PRIMARY KEY, g int NOT NULL, v int) PARTITION BY RANGE (id);

@@ -14,7 +14,7 @@ FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname IN ('sift', 'sift_internal')
   AND EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c LIKE 'search_path=%')
   AND NOT EXISTS (SELECT 1 FROM unnest(p.proconfig) c WHERE c ~ '^search_path=.*, pg_temp$')
-ORDER BY 1::text;
+ORDER BY p.oid::regprocedure::text COLLATE "C";
 
 SELECT p.proname, p.proconfig FROM pg_proc p WHERE p.pronamespace = 'sift'::regnamespace AND p.proname IN ('approx_percentile', 'approx_quantiles') ORDER BY 1;
 
