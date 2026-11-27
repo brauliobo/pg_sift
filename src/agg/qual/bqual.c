@@ -5,7 +5,6 @@
  */
 #include "postgres.h"
 
-#include "datatype/timestamp.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
@@ -17,7 +16,6 @@
 #include "agg/vexpr/str.h"
 #include "agg/qual/step.h"
 #include "core/popcount.h"
-#include "core/zoneoff.h"
 
 #define BQ_TEXT_MAX		8
 #define BQ_STEP_MAX		8
@@ -28,14 +26,13 @@ typedef struct BqText
 	SiftTextQual q;
 } BqText;
 
-/* a clause of a calendar step: the program or the expression that evaluates it, the column of the step, and the zone of the clock a timestamptz is cut on */
+/* a clause of a calendar step: the program or the expression that evaluates it, the input column of the step, and the step */
 typedef struct BqStep
 {
 	SiftV6Vexpr vx;
 	SiftV6PgQual *pg;
 	int			slot;
-	int64		us;
-	ZoneOff    *zone;
+	SiftV6Step	step;
 } BqStep;
 
 struct SiftV6Bq
@@ -102,9 +99,10 @@ sift_v6_bq_step(const Expr *clause)
 	const Var  *col;
 	SiftTextQual q;
 	const Var  *column;
+	bool		local;
 
 	return sift_v6_pgexpr_exec((const Node *) clause) || sift_text_qual_of((const Node *) clause, SIFT_V6_BQ_RELID, &q, &column) ? 0 :
-		sift_v6_calendar_step((const Node *) clause, SIFT_V6_BQ_RELID, &col);
+		sift_v6_calendar_step((const Node *) clause, SIFT_V6_BQ_RELID, &col, &local);
 }
 
 /* the clause of a calendar step, opened over the input: the machine runs it when it can, else PostgreSQL's executor */
@@ -113,7 +111,7 @@ step_open(SiftV6Bq *bq, MemoryContext cx, Expr *clause, BqStep *st)
 {
 	const Var  *col;
 
-	st->us = sift_v6_calendar_step((const Node *) clause, SIFT_V6_BQ_RELID, &col);
+	sift_v6_step_open(cx, (const Node *) clause, SIFT_V6_BQ_RELID, &st->step, &col);
 	if (machine_runs(&bq->in, clause))
 	{
 		if (!compile(cx, list_make1(clause), &bq->in, &st->vx))
@@ -123,7 +121,6 @@ step_open(SiftV6Bq *bq, MemoryContext cx, Expr *clause, BqStep *st)
 		st->pg = sift_v6_pgqual_open(cx, list_make1(clause), &bq->in, NULL);
 	st->slot = sift_v6_input_add_var(&bq->in, col);
 	SIFT_INVARIANT(st->slot >= 0, "the scan decodes the column of a calendar step of relation %u", bq->in.indexoid);
-	st->zone = col->vartype == TIMESTAMPTZOID ? zone_open(cx, session_timezone) : NULL;
 }
 
 bool
@@ -234,61 +231,6 @@ filter_text(const BqText *t, const SiftVec *v, SiftBatchSel *bs)
 	bs->has_sel = false;
 }
 
-/* floor(t / us) */
-static int64
-step_of(int64 t, int64 us)
-{
-	return t >= 0 ? t / us : -((-(t + 1)) / us) - 1;
-}
-
-/* the rows of the runs of one step in bs: heads, the first row of each, and head_of[r] the head of row r's run; a NULL or an infinite timestamp is a run of its own */
-static void
-step_runs(const BqStep *st, const SiftVec *v, const SiftBatchSel *bs, SiftBatchSel *heads, uint16 *head_of)
-{
-	const int64 *t = v->data;
-	int64		lo = PG_INT64_MAX,
-				hi = PG_INT64_MIN,
-				k = 0,
-				off = 0;
-	bool		open = false;
-	uint16		head = 0;
-
-	*heads = (SiftBatchSel) {.n_raw = bs->n_raw};
-	for (uint16 w = 0; st->zone != NULL && w < (bs->n_raw + 63) / 64; w++)
-		for (uint64 bits = bs->mask[w] & (v->all_valid ? ~UINT64CONST(0) : v->valid[w]); bits != 0; bits &= bits - 1)
-		{
-			const int64 x = t[w * 64 + __builtin_ctzll(bits)];
-
-			if (!TIMESTAMP_NOT_FINITE(x))
-			{
-				lo = Min(lo, x);
-				hi = Max(hi, x);
-			}
-		}
-	if (lo <= hi)
-		zone_cover(st->zone, lo, hi);
-	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
-		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
-		{
-			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
-			const bool	finite = (v->all_valid || ((v->valid[w] >> (r & 63)) & 1)) && !TIMESTAMP_NOT_FINITE(t[r]);
-			const int64 o = finite && st->zone != NULL ? zone_offset_at(st->zone, t[r]) : 0;
-			const int64 s = finite ? step_of(t[r] + o, st->us) : 0;
-
-			if (!(open && finite && s == k && o == off))
-			{
-				head = r;
-				heads->mask[w] |= UINT64CONST(1) << (r & 63);
-				heads->n_active++;
-			}
-			head_of[r] = head;
-			open = finite;
-			k = s;
-			off = o;
-		}
-	heads->all_active = heads->n_active == heads->n_raw;
-}
-
 /* the rows of bs whose run's first row passes the clause */
 static void
 filter_step(SiftV6Bq *bq, BqStep *st, SiftBatchSel *bs)
@@ -298,7 +240,7 @@ filter_step(SiftV6Bq *bq, BqStep *st, SiftBatchSel *bs)
 	uint64		pass[SIFT_VEC_WORDS];
 	uint16		left = 0;
 
-	step_runs(st, bq->src[st->slot], bs, &heads, head_of);
+	sift_v6_step_runs(&st->step, bq->src[st->slot], bs, &heads, head_of);
 	if (st->pg != NULL)
 	{
 		sift_v6_pgqual_filter(st->pg, &heads, bq->src);

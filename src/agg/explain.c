@@ -7,6 +7,7 @@
 #include "commands/explain.h"
 #include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -220,21 +221,68 @@ col_name(Oid relid, bool is_table, const SiftV6Col *c)
 	return att > 0 ? get_attname(heapoid, att, false) : NULL;
 }
 
-void
-sift_v6_explain_group_keys(const SiftV6Spec *spec, ExplainState *es)
+/* a key the scan computes from a column of the relation: `column: expression`, and the step of a calendar key (agg/qual/step.h), whose value the scan takes once for each step */
+static void
+computed_key(StringInfo buf, Expr *e, List *dpcontext)
 {
+	List	   *vars = pull_var_clause((Node *) e, 0);
+	const Var  *col;
+	bool		local;
+	const int64 step = sift_v6_calendar_step((const Node *) e, ((const Var *) linitial(vars))->varno, &col, &local);
+
+	appendStringInfo(buf, "%s: %s%s", deparse_expression(linitial(vars), dpcontext, false, false), deparse_expression((Node *) e, dpcontext, true, false),
+					 step > 0 ? sift_v6_step_text(step) : "");
+}
+
+static bool
+key_computed(const SiftV6Spec *spec, int i)
+{
+	for (int b = 0; b < spec->nbins; b++)
+		if (spec->bin[b].key == i)
+			return true;
+	return spec->key[i].derive > 0;
+}
+
+void
+sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, const SiftV6Spec *spec, ExplainState *es)
+{
+	const List *tlist = ((CustomScan *) css->ss.ps.plan)->custom_scan_tlist;
+	List	   *dpcontext = set_deparse_context_plan(es->deparse_cxt, css->ss.ps.plan, ancestors);
 	StringInfoData buf;
 
-	if (spec->nsets > 0 || spec->affine || spec->nkeys == 0)
+	if (spec->nsets > 0 || spec->affine || spec->nkeys == 0 || list_length(tlist) < spec->nkeys)
 		return;
 	initStringInfo(&buf);
 	for (int i = 0; i < spec->nkeys; i++)
 	{
+		Expr	   *e = ((TargetEntry *) list_nth(tlist, i))->expr;
 		const char *name = col_name(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), &spec->key[i]);
 
-		if (name == NULL)
+		appendStringInfoString(&buf, i ? ", " : "");
+		if (key_computed(spec, i) && spec->ext == NULL && !IsA(e, Var) && pull_var_clause((Node *) e, 0) != NIL)
+			computed_key(&buf, e, dpcontext);
+		else if (name != NULL)
+			appendStringInfoString(&buf, name);
+		else
 			return;
-		appendStringInfo(&buf, "%s%s", i ? ", " : "", name);
+	}
+	ExplainPropertyText("Group Keys", buf.data, es);
+}
+
+void
+sift_v6_explain_stream_keys(CustomScanState *css, List *ancestors, const List *keys, ExplainState *es)
+{
+	List	   *dpcontext = set_deparse_context_plan(es->deparse_cxt, css->ss.ps.plan, ancestors);
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	foreach_ptr(Expr, e, keys)
+	{
+		appendStringInfoString(&buf, buf.len ? ", " : "");
+		if (IsA(e, Var))
+			appendStringInfoString(&buf, deparse_expression((Node *) e, dpcontext, false, false));
+		else
+			computed_key(&buf, e, dpcontext);
 	}
 	ExplainPropertyText("Group Keys", buf.data, es);
 }

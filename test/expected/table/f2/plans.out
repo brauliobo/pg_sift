@@ -39,11 +39,11 @@ SELECT plan('SELECT grp, sum(amount) FROM pt WHERE qty >= 5 AND grp IN (1, 2, 3)
 (5 rows)
 
 SELECT plan('SELECT date_bin(interval ''1 hour'', at, timestamptz ''2030-01-01''), count(*) FROM pt GROUP BY 1') AS date_bin;
-          date_bin           
------------------------------
+                                                          date_bin                                                          
+----------------------------------------------------------------------------------------------------------------------------
  Custom Scan (SiftAggV6)
  Table: pt
- Group Keys: at
+ Group Keys: at: date_bin('@ 1 hour'::interval, pt.at, 'Tue Jan 01 00:00:00 2030 PST'::timestamp with time zone) (per hour)
  Pushed Aggregates: count(*)
 (4 rows)
 

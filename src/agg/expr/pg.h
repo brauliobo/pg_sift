@@ -17,6 +17,7 @@
 
 #include "agg/qual/bqual.h"
 #include "agg/expr/str.h"
+#include "agg/qual/step.h"
 #include "agg/plan/rewrite.h"
 
 #define SIFT_V6_PGX_RELID		1
@@ -41,6 +42,7 @@ typedef struct SiftV6PgExpr
 	TupleTableSlot *slot;
 	int			nin;
 	SiftV6PgIn	in[SIFT_V6_MAX_COLS];
+	SiftV6Step	step;			/* an expression of the calendar step of its one timestamp input (agg/qual/step.h): evaluated for the first row of each run of one step */
 	Datum		vals[SIFT_VEC_LEN];
 	bool		isnull[SIFT_VEC_LEN];
 } SiftV6PgExpr;
@@ -59,7 +61,7 @@ extern bool sift_v6_pgexpr_exec(const Node *e);
 /* The expression over the inputs in[0 .. nin - 1], in cx (the state lives as long as cx). With a node (ps), it is that node's own: its sub-plans are the node's, and cx has to live as long as the node */
 extern SiftV6PgExpr *sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const SiftV6PgIn *in);
 
-/* vals[r] and isnull[r] of every active row of bs; in[i] is the vector of input i. The Datums are valid until the next call */
+/* vals[r] and isnull[r] of every active row of bs (of the first row of its run for an expression of a calendar step); in[i] is the vector of input i. The Datums are valid until the next call */
 extern void sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs);
 
 /* The same, as the vector of the expression's result: native when its type has a native vector, else a SVEC_DATUM */

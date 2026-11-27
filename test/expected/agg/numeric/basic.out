@@ -77,12 +77,13 @@ EXPLAIN (COSTS OFF) SELECT store, count(*) FROM items WHERE price > 1.5::float8 
 (5 rows)
 
 EXPLAIN (COSTS OFF) SELECT price % 7 AS k, max(sqrt(abs(rate))) FROM items GROUP BY 1;
-                   QUERY PLAN                    
--------------------------------------------------
+                    QUERY PLAN                     
+---------------------------------------------------
  Custom Scan (SiftAggV6)
    Index: items_col
+   Group Keys: price: (items.price % '7'::numeric)
    Pushed Aggregates: max(sqrt(abs(items.rate)))
-(3 rows)
+(4 rows)
 
 -- more digits than the 128-bit programs hold: PostgreSQL adds the products; the integer sum of an expression PostgreSQL evaluates: a generic aggregate
 EXPLAIN (COSTS OFF) SELECT store, sum(price * rate * rate) FROM items GROUP BY store;

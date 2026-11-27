@@ -5,6 +5,7 @@
 
 #include "access/tupdesc.h"
 #include "miscadmin.h"
+#include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
@@ -362,18 +363,22 @@ sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const Sif
 	x->econtext = ps != NULL ? CreateExprContext(ps->state) : CreateStandaloneExprContext();
 	x->econtext->ecxt_scantuple = x->slot;
 	x->state = ExecInitExpr(e, ps);
+	if (nin == 1 && (x->in[0].typid == TIMESTAMPOID || x->in[0].typid == TIMESTAMPTZOID))
+	{
+		const Var  *col;
+
+		sift_v6_step_open(cx, (const Node *) e, SIFT_V6_PGX_RELID, &x->step, &col);
+	}
 	MemoryContextSwitchTo(old);
 	return x;
 }
 
-void
-sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs)
+static void
+eval_rows(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs)
 {
 	ExprContext *ec = x->econtext;
 	TupleTableSlot *slot = x->slot;
 
-	CHECK_FOR_INTERRUPTS();
-	ResetExprContext(ec);
 	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
 		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
 		{
@@ -388,6 +393,31 @@ sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSe
 			ExecStoreVirtualTuple(slot);
 			MemoryContextSwitchTo(old);
 			x->vals[r] = ExecEvalExprSwitchContext(x->state, ec, &x->isnull[r]);
+		}
+}
+
+void
+sift_v6_pgexpr_eval(SiftV6PgExpr *x, const SiftVec *const *in, const SiftBatchSel *bs)
+{
+	SiftBatchSel heads;
+	uint16		head_of[SIFT_VEC_LEN];
+
+	CHECK_FOR_INTERRUPTS();
+	ResetExprContext(x->econtext);
+	if (x->step.us == 0)
+	{
+		eval_rows(x, in, bs);
+		return;
+	}
+	sift_v6_step_runs(&x->step, in[0], bs, &heads, head_of);
+	eval_rows(x, in, &heads);
+	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
+		for (uint64 bits = bs->mask[w] & ~heads.mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
+
+			x->vals[r] = x->vals[head_of[r]];
+			x->isnull[r] = x->isnull[head_of[r]];
 		}
 }
 
