@@ -166,7 +166,8 @@ DEALLOCATE ALL;
 INSERT INTO wa SELECT 30000 + i, i % 7, i % 100, CASE WHEN i % 7 = 0 THEN 'NaN' ELSE i * 1234567.1234567891 END, i / 3.0,
 	   CASE WHEN i % 5 = 0 THEN 'NaN' ELSE round(i / 7.0, i % 9) END, 100, (i * 17 || '.' || i % 100)::money, make_interval(months => i % 14, days => i % 40) FROM generate_series(1, 3000) i;
 -- an UPDATE of Format 2 keeps the row at its place in its part with its new heap address, so the index reads it before rows the heap holds ahead of its new version: a group of
--- equal values spelled differently (1.0 and 1.00) may then show another spelling than the normal plan, which SQL leaves open. After the updates the rows compare as typed values
+-- equal values spelled differently (1.0 and 1.00, '1 mon' and '30 days') may then show another spelling than the normal plan, which SQL leaves open. A VACUUM that keeps the newer
+-- part and the workers of a parallel plan change that order too. From the updates on the rows compare as typed values
 CREATE FUNCTION chk_typed(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a bigint; pushed boolean;
 BEGIN
@@ -217,13 +218,13 @@ SELECT sift.col_merge('wa_col', true) >= 0 AS merged;
  t
 (1 row)
 
-SELECT shapes('merged');
+SELECT shapes('merged', true);
                           shapes                          
 ----------------------------------------------------------
  merged scan same scan same scan same scan same scan same
 (1 row)
 
--- parallel workers: the aggregates run in them, a key of equal spellings does not
+-- parallel workers: the aggregates run in them
 RESET seq_page_cost;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -231,7 +232,7 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 1000;
 SELECT chk($$SELECT grp AS g, count(*) AS c, sum(n38) AS s, min(iv) AS a FROM wa GROUP BY grp$$) AS parallel_aggs,
-       chk($$SELECT iv AS k, count(*) AS c FROM wa GROUP BY iv$$) AS parallel_key;
+       chk_typed($$SELECT iv AS k, count(*) AS c FROM wa GROUP BY iv$$) AS parallel_key;
  parallel_aggs | parallel_key 
 ---------------+--------------
  scan same     | scan same
