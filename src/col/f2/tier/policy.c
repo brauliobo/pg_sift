@@ -171,6 +171,21 @@ typedef struct CachedRefs
 static CachedRefs cached;
 
 static void
+refs_drop(void)
+{
+	if (cached.refs != NULL)
+		pfree(cached.refs);
+	cached = (CachedRefs) {0};
+}
+
+void
+sift_tier_refs_forget(const RelFileLocator *locator)
+{
+	if (RelFileLocatorEquals(cached.locator, *locator))
+		refs_drop();
+}
+
+static void
 opened_close(Opened *o)
 {
 	if (o->cache != NULL)
@@ -434,11 +449,7 @@ sift_tier_refs(Relation rel, int *n)
 	if (cached.refs != NULL && RelFileLocatorEquals(cached.locator, rel->rd_locator) && cached.gen == meta.tier_dir_gen && cached.n == *n)
 		return cached.refs;
 	refs = sift_manifest_read_tier(rel, &meta, n);
-	if (cached.refs != NULL)
-	{
-		pfree(cached.refs);
-		cached.refs = NULL;
-	}
+	refs_drop();
 	cached = (CachedRefs) {.locator = rel->rd_locator,.gen = meta.tier_dir_gen,.n = *n,.refs = MemoryContextAlloc(policy_context(), *n * sizeof(SiftTierPartRef))};
 	memcpy(cached.refs, refs, *n * sizeof(SiftTierPartRef));
 	pfree(refs);

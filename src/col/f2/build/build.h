@@ -20,6 +20,12 @@ extern double sift_f2_build_scan(SiftF2Build *bs, IndexInfo *info, TableScanDesc
 extern uint64 sift_f2_build_rows(const SiftF2Build *bs);
 extern void sift_f2_build_end(SiftF2Build *bs);
 
+/*
+ * ON COMMIT DELETE ROWS, and a TRUNCATE of a relation made in the transaction, keep its file and begin its generations, blocks and versions again: what the backend and the shared memory
+ * hold of the file (rows staged, snapshots, pins, the pages of its pool, its leased generations, the caches keyed by them) names the contents before and goes with them
+ */
+extern void sift_f2_forget_file(Relation rel);
+
 /* Builds with the parallel workers the planner gave the index (info->ii_ParallelWorkers), the leader taking a share; false, with nothing read, when there are none or none could be started; res gets the tuples of the heap and the rows the workers indexed (the leader's own are added by the caller) */
 extern bool sift_f2_build_par(Relation heap, Relation index, IndexInfo *info, SiftF2Build *leader, IndexBuildResult *res);
 

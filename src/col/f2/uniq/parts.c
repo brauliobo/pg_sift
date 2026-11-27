@@ -541,6 +541,14 @@ filter_get(Relation index)
 	return f;
 }
 
+void
+sift_uniq_parts_forget(const RelFileLocator *locator)
+{
+	for (int i = nfilters - 1; i >= 0; i--)
+		if (RelFileLocatorEquals(filters[i]->locator, *locator))
+			filter_drop(i);
+}
+
 const SiftPlanSnapshot *
 sift_uniq_parts_prune(Relation index, Relation heap, const SiftPlanSnapshot *plan, uint64 fp64, SiftUniqSlabKeyFn key_fp, void *arg, MemoryContext cx)
 {

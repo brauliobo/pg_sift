@@ -12,6 +12,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 
+#include "col/dsmreg.h"
 #include "col/f2/meta.h"
 #include "col/f2/part/format.h"
 #include "core/f2/gate.h"
@@ -241,6 +242,12 @@ anchor_memo_find(Relation rel, const SiftPartitionEntry *e)
 			return m;
 	}
 	return NULL;
+}
+
+void
+sift_manifest_anchor_forget(void)
+{
+	memset(anchor_memo, 0, sizeof(anchor_memo));
 }
 
 SiftColDeltaAnchor
@@ -509,7 +516,6 @@ write_path(Relation rel, Tree *t, const SiftPartDirKey *leaf, int at, uint64 ver
 	sift_mf_blk_add(dead, t->top.blk);
 }
 
-
 void
 sift_mf_read_leaves(Relation rel, Tree *t, int first, int span, Change *ch, int slack)
 {
@@ -608,10 +614,14 @@ sift_mf_publish(Relation rel, Tree *t, Change *ch, BlkVec *created, uint64 *vers
 	}
 	if (nrel > 0 && !FullTransactionIdIsValid(safexid) && !sift_manifest_unshared(rel))
 		safexid = ReadNextFullTransactionId();
+	first_batch = Min(nrel, (int) SIFT_FSM_PAGE_CAP);
+#ifdef SIFT_TESTING
+	if (sift_test_dsm_fail != NULL && strstr(sift_test_dsm_fail, "manifest_reserve") != NULL)
+		ereport(ERROR, (errcode(ERRCODE_DISK_FULL), errmsg("sift test: the extents of the commit find no room in the release queue (manifest_reserve)")));	/* check-errors: allow */
+#endif
+	sift_fsm_reserve_release(rel, buf0, first_batch);
 	if (!sift_manifest_unshared(rel))
 		sift_shm_manifest_hold(&rel->rd_locator, new_version);
-	first_batch = Min(nrel, (int) SIFT_FSM_PAGE_CAP);
-	sift_fsm_reserve_release(rel, buf0, first_batch);
 	x = sift_xlog_start(rel);
 	p0 = sift_xlog_register(&x, buf0, 0);
 	m = SIFT_COL_META(p0);

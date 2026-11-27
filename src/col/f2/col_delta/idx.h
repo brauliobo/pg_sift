@@ -163,6 +163,8 @@ extern void sift_f2_track_note_unchanged(Relation index, ItemPointer new_tid);
 /* The overlay of the part of the partition for the snapshot xc stands for, in the current memory context; NULL when the partition has no chain or the snapshot sees no patch of it (f2_col_delta_srv.c) */
 extern SiftColDeltaPartMap *sift_cdi_part_map(Relation rel, const SiftPartitionEntry *e, const SiftPart *part, SiftXidCache *xc);
 
+/* The leaves read for the projections of the file go: a file truncated in place numbers its projection directory again from the start */
+extern void sift_cdi_proj_leaves_forget(const RelFileLocator *locator);
 /* The address changes of the committed writers and the transaction itself in the partition's chain; NULL when the partition has none (f2_col_delta_srv.c) */
 extern SiftCdRemapMap *sift_cdi_remap_load(Relation rel, const SiftPartitionEntry *entry);
 #endif

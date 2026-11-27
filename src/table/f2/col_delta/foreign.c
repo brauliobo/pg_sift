@@ -147,6 +147,14 @@ foreign_evict_all(void)
 		;
 }
 
+void
+sift_col_delta_foreign_forget(const RelFileLocator *loc)
+{
+	for (int i = 0; i < FOREIGN_LOGS; i++)
+		if (logs[i].cx != NULL && RelFileLocatorEquals(logs[i].loc, *loc))
+			log_drop(&logs[i]);
+}
+
 static const SiftCacheKind foreign_kind = {"table_f2_col_delta_foreign_log", foreign_oldest, foreign_evict_one, foreign_evict_all};
 
 /* The log of the partition, made in a free place or in the one of the log used the longest ago: no pointer to a log outlives the call that read it */

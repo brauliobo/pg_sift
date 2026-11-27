@@ -35,8 +35,10 @@
 #include "core/shm/manifest.h"
 #include "core/compat.h"
 #include "core/part_lock.h"
+#include "col/f2/build/build.h"
 #include "col/f2/cache.h"
 #include "col/f2/l0/shard_dir.h"
+#include "table/f2/col_delta/io.h"
 #include "table/f2/gcache.h"
 #include "table/f2/row/state.h"
 #include "table/f2/slot.h"
@@ -108,23 +110,19 @@ sift_tbl_f2_relation_set_new_filelocator(Relation rel, const RelFileLocator *new
 	}
 }
 
-/* The caches of the file are keyed by locator and generation, and a table made in the transaction keeps its file through a TRUNCATE: its generations start again, so a granule of the rows before would answer for the new ones */
 static void
-forget_caches(Relation rel)
+forget_file(Relation rel)
 {
-	sift_plan_cache_forget(&rel->rd_locator);
-	sift_f2_gbuf_forget(rel);
+	sift_f2_forget_file(rel);
 	sift_f2_gcache_forget(&rel->rd_locator);
+	sift_col_delta_foreign_forget(&rel->rd_locator);
 }
 
 void
 sift_tbl_f2_relation_nontransactional_truncate(Relation rel)
 {
-	forget_caches(rel);
-	sift_stage_discard(rel);
-	sift_fsm_cache_discard_rel(rel);
+	forget_file(rel);
 	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
-	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	RelationTruncate(rel, 0);
 	init_pages(rel);
 	sift_tbl_f2_tid_reset(sift_f2_store_open(rel));
@@ -140,10 +138,7 @@ sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 	SMgrRelation dstrel = smgropen(*newrlocator, rel->rd_backend);
 
 	sift_stage_flush_with_deletes(rel);
-	sift_stage_discard(rel);
-	forget_caches(rel);
-	sift_fsm_cache_discard_rel(rel);
-	sift_shm_manifest_invalidate(&rel->rd_locator, false);
+	forget_file(rel);
 	RelationCreateStorage(*newrlocator, rel->rd_rel->relpersistence, true);
 	FlushRelationBuffers(rel);
 	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM, rel->rd_rel->relpersistence);

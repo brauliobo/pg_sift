@@ -266,6 +266,7 @@ publish_claimed(Table *t, dsa_area *a, const SiftShmIndexMeta *m, dsa_pointer dp
 	}
 	PG_CATCH();
 	{
+		LWLockRelease(&t->claim_lock);
 		if (dp != InvalidDsaPointer)
 			sift_shm_snap_free(a, dsa_get_address(a, dp));
 		PG_RE_THROW();

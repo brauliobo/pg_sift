@@ -45,6 +45,8 @@ extern bool sift_v6_spec_whole_parts(const SiftV6Spec *spec);
 
 typedef struct V6ColStat V6ColStat;
 
+/* The totals kept of the parts of the file go: a file truncated in place names its new parts by the generations and blocks of the old ones */
+extern void sift_v6_colstat_forget(const RelFileLocator *rel);
 /* The totals of the parts for a spec of ungrouped COUNT, SUM, AVG, MIN and MAX of integer columns; NULL for any other spec. first is the index's first leaf of each attribute */
 extern V6ColStat *sift_v6_colstat_begin(const SiftV6Spec *spec, SiftV6Group *g, Relation index, const int *first, MemoryContext cx);
 /* The part is offered to the scan: when its totals are known they are folded into the group and true says the part is answered; else it is read, and whole says that its batches are all of its rows */

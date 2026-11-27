@@ -24,6 +24,9 @@ typedef bool (*SiftUniqFpPut) (void *arg, uint64 fp);
 /* The hashes of the keys of the heap tuples at tids[0..n) (what a slab or a part names), offered to put in order; one that is gone (an aborted insert the heap pruned) holds no key. False when put stopped it */
 extern bool sift_uniq_fold_tids(Relation heap, const ItemPointerData *tids, uint32 n, SiftUniqSlabKeyFn key_fp, void *arg, SiftUniqFpPut put, void *put_arg);
 
+/* The filters of the slabs of the file go: a file truncated in place begins its slabs again at the same blocks, where a temporary or unlogged one stamps no LSN */
+extern void sift_uniq_slab_forget(const RelFileLocator *locator);
+
 /*
  * The manifest of plan without the slabs that hold no key of the hash fp64 (a copy in cx; plan itself when it has no slab to leave out). A slab that holds a row of the hash stays: the scan of the
  * key reads its rows and decides.

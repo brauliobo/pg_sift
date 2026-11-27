@@ -486,6 +486,13 @@ typedef struct ProjLeaves
 
 static ProjLeaves proj_leaves;
 
+void
+sift_cdi_proj_leaves_forget(const RelFileLocator *locator)
+{
+	if (RelFileLocatorEquals(proj_leaves.locator, *locator))
+		proj_leaves = (ProjLeaves) {0};
+}
+
 static uint64
 leaf_bit(int leaf)
 {

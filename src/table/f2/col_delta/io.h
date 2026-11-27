@@ -7,6 +7,8 @@
 #include "table/f2/col_delta/col_delta.h"
 
 /* The writers of the records of the row (sift_col_delta_writers_add): the log of the chain of the partition of the entry follows it from one statement to the next */
+/* The logs of the chains of the file go: a file truncated in place begins its chains again at the same blocks and generations */
+extern void sift_col_delta_foreign_forget(const RelFileLocator *loc);
 extern SiftColDeltaWriters sift_col_delta_foreign_writers(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops);
 
 #endif

@@ -336,6 +336,14 @@ filter_refresh(SlabFilter *f, Relation index, Relation heap, BlockNumber tail, S
 	f->stamped = true;
 }
 
+void
+sift_uniq_slab_forget(const RelFileLocator *locator)
+{
+	for (int i = nfilters - 1; i >= 0; i--)
+		if (RelFileLocatorEquals(filters[i]->locator, *locator))
+			filter_drop(i);
+}
+
 const SiftPlanSnapshot *
 sift_uniq_slab_prune(Relation index, Relation heap, const SiftPlanSnapshot *plan, uint64 fp64, SiftUniqSlabKeyFn key_fp, void *arg, MemoryContext cx)
 {

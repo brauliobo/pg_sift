@@ -66,6 +66,8 @@ extern void sift_tier_raise(SiftTierStatus st, const SiftTierErr *err, const cha
 
 /* The refs of the tier directory as of the metapage now, kept for the next call of the session while tier_dir_gen is the same */
 extern const SiftTierPartRef *sift_tier_refs(Relation rel, int *n);
+/* The tiered parts read of the file go: a file truncated in place numbers its tier directory again from the start */
+extern void sift_tier_refs_forget(const RelFileLocator *locator);
 
 /* The time column the relation's parts age by: the slot (0 or 1) of the column named col, -1 when it is not a time column of the manifest */
 extern int	sift_tier_time_slot(Relation rel, const SiftF2Store *store, const char *col);

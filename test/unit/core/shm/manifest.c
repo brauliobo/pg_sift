@@ -14,7 +14,30 @@
 #undef snprintf
 #undef qsort
 
+#include <sys/mman.h>
+
 #include "test/common/bench.h"
+#include "test/common/pgshim.h"
+#include "port/atomics.h"
+
+/* What another backend does right after a count of this one reaches 0, before this one reads anything more */
+static void (*on_zero) (void);
+
+static uint32
+sub_fetch_then(volatile pg_atomic_uint32 *ptr, int32 sub)
+{
+	uint32		left = (pg_atomic_sub_fetch_u32) (ptr, sub);
+	void		(*hook) (void) = on_zero;
+
+	if (left == 0 && hook != NULL)
+	{
+		on_zero = NULL;
+		hook();
+	}
+	return left;
+}
+
+#define pg_atomic_sub_fetch_u32(ptr, sub) sub_fetch_then((ptr), (sub))
 
 #include "core/shm/manifest.c"
 #include "core/shm/manifest_pub.c"
@@ -146,7 +169,7 @@ sift_lease_invalidate_db(Oid db)
 {
 }
 
-/* The area is the heap: a dsa_pointer is the address */
+/* The area is mappings of their own: a dsa_pointer is the address, and a read of a freed snapshot faults */
 dsa_area *
 dsa_create_ext(int tranche_id, size_t init_segment_size, size_t max_segment_size)
 {
@@ -173,6 +196,8 @@ dsa_pin_mapping(dsa_area *a)
 dsa_pointer
 dsa_allocate_extended(dsa_area *a, size_t size, int flags)
 {
+	char	   *raw;
+
 	if (exit_in_alloc)
 		exit_now();
 	if (alloc_fails)
@@ -181,13 +206,19 @@ dsa_allocate_extended(dsa_area *a, size_t size, int flags)
 		return InvalidDsaPointer;
 	}
 	allocs++;
-	return (dsa_pointer) (uintptr_t) calloc(1, size);
+	size += MAXIMUM_ALIGNOF;
+	raw = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	SIFT_CHECK(raw != MAP_FAILED);
+	*(size_t *) raw = size;
+	return (dsa_pointer) (uintptr_t) (raw + MAXIMUM_ALIGNOF);
 }
 
 void
 dsa_free(dsa_area *a, dsa_pointer dp)
 {
-	free((void *) (uintptr_t) dp);
+	char	   *raw = (char *) (uintptr_t) dp - MAXIMUM_ALIGNOF;
+
+	munmap(raw, *(size_t *) raw);
 }
 
 void *
@@ -292,6 +323,27 @@ test_retire_is_fifo(void)
 	snap_decref(area, held);
 	SIFT_CHECKF(pg_atomic_read_u32(&table->snaps_live) == live - 1, "the held snapshot goes with its last reader");
 	SIFT_CHECKF(table->retired_head == InvalidDsaPointer && table->retired_tail == InvalidDsaPointer, "the retired list is empty");
+}
+
+static void
+other_reclaims(void)
+{
+	reclaim_now(table, area, false);
+}
+
+/* The last reader of a retired snapshot lets go of its count and another backend frees the snapshot at once: the reader does not read it again */
+static void
+test_last_decref_reads_no_freed_snap(void)
+{
+	dsa_pointer held = fresh_snap();
+	uint32		live;
+
+	pg_atomic_fetch_add_u32(&((SiftShmManifestSnap *) dsa_get_address(area, held))->refcount, 1);
+	sift_shm_snap_retire(table, area, held);
+	live = pg_atomic_read_u32(&table->snaps_live);
+	on_zero = other_reclaims;
+	snap_decref(area, held);
+	SIFT_CHECKF(on_zero == NULL && pg_atomic_read_u32(&table->snaps_live) == live - 1, "the retired snapshot goes with its last reader");
 }
 
 static void
@@ -589,6 +641,30 @@ test_unattached_writer_retires_in_area(void)
 		table->area_users--;
 }
 
+static void
+publish_meta(void *arg)
+{
+	(void) sift_shm_manifest_publish(arg, NULL);
+}
+
+/* A writer whose slot holds a snapshot it cannot drop fails (ERROR) and lets go of claim_lock: a caller that catches the error claims slots again */
+static void
+test_failed_drop_releases_claim(void)
+{
+	SiftShmIndexMeta m = meta_of(22, 20900, 3);
+	bool		raised;
+
+	(void) published_snap(&m);
+	m.manifest_version = 4;
+	sift_test_dsm_fail = "manifest_drop_snap";
+	pgshim_error_hook = throw_error;
+	raised = raises(publish_meta, &m);
+	pgshim_error_hook = NULL;
+	sift_test_dsm_fail = NULL;
+	SIFT_CHECK(raised);
+	SIFT_CHECKF(!claim_held(), "a writer that failed to drop the snapshot of its slot holds claim_lock");
+}
+
 int
 main(void)
 {
@@ -598,6 +674,7 @@ main(void)
 	test_one_snapshot_per_version();
 	test_slot_refuses_same_version();
 	test_retire_is_fifo();
+	test_last_decref_reads_no_freed_snap();
 	test_invalidate_db();
 	test_peek_miss_preserves_out();
 	test_claimed_writer_rechecks();
@@ -609,6 +686,7 @@ main(void)
 	test_pinned_reader_error();
 	test_list_install_exit();
 	test_build_exit_released();
+	test_failed_drop_releases_claim();
 #endif
 	return sift_check_summary();
 }

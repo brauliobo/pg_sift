@@ -278,6 +278,8 @@ extern SiftPartDesc *sift_manifest_read_parts(Relation rel, const SiftPartitionE
 
 /* The anchor of the column delta chain of the partition, read from the first page of its part list; no chain when the entry does not say it has one (no page is read) */
 extern SiftColDeltaAnchor sift_manifest_read_col_delta(Relation rel, const SiftPartitionEntry *entry);
+/* The anchors read so far go: a file truncated in place (ON COMMIT DELETE ROWS, a TRUNCATE of a relation made in the transaction) gives its part lists the same generations and blocks again */
+extern void sift_manifest_anchor_forget(void);
 
 /* The scope refs the metapage's directory chain holds, ascending by scope_ord; NULL and *nscopes = 0 without reading a page when the index has no scope */
 struct SiftColMetaPageData;

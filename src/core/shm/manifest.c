@@ -373,13 +373,13 @@ sift_shm_snap_retire(Table *t, dsa_area *a, dsa_pointer dp)
 		reclaim_now(t, a, false);
 }
 
-/* A reader lets go of its count: the last one of a retired snapshot has it freed */
+/* A reader lets go of its count: the last one has the snapshot freed. The slot holds a count until it retires the snapshot, so a count of 0 is a retired one that another backend may free at once */
 static void
 snap_decref(dsa_area *a, dsa_pointer dp)
 {
 	SiftShmManifestSnap *snap = dsa_get_address(a, dp);
 
-	if (pg_atomic_sub_fetch_u32(&snap->refcount, 1) == 0 && pg_atomic_read_u32(&snap->retired))
+	if (pg_atomic_sub_fetch_u32(&snap->refcount, 1) == 0)
 		reclaim_now(table, a, false);
 }
 

@@ -234,6 +234,14 @@ stat_is(const StatEnt *e, const RelFileLocator *rel, const SiftPartDesc *d, int 
 	return e->used != 0 && e->part_gen == d->part_gen && e->leaf == leaf && e->header_blk == d->header_blk && e->nrows == d->nrows && RelFileLocatorEquals(e->rel, *rel);
 }
 
+void
+sift_v6_colstat_forget(const RelFileLocator *rel)
+{
+	for (int i = 0; stat_slots != NULL && i < STAT_SLOTS; i++)
+		if (RelFileLocatorEquals(stat_slots[i].rel, *rel))
+			stat_slots[i].used = 0;
+}
+
 /* ---- the scan's view of them ---- */
 
 struct V6ColStat

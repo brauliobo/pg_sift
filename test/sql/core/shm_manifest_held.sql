@@ -1,0 +1,29 @@
+-- A commit of the manifest that fails before block 0 changes (its extents find no room in the release queue: sift.test_dsm_fail names manifest_reserve) leaves the registry in shared memory
+-- serving the version block 0 still has: the slot is marked held for the new version only once nothing can fail before the switch.
+CREATE EXTENSION pg_sift_test CASCADE;
+SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
+SET sift.test_create_format1 = off;
+SET enable_seqscan = off;
+\set VERBOSITY terse
+CREATE FUNCTION pg_temp.state_of(stmt text) RETURNS text LANGUAGE plpgsql AS
+$$ BEGIN EXECUTE stmt; RETURN 'ok'; EXCEPTION WHEN OTHERS THEN RETURN SQLSTATE; END $$;
+
+CREATE TABLE hd (id int, v int) WITH (autovacuum_enabled = false);
+CREATE INDEX hd_i ON hd USING sift_col (id, v);
+INSERT INTO hd SELECT g, g FROM generate_series(1, 100) g;
+SELECT sift.col_maintain('hd_i');
+SELECT count(*) FROM hd WHERE id > 0;
+SELECT sift._test_shm_manifest_served('hd_i') AS served;
+INSERT INTO hd SELECT g, g FROM generate_series(101, 200) g;
+SET sift.test_dsm_fail = 'manifest_reserve';
+SELECT pg_temp.state_of($$SELECT sift.col_maintain('hd_i')$$) AS failed_commit;
+RESET sift.test_dsm_fail;
+SELECT count(*) FROM hd WHERE id > 0;
+SELECT sift._test_shm_manifest_served('hd_i') AS served_after_failed_commit;
+SELECT sift.col_maintain('hd_i');
+SELECT count(*) FROM hd WHERE id > 0;
+
+DROP TABLE hd;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

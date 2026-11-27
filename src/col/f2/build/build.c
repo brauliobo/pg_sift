@@ -15,11 +15,17 @@
 #include "utils/snapmgr.h"
 
 #include "col/f2/f2.h"
+#include "col/f2/agg/colstat.h"
 #include "col/f2/build/par.h"
+#include "col/f2/col_delta/idx.h"
 #include "col/f2/connect.h"
 #include "col/f2/compact/compact.h"
 #include "col/f2/del/delete.h"
 #include "col/f2/scope/scope.h"
+#include "col/f2/store/store.h"
+#include "col/f2/tier/host.h"
+#include "col/f2/uniq/parts.h"
+#include "col/f2/uniq/slab.h"
 #include "col/f2/uniq/unique.h"
 #include "col/f2/l0/stage.h"
 #include "col/f2/cache.h"
@@ -27,6 +33,7 @@
 #include "col/scope/scope.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/gate.h"
+#include "core/f2/manifest/manifest.h"
 #include "core/f2/progress.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -321,18 +328,24 @@ meta_flags(const SiftF2Rel *f, uint32 pending)
 	return (f->nkey == 0 ? SIFT_META_FLAG_UNKEYED : 0) | pending;
 }
 
-/*
- * ON COMMIT DELETE ROWS, and a TRUNCATE of a table made in the transaction, build the index again in its truncated file: what the backend and the shared memory hold of the file (rows staged,
- * snapshots, pins, the pages of its pool, its leased generations) names the contents before and goes with them
- */
-static void
-forget_file(Relation index)
+void
+sift_f2_forget_file(Relation rel)
 {
-	sift_stage_discard(index);
-	sift_plan_cache_forget(&index->rd_locator);
-	sift_f2_gbuf_forget(index);
-	sift_fsm_cache_discard_rel(index);
-	sift_shm_manifest_invalidate(&index->rd_locator, false);
+	const RelFileLocator *loc = &rel->rd_locator;
+
+	sift_stage_discard(rel);
+	sift_plan_cache_forget(loc);
+	sift_f2_gbuf_forget(rel);
+	sift_fsm_cache_discard_rel(rel);
+	sift_shm_manifest_invalidate(loc, false);
+	sift_f2_invalidate_now(rel);
+	sift_manifest_anchor_forget();
+	sift_v6_colstat_forget(loc);
+	sift_cdi_proj_leaves_forget(loc);
+	sift_tier_refs_forget(loc);
+	sift_uniq_parts_forget(loc);
+	sift_uniq_slab_forget(loc);
+	sift_uniq_shm_release(loc);
 }
 
 IndexBuildResult *
@@ -351,7 +364,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (info->ii_Unique)
 		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
 	sift_col_warn_f2_build_relopts(heap, index);
-	forget_file(index);
+	sift_f2_forget_file(index);
 	sift_f2_connect_resolve(heap, index);
 	sift_scope_resolve(heap, index, false, info->ii_Concurrent ? SIFT_JOURNAL_DEFER : SIFT_JOURNAL_PLAIN);
 	choices = sift_f2_choices(index);

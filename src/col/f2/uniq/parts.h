@@ -16,6 +16,9 @@
 #include "col/f2/cache.h"
 #include "col/f2/uniq/slab.h"
 
+/* The filters of the file go: a file truncated in place gives its new parts the generations and blocks of the old ones, and its manifest the old versions */
+extern void sift_uniq_parts_forget(const RelFileLocator *locator);
+
 /*
  * The manifest of plan without the covered parts that hold no key of the hash fp64: the parts of plan not yet seen are read first (their keys from the heap tuples they name, by key_fp).
  * It is a copy in cx, or the manifest of the index without the covered parts, which lives until the next call for the index: a scan of it must not outlive that call.
