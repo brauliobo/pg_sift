@@ -41,16 +41,52 @@ scannable_rel(Oid relid)
 	return found;
 }
 
+static bool reads_scannable_walker(Node *n, List **outer);
+
+/* the body of the CTE an entry of the innermost query of outer (the queries around it, innermost last) names reads such a table: walked below the query of its WITH */
 static bool
-reads_scannable_walker(Node *n, void *cx)
+cte_reads_scannable(const RangeTblEntry *rte, List *outer)
 {
+	const int	at = list_length(outer) - 1 - (int) rte->ctelevelsup;
+	List	   *with;
+
+	if (at < 0)
+		return false;
+	with = list_copy_head(outer, at + 1);
+	foreach_node(CommonTableExpr, cte, ((Query *) list_nth(outer, at))->cteList)
+		if (strcmp(cte->ctename, rte->ctename) == 0)
+			return !cte->cterecursive && reads_scannable_walker(cte->ctequery, &with);
+	return false;
+}
+
+/* does the tree read a table an aggregate scan reads, directly or through a CTE it names; outer: the queries around n, innermost last */
+static bool
+reads_scannable_walker(Node *n, List **outer)
+{
+	bool		found;
+
 	if (n == NULL)
 		return false;
 	if (IsA(n, Query))
-		return query_tree_walker((Query *) n, reads_scannable_walker, cx, QTW_EXAMINE_RTES_BEFORE);
+	{
+		*outer = lappend(*outer, n);
+		found = query_tree_walker((Query *) n, reads_scannable_walker, outer, QTW_EXAMINE_RTES_BEFORE);
+		*outer = list_delete_last(*outer);
+		return found;
+	}
+	if (IsA(n, RangeTblEntry) && ((RangeTblEntry *) n)->rtekind == RTE_CTE)
+		return cte_reads_scannable((RangeTblEntry *) n, *outer);
 	if (IsA(n, RangeTblEntry))
 		return ((RangeTblEntry *) n)->rtekind == RTE_RELATION && scannable_rel(((RangeTblEntry *) n)->relid);
-	return expression_tree_walker(n, reads_scannable_walker, cx);
+	return expression_tree_walker(n, reads_scannable_walker, outer);
+}
+
+static bool
+reads_scannable(Node *n, const Query *with)
+{
+	List	   *outer = with != NULL ? list_make1((Query *) with) : NIL;
+
+	return reads_scannable_walker(n, &outer);
 }
 
 /* the readers of one CTE, the queries at `depth` below its WITH that name it */
@@ -143,7 +179,7 @@ shared_cte(const Query *q, const CommonTableExpr *cte)
 	const Query *body = castNode(Query, cte->ctequery);
 
 	return !cte->cterecursive && cte->ctematerialized != CTEMaterializeNever && (cte->cterefcount > 1 || cte->ctematerialized == CTEMaterializeAlways) &&
-		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable_walker(cte->ctequery, NULL) && inline_raises_alike(q, cte);
+		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable(cte->ctequery, q) && inline_raises_alike(q, cte);
 }
 
 /* does a node of the sub-select read a level above it (depth is how far the walk went below the sub-select) */
@@ -335,7 +371,7 @@ agg_planner(SIFT_PLANNER_PARAMS)
 	bool		priced,
 				rows;
 
-	if (!sift_enable_agg || !sift_db_has_extension() || !reads_scannable_walker((Node *) parse, NULL))
+	if (!sift_enable_agg || !sift_db_has_extension() || !reads_scannable((Node *) parse, NULL))
 		return plan_query(SIFT_PLANNER_ARGS(parse));
 	if (parse->commandType == CMD_SELECT)
 		sift_agg_drop_unused_laterals(parse);
