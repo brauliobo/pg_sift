@@ -5,13 +5,18 @@
  */
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "lib/ilist.h"
 #include "utils/snapmgr.h"
 
 #include "col/f2/slab_view.h"
+#include "col/f2/gbuf/gbuf.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/rowbuf/rowbuf.h"
+#include "core/f2/gate.h"
 #include "core/memtrack.h"
+
+#define SLAB_REREAD_GATE	21	/* testing: a process reads again a slab of a view that it did not keep the rows of (the gates of core/f2/gate.h are 2 to 17, col/f2/uniq/shm.c has 20) */
 
 /*
  * The rows a view read of each slab, kept while the view is: a part this backend makes again from the descriptor is made from them. A directory of hot shards is read shard by shard and
@@ -120,9 +125,14 @@ SiftPart *
 sift_f2_slab_part(Relation rel, const SiftF2Store *store, const SiftPartDesc *d, uint32 part_id)
 {
 	const SiftRowBuf *kept = kept_rows(rel, d, part_id);
-	SiftRowBuf *rb = kept != NULL ? copy_rows(kept, &store->spec, kept->n) : slab_rows(rel, &store->spec, part_id, d->header_blk, (int) d->nrows);
+	SiftRowBuf *rb;
 	SiftPartDesc made;
-	SiftPart   *part = rows_part(rel, &store->spec, part_id, rb, &made);
+	SiftPart   *part;
+
+	if (kept == NULL)
+		SIFT_F2_GATE(SLAB_REREAD_GATE);
+	rb = kept != NULL ? copy_rows(kept, &store->spec, kept->n) : slab_rows(rel, &store->spec, part_id, d->header_blk, (int) d->nrows);
+	part = rows_part(rel, &store->spec, part_id, rb, &made);
 
 	if (part == NULL)
 		ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE), errmsg("the micro-slab of partition %u of \"%s\" is gone", part_id, RelationGetRelationName(rel)),
@@ -183,4 +193,19 @@ sift_f2_slab_view(Relation rel, SiftF2Store *store, const SiftPlanSnapshot *snap
 		list->nparts++;
 	}
 	return view != NULL ? view : snap;
+}
+
+const SiftPlanSnapshot *
+sift_f2_parallel_view(Relation rel, SiftF2Store *store, MemoryContext mcxt)
+{
+	const SiftPlanSnapshot *snap;
+	bool		flushed = false;
+
+	if (RecoveryInProgress())
+		return sift_f2_view(rel, store, mcxt);
+	snap = sift_plan_cache_get(rel, mcxt);
+	for (int i = 0; i < snap->npartitions; i++)
+		if (snap->partitions[i].l0_slab_blk != InvalidBlockNumber)
+			flushed |= sift_l0_slab_flush(rel, snap->partitions[i].part_id, snap->partitions[i].key_lo, &store->spec);
+	return flushed ? sift_plan_cache_get(rel, mcxt) : snap;
 }

@@ -28,6 +28,7 @@
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
+#include "col/f2/slab_view.h"
 #include "col/f2/store/schema.h"
 #include "core/cachebudget.h"
 #include "core/maint/pacer.h"
@@ -123,7 +124,7 @@ cursor_take(Relation rel, SiftF2Store *store, UnitCursor *c, UnitList *out, cons
 static ScanUnit *
 list_units(Relation rel, SiftF2Store *store, uint64 *nunits)
 {
-	UnitCursor	c = {.view = sift_f2_view(rel, store, CurrentMemoryContext)};
+	UnitCursor	c = {.view = sift_f2_parallel_view(rel, store, CurrentMemoryContext)};
 	UnitList	l = {.units = palloc(sizeof(ScanUnit) * 16),.cap = 16};
 
 	while (cursor_take(rel, store, &c, &l, NULL))

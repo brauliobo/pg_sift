@@ -1,0 +1,130 @@
+Parsed test spec with 7 sessions
+
+starting permutation: s1b s2l s1q s3m s3i s2u s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_psv;
+count
+-----
+20050
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7121);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, parallel FROM iso_psv_q(7100);
+agree|parallel
+-----+--------
+t    |t       
+(1 row)
+
+step s3m: VACUUM (FREEZE) iso_psv;
+step s3i: INSERT INTO iso_psv SELECT g, 2000, 'new' FROM generate_series(30001, 30060) g;
+step s2u: SELECT pg_advisory_unlock(7121);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s1b s2l s1q s3i s2u s1c
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_psv;
+count
+-----
+20050
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7121);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, parallel FROM iso_psv_q(7100);
+agree|parallel
+-----+--------
+t    |t       
+(1 row)
+
+step s3i: INSERT INTO iso_psv SELECT g, 2000, 'new' FROM generate_series(30001, 30060) g;
+step s2u: SELECT pg_advisory_unlock(7121);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1c: COMMIT;
+
+starting permutation: s3one s7l s4v s3two s7u s7l s4v s6one s7u s1hot s5one s5two s6two s1b s2l s1q s3one s5two s6two s2u s1c
+step s3one: INSERT INTO iso_psv VALUES (40001, 3000, 'one');
+step s7l: SELECT pg_advisory_lock(7110);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s4v: VACUUM (FREEZE) iso_psv; <waiting ...>
+step s3two: INSERT INTO iso_psv VALUES (40002, 3000, 'one'); <waiting ...>
+step s7u: SELECT pg_advisory_unlock(7110);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s4v: <... completed>
+step s3two: <... completed>
+step s7l: SELECT pg_advisory_lock(7110);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s4v: VACUUM (FREEZE) iso_psv; <waiting ...>
+step s6one: INSERT INTO iso_psv VALUES (60001, 5000, 'six'); <waiting ...>
+step s7u: SELECT pg_advisory_unlock(7110);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s4v: <... completed>
+step s6one: <... completed>
+step s1hot: SELECT iso_psv_hot('iso_psv') AS hot;
+hot
+---
+  1
+(1 row)
+
+step s5one: INSERT INTO iso_psv VALUES (50001, 4000, 'five');
+step s5two: INSERT INTO iso_psv VALUES (50002, 4000, 'five');
+step s6two: INSERT INTO iso_psv VALUES (60002, 5000, 'six');
+step s1b: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_psv;
+count
+-----
+20056
+(1 row)
+
+step s2l: SELECT pg_advisory_lock(7121);
+pg_advisory_lock
+----------------
+                
+(1 row)
+
+step s1q: SELECT agree, parallel FROM iso_psv_q(7100);
+agree|parallel
+-----+--------
+t    |t       
+(1 row)
+
+step s3one: INSERT INTO iso_psv VALUES (40001, 3000, 'one');
+step s5two: INSERT INTO iso_psv VALUES (50002, 4000, 'five');
+step s6two: INSERT INTO iso_psv VALUES (60002, 5000, 'six');
+step s2u: SELECT pg_advisory_unlock(7121);
+pg_advisory_unlock
+------------------
+t                 
+(1 row)
+
+step s1c: COMMIT;
