@@ -19,6 +19,7 @@
 #include "utils/snapmgr.h"
 
 #include "core/cachebudget.h"
+#include "core/compat.h"
 #include "core/f2/col_delta_anchor.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
@@ -56,6 +57,7 @@ typedef struct ForeignLog
 	BlockNumber anchor_blk;
 	uint32		anchor_pages;
 	uint64		seq;
+	bool		following;		/* a read of the chain began and did not end (a cancel, out of memory): the records and the watch are not the chain's */
 	int			n;
 	int			cap;
 	ForeignRec *recs;			/* ascending by (tid, seq) */
@@ -242,6 +244,7 @@ log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
 #ifdef SIFT_TESTING
 	sift_chain_cache_pages++;
 #endif
+	SIFT_POINT("sift-col-delta-foreign-visit");
 	CHECK_FOR_INTERRUPTS();
 	return true;
 }
@@ -286,11 +289,11 @@ log_merge(int sorted)
 	pfree(tail);
 }
 
-/* A writer of the transaction whose records the log left out ended: the chain is read again for them */
+/* A read of the chain that did not end, or a writer of the transaction whose records the log left out ended: the chain is read again */
 static void
-log_own_ended(void)
+log_settle(void)
 {
-	if (log_skipped_gone())
+	if (flog->following || log_skipped_gone())
 		log_reset();
 }
 
@@ -300,6 +303,7 @@ log_follow(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnch
 	SiftColDeltaWatchRead r;
 	int			sorted;
 
+	flog->following = true;
 	log_forget_settled();
 	sorted = flog->n;
 	if (!sift_col_delta_watch_read(rel, entry, a, &flog->watch, NULL, log_visit, NULL, &r))
@@ -315,6 +319,7 @@ log_follow(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnch
 	flog->anchor_pages = a->npages;
 	sift_col_delta_watch_release(&r);
 	log_merge(sorted);
+	flog->following = false;
 }
 
 static bool
@@ -333,7 +338,7 @@ log_of(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *
 {
 	log_open(rel, entry->part_id);
 	flog->tick = sift_cache_tick();
-	log_own_ended();
+	log_settle();
 	if (!log_current(rel, anchor))
 		log_follow(rel, entry, anchor);
 	flog->tick = sift_cache_tick();
