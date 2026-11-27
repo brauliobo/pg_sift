@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "catalog/pg_am_d.h"
+#include "catalog/pg_operator_d.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -208,6 +209,18 @@ has_numeric_var(Node *n, void *context)
 	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
 }
 
+/* a boolean column, or NOT of it, is the comparison of the column with true (false): NULL keeps no row in either */
+static Expr *
+qual_bool_column(V6Plan *p, Expr *clause)
+{
+	const bool	negated = is_notclause(clause);
+	Expr	   *v = negated ? get_notclausearg(clause) : clause;
+
+	if (!IsA(v, Var) || exprType((Node *) v) != BOOLOID)
+		return NULL;
+	return qual_compare(p, (OpExpr *) make_opclause(BooleanEqualOperator, BOOLOID, false, v, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid));
+}
+
 Expr *
 sift_v6_index_qual(V6Plan *p, Expr *clause)
 {
@@ -225,6 +238,9 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 			return qual_in_list(p, (ScalarArrayOpExpr *) clause);
 		case T_NullTest:
 			return qual_null_test(p, (NullTest *) clause);
+		case T_Var:
+		case T_BoolExpr:
+			return qual_bool_column(p, clause);
 		default:
 			return NULL;
 	}

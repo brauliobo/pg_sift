@@ -64,9 +64,9 @@ SELECT * FROM held('SELECT count(DISTINCT r) FROM dl WHERE v < 700 AND k IS NOT 
 (1 row)
 
 SELECT * FROM held('SELECT count(DISTINCT g) FILTER (WHERE b), count(DISTINCT v) FROM dl');
- parallel | strategy | same 
-----------+----------+------
- f        |          | t
+ parallel |    strategy    | same 
+----------+----------------+------
+ t        | radix distinct | t
 (1 row)
 
 -- one key of each kind: an integer, two integers that pack into one inline key, a text, a text and an integer, a key with NULLs
@@ -122,7 +122,7 @@ SELECT * FROM held('SELECT s, count(DISTINCT b) AS d, count(DISTINCT k) AS e, co
 SELECT * FROM held('SELECT r, count(DISTINCT g) FILTER (WHERE b) AS d, count(DISTINCT v) AS e FROM dl GROUP BY r ORDER BY r LIMIT 20');
  parallel | strategy | same 
 ----------+----------+------
- f        |          | t
+ t        | radix    | t
 (1 row)
 
 SELECT * FROM held('SELECT s, count(DISTINCT g) AS d, min(t) AS m FROM dl GROUP BY s ORDER BY s');

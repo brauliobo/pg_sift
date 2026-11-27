@@ -78,6 +78,13 @@ SET sift.enable_agg = off;
 SELECT k, sum(CASE WHEN p = 'a' THEN x ELSE 0 END) FROM cf WHERE k = 9 GROUP BY k;
 RESET sift.enable_agg;
 
+-- a boolean column as the condition, and NOT of it: NULL keeps the row in neither
+CREATE TABLE cb (id int, k int, f bool, x float8);
+INSERT INTO cb SELECT g, g % 10, CASE WHEN g % 7 = 0 THEN NULL ELSE g % 3 = 0 END, g * 0.5 FROM generate_series(1, 3000) g;
+CREATE INDEX cb_col ON cb USING sift_col (id, k, f, x);
+VACUUM ANALYZE cb;
+SELECT * FROM shape_check($q$SELECT k, count(*) FILTER (WHERE f), sum(x) FILTER (WHERE NOT f), sum(CASE WHEN f THEN x END) FROM cb GROUP BY k$q$);
+DROP TABLE cb;
 DROP FUNCTION shape_check(text);
 DROP TABLE shapes, cf;
 DROP EXTENSION pg_sift;
