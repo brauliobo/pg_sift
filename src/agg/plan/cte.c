@@ -7,6 +7,7 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/planner.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/memutils.h"
@@ -52,17 +53,97 @@ reads_scannable_walker(Node *n, void *cx)
 	return expression_tree_walker(n, reads_scannable_walker, cx);
 }
 
+/* the readers of one CTE, the queries at `depth` below its WITH that name it */
+typedef struct CteReads
+{
+	const CommonTableExpr *cte;
+	Bitmapset  *raising;		/* the columns of the body that may raise */
+	int			depth;
+	bool		full;			/* every query around the body keeps its rows, and every reader takes every column of raising */
+} CteReads;
+
+/* the query passes on every row it reads: no condition, join or limit, and no HAVING without an aggregate (PostgreSQL makes those a WHERE) */
+static bool
+keeps_rows(const Query *q)
+{
+	const FromExpr *from = q->jointree;
+	bool		keeps = q->limitCount == NULL && q->limitOffset == NULL &&
+		(from == NULL || (from->quals == NULL && list_length(from->fromlist) <= 1 && (from->fromlist == NIL || IsA(linitial(from->fromlist), RangeTblRef))));
+
+	foreach_ptr(Node, clause, make_ands_implicit((Expr *) q->havingQual))
+		keeps &= contain_agg_clause(clause);
+	return keeps;
+}
+
+/* the columns of the range table entry rti that the query computes for every row: an output that is the column, or the argument of an aggregate without FILTER */
+static Bitmapset *
+row_reads(const Query *q, Index rti)
+{
+	Bitmapset  *cols = NULL;
+
+	foreach_node(TargetEntry, te, q->targetList)
+	{
+		List	   *args = IsA(te->expr, Aggref) && ((Aggref *) te->expr)->aggfilter == NULL && ((Aggref *) te->expr)->agglevelsup == 0 ? ((Aggref *) te->expr)->args : list_make1(te);
+
+		foreach_node(TargetEntry, a, args)
+			if (IsA(a->expr, Var) && ((Var *) a->expr)->varno == (int) rti && ((Var *) a->expr)->varlevelsup == 0)
+				cols = bms_add_member(cols, ((Var *) a->expr)->varattno);
+	}
+	return cols;
+}
+
+static bool
+reads_walker(Node *n, CteReads *r)
+{
+	Query	   *q;
+	bool		found;
+
+	if (n == NULL || n == r->cte->ctequery)
+		return false;
+	if (!IsA(n, Query))
+		return expression_tree_walker(n, reads_walker, r);
+	q = (Query *) n;
+	r->full &= keeps_rows(q);
+	foreach_node(RangeTblEntry, rte, q->rtable)
+		if (rte->rtekind == RTE_CTE && rte->ctelevelsup == (Index) r->depth && strcmp(rte->ctename, r->cte->ctename) == 0)
+			r->full &= bms_is_subset(r->raising, row_reads(q, foreach_current_index(rte) + 1));
+	r->depth++;
+	found = query_tree_walker(q, reads_walker, r, 0);
+	r->depth--;
+	return found;
+}
+
 /*
- * a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row and cannot raise (the copy computes every row and column of the body, the
- * inline plan only what its readers take); PostgreSQL itself refuses to inline the volatile, writing and self-referencing ones
+ * Inline, the plan computes only what the readers take, the shared copy every row and column of the body: the two raise the same errors when nothing of the body but its columns may raise
+ * and the statement takes every row and every column that may (agg/safety.h)
  */
 static bool
-shared_cte(const CommonTableExpr *cte)
+inline_raises_alike(const Query *q, const CommonTableExpr *cte)
+{
+	const Query *body = castNode(Query, cte->ctequery);
+	Query		rest = *body;
+	CteReads	r = {.cte = cte,.full = true};
+
+	rest.targetList = NIL;
+	foreach_node(TargetEntry, te, body->targetList)
+		if (!te->resjunk && agg_node_may_raise((Node *) te->expr))
+			r.raising = bms_add_member(r.raising, te->resno);
+	if (r.raising != NULL)
+		reads_walker((Node *) q, &r);
+	return !agg_node_may_raise((Node *) &rest) && r.full;
+}
+
+/*
+ * a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row and whose inline plan raises what the copy raises; PostgreSQL itself refuses to
+ * inline the volatile, writing and self-referencing ones
+ */
+static bool
+shared_cte(const Query *q, const CommonTableExpr *cte)
 {
 	const Query *body = castNode(Query, cte->ctequery);
 
 	return !cte->cterecursive && cte->ctematerialized != CTEMaterializeNever && (cte->cterefcount > 1 || cte->ctematerialized == CTEMaterializeAlways) &&
-		body->commandType == CMD_SELECT && body->rowMarks == NIL && !agg_node_may_raise(cte->ctequery) && reads_scannable_walker(cte->ctequery, NULL);
+		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable_walker(cte->ctequery, NULL) && inline_raises_alike(q, cte);
 }
 
 /* does a node of the sub-select read a level above it (depth is how far the walk went below the sub-select) */
@@ -170,9 +251,9 @@ mark_ctes(Query *q, CteWalk *w)
 	{
 		Query	   *body = castNode(Query, cte->ctequery);
 
-		if (shared_cte(cte))
+		if (shared_cte(q, cte))
 			w->found++;
-		if (shared_cte(cte) && w->mark)
+		if (shared_cte(q, cte) && w->mark)
 		{
 			cte->ctematerialized = CTEMaterializeNever;
 			foreach_ptr(Node, qual, make_ands_implicit((Expr *) body->jointree->quals))
