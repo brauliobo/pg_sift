@@ -245,7 +245,8 @@ typedef struct Stream
 	/* the live postings not yet delivered */
 	uint32		n;
 	uint32		pcap;			/* entries of keys, tf, dl and plen */
-	uint32		gcap;			/* entries of tids and gtf */
+	uint32		tcap;			/* entries of tids: a slice of a group */
+	uint32		gcap;			/* entries of gtf: a group */
 	SiftKey    *keys;
 	uint8	   *tf;
 	uint16	   *dl;
@@ -255,16 +256,36 @@ typedef struct Stream
 	Size		poscap;
 } Stream;
 
-/* MEM[MEM-BM25-12]: bm25 livestream/facet scratch + allowlist sweep (1.8MB/seg eager; 41 DEFAULT_SIZES + 37 huge) */
-/* The arrays of a group of k postings (what decodes at once), growing from 256 to what the groups of the segment need */
+/* The tf of a group of k postings (what decodes at once), growing from 256 to what the groups of the segment need */
 static void
-stream_reserve_group(Stream *s, uint32 k)
+stream_reserve_tf(Stream *s, uint32 k)
 {
 	if (k <= s->gcap)
 		return;
 	s->gcap = Min(Max(k, Max(256, 2 * s->gcap)), STREAM_POSTINGS);
-	SIFT_REGROW_IN(s->dc.mcxt, s->tids, (Size) s->gcap * sizeof(sift_tid));
 	SIFT_REGROW_IN(s->dc.mcxt, s->gtf, s->gcap + SIFT_KERN_PAD);
+}
+
+/* The pages of a group read at once: what the arrays of a stream hold does not grow with the docs an SB of the segment has */
+#define STREAM_SLICE_PAGES	32
+#define STREAM_SLICES		(SIFT_SB_PAGES / STREAM_SLICE_PAGES)
+
+/* The keys of the postings of the pages of slice w of the group in s->tids, and their number */
+static uint32
+stream_slice(Stream *s, const sift_grp *g, int w)
+{
+	uint64		mask[SIFT_PAGEMASK_WORDS] = {0};
+	int			word = w * STREAM_SLICE_PAGES / 64;
+	uint32		k;
+
+	if ((mask[word] = g->pages[word] & (((1ULL << STREAM_SLICE_PAGES) - 1) << (w * STREAM_SLICE_PAGES % 64))) == 0)
+		return 0;
+	if ((k = sift_grp_count_mask(g, mask)) > s->tcap)
+	{
+		s->tcap = Min(Max(k, Max(256, 2 * s->tcap)), STREAM_POSTINGS);
+		SIFT_REGROW_IN(s->dc.mcxt, s->tids, (Size) s->tcap * sizeof(sift_tid));
+	}
+	return sift_grp_tids(g, mask, s->tids);
 }
 
 /* The pending postings: k more */
@@ -289,17 +310,22 @@ stream_flush(Stream *s, bool haspos)
 	s->poslen = 0;
 }
 
-/* Adds the live postings of the group to the pending ones; pr: the records of the term (read in step with the postings) */
+/* The tf of the postings of the group, which its slices take in turn */
 static void
-stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *pr)
+stream_group_tf(Stream *s, SiftPostingCursor *c, const sift_grp *g)
+{
+	stream_reserve_tf(s, sift_grp_count(g));
+	sift_post_group_tf(c, s->gtf);
+}
+
+/* Adds the live postings of slice w of the group to the pending ones, rank: of its first posting in the group; pr: the records of the term (read in step with the postings) */
+static uint32
+stream_slice_add(Stream *s, const sift_grp *g, int w, uint32 rank, SiftPosReader *pr)
 {
 	SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
-	uint32		k;
+	uint32		k = stream_slice(s, g, w);
 
-	stream_reserve_group(s, sift_grp_count(g));
-	stream_reserve_pending(s, sift_grp_count(g));
-	k = sift_grp_tids(g, NULL, s->tids);
-	sift_post_group_tf(c, s->gtf);
+	stream_reserve_pending(s, k);
 	for (uint32 j = 0; j < k; j++)
 	{
 		uint16		dl = sbdocs_dl(&s->dc, e, s->tids[j]);
@@ -320,11 +346,12 @@ stream_group(Stream *s, SiftPostingCursor *c, const sift_grp *g, SiftPosReader *
 			s->plen[s->n] = len;
 		}
 		s->keys[s->n] = s->tids[j];
-		s->tf[s->n] = s->gtf[j];
+		s->tf[s->n] = s->gtf[rank + j];
 		s->dl[s->n++] = dl;
 		if (s->streaming && s->poslen >= STREAM_POS_KEEP)
 			stream_flush(s, true);
 	}
+	return k;
 }
 
 /* Live postings of the term, counted without delivering them */
@@ -335,13 +362,11 @@ stream_count(Stream *s, SiftPostingCursor *c)
 
 	for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 	{
- 		SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
-		uint32		k;
+		SBDocs	   *e = sbdocs_get(&s->dc, g->gid);
 
-		stream_reserve_group(s, sift_grp_count(g));
-		k = sift_grp_tids(g, NULL, s->tids);
-		for (uint32 j = 0; j < k; j++)
-			live += sbdocs_dl(&s->dc, e, s->tids[j]) != 0;
+		for (int w = 0; w < STREAM_SLICES; w++)
+			for (uint32 j = 0, k = stream_slice(s, g, w); j < k; j++)
+				live += sbdocs_dl(&s->dc, e, s->tids[j]) != 0;
 	}
 	sift_post_rewind(c);
 	return live;
@@ -366,9 +391,13 @@ stream_term(void *arg, const char *term, int len, const SiftTermInfo *info)
 	if (buffered || live.df > 0)
 		for (const sift_grp *g = sift_next(sift_post_cursor(c)); g; g = sift_next(sift_post_cursor(c)))
 		{
-			stream_group(s, c, g, pr);
-			if (!buffered)
-				stream_flush(s, haspos);
+			stream_group_tf(s, c, g);
+			for (int w = 0, rank = 0; w < STREAM_SLICES; w++)
+			{
+				rank += stream_slice_add(s, g, w, rank, pr);
+				if (!buffered)
+					stream_flush(s, haspos);
+			}
 		}
 	if (buffered && s->n > 0)
 	{
@@ -465,6 +494,9 @@ struct SiftSegCursor
 	SiftTermInfo info;
 	SiftPostingCursor *pc;
 	SiftPosReader *pr;
+	const sift_grp *g;			/* the group being read, its next slice and the rank of that slice's first posting */
+	int			w;
+	uint32		rank;
 	uint32		ri;				/* of the pending postings, the next to deliver */
 	Size		poff;			/* ... and where its record starts in s.pos */
 };
@@ -579,6 +611,7 @@ sift_seg_cursor_term(SiftSegCursor *c, const char **term, int *len, SiftTermInfo
 		}
 		s->n = c->ri = 0;
 		s->poslen = c->poff = 0;
+		c->g = NULL;
 		*info = c->info;
 		return true;
 	}
@@ -592,13 +625,17 @@ sift_seg_cursor_posting(SiftSegCursor *c, SiftKey *key, uint8 *tf, uint16 *dl, c
 
 	while (c->ri == s->n)
 	{
-		const sift_grp *g;
-
 		s->n = c->ri = 0;
 		s->poslen = c->poff = 0;
-		if ((g = sift_next(sift_post_cursor(c->pc))) == NULL)
-			return false;
-		stream_group(s, c->pc, g, c->pr);
+		if (c->g == NULL || c->w == STREAM_SLICES)
+		{
+			if ((c->g = sift_next(sift_post_cursor(c->pc))) == NULL)
+				return false;
+			stream_group_tf(s, c->pc, c->g);
+			c->w = 0;
+			c->rank = 0;
+		}
+		c->rank += stream_slice_add(s, c->g, c->w++, c->rank, c->pr);
 	}
 	*key = s->keys[c->ri];
 	*tf = s->tf[c->ri];
