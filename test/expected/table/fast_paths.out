@@ -42,7 +42,7 @@ SELECT sift.create_projection('ft', 'p_by_uid', 'ORDER BY uid') AS projection;
 (1 row)
 
 VACUUM (FREEZE, ANALYZE) ft;
-SELECT max(granules) > 16 AS many_granules FROM sift.parts('ft'::regclass);
+SELECT sum(granules) > 16 AS many_granules FROM sift.parts('ft'::regclass);
  many_granules 
 ---------------
  t

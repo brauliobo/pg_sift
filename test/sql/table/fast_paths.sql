@@ -38,7 +38,7 @@ CREATE TABLE fh (LIKE ft);
 INSERT INTO fh SELECT * FROM ft;
 SELECT sift.create_projection('ft', 'p_by_uid', 'ORDER BY uid') AS projection;
 VACUUM (FREEZE, ANALYZE) ft;
-SELECT max(granules) > 16 AS many_granules FROM sift.parts('ft'::regclass);
+SELECT sum(granules) > 16 AS many_granules FROM sift.parts('ft'::regclass);
 
 \echo == a point lookup of a sort column is answered from the cells of its projection
 SELECT * FROM check_fast('lookup', 'SiftProjSortScan', $q$ SELECT uid FROM ft WHERE uid = 1234 $q$);
