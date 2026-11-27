@@ -339,10 +339,7 @@ granule_sliced(const Sink *s, int nrows)
 	return (Size) nrows * s->row_bytes > s->flush_bytes;
 }
 
-/*
- * The bytes a row of the inputs takes in a row buffer, before the first slice: measured on the first rows of the granule in a buffer of their own, so that the first granule is read whole
- * when it fits, as every other one, and the sink's buffer grows as it does from a whole granule
- */
+/* The bytes a row of the inputs takes in a row buffer, measured on the first rows in a buffer of their own: the first granule is read whole when it fits, as every other one */
 static void
 measure_row(Sink *s, const SiftGranuleView *v, const SiftRowVer *vers, const SiftCodeMap *code_map, const SiftColRemap *remap)
 {
@@ -770,10 +767,12 @@ dv_delta(Relation rel, uint32 part_id, const CompactIn *in, const SiftDv *now, v
 		MemoryContextDelete(icx);
 }
 
-/* The compaction gives up under its locks: the outputs go back, nothing was committed */
+/* The compaction gives up under its locks: the outputs and what the fold wrote go back, nothing was committed */
 static bool
-abandon(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, bool packed)
+abandon(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, bool packed, void *fold)
 {
+	if (fold != NULL)
+		sift_compact_fold->forget(fold);
 	sift_compact_release_outputs(rel, part_id, out, nout);
 	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
 	if (packed)
@@ -889,6 +888,8 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return true;
 	}
+	if (fold != NULL)
+		sift_compact_fold->prepare(fold, part_id, key_lo, out, nout);
 	SIFT_F2_GATE(SIFT_F2_GATE_COMPACT);
 #ifdef SIFT_TESTING
 	if (sift_test_compact_delete > 0)
@@ -928,7 +929,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	}
 	sift_part_gen_idx_free(&by_gen);
 	if (parts == NULL || (delta.n > 0 && sift_compact_adoption_ambiguous(rel, part_id, &delta, out, nout)))
-		return abandon(rel, part_id, out, nout, packed);
+		return abandon(rel, part_id, out, nout, packed, fold);
 	if (delta.n > 0)
 		sift_compact_adopt_deletes(rel, part_id, &delta, out, nout);
 	rel_ext = repalloc(rel_ext, (nrel + 2 * ngens + 1) * sizeof(SiftExtent));
@@ -937,7 +938,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 			rel_ext[nrel++] = (SiftExtent) {in[i].d.dv_blk, in[i].d.dv_nblocks};
 	nrel += release_packed_pages(rel, part_id, in, ngens, rel_ext + nrel);
 	if (fold != NULL && !sift_compact_fold->commit(fold, &mr.entries[0], parts, nparts, out, nout, &e, &rel_ext, &nrel, &res->stripped))
-		return abandon(rel, part_id, out, nout, packed);
+		return abandon(rel, part_id, out, nout, packed, fold);
 	e.nadd = nout;
 	e.add_parts = out;
 	e.release = rel_ext;

@@ -713,38 +713,65 @@ sift_col_delta_fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo)
 	return e;
 }
 
-typedef struct ChainOut
+struct SiftColDeltaChainOut
 {
 	SiftColDeltaDiskChain d;
 	SiftColDeltaWriter w;
 	SiftColDeltaAnchor *anchor;
 	FullTransactionId next;
-} ChainOut;
+	SiftColDeltaCarry *carry;
+};
 
 static void
 chain_out_page(void *ctx, SiftColDeltaBatch *page)
 {
-	ChainOut   *o = ctx;
+	SiftColDeltaChainOut *o = ctx;
 
 	sift_col_delta_chain_append(&o->w, o->anchor, page, o->next);
 	sift_col_delta_batch_free(page);
 }
 
-/* The records that stay never need more pages than the chain they stay of has: the generations of the pages are reserved once */
+SiftColDeltaChainOut *
+sift_col_delta_chain_out_begin(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaAnchor *anchor)
+{
+	SiftColDeltaChainOut *o = palloc0(sizeof(SiftColDeltaChainOut));
+
+	o->d = (SiftColDeltaDiskChain) {.rel = rel,.entry = entry,.capture = anchor};
+	o->w = sift_col_delta_disk_writer(&o->d);
+	o->anchor = anchor;
+	o->carry = sift_col_delta_carry_begin(chain_out_page, o);
+	*anchor = sift_col_delta_anchor_none();
+	return o;
+}
+
+/* The records that stay never need more pages than the chain they stay of has: the generations of the pages are reserved once a feed */
+void
+sift_col_delta_chain_out_feed(SiftColDeltaChainOut *o, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap)
+{
+	if (src->npages > 0)
+	{
+		o->d.gen_next = sift_manifest_new_gen(o->d.rel, src->npages);
+		o->d.gen_left = src->npages;
+	}
+	o->next = next;
+	sift_col_delta_carry_feed(o->carry, plan, src, next, remap);
+}
+
+void
+sift_col_delta_chain_out_end(SiftColDeltaChainOut *o)
+{
+	sift_col_delta_carry_end(o->carry);
+	pfree(o);
+}
+
 void
 sift_col_delta_write_carry(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next,
 						   const SiftColDeltaRemap *remap, SiftColDeltaAnchor *anchor)
 {
-	ChainOut	o = {.d = {.rel = rel,.entry = entry,.capture = anchor},.anchor = anchor,.next = next};
+	SiftColDeltaChainOut *o = sift_col_delta_chain_out_begin(rel, entry, anchor);
 
-	o.w = sift_col_delta_disk_writer(&o.d);
-	if (src->npages > 0)
-	{
-		o.d.gen_next = sift_manifest_new_gen(rel, src->npages);
-		o.d.gen_left = src->npages;
-	}
-	*anchor = sift_col_delta_anchor_none();
-	sift_col_delta_compact_carry(plan, src, next, remap, chain_out_page, &o);
+	sift_col_delta_chain_out_feed(o, plan, src, next, remap);
+	sift_col_delta_chain_out_end(o);
 }
 
 /* ---- vacuum ---- */

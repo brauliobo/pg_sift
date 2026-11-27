@@ -153,7 +153,7 @@ extern SiftCompactGroup *sift_compact_plan_rewrites(const SiftPartDesc *parts, i
 
 /*
  * What a host folds into the parts a compaction rewrites besides their rows: a table, the column deltas of the partition (table/f2/col_delta/col_delta.h). The host installs it once; with none,
- * a compaction is what it was. A record may reach the partition while the outputs are written, so open serves every compaction and commit reads the host's records again under the lock.
+ * a compaction is what it was. A record may reach the partition while the outputs are written, so open serves every compaction, prepare reads the host's records again and commit, under the lock, the ones that came after.
  */
 typedef struct SiftCompactFold
 {
@@ -167,6 +167,8 @@ typedef struct SiftCompactFold
 	void		(*apply) (void *fold, uint64 part_gen, uint32 granule_id, uint32 row0, SiftRowBuf *rows, SiftExtent **release, int *nrelease);
 	/* The addresses the n rows of a granule of the part have in the outputs: the address changes that apply folds, laid over the stored ones in tids */
 	void		(*row_tids) (void *fold, uint64 part_gen, uint32 granule_id, uint64 *tids, uint32 n);
+	/* With the outputs written, before the partition lock: what stays of the host's records as they are now is written, so that commit takes only the ones that come after */
+	void		(*prepare) (void *fold, uint64 part_id, const uint8 *key_lo, const SiftPartDesc *out, int nout);
 	/*
 	 * Under the partition lock, with the outputs written: what stays of the host's records goes with them into edit; *stripped is raised to the greatest writer folded, the pages of what it replaced
 	 * join *release. false, with edit unchanged: two rows of the outputs have an address a record that stays names, so the record cannot tell which of them it is for; the horizon of a later
@@ -174,6 +176,8 @@ typedef struct SiftCompactFold
 	 */
 	bool		(*commit) (void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit,
 						   SiftExtent **release, int *nrelease, FullTransactionId *stripped);
+	/* The compaction gives up: what prepare wrote goes back */
+	void		(*forget) (void *fold);
 } SiftCompactFold;
 
 extern PGDLLIMPORT const SiftCompactFold *sift_compact_fold;

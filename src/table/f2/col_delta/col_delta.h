@@ -689,6 +689,7 @@ typedef struct SiftColDeltaPageSource
 	void	   *ctx;
 	int			npages;
 	const char *(*page) (void *ctx, int i, uint32 *nrecords);
+	uint32		skip;			/* the first records of page 0 that are not of the source (an earlier plan took them) */
 } SiftColDeltaPageSource;
 
 /* Classifies the records of the chain the source gives: the fate of each is held as bits, never the record. A record every attribute of which a later one of its row writes again is dropped (of the rows
@@ -728,6 +729,12 @@ typedef void (*SiftColDeltaEmit) (void *ctx, SiftColDeltaBatch *page);
  * may be NULL when the plan moves none */
 extern void sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap, SiftColDeltaEmit emit, void *ctx);
 
+/* The same in steps: the records that stay of each plan fed, in the order fed, go on the pages of one carry (a later plan's records that name a row an earlier one moved follow it) */
+typedef struct SiftColDeltaCarry SiftColDeltaCarry;
+extern SiftColDeltaCarry *sift_col_delta_carry_begin(SiftColDeltaEmit emit, void *ctx);
+extern void sift_col_delta_carry_feed(SiftColDeltaCarry *c, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap);
+extern void sift_col_delta_carry_end(SiftColDeltaCarry *c);
+
 /* ---- the server side (f2_col_delta_io.c) ---- */
 
 /* The record an UPDATE would make, or why it makes none */
@@ -759,6 +766,13 @@ extern SiftHorizonStatus sift_col_delta_horizon_status(void *ctx, TransactionId 
 /* A fresh chain of the records the plan carries, written a page at a time; its anchor is the caller's to publish, in the manifest change of a compaction */
 extern void sift_col_delta_write_carry(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next,
 									   const SiftColDeltaRemap *remap, SiftColDeltaAnchor *anchor);
+
+/* The same in steps, a plan a feed: the new chain the records that stay make, in the order fed, until end gives its anchor (in *anchor) */
+typedef struct SiftColDeltaChainOut SiftColDeltaChainOut;
+extern SiftColDeltaChainOut *sift_col_delta_chain_out_begin(Relation rel, const SiftPartitionEntry *entry, SiftColDeltaAnchor *anchor);
+extern void sift_col_delta_chain_out_feed(SiftColDeltaChainOut *o, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next,
+										  const SiftColDeltaRemap *remap);
+extern void sift_col_delta_chain_out_end(SiftColDeltaChainOut *o);
 
 /* The entry of a partition as the manifest has it now */
 extern SiftPartitionEntry sift_col_delta_fresh_entry(Relation rel, uint64 part_id, const uint8 *key_lo);

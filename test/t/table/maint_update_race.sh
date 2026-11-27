@@ -2,6 +2,7 @@
 # The rewrite of the parts of a sift_table (VACUUM, sift.maintain) beside UPDATEs that change one column of many rows. A compaction that starts in a partition with no column delta chain writes its outputs and
 # then commits them under the lock: an UPDATE that commits in between puts its column deltas into a chain that names the parts the commit replaces, and the deltas of a part that is gone are dropped, so the
 # UPDATE is lost. The compaction is held after its outputs are written (sift.test_phase_gate, gate SIFT_F2_GATE_COMPACT = 11) while an UPDATE commits, then released: every row the UPDATE changed is changed.
+# Once the partition has a chain, the compaction writes what stays of it before the gate, and the commit carries under the lock only the deltas of the UPDATE that came after: they too are kept.
 # The workers of sift stay off until then: one would compact the deleted rows of the table first and leave the VACUUM nothing to rewrite.
 # Then, with the workers on, writers that add one to rows beside the rewrite of the parts, and a churn of the rows beside them, end with the sum of the rows they updated and no statement failed.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
@@ -11,7 +12,7 @@ ROWS=${SIFT_RACE_ROWS:-16000}
 SPAN=${SIFT_RACE_SPAN:-400}
 ROUNDS=${SIFT_RACE_ROUNDS:-12}
 
-plan 9
+plan 14
 node_init mr 42 "autovacuum = off
 sift.maintenance_naptime = 200
 sift.async_maintenance = off
@@ -27,6 +28,7 @@ parts() { sql mr "SELECT string_agg(part_gen::text, ',' ORDER BY part_gen) FROM 
 waiting() { sql mr "SELECT count(*) FROM pg_stat_activity WHERE query LIKE '$1%' AND wait_event_type = 'Lock' AND wait_event = 'advisory'"; }
 before=$(parts)
 
+# gated ROWS: a VACUUM held at the gate while an UPDATE of every row of dp commits; ROWS: the rows it updates
 gated() {
 	rm -f "$D/H.in"; mkfifo "$D/H.in"
 	psql -X -At -q -h "$D/sock" -p "$(port mr)" -U postgres -d postgres <"$D/H.in" >"$D/H.out" 2>&1 &
@@ -36,15 +38,17 @@ gated() {
 	wait_for "grep -q '@@held' '$D/H.out'" 30 || bail "the gate was not taken"
 	(sql mr "SET sift.test_phase_gate = $G" "VACUUM dp" >"$D/vacuum.out" 2>&1; echo $? >"$D/vacuum.rc") &
 	check "the compaction waits with its outputs written" wait_for "[[ \$(waiting 'VACUUM dp') == 1 ]]" 60
-	check "the UPDATE of the 400 rows commits meanwhile" test "$(sql mr "WITH u AS (UPDATE dp SET v = v + 1 RETURNING 1) SELECT count(*) FROM u")" == 400
+	check "the UPDATE of the $1 rows commits meanwhile" test "$(sql mr "WITH u AS (UPDATE dp SET v = v + 1 RETURNING 1) SELECT count(*) FROM u")" == "$1"
 	echo "SELECT pg_advisory_unlock($((G + 11)));" >&"$H"
 	wait_for "[[ -f '$D/vacuum.rc' ]]" 120 || bail "the VACUUM did not finish"
 	exec {H}>&-
 	wait
 	check "the VACUUM succeeded and replaced the parts" test "$(cat "$D/vacuum.rc")|$(parts)" != "0|$before"
+	before=$(parts)
 }
-if [[ $(sql mr "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'") == 1 ]]; then
-	gated
+GATED=$(sql mr "SELECT count(*) FROM pg_settings WHERE name = 'sift.test_phase_gate'")
+if [[ $GATED == 1 ]]; then
+	gated 400
 else
 	skip 3 "the release library has no gate"
 	sql mr "UPDATE dp SET v = v + 1" "VACUUM dp" >/dev/null
@@ -52,6 +56,17 @@ fi
 check "every row the UPDATE changed is changed" test "$(sql mr "SELECT sum(v) FROM dp")" == 400
 sql mr "VACUUM dp" >/dev/null
 check "and stays changed after the next VACUUM" test "$(sql mr "SELECT sum(v) FROM dp")" == 400
+before=$(parts)
+sql mr "UPDATE dp SET v = v + 1 WHERE id % 20 = 0" >/dev/null || bail "the update of the chain failed"
+if [[ $GATED == 1 ]]; then
+	gated 400
+else
+	skip 3 "the release library has no gate"
+	sql mr "UPDATE dp SET v = v + 1" "VACUUM dp" >/dev/null
+fi
+check "with a chain carried before the lock, every row both UPDATEs changed is changed" test "$(sql mr "SELECT sum(v) FROM dp")" == 1000
+sql mr "VACUUM dp" >/dev/null
+check "and stays changed after the next VACUUM" test "$(sql mr "SELECT sum(v) FROM dp")" == 1000
 
 sql mr "ALTER SYSTEM SET sift.async_maintenance = on" "SELECT pg_reload_conf()" >/dev/null || bail "the workers were not turned on"
 wait_for "setting_is mr sift.async_maintenance on" 30 || bail "the reload did not reach the server"

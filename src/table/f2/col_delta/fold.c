@@ -3,8 +3,10 @@
  *
  * open reads the chain once, a page at a time, and classifies it (f2_col_delta_compact.c): the records of the parts rewritten whose writers committed before the horizon are folds, and
  * it keeps their patches, the newest of each cell, by part and granule (fold_idx.c), with the pages the chain has; the rows of a record that stays are held back from the fold by the pass
- * that classifies them. A granule is folded, as the compaction reads it, from its patches alone. Under the partition lock the chain is read once more and classified with only the records
- * seen by open allowed to fold (the others came while the parts were written): what stays is written as the chain of the new parts, its records of a rewritten part sent to the row it is now.
+ * that classifies them. A granule is folded, as the compaction reads it, from its patches alone. Once the parts are written, prepare reads the chain once more and classifies it with only the
+ * records seen by open allowed to fold (the others came while the parts were written): what stays is written as the start of the chain of the new parts, its records of a rewritten part sent
+ * to the row it is now. Under the partition lock only the records written since prepare are classified and carried after it, so that the writers of the partition wait on what came while it
+ * ran, not on the length of the chain.
  */
 #include "postgres.h"
 
@@ -16,6 +18,7 @@
 #include "col/f2/compact/compact.h"
 #include "core/compat.h"
 #include "core/crash_point.h"
+#include "core/f2/fsm/fsm.h"
 #include "core/memtrack.h"
 #include "core/page_io.h"
 #include "core/part_lock.h"
@@ -44,6 +47,7 @@ typedef struct Trail
 	SiftColDeltaPageReader reader;
 	TrailPage  *pages;			/* oldest first */
 	int			npages;
+	int			from;			/* the page a source of the trail starts at */
 	BlockNumber *dir_blks;
 	int			ndir;
 	uint32		nrecords;
@@ -112,22 +116,18 @@ trail_summarize(Trail *t, const BlockNumber *blks)
 	return why;
 }
 
-/* The pages the entry's chain has, checked as they are read; false when it has none */
+/* The pages of the chain the anchor names, checked as they are read; false when it names none */
 static bool
-trail_open(Trail *t, Relation rel, const SiftPartitionEntry *entry)
+trail_open_anchor(Trail *t, Relation rel, uint64 part_id, SiftColDeltaAnchor anchor)
 {
-	SiftColDeltaAnchor anchor;
 	BlockNumber *blks;
 	const char *why;
 
 	memset(t, 0, offsetof(Trail, page));
 	t->rel = rel;
-	t->part_id = entry->part_id;
-	t->disk = (SiftColDeltaDiskReader) {.rel = rel,.part_id = (uint32) entry->part_id};
+	t->part_id = part_id;
+	t->disk = (SiftColDeltaDiskReader) {.rel = rel,.part_id = (uint32) part_id};
 	t->reader = sift_col_delta_disk_reader(&t->disk);
-	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0)
-		return false;
-	anchor = sift_manifest_read_col_delta(rel, entry);
 	if (!sift_col_delta_anchor_has_chain(&anchor))
 		return false;
 	why = sift_col_delta_anchor_sane(&anchor) ? NULL : "the anchor of a chain is not one of this format";
@@ -149,21 +149,30 @@ trail_open(Trail *t, Relation rel, const SiftPartitionEntry *entry)
 	if (why == NULL)
 		why = trail_summarize(t, blks);
 	if (why != NULL)
-		SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) entry->part_id);
+		SIFT_CORRUPT(rel, "%s (partition %llu).", why, (unsigned long long) part_id);
 	pfree(blks);
 	return true;
 }
 
-/* The page i of the chain, in the one buffer of the trail: it is there until the next is read */
+/* The pages the entry's chain has; false when it has none */
+static bool
+trail_open(Trail *t, Relation rel, const SiftPartitionEntry *entry)
+{
+	SiftColDeltaAnchor none = sift_col_delta_anchor_none();
+
+	return trail_open_anchor(t, rel, entry->part_id, (entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0 ? sift_manifest_read_col_delta(rel, entry) : none);
+}
+
+/* The page i of the chain from the page the trail's source starts at, in the one buffer of the trail: it is there until the next is read */
 static const char *
 trail_page(void *ctx, int i, uint32 *nrecords)
 {
 	Trail	   *t = ctx;
-	const char *why = trail_read(t, t->pages[i].blk);
+	const char *why = trail_read(t, t->pages[t->from + i].blk);
 
 	if (why != NULL)
 		SIFT_CORRUPT(t->rel, "%s (partition %llu).", why, (unsigned long long) t->part_id);
-	*nrecords = t->pages[i].nrecords;
+	*nrecords = t->pages[t->from + i].nrecords;
 	return t->page.data;
 }
 
@@ -245,6 +254,14 @@ typedef struct Fold
 	int			nfolded_gens;
 	uint64		remap_gen;		/* the part remap was built for, 0: none */
 	const SiftColRemap *remap;
+	/* what stays of the chain as prepare read it (pre, of the parts pre_live), written before the partition lock as the start of the new chain (out, its anchor new_anchor) */
+	SiftPartitionEntry pre_entry;
+	Trail		pre;
+	uint64	   *pre_live;
+	int			pre_nlive;
+	SiftColDeltaChainOut *out;
+	SiftColDeltaAnchor new_anchor;
+	FullTransactionId stripped;
 } Fold;
 
 /* The leaf a patch is of: a sift_col index names it (its attribute is the leaf plus one), a table by the number of its column; -1 for the address of the row */
@@ -583,62 +600,170 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 	return !twice && !placed_twice(pl);
 }
 
+/* What stays of the plan's records goes on the new chain, those that move sent to the rows of the outputs they are now; false: two rows of the outputs have an address a record names */
+static bool
+carry_plan(Fold *f, uint64 part_id, const SiftPartDesc *out, int nout, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next)
+{
+	Placement	pl;
+	bool		placed = place_rows(f->rel, part_id, out, nout, plan->want, plan->nwant, &pl);
+
+	if (placed)
+		sift_col_delta_chain_out_feed(f->out, plan, src, next, &(SiftColDeltaRemap) {.ctx = &pl,.locate = placed_at});
+	pfree(pl.v);
+	return placed;
+}
+
+/* The new chain written so far goes back: no anchor names its pages */
+static void
+fold_forget(void *fold)
+{
+	Fold	   *f = fold;
+	Trail		t;
+
+	if (f->out == NULL)
+		return;
+	sift_col_delta_chain_out_end(f->out);
+	f->out = NULL;
+	if (trail_open_anchor(&t, f->rel, f->pre_entry.part_id, f->new_anchor))
+	{
+		int			n;
+		SiftExtent *x = trail_extents(&t, &n);
+
+		sift_fsm_release(f->rel, x, n, InvalidFullTransactionId);
+		pfree(x);
+		trail_free(&t);
+	}
+	trail_free(&f->pre);
+}
+
+/*
+ * Before the partition lock, with the outputs written: the chain as it is now is classified and what stays written as the start of the new chain, so that the commit under the lock reads
+ * only the records written since, whatever the length of the chain. Nothing is written when no record would fold, go or move.
+ */
+static void
+fold_prepare(void *fold, uint64 part_id, const uint8 *key_lo, const SiftPartDesc *out, int nout)
+{
+	Fold	   *f = fold;
+	SiftColDeltaPageSource src = {.ctx = &f->pre,.page = trail_page};
+	SiftColDeltaCompactPlan plan;
+	SiftPartDesc *parts;
+
+	trail_free(&f->trail);
+	f->pre_entry = sift_col_delta_fresh_entry(f->rel, part_id, key_lo);
+	if (!trail_open(&f->pre, f->rel, &f->pre_entry))
+		return;
+	src.npages = f->pre.npages;
+	parts = sift_manifest_read_parts(f->rel, &f->pre_entry, &f->pre_nlive);
+	f->pre_live = sift_col_delta_sorted_gens(parts, f->pre_nlive);
+	pfree(parts);
+	sift_xid_horizon_init(&f->hc, f->hc.horizon);
+	if (!sift_col_delta_compact_changes(&src, f->gens, f->ngens, f->pre_live, f->pre_nlive, &f->hz, f->nrecords))
+	{
+		trail_free(&f->pre);
+		return;
+	}
+	sift_col_delta_compact_stream(&src, f->gens, f->ngens, f->pre_live, f->pre_nlive, &f->hz, f->nrecords, &plan);
+	f->out = sift_col_delta_chain_out_begin(f->rel, &f->pre_entry, &f->new_anchor);
+	f->stripped = plan.stripped;
+	if (!carry_plan(f, part_id, out, nout, &plan, &src, ReadNextFullTransactionId()))
+		fold_forget(f);
+	sift_col_delta_compact_plan_free(&plan);
+}
+
+/* The chain under the lock is the one prepare carried, with the records written since after its own: the same pages, the last of them with as many records or more, of parts that are all still there */
+static bool
+prepared_holds(const Fold *f, const Trail *now, const uint64 *live, int nlive)
+{
+	int			last = f->pre.npages - 1;
+
+	if (now->npages < f->pre.npages || now->pages[last].nrecords < f->pre.pages[last].nrecords)
+		return false;
+	for (int i = 0; i < f->pre.npages; i++)
+		if (now->pages[i].blk != f->pre.pages[i].blk || now->pages[i].first_seq != f->pre.pages[i].first_seq)
+			return false;
+	for (int i = 0; i < f->pre_nlive; i++)
+		if (!in_sorted(live, nlive, f->pre_live[i]))
+			return false;
+	return true;
+}
+
+/*
+ * What the commit carries under the lock: after a prepare, the records written since it (none of which folds, as open did not see them); with none, the whole chain, when a record of it
+ * would fold, go or move (false with the chain kept). *placed is false when two rows of the outputs have an address a record names.
+ */
+static bool
+commit_records(Fold *f, Trail *t, const SiftPartitionEntry *entry, const uint64 *live, int nlive, const SiftPartDesc *out, int nout, FullTransactionId next, bool *placed)
+{
+	SiftColDeltaPageSource src = {.ctx = t,.npages = t->npages,.page = trail_page};
+	SiftColDeltaCompactPlan plan;
+	uint32		fold_limit = f->nrecords;
+
+	*placed = true;
+	if (f->out != NULL)
+	{
+		t->from = f->pre.npages - 1;
+		src = (SiftColDeltaPageSource) {.ctx = t,.npages = t->npages - t->from,.page = trail_page,.skip = f->pre.pages[t->from].nrecords};
+		fold_limit = 0;
+	}
+	else if (!sift_col_delta_compact_changes(&src, f->gens, f->ngens, live, nlive, &f->hz, fold_limit))
+		return false;
+	else
+		f->out = sift_col_delta_chain_out_begin(f->rel, entry, &f->new_anchor);
+	sift_col_delta_compact_stream(&src, f->gens, f->ngens, live, nlive, &f->hz, fold_limit, &plan);
+	f->stripped = sift_fxid_max(f->stripped, plan.stripped);
+	*placed = carry_plan(f, entry->part_id, out, nout, &plan, &src, next);
+	t->from = 0;
+	sift_col_delta_compact_plan_free(&plan);
+	return true;
+}
+
 static bool
 fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *parts, int nparts, const SiftPartDesc *out, int nout, SiftManifestEdit *edit, SiftExtent **release,
 			int *nrelease, FullTransactionId *stripped)
 {
 	Fold	   *f = fold;
 	Trail		t;
-	SiftColDeltaPageSource src = {.ctx = &t,.page = trail_page};
-	SiftColDeltaCompactPlan plan;
-	SiftColDeltaAnchor anchor;
 	FullTransactionId next = ReadNextFullTransactionId();
 	uint64	   *live = sift_col_delta_sorted_gens(parts, nparts);
 	int			nfreed;
 	SiftExtent *freed;
-	Placement	pl;
-	SiftColDeltaRemap remap;
-	bool		has_chain;
+	bool		has_chain,
+				rewritten,
+				placed = true;
 
 	trail_free(&f->trail);
 	has_chain = trail_open(&t, f->rel, entry);
 	SIFT_INVARIANT(has_chain || !f->had_chain, "the chain of a partition went while its compaction held the lock");
-	if (!has_chain)
-		return true;
-	src.npages = t.npages;
+	if (!has_chain || (f->out != NULL && !prepared_holds(f, &t, live, nparts)))
+		fold_forget(f);
 	sift_xid_horizon_init(&f->hc, f->hc.horizon);
-	if (!sift_col_delta_compact_changes(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords))
+	rewritten = has_chain && commit_records(f, &t, entry, live, nparts, out, nout, next, &placed);
+	pfree(live);
+	if (!rewritten || !placed)
 	{
-		trail_free(&t);
-		return true;
+		fold_forget(f);
+		if (has_chain)
+			trail_free(&t);
+		return placed;
 	}
-	sift_col_delta_compact_stream(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
-	if (!place_rows(f->rel, entry->part_id, out, nout, plan.want, plan.nwant, &pl))
-	{
-		pfree(pl.v);
-		sift_col_delta_compact_plan_free(&plan);
-		trail_free(&t);
-		return false;
-	}
-	remap = (SiftColDeltaRemap) {.ctx = &pl,.locate = placed_at};
-	sift_col_delta_write_carry(f->rel, entry, &plan, &src, next, &remap, &anchor);
-	pfree(pl.v);
+	sift_col_delta_chain_out_end(f->out);
+	f->out = NULL;
+	trail_free(&f->pre);
 	edit->set_col_delta = true;
-	edit->new_col_delta = anchor;
+	edit->new_col_delta = f->new_anchor;
 	SIFT_CRASH_POINT(f2_col_delta_fold_pre_p2);
 	freed = trail_extents(&t, &nfreed);
 	*release = repalloc(*release, sizeof(SiftExtent) * (*nrelease + nfreed + 1));
 	memcpy(*release + *nrelease, freed, sizeof(SiftExtent) * nfreed);
 	*nrelease += nfreed;
 	pfree(freed);
-	*stripped = sift_fxid_max(*stripped, plan.stripped);
-	sift_col_delta_compact_plan_free(&plan);
+	*stripped = sift_fxid_max(*stripped, f->stripped);
 	trail_free(&t);
 	return true;
 }
 
 static const SiftCompactFold col_delta_fold = {
-	.open = fold_open,.folded_leaves = fold_folded_leaves,.folds_part = fold_folds_part,.apply = fold_apply,.row_tids = fold_row_tids,.commit = fold_commit,
+	.open = fold_open,.folded_leaves = fold_folded_leaves,.folds_part = fold_folds_part,.apply = fold_apply,.row_tids = fold_row_tids,.prepare = fold_prepare,.commit = fold_commit,.forget = fold_forget,
 };
 
 void

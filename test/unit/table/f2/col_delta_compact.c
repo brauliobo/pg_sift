@@ -178,10 +178,62 @@ test_carry(void)
 	pfree(c.page);
 }
 
+/* The first three records of the page: a source that ends where the chain ended when an earlier pass read it */
+static const char *
+first_three(void *ctx, int i, uint32 *count)
+{
+	*count = 3;
+	return sift_col_delta_chain_page(((const ChainSource *) ctx)->chain, i);
+}
+
+/*
+ * A carry fed twice: the plan of the records a pass saw, then the plan of the ones written after them on the same page (skipped by the second source): the records come back in the order
+ * of the chain, and a later record of a row the first plan folded is not folded, as the second plan lets none fold
+ */
+static void
+test_carry_tail(void)
+{
+	Chain		c = {.page = palloc0(BLCKSZ),.used = sizeof(SiftColDeltaPageData)};
+	SiftColDeltaChain chain = {.npages = 1,.arena = c.page};
+	SiftColDeltaHorizon hz = {.ctx = NULL,.status = status_of};
+	SiftColDeltaCompactPlan head, tail;
+	SiftColDeltaRemap remap = {.locate = moved_to_part};
+	ChainSource cs = {&chain};
+	SiftColDeltaPageSource first = {.ctx = &cs,.npages = 1,.page = first_three},
+				rest = {.ctx = &cs,.npages = 1,.page = chain_page,.skip = 3};
+	Emitted		out = {0};
+	uint64		gens[1] = {REWRITTEN},
+				live[2] = {REWRITTEN, OTHER};
+	SiftColDeltaCarry *carry = sift_col_delta_carry_begin(emit_parts, &out);
+
+	SiftPageSetUsed(c.page, c.used);
+	put_in(&c, REWRITTEN, 1, 10, 1u << 3);
+	put_in(&c, OTHER, 1, 10, 1u << 3);
+	put_in(&c, REWRITTEN, 2, RUNNING_FROM + 50, 1u << 3);
+	put_in(&c, REWRITTEN, 2, RUNNING_FROM + 60, 1u << 4);
+	put_in(&c, OTHER, 2, 10, 1u << 3);
+	put_in(&c, REWRITTEN, 1, 11, 1u << 4);
+	sift_col_delta_compact_stream(&first, gens, 1, live, 2, &hz, UINT32_MAX, &head);
+	SIFT_CHECKF(head.nrecords == 3 && head.nfolded == 1 && head.ncarry == 2, "the first plan: %d records, %d fold, %d stay", head.nrecords, head.nfolded, head.ncarry);
+	sift_col_delta_carry_feed(carry, &head, &first, FullTransactionIdFromEpochAndXid(0, 1000), &remap);
+	sift_col_delta_compact_stream(&rest, gens, 1, live, 2, &hz, 0, &tail);
+	SIFT_CHECKF(tail.nrecords == 3 && tail.nfolded == 0 && tail.ncarry == 3, "the second plan: %d records, %d fold, %d stay", tail.nrecords, tail.nfolded, tail.ncarry);
+	sift_col_delta_carry_feed(carry, &tail, &rest, FullTransactionIdFromEpochAndXid(0, 1100), &remap);
+	sift_col_delta_carry_end(carry);
+	SIFT_CHECKF(out.n == 5 && out.part_gen[0] == OTHER && out.part_gen[1] == MOVED_TO && out.part_gen[2] == MOVED_TO && out.part_gen[3] == OTHER && out.part_gen[4] == MOVED_TO,
+				"five come back in the order of the chain: %d (%d %d %d %d %d)", out.n, (int) out.part_gen[0], (int) out.part_gen[1], (int) out.part_gen[2], (int) out.part_gen[3],
+				(int) out.part_gen[4]);
+	sift_col_delta_compact_plan_free(&head);
+	sift_col_delta_compact_plan_free(&tail);
+	pfree(c.page);
+}
+
 static void
 moved_map_fn(void *arg)
 {
-	(void) moved_map_new(*(int *) arg);
+	MovedMap	mm = {0};
+
+	moved_map_reserve(&mm, *(int *) arg);
 }
 
 /* More moves than one allocation holds (a chain of short batch rows has them): the error says the chain is too long, before anything is allocated */
@@ -202,6 +254,8 @@ main(void)
 		test_superseded();
 	if (unit_wants("compact_carry"))
 		test_carry();
+	if (unit_wants("compact_carry_tail"))
+		test_carry_tail();
 	if (unit_wants("compact_moved_map_bound"))
 		test_moved_map_bound();
 	return sift_check_summary();

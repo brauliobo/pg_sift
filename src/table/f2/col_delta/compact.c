@@ -193,15 +193,20 @@ typedef struct PageRecs
 	uint32		left;
 } PageRecs;
 
-/* The first nrecords records of page i (the rows of its batches as records): the page is there until the next is taken, and a record until the next of its page */
+static SiftColDeltaEntryHdr recs_take(PageRecs *r, const uint8 **rec);
+
+/* The first nrecords records of page i (the rows of its batches as records), past the ones the source skips: the page is there until the next is taken, and a record until the next of its page */
 static void
 page_recs(PageRecs *r, const SiftColDeltaPageSource *src, int i)
 {
 	uint32		count;
 	const char *page = src->page(src->ctx, i, &count);
+	const uint8 *rec;
 
 	sift_col_delta_recs_init(&r->it, sift_col_delta_page_first(page), sift_col_delta_page_end(page));
 	r->left = count;
+	for (uint32 k = 0; i == 0 && k < src->skip; k++)
+		(void) recs_take(r, &rec);
 }
 
 static bool
@@ -639,19 +644,28 @@ moved_to(const MovedMap *m, uint64 tid, SiftColDeltaEntryHdr *h)
 	return false;
 }
 
-static MovedMap
-moved_map_new(int nmoved)
+/* Room for nmoved more moves: the moves so far are laid out again over slots for all of them */
+static void
+moved_map_reserve(MovedMap *m, int nmoved)
 {
-	MovedMap	mm = {0};
+	int			n = m->nmv + Max(nmoved, 1);
 	uint32		slots;
+	Moved	   *old = m->mv;
+	int			nold = m->nmv;
 
-	chain_bound(Max(nmoved, 1), sizeof(Moved));
-	slots = Max(pg_nextpower2_32(2 * (uint32) Max(nmoved, 1)), 32);
-	mm.mv = palloc(sizeof(Moved) * Max(nmoved, 1));
+	chain_bound(n, sizeof(Moved));
+	slots = Max(pg_nextpower2_32(2 * (uint32) n), 32);
+	m->mv = palloc(sizeof(Moved) * n);
+	if (m->slot != NULL)
+		pfree(m->slot);
 	/* check-memory: allow a slot for each carried address change of one compaction, twice over */
-	mm.slot = palloc0(slots * sizeof(int32));
-	mm.mask = slots - 1;
-	return mm;
+	m->slot = palloc0(slots * sizeof(int32));
+	m->mask = slots - 1;
+	m->nmv = 0;
+	for (int i = 0; i < nold; i++)
+		moved_add(m, &old[i]);
+	if (old != NULL)
+		pfree(old);
 }
 
 /* The records of recs (n bytes) after the ones of page, whose batch goes out when the next does not fit it */
@@ -690,17 +704,35 @@ carried(const SiftColDeltaCompactPlan *plan, uint32 seq, MovedMap *mm, const Sif
 	return true;
 }
 
-void
-sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap, SiftColDeltaEmit emit,
-							 void *emit_ctx)
+struct SiftColDeltaCarry
 {
-	MovedMap	mm = moved_map_new(plan->nmoved);
-	SiftColDeltaBatch page = {0};
+	MovedMap	mm;
+	SiftColDeltaBatch page;
 	SiftColDeltaRun run;
 	uint8		out[SIFT_COL_DELTA_RUN_OUT_BYTES];
+	FullTransactionId next;
+	SiftColDeltaEmit emit;
+	void	   *emit_ctx;
+};
+
+SiftColDeltaCarry *
+sift_col_delta_carry_begin(SiftColDeltaEmit emit, void *emit_ctx)
+{
+	SiftColDeltaCarry *c = palloc0(sizeof(SiftColDeltaCarry));
+
+	c->emit = emit;
+	c->emit_ctx = emit_ctx;
+	sift_col_delta_run_init(&c->run);
+	return c;
+}
+
+void
+sift_col_delta_carry_feed(SiftColDeltaCarry *c, const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap)
+{
 	uint32		seq = 0;
 
-	sift_col_delta_run_init(&run);
+	moved_map_reserve(&c->mm, plan->nmoved);
+	c->next = next;
 	for (int i = 0; i < src->npages; i++)
 	{
 		PageRecs	r;
@@ -715,17 +747,35 @@ sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColD
 			uint64		new_tid;
 
 			(void) recs_take(&r, &rec);
-			if (!carried(plan, seq++, &mm, remap, rec, buf, &h))
+			if (!carried(plan, seq++, &c->mm, remap, rec, buf, &h))
 				continue;
 			new_tid = record_new_tid(buf, &h);
 			if (new_tid != 0)
-				moved_add(&mm, &(Moved) {new_tid, h.part_gen, h.granule_id, h.row_ordinal});
-			carry_put(&page, next, out, sift_col_delta_run_feed(&run, buf, out), emit, emit_ctx);
+				moved_add(&c->mm, &(Moved) {new_tid, h.part_gen, h.granule_id, h.row_ordinal});
+			carry_put(&c->page, next, c->out, sift_col_delta_run_feed(&c->run, buf, c->out), c->emit, c->emit_ctx);
 		}
 	}
-	carry_put(&page, next, out, sift_col_delta_run_feed(&run, NULL, out), emit, emit_ctx);
-	if (page.nentries > 0)
-		emit(emit_ctx, &page);
-	pfree(mm.mv);
-	pfree(mm.slot);
+}
+
+void
+sift_col_delta_carry_end(SiftColDeltaCarry *c)
+{
+	carry_put(&c->page, c->next, c->out, sift_col_delta_run_feed(&c->run, NULL, c->out), c->emit, c->emit_ctx);
+	if (c->page.nentries > 0)
+		c->emit(c->emit_ctx, &c->page);
+	if (c->mm.mv != NULL)
+		pfree(c->mm.mv);
+	if (c->mm.slot != NULL)
+		pfree(c->mm.slot);
+	pfree(c);
+}
+
+void
+sift_col_delta_compact_carry(const SiftColDeltaCompactPlan *plan, const SiftColDeltaPageSource *src, FullTransactionId next, const SiftColDeltaRemap *remap, SiftColDeltaEmit emit,
+							 void *emit_ctx)
+{
+	SiftColDeltaCarry *c = sift_col_delta_carry_begin(emit, emit_ctx);
+
+	sift_col_delta_carry_feed(c, plan, src, next, remap);
+	sift_col_delta_carry_end(c);
 }
