@@ -3,8 +3,8 @@
  *
  * The source offers each unit it is about to read. A unit is answered when the statement is one the cubes hold (no key, or one key that is a dimension of the unit's histogram, and aggregates that are
  * counts, sums (of a leaf or of a line of one), least and greatest of the leaves the histogram has measures of, or of the zone of the unit when there is no key, and the distinct values of
- * a histogram dimension), the unit stands for exactly the rows the snapshot sees (stored, no
- * dead row, every heap page all-visible: SiftV1ReaderOps.unit_exact) and its zones decide every test of the statement for all its rows (or for none: it adds nothing). Any other unit is read as it
+ * a histogram dimension), the unit stands for exactly the rows the snapshot sees (stored, every heap page all-visible, no dead row or the pre-aggregates
+ * net of them: SiftV1ReaderOps.unit_rows) and its zones decide every test of the statement for all its rows (or for none: it adds nothing). Any other unit is read as it
  * was, rows and visibility checks included, so an answer is the scan's.
  */
 /* check-memory: allow-allocs every array here follows the keys, aggregates and tests of one statement or the groups of one unit, not the rows of the table */
@@ -660,14 +660,15 @@ static bool
 offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 {
 	SiftV1Cube *c = arg;
+	SiftSrcUnit live = *unit;
 	Verdict		v;
 	bool		done;
 
-	if (unit->nsu != 0 || !rd->unit_exact(src, unit) || !sift_v6_group_takes_cells(c->group))
+	if (unit->nsu != 0 || !sift_v6_group_takes_cells(c->group) || (live.nrow = rd->unit_rows(src, unit)) < 0)
 		return false;
-	if ((v = unit_verdict(c, rd, src, unit)) == V_SOME)
+	if ((v = unit_verdict(c, rd, src, &live)) == V_SOME)
 		return false;
-	done = v == V_NONE || (c->nkeys == 0 && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, unit) : fold_hist(c, rd, src, unit));
+	done = v == V_NONE || (c->nkeys == 0 && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live));
 	c->stats->grans_preagg += done;
 	return done;
 }

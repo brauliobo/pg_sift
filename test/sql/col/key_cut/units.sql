@@ -59,11 +59,12 @@ VACUUM nk; VACUUM nu;
 
 -- units with dead rows over an all-visible heap are read without the heap: no row is vetted
 CREATE FUNCTION nvetted(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; BEGIN
+DECLARE l text; g text := 'no agg'; v text := '0'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Rows: %' THEN RETURN trim(l); END IF;
+		g := CASE WHEN l ~ '^\s*Granules: ' THEN trim(l) ELSE g END;
+		v := coalesce(substring(l from 'heap_vet=(\d+)'), v);
 	END LOOP;
-	RETURN 'no agg';
+	RETURN g || ' heap_vet=' || v;
 END $$;
 SELECT nvetted('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1') AS dirty_vetted;
 SELECT nvetted('SELECT sum(amt) FROM nk WHERE amt > 0') AS dirty_filter_vetted;

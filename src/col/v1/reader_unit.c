@@ -1,19 +1,27 @@
 /*
  * col/v1/reader_unit.c - what a stored unit of Format 1 answers without being read (col/v1/reader.h): the zone and the exact sums of a leaf, and the histogram of a dimension, for the units
- * of an index and of a sift_table alike. A unit answers only while it stands for exactly the rows a snapshot sees: stored, no dead row, every heap page it has rows on all-visible to it.
+ * of an index and of a sift_table alike. A unit answers only while it stands for exactly the rows a snapshot sees: stored, every heap page it has rows on all-visible to it, and no dead
+ * row or the pre-aggregates VACUUM wrote net of exactly its dead rows (col/v1/seg/net.c).
  */
 #include "postgres.h"
 
 #include "col/v1/pagg.h"
 #include "col/v1/reader.h"
 
-bool
-sift_v1_unit_exact(const SiftColUnit *unit)
+int
+sift_v1_unit_rows(SiftColUnit *unit)
 {
 	SiftColSegment *seg;
 	uint32		u;
 
-	return sift_col_unit_stored(unit, &seg, &u) && sift_col_unit_exact(unit);
+	if (!sift_col_unit_stored(unit, &seg, &u))
+		return -1;
+	if (sift_col_unit_exact(unit))
+		return (int) unit->nrows;
+	if (sift_col_unit_dead(unit, 0, false) >= 0 && sift_col_unit_net(unit))
+		return (int) (unit->nrows - sift_col_unit_net_dead(unit));
+	sift_col_unit_dead(unit, -1, false);
+	return -1;
 }
 
 bool

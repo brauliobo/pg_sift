@@ -97,22 +97,23 @@ CHECKPOINT;
 VACUUM nk; VACUUM nu;
 -- units with dead rows over an all-visible heap are read without the heap: no row is vetted
 CREATE FUNCTION nvetted(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; BEGIN
+DECLARE l text; g text := 'no agg'; v text := '0'; BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Rows: %' THEN RETURN trim(l); END IF;
+		g := CASE WHEN l ~ '^\s*Granules: ' THEN trim(l) ELSE g END;
+		v := coalesce(substring(l from 'heap_vet=(\d+)'), v);
 	END LOOP;
-	RETURN 'no agg';
+	RETURN g || ' heap_vet=' || v;
 END $$;
 SELECT nvetted('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1') AS dirty_vetted;
-               dirty_vetted                
--------------------------------------------
- Rows: 0 scanned, 0 aggregated, 100 groups
+                             dirty_vetted                             
+----------------------------------------------------------------------
+ Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=13 heap_vet=0
 (1 row)
 
 SELECT nvetted('SELECT sum(amt) FROM nk WHERE amt > 0') AS dirty_filter_vetted;
-                                   dirty_filter_vetted                                    
-------------------------------------------------------------------------------------------
- Rows: 393120 scanned (1 filters in source), 356534 aggregated, 96 dense chunks, 1 groups
+                         dirty_filter_vetted                          
+----------------------------------------------------------------------
+ Granules: scanned=12 pruned_zone=0 pruned_skip=0 preagg=1 heap_vet=0
 (1 row)
 
 DROP FUNCTION nvetted(text);

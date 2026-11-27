@@ -157,8 +157,8 @@ typedef struct SiftSrcZone
 } SiftSrcZone;
 /*
  * Pre-aggregates (docs/COL-PREAGG.md), optional provider callbacks: what a unit knows about its rows without reading a chunk. A unit may answer
- * only when it is fully visible and clean (unit_exact: no dead row, every page it has rows on all-visible to the snapshot; a unit of the write
- * buffer never is); the consumer applies its predicate on top (a unit whose zone lies inside the predicate answers whole, any other is scanned).
+ * only when it is fully visible and clean (unit_rows: every page it has rows on all-visible to the snapshot, and no dead row or a sidecar net of them;
+ * a unit of the write buffer never is); the consumer applies its predicate on top (a unit whose zone lies inside the predicate answers whole, any other is scanned).
  * unit_agg / unit_hist / unit_rollup return false when the unit cannot answer (not exact, an overflow value, no histogram for that dim in that unit).
  * Memory of a result is valid until the next unit_hist or unit_rollup call of the source.
  */

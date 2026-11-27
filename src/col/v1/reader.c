@@ -288,12 +288,12 @@ idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
-static bool
-idx_unit_exact(void *impl, const SiftSrcUnit *unit)
+static int
+idx_unit_rows(void *impl, const SiftSrcUnit *unit)
 {
 	SiftV1Idx  *r = impl;
 
-	return !r->sel.compact && sift_v1_unit_exact(&r->unit);
+	return r->sel.compact ? -1 : sift_v1_unit_rows(&r->unit);
 }
 
 static bool
@@ -336,7 +336,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.filter_types = idx_filter_types,
 	.read = sift_v1_idx_read,
 	.tids = sift_v1_idx_tids,
-	.unit_exact = idx_unit_exact,
+	.unit_rows = idx_unit_rows,
 	.unit_agg = idx_unit_agg,
 	.unit_hist = idx_unit_hist
 };

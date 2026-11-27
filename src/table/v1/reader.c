@@ -444,10 +444,10 @@ tbl_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, ui
 	return sift_srcsel_rows_left(bits, unit->nrow);
 }
 
-static bool
-tbl_unit_exact(void *impl, const SiftSrcUnit *unit)
+static int
+tbl_unit_rows(void *impl, const SiftSrcUnit *unit)
 {
-	return !((SiftV1Tbl *) impl)->sel.compact && sift_v1_unit_exact(&((TblPart *) unit->priv)->unit);
+	return ((SiftV1Tbl *) impl)->sel.compact ? -1 : sift_v1_unit_rows(&((TblPart *) unit->priv)->unit);
 }
 
 /* a segment of an older layout may lack the column: the unit is read, and the scan gives the default of the catalog */
@@ -493,7 +493,7 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.filter_types = tbl_filter_types,
 	.read = sift_v1_tbl_read,
 	.tids = sift_v1_tbl_tids,
-	.unit_exact = tbl_unit_exact,
+	.unit_rows = tbl_unit_rows,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist
 };
