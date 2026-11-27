@@ -26,6 +26,9 @@ extern void sift_f2_build_end(SiftF2Build *bs);
  */
 extern void sift_f2_forget_file(Relation rel);
 
+/* The parallel workers a build launches: those the planner gave the index, one fewer than the granules of the heap at most, none for a unique index */
+extern int sift_f2_build_workers(Relation heap, IndexInfo *info);
+
 /* Builds with the parallel workers the planner gave the index (info->ii_ParallelWorkers), the leader taking a share; false, with nothing read, when there are none or none could be started; res gets the tuples of the heap and the rows the workers indexed (the leader's own are added by the caller) */
 extern bool sift_f2_build_par(Relation heap, Relation index, IndexInfo *info, SiftF2Build *leader, IndexBuildResult *res);
 

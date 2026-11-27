@@ -72,6 +72,21 @@ SELECT sift_helpers.f2_same('SELECT id FROM pc WHERE id > 199990'), sift_helpers
 SELECT (SELECT sum(total_rows - total_dead) FROM sift._test_f2_partitions('pc_cic')) = (SELECT count(*) FROM pc) AS index_rows_are_heap_rows;
 DROP INDEX pc_cic;
 
+-- A heap of fewer granules than the participants asked for is built by fewer, at least a granule of rows each: 2 granules take one worker, under 2 the leader alone
+CREATE TABLE pw (id int, v int) WITH (parallel_workers = 4);
+INSERT INTO pw SELECT i, i % 97 FROM generate_series(1, 16384) i;
+VACUUM (ANALYZE) pw;
+SET sift.test_par_workers = 0;
+CREATE INDEX pw_i ON pw USING sift_col (id, v);
+SELECT current_setting('sift.test_par_workers')::int AS workers_16384_rows, (SELECT count(*) FROM sift._test_f2_partitions('pw_i')) > 0 AS indexed;
+DELETE FROM pw WHERE id > 8000;
+VACUUM (ANALYZE) pw;
+DROP INDEX pw_i;
+SET sift.test_par_workers = 0;
+CREATE INDEX pw_i ON pw USING sift_col (id, v);
+SELECT current_setting('sift.test_par_workers')::int AS workers_8000_rows, (SELECT sum(total_rows) FROM sift._test_f2_partitions('pw_i')) = 8000 AS rows_8000;
+DROP TABLE pw;
+
 -- Compaction takes no partition lock while it writes: the parts it joins, then the parts it merges, with deletes that reach their inputs meanwhile (as a settled delete of the bulk path
 -- does); the vector of the part that replaces them holds those rows, and no row is lost or doubled
 SET sift.enable_agg = off;

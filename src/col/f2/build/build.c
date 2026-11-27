@@ -361,8 +361,7 @@ sift_f2_ambuild(Relation heap, Relation index, IndexInfo *info)
 	if (heap->rd_tableam != GetHeapamTableAmRoutine())
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("sift_col indexes require a heap table"),
 						errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
-	if (info->ii_Unique)
-		info->ii_ParallelWorkers = 0;	/* the rows of one key may be in the shares of two participants */
+	info->ii_ParallelWorkers = sift_f2_build_workers(heap, info);
 	sift_col_warn_f2_build_relopts(heap, index);
 	sift_f2_forget_file(index);
 	sift_f2_connect_resolve(heap, index);

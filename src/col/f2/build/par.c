@@ -15,6 +15,7 @@
 #include "utils/rel.h"
 
 #include "col/am.h"
+#include "col/granule/granule.h"
 #include "col/f2/build/par.h"
 #include "core/f2/gate.h"
 #include "core/parbuild.h"
@@ -89,6 +90,23 @@ init_scan(Relation heap, F2BuildShared *sh, Snapshot snapshot)
 	set_config_option("synchronize_seqscans", "off", PGC_USERSET, PGC_S_SESSION, GUC_ACTION_SAVE, true, 0, false);
 	table_parallelscan_initialize(heap, SCAN_OF(sh), snapshot);
 	AtEOXact_GUC(false, nest);
+}
+
+/*
+ * A participant writes its share as parts of its own, and a share of less than a granule is a part of a few rows that costs a part's fixed bytes: a heap of fewer granules than the
+ * participants asked for is built by fewer. A unique build is the leader's alone, as the rows of one key may be in the shares of two participants.
+ */
+int
+sift_f2_build_workers(Relation heap, IndexInfo *info)
+{
+	BlockNumber pages;
+	double		tuples,
+				allvisfrac;
+
+	if (info->ii_Unique || info->ii_ParallelWorkers < 1)
+		return 0;
+	table_relation_estimate_size(heap, NULL, &pages, &tuples, &allvisfrac);
+	return Max(0, Min(info->ii_ParallelWorkers, (int) (tuples / SIFT_GRANULE_ROWS) - 1));
 }
 
 bool
