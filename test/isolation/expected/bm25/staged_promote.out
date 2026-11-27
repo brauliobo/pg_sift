@@ -1,0 +1,47 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1b s1i s2p s1c s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_stg SELECT g, 'alpha staged ' || g FROM generate_series(100, 109) g;
+step s2p: SELECT sift.promote('iso_stg_idx') >= 0 AS promoted; <waiting ...>
+step s1c: COMMIT;
+step s2p: <... completed>
+promoted
+--------
+t       
+(1 row)
+
+step s3q: SELECT count(*) AS problems FROM sift.check('iso_stg_idx', true); SELECT count(*) AS alpha FROM iso_stg WHERE body @@> 'alpha';
+problems
+--------
+       0
+(1 row)
+
+alpha
+-----
+   10
+(1 row)
+
+
+starting permutation: s1b s1i s2p s1a s3q
+step s1b: BEGIN;
+step s1i: INSERT INTO iso_stg SELECT g, 'alpha staged ' || g FROM generate_series(100, 109) g;
+step s2p: SELECT sift.promote('iso_stg_idx') >= 0 AS promoted; <waiting ...>
+step s1a: ROLLBACK;
+step s2p: <... completed>
+promoted
+--------
+t       
+(1 row)
+
+step s3q: SELECT count(*) AS problems FROM sift.check('iso_stg_idx', true); SELECT count(*) AS alpha FROM iso_stg WHERE body @@> 'alpha';
+problems
+--------
+       0
+(1 row)
+
+alpha
+-----
+    0
+(1 row)
+

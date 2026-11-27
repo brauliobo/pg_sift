@@ -17,6 +17,7 @@
 #include "storage/lmgr.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -38,6 +39,7 @@
 #include "core/varint.h"
 #include "core/visibility/visibility.h"
 #include "core/memtrack.h"
+#include "core/meta_peek.h"
 #include "table/dispatch.h"
 #include "bm25/doctext.h"
 
@@ -87,6 +89,65 @@ sift_doc_next(DocCursor *c)
 }
 
 
+/* Whether the docs take their terms from the text of their rows: an index with positions (the write buffer keeps none) */
+static bool
+reads_rows(Relation index, SiftAnalyzerConfig *cfg)
+{
+	sift_analyzer_config_from_index(index, cfg);
+#ifdef SIFT_TESTING
+	if (sift_test_no_heap_positions)
+		return false;
+#endif
+	return sift_index_options(index)->positions && !cfg->keyword;
+}
+
+/*
+ * Whether another transaction with an xid holds the table: a writer, as the writer of a doc of a sealed buffer was when it wrote it (VACUUM and the maintenance hold the table without
+ * one); wait: each one is waited for.
+ */
+static bool
+other_writers(Oid relid, bool wait)
+{
+	LOCKTAG		tag;
+	bool		any = false;
+
+	SET_LOCKTAG_RELATION(tag, MyDatabaseId, relid);
+	for (VirtualTransactionId *v = GetLockConflicts(&tag, ShareLock, NULL); VirtualTransactionIdIsValid(*v); v++)
+		if (TransactionIdIsValid(ProcNumberGetProc(v->procNumber)->xid))
+		{
+			any = true;
+			if (wait)
+				VirtualXactLock(*v, true);
+		}
+	return any;
+}
+
+/* The rows a transaction inserts reach the table at its commit, after their docs (a Format 2.0 sift_table) */
+static bool
+stages_rows(Relation heap)
+{
+	return sift_tbl_is_table(heap) && sift_meta_resolve_major(heap) == SIFT_FORMAT2_MAJOR;
+}
+
+/*
+ * A Format 2.0 sift_table writes the rows a transaction inserts at its commit, after their docs: a promotion that misses the row of a doc waits for the writers (doctext_fetch). A
+ * backend that writes the table cannot wait for the others, which may wait for it in turn: it leaves the sealed buffers to another while there are some.
+ */
+bool
+sift_doctext_writers_busy(Relation index)
+{
+	SiftAnalyzerConfig cfg;
+	Relation	heap;
+	bool		busy;
+
+	if (!TransactionIdIsValid(GetTopTransactionIdIfAny()) || !reads_rows(index, &cfg))
+		return false;
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	busy = stages_rows(heap) && other_writers(RelationGetRelid(heap), false);
+	table_close(heap, AccessShareLock);
+	return busy;
+}
+
 /*
  * The text of the docs of a promotion. The write buffer keeps the terms of a doc and their counts, not where in the text they are, and
  * a segment of an index with positions needs the position records of its terms: a merge keeps them only when every segment it merges has
@@ -99,13 +160,8 @@ sift_doctext_open(Relation index, bool windowed)
 	SiftAnalyzerConfig cfg;
 	DocText    *d;
 
-	sift_analyzer_config_from_index(index, &cfg);
-	if (!sift_index_options(index)->positions || cfg.keyword)
+	if (!reads_rows(index, &cfg))
 		return NULL;
-#ifdef SIFT_TESTING
-	if (sift_test_no_heap_positions)
-		return NULL;
-#endif
 	d = palloc0(sizeof(DocText));
 	SIFT_TEST_GATE(sift_test_worker_gate && MyBackendType == B_BG_WORKER, 7);
 	d->index = index;
@@ -118,6 +174,7 @@ sift_doctext_open(Relation index, bool windowed)
 	sift_analyzer_set_positions(d->an, true);
 	sift_bm25_doc_keys(index, &d->keys, CurrentMemoryContext);
 	d->nblocks = sift_vis_nblocks(d->heap);
+	d->settle = windowed && stages_rows(d->heap) && !TransactionIdIsValid(GetTopTransactionIdIfAny());
 	if (windowed && index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
 	{
 		d->wcx = sift_mem_allocset_create(CurrentMemoryContext, "sift doctext window");
@@ -159,17 +216,31 @@ sift_doctext_close(DocText *d)
 	table_close(d->heap, AccessShareLock);
 }
 
-/* The tuple a key stands for, in d->slot, through the table access method (a sift_table has no heap pages to read); false when it is gone (dead for every snapshot) */
 static bool
-doctext_fetch(DocText *d, const ItemPointerData *tid)
+doctext_fetch_any(DocText *d, const ItemPointerData *tid)
 {
 	ItemPointerData t = *tid;
 	bool		again = false,
 				all_dead = false;
 
-	if (ItemPointerGetBlockNumber(tid) >= d->nblocks)
+	return ItemPointerGetBlockNumber(tid) < d->nblocks && table_index_fetch_tuple(d->fetch, &t, SnapshotAny, d->slot, &again, &all_dead);
+}
+
+/*
+ * The tuple a key stands for, in d->slot, through the table access method (a sift_table has no heap pages to read); false when it is gone (dead for every snapshot). The row of a doc of
+ * a sealed buffer that a Format 2.0 sift_table does not hold yet is one of a writer still running (sift_doctext_writers_busy): the first such miss waits for the writers and looks again.
+ */
+static bool
+doctext_fetch(DocText *d, const ItemPointerData *tid)
+{
+	if (doctext_fetch_any(d, tid))
+		return true;
+	if (!d->settle)
 		return false;
-	return table_index_fetch_tuple(d->fetch, &t, SnapshotAny, d->slot, &again, &all_dead);
+	d->settle = false;
+	other_writers(RelationGetRelid(d->heap), true);
+	d->nblocks = sift_vis_nblocks(d->heap);
+	return doctext_fetch_any(d, tid);
 }
 
 /* The text of the doc at tid, detoasted, valid until the next call; NULL when its row or its text is gone */

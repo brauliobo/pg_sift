@@ -40,6 +40,7 @@ typedef struct DocText
 	SiftAnalyzer *an;
 	SiftDocKeys keys;
 	BlockNumber nblocks;
+	bool		settle;			/* a row missed waits for the writers of the table first, once (doctext_fetch) */
 	/* a table whose rows lie in an order of their own: the texts of the next docs read in that order (sift_doctext_prime), and handed out in the order of the docs */
 	MemoryContext wcx;
 	SiftKey    *wkey;
@@ -52,6 +53,7 @@ typedef struct DocText
 extern bool sift_doc_next(DocCursor *c);
 extern DocText *sift_doctext_open(Relation index, bool windowed);
 extern void sift_doctext_close(DocText *d);
+extern bool sift_doctext_writers_busy(Relation index);
 extern void sift_doctext_prime(DocText *d, DocCursor *c);
 extern bool sift_doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int *nterms, uint32 *dl, int *len);
 

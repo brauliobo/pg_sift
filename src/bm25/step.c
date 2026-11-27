@@ -443,13 +443,15 @@ still_there(Relation index, uint64 gen, SiftSegKind kind)
 	return found;
 }
 
-/* Promotes the oldest sealed segment nobody else is at; busy: the generation of one that is */
+/* Promotes the oldest sealed segment nobody else is at; busy: the generation of one that is. A writer leaves them to others while the table has other writers (sift_doctext_writers_busy) */
 SiftStepResult
 promote_next(Relation index, bool propagate, uint64 *busy)
 {
 	SiftDirSnapshot *snap;
 	SiftStepResult	r = SIFT_STEP_IDLE;
 
+	if (sift_doctext_writers_busy(index))
+		return r;
 	snap = sift_dir_read(index);
 	for (int i = 0; i < snap->nsegs && r == SIFT_STEP_IDLE; i++)
 	{
