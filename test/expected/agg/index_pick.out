@@ -1,4 +1,4 @@
--- A table with several sift_col indexes is scanned through the one the cost model prices lowest, whichever was created last: an index cut by the key (key_cut)
+-- A table with several sift_col indexes is scanned through the one the cost model prices lowest, whichever was created last: an index ordered by the key (key_order)
 -- reads the few units of a key and all of them for a date range, an index cut by block range the other way round. Each table has both, in the two creation orders.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -26,8 +26,8 @@ SELECT ip_fill('ip_a'), ip_fill('ip_b'), ip_fill('ip_one');
 (1 row)
 
 CREATE INDEX ip_a_page ON ip_a USING sift_col (id, tenant, day, v);
-CREATE INDEX ip_a_key ON ip_a USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
-CREATE INDEX ip_b_key ON ip_b USING sift_col (id, tenant, day, v) WITH (key_cut = 'tenant');
+CREATE INDEX ip_a_key ON ip_a USING sift_col (id, tenant, day, v) WITH (key_order = 'tenant');
+CREATE INDEX ip_b_key ON ip_b USING sift_col (id, tenant, day, v) WITH (key_order = 'tenant');
 CREATE INDEX ip_b_page ON ip_b USING sift_col (id, tenant, day, v);
 CREATE INDEX ip_one_page ON ip_one USING sift_col (id, tenant, day, v);
 VACUUM (FREEZE, ANALYZE) ip_a, ip_b, ip_one;
