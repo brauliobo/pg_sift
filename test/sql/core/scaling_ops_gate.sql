@@ -150,7 +150,7 @@ SELECT pg_temp.gate('column update', 'UPDATE tb2k SET v = v + 1 WHERE id % 8 = 0
 SELECT pg_temp.gate('in list', pg_temp.inlist(2, 2000), pg_temp.inlist(16, 16000), 'SiftAggV6', 10.0, NULL, '{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
 SELECT pg_temp.gate('star range join', 'SELECT d.cat, count(*), sum(f.val) FROM fx2k f JOIN dm2k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat',
 					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'SiftAggV6', 11.5, NULL,
-					'{"enable_seqscan = off"}', '{"enable_seqscan = off"}');
+					'{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
 SELECT pg_temp.gate('bm25 terms', pg_temp.terms(2, 16), pg_temp.terms(16, 128), 'SiftScan', 11.5);
 
 DROP TABLE pt2k, pt16k, ev16k, ev128k, ep16k, ep128k, tb2k, tb16k, fx2k, fx16k, dm2k, dm16k, bm2k, bm16k;

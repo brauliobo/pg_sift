@@ -173,7 +173,7 @@ SELECT pg_temp.gate('in list', pg_temp.inlist(2, 2000), pg_temp.inlist(16, 16000
 
 SELECT pg_temp.gate('star range join', 'SELECT d.cat, count(*), sum(f.val) FROM fx2k f JOIN dm2k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat',
 					'SELECT d.cat, count(*), sum(f.val) FROM fx16k f JOIN dm16k d ON f.ts >= d.lo AND f.ts < d.hi GROUP BY d.cat', 'SiftAggV6', 11.5, NULL,
-					'{"enable_seqscan = off"}', '{"enable_seqscan = off"}');
+					'{"sift.agg_force = on"}', '{"sift.agg_force = on"}');
                            gate                           
 ----------------------------------------------------------
  PASS | star range join | node_ok=t | temp=0 | ratio_ok=t
