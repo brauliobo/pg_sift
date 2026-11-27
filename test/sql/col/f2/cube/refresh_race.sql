@@ -27,7 +27,7 @@ SELECT key_diff('facts_s') AS key_differences, counters('facts_s') AS refreshes_
 
 -- rows in new parts, a compaction, and a bulk synchronisation of members, in the same cycle
 INSERT INTO facts SELECT 40000 + i, 1 + (i * 41) % 6000, timestamptz '2026-04-01' + i * interval '13 minutes', i % 60 FROM generate_series(1, 6000) i;
-DELETE FROM facts WHERE id % 7 = 0;
+DELETE FROM facts WHERE id > 40000 AND id % 7 = 0;
 DELETE FROM members WHERE member % 6 = 0 AND panel < 10;
 INSERT INTO members SELECT m, 1 + (m * 3) % 20 FROM generate_series(1, 5000) m ON CONFLICT DO NOTHING;
 UPDATE members SET panel = panel % 20 + 1 WHERE member BETWEEN 2000 AND 2400;
