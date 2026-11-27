@@ -116,8 +116,7 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::smallint IN (1, 2, 5) GROUP BY 1', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::int IS NULL GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, (metrics -> ''m_total'')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2', 'node18'),
-	-- a condition and a key that cast to two types raise two errors, and the scan cannot raise the one PostgreSQL meets first: the normal plan
-	('SELECT CAST(jsonb_extract_path(metrics, ''quality'') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS bigint) >= 3 GROUP BY 1', 'plain'),
+	('SELECT CAST(jsonb_extract_path(metrics, ''quality'') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS bigint) >= 3 GROUP BY 1', 'node18'),
 	('SELECT (metrics[''quality''])::int, count(*) FROM mk GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int AS q, count(*) FROM mk WHERE g < 3 GROUP BY 1 HAVING count(*) > 10', 'node18'),
 	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 AND g < 3', 'node18'),
@@ -272,6 +271,20 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT g, count((metrics ->> ''m_total'')::float8), sum((metrics ->> ''m_total'')::float8) FROM ml GROUP BY 1', 'node')
 ) t(q, w);
 
+-- Q-13. A condition and a read of the rows it keeps that cast to two types raise two errors: of the first row that raises, the one PostgreSQL meets first in it (the condition, then
+-- the read), whichever cast comes first in the scan
+CREATE TABLE mo (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mo SELECT i, CASE i WHEN 10 THEN '{"m_total": 5, "quality": "q"}' WHEN 20 THEN '{"m_total": "t", "quality": 1}' WHEN 30 THEN '{"m_total": "u", "quality": "v"}'
+	ELSE jsonb_build_object('m_total', i % 9, 'quality', i % 4) END::jsonb FROM generate_series(1, 2000) i;
+CREATE INDEX mo_col ON mo USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+VACUUM ANALYZE mo;
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 AND id <> 10 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 AND id > 25 GROUP BY 1', 'node18'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint > 1), count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0', 'node18')
+) t(q, w);
+
 DROP FUNCTION same(text, text), answer(text), plan_of(text), reread(text);
-DROP TABLE mk, mn, md, mx, ms, mb, ml;
+DROP TABLE mk, mn, md, mx, ms, mb, ml, mo;
 DROP EXTENSION pg_sift;

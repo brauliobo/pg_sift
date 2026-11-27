@@ -263,7 +263,31 @@ raise_row(V6Scan *s, const V6Col *c, const ColView *views, const uint64 *tid, in
 	sift_v6_json_exception_raise(c->typid, c->jsonb_cast, views[c->leaf].xpay[r], views[c->leaf].xplen[r], s->batch_cx);
 }
 
-/* PostgreSQL's error for the first row whose cast raises that PostgreSQL casts: one the batch quals keep, or any row of a column they read themselves */
+/* the rows PostgreSQL casts the column of: those the batch quals keep, or of a column they read themselves those the quals it tests first keep */
+static const uint64 *
+cast_rows(const V6Scan *s, const V6Col *c, const SiftBatchSel *kept, const SiftBatchSel *uncast)
+{
+	return s->bq == NULL || quals_read(s, c) ? uncast->mask : kept->mask;
+}
+
+/* PostgreSQL's first error for row i of the batch from off: the cast of the WHERE clause, which it tests first, else the first read of the row it keeps */
+static void
+raise_first(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, const SiftBatchSel *kept, const SiftBatchSel *uncast, int off, int i)
+{
+	for (int where = 1; where >= 0; where--)
+		for (int k = 0; k < s->ncols; k++)
+		{
+			const V6Col *c = &s->cols[k];
+
+			if (raises[k] != NULL && (s->bq != NULL && quals_read(s, c)) == where && ((raises[k][i >> 6] & cast_rows(s, c, kept, uncast)[i >> 6]) >> (i & 63)) & 1)
+				raise_row(s, c, views, tid, off + i);
+		}
+}
+
+/*
+ * PostgreSQL's error for the first row whose cast raises that PostgreSQL casts (one the batch quals keep, or any row of a column they read themselves): in the row, the error PostgreSQL meets first.
+ * When sift_f2_v6_raise_kept returns, no row of the batch raises
+ */
 void
 sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n)
 {
@@ -276,14 +300,15 @@ sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64
 		sift_v6_bq_filter(s->bq, &kept);
 	if (s->bq_uncast != NULL)
 		sift_v6_bq_filter(s->bq_uncast, &uncast);
-	for (int k = 0; k < s->ncols; k++)
+	for (int w = 0; w < (n + 63) / 64; w++)
 	{
-		const V6Col *c = &s->cols[k];
-		const uint64 *cast = s->bq == NULL || quals_read(s, c) ? uncast.mask : kept.mask;
+		uint64		any = 0;
 
-		for (int w = 0; raises[k] != NULL && w < (n + 63) / 64; w++)
-			if ((raises[k][w] & cast[w]) != 0)
-				raise_row(s, c, views, tid, off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]));
+		for (int k = 0; k < s->ncols; k++)
+			if (raises[k] != NULL)
+				any |= raises[k][w] & cast_rows(s, &s->cols[k], &kept, &uncast)[w];
+		if (any != 0)
+			raise_first(s, views, tid, raises, &kept, &uncast, off, w * 64 + __builtin_ctzll(any));
 	}
 }
 

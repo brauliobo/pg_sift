@@ -263,6 +263,20 @@ conversions(const SiftV6Spec *s, const Bitmapset *reads)
 	return out;
 }
 
+/*
+ * The scan of the rows raises, for the first row whose casts raise, the error PostgreSQL meets first in it: the cast of the WHERE clause, then a read of the row the clause keeps
+ * (sift_f2_v6_raise_kept, SiftJsonbOps.raise_after_quals). A read the clause makes too raises for no row it keeps, so the error is PostgreSQL's when the other reads convert alike; the unnest of a row converts a column at a
+ * time, and its reads convert as the clause does
+ */
+static bool
+one_error(const V6Plan *p, const Bitmapset *other, const Bitmapset *cast_reads)
+{
+	const SiftV6Spec *s = &p->spec;
+	const bool	rows_first = p->ops->jsonb->raise_after_quals && (p->xseed == NULL || !p->xseed->unnest);
+
+	return (rows_first && bms_num_members(conversions(s, bms_difference(other, cast_reads))) <= 1) || bms_is_subset(conversions(s, other), conversions(s, cast_reads));
+}
+
 bool
 sift_v6_json_cast_order_ok(V6Plan *p)
 {
@@ -289,5 +303,5 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
 	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
-		bms_is_subset(conversions(s, other), conversions(s, cast_leaves)) && tested_before(p->root, p->rel->baserestrictinfo, cast);
+		one_error(p, other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
 }
