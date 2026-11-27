@@ -4,6 +4,7 @@
 -- with the executor (a wildcard or an escape inside the part, ILIKE, NOT LIKE of a prefix or a suffix, a suffix); NOT LIKE '%part%' is the complement of the same test (NULL rows stay out).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
@@ -68,17 +69,7 @@ SELECT ct_check('sift_table', 'ctt', 1);
 SELECT ct_check('parsed', 'ct', 5, ARRAY['%item/%', '%shop17.%', '%ab%']);
 
 -- the units whose dictionary lacks the part are not read: an absent or a rare part reads fewer rows than a common one
-CREATE FUNCTION ct_scanned(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE
-	l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Rows: (\d+) scanned' THEN
-			RETURN substring(l FROM 'Rows: (\d+) scanned')::int;
-		END IF;
-	END LOOP;
-	RETURN NULL;
-END $$;
+CREATE FUNCTION ct_scanned(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.rows_decoded(q) $$;
 SELECT ct_scanned('SELECT count(*) FROM ct WHERE s LIKE ''%zz%''') < ct_scanned('SELECT count(*) FROM ct WHERE s LIKE ''%item/%''') AS absent_reads_fewer,
        ct_scanned('SELECT count(*) FROM ct WHERE c LIKE ''%wb29%''') < ct_scanned('SELECT count(*) FROM ct WHERE c LIKE ''%c%''') AS rare_reads_fewer;
 
@@ -110,5 +101,6 @@ RESET sift.simd;
 DROP FUNCTION ct_check(text, text, int, text[]), ct_scanned(text);
 DROP TABLE ct_pat, ct, ctt;
 DROP FUNCTION agg_pushed(text), agg_rows(text, bool);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;

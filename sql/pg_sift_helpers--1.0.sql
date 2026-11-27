@@ -297,6 +297,13 @@ CREATE FUNCTION sift_helpers.agg_heap_rereads(q text) RETURNS bigint LANGUAGE pl
 BEGIN RETURN sift_helpers.plan_heap_rereads_forced_on(q); EXCEPTION WHEN others THEN RETURN -1; END $$;
 CREATE FUNCTION sift_helpers.agg_arms_in_one_pass(q text) RETURNS int LANGUAGE sql AS $$
 	SELECT coalesce(max(m[1]::int), 0) FROM regexp_matches(sift_helpers.plan_text(q, true), 'Fused Arms: (\d+)', 'g') m $$;
+-- rows_decoded: the rows the sift scans of this backend decoded to run q (sift.stats rows_decoded)
+CREATE FUNCTION sift_helpers.rows_decoded(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE r0 bigint := (SELECT value FROM sift.stats(local => true) WHERE name = 'rows_decoded');
+BEGIN
+	EXECUTE q;
+	RETURN (SELECT value FROM sift.stats(local => true) WHERE name = 'rows_decoded') - r0;
+END $$;
 -- agg_units_read: 'normal', or the granules the SiftAggV6 nodes of the plan read (scanned or answered from the pre-aggregates)
 CREATE FUNCTION sift_helpers.agg_units_read(q text) RETURNS text LANGUAGE sql AS $$
 	SELECT CASE WHEN NOT sift_helpers.plan_pushed(p) THEN 'normal'
