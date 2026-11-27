@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The memory slope gate does not depend on the order of its cases or on the run (scripts/mem-slope.py determinism): seven cases of different kinds (a read, a read of a table
-# another session made, a write, the maintenance steps that race the background worker when it may run, the two merges) run forward, forward again and in reverse, each measurement in a fresh backend; the slope
+# another session made, a write, the maintenance steps that race the background worker when it may run, the two merges) run forward, forward again and in reverse, each size measured once in a fresh backend; the slope
 # of the bytes the memory scopes of sift counted (sift._test_mem_highwater(), exact) differs between the passes by no more than max(2 B/row, 15%). The resident peaks are printed beside them
 # but not compared: a sampler that another job keeps off the CPU for a few milliseconds misses a short peak (0.5 to 0.9 MB on hosted runs with four jobs at once, none alone).
 . "${SIFT_REPO:?}/test/t/lib/common.bash"

@@ -19,7 +19,7 @@ the ceiling is the largest of three runs plus 15 percent and there is no floor. 
 
   scripts/mem-slope.py run [--rows N] [--only RE] [--shard I/N] [--reverse]   one SLOPE line a case: SLOPE name kind bytes/row ceiling status PASS|FAIL, and TIME name seconds
   scripts/mem-slope.py list [--only RE] [--shard I/N]                          the names of the cases of a shard (a case is in shard I when crc32(name) % N == I-1)
-  scripts/mem-slope.py determinism [--rows N] --only RE                        the cases run forward, forward again and in reverse: no slope of the memory scopes of sift (exact bytes, not sampled) differs by more than max(2 B/row, 15%)
+  scripts/mem-slope.py determinism [--rows N] --only RE                        the cases run forward, forward again and in reverse, each size measured once: no slope of the memory scopes of sift (exact bytes, not sampled) differs by more than max(2 B/row, 15%)
   scripts/mem-slope.py compare FILE FILE                                       the SLOPE lines of two runs, the same rule
   scripts/mem-slope.py selftest
 
@@ -225,12 +225,12 @@ def uses(key, *sql):
     return any(key in s for s in sql)
 
 
-def slope_case(sizes, name, setup, warm, op, first=0, control=False):
+def slope_case(sizes, name, setup, warm, op, first=0, control=False, repeats=RUNS):
     peaks, highs, exact, scopes = [], [], [], []
     for n in sizes:
         fmt = dict(f=f"f{n}", d=f"d{n}", m=f"c{n}" if control else f"m{n}", s=f"s{n}", n=n)
         runs = []
-        for _ in range(RUNS):
+        for _ in range(repeats):
             if control:
                 control_table(n)
             elif uses("{m}", setup, warm, op) or uses("{s}", setup, warm, op):
@@ -336,19 +336,20 @@ def compare(a_text, b_text, what="compare"):
 
 
 def determinism(rows, only):
-    """the same cases forward, forward again and in reverse, in fresh backends: what a slope depends on is the case, not the order or the run"""
+    """the same cases forward, forward again and in reverse, in fresh backends: what a slope depends on is the case, not the order or the run. Each size is measured
+    once: the least of two runs, which the gate takes against a sampler's noise, would hide a run that differs"""
     cases = [c for c in read_cases(only) if c.kind == "slope"]
     sizes = sizes_of(rows)
     build_all(sizes)
     runs = {k: {} for k in ("first", "again", "reverse")}
     for tag, order in (("first", cases), ("again", cases), ("reverse", cases[::-1])):
         for c in order:
-            runs[tag][c.name] = run_case(sizes, c)[2:]
+            runs[tag][c.name] = slope_case(sizes, c.name, c.setup, c.warm, c.op, repeats=1)
     bad = 0
     for name in (c.name for c in cases):
-        exact = [runs[t][name][2] for t in runs]
+        exact = [runs[t][name][3] for t in runs]
         sampled = "/".join(f"{runs[t][name][0]:.0f}" for t in runs)
-        peaks = "; ".join("/".join(runs[t][name][1]) for t in runs)
+        peaks = "; ".join("/".join(f"{p:.1f}" for p in runs[t][name][1]) for t in runs)
         ok = all(spread_ok(exact[0], e) for e in exact[1:])
         print(f"SLOPE {name} determinism {'/'.join(f'{e:.0f}' for e in exact)} B/row of memory scopes (first, again, reverse), at most max({VARIANCE_ROWS:.0f} B/row, {VARIANCE_PCT:.0%}) apart; "
               f"sampled peaks {sampled} B/row ({peaks} MB) {'PASS' if ok else 'FAIL'}", flush=True)
