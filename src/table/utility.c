@@ -185,17 +185,35 @@ vacuum_parallel(Node *parse)
 	return 0;
 }
 
-/* Calls the callback of the format on each table, the statement as it runs on that table */
-static void
-each_table(List *relids, Oid named, Node *parse, void (*call) (Relation rel, const SiftTableFormatOps *ops, Node *stmt))
+/* The format of each table as the statement finds it: a table the statement takes off sift_table is still told to the callbacks of the format it left */
+static List *
+formats_of(List *relids)
 {
-	Node	   *inherited = relids != NIL ? inherited_statement(parse) : NULL;
+	List	   *formats = NIL;
 
 	foreach_oid(relid, relids)
 	{
 		Relation	rel = relation_open(relid, NoLock);
 
-		call(rel, sift_tbl_ops(rel), relid == named ? parse : inherited);
+		formats = lappend(formats, unconstify(SiftTableFormatOps *, sift_tbl_ops(rel)));
+		relation_close(rel, NoLock);
+	}
+	return formats;
+}
+
+/* Calls the callback of the format on each table, the statement as it runs on that table */
+static void
+each_table(List *relids, List *formats, Oid named, Node *parse, void (*call) (Relation rel, const SiftTableFormatOps *ops, Node *stmt))
+{
+	Node	   *inherited = relids != NIL ? inherited_statement(parse) : NULL;
+	ListCell   *lr,
+			   *lf;
+
+	forboth(lr, relids, lf, formats)
+	{
+		Relation	rel = relation_open(lfirst_oid(lr), NoLock);
+
+		call(rel, lfirst(lf), lfirst_oid(lr) == named ? parse : inherited);
 		relation_close(rel, NoLock);
 	}
 }
@@ -207,9 +225,12 @@ call_before(Relation rel, const SiftTableFormatOps *ops, Node *stmt)
 		ops->ddl_before(rel, castNode(AlterTableStmt, stmt));
 }
 
+/* A table that is still a sift_table may have been rewritten into another format; one that left it has the format it was in */
 static void
-call_after(Relation rel, const SiftTableFormatOps *ops, Node *stmt)
+call_after(Relation rel, const SiftTableFormatOps *before, Node *stmt)
 {
+	const SiftTableFormatOps *ops = sift_tbl_is_table(rel) ? sift_tbl_ops(rel) : before;
+
 	if (ops->ddl_after != NULL)
 		ops->ddl_after(rel, stmt);
 	if (ops->ddl_rename_column != NULL && IsA(stmt, RenameStmt))
@@ -225,8 +246,9 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	List	   *relids = statement_tables(parse, &lock, &named);
 	int			workers = sift_vacuum_parallel_workers;
 	List	   *outer = altered;
+	List	   *formats = formats_of(relids);
 
-	each_table(relids, named, parse, call_before);
+	each_table(relids, formats, named, parse, call_before);
 	PG_TRY();
 	{
 		sift_vacuum_parallel_workers = vacuum_parallel(parse);
@@ -246,7 +268,7 @@ tbl_utility(PlannedStmt *pstmt, const char *query, bool readonly, ProcessUtility
 	check_new_partitions(parse);
 	if (IsA(parse, DiscardStmt) && castNode(DiscardStmt, parse)->target == DISCARD_ALL)
 		sift_cache_discard_all();
-	each_table(ours_of(relids), named, parse, call_after);
+	each_table(relids, formats, named, parse, call_after);
 }
 
 void

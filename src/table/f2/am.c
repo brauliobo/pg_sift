@@ -502,6 +502,7 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 	if (own_scan)
 	{
 		snapshot = RegisterSnapshot(index_info->ii_Concurrent ? GetTransactionSnapshot() : GetLatestSnapshot());
+		SIFT_POINT("sift-tbl-index-build-snapshot");
 		scan = table_beginscan_strat(table_rel, snapshot, 0, NULL, true, allow_sync);
 		if (start_blockno != 0 || numblocks != InvalidBlockNumber)
 		{
@@ -543,15 +544,16 @@ sift_tbl_f2_index_build_range_scan(Relation table_rel, Relation index_rel, struc
 }
 
 /*
- * The visible rows of the table by windows of virtual blocks (a window holds at most the addresses a half of the maintenance budget holds, as every block holds a bounded number of
- * rows), each sorted by address and merged with the addresses the index has, which come in the order of the sort of PostgreSQL: one pass of N log N with no temp file where a scan that probes the index for each row is N squared.
+ * The visible rows of the table by windows of virtual blocks (a window holds at most the addresses a half of the maintenance budget holds, one allocation of them and the blocks
+ * of the table, as every block holds a bounded number of rows), each sorted by address and merged with the addresses the index has, which come in the order of the sort of PostgreSQL: one pass of N log N with no temp file where a scan that probes the index for each row is N squared.
  * A row that does not satisfy the predicate of the index is not in the window: the index never held it.
  */
 void
 sift_tbl_f2_index_validate_scan(Relation table_rel, Relation index_rel, struct IndexInfo *index_info, Snapshot snapshot, struct ValidateIndexState *state)
 {
 	const uint64 nvblocks = sift_tbl_f2_nvblocks(table_rel);
-	const uint64 max_addrs = Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2) / sizeof(int64), SIFT_TBL_ROWS_PER_VBLOCK);
+	const uint64 budget = Min(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 2), MaxAllocSize) / sizeof(int64);
+	const uint64 max_addrs = Max(Min(budget, nvblocks * SIFT_TBL_ROWS_PER_VBLOCK), SIFT_TBL_ROWS_PER_VBLOCK);
 	const uint64 step = max_addrs / SIFT_TBL_ROWS_PER_VBLOCK;
 	int64	   *window = palloc(max_addrs * sizeof(int64));
 	TableScanDesc scan = sift_table_beginscan(table_rel, snapshot, 0, NULL);
@@ -597,6 +599,7 @@ sift_tbl_f2_index_validate_scan(Relation table_rel, Relation index_rel, struct I
 				continue;
 			MemoryContextReset(econtext->ecxt_per_tuple_memory);
 			FormIndexDatum(index_info, slot, estate, values, isnull);
+			SIFT_POINT("sift-tbl-validate-insert");
 			index_insert(index_rel, values, isnull, &tid, table_rel, index_info->ii_Unique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO, false, index_info);
 			state->tups_inserted += 1;
 		}

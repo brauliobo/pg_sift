@@ -447,7 +447,7 @@ static const char *const catalog_deletes[] = {
 	"DELETE FROM sift.ttl_policies WHERE relid::pg_catalog.oid = $1",
 };
 
-/* A table that leaves sift_table keeps no row of the catalogs of the extension, as a table that is dropped does not */
+/* A table that left sift_table keeps no row of the catalogs of the extension, as a table that is dropped does not: the rewrite that copied its rows read them */
 static void
 forget_catalogs(Relation rel)
 {
@@ -480,10 +480,6 @@ sift_tbl_f2_ddl_before(Relation rel, AlterTableStmt *stmt)
 				sift_proj_defs_check_drop_column(rel, cmd->name);
 				fence = true;
 				break;
-			case AT_SetAccessMethod:
-				if (strcmp(cmd->name != NULL ? cmd->name : default_table_access_method, "sift_table") != 0)
-					forget_catalogs(rel);
-				break;
 			case AT_AlterColumnType:
 				if (!is_time_type(getBaseType(typenameTypeId(NULL, castNode(ColumnDef, cmd->def)->typeName))))
 					check_ttl_column(rel, cmd->name, "change the type of");
@@ -512,7 +508,9 @@ sift_tbl_f2_guard_publication(Relation rel)
 void
 sift_tbl_f2_ddl_after(Relation rel, Node *parsetree)
 {
-	if (IsA(parsetree, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parsetree)->objectType == OBJECT_TABLE)
+	if (!sift_tbl_is_table(rel))
+		forget_catalogs(rel);
+	else if (IsA(parsetree, AlterObjectSchemaStmt) && castNode(AlterObjectSchemaStmt, parsetree)->objectType == OBJECT_TABLE)
 		sift_tbl_f2_guard_publication(rel);
 }
 
