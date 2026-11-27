@@ -1,6 +1,6 @@
 -- A test of a range, a network or a wide value that the source runs on the stored lanes (the conjunct of a WHERE) is run there as a branch of an OR, in an aggregate's FILTER, in a CASE and as
 -- `IS NOT TRUE` too: the source gives the rows that pass as a bitmap of the unit and the executor tests nothing. The rows must be those of the scan off (NULL, empty and infinite
--- ranges, bounds too large for a lane, IPv6 and IPv4 networks, NULL values), and `src` says the scan counts the tests it runs in the source. The scan is forced: it is the plan being tested.
+-- ranges, bounds too large for a lane, IPv6 and IPv4 networks, NULL values), and `src` says the scan runs the test: no node of PostgreSQL filters its rows. The scan is forced: it is the plan being tested.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -85,13 +85,13 @@ BEGIN
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
   RETURN r;
 END $$;
--- src: the plan is a Custom Scan (SiftAgg) that runs tests in the source (EXPLAIN ANALYZE counts them)
+-- src: the plan is a Custom Scan (SiftAgg) that runs the test itself, with no Filter of PostgreSQL over its rows
 CREATE FUNCTION form_check(tpl text, tbl text, pred text) RETURNS TABLE (scan bool, src bool, same bool) LANGUAGE plpgsql AS
 $$ DECLARE l text; plan text := ''; sql text := replace(replace(tpl, '@T', tbl), '@P', '(' || pred || ')'); off text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP plan := plan || l || E'\n'; END LOOP;
   scan := plan LIKE '%Custom Scan (SiftAgg%';
-  src := plan ~ '[1-9][0-9]* wide filters in source';
+  src := scan AND plan !~ '\mFilter:';
   PERFORM set_config('sift.enable_agg', 'off', true);
   off := rows_md5(sql);
   PERFORM set_config('sift.enable_agg', 'on', true);
@@ -565,22 +565,22 @@ SELECT q.tbl, q.pred, f.form, c.* FROM q CROSS JOIN forms f, LATERAL form_check(
  wd  | n IN (1000000000000000000.0001, 2000000000000000000.0002)     | not true       | t    | t   | t
  wd  | n IN (1000000000000000000.0001, 2000000000000000000.0002)     | not true and   | t    | t   | t
  wd  | n IN (1000000000000000000.0001, 2000000000000000000.0002)     | or             | t    | t   | t
- wd  | n IS NULL                                                     | case else 0    | t    | f   | t
- wd  | n IS NULL                                                     | case else null | t    | f   | t
+ wd  | n IS NULL                                                     | case else 0    | t    | t   | t
+ wd  | n IS NULL                                                     | case else null | t    | t   | t
  wd  | n IS NULL                                                     | conjunct       | t    | t   | t
- wd  | n IS NULL                                                     | filter         | t    | f   | t
- wd  | n IS NULL                                                     | filter group   | t    | f   | t
- wd  | n IS NULL                                                     | not true       | t    | f   | t
- wd  | n IS NULL                                                     | not true and   | t    | f   | t
- wd  | n IS NULL                                                     | or             | t    | f   | t
- wd  | n IS NOT NULL                                                 | case else 0    | t    | f   | t
- wd  | n IS NOT NULL                                                 | case else null | t    | f   | t
+ wd  | n IS NULL                                                     | filter         | t    | t   | t
+ wd  | n IS NULL                                                     | filter group   | t    | t   | t
+ wd  | n IS NULL                                                     | not true       | t    | t   | t
+ wd  | n IS NULL                                                     | not true and   | t    | t   | t
+ wd  | n IS NULL                                                     | or             | t    | t   | t
+ wd  | n IS NOT NULL                                                 | case else 0    | t    | t   | t
+ wd  | n IS NOT NULL                                                 | case else null | t    | t   | t
  wd  | n IS NOT NULL                                                 | conjunct       | t    | t   | t
- wd  | n IS NOT NULL                                                 | filter         | t    | f   | t
- wd  | n IS NOT NULL                                                 | filter group   | t    | f   | t
- wd  | n IS NOT NULL                                                 | not true       | t    | f   | t
- wd  | n IS NOT NULL                                                 | not true and   | t    | f   | t
- wd  | n IS NOT NULL                                                 | or             | t    | f   | t
+ wd  | n IS NOT NULL                                                 | filter         | t    | t   | t
+ wd  | n IS NOT NULL                                                 | filter group   | t    | t   | t
+ wd  | n IS NOT NULL                                                 | not true       | t    | t   | t
+ wd  | n IS NOT NULL                                                 | not true and   | t    | t   | t
+ wd  | n IS NOT NULL                                                 | or             | t    | t   | t
  wd  | m > 100::numeric::money                                       | case else 0    | t    | t   | t
  wd  | m > 100::numeric::money                                       | case else null | t    | t   | t
  wd  | m > 100::numeric::money                                       | conjunct       | t    | t   | t
@@ -597,14 +597,14 @@ SELECT q.tbl, q.pred, f.form, c.* FROM q CROSS JOIN forms f, LATERAL form_check(
  wd  | iv > interval '10 days'                                       | not true       | t    | t   | t
  wd  | iv > interval '10 days'                                       | not true and   | t    | t   | t
  wd  | iv > interval '10 days'                                       | or             | t    | t   | t
- wd  | iv IS NULL                                                    | case else 0    | t    | f   | t
- wd  | iv IS NULL                                                    | case else null | t    | f   | t
+ wd  | iv IS NULL                                                    | case else 0    | t    | t   | t
+ wd  | iv IS NULL                                                    | case else null | t    | t   | t
  wd  | iv IS NULL                                                    | conjunct       | t    | t   | t
- wd  | iv IS NULL                                                    | filter         | t    | f   | t
- wd  | iv IS NULL                                                    | filter group   | t    | f   | t
- wd  | iv IS NULL                                                    | not true       | t    | f   | t
- wd  | iv IS NULL                                                    | not true and   | t    | f   | t
- wd  | iv IS NULL                                                    | or             | t    | f   | t
+ wd  | iv IS NULL                                                    | filter         | t    | t   | t
+ wd  | iv IS NULL                                                    | filter group   | t    | t   | t
+ wd  | iv IS NULL                                                    | not true       | t    | t   | t
+ wd  | iv IS NULL                                                    | not true and   | t    | t   | t
+ wd  | iv IS NULL                                                    | or             | t    | t   | t
  wd  | n > 5000000000000000000000.5 OR ip << inet '203.1.0.0/16'     | case else 0    | t    | t   | t
  wd  | n > 5000000000000000000000.5 OR ip << inet '203.1.0.0/16'     | case else null | t    | t   | t
  wd  | n > 5000000000000000000000.5 OR ip << inet '203.1.0.0/16'     | conjunct       | t    | t   | t

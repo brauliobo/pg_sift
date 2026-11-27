@@ -1,6 +1,6 @@
 -- A test of a range, a network or a wide value that the source runs on the stored lanes (the conjunct of a WHERE) is run there as a branch of an OR, in an aggregate's FILTER, in a CASE and as
 -- `IS NOT TRUE` too: the source gives the rows that pass as a bitmap of the unit and the executor tests nothing. The rows must be those of the scan off (NULL, empty and infinite
--- ranges, bounds too large for a lane, IPv6 and IPv4 networks, NULL values), and `src` says the scan counts the tests it runs in the source. The scan is forced: it is the plan being tested.
+-- ranges, bounds too large for a lane, IPv6 and IPv4 networks, NULL values), and `src` says the scan runs the test: no node of PostgreSQL filters its rows. The scan is forced: it is the plan being tested.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -90,13 +90,13 @@ BEGIN
   EXECUTE 'SELECT md5(string_agg(r::text, ''|'' ORDER BY r::text)) FROM (' || q || ') r' INTO r;
   RETURN r;
 END $$;
--- src: the plan is a Custom Scan (SiftAgg) that runs tests in the source (EXPLAIN ANALYZE counts them)
+-- src: the plan is a Custom Scan (SiftAgg) that runs the test itself, with no Filter of PostgreSQL over its rows
 CREATE FUNCTION form_check(tpl text, tbl text, pred text) RETURNS TABLE (scan bool, src bool, same bool) LANGUAGE plpgsql AS
 $$ DECLARE l text; plan text := ''; sql text := replace(replace(tpl, '@T', tbl), '@P', '(' || pred || ')'); off text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || sql LOOP plan := plan || l || E'\n'; END LOOP;
   scan := plan LIKE '%Custom Scan (SiftAgg%';
-  src := plan ~ '[1-9][0-9]* wide filters in source';
+  src := scan AND plan !~ '\mFilter:';
   PERFORM set_config('sift.enable_agg', 'off', true);
   off := rows_md5(sql);
   PERFORM set_config('sift.enable_agg', 'on', true);
