@@ -19,6 +19,9 @@ struct SiftV6Exec;
 /* The clause is one the machine runs over the columns of the input (a relation as the planner or the executor opened it): true */
 extern bool sift_v6_bq_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause);
 
+/* The step of a clause of a calendar step of a timestamp column (agg/qual/step.h) that the batch quals evaluate once for each run of rows in one step; 0 for any other clause */
+extern int64 sift_v6_bq_step(const Expr *clause);
+
 /* The clause is one PostgreSQL's executor evaluates row by row (agg/qual/pg.h): neither a text qual of the bytes nor one the machine runs */
 extern bool sift_v6_bq_runs_pg(const SiftV6Input *in, const Expr *clause);
 

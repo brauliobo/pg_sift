@@ -1,9 +1,11 @@
 /*
  * agg/qual/bqual.c - the quals of the scan that no scan key says, over the vectors of a batch (agg/qual/bqual.h): the clauses the machine of agg/vexpr/vexpr.h runs, then the ones it does not, which
- * PostgreSQL's executor evaluates for the rows that are left (agg/qual/pg.h).
+ * PostgreSQL's executor evaluates for the rows that are left (agg/qual/pg.h). A clause of a calendar step of a timestamp column (agg/qual/step.h) is evaluated for the first row of each run of rows
+ * in one step, and its verdict holds for the rest of the run.
  */
 #include "postgres.h"
 
+#include "datatype/timestamp.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
@@ -13,9 +15,12 @@
 #include "agg/pg_exec.h"
 #include "agg/qual/pg.h"
 #include "agg/vexpr/str.h"
+#include "agg/qual/step.h"
 #include "core/popcount.h"
+#include "core/zoneoff.h"
 
 #define BQ_TEXT_MAX		8
+#define BQ_STEP_MAX		8
 
 typedef struct BqText
 {
@@ -23,10 +28,22 @@ typedef struct BqText
 	SiftTextQual q;
 } BqText;
 
+/* a clause of a calendar step: the program or the expression that evaluates it, the column of the step, and the zone of the clock a timestamptz is cut on */
+typedef struct BqStep
+{
+	SiftV6Vexpr vx;
+	SiftV6PgQual *pg;
+	int			slot;
+	int64		us;
+	ZoneOff    *zone;
+} BqStep;
+
 struct SiftV6Bq
 {
 	SiftV6Vexpr vx;
 	bool		has_vx;
+	int			nstep;
+	BqStep		step[BQ_STEP_MAX];
 	SiftV6PgQual *pg;
 	SiftV6PgQual *pgx;			/* the clauses that need the node's executor */
 	int			ntext;			/* the clauses over the bytes of a text column (text_qual.h), which no executor runs */
@@ -79,6 +96,36 @@ sift_v6_bq_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *clause)
 	return text_slot(&scratch, clause, &q) >= 0 || machine_runs(in, clause) || sift_v6_pgqual_plan_ok(root, in, clause);
 }
 
+int64
+sift_v6_bq_step(const Expr *clause)
+{
+	const Var  *col;
+	SiftTextQual q;
+	const Var  *column;
+
+	return sift_v6_pgexpr_exec((const Node *) clause) || sift_text_qual_of((const Node *) clause, SIFT_V6_BQ_RELID, &q, &column) ? 0 :
+		sift_v6_calendar_step((const Node *) clause, SIFT_V6_BQ_RELID, &col);
+}
+
+/* the clause of a calendar step, opened over the input: the machine runs it when it can, else PostgreSQL's executor */
+static void
+step_open(SiftV6Bq *bq, MemoryContext cx, Expr *clause, BqStep *st)
+{
+	const Var  *col;
+
+	st->us = sift_v6_calendar_step((const Node *) clause, SIFT_V6_BQ_RELID, &col);
+	if (machine_runs(&bq->in, clause))
+	{
+		if (!compile(cx, list_make1(clause), &bq->in, &st->vx))
+			SIFT_INVARIANT(false, "the batch quals of the aggregate scan of relation %u are not compiled", bq->in.indexoid);
+	}
+	else
+		st->pg = sift_v6_pgqual_open(cx, list_make1(clause), &bq->in, NULL);
+	st->slot = sift_v6_input_add_var(&bq->in, col);
+	SIFT_INVARIANT(st->slot >= 0, "the scan decodes the column of a calendar step of relation %u", bq->in.indexoid);
+	st->zone = col->vartype == TIMESTAMPTZOID ? zone_open(cx, session_timezone) : NULL;
+}
+
 bool
 sift_v6_bq_runs_pg(const SiftV6Input *in, const Expr *clause)
 {
@@ -101,6 +148,8 @@ sift_v6_bq_open(MemoryContext cx, const List *quals, const SiftV6Input *in, Sift
 	foreach_ptr(Expr, clause, quals)
 		if (bq->ntext < BQ_TEXT_MAX && (bq->text[bq->ntext].slot = text_slot(&bq->in, clause, &bq->text[bq->ntext].q)) >= 0)
 			bq->ntext++;
+		else if (bq->nstep < BQ_STEP_MAX && sift_v6_bq_step(clause) > 0)
+			step_open(bq, cx, clause, &bq->step[bq->nstep++]);
 		else if (sift_v6_pgexpr_exec((const Node *) clause))
 			needs_exec = lappend(needs_exec, clause);
 		else if (machine_runs(in, clause))
@@ -185,6 +234,102 @@ filter_text(const BqText *t, const SiftVec *v, SiftBatchSel *bs)
 	bs->has_sel = false;
 }
 
+/* floor(t / us) */
+static int64
+step_of(int64 t, int64 us)
+{
+	return t >= 0 ? t / us : -((-(t + 1)) / us) - 1;
+}
+
+/* the rows of the runs of one step in bs: heads, the first row of each, and head_of[r] the head of row r's run; a NULL or an infinite timestamp is a run of its own */
+static void
+step_runs(const BqStep *st, const SiftVec *v, const SiftBatchSel *bs, SiftBatchSel *heads, uint16 *head_of)
+{
+	const int64 *t = v->data;
+	int64		lo = PG_INT64_MAX,
+				hi = PG_INT64_MIN,
+				k = 0,
+				off = 0;
+	bool		open = false;
+	uint16		head = 0;
+
+	*heads = (SiftBatchSel) {.n_raw = bs->n_raw};
+	for (uint16 w = 0; st->zone != NULL && w < (bs->n_raw + 63) / 64; w++)
+		for (uint64 bits = bs->mask[w] & (v->all_valid ? ~UINT64CONST(0) : v->valid[w]); bits != 0; bits &= bits - 1)
+		{
+			const int64 x = t[w * 64 + __builtin_ctzll(bits)];
+
+			if (!TIMESTAMP_NOT_FINITE(x))
+			{
+				lo = Min(lo, x);
+				hi = Max(hi, x);
+			}
+		}
+	if (lo <= hi)
+		zone_cover(st->zone, lo, hi);
+	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
+		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
+			const bool	finite = (v->all_valid || ((v->valid[w] >> (r & 63)) & 1)) && !TIMESTAMP_NOT_FINITE(t[r]);
+			const int64 o = finite && st->zone != NULL ? zone_offset_at(st->zone, t[r]) : 0;
+			const int64 s = finite ? step_of(t[r] + o, st->us) : 0;
+
+			if (!(open && finite && s == k && o == off))
+			{
+				head = r;
+				heads->mask[w] |= UINT64CONST(1) << (r & 63);
+				heads->n_active++;
+			}
+			head_of[r] = head;
+			open = finite;
+			k = s;
+			off = o;
+		}
+	heads->all_active = heads->n_active == heads->n_raw;
+}
+
+/* the rows of bs whose run's first row passes the clause */
+static void
+filter_step(SiftV6Bq *bq, BqStep *st, SiftBatchSel *bs)
+{
+	SiftBatchSel heads;
+	uint16		head_of[SIFT_VEC_LEN];
+	uint64		pass[SIFT_VEC_WORDS];
+	uint16		left = 0;
+
+	step_runs(st, bq->src[st->slot], bs, &heads, head_of);
+	if (st->pg != NULL)
+	{
+		sift_v6_pgqual_filter(st->pg, &heads, bq->src);
+		memcpy(pass, heads.mask, sizeof(pass));
+	}
+	else
+	{
+		const SiftV6Batch b = {.n = bs->n_raw,.col = bq->col,.mask = heads.mask};
+
+		bq->col[st->slot] = *bq->src[st->slot];
+		bq->col[st->slot].type = bq->in.col[st->slot].type;
+		sift_v6_vexpr_filter(bq->ctx, &st->vx, &b, pass);
+	}
+	for (uint16 w = 0; w < (bs->n_raw + 63) / 64; w++)
+	{
+		uint64		keep = 0;
+
+		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
+
+			keep |= ((pass[head_of[r] >> 6] >> (head_of[r] & 63)) & 1) << (r & 63);
+		}
+		bs->mask[w] = keep;
+		left += (uint16) sift_pc64(keep);
+	}
+	bs->n_active = left;
+	bs->all_active = left == bs->n_raw;
+	bs->has_sel = false;
+}
+
 void
 sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs)
 {
@@ -192,6 +337,8 @@ sift_v6_bq_filter(SiftV6Bq *bq, SiftBatchSel *bs)
 		return;
 	if (bq->has_vx)
 		filter_machine(bq, bs);
+	for (int i = 0; i < bq->nstep && bs->n_active > 0; i++)
+		filter_step(bq, &bq->step[i], bs);
 	for (int i = 0; i < bq->ntext && bs->n_active > 0; i++)
 		filter_text(&bq->text[i], bq->src[bq->text[i].slot], bs);
 	if (bq->pg != NULL)

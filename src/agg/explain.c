@@ -15,6 +15,8 @@
 
 #include "agg/explain.h"
 #include "agg/expr/num.h"
+#include "agg/qual/bqual.h"
+#include "agg/qual/step.h"
 #include "agg/topn/topn.h"
 #include "core/compat.h"
 #include "core/explain.h"
@@ -65,7 +67,11 @@ explain_filters(const SiftV6Spec *spec, Relation heap, Relation index, ExplainSt
 	initStringInfo(&buf);
 	foreach_ptr(Node, q, list_concat_copy(spec->indexqual, spec->vqual))
 		if (!reads_json_type(q, NULL))
-			appendStringInfo(&buf, "%s%s", buf.len ? " AND " : "", deparse_expression(as_written(q, index), dpcontext, false, false));
+		{
+			const int64 step = list_member_ptr(spec->vqual, q) ? sift_v6_bq_step((const Expr *) q) : 0;
+
+			appendStringInfo(&buf, "%s%s%s", buf.len ? " AND " : "", deparse_expression(as_written(q, index), dpcontext, false, false), step > 0 ? sift_v6_step_text(step) : "");
+		}
 	if (buf.len)
 		ExplainPropertyText("Filters", buf.data, es);
 }

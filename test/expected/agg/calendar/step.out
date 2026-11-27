@@ -109,29 +109,29 @@ SELECT extract(dow FROM tz)::int AS dow, count(*), sum(id) FROM st WHERE extract
 RESET sift.enable_agg;
 SET sift.enable_agg = on;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE extract(dow FROM ts) = 3;
-                            QUERY PLAN                             
--------------------------------------------------------------------
- Custom Scan (SiftAgg)
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: st_col
-   Filters: ts: (EXTRACT(dow FROM st.ts) = '3'::numeric) (per day)
+   Filters: (EXTRACT(dow FROM ts) = '3'::numeric) (per day)
    Pushed Aggregates: count(*)
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE extract(hour FROM tz) = 5 OR extract(minute FROM tz) = 7;
-                                                              QUERY PLAN                                                               
----------------------------------------------------------------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+                                                  QUERY PLAN                                                  
+--------------------------------------------------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: st_col
-   Filters: (tz: (EXTRACT(hour FROM st.tz) = '5'::numeric) (per hour) OR tz: (EXTRACT(minute FROM st.tz) = '7'::numeric) (per minute))
+   Filters: ((EXTRACT(hour FROM tz) = '5'::numeric) OR (EXTRACT(minute FROM tz) = '7'::numeric)) (per minute)
    Pushed Aggregates: count(*)
 (4 rows)
 
 EXPLAIN (COSTS OFF) SELECT count(*) FROM st WHERE to_char(tz, 'D') = '4';
-                       QUERY PLAN                       
---------------------------------------------------------
- Custom Scan (SiftAgg)
+                   QUERY PLAN                    
+-------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: st_col
-   Filters: tz: (to_char(st.tz, 'D'::text) = '4'::text)
+   Filters: (to_char(tz, 'D'::text) = '4'::text)
    Pushed Aggregates: count(*)
 (4 rows)
 
