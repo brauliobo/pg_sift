@@ -9,6 +9,7 @@
 #include "miscadmin.h"
 #include "access/stratnum.h"
 #include "catalog/pg_type_d.h"
+#include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rangetypes.h"
@@ -653,10 +654,26 @@ bound_key(Relation index, AttrNumber att, Oid typid, StrategyNumber strategy, Oi
 	ScanKeyEntryInitialize(key, 0, att, strategy, typid, index->rd_indcollation[att - 1], get_opcode(opno), key_datum(typid, v));
 }
 
+/* att = ANY(the keys): the point directory and the marks of a part read the rows of these keys only */
+static void
+in_key(Relation index, AttrNumber att, Oid typid, Oid opno, const SiftStarPush *push, ScanKey key)
+{
+	Datum	   *vals = palloc(push->nkeys * sizeof(Datum));
+	int16		len;
+	bool		byval;
+	char		align;
+
+	for (uint32 i = 0; i < push->nkeys; i++)
+		vals[i] = key_datum(typid, push->keys[i]);
+	get_typlenbyvalalign(typid, &len, &byval, &align);
+	ScanKeyEntryInitialize(key, SK_SEARCHARRAY, att, BTEqualStrategyNumber, typid, index->rd_indcollation[att - 1], get_opcode(opno),
+						   PointerGetDatum(construct_array(vals, (int) push->nkeys, typid, len, byval, align)));
+}
+
 ScanKey
 sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n)
 {
-	ScanKey		out = palloc(((Size) nkeys + 2 * r->x->ndims) * sizeof(ScanKeyData));
+	ScanKey		out = palloc(((Size) nkeys + 3 * r->x->ndims) * sizeof(ScanKeyData));
 
 	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
 	*n = nkeys;
@@ -671,13 +688,16 @@ sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int
 		const Oid	type = xd->ftype[0],
 					family = att >= 1 && att <= index->rd_index->indnatts ? index->rd_opfamily[att - 1] : InvalidOid,
 					ge = OidIsValid(family) ? get_opfamily_member(family, type, type, BTGreaterEqualStrategyNumber) : InvalidOid,
-					le = OidIsValid(family) ? get_opfamily_member(family, type, type, BTLessEqualStrategyNumber) : InvalidOid;
+					le = OidIsValid(family) ? get_opfamily_member(family, type, type, BTLessEqualStrategyNumber) : InvalidOid,
+					eq = OidIsValid(family) ? get_opfamily_member(family, type, type, BTEqualStrategyNumber) : InvalidOid;
 
 		if (push.kind == SSP_NONE || (xd->mode != SV6J_INNER_EQUI && xd->mode != SV6J_SEMI_EQUI) || xd->fsrc[0] != SV6SRC_ATTR || xd->kx[0] != 0 ||
 			type != xd->ktype[0] || !int_key_type(type) || !OidIsValid(ge) || !OidIsValid(le))
 			continue;
 		bound_key(index, att, type, BTGreaterEqualStrategyNumber, ge, push.lo, &out[(*n)++]);
 		bound_key(index, att, type, BTLessEqualStrategyNumber, le, push.hi, &out[(*n)++]);
+		if (push.kind == SSP_EXACT && OidIsValid(eq))
+			in_key(index, att, type, eq, &push, &out[(*n)++]);
 	}
 	return out;
 }
