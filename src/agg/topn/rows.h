@@ -12,10 +12,14 @@
 
 
 #define SIFT_V6_ROWS_ADDR_BITS	48
+/* the K of a row Top-N with no LIMIT: every row, sorted */
+#define SIFT_V6_ROWS_ALL		PG_UINT32_MAX
 
 /* EXPLAIN of a row Top-N: its sort keys and the rows its heap holds */
 extern void sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec);
-/* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item */
+/* The K of a row Top-N whose LIMIT and OFFSET the execution gives (SiftV6Spec.topk_count), evaluated in ec as the Limit node above evaluates them: their sum, SIFT_V6_ROWS_ALL for no limit */
+extern uint32 sift_v6_rows_given_k(const List *count, ExprContext *ec);
+/* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item: a heap of the best, or a sort bounded by K for a K past what the heap holds */
 extern SiftV6Rows *sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec);
 /* the rows of bs, whose keys are keyvec and whose heap addresses are tid[row] */
 extern void sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyvec, const uint64 *tid);
@@ -26,6 +30,7 @@ extern void sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *c
 /* What a row must beat to stay, as the scan takes it (col/f2/sink/sink.h): kept up to date by sift_v6_rows_update; NULL when the first sort column is not an integer the zones of a granule bound */
 extern const SiftF2Bound *sift_v6_rows_bound(const SiftV6Rows *r);
 extern void sift_v6_rows_finish(SiftV6Rows *r);
+/* the files of a sort that spilled are closed (the memory goes with the context of the rows) */
 extern void sift_v6_rows_end(SiftV6Rows *r);
 /* the rows offered from now on are those of partition source: their addresses are told from those of the others */
 extern void sift_v6_rows_source(SiftV6Rows *r, uint32 source);

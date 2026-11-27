@@ -19,6 +19,8 @@
 #include "agg/expr/num.h"
 #include "agg/group/topk.h"
 #include "agg/plan/rewrite.h"
+#include "agg/safety.h"
+#include "agg/topn/topn.h"
 #include "agg/datum.h"
 
 static bool
@@ -557,11 +559,40 @@ sift_v6_topk_of(const Query *q)
 	return q->sortClause == NIL || q->hasWindowFuncs ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
 }
 
-/* the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed */
+/* a part of a LIMIT or OFFSET that no execution of the plan can give: a column, a sub-select or an executor parameter */
+static bool
+not_given(Node *n, void *context)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Param))
+		return ((const Param *) n)->paramkind != PARAM_EXTERN;
+	return IsA(n, Var) || IsA(n, SubLink) || IsA(n, SubPlan) || expression_tree_walker(n, not_given, context);
+}
+
+/* a count the execution gives: absent, a constant, or an expression of external parameters with no volatile function */
+static bool
+given_count(Node *n)
+{
+	return n == NULL || IsA(n, Const) || (!not_given(n, NULL) && !contain_volatile_functions(n));
+}
+
+List *
+sift_v6_rows_count_of(const Query *q)
+{
+	if (q->sortClause == NIL || q->distinctClause != NIL || q->hasTargetSRFs || q->limitOption != LIMIT_OPTION_COUNT || q->limitCount == NULL ||
+		!agg_node_has_extern_param((Node *) list_make2(q->limitCount, q->limitOffset)) || !given_count(q->limitCount) || !given_count(q->limitOffset))
+		return NIL;
+	return list_make2(q->limitCount, q->limitOffset);
+}
+
+/* the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed; a K that parameters give is planned as a typical page */
 uint32
 sift_v6_rows_k_of(const Query *q)
 {
-	return q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
+	const uint32 k = q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
+
+	return k == 0 && sift_v6_rows_count_of(q) != NIL ? SIFT_V6_PARAM_ROWS : k;
 }
 
 uint32

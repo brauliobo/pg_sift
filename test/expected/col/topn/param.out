@@ -303,15 +303,15 @@ SELECT tp_mode(true);
 PREPARE tp_p (int[], int) AS
 	SELECT d.k, x.id FROM unnest($1) d(k) CROSS JOIN LATERAL (SELECT id, ts FROM tp WHERE dev = d.k ORDER BY ts DESC, id LIMIT $2) x;
 EXPLAIN (COSTS OFF) EXECUTE tp_p(ARRAY[5, 3], 4);
-                      QUERY PLAN                      
-------------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Nested Loop
    ->  Function Scan on unnest d
    ->  Limit
-         ->  Sort
-               Sort Key: tp.ts DESC, tp.id
-               ->  Index Only Scan using tp_col on tp
-                     Index Cond: (dev = d.k)
+         ->  Custom Scan (SiftAggV6)
+               Index: tp_col
+               Filters: (dev = $0)
+               Top-N: ts DESC, id (limit by parameter)
 (7 rows)
 
 CREATE TEMP TABLE tp_gen_a AS SELECT tp_gen(ARRAY[5, 3, 5, 99, NULL], 4) a, tp_gen(ARRAY[1, 2], 1) b, tp_gen(ARRAY[7], 100) c, tp_gen(ARRAY[7, 8, 9]::int[], 2) d;

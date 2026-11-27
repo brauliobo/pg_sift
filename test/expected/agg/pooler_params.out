@@ -72,11 +72,11 @@ ORDER BY stmt, args;
  push   | 3                    | SiftAggV6Push   | t
  push   | 5                    | SiftAggV6Push   | t
  push   | NULL                 | SiftAggV6Push   | t
- tn     | 0, 0                 | SiftAggV6TopN   | t
- tn     | 1000, 10             | SiftAggV6TopN   | t
- tn     | 3, 0                 | SiftAggV6TopN   | t
- tn     | 3, 495               | SiftAggV6TopN   | t
- tn     | NULL, NULL           | SiftAggV6TopN   | t
+ tn     | 0, 0                 | SiftAggV6       | t
+ tn     | 1000, 10             | SiftAggV6       | t
+ tn     | 3, 0                 | SiftAggV6       | t
+ tn     | 3, 495               | SiftAggV6       | t
+ tn     | NULL, NULL           | SiftAggV6       | t
  win_le | 1                    | SiftAggV6Window | t
  win_le | 3                    | SiftAggV6Window | t
  win_lt | 1                    | SiftAggV6Window | t

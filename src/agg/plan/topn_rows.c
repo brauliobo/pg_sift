@@ -81,7 +81,7 @@ sort_exprs_cost(PlannerInfo *root, double rows)
 void
 sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 {
-	sift_v6_topn_explain(es, spec->topn_desc, psprintf("%u", spec->topk));
+	sift_v6_topn_explain(es, spec->topn_desc, spec->topk_count != NIL ? sift_v6_topn_limit_text(linitial(spec->topk_count), lsecond(spec->topk_count)) : psprintf("%u", spec->topk));
 	if (spec->agg_desc != NULL)
 		ExplainPropertyText("Pushed Aggregates", spec->agg_desc, es);
 	if (spec->join_desc != NULL)
@@ -104,7 +104,7 @@ rows_served(const V6Plan *p)
 bool
 sift_v6_rows_compile(V6Plan *p, uint32 k)
 {
-	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k,.ext = p->xseed};
+	p->spec = (SiftV6Spec) {.relid = p->relid,.is_table = p->is_table,.rows = true,.topk = k,.topk_count = sift_v6_rows_count_of(p->root->parse),.ext = p->xseed};
 	p->freg = sift_freg_create(CurrentMemoryContext);
 	p->cap_aggs = p->cap_funcs = 0;
 	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p) && rows_served(p);

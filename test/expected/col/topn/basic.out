@@ -243,36 +243,36 @@ SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC,
 -- of that many rows up to 100000, and every row that passes in a sort above it (or when there is no limit)
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT $1', v) AS generic_limit, v
 FROM (VALUES ('0'), ('1'), ('10'), ('100000'), ('100001'), ('NULL'), ('9223372036854775807')) x(v);
- generic_limit |          v          
----------------+---------------------
- same 0        | 0
- same 1        | 1
- same 10       | 10
- same 5218     | 100000
- same 5218     | 100001
- same 5218     | NULL
- same 5218     | 9223372036854775807
+ generic_limit  |          v          
+----------------+---------------------
+ same+topn 0    | 0
+ same+topn 1    | 1
+ same+topn 10   | 10
+ same+topn 5218 | 100000
+ same+topn 5218 | 100001
+ same+topn 5218 | NULL
+ same+topn 5218 | 9223372036854775807
 (7 rows)
 
 SELECT ct_generic('bigint, bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts, id LIMIT $1 OFFSET $2', v) AS generic_offset, v
 FROM (VALUES ('10, 5'), ('10, NULL'), ('NULL, 5'), ('NULL, NULL'), ('5, 99999'), ('5, 100000'), ('9223372036854775807, 9223372036854775807')) x(v);
  generic_offset |                    v                     
 ----------------+------------------------------------------
- same 10        | 10, 5
- same 10        | 10, NULL
- same 5213      | NULL, 5
- same 5218      | NULL, NULL
- same 0         | 5, 99999
- same 0         | 5, 100000
- same 0         | 9223372036854775807, 9223372036854775807
+ same+topn 10   | 10, 5
+ same+topn 10   | 10, NULL
+ same+topn 5213 | NULL, 5
+ same+topn 5218 | NULL, NULL
+ same+topn 0    | 5, 99999
+ same+topn 0    | 5, 100000
+ same+topn 0    | 9223372036854775807, 9223372036854775807
 (7 rows)
 
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct WHERE memo @@> ''gift'' OR memo @@> ''label'' ORDER BY amount, id LIMIT $1', v) AS generic_or, v
 FROM (VALUES ('7'), ('NULL')) x(v);
- generic_or |  v   
-------------+------
- same 7     | 7
- same 9432  | NULL
+   generic_or   |  v   
+----------------+------
+ same+topn 7    | 7
+ same+topn 9432 | NULL
 (2 rows)
 
 SELECT ct_generic('bigint', 'SELECT id, ts FROM ct ORDER BY ts DESC, id LIMIT $1', v) AS generic_no_filter, v FROM (VALUES ('3'), ('100001')) x(v);

@@ -205,6 +205,25 @@ NOTICE:  table "tb_b0" does not exist, skipping
  same+topn 25 | same+topn 25 | same+topn 25     | same+topn 25  | same+topn 25
 (1 row)
 
+-- a LIMIT and an OFFSET that the execution gives: a page, no limit (every row, sorted), a page past what the heap of the best rows holds (a sort bounded by
+-- LIMIT + OFFSET, which spills past work_mem), an expression of a parameter
+SELECT tb_check_p($q$SELECT id, a FROM tb ORDER BY a, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', '25, 10') AS page,
+	   tb_check_p($q$SELECT id, a FROM tb ORDER BY a, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', 'NULL, NULL') AS no_limit,
+	   tb_check_p($q$SELECT id, s FROM tb ORDER BY lower(s), id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', '10, 70000') AS past_the_heap,
+	   tb_check_p($q$SELECT id, g FROM tb ORDER BY g, id DESC LIMIT $1 * 3 + 1$q$, 'int', '4') AS expression;
+     page     |    no_limit     | past_the_heap |  expression  
+--------------+-----------------+---------------+--------------
+ same+topn 25 | same+topn 30000 | same+topn 0   | same+topn 13
+(1 row)
+
+SET work_mem = '64kB';
+SELECT tb_check_p($q$SELECT id, s, a FROM tb ORDER BY s, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', 'NULL, 10') AS spilled_sort;
+  spilled_sort   
+-----------------
+ same+topn 29990
+(1 row)
+
+RESET work_mem;
 -- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
 INSERT INTO tb SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, NULL, 12.5 * i, NULL, DATE '2019-12-31' - i % 5, NULL,
 	CASE WHEN i % 5 = 0 THEN NULL ELSE '!Ǆ' || i || 'zz' END, 'w' || i

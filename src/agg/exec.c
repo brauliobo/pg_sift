@@ -535,6 +535,8 @@ v6_totals(V6State *st)
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
+	if (st->spec->topk_count != NIL)
+		st->spec->topk = sift_v6_rows_given_k(st->spec->topk_count, st->css.ss.ps.ps_ExprContext);
 	st->rows = sift_v6_rows_new(st->gcx, st->spec);
 	if (st->spec->naggs > 0)
 		st->group = sift_v6_rows_totals_new(st->gcx, st->spec);

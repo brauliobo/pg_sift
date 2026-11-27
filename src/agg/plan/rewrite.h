@@ -57,6 +57,8 @@ extern bool sift_v6_derive_of(const SiftV6Resolver *rs, const Expr *e, bool key,
 /* LIMIT + OFFSET of the query when they are constants and the statement is ordered (0: otherwise) */
 extern uint32 sift_v6_topk_of(const Query *q);
 extern uint32 sift_v6_rows_k_of(const Query *q);
+/* The LIMIT and the OFFSET of an ordered query when an execution gives them (expressions of external parameters, SiftV6Spec.topk_count); NIL: they are constants or none */
+extern List *sift_v6_rows_count_of(const Query *q);
 /* The sort columns of the query as positions of the scan tuple (spec topk_item); false when one is not a key or an aggregate of the node */
 extern bool sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s);
 #define SIFT_LOCK_MAX_K	4096

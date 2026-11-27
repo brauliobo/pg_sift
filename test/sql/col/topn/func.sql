@@ -141,6 +141,16 @@ SELECT tb_check_p($q$SELECT id, g FROM tb ORDER BY g + $1, id LIMIT 25$q$, 'int'
 	   tb_check_p($q$SELECT id, s FROM tb ORDER BY s || $1, id LIMIT 25$q$, 'text', $$'-x'$$) AS text_appended,
 	   tb_check_p($q$SELECT id, s FROM tb ORDER BY left(s, $1), id LIMIT 25$q$, 'int', '2', 2) AS with_workers_asked;
 
+-- a LIMIT and an OFFSET that the execution gives: a page, no limit (every row, sorted), a page past what the heap of the best rows holds (a sort bounded by
+-- LIMIT + OFFSET, which spills past work_mem), an expression of a parameter
+SELECT tb_check_p($q$SELECT id, a FROM tb ORDER BY a, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', '25, 10') AS page,
+	   tb_check_p($q$SELECT id, a FROM tb ORDER BY a, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', 'NULL, NULL') AS no_limit,
+	   tb_check_p($q$SELECT id, s FROM tb ORDER BY lower(s), id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', '10, 70000') AS past_the_heap,
+	   tb_check_p($q$SELECT id, g FROM tb ORDER BY g, id DESC LIMIT $1 * 3 + 1$q$, 'int', '4') AS expression;
+SET work_mem = '64kB';
+SELECT tb_check_p($q$SELECT id, s, a FROM tb ORDER BY s, id LIMIT $1 OFFSET $2$q$, 'bigint, bigint', 'NULL, 10') AS spilled_sort;
+RESET work_mem;
+
 -- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet
 INSERT INTO tb SELECT 30000 + i, i % 7, CASE WHEN i % 3 = 0 THEN NULL ELSE i - 200 END, NULL, NULL, NULL, 12.5 * i, NULL, DATE '2019-12-31' - i % 5, NULL,
 	CASE WHEN i % 5 = 0 THEN NULL ELSE '!Ǆ' || i || 'zz' END, 'w' || i

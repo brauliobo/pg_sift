@@ -7,7 +7,10 @@
 #include "catalog/pg_type_d.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "common/int.h"
+#include "executor/executor.h"
 #include "utils/memutils.h"
+#include "utils/tuplesort.h"
 
 #include "agg/ht/ht.h"
 #include "agg/group/int.h"
@@ -22,6 +25,9 @@ struct SiftV6Rows
 {
 	const SiftV6Spec *spec;
 	SiftV6TopKRun *run;
+	Tuplesortstate *sort;		/* instead of run, for a K past SIFT_TOPK_MAX_K: every row the scan keeps, sorted, bounded by K */
+	TupleTableSlot *in;			/* the row offered to the sort */
+	TupleTableSlot *out;		/* the row it gives back */
 	MemoryContext tmp;
 	Datum		values[SIFT_V6_MAX_KEYS + 1];
 	bool		isnull[SIFT_V6_MAX_KEYS + 1];
@@ -127,19 +133,50 @@ datum_value(void *ctx, int item, bool *isnull)
 	return c->values[pos];
 }
 
+/* the row would stay: the heap is not full or the row beats its worst; a sort takes every row */
+static bool
+rows_wants(SiftV6Rows *r, SiftTopKValue value, void *ctx)
+{
+	return r->sort != NULL || sift_v6_topk_run_wants(r->run, value, ctx);
+}
+
+/* the row of r->values and r->isnull among the best */
+static void
+rows_keep(SiftV6Rows *r)
+{
+	const int	n = r->spec->nkeys + 1;
+
+	if (r->sort == NULL)
+	{
+		sift_v6_topk_run_put(r->run, r->values, r->isnull);
+		return;
+	}
+	ExecClearTuple(r->in);
+	memcpy(r->in->tts_values, r->values, n * sizeof(Datum));
+	memcpy(r->in->tts_isnull, r->isnull, n * sizeof(bool));
+	tuplesort_puttupleslot(r->sort, ExecStoreVirtualTuple(r->in));
+}
+
+/* the sort column item of the worst row held, when a full heap has one */
+static bool
+rows_worst(const SiftV6Rows *r, int item, Datum *value, bool *isnull)
+{
+	return r->sort == NULL && sift_v6_topk_run_worst(r->run, item, value, isnull);
+}
+
 void
 sift_v6_rows_put(SiftV6Rows *r, const Datum *values, const bool *isnull, uint64 tid)
 {
 	const DatumCand c = {.r = r,.values = values,.isnull = isnull};
 	const int	nkeys = r->spec->nkeys;
 
-	if (!sift_v6_topk_run_wants(r->run, datum_value, (void *) &c))
+	if (!rows_wants(r, datum_value, (void *) &c))
 		return;
 	memcpy(r->values, values, nkeys * sizeof(Datum));
 	memcpy(r->isnull, isnull, nkeys * sizeof(bool));
 	r->values[nkeys] = Int64GetDatum((int64) (tid | r->source));
 	r->isnull[nkeys] = false;
-	sift_v6_topk_run_put(r->run, r->values, r->isnull);
+	rows_keep(r);
 }
 
 static bool
@@ -166,6 +203,45 @@ sift_v6_rows_bound(const SiftV6Rows *r)
 	return r->bounded ? &r->bound : NULL;
 }
 
+uint32
+sift_v6_rows_given_k(const List *count, ExprContext *ec)
+{
+	const Node *offset = lsecond(count);
+	bool		limit_null,
+				offset_null = true;
+	const int64 limit = DatumGetInt64(ExecEvalExprSwitchContext(ExecInitExpr(linitial(count), NULL), ec, &limit_null));
+	const int64 skip = offset == NULL ? 0 : DatumGetInt64(ExecEvalExprSwitchContext(ExecInitExpr((Expr *) offset, NULL), ec, &offset_null));
+	int64		sum;
+
+	if (limit_null || limit < 0 || pg_add_s64_overflow(limit, offset_null || skip < 0 ? 0 : skip, &sum) || sum >= SIFT_V6_ROWS_ALL)
+		return SIFT_V6_ROWS_ALL;
+	return (uint32) sum;
+}
+
+/* the rows sorted by the sort columns of the spec (the positions of desc, the keys then the address), the first K of them kept */
+static void
+rows_sort_begin(SiftV6Rows *r, TupleDesc desc)
+{
+	const SiftV6Spec *spec = r->spec;
+	AttrNumber	cols[SIFT_V6_MAX_TOPK_ITEMS];
+	Oid			ops[SIFT_V6_MAX_TOPK_ITEMS];
+	Oid			colls[SIFT_V6_MAX_TOPK_ITEMS];
+	bool		nulls_first[SIFT_V6_MAX_TOPK_ITEMS];
+
+	for (int i = 0; i < spec->ntopk; i++)
+	{
+		cols[i] = (AttrNumber) (spec->topk_item[i].pos + 1);
+		ops[i] = spec->topk_item[i].sortop;
+		colls[i] = spec->topk_item[i].collid;
+		nulls_first[i] = spec->topk_item[i].nulls_first;
+	}
+	r->sort = tuplesort_begin_heap(desc, spec->ntopk, cols, ops, colls, nulls_first, work_mem, NULL, TUPLESORT_NONE);
+	if (spec->topk != SIFT_V6_ROWS_ALL)
+		tuplesort_set_bound(r->sort, spec->topk);
+	r->in = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
+	r->out = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+}
+
 SiftV6Rows *
 sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 {
@@ -182,7 +258,10 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 	TupleDescInitEntry(desc, spec->nkeys + 1, NULL, INT8OID, -1, 0);
 	sift_tupdesc_finalize(desc);
 	r->spec = spec;
-	r->run = sift_v6_topk_run_new(cx, spec, desc);
+	if (spec->topk > SIFT_TOPK_MAX_K)
+		rows_sort_begin(r, desc);
+	else
+		r->run = sift_v6_topk_run_new(cx, spec, desc);
 	r->bounded = key0->derive == 0 && key0->src != SV6SRC_DIM && bound_type(key0->typid);
 	r->by_code = key0->derive == 0 && key0->src != SV6SRC_DIM && text_type(key0->typid) && OidIsValid(spec->topk_item[0].collid) && sift_collate_is_c(spec->topk_item[0].collid);
 	if (r->bounded || r->by_code)
@@ -233,7 +312,7 @@ code_range(const SiftV6Rows *r, const SiftVec *k0, uint32 *lo, uint32 *hi)
 
 	*lo = 0;
 	*hi = UINT32_MAX;
-	if (!sift_v6_topk_run_worst(r->run, 0, &worst, &worst_null) || worst_null)
+	if (!rows_worst(r, 0, &worst, &worst_null) || worst_null)
 		return;
 	t = DatumGetTextPP(worst);
 	if (r->desc)
@@ -263,13 +342,13 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 
 			if (coded && is_valid(k0, c.row) && (((const uint32 *) k0->data)[c.row] > hi || ((const uint32 *) k0->data)[c.row] < lo))
 				continue;
-			if (!sift_v6_topk_run_wants(r->run, cand_value, &c))
+			if (!rows_wants(r, cand_value, &c))
 				continue;
 			for (int i = 0; i < spec->nkeys; i++)
 				r->values[i] = key_datum(r, i, keyvec[i], c.row, &r->isnull[i], r->sbuf[i]);
 			r->values[spec->nkeys] = Int64GetDatum((int64) (tid[c.row] | r->source));
 			r->isnull[spec->nkeys] = false;
-			sift_v6_topk_run_put(r->run, r->values, r->isnull);
+			rows_keep(r);
 			if (coded)
 				code_range(r, k0, &lo, &hi);
 		}
@@ -280,7 +359,7 @@ sift_v6_rows_update(SiftV6Rows *r, const SiftBatchSel *bs, SiftVec *const *keyve
 		Datum		worst;
 		bool		worst_null;
 
-		r->bound.active = sift_v6_topk_run_worst(r->run, 0, &worst, &worst_null) && !worst_null;
+		r->bound.active = rows_worst(r, 0, &worst, &worst_null) && !worst_null;
 		if (r->bound.active)
 			r->bound.value = bound_value(spec->key[spec->topk_item[0].pos].typid, worst);
 	}
@@ -321,8 +400,8 @@ sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, c
 	}
 	r->values[spec->nkeys] = Int64GetDatum((int64) (tid | r->source));
 	r->isnull[spec->nkeys] = false;
-	if (sift_v6_topk_run_wants(r->run, put_value, &(PutCand) {r, r->values, r->isnull}))
-		sift_v6_topk_run_put(r->run, r->values, r->isnull);
+	if (rows_wants(r, put_value, &(PutCand) {r, r->values, r->isnull}))
+		rows_keep(r);
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(r->tmp);
 }
@@ -330,13 +409,26 @@ sift_v6_rows_put_raw(SiftV6Rows *r, const int64 *ival, const char *const *str, c
 void
 sift_v6_rows_finish(SiftV6Rows *r)
 {
-	sift_v6_topk_run_finish(r->run);
+	if (r->sort != NULL)
+		tuplesort_performsort(r->sort);
+	else
+		sift_v6_topk_run_finish(r->run);
 }
 
 void
 sift_v6_rows_end(SiftV6Rows *r)
 {
-	sift_v6_topk_run_end(r->run);
+	if (r->run != NULL)
+	{
+		sift_v6_topk_run_end(r->run);
+		return;
+	}
+	if (r->sort == NULL)
+		return;
+	tuplesort_end(r->sort);
+	ExecDropSingleTupleTableSlot(r->in);
+	ExecDropSingleTupleTableSlot(r->out);
+	r->sort = NULL;
 }
 
 SiftV6Group *
@@ -361,12 +453,28 @@ sift_v6_rows_source(SiftV6Rows *r, uint32 source)
 	r->source = (uint64) source << SIFT_V6_ROWS_ADDR_BITS;
 }
 
+/* the next best row into r->values and r->isnull, valid until the next one */
+static bool
+rows_next(SiftV6Rows *r)
+{
+	const int	n = r->spec->nkeys + 1;
+
+	if (r->sort == NULL)
+		return sift_v6_topk_run_next(r->run, r->values, r->isnull);
+	if (!tuplesort_gettupleslot(r->sort, true, false, r->out, NULL))
+		return false;
+	slot_getallattrs(r->out);
+	memcpy(r->values, r->out->tts_values, n * sizeof(Datum));
+	memcpy(r->isnull, r->out->tts_isnull, n * sizeof(bool));
+	return true;
+}
+
 bool
 sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid)
 {
 	uint64		addr;
 
-	if (!sift_v6_topk_run_next(r->run, r->values, r->isnull))
+	if (!rows_next(r))
 		return false;
 	addr = (uint64) DatumGetInt64(r->values[r->spec->nkeys]);
 	*source = (uint32) (addr >> SIFT_V6_ROWS_ADDR_BITS);

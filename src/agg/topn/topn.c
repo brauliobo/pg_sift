@@ -213,16 +213,13 @@ tournament_rows(const ParamListInfo params, const SiftV6TopNSpec *spec, uint64 *
 	return true;
 }
 
-/* offset + limit as the planner costs them: a parameter's value is not known, a typical page of results is */
-#define SIFT_V6_TOPN_PARAM_ROWS	100
-
 static double
 plan_rows(const Node *limit, const Node *offset)
 {
 	const Const *l = (const Const *) limit,
 			   *o = (const Const *) offset;
 
-	return (IsA(limit, Const) && !l->constisnull ? (double) DatumGetInt64(l->constvalue) : SIFT_V6_TOPN_PARAM_ROWS) +
+	return (IsA(limit, Const) && !l->constisnull ? (double) DatumGetInt64(l->constvalue) : SIFT_V6_PARAM_ROWS) +
 		(offset == NULL ? 0 : IsA(offset, Const) && !o->constisnull ? (double) DatumGetInt64(o->constvalue) : 0);
 }
 
