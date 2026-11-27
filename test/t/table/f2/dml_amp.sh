@@ -53,6 +53,12 @@ problems() {
 }
 # footprint REL: "relation_bytes used_blocks"
 footprint() { sql ch "SELECT pg_relation_size('$1') || ' ' || used_blocks FROM sift.space('$1')"; }
+# fresh_footprint INDEX: the footprint of a new index of the same definition on the rows the table holds now: the clean size of what a churn that changes how the rows code leaves
+fresh_footprint() {
+	sql ch "$(sql ch "SELECT regexp_replace(pg_get_indexdef('$1'::regclass), '^CREATE INDEX $1 ON', 'CREATE INDEX ${1}_fresh ON')")" >/dev/null || bail "fresh $1 failed"
+	footprint "${1}_fresh"
+	sql ch "DROP INDEX ${1}_fresh" >/dev/null
+}
 # settle REL INDEX STEP: the VACUUM and the maintenance step (sift.maintain unless STEP says another) of an idle relation; sets SETTLE_ERRORS (the errors and warnings they
 # raised), USED_VACUUM and USED_POST (the blocks in use after each) and SIZE_POST (the bytes of the file)
 settle() {
@@ -245,7 +251,8 @@ clean=$(footprint hc_col)
 tb0=$(temp_bytes)
 churn_cycles col_f2_churn hc_col "VACUUM hc"
 cycle_rows col_f2_churn
-settled_rows col_f2_churn hc "$clean" "$tb0" hc_col
+# The churn turns the linear columns of the load into ones that code worse, so the settled index is held to a new index of the rows it holds, not to the one of the load
+settled_rows col_f2_churn hc "$(fresh_footprint hc_col)" "$tb0" hc_col
 blocks_rows col_f2_churn "$clean"
 sql ch "DROP TABLE hc" >/dev/null
 done_case col_f2_churn
