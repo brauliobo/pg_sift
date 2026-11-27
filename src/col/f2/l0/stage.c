@@ -973,7 +973,7 @@ sift_stage_flush_all(void)
 
 		if (rel == NULL)
 			continue;
-		flush_stage_rows(rel, st, false);
+		flush_rows_and_deletes(rel, st);
 		relation_close(rel, NoLock);
 	}
 }
