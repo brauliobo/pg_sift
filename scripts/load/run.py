@@ -472,7 +472,7 @@ def selftest():
     for name, (cases, classes) in suites.SUITES.items():
         expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
     every = suites.cases('all')
-    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 58, 'the suites share no id: 17 core, 28 workloads, 7 stress, 6 repl')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 64, 'the suites share no id: 17 core, 28 workloads, 12 stress, 7 repl')
     suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
