@@ -48,10 +48,10 @@ require_vocab() {
 match() { grep -q -i -F -f "$PAT"; }
 
 # scan MODE [PATH LABEL]: the words and the addresses, minus the allowlist. names and files read NUL separated paths from stdin; text reads a message whose
-# pseudo path (<commit>, <pr>) selects the rows of the allowlist
+# pseudo path (<commit>, <pr>) selects the rows of the allowlist; commits reads NUL separated records of a sha line and its message, and also the denylist
 read -r -d '' PERL <<'EOF' || true
 use strict; use warnings;
-my ($mode, $words, $allow, $path, $label) = @ARGV;
+my ($mode, $words, $allow, $pat, $path, $label) = @ARGV;
 open my $w, '<', $words or die "$words: $!"; chomp(my @w = <$w>); close $w;
 my $words_alt = join '|', map { quotemeta } sort { length $b <=> length $a } grep { length } @w;
 my $dom = length $words_alt ? qr/(?<![A-Za-z0-9])(?:$words_alt)(?![A-Za-z0-9])/i : qr/(?!)/;
@@ -79,6 +79,19 @@ if ($mode eq 'text') {
 	local $/; my $s = <STDIN>; my $n = 0;
 	my $texts = allowed($path);
 	scan($path, $_, "$label, line " . ++$n, $texts) for split /\r?\n/, $s;
+} elsif ($mode eq 'commits') {
+	open my $d, '<', $pat or die "$pat: $!"; chomp(my @deny = map { lc } <$d>); close $d;
+	my $texts = allowed('<commit>');
+	local $/ = "\0";
+	while (my $r = <STDIN>) {
+		chomp $r;
+		my ($sha, $msg) = split /\n/, $r, 2;
+		my $where = 'commit ' . substr($sha, 0, 9);
+		my $lc = lc($msg // '');
+		if (grep { index($lc, $_) >= 0 } @deny) { print "neutral: $where holds a name of the denylist\n"; $bad = 1; next }
+		my $n = 0;
+		scan('<commit>', $_, "$where, line " . ++$n, $texts) for split /\r?\n/, $msg // '';
+	}
 } else {
 	local $/ = "\0";
 	while (my $f = <STDIN>) {
@@ -99,7 +112,7 @@ if ($mode eq 'text') {
 }
 exit $bad;
 EOF
-scan() { perl -e "$PERL" "$1" "$WORDS" "$ALLOW" "${2:-}" "${3:-}"; }
+scan() { perl -e "$PERL" "$1" "$WORDS" "$ALLOW" "$PAT" "${2:-}" "${3:-}"; }
 
 # check_text PATH LABEL: stdin holds a commit message or a pull request part
 check_text() {
@@ -137,7 +150,7 @@ changed_files() {
 }
 
 check_repo() {
-	local bad=0 base sha names f tree only=0 todo=()
+	local bad=0 base names f tree only=0 todo=()
 	cd "$REPO"
 	require_vocab || return 1
 	if changed_files; then only=1; fi
@@ -164,11 +177,7 @@ check_repo() {
 	else
 		base=$(git merge-base origin/main HEAD 2>/dev/null) || base=
 	fi
-	if [[ -n $base ]]; then
-		while read -r sha; do
-			git log -1 --format=%B "$sha" | check_text '<commit>' "commit ${sha:0:9}" || bad=1
-		done < <(git log --format=%H "$base..HEAD")
-	fi
+	if [[ -n $base ]]; then git log -z --format='%H%n%B' "$base..HEAD" | scan commits || bad=1; fi
 	check_pr || bad=1
 	# a whole tree that passed is the tree to compare with next time (not with a change in the work tree, which the next run reads again anyway)
 	if (( ! bad )) && [[ -n $CLEAN ]] && git diff --quiet && tree=$(git write-tree 2>/dev/null); then echo "$tree" >"$CLEAN.$$" && mv "$CLEAN.$$" "$CLEAN"; fi
@@ -246,7 +255,7 @@ selftest() {
 	printf 'one\n' >"$d/a.txt"; printf 'two\n' >"$d/b.txt"
 	g() { git -C "$d" -c user.name=t -c user.email=t@t "$@"; }
 	g init -q; g add -A; g commit -q -m x
-	w=$(printf 'zz%sx' cache); printf '[words]\n%s\n' "$w" >"$d/vocab"
+	w=$(printf 'zz%sx' cache); printf '[denylist]\n%s\n[words]\n%s\n' "${w}brand" "$w" >"$d/vocab"
 	nc() { ( cd "$d" && SIFT_NEUTRAL_CACHE=$d/cache NEUTRAL_VOCAB_FILE=$d/vocab "$d/scripts/check-neutral.sh" ); }
 	nc >/dev/null 2>&1 || { echo "FAIL: a clean tree is flagged"; bad=1; }
 	g rm -q b.txt
@@ -257,6 +266,9 @@ selftest() {
 	printf 'one\n' >"$d/a.txt"; g add a.txt; g commit -q -m y
 	g commit -q --allow-empty -m "ci: neutral: a $w"
 	NEUTRAL_BASE=HEAD~1 nc >/dev/null 2>&1 && { echo "FAIL: a commit message with a domain word after NEUTRAL_BASE passes"; bad=1; }
+	g commit -q --allow-empty -m "ci: neutral: a neutral change" -m "the ${w}brand plan"
+	grep -q "commit $(g rev-parse --short=9 HEAD) holds a name of the denylist" <<<"$(NEUTRAL_BASE=HEAD~1 nc 2>&1)" || { echo "FAIL: a commit message with a name of the denylist passes"; bad=1; }
+	grep -q "commit $(g rev-parse --short=9 HEAD~1), line 1 holds a domain word" <<<"$(NEUTRAL_BASE=HEAD~2 nc 2>&1)" || { echo "FAIL: a domain word in an older commit of the range passes"; bad=1; }
 	NEUTRAL_BASE=HEAD nc >/dev/null 2>&1 || { echo "FAIL: a commit message before NEUTRAL_BASE is judged"; bad=1; }
 	NEUTRAL_BASE=no-such-ref nc >/dev/null 2>&1 && { echo "FAIL: a NEUTRAL_BASE that is no commit passes"; bad=1; }
 	rm -rf "$d"
