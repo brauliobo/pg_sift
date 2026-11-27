@@ -26,6 +26,7 @@ typedef struct SiftV6InCol
 	int16		scale;
 	uint8		prec;
 	const List *path;			/* attno is a jsonb document's leaf (SIFT_V6_JLEAF_VATT + its leaf), the column the float8 of the member these keys lead to: the document's heap row gives it when the leaf cannot */
+	bool		jsonb_cast;		/* attno is a key's leaf read as (doc -> 'key')::float8 (SiftV6Col.jsonb_cast): a value the leaf cannot hold is cast from its jsonb, not from its `->>` text */
 } SiftV6InCol;
 
 /* A boolean the scan decodes as a bitmap: a boolean column, or the presence of a key in a jsonb column */
@@ -47,6 +48,7 @@ typedef struct SiftV6Input
 	int			nmasks;
 	SiftV6InMask mask[SIFT_V6_MAX_MASKS];
 	EState	   *estate;			/* the execution the program runs in (the values of PARAM_EXEC): NULL while a path is made */
+	bool		raise_late;		/* the operator raises the errors of the casts of SiftV6Batch.raises itself, row by row after its own quals (SiftV6Source.raise); else the source raises them */
 } SiftV6Input;
 
 /* One batch of a scan: rows the visibility of the heap and the deletions of the index leave, the columns of the input as vectors (col[i] is input column i), the booleans as bitmaps */
@@ -57,6 +59,7 @@ typedef struct SiftV6Batch
 	const SiftVexprMaskIn *masks;
 	const uint64 *mask;			/* the rows taken, NULL: all n */
 	const uint64 *tag;			/* a number per row that names it to fetch (a row id of the source), NULL when the operator reads no other column */
+	const uint64 *raises;		/* SiftV6Input.raise_late: the rows taken whose value of a column the cast of the statement raises for, NULL: none */
 } SiftV6Batch;
 
 typedef struct SiftV6Source SiftV6Source;
@@ -81,6 +84,8 @@ struct SiftV6Source
 	/* the columns attnos[0 .. n-1] of the table for the row of the tag, as the Datums of their types */
 	bool		(*fetch) (SiftV6Source *s, uint64 tag, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
 	void		(*close) (SiftV6Source *s);
+	/* raises the error of the cast of a row of raises of the last batch (NULL: the source gives no raises) */
+	void		(*raise) (SiftV6Source *s, int row);
 	/* adds the granules the source read so far to out (NULL: the format counts none) */
 	void		(*granules) (SiftV6Source *s, SiftV6GranCounts *out);
 };

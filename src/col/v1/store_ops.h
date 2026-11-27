@@ -10,6 +10,7 @@
 
 #include "nodes/execnodes.h"
 #include "nodes/pg_list.h"
+#include "utils/jsonb.h"
 
 #include "agg/batch_source.h"
 #include "agg/vexpr/str.h"
@@ -34,7 +35,7 @@ extern const SiftStoreParOps sift_v1_par_ops;
 extern const SiftConnOps sift_v1_conn_ops;
 extern const SiftSrcLeaf *sift_v1_found_leaf(Relation index, const SiftSrcLayout *lay, int attno);
 
-/* The keys of a document of the unified scan (col/v1_engine/store_ops_json.c): the JSON types the reader tests one at a time, in the order of the index a row's type is, and the value of a key from a document */
+/* The keys of a document of the unified scan (col/v1_engine/store_ops_json.c): the JSON types the reader tests one at a time, in the order of the index a row's type is, and the value of a key from a document (NULL: none) */
 #define SIFT_V1_NJSON_TYPES 7
 typedef struct SiftV1JsonType
 {
@@ -42,7 +43,7 @@ typedef struct SiftV1JsonType
 	const char *name;			/* what jsonb_typeof gives; NULL for a missing key, whose jsonb_typeof is NULL */
 } SiftV1JsonType;
 extern const SiftV1JsonType sift_v1_json_types[SIFT_V1_NJSON_TYPES];
-extern bool sift_v1_json_member(Datum doc, const char *key, SiftV6Class cls, MemoryContext cx, const char **text, uint32 *tlen, double *f);
+extern Jsonb *sift_v1_json_member(Datum doc, const char *key);
 
 /* The optional sub-vtables of the Format 1 store (col/v1_engine/store_ops_ext.c, v1_store_ops_jsonb.c) */
 extern const SiftOrderOps v1_order_ops;

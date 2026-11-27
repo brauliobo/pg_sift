@@ -15,15 +15,13 @@ const SiftV1JsonType sift_v1_json_types[SIFT_V1_NJSON_TYPES] = {
 	{SIFT_SRC_JT_ARRAY, "array"}, {SIFT_SRC_JT_NONE, NULL}, {SIFT_SRC_JT_NULL, "null"}
 };
 
-bool
-sift_v1_json_member(Datum doc, const char *key, SiftV6Class cls, MemoryContext cx, const char **text, uint32 *tlen, double *f)
+Jsonb *
+sift_v1_json_member(Datum doc, const char *key)
 {
 	Jsonb	   *jb = DatumGetJsonbP(doc);
 	JsonbValue	jv;
-	Jsonb	   *member;
 
 	if (!JB_ROOT_IS_OBJECT(jb) || getKeyJsonValueFromContainer(&jb->root, key, strlen(key), &jv) == NULL)
-		return false;
-	member = JsonbValueToJsonb(&jv);
-	return sift_v6_json_exception(cls, (const char *) member, VARSIZE(member), cx, text, tlen, f);
+		return NULL;
+	return JsonbValueToJsonb(&jv);
 }

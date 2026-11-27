@@ -83,6 +83,7 @@ struct SiftSrcFold
 	SiftV6Pipe *pipe;
 	SiftBatchSel bs;
 	const uint64 *tag;			/* the heap addresses of the rows of the batch being folded */
+	SiftV6Source *src;			/* the source of the run: it raises the errors of the rows of its raises */
 	bool		count_only;
 };
 
@@ -98,7 +99,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 	attno = sift_v6_col_batch_attno(&c);
 	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO || sift_v6_attno_found(c.attno) >= 0) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
-		if (f->col[i].attno == attno && f->col[i].jmember == c.jmember && f->col[i].cls == cls)
+		if (f->col[i].attno == attno && f->col[i].jmember == c.jmember && f->col[i].cls == cls && f->in.col[f->col[i].slot].jsonb_cast == c.jsonb_cast)
 		{
 			f->col[i].nan_ok &= takes_nan;
 			return &f->col[i];
@@ -106,7 +107,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 	SIFT_INVARIANT(f->nfold < SIFT_V6_MAX_COLS, "the aggregate scan of %s reads more columns than a batch holds", sift_rel_label(f->a.spec->relid));
 	f->col[f->nfold] = (FoldCol) {.attno = attno,.jmember = c.jmember,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
 	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,.path = c.jmember > 0 ? list_nth(f->a.spec->jmembers, c.jmember - 1) : NIL,
-		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64};
+		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64,.jsonb_cast = c.jsonb_cast};
 	return &f->col[f->nfold++];
 }
 
@@ -442,6 +443,30 @@ derive_columns(SiftSrcFold *f)
 		sift_vx_affine_check(f->a.spec, f->keyvec[0], &f->bs);
 }
 
+/*
+ * PostgreSQL's error for the first row the quals keep whose value of a column the cast raises for (SiftV6Batch.raises): the rows before it are derived first, as PostgreSQL computes the
+ * arguments of the aggregates of each row in turn, and the first of them that raises is the error
+ */
+static void
+raise_first(SiftSrcFold *f, const uint64 *raises)
+{
+	SiftBatchSel *bs = &f->bs;
+	const int	words = (bs->n_raw + 63) / 64;
+	int			row = -1;
+
+	for (int w = 0; row < 0 && w < words; w++)
+		row = (bs->mask[w] & raises[w]) != 0 ? w * 64 + pg_rightmost_one_pos64(bs->mask[w] & raises[w]) : -1;
+	if (row < 0)
+		return;
+	bs->n_active = 0;
+	for (int w = 0; w < words; w++)
+		bs->n_active += pg_popcount64(bs->mask[w] &= w < row / 64 ? ~UINT64CONST(0) : w == row / 64 ? (UINT64CONST(1) << (row & 63)) - 1 : 0);
+	bs->all_active = false;
+	if (bs->n_active > 0)
+		derive_columns(f);
+	f->src->raise(f->src, row);
+}
+
 static void
 bin_keys(SiftSrcFold *f)
 {
@@ -489,6 +514,8 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 		sift_v6_bq_filter(f->bq, bs);
 	if (f->a.gate != NULL && bs->n_active > 0)
 		take_gate(f);
+	if (b->raises != NULL)
+		raise_first(f, b->raises);
 	if (bs->n_active == 0)
 		return;
 	derive_columns(f);
@@ -516,7 +543,7 @@ sift_srcfold_tags(const SiftSrcFold *f)
 void
 sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 {
-	SiftV6Source *src = open(open_arg, &f->in, f->quals);
+	SiftV6Source *src = f->src = open(open_arg, &f->in, f->quals);
 	SiftV6Batch b;
 	SiftErrCtx	ctx;
 	SiftV6GranCounts grans = {0};

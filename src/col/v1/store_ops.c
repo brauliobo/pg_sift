@@ -963,7 +963,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	sift_v1_src_prune_begin(s, scan);
 	sift_errctx_pop(&ctx);
 	MemoryContextSwitchTo(old);
-	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules};
+	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules,.raise = sift_v1_src_raise};
 	return &s->base;
 }
 

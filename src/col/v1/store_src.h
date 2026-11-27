@@ -38,6 +38,8 @@ typedef struct SiftV1Src
 	AttrNumber	jatt[SIFT_V6_MAX_COLS];	/* the column of the heap row of the document of a JSON column */
 	uint64	   *jexc[SIFT_V6_MAX_COLS];	/* the rows of the batch whose leaf could not hold the value */
 	bool		has_jexc[SIFT_V6_MAX_COLS];
+	uint64		raises[SIFT_VEC_WORDS];	/* the rows of the batch whose value of a key the cast raises for (SiftV6Input.raise_late) */
+	bool		has_raises;
 	uint8	   *jtag[SIFT_V6_MAX_COLS];	/* the JSON type of each row of the unit (the index of json_types), or of a presence column 1 where the document has the key */
 	bool		jrootless[SIFT_V6_MAX_COLS];	/* SiftV1TypeTest.rootless of a presence column */
 	int			ndocs;			/* the columns of the input that are a jsonb document, read from the heap row of each row the batch keeps */
@@ -106,7 +108,9 @@ extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);
 extern bool sift_v1_src_vet(SiftV1Src *s, SiftV6Batch *b);
 
 /* The columns of a batch that the leaves cannot hold, read from the heap row of each row the batch keeps (col/v1_engine/store_ops_heap.c): jsonb documents, values of keys, members of maps */
-extern void sift_v1_src_fill_heap(SiftV1Src *s, const SiftV6Batch *b);
+extern void sift_v1_src_fill_heap(SiftV1Src *s, SiftV6Batch *b);
+/* SiftV6Source.raise: PostgreSQL's error for a row of the raises of the last batch */
+extern void sift_v1_src_raise(SiftV6Source *base, int row);
 
 /* The rows of bits of the unit whose key of leaf l has one of the JSON types (SIFT_SRC_JT_*); false when none is left */
 extern bool sift_v1_src_filter_types(SiftV1Src *s, const SiftSrcLeaf *l, uint32 types, uint64 *bits);
