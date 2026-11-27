@@ -225,6 +225,13 @@ class Harness(unittest.TestCase):
         self.assertTrue(out['w'].bad and out['w'].bad[0].startswith('wedged: '), out['w'].bad)
         self.assertIn(run.STUCK, ctx.db.sqls)
 
+    def test_every_worker_runs_its_first_statement_however_late_its_thread_starts(self):
+        ctx, ran = ctx_of(), []
+        ws = [worker(seed=k) for k in range(16)]
+        ctx.phase({'w': (ws, lambda w, i: ran.append(w.seed))}, 0.0)
+        self.assertEqual(ctx.wedged, 0)
+        self.assertEqual(sorted(set(ran)), list(range(16)), 'a phase that ends before a thread is scheduled still runs its worker once')
+
     def test_s117_l1_restandby_and_restart_waits_are_bounded(self):
         with open(os.path.join(REPO, 'test/t/core/load_repl.sh')) as f:
             self.assertNotRegex(f.read(), r'until \[\[ \$\(sql lp')

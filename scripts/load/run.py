@@ -201,8 +201,8 @@ class Ctx:
         return ws
 
     def phase(self, roles: dict, secs: float, peak: str = '', pacer: bool = False, lead: str = '') -> dict:
-        """runs every (workers, fn) of ROLES together for SECS, or until the workers of the role LEAD end (a fn that returns False ends its worker): fn(worker, i) does statement i;
-        a worker still in its statement cap() seconds after the end is wedged (unwedge)"""
+        """runs every (workers, fn) of ROLES together for SECS, or until the workers of the role LEAD end (a fn that returns False ends its worker): fn(worker, i) does statement i,
+        the first one even when its thread starts after the end; a worker still in its statement cap() seconds after the end is wedged (unwedge)"""
         stop, pairs = threading.Event(), [(name, w, fn) for name, (ws, fn) in roles.items() for w in ws]
         bar = threading.Barrier(len(pairs) + 1)
         seen = [len(w.bad) for _, w, _ in pairs]
@@ -213,7 +213,7 @@ class Ctx:
             bar.wait()
             i = 0
             try:
-                while not stop.is_set() and fn(w, i) is not False:
+                while fn(w, i) is not False and not stop.is_set():
                     i += 1
             except Exception as e:
                 w.bad.append(f'{type(e).__name__}: {e}'[:200])
