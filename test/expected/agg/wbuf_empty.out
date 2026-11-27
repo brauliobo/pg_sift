@@ -18,9 +18,9 @@ ROLLBACK;
 EXPLAIN (COSTS OFF) SELECT g, count(*) FROM we WHERE g < 3 GROUP BY g;
           QUERY PLAN           
 -------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
    Index: we_col
-   Filters: g < 3
+   Filters: (g < 3)
    Group Keys: g
    Pushed Aggregates: count(*)
 (5 rows)
