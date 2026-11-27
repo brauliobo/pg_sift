@@ -89,10 +89,12 @@ exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
 	return sp;
 }
 
-/* the sub-plan or call c is, under at most one NOT */
+/* the sub-plan or call c is, under at most one NOT, the whole under an IS TRUE, which keeps the rows a WHERE or a FILTER keeps */
 static const Node *
 test_node(const Node *c, bool *negated)
 {
+	if (IsA(c, BooleanTest) && ((const BooleanTest *) c)->booltesttype == IS_TRUE)
+		c = (const Node *) ((const BooleanTest *) c)->arg;
 	*negated = IsA(c, BoolExpr) && ((const BoolExpr *) c)->boolop == NOT_EXPR;
 	if (*negated)
 		c = linitial(((const BoolExpr *) c)->args);
