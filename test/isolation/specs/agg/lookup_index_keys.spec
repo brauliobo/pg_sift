@@ -19,7 +19,7 @@ setup
 		differences bigint;
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l LIKE '%Custom Scan (SiftAggV6)%' THEN nodes := nodes + 1; END IF;
+			IF l LIKE '%Custom Scan (SiftAggV6%' THEN nodes := nodes + 1; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_lk_on AS ' || q;
 		PERFORM set_config('sift.enable_agg', 'off', true);
