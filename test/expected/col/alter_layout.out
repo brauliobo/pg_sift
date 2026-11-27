@@ -141,6 +141,9 @@ SELECT sift.verify('al_auto_col');
 (1 row)
 
 -- an index a release without the check altered: the write and the read fail alike, the REINDEX repairs both
+-- Format 1: byte 40 of the metapage is the hash of the column definitions of Format 1.
+SET sift.test_create_format1 = on;
+REINDEX INDEX al_full_col;
 SELECT sift._test_poke('al_full_col', 0, 40, 1, 1);
  _test_poke 
 ------------

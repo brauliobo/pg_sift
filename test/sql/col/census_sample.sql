@@ -2,6 +2,8 @@
 -- first plan of every backend, so the units are counted up to sift.test_limits pre_census_units (16 by default) of each segment, spread over it; the count stands for the units of its segment.
 -- A segment of fewer units is counted whole.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the unit statistics of the segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 

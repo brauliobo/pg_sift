@@ -4,6 +4,8 @@
 -- its order array asked for 24 bytes a row at the end of the build (an ERROR at 1 GB: 260 million rows after twelve minutes of scan). sift.test_col_segment_kb
 -- lowers the budget (the index is built with key_cut = 'off': the build cuts a key_order index by its group, which has its own runs), so that a few rows reach it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments the allocation budget cuts are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

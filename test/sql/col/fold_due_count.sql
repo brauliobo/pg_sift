@@ -5,6 +5,8 @@
 -- (80 times) and, when the fold is due, at every scan that comes after.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and its folds are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 CREATE TABLE r (id int PRIMARY KEY, g int NOT NULL, v int) WITH (autovacuum_enabled = false);
