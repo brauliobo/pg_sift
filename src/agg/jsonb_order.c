@@ -110,6 +110,24 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 	return leaves;
 }
 
+/* a value of a key of a map that a cast of a member gives: the scan raises the error of the cast for the row, whatever the FILTER of the aggregate that reads it */
+static bool
+late_col(const SiftV6Ext *x, const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ELEM && x != NULL && x->elem.fn == SV6E_KEYS && c->typid != TEXTOID;
+}
+
+/* an aggregate with a FILTER reads such a value: PostgreSQL casts it only for the rows the FILTER keeps */
+static bool
+filtered_late(const SiftV6Spec *s, const SiftV6Ext *x)
+{
+	bool		late = false;
+
+	for (int a = 0; a < s->naggs; a++)
+		late |= s->agg[a].fclause != 0 && (late_col(x, &s->agg[a].arg) || late_col(x, &s->agg[a].arg2));
+	return late;
+}
+
 /* a join of dimensions that drops fact rows after the scan converted them: an inner, semi, anti or right one, or a condition of the join no key says */
 static bool
 join_drops_rows(const SiftV6Ext *x)
@@ -172,7 +190,7 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		cast = ri;
 		cast_leaves = leaves;
 	}
-	if ((cast != NULL || other != NULL) && join_drops_rows(p->xseed))
+	if (((cast != NULL || other != NULL) && join_drops_rows(p->xseed)) || filtered_late(s, p->xseed))
 		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));

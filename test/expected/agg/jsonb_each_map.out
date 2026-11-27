@@ -261,6 +261,19 @@ SELECT same(q) FROM unnest(ARRAY[
  same node error 22P02 invalid input syntax for type double precision: "{"x": 1}" SELECT m.key, sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE o.id = 1001 AND m.key IN ('b', 'c') GROUP BY 1
 (5 rows)
 
+-- a FILTER or a CASE casts the value only for the rows it keeps: those of the members that are no number are not, so nothing raises
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum((kv.value #>> ''{}'')::float8) FILTER (WHERE kv.key = ''b'' AND o.id < 1001) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, sum(m.value::float8) FILTER (WHERE o.id < 1001) FROM ed o, jsonb_each_text(o.metrics) m GROUP BY 1',
+	'SELECT o.id % 2, sum(CASE WHEN o.id < 1001 THEN (o.metrics ->> ''a'')::float8 END) FROM ed o GROUP BY 1'
+]) q;
+                                                                          same                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT kv.key, sum((kv.value #>> '{}')::float8) FILTER (WHERE kv.key = 'b' AND o.id < 1001) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1
+ same node ok SELECT m.key, sum(m.value::float8) FILTER (WHERE o.id < 1001) FROM ed o, jsonb_each_text(o.metrics) m GROUP BY 1
+ same normal ok SELECT o.id % 2, sum(CASE WHEN o.id < 1001 THEN (o.metrics ->> 'a')::float8 END) FROM ed o GROUP BY 1
+(3 rows)
+
 -- Q-08. A document that is no object raises where the row reaches the function, and none of the others is read
 CREATE TABLE eo (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
 INSERT INTO eo SELECT i, CASE i % 5 WHEN 0 THEN NULL WHEN 1 THEN '{"a": 1}' WHEN 2 THEN '{}' ELSE jsonb_build_object('a', i, 'b', 2) END FROM generate_series(1, 600) i;

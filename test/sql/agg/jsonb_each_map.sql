@@ -150,6 +150,12 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT kv.key, sum(kv.value::float8) FROM ed o, jsonb_each(o.metrics) kv WHERE o.id IN (1001, 1002) GROUP BY 1',
 	'SELECT m.key, sum(m.value::float8) FROM ed o, jsonb_each_text(o.metrics) m WHERE o.id = 1001 AND m.key IN (''b'', ''c'') GROUP BY 1'
 ]) q;
+-- a FILTER or a CASE casts the value only for the rows it keeps: those of the members that are no number are not, so nothing raises
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT kv.key, sum((kv.value #>> ''{}'')::float8) FILTER (WHERE kv.key = ''b'' AND o.id < 1001) FROM ed o, jsonb_each(o.metrics) kv GROUP BY 1',
+	'SELECT m.key, sum(m.value::float8) FILTER (WHERE o.id < 1001) FROM ed o, jsonb_each_text(o.metrics) m GROUP BY 1',
+	'SELECT o.id % 2, sum(CASE WHEN o.id < 1001 THEN (o.metrics ->> ''a'')::float8 END) FROM ed o GROUP BY 1'
+]) q;
 
 -- Q-08. A document that is no object raises where the row reaches the function, and none of the others is read
 CREATE TABLE eo (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
