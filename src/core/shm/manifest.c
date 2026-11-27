@@ -588,6 +588,14 @@ pin_locked(SiftShmIndexSlot *s, dsa_area *a)
 	return snap;
 }
 
+/* The reads of a snapshot are done before the epoch is left: a write barrier orders only the stores, and a reclaimer that sees the epoch left may free what is still being read */
+static void
+pin_epoch_leave(pg_atomic_uint64 *mine)
+{
+	pg_memory_barrier();
+	pg_atomic_write_u64(mine, 0);
+}
+
 /*
  * The same without a lock: the backend announces the epoch it enters, reads the pointer and counts itself in the refcount, and leaves the epoch. The full barrier after the announcement
  * makes either the writer that retires the snapshot see the announcement or this backend see the pointer that replaced it; a snapshot that was retired in between has no holder left (its
@@ -621,8 +629,7 @@ pin_in_epoch(Table *t, SiftShmIndexSlot *s, dsa_area *a)
 		}
 		PG_FINALLY();
 		{
-			pg_write_barrier();
-			pg_atomic_write_u64(mine, 0);
+			pin_epoch_leave(mine);
 		}
 		PG_END_TRY();
 		if (retired)
@@ -740,8 +747,7 @@ run_on_snapshot(Table *t, SiftShmIndexSlot *s, dsa_area *a, const RelFileLocator
 	}
 	PG_FINALLY();
 	{
-		pg_write_barrier();
-		pg_atomic_write_u64(mine, 0);
+		pin_epoch_leave(mine);
 	}
 	PG_END_TRY();
 	return ran;
