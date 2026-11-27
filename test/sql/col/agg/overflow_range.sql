@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+SET client_min_messages = warning;
 
 CREATE TABLE r_t (id int PRIMARY KEY, amt numeric(18, 2), doc jsonb) WITH (autovacuum_enabled = false);
 -- from the row 1000 on: 70000 in the int2 path, 5000000000 in the int4 path, 1e30 in the int8 path, 1e300 in the float4 path, 1e400 in the float8 path

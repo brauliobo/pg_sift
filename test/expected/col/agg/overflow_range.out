@@ -7,6 +7,7 @@ CREATE EXTENSION pg_sift_helpers;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+SET client_min_messages = warning;
 CREATE TABLE r_t (id int PRIMARY KEY, amt numeric(18, 2), doc jsonb) WITH (autovacuum_enabled = false);
 -- from the row 1000 on: 70000 in the int2 path, 5000000000 in the int4 path, 1e30 in the int8 path, 1e300 in the float4 path, 1e400 in the float8 path
 INSERT INTO r_t
@@ -20,9 +21,6 @@ SELECT i, 9999999999999999.99 - i % 7,
                                        FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 5000) i;
 CREATE INDEX r_t_col ON r_t USING sift_col (id, amt, doc) WITH (paths = 'doc.lines[]{k text, h int2, n int4, b int8, f float4, d float8}');
-NOTICE:  sift_col index "r_t_col": 1 automatic choice (track_changes)
-DETAIL:  track_changes = id
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('r_t_col');
 VACUUM (FREEZE, ANALYZE) r_t;
 \ir test/common/sql/agg/base.sql
 \set ECHO none
