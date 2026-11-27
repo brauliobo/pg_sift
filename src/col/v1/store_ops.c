@@ -23,6 +23,7 @@
 #include "agg/agg.h"
 #include "agg/batch_source.h"
 #include "col/am.h"
+#include "col/col.h"
 #include "col/source_fold.h"
 #include "col/v1/reader.h"
 #include "col/v1/store_ops.h"
@@ -872,6 +873,50 @@ bind_types(SiftV1Src *s, const SiftV1Scan *scan)
 		}
 }
 
+typedef struct SrcKeys
+{
+	const SiftV1Src *s;
+	SiftSrcBound bound[SIFT_SRC_MAX_BOUNDS];
+	int			nbound;
+} SrcKeys;
+
+/* The keys of leaf the bounds of the quals admit (SiftColLeafKeys): those of its integer bounds, the conjuncts the units are pruned by */
+static bool
+bound_keys(int leaf, const void *arg, int64 *lo, int64 *hi, bool *null)
+{
+	const SrcKeys *k = arg;
+	bool		found = false;
+
+	*lo = PG_INT64_MIN;
+	*hi = PG_INT64_MAX;
+	*null = false;
+	for (int i = 0; i < k->nbound; i++)
+	{
+		const SiftSrcLeaf *l = k->s->col_leaf[k->bound[i].slot];
+
+		if (l == NULL || l->id != leaf || l->wide || (l->vtype != SCV_I32 && l->vtype != SCV_I64))
+			continue;
+		*lo = k->bound[i].has_lo ? Max(*lo, k->bound[i].lo) : *lo;
+		*hi = k->bound[i].has_hi ? Min(*hi, k->bound[i].hi) : *hi;
+		found = true;
+	}
+	return found;
+}
+
+/* The reader of the source: an index read by the statement alone opens only the partitions of its key_cut the bounds of the quals may find rows in, a worker the directory of its leader */
+static void *
+open_reader(SiftV1Src *s, const SiftV1Range *range)
+{
+	SrcKeys		k = {.s = s};
+	SiftKeyRange keys;
+
+	if (s->in.is_table)
+		return s->rd->open(s->rels.heap, NULL, s->snap, s->cx, range ? range->view : NULL);
+	k.nbound = s->quals != NULL && range == NULL ? sift_srcfold_bounds(s->quals, k.bound) : 0;
+	return sift_v1_idx_open_keys(s->rels.heap, s->rels.rel, s->snap, s->cx, range ? range->view : NULL,
+								 k.nbound > 0 && sift_col_key_range_by(s->rels.rel, bound_keys, &k, &keys) ? &keys : NULL);
+}
+
 SiftV6Source *
 sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Scan *scan)
 {
@@ -895,16 +940,16 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->tid_hi = scan->tid_hi;
 	s->rels = sift_v1_rel_open(in->indexoid, in->is_table);
 	s->rd = sift_v1_reader_of(in->is_table);
-	s->src = s->rd->open(s->rels.heap, in->is_table ? NULL : s->rels.rel, s->snap, cx, range ? range->view : NULL);
-	s->lay = s->rd->source_layout(s->src);
+	s->lay = s->rd->layout(in->is_table ? s->rels.heap : s->rels.rel);
 	bind_columns(s);
 	if (scan->elem != NULL)
 		bind_elems(s, scan->elem);
+	if (quals != NULL)
+		s->quals = sift_v6_vexpr_dup(cx, quals);
+	s->src = open_reader(s, range);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
 	if (!in->is_table)
 		s->index_fetch = sift_table_index_fetch_begin(s->rels.heap);
-	if (quals != NULL)
-		s->quals = sift_v6_vexpr_dup(cx, quals);
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (scan->keep != NULL)
 		s->rd->select(s->src, scan->keep);

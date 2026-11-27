@@ -39,13 +39,19 @@ sift_v1_idx_init(SiftV1Idx *r, Relation heap, Relation index, Snapshot snapshot,
 	MemoryContextSwitchTo(old);
 }
 
-static void *
-idx_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+void *
+sift_v1_idx_open_keys(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys)
 {
 	SiftV1Idx  *r = MemoryContextAllocZero(mcxt, sizeof(SiftV1Idx));
 
-	sift_v1_idx_init(r, heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, NULL);
+	sift_v1_idx_init(r, heap, index, snapshot, mcxt, SIFT_COLO_NOACL | SIFT_COLO_POINTS | SIFT_COLO_POINT_ROWS, view, keys);
 	return r;
+}
+
+static void *
+idx_open(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view)
+{
+	return sift_v1_idx_open_keys(heap, index, snapshot, mcxt, view, NULL);
 }
 
 SiftColSource *

@@ -82,6 +82,8 @@ extern void sift_v1_idx_preagg(Relation index, SiftSrcPreagg *pa);
 extern int	sift_v1_idx_key_leaf(Relation index);
 /* The column source of an index reader (sift_v1_idx_reader.open): what the global order of a leaf is read through (col/api/source.h) */
 extern SiftColSource *sift_v1_idx_colsource(void *impl);
+/* sift_v1_idx_reader.open confined to the partitions of the key_cut that may hold keys (NULL: all of them) */
+extern void *sift_v1_idx_open_keys(Relation heap, Relation index, Snapshot snapshot, MemoryContext mcxt, const void *view, const SiftKeyRange *keys);
 
 extern SiftSrcLayout *sift_v1_idx_layout(Relation index);
 extern void sift_v1_idx_stats(Relation index, SiftSrcStats *st);
