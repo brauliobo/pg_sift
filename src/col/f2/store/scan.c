@@ -30,6 +30,7 @@
 #include "col/f2/l0/stage.h"
 #include "col/f2/part/vis.h"
 #include "col/f2/del/pend.h"
+#include "core/errctx.h"
 #include "col/f2/pin_win.h"
 #include "col/f2/slab_view.h"
 #include "core/memtrack.h"
@@ -634,7 +635,9 @@ scan_table(const SiftStoreScanOpts *o, SiftF2Sink sink, void *arg)
 {
 	SiftStoreScan *s = sift_f2_store_scan_open(o);
 	SiftF2Batch b;
+	SiftErrCtx	ctx;
 
+	sift_errctx_push(&ctx, RelationGetRelid(o->rel));
 	s->sink = sink;
 	s->sink_arg = arg;
 	for (List *run; (run = sift_f2_store_scan_next_run(s, false)) != NIL;)
@@ -644,6 +647,7 @@ scan_table(const SiftStoreScanOpts *o, SiftF2Sink sink, void *arg)
 	if (o->pinwin != NULL)
 		o->pinwin_done(arg);
 	sift_f2_store_scan_close(s);
+	sift_errctx_pop(&ctx);
 }
 
 void

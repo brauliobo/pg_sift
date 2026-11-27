@@ -62,7 +62,7 @@ keys_of(const SiftV6Spec *sp, const int *first, TsRun *t)
 
 		k->binned = true;
 		k->month = sp->bin[b].stride_us == SIFT_DATEBIN_MONTH;
-		k->bin = (SiftDateBin) {.stride_us = sp->bin[b].stride_us,.origin = sp->bin[b].origin,.stride_status = SDB_OK};
+		k->bin = (SiftDateBin) {.stride_us = sp->bin[b].stride_us,.origin = sp->bin[b].origin,.stride_status = sp->bin[b].status};
 	}
 	return true;
 }

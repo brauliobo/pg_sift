@@ -28,6 +28,7 @@
 #include "agg/vexpr.h"
 #include "col/am/preds.h"
 #include "col/source_fold.h"
+#include "core/errctx.h"
 #include "core/memtrack.h"
 #include "nodes/pathnodes.h"
 
@@ -214,7 +215,7 @@ setup_bins(SiftSrcFold *f)
 
 		bn->key = spec->bin[b].key;
 		bn->month = spec->bin[b].stride_us == SIFT_DATEBIN_MONTH;
-		bn->bin = (SiftDateBin) {.stride_us = spec->bin[b].stride_us,.origin = spec->bin[b].origin,.stride_status = SDB_OK};
+		bn->bin = (SiftDateBin) {.stride_us = spec->bin[b].stride_us,.origin = spec->bin[b].origin,.stride_status = spec->bin[b].status};
 		bn->src = f->keyvec[bn->key];
 		bn->out = MemoryContextAllocAligned(f->cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		f->keyvec[bn->key] = &bn->vec;
@@ -512,11 +513,13 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 {
 	SiftV6Source *src = open(open_arg, &f->in, f->quals);
 	SiftV6Batch b;
-
+	SiftErrCtx	ctx;
 	SiftV6GranCounts grans = {0};
 
+	sift_errctx_push(&ctx, RelationGetRelid(f->a.host));
 	while (src->next(src, &b))
 		sift_srcfold_batch(f, &b);
+	sift_errctx_pop(&ctx);
 	if (src->granules != NULL)
 		src->granules(src, &grans);
 	f->a.stats->grans += grans.read;

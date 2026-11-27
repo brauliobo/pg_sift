@@ -18,6 +18,7 @@
 
 #include "agg/vclass.h"
 #include "agg/vec.h"
+#include "agg/win/datebin.h"
 #include "core/tidbridge.h"
 #include "col/am.h"
 #include "core/store/ops.h"
@@ -188,6 +189,7 @@ typedef struct SiftV6Bin
 	int			key;			/* the index into SiftV6Spec.key */
 	int64		stride_us;
 	int64		origin;
+	SiftDateBinStatus status;	/* the error of PostgreSQL the stride or the origin raises for every finite source (a stride with months): the scan raises it for the first such row */
 } SiftV6Bin;
 
 /* A key or an argument computed from columns of the row (agg/expr/str.h): the vector of the batch it is is made after the columns are decoded */

@@ -383,13 +383,14 @@ compile_month(V6Plan *p, const FuncExpr *f, SiftV6Col *k)
 	return true;
 }
 
-/* a key of date_bin(stride, column, origin) over a timestamp or timestamptz column, with a stride and an origin PostgreSQL accepts for every source: k is the column, p->spec.bin the binning */
+/* a key of date_bin(stride, column, origin) over a timestamp or timestamptz column with a constant stride and origin: k is the column, p->spec.bin the binning, or the error PostgreSQL raises for a finite source */
 static bool
 compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 {
 	const FuncExpr *f = (const FuncExpr *) e;
 	SiftDateBinShape shape = {0};
 	SiftDateBin bin;
+	SiftShapeVerdict verdict;
 	const Const *stride,
 			   *origin;
 	const SiftV6Resolver rs = {sift_v6_resolve_column, p};
@@ -428,9 +429,10 @@ compile_bin(V6Plan *p, Expr *e, SiftV6Col *k)
 		shape.origin = origin->constisnull ? 0 : DatumGetInt64(origin->constvalue);
 		shape.source_ok = sift_v6_plan_column(p, lsecond(f->args), false, k) && (k->typid == TIMESTAMPOID || k->typid == TIMESTAMPTZOID) && origin->consttype == k->typid;
 	}
-	if (sift_shape_datebin(&shape, &bin) != SSV_OK)
+	verdict = sift_shape_datebin(&shape, &bin);
+	if (verdict != SSV_OK && verdict != SSV_DATEBIN_MONTHS && verdict != SSV_DATEBIN_STRIDE && verdict != SSV_DATEBIN_ORIGIN)
 		return false;
-	p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = bin.stride_us,.origin = bin.origin};
+	p->spec.bin[p->spec.nbins++] = (SiftV6Bin) {.key = p->spec.nkeys,.stride_us = bin.stride_us,.origin = bin.origin,.status = bin.stride_status};
 	return true;
 }
 

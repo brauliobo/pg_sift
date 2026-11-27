@@ -374,7 +374,7 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 
 		bn->key = spec->bin[b].key;
 		bn->month = spec->bin[b].stride_us == SIFT_DATEBIN_MONTH;
-		bn->bin = (SiftDateBin) {.stride_us = spec->bin[b].stride_us,.origin = spec->bin[b].origin,.stride_status = SDB_OK};
+		bn->bin = (SiftDateBin) {.stride_us = spec->bin[b].stride_us,.origin = spec->bin[b].origin,.stride_status = spec->bin[b].status};
 		bn->src = s->keyvec[bn->key];
 		bn->out = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		s->keyvec[bn->key] = &bn->vec;

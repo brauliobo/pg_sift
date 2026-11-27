@@ -102,7 +102,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 		ints = put_col(ints, &s->fcol[i]);
 	ints = lappend_int(ints, s->nbins);
 	for (int i = 0; i < s->nbins; i++)
-		ints = put_int64(put_int64(lappend_int(ints, s->bin[i].key), s->bin[i].stride_us), s->bin[i].origin);
+		ints = lappend_int(put_int64(put_int64(lappend_int(ints, s->bin[i].key), s->bin[i].stride_us), s->bin[i].origin), s->bin[i].status);
 	ints = lappend_int(ints, s->nparts);
 	for (int k = 0; k < s->nparts; k++)
 		ints = lappend_int(lappend_int(ints, (int) s->part_index[k]), s->part_is_table[k]);
@@ -167,6 +167,7 @@ sift_v6_spec_unpack(const List *l)
 		s->bin[i].key = list_nth_int(ints, at++);
 		s->bin[i].stride_us = take_int64(ints, &at);
 		s->bin[i].origin = take_int64(ints, &at);
+		s->bin[i].status = (SiftDateBinStatus) list_nth_int(ints, at++);
 	}
 	s->nparts = list_nth_int(ints, at++);
 	s->part_index = palloc(Max(s->nparts, 1) * sizeof(Oid));
