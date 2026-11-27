@@ -95,7 +95,7 @@ SELECT r.same, r.proofs > 0 AS flags_used FROM found_run($q$SELECT count(*) FROM
 SELECT r.same, r.proofs > 0 AS flags_used FROM found_run($q$SELECT count(*) FROM ev_over e JOIN dim_over d ON d.id = e.dim_id$q$) r;
  same | flags_used 
 ------+------------
- t    | f
+ t    | t
 (1 row)
 
 -- keys that are not evenly spread (squares), asked for keys the parent has and keys next to them it has not
