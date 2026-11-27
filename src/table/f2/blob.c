@@ -150,7 +150,7 @@ give_back(Relation rel, const SiftExtent *ext, int n)
 	}
 	PG_CATCH();
 	{
-		sift_fsm_note_orphans(rel);
+		sift_fsm_note_orphans(&rel->rd_locator);
 		PG_RE_THROW();
 	}
 	PG_END_TRY();

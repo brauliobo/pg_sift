@@ -109,7 +109,15 @@ SELECT (SELECT bytes FROM sift.index_size_breakdown('dr3_idx') WHERE category = 
 SELECT sift._test_f2_check_keys('dr3_idx') ~ ' exact$' AS keys_exact;
 SELECT sift_helpers.f2_same('SELECT * FROM dr3 WHERE tag = ''v123x'''), sift_helpers.f2_same('SELECT count(*) FROM dr3 WHERE id BETWEEN 30000 AND 50000');
 
-DROP TABLE c, d, dr1, dr2, dr3;
+-- The merged dictionaries take at most an eighth of the maintenance budget: a column whose dictionaries do not fit is read as strings, and the columns after it that fit are still merged
+CALL f2_dict_load('dr4');
+SET maintenance_work_mem = '1MB';
+SELECT dict_cols_remapped, rows_in = rows_out AS all_rows
+FROM sift._test_f2_compact('dr4_idx', 1, NULL, (SELECT array_agg(part_gen)::int8[] FROM sift._test_f2_parts('dr4_idx', 1, NULL) WHERE level = 1), false, true);
+RESET maintenance_work_mem;
+SELECT sift_helpers.f2_same('SELECT id, status, name, note FROM dr4 WHERE id BETWEEN 15000 AND 25000') AS over_budget_range, sift_helpers.f2_same('SELECT count(*) FROM dr4 WHERE note = ''n7x''') AS after_over_budget;
+
+DROP TABLE c, d, dr1, dr2, dr3, dr4;
 DROP PROCEDURE f2_batches(int, int), f2_dict_load(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;

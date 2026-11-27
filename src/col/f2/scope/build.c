@@ -25,14 +25,14 @@
 #include "col/f2/scope/mem.h"
 
 /* The relation this backend wrote summaries of that no commit names yet: an abort leaves them to the orphan sweep, which it asks for */
-static Relation unnamed;
+static RelFileLocator unnamed;
 
 static void
 unnamed_abort(void)
 {
-	if (unnamed != NULL)
-		sift_fsm_note_orphans(unnamed);
-	unnamed = NULL;
+	if (RelFileNumberIsValid(unnamed.relNumber))
+		sift_fsm_note_orphans(&unnamed);
+	unnamed.relNumber = InvalidRelFileNumber;
 }
 
 static void
@@ -40,7 +40,7 @@ unnamed_xact_end(XactEvent event, void *arg)
 {
 	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT)
 		unnamed_abort();
-	unnamed = NULL;
+	unnamed.relNumber = InvalidRelFileNumber;
 }
 
 static void
@@ -61,7 +61,7 @@ unnamed_written(Relation rel)
 		RegisterSubXactCallback(unnamed_subxact_end, NULL);
 		registered = true;
 	}
-	unnamed = rel;
+	unnamed = rel->rd_locator;
 }
 
 /* The part a summary is kept in: one section, the object */
@@ -300,7 +300,7 @@ commit_scopes(Relation rel, const SiftManifestRead *mr, SiftManifestScopeRef *re
 	SIFT_F2_GATE(SIFT_F2_GATE_SCOPE);
 	sift_manifest_commit(rel, &(SiftManifestEdit) {.part_id = mr->entries[0].part_id,.key_lo = mr->entries[0].key_lo,.update_scopes = refs,.nupdate_scopes = nscope,
 	.release = release,.nrelease = nrel});
-	unnamed = NULL;
+	unnamed.relNumber = InvalidRelFileNumber;
 }
 
 void
@@ -700,7 +700,7 @@ sift_f2_scope_refresh_for(Relation rel, SiftManifestEdit *e)
 	UnregisterSnapshot(snap);
 	if (heap != rel)
 		table_close(heap, NoLock);
-	unnamed = NULL;
+	unnamed.relNumber = InvalidRelFileNumber;
 	if (nreplaced == 0)
 		return;
 	release = replaced_extents(rel, nscope, replaced, &nrel);

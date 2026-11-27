@@ -198,7 +198,7 @@ extern uint64 sift_fsm_sweep_orphans(Relation rel);
 extern bool sift_fsm_sweep_due(Relation rel);
 
 /* An error path of a writer could not give back the extents it took: the next VACUUM sweeps the relation (no lock is taken, no page is read) */
-extern void sift_fsm_note_orphans(Relation rel);
+extern void sift_fsm_note_orphans(const RelFileLocator *loc);
 
 /* Whether every extent of the relation has a name that a pass over its parts finds: a sift_table keeps its wide values in extents that only a granule or a micro-slab names, so a table with a column of variable length has not */
 extern bool sift_fsm_names_all_extents(Relation rel);

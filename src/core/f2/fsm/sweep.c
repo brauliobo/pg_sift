@@ -610,28 +610,28 @@ orphan_hints_init(SIFT_DSM_INIT_ARGS)
 }
 
 static pg_atomic_uint32 *
-orphan_hint(Relation rel)
+orphan_hint(const RelFileLocator *loc)
 {
 	static OrphanHints *hints;
 
 	/* MEM[MEM-SHM-19]: DSM orphan hints sift_orphan_hint_1 (1 kB fixed) */
 	if (hints == NULL)
 		hints = sift_dsm_try("sift_orphan_hint_1", sizeof(OrphanHints), orphan_hints_init);
-	return hints != NULL ? &hints->n[hash_bytes((const unsigned char *) &rel->rd_locator, sizeof(RelFileLocator)) % ORPHAN_HINTS] : NULL;
+	return hints != NULL ? &hints->n[hash_bytes((const unsigned char *) loc, sizeof(RelFileLocator)) % ORPHAN_HINTS] : NULL;
 }
 
 static uint32
 orphan_hint_read(Relation rel)
 {
-	pg_atomic_uint32 *h = orphan_hint(rel);
+	pg_atomic_uint32 *h = orphan_hint(&rel->rd_locator);
 
 	return h != NULL ? pg_atomic_read_u32(h) : 0;
 }
 
 void
-sift_fsm_note_orphans(Relation rel)
+sift_fsm_note_orphans(const RelFileLocator *loc)
 {
-	pg_atomic_uint32 *h = orphan_hint(rel);
+	pg_atomic_uint32 *h = orphan_hint(loc);
 
 	if (h != NULL)
 		pg_atomic_fetch_add_u32(h, 1);
@@ -641,7 +641,7 @@ sift_fsm_note_orphans(Relation rel)
 static void
 orphan_hint_clear(Relation rel, uint32 seen)
 {
-	pg_atomic_uint32 *h = orphan_hint(rel);
+	pg_atomic_uint32 *h = orphan_hint(&rel->rd_locator);
 
 	if (h != NULL && seen != 0)
 		(void) pg_atomic_compare_exchange_u32(h, &seen, 0);

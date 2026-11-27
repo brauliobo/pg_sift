@@ -90,6 +90,7 @@ table/f2/lock_esc_shared	1.5
 table/f2/mvcc_snapshot_aba	0.0
 table/f2/onconflict_dirty	0.1
 table/f2/pk_concurrent	0.1
+table/f2/key_share_cic	0.1
 table/f2/speculative_ssi	0.0
 table/f2/ssi_delvec	0.1
 table/fetch_past_dir	2.4

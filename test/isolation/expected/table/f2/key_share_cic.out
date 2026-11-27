@@ -1,0 +1,57 @@
+Parsed test spec with 5 sessions
+
+starting permutation: old_begin cic u_open chk_valid old_end chk_valid ks_lock u_upd ks_end
+step old_begin: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM pg_class WHERE relname = 'iso_ks';
+count
+-----
+    1
+(1 row)
+
+step cic: CREATE UNIQUE INDEX CONCURRENTLY iso_ks_k ON iso_ks (k); <waiting ...>
+step u_open: SELECT count(*) FROM iso_ks;
+count
+-----
+   10
+(1 row)
+
+step chk_valid: SELECT indisvalid FROM pg_index WHERE indexrelid = 'iso_ks_k'::regclass;
+indisvalid
+----------
+f         
+(1 row)
+
+step old_end: COMMIT;
+step cic: <... completed>
+step chk_valid: SELECT indisvalid FROM pg_index WHERE indexrelid = 'iso_ks_k'::regclass;
+indisvalid
+----------
+t         
+(1 row)
+
+step ks_lock: BEGIN; SELECT id FROM iso_ks WHERE id = 1 FOR KEY SHARE;
+id
+--
+ 1
+(1 row)
+
+step u_upd: UPDATE iso_ks SET k = k + 100 WHERE id = 1; <waiting ...>
+step ks_end: COMMIT;
+step u_upd: <... completed>
+
+starting permutation: u_open cic ks_lock u_upd ks_end
+step u_open: SELECT count(*) FROM iso_ks;
+count
+-----
+   10
+(1 row)
+
+step cic: CREATE UNIQUE INDEX CONCURRENTLY iso_ks_k ON iso_ks (k);
+step ks_lock: BEGIN; SELECT id FROM iso_ks WHERE id = 1 FOR KEY SHARE;
+id
+--
+ 1
+(1 row)
+
+step u_upd: UPDATE iso_ks SET k = k + 100 WHERE id = 1; <waiting ...>
+step ks_end: COMMIT;
+step u_upd: <... completed>

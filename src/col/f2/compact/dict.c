@@ -91,6 +91,7 @@ merge_column(SiftDictMerge *m, int c, const SiftPartDict *const *in)
 		uint32		bi = cur[h.part[0]];
 		uint32		len = b->off[bi + 1] - b->off[bi];
 
+		CHECK_FOR_INTERRUPTS();
 		if (out->n == ocap)
 			out->off = repalloc(out->off, ((ocap *= 2) + 1) * sizeof(uint32));
 		if (out->off[out->n] + (Size) len > bcap)
@@ -206,8 +207,8 @@ sift_dict_merge_plan(Relation rel, uint32 part_id, const SiftPartDesc *const *at
 	size = dict_sizes(rel, part_id, at, nparts, spec, remaps, merged);
 	for (int c = 0; c < spec->ncols; c++)
 	{
+		merged[c] = merged[c] && size[c] <= MaxAllocSize && held + size[c] <= max_bytes;
 		held += merged[c] ? size[c] : 0;
-		merged[c] = merged[c] && held <= max_bytes;
 		any |= merged[c];
 	}
 	copy = any ? copy_dicts(rel, part_id, at, nparts, spec->ncols, remaps, merged) : NULL;
