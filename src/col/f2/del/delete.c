@@ -222,9 +222,16 @@ mark_granule(const SiftPart *part, uint32 g, const uint64 *tids, int nrows, cons
 	for (int c = 0; c < nc; c++)
 		row[c] = -1;
 	for (int r = 0; r < nrows; r++)
-		for (int c = cand_first(&cs, tids[r]); c >= 0 && c < nc && o->recs[cand[c]].tid == tids[r]; c++)
-			if (row[c] < 0 && (rm == NULL || !sift_cd_remap_supersedes(rm, part->hdr.part_gen, g, r, tids[r])) && !row_dead(dead_rows, g, r))
-				row[c] = r;
+	{
+		int			c = cand_first(&cs, tids[r]);
+
+		if (c < 0 || (rm != NULL && sift_cd_remap_supersedes(rm, part->hdr.part_gen, g, r, tids[r])) || row_dead(dead_rows, g, r))
+			continue;
+		while (c < nc && o->recs[cand[c]].tid == tids[r] && row[c] >= 0)
+			c++;
+		if (c < nc && o->recs[cand[c]].tid == tids[r])
+			row[c] = r;
+	}
 	for (int c = 0; c < nc; c++)
 		if (row[c] >= 0)
 			emit[ne++] = c;
