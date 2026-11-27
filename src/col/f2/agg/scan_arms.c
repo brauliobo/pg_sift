@@ -9,6 +9,7 @@
 #include "utils/memutils.h"
 
 #include "agg/fuse/fuse.h"
+#include "agg/qual/bqual.h"
 #include "agg/star/run.h"
 #include "agg/vet.h"
 #include "col/f2/sink/sink.h"
@@ -42,7 +43,17 @@ arms_fill(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
 	return sift_f2_v6_fill_cols(s, a->b->views, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
 }
 
-/* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows (the casts of the arm raise only for those) */
+/* the arm takes every live row of the pass: no gate of its own quals and no quals that no scan key says (its batch quals) */
+static bool
+takes_all(const V6Scan *s)
+{
+	return s->gate == NULL && s->bq == NULL;
+}
+
+/*
+ * the rows of the pass the arm takes: all of them when the arms have the keys of the leader and the arm has no batch quals, else those its gate and then its batch quals allow (the casts
+ * of the arm raise for the rows its gate allows, as in a scan of its own)
+ */
 static uint16
 arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 {
@@ -52,18 +63,23 @@ arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 	uint64	  **raises;
 	uint16		n = 0;
 
-	if (s->gate == NULL)
+	if (takes_all(s))
 	{
 		memcpy(out, live, SIFT_VEC_WORDS * sizeof(uint64));
 		return a->n_live;
 	}
 	raises = arms_fill(a, s, live, a->n_live);
-	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
+	if (s->gate != NULL)
+		sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
 	for (int w = 0; w < SIFT_VEC_WORDS; w++)
-		n += pg_popcount64(out[w] = live[w] & allowed[w]);
+		n += pg_popcount64(out[w] = s->gate != NULL ? live[w] & allowed[w] : live[w]);
 	arms_select(a, s, out, n);
 	sift_f2_v6_raise_kept(s, a->b->views, raises, a->off, a->n);
-	return n;
+	if (s->bq == NULL)
+		return n;
+	sift_v6_bq_filter(s->bq, &s->bs);
+	memcpy(out, s->bs.mask, SIFT_VEC_WORDS * sizeof(uint64));
+	return s->bs.n_active;
 }
 
 static void
@@ -72,7 +88,7 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	V6Arms	   *a = ctx;
 	V6Scan	   *s = &a->s[arm];
 
-	if (s->gate == NULL)
+	if (takes_all(s))
 		sift_f2_v6_raise_kept(s, a->b->views, arms_fill(a, s, mask, n_active), a->off, a->n);
 	else
 		arms_select(a, s, mask, n_active);

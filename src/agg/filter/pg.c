@@ -23,7 +23,7 @@ typedef struct Build
 	SiftV6Col  *fcol;
 	int		   *nfcols;
 	bool		add;
-	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest: its evaluation is sift_clause_eval alone) */
+	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest, the gate of a fused arm: their evaluation is sift_clause_eval alone) */
 	bool		params;			/* $n stands for a constant of its type (param_operand) */
 	int			ngroups;
 	SiftBytes  *canon;

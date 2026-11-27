@@ -9,16 +9,19 @@
 #include "common/hashfn.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "parser/parse_oper.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
+#include "agg/ext.h"
 #include "agg/node_hash.h"
 #include "agg/filter/eval.h"
 #include "agg/filter/pg.h"
 #include "agg/vexpr.h"
 #include "agg/fuse/keys.h"
+#include "agg/safety.h"
 #include "col/am.h"
 #include "core/errctx.h"
 
@@ -177,7 +180,7 @@ qual_gateable(QualEnt *e, const SiftV6Spec *spec)
 		SiftV6Spec	scratch = *spec;
 		SiftClause	gate;
 
-		e->gate = sift_v6_clause_make(CurrentMemoryContext, list_make1((void *) e->q), &scratch, &gate, NULL);
+		e->gate = sift_v6_clause_make_or(CurrentMemoryContext, list_make1((void *) e->q), &scratch, &gate);
 	}
 	return e->gate;
 }
@@ -196,18 +199,27 @@ only_gateable(const SiftV6FuseArm *a, const SiftV6FuseArm *b, int *common)
 	return true;
 }
 
-/* the arms differ in quals the gate can evaluate; the pass then needs a quals in common or the values of the lead key to be selective */
+static bool
+looks_up(const SiftV6FuseArm *a)
+{
+	return a->spec->ext != NULL && a->spec->ext->ndims > 0;
+}
+
+/*
+ * the arms differ in quals the gate can evaluate; the pass then needs a quals in common or the values of the lead key to be selective, unless both arms look a table up: the
+ * lookup of every row costs more than the gate of an arm, so one pass is cheaper whatever it reads
+ */
 static bool
 may_union(const SiftV6FuseArm *a, const SiftV6FuseArm *b)
 {
 	int			common = 0,
 				none = 0;
 
-	if (a->lead_att == 0 || a->lead_att != b->lead_att)
-		return false;
 	if (!only_gateable(a, b, &common) || !only_gateable(b, a, &none))
 		return false;
-	return common > 0 || (a->key_set.n > 0 && b->key_set.n > 0);
+	if (looks_up(a) && looks_up(b))
+		return true;
+	return a->lead_att != 0 && a->lead_att == b->lead_att && (common > 0 || (a->key_set.n > 0 && b->key_set.n > 0));
 }
 
 static int
@@ -217,6 +229,12 @@ key_range_cmp(const void *x, const void *y)
 				b = ((const SiftF2KeyRange *) y)->ilo;
 
 	return a < b ? -1 : a > b;
+}
+
+bool
+sift_v6_fuse_batch_quals_ok(const SiftV6Spec *spec)
+{
+	return !agg_node_may_raise((Node *) spec->vqual) && !contain_subplans((Node *) spec->vqual);
 }
 
 void
@@ -314,6 +332,6 @@ sift_v6_fuse_gate(MemoryContext cx, const SiftV6FuseArm *arm, const List *common
 	*pass_spec = MemoryContextAlloc(cx, sizeof(SiftV6Spec));
 	**pass_spec = *spec;
 	*gate = MemoryContextAlloc(cx, sizeof(SiftClause));
-	SIFT_INVARIANT(sift_v6_clause_make(cx, own, *pass_spec, *gate, NULL), "the quals of an arm of index %u are not compiled", spec->relid);
+	SIFT_INVARIANT(sift_v6_clause_make_or(cx, own, *pass_spec, *gate), "the quals of an arm of index %u are not compiled", spec->relid);
 	return true;
 }

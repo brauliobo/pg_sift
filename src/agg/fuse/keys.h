@@ -15,6 +15,9 @@
 
 struct SiftClause;
 
+/* The batch quals of the arm (those no scan key says) can run on the rows of a pass its gate allows: none of them raises an error for some rows or runs a sub-plan */
+extern bool sift_v6_fuse_batch_quals_ok(const SiftV6Spec *spec);
+
 /* Fills the key set and the quals of the arm from the quals of the spec, and the check of arms that may fuse with different keys */
 extern void sift_v6_fuse_describe(SiftV6FuseArm *arm, Relation index, const SiftV6Spec *spec);
 

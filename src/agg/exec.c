@@ -122,8 +122,8 @@ require_formats(const V6State *st)
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && st->spec->vqual == NIL && (st->spec->ext == NULL || (st->star != NULL && !st->spec->ext->unnest)) &&
-		st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid) && !st->spec->rows && st->spec->topk == 0;
+	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && sift_v6_fuse_batch_quals_ok(st->spec) &&
+		(st->spec->ext == NULL || (st->star != NULL && !st->spec->ext->unnest)) && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid) && !st->spec->rows && st->spec->topk == 0;
 }
 
 static void
@@ -343,14 +343,12 @@ pass_keys(V6State *st, const SiftV6FuseCohort *c, List *quals, int *nkeys)
 	return keys;
 }
 
-/* The dimensions of a star join of an arm, read for the pass: false when they need more than one pass, join no fact row, or the arms take their rows by gates (the arm then scans alone) */
+/* The dimensions of a star join of an arm, read for the pass: false when they need more than one pass or join no fact row (the arm then scans alone) */
 static bool
-star_fits_pass(V6State *owner, const SiftV6FuseCohort *c)
+star_fits_pass(V6State *owner)
 {
 	if (owner->star == NULL)
 		return true;
-	if (!c->same_keys)
-		return false;
 	if (sift_v6_star_open(owner->star, 0, 1) == SSO_SCAN && sift_v6_star_one_pass(owner->star))
 		return true;
 	sift_v6_star_close(owner->star);
@@ -383,7 +381,7 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 	ScanKey		keys;
 
 	for (int i = 0; i < narms; i++)
-		if (!star_fits_pass(c->arms[i]->owner, c))
+		if (!star_fits_pass(c->arms[i]->owner))
 			alone[nalone++] = c->arms[i]->owner;
 	for (int i = 0; i < nalone; i++)
 		run_alone(alone[i], estate);
