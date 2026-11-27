@@ -45,6 +45,9 @@ INSERT INTO q VALUES
 	(12, $$SELECT i.kind, sum(i.score) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8) WHERE t.doc ->> 'channel' = 'ch_1' GROUP BY 1$$),
 	(15, $$SELECT coalesce(t.doc ->> 'channel', '-') || '/' || i.kind, count(*), sum(i.score * t.qty) FROM tj t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'items') i(kind text, score float8)
 		WHERE t.doc ->> 'channel' IN ('ch_1', 'ch_2') OR t.qty IS NULL GROUP BY 1$$),
+	-- the members of a map
+	(16, $$SELECT m.key, count(*), sum(m.value::float8) FROM tj t CROSS JOIN LATERAL jsonb_each_text(t.doc) m WHERE m.key = 'k' GROUP BY 1$$),
+	(17, $$SELECT m.key, count(*), avg((m.value #>> '{}')::float8) FROM tj t CROSS JOIN LATERAL jsonb_each(t.doc) m WHERE m.key IN ('k', 'zz') GROUP BY 1$$),
 	-- the elements an EXISTS tests against a column of the row
 	(18, $$SELECT t.qty, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> 'items') i(score int) WHERE i.score > t.qty)) FROM tj t GROUP BY 1$$),
 	(19, $$SELECT t.qty, count(*) FROM tj t WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> 'items') i(kind text) WHERE i.kind = 'k1') GROUP BY 1$$),

@@ -111,6 +111,13 @@ begin_star(V6State *st, CustomScanState *node, EState *estate, int eflags)
 	st->star = sift_v6_star_begin(st->spec->ext, children, estate->es_query_cxt);
 }
 
+/* the relation whose columns the scan reads: the index, or the table */
+static Relation
+source_host(const SiftV6ScanSrc *src)
+{
+	return src->index != NULL ? src->index : src->heap;
+}
+
 /* After the quarantine net of sift_v6_source_enter, which says why an index is out: an index with no format left service some other way (REINDEX CONCURRENTLY marks the replaced one invalid) */
 static void
 require_formats(const V6State *st)
@@ -118,7 +125,7 @@ require_formats(const V6State *st)
 	for (int k = 0; k < st->nsources; k++)
 		if (st->sources[k].ops == NULL)
 			ereport(ERROR, (errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-							errmsg("sift index \"%s\" left service after the statement was planned; the statement must be planned again", RelationGetRelationName(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap)),
+							errmsg("sift index \"%s\" left service after the statement was planned; the statement must be planned again", RelationGetRelationName(source_host(&st->sources[k]))),
 							errhint("Run the statement again: it is planned without the index.")));
 }
 
@@ -893,11 +900,11 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, es);
 	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.fn == SV6E_KEYS)
-		ExplainPropertyText("Map Keys", sift_v6_mapkey_text(st->spec->ext, RelationGetDescr(st->sources[0].index)), es);
+		ExplainPropertyText("Map Keys", sift_v6_mapkey_text(st->spec->ext, RelationGetDescr(source_host(&st->sources[0]))), es);
 	else if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
 	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.vread != SV6V_NONE)
-		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(st->sources[0].index), st->spec->ext->elem.attno - 1)->attname)), es);
+		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(source_host(&st->sources[0])), st->spec->ext->elem.attno - 1)->attname)), es);
 	if (st->star_passes > 1)
 		ExplainPropertyInteger("Star Passes", NULL, st->star_passes, es);
 	if (st->star != NULL && sift_v6_star_cache(st->star, &dim_hits, &dim_built))

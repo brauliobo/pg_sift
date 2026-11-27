@@ -1,7 +1,8 @@
 /*
  * agg/unnest/table_elems.c - the elements of an unnest over a sift_table (agg/unnest/jsonb.h): the table keeps the array of a row whole in its cell, and the scan takes it apart from the row with the
- * function of the statement itself (unnest, jsonb_to_recordset, jsonb_array_elements_text, jsonb_array_elements read by members), so the columns of the elements need no leaf: unnest has the one
- * element, a recordset the columns it declares, jsonb_array_elements_text the text of each element, and the members of jsonb_array_elements are added as the statement reads them.
+ * function of the statement itself (unnest, jsonb_to_recordset, jsonb_array_elements_text, jsonb_array_elements read by members, jsonb_each and jsonb_each_text), so the columns of the elements
+ * need no leaf: unnest has the one element, a recordset the columns it declares, jsonb_array_elements_text the text of each element, the members of jsonb_array_elements are added as the
+ * statement reads them, and a member of a map is its key and its value read as a float8 (a cast of the jsonb or of its text).
  */
 #include "postgres.h"
 
@@ -61,6 +62,13 @@ sift_v6_table_elems_seed(const V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *r
 			*names = list_make1(makeString(pstrdup("value")));
 			return true;
 		case SV6E_MEMBERS:
+			return true;
+		case SV6E_EACH:
+		case SV6E_EACH_TEXT:
+			e->col_leaf[1] = -1;
+			e->col_type[0] = TEXTOID;
+			e->col_type[1] = FLOAT8OID;
+			e->ncols = 2;
 			return true;
 		default:
 			return false;
