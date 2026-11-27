@@ -44,7 +44,7 @@ SELECT * FROM check_query($q$
    FROM facts f LEFT JOIN LATERAL (SELECT label FROM lookup_values m WHERE m.kind = f.kind AND m.region = r.region LIMIT 1) l ON true)
  FROM regions r
 $q$);
--- Not lateral: a sub-select of the FROM list reads the outer query too.
+-- Not lateral: a sub-select of the FROM list reads the outer query too, and the scan reads it again for each outer row.
 SELECT * FROM check_query($q$
  SELECT r.id, (SELECT count(*) FILTER (WHERE l.label = 'ae')
    FROM facts f LEFT JOIN (SELECT kind, label FROM lookup_values m WHERE m.region = r.region) l ON l.kind = f.kind)
