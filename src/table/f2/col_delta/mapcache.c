@@ -391,14 +391,16 @@ look_of(SiftColDeltaLooks *looks, const SiftPartitionEntry *entry, const SiftCol
 	return NULL;
 }
 
+/* The stamp of the newest page: the one the statement saw of it, else read now (*read) */
 static HeadStamp
-head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, BlockNumber blk)
+head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, BlockNumber blk, bool *read)
 {
 	bool		scoped = looks != NULL && vis->snap->snapshot_type == SNAPSHOT_MVCC && !vis->serializable;
 	SiftColDeltaLook *l = scoped ? look_of(looks, entry, a, blk) : NULL;
 	Buffer		buf;
 	HeadStamp	st;
 
+	*read = l == NULL;
 	if (l != NULL)
 		return (HeadStamp) {l->blk, l->gen, l->lsn, l->used, l->crc};
 	buf = sift_blk_read(rel, blk, BUFFER_LOCK_SHARE);
@@ -414,24 +416,29 @@ head_now(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor
 
 /*
  * The newest page of the chain is the one the slot saw, with the records it held and no more: with the same anchor, the chain is the slot's. A slot that covers the whole chain knows it
- * without reading the page while no write in place of the newest page was counted since (appends, taken before any page of the ask was read)
+ * without reading the page while no write in place of the newest page was counted since (appends, taken before any page of the ask was read). Only a read of the page vouches for the
+ * count: the stamp a statement kept of the page is as old as that statement
  */
 static bool
 chain_unchanged(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, const SiftColDeltaAnchor *a, const SiftTblVis *vis, SiftColDeltaLooks *looks, uint64 appends)
 {
 	HeadStamp	seen,
 				now;
+	bool		read;
 
 	if (s->watch.npages == 0 || memcmp(&s->anchor, a, sizeof(*a)) != 0)
 		return false;
 	if (s->counted && !s->cut && s->appends == appends)
 		return true;
 	seen = (HeadStamp) {s->watch.blks[s->watch.npages - 1], s->watch.head.gen, s->watch.head.lsn, s->watch.head.used, s->watch.head.crc};
-	now = head_now(rel, entry, a, vis, looks, seen.blk);
+	now = head_now(rel, entry, a, vis, looks, seen.blk, &read);
 	if (seen.gen != now.gen || seen.lsn != now.lsn || seen.used != now.used || seen.crc != now.crc)
 		return false;
-	s->appends = appends;
-	s->counted = true;
+	if (read)
+	{
+		s->appends = appends;
+		s->counted = true;
+	}
 	return true;
 }
 
@@ -444,6 +451,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	uint64		want = attnum_bloom == 0 ? ALL_ATTRS : attnum_bloom;
 	bool		mvcc = vis->snap->snapshot_type == SNAPSHOT_MVCC;
 	uint64		appends;
+	bool		hit;
 	Advance		r = ADVANCED;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || RecoveryInProgress() || !snapshot_supported(vis))
@@ -467,7 +475,8 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		slot_widen(s, want);
 	if (s == NULL)
 		s = slot_open(rel, entry->part_id, part_gen, mvcc, want);
-	if (chain_unchanged(rel, entry, s, &a, vis, looks, appends))
+	hit = chain_unchanged(rel, entry, s, &a, vis, looks, appends);
+	if (hit)
 		*map = sift_col_delta_part_map_ref(s->map);
 	else
 		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
@@ -483,8 +492,11 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 		slot_drop(s);
 		return false;
 	}
-	s->appends = appends;
-	s->counted = true;
+	if (!hit)
+	{
+		s->appends = appends;
+		s->counted = true;
+	}
 	s->tick = sift_cache_tick();
 	*settled = !s->cut;
 	if ((s->map != NULL && MemoryContextMemAllocated(s->map->cx, true) > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())
