@@ -121,7 +121,39 @@ SELECT s.label, r.cte_scans, r.scans > 0 AS scanned FROM scopes s, LATERAL plan_
 SET sift.agg_force = on;
 WITH c AS MATERIALIZED (SELECT tenant_id, 10 / (id % 7) AS r FROM events) SELECT tenant_id, count(*) FROM c GROUP BY 1;
 ERROR:  division by zero
+-- Inline when every reader is an aggregate of all the rows that evaluates the column that may raise (a key, an argument of an aggregate it keeps): the copy and the inline plan
+-- run it on the same rows, so a guarded cast is inline and a division by zero raises both ways; a reader with a WHERE, or whose aggregate of the column no level above reads, keeps the copy
+CREATE FUNCTION shared_copy(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP n := n + (l ~ 'CTE Scan on c\M')::int; END LOOP;
+	RETURN n > 0;
+END $$;
+CREATE TABLE raise_q (label text PRIMARY KEY, q text NOT NULL);
+INSERT INTO raise_q VALUES
+	('guarded cast, two aggregates', $q$WITH c AS (SELECT e.id, n.code, CASE WHEN n.code ~ '^code_[0-9]+$' THEN substr(n.code, 6)::int END AS k FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.payload -> 'notes') AS n(code text, score int))
+		SELECT count(*), sum(s), max(m) FROM (SELECT id, sum(k) AS s, max(k) AS m FROM c GROUP BY id UNION ALL SELECT 0, sum(k), max(k) FROM c GROUP BY code) x$q$),
+	('a reader with a WHERE', $q$WITH c AS (SELECT e.id, n.code, CASE WHEN n.code ~ '^code_[0-9]+$' THEN substr(n.code, 6)::int END AS k FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.payload -> 'notes') AS n(code text, score int))
+		SELECT count(*), sum(s) FROM (SELECT id, sum(k) AS s FROM c WHERE id > 5 GROUP BY id UNION ALL SELECT 0, sum(k) FROM c GROUP BY code) x$q$),
+	('an aggregate no level reads', $q$WITH c AS (SELECT e.id, n.code, CASE WHEN n.code ~ '^code_[0-9]+$' THEN substr(n.code, 6)::int END AS k FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.payload -> 'notes') AS n(code text, score int))
+		SELECT count(*), sum(s) FROM (SELECT id, count(*) AS s, max(k) AS m FROM c GROUP BY id UNION ALL SELECT 0, sum(k), 0 FROM c GROUP BY code) x$q$);
+SELECT label, shared_copy(q) AS shared_copy, same(q) AS same_rows FROM raise_q ORDER BY label;
+            label             | shared_copy | same_rows 
+------------------------------+-------------+-----------
+ a reader with a WHERE        | t           | t
+ an aggregate no level reads  | t           | t
+ guarded cast, two aggregates | f           | t
+(3 rows)
+
+\set SHOW_CONTEXT never
+WITH c AS (SELECT tenant_id, 10 / (id % 7) AS r FROM events) SELECT sum(s) FROM (SELECT tenant_id, sum(r) AS s FROM c GROUP BY 1 UNION ALL SELECT 0, max(r) FROM c) x;
+ERROR:  division by zero
 RESET sift.agg_force;
+WITH c AS (SELECT tenant_id, 10 / (id % 7) AS r FROM events) SELECT sum(s) FROM (SELECT tenant_id, sum(r) AS s FROM c GROUP BY 1 UNION ALL SELECT 0, max(r) FROM c) x;
+ERROR:  division by zero
+\set SHOW_CONTEXT errors
+DROP FUNCTION shared_copy(text);
+DROP TABLE raise_q;
 DROP FUNCTION same(text);
 DROP FUNCTION plan_reads(text, bool);
 DROP FUNCTION notes_query(text);

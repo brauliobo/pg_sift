@@ -14,6 +14,7 @@
 #include "utils/memutils.h"
 
 #include "agg/agg.h"
+#include "agg/plan/cte_read.h"
 #include "agg/plan/flat_rewrite.h"
 #include "agg/plan/lineage.h"
 #include "agg/safety.h"
@@ -173,16 +174,17 @@ inline_raises_alike(const Query *q, const CommonTableExpr *cte)
 }
 
 /*
- * a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row and whose inline plan raises what the copy raises; PostgreSQL itself refuses to
- * inline the volatile, writing and self-referencing ones
+ * a CTE that PostgreSQL keeps as a shared copy, over a table an aggregate scan reads, that locks no row and whose inline plan raises what the copy raises (inline_raises_alike, or every
+ * aggregate reader evaluates what may raise: agg/plan/cte_read.h); PostgreSQL itself refuses to inline the volatile, writing and self-referencing ones
  */
 static bool
-shared_cte(const Query *q, const CommonTableExpr *cte)
+shared_cte(const CommonTableExpr *cte, const Query *owner, Query *top)
 {
 	const Query *body = castNode(Query, cte->ctequery);
 
 	return !cte->cterecursive && cte->ctematerialized != CTEMaterializeNever && (cte->cterefcount > 1 || cte->ctematerialized == CTEMaterializeAlways) &&
-		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable(cte->ctequery, q) && inline_raises_alike(q, cte);
+		body->commandType == CMD_SELECT && body->rowMarks == NIL && reads_scannable(cte->ctequery, owner) &&
+		(inline_raises_alike(owner, cte) || sift_cte_readers_evaluate_raising(top, owner, cte));
 }
 
 /* does a node of the sub-select read a level above it (depth is how far the walk went below the sub-select) */
@@ -273,6 +275,7 @@ hoist(SubLink *sl, int n)
 
 typedef struct CteWalk
 {
+	Query	   *top;			/* the statement walked */
 	bool		mark;			/* write the shared CTEs NOT MATERIALIZED and hoist their IN sub-selects, or only count them */
 	int			found;
 	int			hoisted;
@@ -290,9 +293,11 @@ mark_ctes(Query *q, CteWalk *w)
 	{
 		Query	   *body = castNode(Query, cte->ctequery);
 
-		if (shared_cte(q, cte))
+		const bool	shared = shared_cte(cte, q, w->top);
+
+		if (shared)
 			w->found++;
-		if (shared_cte(q, cte) && w->mark)
+		if (shared && w->mark)
 		{
 			cte->ctematerialized = CTEMaterializeNever;
 			if (body->cteList == NIL)
@@ -367,7 +372,7 @@ plan_query(SIFT_PLANNER_PARAMS)
 static PlannedStmt *
 plan_statement(SIFT_PLANNER_PARAMS)
 {
-	CteWalk		w = {0};
+	CteWalk		w = {.top = parse};
 	MemoryContext caller = CurrentMemoryContext;
 	MemoryContext cx;
 	Query	   *alt;
@@ -387,6 +392,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 		return plan_query(SIFT_PLANNER_ARGS(parse));
 	alt = copyObject(parse);
 	w.mark = true;
+	w.top = alt;
 	cte_walker((Node *) alt, &w);
 	sift_agg_having_to_where(alt, true);
 	sift_agg_flat_decorrelate(alt, true);
