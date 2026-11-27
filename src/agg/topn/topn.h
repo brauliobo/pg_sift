@@ -31,6 +31,7 @@ typedef struct SiftV6TopNSpec
 	uint64		rows;			/* offset + limit, when a run found them small enough for the tournament */
 	bool		with_ties;
 	char	   *desc;			/* EXPLAIN: the sort keys */
+	const char *serial_because;	/* EXPLAIN VERBOSE: the rule that keeps the scan in one process while the session allows workers (NULL: none) */
 } SiftV6TopNSpec;
 
 /* What a source passed over without reading: partitions and parts whose keys or times leave no row, granules whose zones do */

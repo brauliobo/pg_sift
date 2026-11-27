@@ -98,8 +98,8 @@ extern SiftVecType sift_v6_pgexpr_vec_type(const SiftV6Spec *s, const SiftV6Deri
 extern SiftVecType sift_v6_derive_vec_type(const SiftV6Spec *s, const SiftV6Derive *d);
 extern bool sift_v6_derive_vec_typed(const SiftV6Derive *d);
 extern void sift_v6_pgexpr_item_at(const SiftV6Spec *s, int at, SiftV6PgItem *out);
-/* The workers of a parallel scan can run the statement: its PostgreSQL expressions are parallel safe, and its groups are bytes the leader merges (a generic key's codes are the state of one backend, a constant group is a row of the one that read some, a percentile_cont's values are offsets into the arena of one backend) */
-extern bool sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s);
+/* Why the workers of a parallel scan cannot run the statement (NULL: they can): its PostgreSQL expressions are parallel safe, and its groups are bytes the leader merges (a generic key's codes are the state of one backend, a constant group is a row of the one that read some, a percentile_cont's values are offsets into the arena of one backend) */
+extern const char *sift_v6_spec_serial_why(PlannerInfo *root, const SiftV6Spec *s);
 /* The spec has derivations or batch quals PostgreSQL evaluates: the text columns they read are given as strings, never as the codes of a dictionary */
 extern bool sift_v6_spec_pg_reads(const SiftV6Spec *s);
 /* The columns the derivations of the spec read, the room the scan's column array needs for them */

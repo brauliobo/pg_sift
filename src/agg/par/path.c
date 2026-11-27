@@ -22,6 +22,8 @@
 #include "agg/cost/model.h"
 #include "agg/safety.h"
 #include "agg/cost/card.h"
+#include "agg/expr/pg.h"
+#include "agg/gen/gen.h"
 #include "agg/group/int.h"
 #include "agg/par/pinrun.h"
 #include "agg/par/run.h"
@@ -278,7 +280,7 @@ distinct_not_partitionable(const SiftV6Spec *spec, uint32 ndist)
 static SiftV6ParInput
 par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
-	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.parallel_ok = rel->consider_parallel && root->glob->parallelModeOK,.max_workers = max_parallel_workers_per_gather,
+	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.max_workers = max_parallel_workers_per_gather,
 		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = scan_rows(root, rel, spec, groups) / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
@@ -296,7 +298,16 @@ par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const Sift
 	}
 	in.has_distinct = ndist > 0;
 	in.has_rls = agg_query_has_rls(root);
-	in.parallel_hazard = (slot_text && ndist > 0 && spec->nkeys == 0) || (valued && spec->nkeys == 0) || OidIsValid(spec->text_indexoid) || unsafe_for_workers(root, spec, output_rel, having) || distinct_not_partitionable(spec, ndist);
+	if (slot_text && ndist > 0 && spec->nkeys == 0)
+		in.hazard = "a text aggregate beside a count(DISTINCT) of no keys keeps its values in one process";
+	else if (valued && spec->nkeys == 0)
+		in.hazard = "a sum or avg of DISTINCT values of no keys keeps its set in one process";
+	else if (OidIsValid(spec->text_indexoid))
+		in.hazard = "the text search of its index runs in one process";
+	else if (unsafe_for_workers(root, spec, output_rel, having))
+		in.hazard = "a condition, an output or the HAVING of it is not parallel safe";
+	else if (distinct_not_partitionable(spec, ndist))
+		in.hazard = "its counts of DISTINCT values cannot be split by group among the workers";
 	in.state_bytes = sizeof(SiftAggSlot64) + (double) spec->naggs * sizeof(V6Acc) + 16.0;
 	return in;
 }
@@ -314,9 +325,54 @@ set_topk(PlannerInfo *root, SiftV6Spec *spec, const List *scan_tlist, const List
 		spec->topk = spec->ntopk = 0;
 }
 
-void
+/* The rules of the statement that keep any scan of rel in one process: PostgreSQL plans no workers for it, or the process of the scan loads the tables of its joins */
+static const char *
+statement_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins)
+{
+	if (!rel->consider_parallel || !root->glob->parallelModeOK)
+		return "PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor";
+	if (joins)
+		return "the lookup tables of its joins are loaded by the process that runs the scan";
+	return NULL;
+}
+
+const char *
+sift_v6_par_rows_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins)
+{
+	const char *why;
+
+	if (max_parallel_workers_per_gather <= 0)
+		return NULL;
+	if ((why = statement_serial_why(root, rel, joins)) != NULL)
+		return why;
+	return "a Top-N of rows reads its units in one process";
+}
+
+/* The rules of the plan that keep the scan in one process, before the numbers of the query are looked at: its joins, a LIMIT that stops it, an output a Gather cannot find, what a worker cannot compute */
+static const char *
+plan_serial_why(PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, bool children, bool as_written)
+{
+	const char *why;
+
+	if ((why = statement_serial_why(root, rel, children || (spec->ext != NULL && spec->ext->ndims > 0))) != NULL)
+		return why;
+	if (spec->ext != NULL)
+		return "the rows it unnests are made by the process that runs the scan";
+	if (spec->lock_k > 0)
+		return "a LIMIT with no ORDER BY stops it at the first groups it holds";
+	if (!as_written)
+		return "it computes an output in another form than the statement writes it, which a Gather does not find";
+	if ((why = sift_v6_spec_serial_why(root, spec)) != NULL)
+		return why;
+	foreach_node(Aggref, a, spec->gen_written)
+		if ((why = sift_v6_gen_serial_why(root, rel->relid, a)) != NULL)
+			return why;
+	return NULL;
+}
+
+const char *
 sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups,
-					 Cost serial_total)
+					 Cost serial_total, bool children, bool as_written)
 {
 	SiftV6Spec	spec = *serial_spec;
 	CostPick	pick = {.serial_total = serial_total,.groups = clamp_row_est(groups)};
@@ -326,10 +382,15 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	CustomPath *cp;
 	GatherPath *gather;
 	double		total_groups;
+	const char *why;
 
+	if (max_parallel_workers_per_gather <= 0)
+		return NULL;
+	if ((why = plan_serial_why(root, rel, &spec, children, as_written)) != NULL)
+		return why;
 	set_topk(root, &spec, scan_tlist, having);
 	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
-		return;
+		return "the threads of the backend share its scan";
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
 	pick.scan_ms = scan_ms(&spec, rel->tuples, rel->rows, groups);
@@ -339,12 +400,13 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	for (int j = 0; j < spec.naggs; j++)
 		pick.values |= sift_v6_kind_distinct(spec.agg[j].kind);
 	in = par_input(root, rel, output_rel, &spec, having, groups, &pick);
-	strategy = sift_v6_par_choose_strategy(&in, &nworkers);
+	strategy = sift_v6_par_choose_strategy(&in, &nworkers, &why);
 	if (strategy == SV6P_SERIAL)
-		return;
+		return why;
 	total_groups = gather_rows(&pick, nworkers) * (having == NIL ? 1.0 : sift_v6_quals_sel(root, having, 0));
 	spec.par_strategy = strategy;
 	spec.par_workers = nworkers;
+	spec.serial_because = NULL;
 	cp = makeNode(CustomPath);
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = output_rel;
@@ -359,4 +421,5 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	gather = create_gather_path(root, output_rel, &cp->path, output_rel->reltarget, NULL, &total_groups);
 	gather->path.startup_cost = gather->path.total_cost = pick.total;
 	add_path(output_rel, (Path *) gather);
+	return NULL;
 }

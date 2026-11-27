@@ -166,14 +166,15 @@ SET max_parallel_maintenance_workers = 0;
 CREATE INDEX wu_col ON wu USING sift_col (g, u, n);
 RESET max_parallel_maintenance_workers;
 VACUUM (FREEZE, ANALYZE) wu;
--- why the forced scan has no workers (EXPLAIN VERBOSE: Serial Because), 'workers' when nothing keeps them from it
+-- why the forced scan has no workers (EXPLAIN VERBOSE: Serial Because), 'workers' when it is the parallel node under a Gather, 'none given' when it has none and no rule is named
 CREATE FUNCTION scan_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'no scan';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
-		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'workers'; END IF;
+		IF l LIKE '%Parallel Custom Scan (SiftAgg%' THEN RETURN 'workers'; END IF;
+		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'none given'; END IF;
 		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
 	END LOOP;
 	RETURN r;

@@ -32,6 +32,7 @@
 #include "agg/gpu.h"
 #include "agg/explain.h"
 #include "agg/refuse.h"
+#include "agg/par/pg.h"
 #include "agg/topn/topn.h"
 #include "agg/settings.h"
 #include "core/memtrack.h"
@@ -430,6 +431,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
 			p.spec.desc = sift_v6_topn_desc(root, input_rel->relid);
+			p.spec.serial_because = sift_v6_par_rows_serial_why(root, input_rel, false);
 			topn_add_path(&p);
 			return;
 		}
@@ -456,7 +458,7 @@ sift_v6_topn_spec_pack(const SiftV6TopNSpec *s)
 		l = lappend_int(lappend_int(l, s->key[i].scale), s->order[i].desc | (s->order[i].nulls_first << 1));
 		l = lappend_int(lappend_int(l, (int) s->sortop[i]), (int) s->collation[i]);
 	}
-	return list_make2(l, list_make4(s->limit, s->offset, makeBoolConst(s->with_ties, false), makeString(s->desc)));
+	return list_make2(l, list_make5(s->limit, s->offset, makeBoolConst(s->with_ties, false), makeString(s->desc), s->serial_because != NULL ? makeString(pstrdup(s->serial_because)) : NULL));
 }
 
 SiftV6TopNSpec *
@@ -483,6 +485,7 @@ sift_v6_topn_spec_unpack(const List *l)
 	s->offset = lsecond(rest);
 	s->with_ties = DatumGetBool(((Const *) lthird(rest))->constvalue);
 	s->desc = strVal(lfourth(rest));
+	s->serial_because = list_nth(rest, 4) != NULL ? strVal(list_nth(rest, 4)) : NULL;
 	return s;
 }
 
@@ -719,6 +722,8 @@ topn_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 
 	sift_v6_explain_index(es, st->spec->indexoid, st->spec->is_table);
 	sift_v6_topn_explain(es, st->spec->desc, sift_v6_topn_limit_text(st->spec->limit, st->spec->offset));
+	if (es->verbose && st->spec->serial_because != NULL)
+		ExplainPropertyText("Serial Because", st->spec->serial_because, es);
 	sift_v6_gpu_explain(&st->gpu, es);
 	if (st->tourn != NULL && st->src.global_order)
 		ExplainPropertyBool("Global Order", true, es);

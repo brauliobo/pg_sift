@@ -921,6 +921,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		explain_par(st->par, &ex);
 	if (st->par != NULL && !es->analyze)
 		ExplainPropertyText("Parallel Strategy", ex.par_strategy, es);
+	if (es->verbose && st->spec->serial_because != NULL)
+		ExplainPropertyText("Serial Because", st->spec->serial_because, es);
 	if (es->analyze)
 		sift_agg_explain_v6(es, &ex, sift_simd_level_name(sift_cpu.active), 0, 0);
 }

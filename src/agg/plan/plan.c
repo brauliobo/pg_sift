@@ -259,6 +259,7 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 	if ((ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
 	p->spec.genref = lappend(p->spec.genref, ref);
+	p->spec.gen_written = lappend(p->spec.gen_written, a);
 	spec_room(p, false);
 	p->spec.agg[p->spec.naggs++] = g;
 	return true;
@@ -765,7 +766,6 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	CustomPath *cp = makeNode(CustomPath);
 	Cost		serial_total,
 				passes;
-	bool		locked;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 	const char *lack = format_lacks(p);
 
@@ -798,14 +798,14 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	serial_total = sift_v6_forced(cp->path.total_cost);
 	sift_v6_threads_price(p->root, p->rel, &p->spec, groups, &cp->path);
 	p->spec.lock_k = child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 ? sift_v6_limit_of(p->root->parse) : 0;
+	p->spec.serial_because = sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total, child_paths != NIL,
+												   outputs_as_written(p->out->reltarget));
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
-	locked = p->spec.lock_k > 0;
 	p->spec.lock_k = 0;
+	p->spec.serial_because = NULL;
 	sift_agg_arm_priced("single", cp->path.total_cost, cheapest_total(p->out));
 	sift_v6_force_price(&cp->path);
 	add_path(p->out, &cp->path);
-	if (child_paths == NIL && p->spec.ext == NULL && !locked && outputs_as_written(p->out->reltarget) && sift_v6_spec_parallel_ok(p->root, &p->spec) && sift_v6_gen_parallel_ok(&p->spec))
-		sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total);
 }
 
 

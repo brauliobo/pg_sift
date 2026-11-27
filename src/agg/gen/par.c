@@ -10,7 +10,10 @@
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "utils/datum.h"
+#include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
+#include "utils/ruleutils.h"
 #include "utils/syscache.h"
 
 #include "core/catname.h"
@@ -142,36 +145,42 @@ unbounded_state(const Aggref *a, Oid transtype)
 	return !byval && len <= 0;
 }
 
-/* the aggregate runs in workers when a partial state of it can be made, carried and combined, as PostgreSQL's own parallel aggregate does */
-static bool
-parallel_aggregate(const Aggref *a)
+/* why the aggregate cannot run in workers (NULL: a partial state of it can be made, carried and combined, as PostgreSQL's own parallel aggregate does) */
+static const char *
+serial_aggregate(const Aggref *a)
 {
 	HeapTuple	tup = SearchSysCache1(AGGFNOID, ObjectIdGetDatum(a->aggfnoid));
 	Form_pg_aggregate ag;
-	bool		ok;
+	const char *why = NULL;
 
 	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for aggregate %u", a->aggfnoid);
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
-	ok = !unbounded_state(a, ag->aggtranstype) && OidIsValid(ag->aggcombinefn) && !IsPolymorphicType(ag->aggtranstype) && func_volatile(ag->aggcombinefn) != PROVOLATILE_VOLATILE &&
-		(ag->aggtranstype != INTERNALOID || (OidIsValid(ag->aggserialfn) && OidIsValid(ag->aggdeserialfn)));
+	if (a->aggdistinct != NIL)
+		why = "DISTINCT keeps the values of a group in one sort or set";
+	else if (a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL)
+		why = "the ORDER BY of its inputs keeps the values of a group in one sort";
+	else if (unbounded_state(a, ag->aggtranstype))
+		why = "its state grows with the rows of a group, and a record of the workers carries one state";
+	else if (!OidIsValid(ag->aggcombinefn) || IsPolymorphicType(ag->aggtranstype) || func_volatile(ag->aggcombinefn) == PROVOLATILE_VOLATILE ||
+			 (ag->aggtranstype == INTERNALOID && (!OidIsValid(ag->aggserialfn) || !OidIsValid(ag->aggdeserialfn))))
+		why = "its partial states cannot be carried and combined";
 	foreach_oid(fn, list_make5_oid(a->aggfnoid, ag->aggtransfn, ag->aggcombinefn, ag->aggserialfn, ag->aggdeserialfn))
-		ok = ok && (!OidIsValid(fn) || func_parallel(fn) == PROPARALLEL_SAFE);
+		if (why == NULL && OidIsValid(fn) && func_parallel(fn) != PROPARALLEL_SAFE)
+			why = "a function of it is not parallel safe";
 	ReleaseSysCache(tup);
-	return ok;
+	return why;
 }
 
-bool
-sift_v6_gen_parallel_ok(const SiftV6Spec *spec)
+const char *
+sift_v6_gen_serial_why(PlannerInfo *root, Index rti, const Aggref *a)
 {
-	int			at = 0;
+	const Oid	relid = planner_rt_fetch(rti, root)->relid;
+	const char *why = serial_aggregate(a);
+	Node	   *named;
 
-	for (int j = 0; j < spec->naggs; j++)
-		if (v6g_is_gen(&spec->agg[j]))
-		{
-			const Aggref *a = list_nth_node(Aggref, spec->genref, at++);
-
-			if (a->aggorder != NIL || a->aggdistinct != NIL || a->aggkind != AGGKIND_NORMAL || !parallel_aggregate(a))
-				return false;
-		}
-	return true;
+	if (why == NULL)
+		return NULL;
+	named = copyObjectImpl(a);
+	ChangeVarNodes(named, rti, 1, 0);
+	return psprintf("%s: %s", deparse_expression(named, deparse_context_for(get_rel_name(relid), relid), true, false), why);
 }

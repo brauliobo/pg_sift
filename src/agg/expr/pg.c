@@ -274,24 +274,24 @@ sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d)
 	return it.nin == 0;
 }
 
-bool
-sift_v6_spec_parallel_ok(PlannerInfo *root, const SiftV6Spec *s)
+const char *
+sift_v6_spec_serial_why(PlannerInfo *root, const SiftV6Spec *s)
 {
 	if (s->constant_groups)
-		return false;
+		return "its group keys read no column: the one group is a row of the process that read some";
 	for (int j = 0; j < s->naggs; j++)
 		if (s->agg[j].kind == SV6_PCT_CONT)
-			return false;
+			return "percentile_cont keeps the values of a group in the memory of the process that read them";
 	for (int i = 0; i < s->nkeys; i++)
 		if (sift_v6_key_generic(s, &s->key[i]))
-			return false;
+			return "a group key of a type the scan does not group by its bytes is held by codes of the process that read it";
 	foreach_ptr(List, item, s->pgexpr)
 		if (sift_v6_pgexpr_exec(linitial(item)) || !is_parallel_safe(root, linitial(item)))
-			return false;
+			return "an expression it computes runs a sub-plan or a function that is not parallel safe";
 	foreach_ptr(Node, clause, s->vqual)
 		if (sift_v6_pgexpr_exec(clause) || !is_parallel_safe(root, clause))
-			return false;
-	return true;
+			return "a condition it tests runs a sub-plan or a function that is not parallel safe";
+	return NULL;
 }
 
 SiftVecType

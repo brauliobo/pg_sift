@@ -188,22 +188,3 @@ sift_v6_rows_outputs(V6Plan *p)
 	}
 	return p->scan_tlist != NIL;
 }
-
-/* the dimensions a row Top-N joins, for EXPLAIN */
-char *
-sift_v6_rows_dims_desc(const V6Plan *p)
-{
-	StringInfoData buf;
-
-	initStringInfo(&buf);
-	foreach_ptr(RelOptInfo, rel, p->dim_rels)
-	{
-		const RangeTblEntry *rte = rel->reloptkind == RELOPT_BASEREL ? planner_rt_fetch(rel->relid, p->root) : NULL;
-		const char *kind = rte == NULL ? "join" : rte->rtekind == RTE_SUBQUERY ? "subquery" : rte->rtekind == RTE_VALUES ? "values" : rte->rtekind == RTE_CTE ? "cte" : NULL;
-
-		appendStringInfo(&buf, "%s%s", buf.len > 0 ? ", " : "", rte != NULL && rte->rtekind == RTE_RELATION ? get_rel_name(rte->relid) : rte != NULL ? rte->eref->aliasname : "");
-		if (kind != NULL)
-			appendStringInfo(&buf, " (%s)", kind);
-	}
-	return buf.data;
-}

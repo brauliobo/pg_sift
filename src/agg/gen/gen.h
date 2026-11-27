@@ -16,6 +16,7 @@
 #include "executor/executor.h"
 #include "executor/nodeAgg.h"
 #include "nodes/execnodes.h"
+#include "nodes/pathnodes.h"
 #include "nodes/primnodes.h"
 
 #include "agg/group/int.h"
@@ -147,8 +148,8 @@ extern void v6_gen_release(V6Gen *gen);
 extern void v6_gen_restart(V6Gen *gen);
 /* a participant of a parallel run holds what it holds until it hands its groups over */
 extern void v6_gen_unbound(V6Gen *gen);
-/* the aggregates of the spec can run in workers: none sorts its inputs, each has a combine function and, for an internal state, serial and deserial functions, and all are parallel safe */
-extern bool sift_v6_gen_parallel_ok(const SiftV6Spec *spec);
+/* why the aggregate a of the statement, over relation rti, cannot run in workers, naming it (NULL: it does not sort its inputs, has a combine function and, for an internal state, serial and deserial functions, and all are parallel safe) */
+extern const char *sift_v6_gen_serial_why(PlannerInfo *root, Index rti, const Aggref *a);
 extern uint64 v6_gen_limit(const V6Gen *gen);
 /* the memory the states and the results of all groups hold */
 extern uint64 v6_gen_bytes(const V6Gen *gen);

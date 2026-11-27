@@ -303,7 +303,8 @@ typedef struct SiftV6Spec
 	int64		aff_hi;
 	char	   *topn_desc;		/* EXPLAIN of a row Top-N: its sort keys */
 	char	   *agg_desc;		/* its aggregates of the whole set (NULL: none) */
-	char	   *join_desc;		/* its dimensions (NULL: none) */
+	const char *serial_because;	/* EXPLAIN VERBOSE: the rule that keeps the scan in one process while the session allows workers (NULL: none) */
+	List	   *gen_written;	/* the planner's: the Aggrefs of genref as the statement writes them, which a reason names (not packed) */
 	int			nout;			/* a row Top-N: the columns the node gives, in the order of its scan tlist */
 	SiftV6RowOut *out;
 	bool		rows;			/* ORDER BY .. LIMIT of the rows of one table, not of groups: the keys are the sort columns (then the columns of the dimensions the rows carry), topk the K, and the node gives the rows it fetches from the heap (v6_rows_topn.h); the aggregates are those of the whole set the rows carry */

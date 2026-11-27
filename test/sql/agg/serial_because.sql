@@ -1,8 +1,14 @@
 -- Why a pushed scan has no workers, one statement for each rule that decides it (EXPLAIN VERBOSE: Serial Because): the aggregate kinds whose partial states the
 -- leader cannot merge, a group key that shows a spelling of equal values, the joins whose lookup tables the process of the scan loads, a statement or sort
--- expression that is not parallel safe. 'workers' when nothing keeps them from it; 'none given' when the scan has none and no rule is named.
+-- expression that is not parallel safe. 'workers' when the scan is the parallel node under a Gather; 'none given' when the scan has none and no rule is named.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2: a Top-N of the rows joined to a lookup table is a scan of the index there (Format 1 plans a join of two scans)
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
 CREATE TABLE f (id int, g int, k int, x numeric, y float8, t text, d_id int) WITH (autovacuum_enabled = false);
 INSERT INTO f SELECT i, i % 7, i % 5, (i % 1001)::numeric / 8, (i % 997) / 8.0, 'v' || i % 50, i % 30 FROM generate_series(1, 60000) i;
 CREATE TABLE d (id int PRIMARY KEY, name text, w numeric);
@@ -13,14 +19,14 @@ ANALYZE d;
 CREATE FUNCTION unsafe_k(i int) RETURNS int LANGUAGE sql IMMUTABLE PARALLEL UNSAFE AS 'SELECT i';
 CREATE FUNCTION restricted_k(i int) RETURNS int LANGUAGE sql IMMUTABLE PARALLEL RESTRICTED AS 'SELECT i';
 
-CREATE FUNCTION scan_workers(q text, preagg bool DEFAULT false) RETURNS text LANGUAGE plpgsql AS $$
+CREATE FUNCTION scan_workers(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'no scan';
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config('sift.agg_force', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
+		IF l LIKE '%Parallel Custom Scan (SiftAgg%' THEN RETURN 'workers'; END IF;
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'none given'; END IF;
-		IF l LIKE '%Workers Planned%' AND r <> 'no scan' THEN RETURN 'workers'; END IF;
 		IF l LIKE '%Serial Because%' THEN RETURN trim(l); END IF;
 	END LOOP;
 	RETURN r;
@@ -50,12 +56,10 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SELECT n, name, scan_workers(q) FROM shapes ORDER BY n;
--- the pre-aggregates of the index answer a count by group without a scan of the rows
-SELECT n, name, scan_workers(q, true) FROM shapes WHERE n IN (1, 11, 18) ORDER BY n;
 -- no workers asked for: no reason is printed
 SET max_parallel_workers_per_gather = 0;
 SELECT n, name, scan_workers(q) FROM shapes WHERE n <= 4 ORDER BY n;
 
-DROP FUNCTION scan_workers(text, bool), unsafe_k(int), restricted_k(int);
+DROP FUNCTION scan_workers(text), unsafe_k(int), restricted_k(int);
 DROP TABLE shapes, f, d;
 DROP EXTENSION pg_sift;

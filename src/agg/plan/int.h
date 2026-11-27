@@ -139,7 +139,6 @@ extern bool sift_v6_compile_quals(V6Plan *p);
 
 /* plan_rows_out.c: the columns a row Top-N gives, and the dimensions of its join for EXPLAIN */
 extern bool sift_v6_rows_outputs(V6Plan *p);
-extern char *sift_v6_rows_dims_desc(const V6Plan *p);
 /* An aggregate the native kernels of the scan fold, not entered in the scan tlist (the caller decides what the node gives it as) */
 extern bool sift_v6_compile_agg_native(V6Plan *p, Aggref *a);
 

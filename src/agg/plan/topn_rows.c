@@ -20,6 +20,7 @@
 #include "agg/cost/card.h"
 #include "agg/cost/cost.h"
 #include "agg/plan/rewrite.h"
+#include "agg/par/pg.h"
 #include "agg/topn/rows.h"
 #include "agg/source_rel.h"
 #include "agg/topn/topn.h"
@@ -85,8 +86,6 @@ sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 						 spec->topk == SIFT_V6_ROWS_ALL ? "all" : psprintf("%u", spec->topk));
 	if (spec->agg_desc != NULL)
 		ExplainPropertyText("Pushed Aggregates", spec->agg_desc, es);
-	if (spec->join_desc != NULL)
-		ExplainPropertyText("Lookup Joins", spec->join_desc, es);
 }
 
 /* the format keeps the best rows of the relation, and what the spec asks beyond them (the aggregates of the whole set, the keys computed from columns, the dimensions of a join, a text match) when it serves that;
@@ -120,8 +119,7 @@ rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost di
 	Path		price;
 
 	p->spec.topn_desc = sift_v6_topn_desc(root, p->rel->relid);
-	if (dims != NIL)
-		p->spec.join_desc = sift_v6_rows_dims_desc(p);
+	p->spec.serial_because = sift_v6_par_rows_serial_why(root, p->rel, dims != NIL);
 	scan += cpu_operator_cost * p->rel->rows * log2(kept + 1.0) + sort_exprs_cost(root, p->rel->rows);
 	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + dims_total};
 	sift_v6_force_price(&price);

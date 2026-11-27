@@ -58,9 +58,8 @@ typedef enum SiftV6ParStrategy
 typedef struct SiftV6ParInput
 {
 	bool		parallel_scan;		/* sift.parallel_scan */
-	bool		parallel_ok;		/* parallelModeOK && consider_parallel */
 	bool		has_rls;			/* row security or a security barrier applies */
-	bool		parallel_hazard;	/* a target, qual, having or group expression is not parallel safe, or an aggregate keeps a state that is not a V6Acc to combine (stddev, variance, bool_or, bool_and, min and max of text) */
+	const char *hazard;		/* why a target, qual, having or group expression or an aggregate does not run in a worker (NULL: all do) */
 	bool		exact_float;		/* sift.agg_exact_float */
 	bool		float_sum_avg;		/* a sum or avg of a float */
 	bool		has_distinct;		/* a count(DISTINCT) */
@@ -79,7 +78,8 @@ typedef struct SiftV6ParInput
 	void	   *cost_arg;
 } SiftV6ParInput;
 
-extern SiftV6ParStrategy sift_v6_par_choose_strategy(const SiftV6ParInput *in, int *nworkers);
+/* SV6P_SERIAL with *why the rule that keeps it serial (NULL: no workers asked for) */
+extern SiftV6ParStrategy sift_v6_par_choose_strategy(const SiftV6ParInput *in, int *nworkers, const char **why);
 
 /* ---- the records ---- */
 
