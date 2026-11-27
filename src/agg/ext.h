@@ -54,14 +54,12 @@ typedef struct SiftV6XDim
 } SiftV6XDim;
 
 /* The function of the lateral relation: unnest of an array column, or jsonb_to_recordset, jsonb_array_elements_text, jsonb_array_elements of objects read by their members (SV6E_MEMBERS), jsonb_each or
- * jsonb_each_text of a jsonb one; SV6E_KEYS has no relation: a map read by constant keys, one row for each row of the table; SV6E_PATH: no lateral relation, the tests are over the keys of the objects of
- * a jsonb array (jsonpath, @>) */
+ * jsonb_each_text of a jsonb one; SV6E_PATH: no lateral relation, the tests are over the keys of the objects of a jsonb array (jsonpath, @>) */
 typedef enum SiftV6ElemFn
 {
 	SV6E_UNNEST = 0,
 	SV6E_RECORDSET,
 	SV6E_PATH,
-	SV6E_KEYS,
 	SV6E_ELEMS_TEXT,
 	SV6E_MEMBERS,
 	SV6E_EACH,
@@ -93,9 +91,6 @@ typedef struct SiftV6XElem
 	int			ncols;
 	int			col_leaf[SIFT_V6_XELEM_COLS];
 	Oid			col_type[SIFT_V6_XELEM_COLS];
-	int			col_att[SIFT_V6_XELEM_COLS];	/* SV6E_KEYS: the attribute of the index each column reads */
-	int			key_leaf;		/* SV6E_KEYS: the leaves of the keys and of the values of the map (-1: none); a column is the value of the key elem_names names, of the type col_type, or the leaf col_leaf (>= 0) of a key of a document */
-	int			val_leaf;
 	bool		col_kind[SIFT_V6_XELEM_COLS];	/* the column is the kind of the value the leaf has in the element (SIFT_ELEM_KIND_*, agg/vec.h), not the value */
 } SiftV6XElem;
 
@@ -159,8 +154,6 @@ typedef struct SiftV6Ext
 	List	   *stream_names;	/* of each stream after the first: the elem_names of its array */
 	List	   *stream_arrays;	/* of each stream after the first: its array as an expression of the table's columns, which the rows read from the heap evaluate */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */
-	List	   *pair_where;		/* SV6E_KEYS: the quals over the values of the keys (the virtual attributes of v6_unnest_jsonb.h), which the scan evaluates on the rows it gives to the groups */
-	List	   *col_expr;		/* SV6E_KEYS: the expression of the statement each column is, which a row read from the heap is given the value of */
 	List	   *late_probe;		/* unnest: the keys and aggregates that read a column of the element computed late, for a member whose cast raised (agg/unnest/late.h) */
 } SiftV6Ext;
 
@@ -184,8 +177,6 @@ sift_v6_ext_stream_array(const SiftV6Ext *x, int s)
 {
 	return s == 0 ? (x->elem_array != NIL ? linitial(x->elem_array) : NULL) : list_nth(x->stream_arrays, s - 1);
 }
-/* SV6E_KEYS, EXPLAIN: the members of documents the columns of the scan read, as `attname['key'] type, ..` (index_desc: the attributes of the index) */
-extern char *sift_v6_mapkey_text(const SiftV6Ext *x, TupleDesc index_desc);
 /* The column the probing side has key k of dimension d in: what the scan or the unnest maps to a slot of its pipe */
 extern SiftV6Col sift_v6_xdim_key_col(const SiftV6XDim *xd, int k);
 

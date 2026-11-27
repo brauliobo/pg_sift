@@ -130,7 +130,7 @@ typedef struct SiftV6Col
 	Oid			typid;
 	int			scale;			/* numeric: the digits after the point of the scaled integer the leaf holds; 0 for any other type */
 	int			jleaf;			/* 1 + the leaf of a key of the jsonb attribute whose `->>` text (typid text) or float8 cast the column is; 0: the first leaf of attno */
-	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers whose keys lead from the document to the member whose `->>` float8 cast the column is (jleaf is then the leaf of the values of its map); 0: none */
+	int			jmember;		/* 1 + the entry of SiftV6Spec.jmembers of what the column reads by a path of a document: a member of a map (jleaf the leaf of the values of the map, found in each row by its key), or the cast of the jsonb of a path the index declares (jleaf its leaf); 0: none */
 	bool		jtype;			/* with jleaf: the column is jsonb_typeof(doc -> 'key') (typid text), the type each row's chunk keeps of the key, not the value of it */
 	bool		jsonb_cast;		/* with jleaf: the column is (doc -> 'key')::float8, which raises for a value that is no number where the `->>` text is converted */
 	bool		jint;			/* with jleaf: the column is (doc ->> 'key')::int2, int4 or int8 of an integer leaf, which raises for a text that is no integer */
@@ -283,7 +283,7 @@ typedef struct SiftV6Spec
 	SiftV6Col	fcol[SIFT_V6_MAX_FCOLS];	/* the columns the clauses read, after the columns of the aggregates in the vectors of a batch */
 	int			nbins;
 	SiftV6Bin	bin[SIFT_V6_MAX_KEYS];
-	List	   *jmembers;		/* of each member of a map of a document the scan reads (SiftV6Col.jmember), the list of its keys from the document, as String nodes */
+	List	   *jmembers;		/* of each member of a document the scan reads by a path (SiftV6Col.jmember): the attribute of the document, the leaf of the values and the type the member is read as (Integer nodes), then the keys from the document (String nodes) */
 	List	   *jsonqual;		/* the quals on the keys of jsonb documents the clauses of an operator class cannot say (agg/qual/jsonb.c) */
 	List	   *vqual;			/* the quals no scan key says (a column against a column, OR, a numeric against a constant), over the columns the scan decodes (agg/qual/bqual.h): they narrow every batch */
 	struct SiftV6Ext *ext;		/* the dimensions of a star join or the array an unnest takes apart (v6_ext.h); NULL for the scan of the columns of one table */
@@ -396,16 +396,22 @@ typedef struct SiftV6Rel
  */
 extern List *sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause);
 extern bool sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out);
-/* `(doc -> 'a' -> .. ->> 'k')::float8` of a map of float8 members of a document of the index as a column of the scan, and the keys in order */
+/*
+ * `(doc -> .. ->> 'k')::float8`, and from PostgreSQL 18 on `(doc -> .. -> 'k')::type` (float8, and of a member of a map an integer), of a member of a map of float8 values of a document or of a path the
+ * index declares float8, as a column of the scan (jleaf the leaf of the values), and the keys from the document; the text of a path the index declares is its leaf alone, with no keys (NIL)
+ */
 extern bool sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path);
 extern bool sift_v6_values_exact(const SiftV6Rel *rel);
 /* The leaves of the relation: those of its index, or of the store of its table */
 extern const struct SiftColSchema *sift_v6_rel_leaves(const SiftV6Rel *rel);
+/* the virtual attribute of the member of a map e reads (sift_v6_member_vatt), and its type; InvalidAttrNumber: e reads none */
+typedef int (*SiftV6MemberVatt) (void *arg, const Expr *e, Oid *typid);
+
 /*
  * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
  * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is
  */
-extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values);
+extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, SiftV6MemberVatt member, void *arg);
 extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
 extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
@@ -413,6 +419,8 @@ extern bool sift_v6_json_type_clash(const SiftV6Spec *s);
 static inline int
 sift_v6_col_input_attno(const SiftV6Col *c)
 {
+	if (c->jmember > 0)
+		return sift_v6_member_vatt(c->jmember, c->jsonb_cast);
 	if (c->jleaf == 0)
 		return c->attno;
 	return sift_v6_jvatt_base(c->jtype, c->jint, c->typid) + c->jleaf - 1;
@@ -427,11 +435,35 @@ sift_v6_col_batch_attno(const SiftV6Col *c)
 	return c->jtype ? sift_v6_col_input_attno(c) : SIFT_V6_JLEAF_VATT + c->jleaf - 1;
 }
 
+/* The keys from the document to member jmember of a map (SiftV6Spec.jmembers) */
+static inline List *
+sift_v6_member_path(const SiftV6Spec *s, int jmember)
+{
+	return list_copy_tail(list_nth(s->jmembers, jmember - 1), 3);
+}
+
+/* The column of the scan the virtual attribute of a member is (sift_v6_member_vatt): the attribute of its document, the leaf of its values, the type and the cast */
+static inline SiftV6Col
+sift_v6_member_col(const SiftV6Spec *s, int attno)
+{
+	const int	at = (attno - SIFT_V6_JMEMBER_VATT) / 2;
+	const List *m = list_nth(s->jmembers, at);
+
+	return (SiftV6Col) {.attno = intVal(linitial(m)),.typid = (Oid) intVal(lthird(m)),.jleaf = intVal(lsecond(m)) + 1,.jmember = at + 1,.jsonb_cast = (attno - SIFT_V6_JMEMBER_VATT) % 2 == 1};
+}
+
 /* The column of the scan a virtual attribute of a key of document attribute att is: the type or the presence, the text or a cast of it, of the key whose leaf is in the attribute */
 static inline SiftV6Col
 sift_v6_vatt_col(int attno, int att, Oid typid, int scale)
 {
 	return (SiftV6Col) {.attno = att,.typid = typid,.scale = scale,.jleaf = sift_v6_vatt_leaf(attno) + 1,.jtype = sift_v6_vatt_is_type(attno),.jint = sift_v6_vatt_is_int_cast(attno)};
+}
+
+/* The column of the scan of the spec a virtual attribute is: a member of a map, or what it reads of a key of a document */
+static inline SiftV6Col
+sift_v6_spec_vatt_col(const SiftV6Spec *s, int attno, Oid typid, int scale)
+{
+	return sift_v6_vatt_is_member(attno) ? sift_v6_member_col(s, attno) : sift_v6_vatt_col(attno, attno, typid, scale);
 }
 /* e is doc -> 'k' or doc['k'] (as_text false), or doc ->> 'k' or its #>> '{}' (as_text true), of a column doc and a constant text key */
 extern bool sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **key);
@@ -443,8 +475,6 @@ extern bool sift_v6_json_doc_att(const SiftV6Rel *rel, const Expr *e, int *att);
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
 /* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
 extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
-/* The (doc -> 'key')::float8 of the payload of an exception: the error PostgreSQL raises for a value that is no number */
-extern double sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx);
 
 typedef enum SiftV6JsonExc
 {
@@ -477,9 +507,14 @@ sift_v6_json_int(Oid typid, Datum value)
 	}
 }
 
-/* The value of an exception as a column of class cls reads it (the `->>` text, its float8 or bool cast, or the float8 cast of the jsonb), without raising: the scan raises only for the rows it keeps */
+/* The value of an exception as a column of class cls reads it (the `->>` text, its float8 or bool cast, or the cast of the jsonb to float8 or an integer), without raising: the scan raises only for the rows it keeps */
 extern SiftV6JsonExc sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out);
 extern void sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx);
+/* The integer cast of the jsonb of a number a float8 leaf holds, as numeric rounds it; false when the type cannot hold it, where sift_v6_json_float_int_raise raises PostgreSQL's error */
+extern bool sift_v6_json_float_int(Oid typid, double f, Datum *out);
+extern void sift_v6_json_float_int_raise(Oid typid, double f);
+/* The member the keys lead to from the jsonb of the payload (a jsonb datum of len bytes), as the payload of one, made in cx; false: none (a key is missing, or a value on the way is no object) */
+extern bool sift_v6_json_payload_member(const char *payload, uint32 len, const List *keys, MemoryContext cx, const char **out, uint32 *outlen);
 /* `doc ? 'k'` of a key whose leaf the scan reads the presence of: the virtual attribute of the presence (InvalidAttrNumber: none) */
 extern int	sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause);
 

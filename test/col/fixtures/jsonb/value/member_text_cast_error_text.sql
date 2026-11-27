@@ -1,6 +1,6 @@
 -- trap: a text that is no number as the member of an object leaf cast from its text raises the error of the cast, not a NULL
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- error: yes

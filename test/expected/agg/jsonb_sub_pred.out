@@ -59,12 +59,12 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT CASE WHEN o.region = ''north'' THEN o.doc ->> ''k'' ELSE o.doc ->> ''t'' END AS k, count(*) FROM @T o GROUP BY 1',
 	'SELECT o.region, sum(length(coalesce(o.doc ->> ''k'', ''none''))) FROM @T o GROUP BY 1'
 ]) q;
-                                                                           same                                                                            
------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                          same                                                                           
+---------------------------------------------------------------------------------------------------------------------------------------------------------
  same node SELECT coalesce(o.doc ->> 'k', o.region) || '/' || o.grp AS k, count(*) FROM @T o GROUP BY 1
  same node SELECT upper(o.doc ->> 'k') AS k, count(*), sum(o.grp) FROM @T o GROUP BY 1
  same node SELECT o.grp, count(*), sum(length(o.doc ->> 't' || o.region)) FROM @T o GROUP BY 1
- same normal SELECT round(((o.doc ->> 'n')::float8)::numeric, 1)::text || coalesce(o.doc ->> 'k', '-') AS k, count(*) FROM @T o WHERE o.grp < 5 GROUP BY 1
+ same node SELECT round(((o.doc ->> 'n')::float8)::numeric, 1)::text || coalesce(o.doc ->> 'k', '-') AS k, count(*) FROM @T o WHERE o.grp < 5 GROUP BY 1
  same node SELECT CASE WHEN o.region = 'north' THEN o.doc ->> 'k' ELSE o.doc ->> 't' END AS k, count(*) FROM @T o GROUP BY 1
  same node SELECT o.region, sum(length(coalesce(o.doc ->> 'k', 'none'))) FROM @T o GROUP BY 1
 (6 rows)

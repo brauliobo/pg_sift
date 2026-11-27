@@ -84,10 +84,4 @@ extern void sift_unnest_any(const SiftArrayLayout *lay, const uint64 *hits, cons
  */
 extern uint32 sift_unnest_semi(const SiftUnnestIn *in, uint64 *hit_out, uint64 *fallback);
 
-/*
- * The map of a jsonb object: the keys of the elements and the key to find; elem_of[p] = the element of parent p whose key is it (the last one if it is repeated, as the value of a key of an
- * object is), or SIFT_UNNEST_NONE. Only the parents of parent_mask are looked at.
- */
-extern void sift_map_lookup(const SiftArrayLayout *lay, const SiftStrView *keys, const char *key, uint32 keylen, const uint64 *parent_mask, uint32 *elem_of);
-
 #endif							/* SIFT_AGG_V6_UNNEST_H */

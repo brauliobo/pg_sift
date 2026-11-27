@@ -329,14 +329,14 @@ sift_v6_pin_fold_words(SiftV6Group *g, const SiftV6Spec *spec, const SiftParWord
 bool
 sift_v6_pin_wanted(const SiftV6Spec *spec)
 {
-	return sift_par_pool_threads() > 1 && sift_v6_tseries_wanted(spec);
+	return sift_par_pool_threads() > 1 && spec->jmembers == NIL && sift_v6_tseries_wanted(spec);
 }
 
 SiftV6PinRun *
 sift_v6_pin_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6ScanStats *stats, const int *first, Relation index, Snapshot snap, SiftPinPartOk part_ok, void *part_arg,
 				  const SiftV6Pipe *pipe, const SiftV6PinCol *cols, int ncols)
 {
-	if (sift_par_pool_threads() < 2)
+	if (sift_par_pool_threads() < 2 || spec->jmembers != NIL)
 		return NULL;
 	if (spec->ext != NULL)
 		return sift_v6_star_pin_begin(spec, g, stats, index, snap, part_ok, part_arg, pipe, cols, ncols);

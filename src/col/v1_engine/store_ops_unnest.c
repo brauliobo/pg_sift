@@ -66,15 +66,6 @@ sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *col, bool month)
 	return u->ncols++;
 }
 
-/* the column of the batch that is leaf `leaf` of a key of a document, which is the source of the value of a member of a map the statement reads by key */
-static int
-source_col(UnRun *u, int leaf)
-{
-	const SiftV6Col c = {.attno = 1,.typid = FLOAT8OID,.jleaf = leaf + 1};
-
-	return sift_v1_unnest_col_index(u, &c, false);
-}
-
 /* the vector of the pipe a column of the statement is read from: a column of the table, the column of the element, or what the pairs compute from them */
 static int
 slot_of(UnRun *u, const SiftV6Col *c, bool month)
@@ -353,8 +344,6 @@ run_batch(UnRun *u, const SiftV6Batch *b)
 		u->stats->rows += sift_pc64(bs->mask[w]);
 	if (u->ntests > 0)
 		sift_v1_unnest_run_tests(u, b, eb);
-	else if (u->keyed)
-		sift_v1_unnest_run_keyed(u, b, eb);
 	else if (eb != NULL)
 		emit_elems(u, b, eb);
 	else
@@ -378,12 +367,6 @@ setup_clauses(UnRun *u)
 		u->wcol = palloc(Max(spec->nfcols, 1) * sizeof(int));
 		for (int i = 0; i < spec->nfcols; i++)
 			u->wcol[i] = reads_batch(&spec->fcol[i]) ? sift_v1_unnest_col_index(u, &spec->fcol[i], false) : -1;
-	}
-	if (u->x->pair_where != NIL)
-	{
-		u->has_pwhere = true;
-		bound = sift_v6_unnest_elem_clause(CurrentMemoryContext, u->x->pair_where, &u->pwhere, u->pcol, &u->npvec);
-		SIFT_INVARIANT(bound, "the quals over the members of the keys of the aggregate scan compiled when it was planned");
 	}
 	if (u->x->elem_where != NIL)
 		u->eev = sift_v6_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
@@ -436,14 +419,7 @@ open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
 	in.ncols = u->ncols;
 	memcpy(type, u->etype, sizeof(type));
 	memcpy(leaf, u->x->elem.col_leaf, sizeof(leaf));
-	if (u->keyed)
-	{
-		leaf[0] = u->x->elem.key_leaf;
-		leaf[1] = u->x->elem.val_leaf;
-		type[0] = SVEC_STRVIEW;
-		type[1] = SVEC_F64;
-	}
-	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->keyed ? 2 : u->nel, leaf, type, u->keyed ? NULL : u->x->elem.col_kind, &u->espec);
+	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->nel, leaf, type, u->x->elem.col_kind, &u->espec);
 	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET || u->x->elem.fn == SV6E_PATH;
 	scan.elem = u->has_elems ? &u->espec : NULL;
 	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, source_quals(u, u->spec->is_table ? heap : index, &in), &scan);
@@ -461,16 +437,14 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	u->x = spec->ext;
 	u->index = index;
 	u->stats = stats;
-	u->keyed = u->x->elem.fn == SV6E_KEYS;
 	u->nel = u->x->elem.ncols;
 	u->ntests = u->x->ntests;
 	for (int c = 0; c < u->nel; c++)
 		u->etype[c] = un_vec_type(sift_v6_class(u->x->elem.col_type[c]));
-	if (!u->keyed)
-		u->heap_att = un_heap_column(u, u->x->elem.attno);
+	u->heap_att = un_heap_column(u, u->x->elem.attno);
 	if (u->x->elem.fn == SV6E_UNNEST)
 		get_typlenbyvalalign(u->x->elem.type, &u->typlen, &u->typbyval, &u->typalign);
-	else if (!u->keyed && u->x->elem.fn != SV6E_PATH)
+	else if (u->x->elem.fn != SV6E_PATH)
 		u->rec = sift_v6_recfn_new(CurrentMemoryContext, &u->x->elem, u->x->elem_names);
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 unnest heap rows");
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
@@ -481,22 +455,14 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	sift_v1_unnest_heap_open(u, heap);
 	if (u->x->elem_array != NIL)
 		u->arr = sift_v1_unnest_heap_expr(u, linitial(u->x->elem_array));
-	else if (!u->keyed)
+	else
 		sift_v1_unnest_heap_att(u, u->heap_att);
 	u->probe = u->rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->rec) : NULL;
 	foreach_ptr(Var, v, pull_var_clause((Node *) u->x->late_probe, 0))
 		if (v->varno != INNER_VAR)
 			sift_v1_unnest_heap_att(u, v->varattno);
-	for (int c = 0; u->keyed && c < u->nel; c++)
-	{
-		u->cexpr[c] = sift_v1_unnest_heap_expr(u, list_nth(u->x->col_expr, c));
-		u->kidx[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
-		u->elem_of[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
-	}
 	setup_cols(u);
 	setup_clauses(u);
-	for (int c = 0; c < u->nel; c++)
-		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, u->x->elem.col_leaf[c]) : -1;
 	setup_pipe(u, g, star);
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].month)

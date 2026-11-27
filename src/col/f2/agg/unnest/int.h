@@ -54,11 +54,23 @@ typedef struct UnCol
 	bool		json;			/* the leaf of a key of a jsonb document: a row that holds a value of another JSON type than the leaf's has it as the payload of an exception */
 	Oid			typid;			/* json: the type the statement reads the value as (the `->>` text or its cast) */
 	bool		jint;			/* json: SiftV6Col.jint, the integer cast of the text of an integer leaf */
-	bool		read;			/* the statement reads the column itself; it may be only the source of a member (keyed) */
+	bool		read;			/* the statement reads the column itself; it may be only the source of a test of the elements */
+	bool		jsonb_cast;		/* json: SiftV6Col.jsonb_cast, the cast of the jsonb of the value */
 	AttrNumber	heap_att;
 	const char *key;
 	int			keylen;
+	bool		member;			/* a member of a document read by a path (SiftV6Col.jmember), converted as the statement does */
+	int			map;			/* member: 1 + the map among those of the pull whose member it is, the leaf of the column its lengths; 0: a path the index declares, the leaf of its values */
+	List	   *path;			/* member: the keys from the document of heap_att to the member, key the last */
 } UnCol;
+
+/* a map of a document whose members are columns of the rows: one more group of the pull, after the arrays of the streams */
+typedef struct UnMap
+{
+	int			group;
+	int			key;
+	int			value;
+} UnMap;
 
 /* an arithmetic of the statement (SVD_ARITH): the vector of the pairs each of its columns is, and whether the column is a float8 */
 typedef struct UnArith
@@ -72,7 +84,7 @@ typedef struct UnArith
 typedef struct UnStream
 {
 	const SiftV6XElem *el;
-	int			nchild;			/* the element columns of the pull and how each is decoded: those of the statement, or the keys and the values of the map when keyed */
+	int			nchild;			/* the element columns of the pull and how each is decoded */
 	SiftVecType ctype[SIFT_V6_XELEM_COLS];
 	SiftVecType etype[SIFT_V6_XELEM_COLS];	/* the columns of the element as the pairs and the tests read them */
 	AttrNumber	heap_att;		/* the array column of the table */
@@ -104,17 +116,8 @@ typedef struct UnRun
 	bool		eused[SIFT_V6_XELEM_COLS];	/* the statement reads the column; the others are read for the values their leaf cannot hold */
 	int			nst;
 	UnStream	st[SIFT_V6_XSTREAMS];	/* st[0]: the array of the pairs, or the first one the tests read */
-	bool		keyed;			/* SV6E_KEYS: a row of the table is one pair, the members its keys name */
-	FmgrInfo	jtext;			/* jsonb_object_field_text: the text of the key of a document read from the heap */
-	ExprState  *cexpr[SIFT_V6_XELEM_COLS];	/* keyed: the expression each column is, with which a row of the heap is given its value */
-	uint32	   *kidx[SIFT_V6_XELEM_COLS];	/* keyed: the member of the map each column of the pair has (SIFT_GATHER_NONE: none) */
-	int			lcol[SIFT_V6_XELEM_COLS];	/* keyed: the column of the batch that is the leaf of a column that is no member of the map (-1: a member) */
-	uint32	   *elem_of[SIFT_V6_XELEM_COLS];	/* keyed: the member each key names in each row of the batch */
-	SiftClause	pwhere;
-	bool		has_pwhere;
-	int			pcol[SIFT_V6_MAX_FCOLS];
-	int			npvec;
-	SiftVec    *pvp[SIFT_V6_MAX_FCOLS];
+	int			nmaps;
+	UnMap		map[SIFT_F2_PULL_MAX_GROUPS];
 	EState	   *estate;			/* the quals of the table as a row of the heap is tested with them */
 	ExprContext *econtext;
 	ExprState  *hqual;
@@ -177,7 +180,6 @@ flag_slot(const UnRun *u, int k)
 }
 
 extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
-extern void sift_f2_unnest_run_keyed(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *vals, uint64 *fallback);
 /* rows.c: the rows of the batch in the TID range whose heap row the snapshot sees; then those the batch quals keep (u->bq), on the columns as the statement reads them (u->fv) */
 extern uint16 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b);
 extern uint16 sift_f2_unnest_restrict_quals(UnRun *u, const SiftF2ExtBatch *b);
@@ -186,8 +188,10 @@ extern void sift_f2_unnest_setup_bq(UnRun *u, const SiftColRel *r);
 /* run.c: the column of the batch that is the column c of the table (its month when month), added to those the pull decodes when it is not one of them */
 extern int	sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);
 extern void sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
+/* member.c: the column of the batch that is the member c reads by a path, and its values on the rows the statement keeps */
+extern int	sift_f2_unnest_member_col(UnRun *u, const SiftColRel *r, const SiftV6Col *c);
+extern void sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
-extern void sift_f2_unnest_emit_heap_keys(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
 /* the quals of the table on columns of the index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
 extern void sift_f2_unnest_where_preds(UnRun *u, const SiftColRel *r, Relation index, SiftF2PullSpec *ps);
 

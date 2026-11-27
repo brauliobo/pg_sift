@@ -249,9 +249,18 @@ reads_attno(Node *n, void *attno)
 static bool
 quals_read(const V6Scan *s, const V6Col *c)
 {
-	int			attno = sift_v6_jvatt_base(false, c->jint, c->typid) + c->leaf;
+	int			attno = c->jmember > 0 ? sift_v6_member_vatt(c->jmember, c->jsonb_cast) : sift_v6_jvatt_base(false, c->jint, c->typid) + c->leaf;
 
-	return !c->jsonb_cast && reads_attno((Node *) s->spec->vqual, &attno);
+	return (c->jmember > 0 || !c->jsonb_cast) && reads_attno((Node *) s->spec->vqual, &attno);
+}
+
+/* PostgreSQL's error for the conversion of row r of the column */
+static void
+raise_row(V6Scan *s, const V6Col *c, const ColView *views, int r)
+{
+	if (c->jmember > 0)
+		sift_f2_v6_member_raise(s, c, views, r);
+	sift_v6_json_exception_raise(c->typid, c->jsonb_cast, views[c->leaf].xpay[r], views[c->leaf].xplen[r], s->batch_cx);
 }
 
 /* PostgreSQL's error for the first row whose cast raises that PostgreSQL casts: one the batch quals keep, or any row of a column they read themselves */
@@ -270,16 +279,11 @@ sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, in
 	for (int k = 0; k < s->ncols; k++)
 	{
 		const V6Col *c = &s->cols[k];
-		const ColView *cv = &views[c->leaf];
 		const uint64 *cast = s->bq == NULL || quals_read(s, c) ? uncast.mask : kept.mask;
 
 		for (int w = 0; raises[k] != NULL && w < (n + 63) / 64; w++)
 			if ((raises[k][w] & cast[w]) != 0)
-			{
-				const int	r = off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]);
-
-				sift_v6_json_exception_raise(c->typid, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx);
-			}
+				raise_row(s, c, views, off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]));
 	}
 }
 
@@ -350,6 +354,14 @@ sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n)
 	v->sel = NULL;
 }
 
+/* the values of a leaf, with those of the exceptions of a leaf of a key of a document: the rows whose cast raises (NULL: none) */
+static uint64 *
+fill_value(V6Scan *s, V6Col *c, const ColView *cv, uint64 part_gen, int off, int n)
+{
+	sift_f2_v6_fill_col(c, cv, off, n, sift_v6_dict_gen(s->host, part_gen), s->bs.n_active * 2 < n ? s->bs.mask : NULL);
+	return c->json ? sift_f2_v6_fill_exceptions(s, c, cv, off, n) : NULL;
+}
+
 /* The vectors of the columns of the n rows from off of a batch: the rows of the selection s->bs are the ones that matter. The rows whose cast raises, for sift_f2_v6_raise_kept once the rows
  * that reach the cast are known (NULL: none) */
 uint64 **
@@ -374,10 +386,9 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint6
 			sift_f2_v6_fill_datum(c, views, off, n, s->batch_cx, s->bs.mask);
 		else
 		{
-			uint64	   *rows;
+			uint64	   *rows = c->jmember > 0 ? sift_f2_v6_fill_member(s, c, views, off, n) : fill_value(s, c, cv, part_gen, off, n);
 
-			sift_f2_v6_fill_col(c, cv, off, n, sift_v6_dict_gen(s->host, part_gen), s->bs.n_active * 2 < n ? s->bs.mask : NULL);
-			if (!c->json || (rows = sift_f2_v6_fill_exceptions(s, c, cv, off, n)) == NULL)
+			if (rows == NULL)
 				continue;
 			raises = raises != NULL ? raises : MemoryContextAllocZero(s->batch_cx, s->ncols * sizeof(uint64 *));
 			raises[i] = rows;

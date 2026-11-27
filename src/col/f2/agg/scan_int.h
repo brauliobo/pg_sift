@@ -23,6 +23,15 @@
 #include "col/f2/scope/route.h"
 #include "col/f2/store/scan.h"
 
+/* the member of a map a column reads (SiftV6Col.jmember): the group leaf of the map and the leaf of its keys (the column's own leaf holds the values), and the member's key */
+typedef struct V6Member
+{
+	int			group;
+	int			key;
+	const char *name;
+	uint32		len;
+} V6Member;
+
 typedef struct V6Col
 {
 	int			leaf;
@@ -49,6 +58,8 @@ typedef struct V6Col
 	bool		bare;			/* is_table, and the cell holds the bare bytes of the value (sift_f2_type_bare_bytes), not its datum image */
 	bool		is_table;		/* the leaf is a cell of a sift_table: the datum of the attribute, not the bytes a sift_col index or the path of a document holds */
 	bool		lane;			/* a leaf the datum of the column before it is made of: it is decoded with that one, and has no vector of its own */
+	int			jmember;		/* SiftV6Col.jmember: the column reads a member of a document by a path (f2_v6_member.c) */
+	const V6Member *member;		/* jmember: the member of a map; NULL for a path the index declares, whose leaf is the column's */
 } V6Col;
 
 /* a key that is date_bin() of a column, or its date_trunc('month'): the batch of the column binned into out, as the vector of the key */
@@ -161,5 +172,10 @@ extern uint64 *sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv
 /* jsonb_typeof of the key of a leaf: the name of the type each row's chunk keeps (a value of the leaf's own type, an exception's tag, a JSON null), NULL for a row with no value for the key */
 extern void sift_f2_v6_fill_type(V6Col *c, const ColView *cv, int off, int n);
 extern void sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n);
+/* f2_v6_member.c: the member a column reads by a path, of a map found by its key in the elements of each row; the rows the batch keeps whose cast raises, NULL: none */
+extern V6Member *sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c);
+extern uint64 *sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, int off, int n);
+/* PostgreSQL's error for the cast of the member of row r of the batch */
+extern void sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, int r);
 
 #endif							/* SIFT_COL_F2_V6_SCAN_INT_H */

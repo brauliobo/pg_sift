@@ -61,7 +61,6 @@ typedef struct SiftF2PullSpec
 	SiftF2PullMask mask[SIFT_F2_PULL_MAX_MASKS];
 	int			ngroups;
 	SiftF2PullGroup group[SIFT_F2_PULL_MAX_GROUPS];
-	bool		poison_rows;	/* with no array column too: the rows of a granule that holds a value a leaf of ncols cannot hold are poison (the consumer reads them from the heap), and the slab's are, as with one */
 	/*
 	 * What the rows the consumer keeps satisfy, ANDed, on the leaves of the rows (npred) and on the element leaves of group 0 (nelem_pred, on the same element). The arrays are the consumer's and
 	 * live as long as the pull. elem_pred only when a row none of whose elements passes gives the consumer nothing (an inner join, EXISTS), not for a left join: a granule in which no element
@@ -101,7 +100,7 @@ typedef struct SiftF2ExtBatch
 	const SiftVexprMaskIn *masks;
 	const uint64 *tid;
 	const uint64 *live;
-	const SiftF2ElemStream *elem;	/* one for each group of the spec (or one with an empty layout when it names none and asks for poison_rows); NULL for neither */
+	const SiftF2ElemStream *elem;	/* one for each group of the spec; NULL when it names none */
 } SiftF2ExtBatch;
 
 /* What the predicates of the spec left of the index, and how the element columns were decoded */

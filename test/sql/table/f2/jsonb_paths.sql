@@ -98,6 +98,26 @@ ALTER TABLE hq RENAME COLUMN doc TO body;
 SELECT attname, spec FROM sift.table_paths WHERE relid = 'tq'::regclass;
 SELECT same(replace(q, 'doc', 'body'), 'tq', 'hq') FROM queries WHERE q NOT LIKE '%''a''%' ORDER BY q;
 
+-- a member of a map (`m.* float8`) found by its key in each row: the float8 of its text in a key, an aggregate, a condition and a FILTER, beside the elements of an unnest; a value no number
+-- raises the cast's error for the rows that reach it
+CREATE TABLE tm (id int, grp int NOT NULL, m jsonb, items jsonb) USING sift_table;
+SELECT sift.table_set_paths('tm', 'm', 'm.* float8');
+SELECT sift.table_set_paths('tm', 'items', 'items[]{kind text}');
+INSERT INTO tm SELECT i, i % 5, CASE i % 6 WHEN 0 THEN NULL WHEN 1 THEN '{}' WHEN 2 THEN jsonb_build_object('a', i % 9 + 0.5, 'b', i % 4) WHEN 3 THEN '{"a": null, "b": 2.5}'
+	ELSE jsonb_build_object('a', -i % 7, 'c', 1) END, jsonb_build_array(jsonb_build_object('kind', 'k' || i % 3), jsonb_build_object('kind', 'k' || i % 2))
+FROM generate_series(1, 3000) i;
+CREATE TABLE hm AS SELECT * FROM tm;
+CREATE TEMP TABLE members (q text);
+INSERT INTO members VALUES
+	('SELECT grp, count((m->>''a'')::float8), sum((m->>''a'')::float8), max((m->>''b'')::float8) FROM @T GROUP BY 1'),
+	('SELECT (m->>''a'')::float8 AS a, count(*) FROM @T WHERE grp < 3 GROUP BY 1'),
+	('SELECT grp, count(*) FILTER (WHERE (m->>''b'')::float8 >= 2), avg((m->>''a'')::float8) FROM @T WHERE (m->>''a'')::float8 IS NOT NULL GROUP BY 1'),
+	('SELECT i.kind, count(*), avg((t.m->>''a'')::float8) FROM @T t CROSS JOIN LATERAL jsonb_to_recordset(t.items) AS i(kind text) GROUP BY 1');
+SELECT same(q, 'tm', 'hm') FROM members ORDER BY q;
+UPDATE tm SET m = '{"a": "str"}' WHERE id = 7;
+UPDATE hm SET m = '{"a": "str"}' WHERE id = 7;
+SELECT same(q, 'tm', 'hm') FROM members ORDER BY q;
+
 DROP FUNCTION same(text, text, text), doc_of(int);
-DROP TABLE tp, hp, tq, hq;
+DROP TABLE tp, hp, tq, hq, tm, hm;
 DROP EXTENSION pg_sift;

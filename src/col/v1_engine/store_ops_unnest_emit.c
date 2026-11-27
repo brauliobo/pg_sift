@@ -86,26 +86,6 @@ row_numbers(UnRun *u, uint32 m)
 	u->outv[u->row_slot] = (SiftVec) {.data = rows,.valid = u->out_valid[u->row_slot],.len = (uint16) m,.all_valid = true,.dense = true,.type = SVEC_I64};
 }
 
-/* the pairs the quals over the members of the keys keep (SV6E_KEYS) */
-static void
-restrict_pairs(UnRun *u, uint32 m)
-{
-	SiftBatchSel *bs = &u->obs;
-	uint64		keep[SIFT_VEC_WORDS];
-	uint32		n = 0;
-
-	for (int v = 0; v < u->npvec; v++)
-		u->pvp[v] = u->out[u->ncols + u->pcol[v]];
-	sift_clause_eval(&u->pwhere, u->pvp, m, keep);
-	for (uint32 w = 0; w < (m + 63) / 64; w++)
-	{
-		bs->mask[w] &= keep[w];
-		n += (uint32) sift_pc64(bs->mask[w]);
-	}
-	bs->n_active = (uint16) n;
-	bs->all_active = n == m;
-}
-
 /* the pairs the columns of the pairs hold, the first m of them, on to the groups */
 void
 sift_v1_unnest_run_pairs(UnRun *u, uint32 m)
@@ -118,8 +98,6 @@ sift_v1_unnest_run_pairs(UnRun *u, uint32 m)
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
-	if (u->has_pwhere)
-		restrict_pairs(u, m);
 	for (int k = 0; k < u->spec->nderive; k++)
 		if (u->spec->derive[k].kind == SVD_PG_EXPR)
 			pg_pairs(u, k);
@@ -194,14 +172,12 @@ reach_late(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *c
 	sift_v6_group_update(lp->u->pipe->group, bs, keyvec, argvec);
 }
 
-/* the pair of a member whose cast raised: decided when it reaches the groups, gone with it when a join drops it; a qual over the members casts it before the join */
+/* the pair of a member whose cast raised: decided when it reaches the groups, gone with it when a join drops it */
 static void
 emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uint32 k, ErrorData *err)
 {
 	LatePair	lp = {u, k, err};
 
-	if (u->has_pwhere)
-		ReThrowError(err);
 	u->pidx[0] = row;
 	u->eidx[0] = k;
 	u->pipe->sink = reach_late;

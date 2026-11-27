@@ -215,20 +215,3 @@ sift_unnest_semi(const SiftUnnestIn *in, uint64 *hit_out, uint64 *fallback)
 	}
 	return n;
 }
-
-void
-sift_map_lookup(const SiftArrayLayout *lay, const SiftStrView *keys, const char *key, uint32 keylen, const uint64 *parent_mask, uint32 *elem_of)
-{
-	for (uint32 p = 0; p < lay->n_parents; p++)
-	{
-		elem_of[p] = SIFT_UNNEST_NONE;
-		if (!bit_at(parent_mask, p))
-			continue;
-		for (uint32 e = lay->offsets[p + 1]; e > lay->offsets[p]; e--)
-			if (keys[e - 1].len == keylen && memcmp(sift_vstr_bytes(&keys[e - 1]), key, keylen) == 0)
-			{
-				elem_of[p] = e - 1;
-				break;
-			}
-	}
-}

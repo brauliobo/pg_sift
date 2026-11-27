@@ -9,8 +9,10 @@
 #include "common/hashfn.h"
 #include "datatype/timestamp.h"
 #include "commands/explain.h"
+#include "lib/stringinfo.h"
 #include "executor/nodeIndexscan.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
@@ -116,6 +118,25 @@ static Relation
 source_host(const SiftV6ScanSrc *src)
 {
 	return src->index != NULL ? src->index : src->heap;
+}
+
+/* EXPLAIN: the members of documents the scan reads by a path (SiftV6Spec.jmembers), as `attname['key'] type, ..` (desc: the attributes of the host) */
+static char *
+members_text(const SiftV6Spec *spec, TupleDesc desc)
+{
+	StringInfoData b;
+
+	initStringInfo(&b);
+	for (int m = 1; m <= list_length(spec->jmembers); m++)
+	{
+		const SiftV6Col c = sift_v6_member_col(spec, sift_v6_member_vatt(m, false));
+
+		appendStringInfo(&b, "%s%s", m > 1 ? ", " : "", NameStr(TupleDescAttr(desc, c.attno - 1)->attname));
+		foreach_node(String, k, sift_v6_member_path(spec, m))
+			appendStringInfo(&b, "['%s']", strVal(k));
+		appendStringInfo(&b, " %s", format_type_be(c.typid));
+	}
+	return b.data;
 }
 
 /* After the quarantine net of sift_v6_source_enter, which says why an index is out: an index with no format left service some other way (REINDEX CONCURRENTLY marks the replaced one invalid) */
@@ -900,10 +921,10 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Star Dimensions", NULL, st->spec->ext->ndims, es);
 		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, es);
 	}
-	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.fn == SV6E_KEYS)
-		ExplainPropertyText("Map Keys", sift_v6_mapkey_text(st->spec->ext, RelationGetDescr(source_host(&st->sources[0]))), es);
-	else if (st->spec->ext != NULL && st->spec->ext->unnest)
+	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
+	if (st->spec->jmembers != NIL)
+		ExplainPropertyText("Map Keys", members_text(st->spec, RelationGetDescr(source_host(&st->sources[0]))), es);
 	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.vread != SV6V_NONE)
 		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(source_host(&st->sources[0])), st->spec->ext->elem.attno - 1)->attname)), es);
 	if (st->star_passes > 1)

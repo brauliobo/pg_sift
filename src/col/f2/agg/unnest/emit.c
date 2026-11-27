@@ -86,26 +86,6 @@ row_numbers(UnRun *u, uint32 m)
 	u->outv[u->row_slot] = (SiftVec) {.data = rows,.valid = u->out_valid[u->row_slot],.len = (uint16) m,.all_valid = true,.dense = true,.type = SVEC_I64};
 }
 
-/* the pairs the quals over the members of the keys keep (SV6E_KEYS) */
-static void
-restrict_pairs(UnRun *u, uint32 m)
-{
-	SiftBatchSel *bs = &u->obs;
-	uint64		keep[SIFT_VEC_WORDS];
-	uint32		n = 0;
-
-	for (int v = 0; v < u->npvec; v++)
-		u->pvp[v] = u->out[u->ncols + u->pcol[v]];
-	sift_clause_eval(&u->pwhere, u->pvp, m, keep);
-	for (uint32 w = 0; w < (m + 63) / 64; w++)
-	{
-		bs->mask[w] &= keep[w];
-		n += (uint32) sift_pc64(bs->mask[w]);
-	}
-	bs->n_active = (uint16) n;
-	bs->all_active = n == m;
-}
-
 /* the pairs the columns of the pairs hold, the first m of them, on to the groups */
 static void
 run_pairs(UnRun *u, uint32 m)
@@ -118,8 +98,6 @@ run_pairs(UnRun *u, uint32 m)
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
-	if (u->has_pwhere)
-		restrict_pairs(u, m);
 	for (int k = 0; k < u->spec->nderive; k++)
 		if (u->spec->derive[k].kind == SVD_PG_EXPR)
 			pg_pairs(u, k);
@@ -143,44 +121,6 @@ sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, u
 	for (int k = 0; k < u->ntests; k++)
 		if (u->flag_used[k])
 			sift_vec_gather(u->out[flag_slot(u, k)], u->out_valid[flag_slot(u, k)], u->out_data[flag_slot(u, k)], &u->flagv[k], u->pidx, m);
-	run_pairs(u, m);
-}
-
-/*
- * The integer PostgreSQL's cast of the jsonb makes of the number the float stands for: numeric rounds half away from zero, as round() does (a float is exactly the boundary of two integers or
- * it is not, whatever its shortest decimal is). A float the type cannot hold is a row the heap is asked: the cast raises there, where the quals before it say the row reaches it.
- */
-static bool
-int_fits(double f, Oid type)
-{
-	const double r = round(f);
-
-	return type == INT2OID ? (r >= -32768.0 && r <= 32767.0) : type == INT4OID ? (r >= -2147483648.0 && r <= 2147483647.0) :
-		(r >= -9223372036854775808.0 && r < 9223372036854775808.0);
-}
-
-/* the pairs of the rows pidx names, each with the members its keys name (kidx): the values of the map are the float8 vector vals, and a column that is an integer takes the cast of its float */
-static void
-emit_keyed(UnRun *u, const SiftVec *fact, const SiftVec *vals, uint32 m)
-{
-	for (int i = 0; i < u->ncols; i++)
-		sift_vec_gather(u->out[i], u->out_valid[i], u->out_data[i], &fact[i], u->pidx, m);
-	for (int c = 0; c < u->nel; c++)
-	{
-		const int	s = u->ncols + c;
-		const Oid	type = u->x->elem.col_type[c];
-
-		if (u->lcol[c] >= 0)
-			sift_vec_gather(u->out[s], u->out_valid[s], u->out_data[s], &fact[u->lcol[c]], u->pidx, m);
-		else
-			sift_vec_gather(u->out[s], u->out_valid[s], u->out_data[s], vals, u->kidx[c], m);
-		if (type == FLOAT8OID)
-			continue;
-		for (uint32 i = 0; i < m; i++)
-			if ((u->out_valid[s][i >> 6] >> (i & 63)) & 1)
-				((int64 *) u->out_data[s])[i] = (int64) round(((double *) u->out_data[s])[i]);
-		u->outv[s].type = SVEC_I64;
-	}
 	run_pairs(u, m);
 }
 
@@ -232,14 +172,12 @@ reach_late(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *c
 	sift_v6_group_update(lp->u->pipe->group, bs, keyvec, argvec);
 }
 
-/* the pair of a member whose cast raised: decided when it reaches the groups, gone with it when a join drops it; a qual over the members casts it before the join */
+/* the pair of a member whose cast raised: decided when it reaches the groups, gone with it when a join drops it */
 static void
 emit_late_pair(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, uint32 k, ErrorData *err)
 {
 	LatePair	lp = {u, k, err};
 
-	if (u->has_pwhere)
-		ReThrowError(err);
 	u->pidx[0] = row;
 	u->eidx[0] = k;
 	u->pipe->sink = reach_late;
@@ -490,161 +428,6 @@ sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
 	}
 	else if (kept)
 		heap_pairs(u, u->fv, row);
-	MemoryContextSwitchTo(old);
-	MemoryContextResetOnly(u->rmt.root_cx);
-}
-
-/* the member of column c of the row as a float, NULL (false) when the row has none */
-static bool
-member_of(const UnRun *u, const SiftVec *vals, int c, uint32 row, bool has_doc, double *f)
-{
-	const SiftVec *v = u->lcol[c] >= 0 ? &u->fv[u->lcol[c]] : vals;
-	const uint32 at = u->lcol[c] >= 0 ? row : has_doc ? u->elem_of[c][row] : SIFT_GATHER_NONE;
-
-	if (at == SIFT_GATHER_NONE || !(v->all_valid || ((v->valid[at >> 6] >> (at & 63)) & 1)))
-		return false;
-	*f = ((const double *) v->data)[at];
-	return true;
-}
-
-/* the integer columns of the row can all be the integers of their casts: the row that cannot is the heap's, where the cast raises when the row reaches it */
-static bool
-members_fit(const UnRun *u, const SiftVec *vals, uint32 row, bool has_doc)
-{
-	for (int c = 0; c < u->nel; c++)
-	{
-		double		f;
-
-		if (u->x->elem.col_type[c] != FLOAT8OID && member_of(u, vals, c, row, has_doc, &f) && !int_fits(f, u->x->elem.col_type[c]))
-			return false;
-	}
-	return true;
-}
-
-/* the rows of the batch the map's leaves hold: one pair each, with the member each key of the statement names; the rows whose map they cannot hold are for the heap */
-void
-sift_f2_unnest_run_keyed(UnRun *u, const SiftF2ExtBatch *b, const SiftVec *vals, uint64 *fallback)
-{
-	const SiftF2ElemStream *es = b->elem;
-	const int	words = (b->n + 63) / 64;
-	uint64		rows[SIFT_VEC_WORDS];
-	uint32		m = 0;
-
-	for (int w = 0; w < words; w++)
-	{
-		fallback[w] = u->bs.mask[w] & es->poison[w];
-		rows[w] = u->bs.mask[w] & ~es->poison[w];
-	}
-	for (int c = 0; c < u->nel; c++)
-	{
-		const char *key = strVal(list_nth(u->x->elem_names, c));
-
-		if (u->lcol[c] < 0)
-			sift_map_lookup(&es->layout, es->child_data[0], key, (uint32) strlen(key), rows, u->elem_of[c]);
-	}
-	for (int w = 0; w < words; w++)
-		for (uint64 bits = rows[w]; bits != 0; bits &= bits - 1)
-		{
-			const uint32 row = w * 64 + (uint32) __builtin_ctzll(bits);
-			const bool	has_doc = (es->doc_valid[row >> 6] >> (row & 63)) & 1;
-
-			if (!members_fit(u, vals, row, has_doc))
-			{
-				fallback[w] |= UINT64CONST(1) << (row & 63);
-				continue;
-			}
-			u->pidx[m] = row;
-			for (int c = 0; c < u->nel; c++)
-				if (u->lcol[c] < 0)
-					u->kidx[c][m] = has_doc ? u->elem_of[c][row] : SIFT_GATHER_NONE;
-			if (++m == SIFT_VEC_LEN)
-			{
-				emit_keyed(u, u->fv, vals, m);
-				m = 0;
-			}
-		}
-	if (m > 0)
-		emit_keyed(u, u->fv, vals, m);
-}
-
-/* the text of the key of a document of the heap row (or its float8) as the cell of a column of one pair: what the statement's `->>` gives, errors included */
-static void
-heap_json_cell(UnRun *u, int i)
-{
-	const UnCol *c = &u->cols[i];
-	const bool	f64 = c->cls == SV6C_F64;
-	SiftVec    *out = u->out[i];
-	LOCAL_FCINFO(fcinfo, 2);
-	bool		isnull;
-	Datum		doc = slot_getattr(u->vet.slot, c->heap_att, &isnull);
-	Datum		txt = 0;
-
-	memset(u->out_valid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
-	*out = (SiftVec) {.data = u->out_data[i],.valid = u->out_valid[i],.len = 1,.all_valid = false,.dense = true,.type = f64 ? SVEC_F64 : SVEC_STRVIEW};
-	if (isnull)
-		return;
-	InitFunctionCallInfoData(*fcinfo, &u->jtext, 2, InvalidOid, NULL, NULL);
-	fcinfo->args[0] = (NullableDatum) {doc, false};
-	fcinfo->args[1] = (NullableDatum) {PointerGetDatum(cstring_to_text_with_len(c->key, c->keylen)), false};
-	txt = FunctionCallInvoke(fcinfo);
-	if (fcinfo->isnull)
-		return;
-	u->out_valid[i][0] = 1;
-	if (f64)
-		((double *) u->out_data[i])[0] = DatumGetFloat8(DirectFunctionCall1(float8in, CStringGetDatum(TextDatumGetCString(txt))));
-	else
-	{
-		struct varlena *t = pg_detoast_datum_packed((struct varlena *) DatumGetPointer(txt));
-		const uint32 len = (uint32) VARSIZE_ANY_EXHDR(t);
-		char	   *copy = palloc(Max(len, 1));
-
-		memcpy(copy, VARDATA_ANY(t), len);
-		((SiftStrView *) u->out_data[i])[0] = sift_vstr_make(copy, len);
-	}
-}
-
-/* the member the expression of column c of the statement gives for the heap row, as the cell of a column of one pair */
-static void
-heap_member_cell(UnRun *u, int c)
-{
-	const int	s = u->ncols + c;
-	const Oid	type = u->x->elem.col_type[c];
-	bool		isnull;
-	Datum		d = ExecEvalExprSwitchContext(u->cexpr[c], u->econtext, &isnull);
-
-	memset(u->out_valid[s], 0, SIFT_VEC_WORDS * sizeof(uint64));
-	u->outv[s] = (SiftVec) {.data = u->out_data[s],.valid = u->out_valid[s],.len = 1,.all_valid = false,.dense = true,.type = type == FLOAT8OID ? SVEC_F64 : SVEC_I64};
-	if (isnull)
-		return;
-	u->out_valid[s][0] = 1;
-	if (type == FLOAT8OID)
-		((double *) u->out_data[s])[0] = DatumGetFloat8(d);
-	else
-		((int64 *) u->out_data[s])[0] = type == INT2OID ? DatumGetInt16(d) : type == INT4OID ? DatumGetInt32(d) : DatumGetInt64(d);
-}
-
-/* a row whose map the index cannot hold: the row of the heap is the pair, each column read from it as the statement reads it, errors included */
-void
-sift_f2_unnest_emit_heap_keys(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
-{
-	MemoryContext old = MemoryContextSwitchTo(u->rmt.root_cx);
-	const bool	found = sift_v6_vet_fetch(&u->vet, tid);
-
-	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its map is read");
-	u->econtext->ecxt_scantuple = u->vet.slot;
-	ResetExprContext(u->econtext);
-	if (u->hqual == NULL || ExecQual(u->hqual, u->econtext))
-	{
-		u->pidx[0] = row;
-		for (int i = 0; i < u->ncols; i++)
-			if (u->cols[i].json && u->cols[i].read)
-				heap_json_cell(u, i);
-			else
-				sift_vec_gather(u->out[i], u->out_valid[i], u->out_data[i], &fact[i], u->pidx, 1);
-		for (int c = 0; c < u->nel; c++)
-			heap_member_cell(u, c);
-		run_pairs(u, 1);
-	}
 	MemoryContextSwitchTo(old);
 	MemoryContextResetOnly(u->rmt.root_cx);
 }

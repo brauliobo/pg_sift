@@ -1,7 +1,7 @@
 -- `(doc -> 'metrics' ->> 'm_a')::float8` of a path the paths option of an index of format major 2 declares below a top-level key (`doc.metrics.m_a float8`): the leaf holds one value a row, so
--- SiftAggV6 reads it as it reads a top-level key, a value the leaf cannot hold from the exception of its row. A member of a map (`doc.mm.* float8`) is one element of its group, which the scan of
--- the columns does not read: it keeps the normal plan on Format 2, and Format 1 reads it from its map. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows
--- (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
+-- SiftAggV6 reads it as it reads a top-level key, a value the leaf cannot hold from the exception of its row. A member of a map (`doc.mm.* float8`) is one element of its group, which the scan
+-- finds by its key in each row on Format 2, and Format 1 reads from its map. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows (or the error) are the
+-- same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;

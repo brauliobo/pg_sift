@@ -47,12 +47,13 @@ compile_once(V6Plan *p, IndexOptInfo *ix, Relation irel, const SiftStoreSchema *
 }
 
 bool
-sift_v6_members_dropped(const V6Plan *p)
+sift_v6_members_again(const V6Plan *p, bool ok)
 {
-	return p->spec.vqual != NIL || p->spec.nfilters > 0 || p->spec.ext != NULL || p->text != NULL;
+	return p->members && p->spec.jmembers != NIL && !p->ops->jsonb->exact_values &&
+		(!ok || p->spec.vqual != NIL || p->spec.nfilters > 0 || p->spec.ext != NULL || p->text != NULL);
 }
 
-/* the members of a map are read from the leaves of the index; a plan that drops rows after the source reads them from the document, as PostgreSQL does for the rows it reads */
+/* the members of a map are read from the leaves of the index; a format that reads the rows its leaves cannot hold from the document compiles a plan that drops rows after the source without them */
 void
 sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const SiftV6RelSource *s, GroupPathExtraData *extra, List *group_exprs)
 {
@@ -63,10 +64,10 @@ sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *
 		V6Plan		p = {.root = root,.rel = input_rel,.out = output_rel,.batch_ok = true,.members = members};
 		bool		ok;
 
-		if (!sift_v6_plan_bind(&p, s, rel) || (!s->is_table && sift_v6_mapkey_paths(&p, extra, group_exprs)))
+		if (!sift_v6_plan_bind(&p, s, rel))
 			break;
 		ok = sift_v6_compile_on(&p, extra, group_exprs);
-		if (members && p.spec.jmembers != NIL && (!ok || sift_v6_members_dropped(&p)))
+		if (sift_v6_members_again(&p, ok))
 			continue;
 		if (ok)
 			sift_v6_add_group_path(&p, output_rel, group_exprs, extra != NULL ? (List *) extra->havingQual : NIL);
@@ -84,7 +85,7 @@ sift_v6_compile_aggregate(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, I
 	*group_exprs = sift_v6_group_exprs_of(root);
 	if (!compile_once(&p, ix, irel, table, extra, *group_exprs))
 		return false;
-	if (p.spec.jmembers != NIL && sift_v6_members_dropped(&p))
+	if (sift_v6_members_again(&p, true))
 	{
 		p = (V6Plan) {.root = root,.rel = rel,.out = out,.score_ok = true};
 		if (!compile_once(&p, ix, irel, table, extra, *group_exprs))

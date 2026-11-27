@@ -443,6 +443,22 @@ get64(const List *ints, int at)
 	return (int64) (((uint64) (uint32) list_nth_int(ints, at + 1) << 32) | (uint32) list_nth_int(ints, at));
 }
 
+/* what a column reads of a document, as one int: the type of a key, the cast of its jsonb, the integer cast of its text and the member of a map */
+static int
+json_flags(const SiftV6Col *c)
+{
+	return (int) c->jtype | (int) c->jsonb_cast << 1 | (int) c->jint << 2 | c->jmember << 3;
+}
+
+static void
+json_unflag(SiftV6Col *c, int flags)
+{
+	c->jtype = (flags & 1) != 0;
+	c->jsonb_cast = (flags & 2) != 0;
+	c->jint = (flags & 4) != 0;
+	c->jmember = flags >> 3;
+}
+
 List *
 sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 {
@@ -452,10 +468,10 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		const SiftV6Derive *d = &s->derive[i];
 
 		ints = list_concat(ints, list_make5_int(d->kind, d->src.attno, (int) d->src.typid, d->ncond, d->else_len));
-		ints = list_concat(ints, list_make5_int((int) d->src.src, d->src.slot, d->src.scale, d->src.jleaf, (int) d->src.jtype));
+		ints = list_concat(ints, list_make5_int((int) d->src.src, d->src.slot, d->src.scale, d->src.jleaf, json_flags(&d->src)));
 		ints = put64(lappend_int(ints, d->utf8), d->aux);
 		for (int c = 0; c < d->ncond; c++)
-			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make4_int((int) d->cond[c].src, d->cond[c].slot, d->cond[c].jleaf, (int) d->cond[c].jtype)), d->cval[c]);
+			ints = put64(list_concat(lappend_int(lappend_int(ints, d->cond[c].attno), (int) d->cond[c].typid), list_make4_int((int) d->cond[c].src, d->cond[c].slot, d->cond[c].jleaf, json_flags(&d->cond[c]))), d->cval[c]);
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)
 			ints = lappend_int(ints, d->else_bytes[b]);
 	}
@@ -486,7 +502,8 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 
 		d->kind = list_nth_int(ints, at);
 		d->src = (SiftV6Col) {.attno = list_nth_int(ints, at + 1),.typid = (Oid) list_nth_int(ints, at + 2),.src = (SiftV6Src) list_nth_int(ints, at + 5),.slot = list_nth_int(ints, at + 6),
-			.scale = list_nth_int(ints, at + 7),.jleaf = list_nth_int(ints, at + 8),.jtype = list_nth_int(ints, at + 9) != 0};
+			.scale = list_nth_int(ints, at + 7),.jleaf = list_nth_int(ints, at + 8)};
+		json_unflag(&d->src, list_nth_int(ints, at + 9));
 		d->ncond = list_nth_int(ints, at + 3);
 		d->else_len = list_nth_int(ints, at + 4);
 		d->utf8 = list_nth_int(ints, at + 10);
@@ -495,7 +512,8 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 		for (int c = 0; c < d->ncond; c++, at += 8)
 		{
 			d->cond[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),.slot = list_nth_int(ints, at + 3),
-			.jleaf = list_nth_int(ints, at + 4),.jtype = list_nth_int(ints, at + 5) != 0};
+			.jleaf = list_nth_int(ints, at + 4)};
+			json_unflag(&d->cond[c], list_nth_int(ints, at + 5));
 			d->cval[c] = get64(ints, at + 6);
 		}
 		for (int b = 0; b < SIFT_V6_ELSE_BYTES; b++)

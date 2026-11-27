@@ -228,6 +228,13 @@ leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored
 	return bytes;
 }
 
+/* the leaf a virtual attribute reads: of a key of a document, or the values of the map of a member */
+static void
+add_vatt_leaf(const SiftV6Spec *spec, Bitmapset **leaves, int attno)
+{
+	*leaves = bms_add_member(*leaves, sift_v6_spec_vatt_col(spec, attno, FLOAT8OID, 0).jleaf - 1);
+}
+
 /* the columns of the index the clauses (filter) or the keys and arguments read, and the leaves of the keys of documents they read instead of the document: a scan decodes those alone */
 static Bitmapset *
 spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
@@ -245,12 +252,12 @@ spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
 		while ((a = bms_next_member(cols, a)) >= 0)
 			if (sift_v6_vatt_is_json(a + FirstLowInvalidHeapAttributeNumber))
 			{
-				*leaves = bms_add_member(*leaves, sift_v6_vatt_leaf(a + FirstLowInvalidHeapAttributeNumber));
+				add_vatt_leaf(spec, leaves, a + FirstLowInvalidHeapAttributeNumber);
 				cols = bms_del_member(cols, a);
 			}
 		for (a = -1; (a = bms_next_member(virt, a)) >= 0;)
 			if (sift_v6_vatt_is_json(a + FirstLowInvalidHeapAttributeNumber))
-				*leaves = bms_add_member(*leaves, sift_v6_vatt_leaf(a + FirstLowInvalidHeapAttributeNumber));
+				add_vatt_leaf(spec, leaves, a + FirstLowInvalidHeapAttributeNumber);
 		return cols;
 	}
 	for (int i = 0; i < spec->nkeys + spec->naggs; i++)

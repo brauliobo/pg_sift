@@ -130,6 +130,11 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	typid = getBaseType(v->vartype);
 	if (typid == NUMERICOID && !numeric_ok)
 		return false;
+	if (sift_v6_vatt_is_member(v->varattno))
+	{
+		*out = sift_v6_member_col(&p->spec, v->varattno);
+		return true;
+	}
 	if (sift_v6_vatt_is_json(v->varattno))
 	{
 		const SiftV6Rel rel = sift_v6_plan_rel(p);
@@ -180,12 +185,14 @@ sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *o
 		sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out));
 }
 
+static int member_vatt(void *arg, const Expr *e, Oid *typid);
+
 Expr *
-sift_v6_plan_json_vars(const V6Plan *p, const Expr *e, bool values)
+sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values);
+	return p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values, member_vatt, p);
 }
 
 /* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
@@ -236,27 +243,46 @@ generated_expr_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return found;
 }
 
-/* the float8 of a member of a map of a document: the column, with the keys that lead to the member in the spec */
+/* a member of a document read as a number by a path: the column, the member in the spec (sift_v6_member_col); the text of a path the index declares is its leaf alone */
 static bool
 member_of(V6Plan *p, const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
 	List	   *path;
+	List	   *member;
 	int			at = 0;
 
-	if (!p->members || !sift_v6_json_map_member(rel, e, out, &path))
+	if (!(p->members || (rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values)) || !sift_v6_json_map_member(rel, e, out, &path))
 		return false;
+	if (path == NIL)
+		return true;
+	member = list_concat(list_make3(makeInteger(out->attno), makeInteger(out->jleaf - 1), makeInteger((int) out->typid)), path);
 	foreach_ptr(List, known, p->spec.jmembers)
 	{
 		at++;
-		if (equal(known, path))
+		if (equal(known, member))
 		{
 			out->jmember = at;
 			return true;
 		}
 	}
-	p->spec.jmembers = lappend(p->spec.jmembers, path);
+	if (list_length(p->spec.jmembers) == SIFT_V6_MAX_JMEMBERS)
+		return false;
+	p->spec.jmembers = lappend(p->spec.jmembers, member);
 	out->jmember = list_length(p->spec.jmembers);
 	return true;
+}
+
+static int
+member_vatt(void *arg, const Expr *e, Oid *typid)
+{
+	V6Plan	   *p = arg;
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	SiftV6Col	col;
+
+	if (!member_of(p, &rel, e, &col))
+		return InvalidAttrNumber;
+	*typid = col.typid;
+	return sift_v6_col_input_attno(&col);
 }
 
 /* A column the scan reads as a value: a column of the index, the text or the float8 of a key of a jsonb document, a payload column of a dimension or the element of the unnest */
@@ -384,7 +410,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
-	e = sift_v6_json_vars(&rel, e, true);
+	e = sift_v6_json_vars(&rel, e, true, member_vatt, p);
 	if (!join_derive_ok(p, e))
 		return sift_v6_star_joined_col(p, e, key, col);
 	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||

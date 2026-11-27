@@ -106,7 +106,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 		}
 	SIFT_INVARIANT(f->nfold < SIFT_V6_MAX_COLS, "the aggregate scan of %s reads more columns than a batch holds", sift_rel_label(f->a.spec->relid));
 	f->col[f->nfold] = (FoldCol) {.attno = attno,.jmember = c.jmember,.cls = cls,.nan_ok = takes_nan,.slot = f->in.ncols};
-	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,.path = c.jmember > 0 ? list_nth(f->a.spec->jmembers, c.jmember - 1) : NIL,
+	f->in.col[f->in.ncols++] = (SiftV6InCol) {.attno = attno,.typid = c.typid,.scale = c.scale,.path = c.jmember > 0 ? sift_v6_member_path(f->a.spec, c.jmember) : NIL,
 		.type = cls == SV6C_F64 ? SVEC_F64 : cls == SV6C_TEXT ? SVEC_STRVIEW : cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64,.jsonb_cast = c.jsonb_cast};
 	return &f->col[f->nfold++];
 }
@@ -229,7 +229,8 @@ setup_bins(SiftSrcFold *f)
 static const SiftVec *
 bq_col(void *arg, const SiftV6InCol *c)
 {
-	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale) :
+	const SiftSrcFold *f = arg;
+	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_spec_vatt_col(f->a.spec, c->attno, c->typid, c->scale) :
 		(SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale};
 
 	return vec_for(arg, col, false);

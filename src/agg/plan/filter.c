@@ -32,12 +32,12 @@ presence_qual(V6Plan *p, Expr *c)
 	return sift_v6_index_qual(p, make_opclause(BooleanEqualOperator, BOOLOID, false, (Expr *) v, (Expr *) makeBoolConst(has, false), InvalidOid, InvalidOid));
 }
 
-/* a conjunct of a FILTER: over the columns of the element, or the members the statement reads by key, as a qual of the rows of the scan; any other over the columns of the index */
+/* a conjunct of a FILTER: over the columns of the element, as a qual of the rows of the scan; any other over the columns of the index */
 static Expr *
 filter_qual(V6Plan *p, Expr *c)
 {
 	const bool	on_elem = p->elem_rel != NULL && bms_is_member(p->elem_rel->relid, pull_varnos(p->root, (Node *) c));
-	Expr	   *q = on_elem || sift_v6_mapkey_on(p) ? sift_v6_unnest_elem_qual(p, (Node *) c) : NULL;
+	Expr	   *q = on_elem ? sift_v6_unnest_elem_qual(p, (Node *) c) : NULL;
 
 	if (q != NULL || on_elem)
 		return q;

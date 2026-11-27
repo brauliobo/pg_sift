@@ -215,12 +215,31 @@ field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const ch
 	return key_leaf(rel, *att, *key);
 }
 
+/* e is a link of a chain over a document (*link): `->` or `->>`, or jsonb_extract_path(doc, ..) and its text; the constant object key it reads (NULL: none) */
+static const char *
+chain_link(const Expr *e, bool *link)
+{
+	const Oid	fn = func_of(e);
+	const char *key;
+
+	*link = list_length(args_of(e)) == 2 && (fn == F_JSONB_OBJECT_FIELD || fn == F_JSONB_OBJECT_FIELD_TEXT || fn == F_JSONB_EXTRACT_PATH || fn == F_JSONB_EXTRACT_PATH_TEXT);
+	if (!*link)
+		return NULL;
+	if (fn == F_JSONB_OBJECT_FIELD || fn == F_JSONB_OBJECT_FIELD_TEXT)
+		return text_const(lsecond(args_of(e)));
+	key = path_key(lsecond(args_of(e)));
+	return object_key(key) ? key : NULL;
+}
+
 const Var *
 sift_v6_doc_chain(const Expr *e, List **path)
 {
 	*path = NIL;
 	for (e = strip(e); e != NULL; e = strip(e))
 	{
+		bool		link;
+		const char *key;
+
 		if (IsA(e, SubscriptingRef))
 		{
 			List	   *keys = subscript_keys(e);
@@ -231,11 +250,12 @@ sift_v6_doc_chain(const Expr *e, List **path)
 			e = ((const SubscriptingRef *) e)->refexpr;
 			continue;
 		}
-		if ((func_of(e) != F_JSONB_OBJECT_FIELD && func_of(e) != F_JSONB_OBJECT_FIELD_TEXT) || list_length(args_of(e)) != 2)
+		key = chain_link(e, &link);
+		if (!link)
 			break;
-		if (text_const(lsecond(args_of(e))) == NULL)
+		if (key == NULL)
 			return NULL;
-		*path = lcons(makeString(pstrdup(text_const(lsecond(args_of(e))))), *path);
+		*path = lcons(makeString(pstrdup(key)), *path);
 		e = linitial(args_of(e));
 	}
 	return e != NULL && IsA(e, Var) && ((const Var *) e)->vartype == JSONBOID ? (const Var *) e : NULL;
@@ -353,16 +373,6 @@ sift_v6_values_exact(const SiftV6Rel *rel)
 	return rel->ops != NULL && rel->ops->jsonb != NULL;
 }
 
-/*
- * (doc -> 'k')::float8 of a table, which is NULL for a JSON null from PostgreSQL 18 on (an error before it, which the leaf does not tell): the scan converts the exceptions of its chunks as the cast
- * does. An index reads it as a member of SV6E_KEYS (agg/mapkey.c).
- */
-static bool
-jsonb_float8_cast(const SiftV6Rel *rel, const Expr *e)
-{
-	return !SIFT_JSON_NULL_CAST_RAISES && rel->table != NULL && e != NULL && func_of(e) == F_FLOAT8_JSONB && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values;
-}
-
 static bool
 is_int_type(Oid typid)
 {
@@ -409,42 +419,62 @@ bool
 sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
 	const Expr *text = strip(e);
-	const bool	cast = jsonb_float8_cast(rel, text);
 	const char *key;
 	int			att,
 				leaf;
 	Oid			typid = TEXTOID;
 
-	if (cast || (text != NULL && IsA(text, CoerceViaIO) && (((const CoerceViaIO *) text)->resulttype == FLOAT8OID || ((const CoerceViaIO *) text)->resulttype == BOOLOID ||
-										  is_int_type(((const CoerceViaIO *) text)->resulttype))))
+	if (text != NULL && IsA(text, CoerceViaIO) && (((const CoerceViaIO *) text)->resulttype == FLOAT8OID || ((const CoerceViaIO *) text)->resulttype == BOOLOID ||
+											 is_int_type(((const CoerceViaIO *) text)->resulttype)))
 	{
-		typid = cast ? FLOAT8OID : ((const CoerceViaIO *) text)->resulttype;
-		text = strip(cast ? linitial(args_of(text)) : (void *) ((const CoerceViaIO *) text)->arg);
+		typid = ((const CoerceViaIO *) text)->resulttype;
+		text = strip(((const CoerceViaIO *) text)->arg);
 	}
-	leaf = field_leaf(rel, text, !cast, &att, &key);
+	leaf = field_leaf(rel, text, true, &att, &key);
 	if (!scalar_leaf(rel, leaf) || !sift_v6_values_exact(rel) || !leaf_reads(rel, leaf, typid))
 		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = cast,.jint = is_int_type(typid)};
+	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jint = is_int_type(typid)};
 	return true;
+}
+
+/*
+ * e reads a member of a document as a number: the float8 of its `->>` text, or the cast of its jsonb to float8 or an integer (a JSON null casts to NULL from PostgreSQL 18 on, where it raised before,
+ * which the leaf does not tell). The document, the keys from it, the type and whether it is the cast of the jsonb; NULL: e is no such read
+ */
+static const Var *
+member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
+{
+	const Expr *x = strip(e);
+
+	*jsonb_cast = x != NULL && IsA(x, FuncExpr) && list_length(args_of(x)) == 1 &&
+		(func_of(x) == F_FLOAT8_JSONB || func_of(x) == F_INT2_JSONB || func_of(x) == F_INT4_JSONB || func_of(x) == F_INT8_JSONB);
+	if (*jsonb_cast && !SIFT_JSON_NULL_CAST_RAISES)
+	{
+		*typid = ((const FuncExpr *) x)->funcresulttype;
+		return sift_v6_doc_chain(linitial(args_of(x)), path);
+	}
+	if (x == NULL || !IsA(x, CoerceViaIO) || ((const CoerceViaIO *) x)->resulttype != FLOAT8OID || exprType((const Node *) ((const CoerceViaIO *) x)->arg) != TEXTOID)
+		return NULL;
+	*typid = FLOAT8OID;
+	return sift_v6_doc_chain(((const CoerceViaIO *) x)->arg, path);
 }
 
 bool
 sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path)
 {
-	const Expr *text = strip(e);
-	const Var  *doc;
+	const Var  *doc = NULL;
+	const SiftJsonbOps *jsonb = rel->ops != NULL ? rel->ops->jsonb : NULL;
+	Oid			typid;
+	bool		jsonb_cast;
 	int			att,
 				leaf;
 
-	if (rel->table != NULL || text == NULL || !IsA(text, CoerceViaIO) || ((const CoerceViaIO *) text)->resulttype != FLOAT8OID)
+	if (jsonb == NULL || jsonb->member_leaf == NULL || (doc = member_read(e, path, &typid, &jsonb_cast)) == NULL || *path == NIL || !doc_of(rel, (const Expr *) doc, &att) ||
+		(jsonb_cast && !jsonb->exact_values) || (leaf = jsonb->member_leaf(rel->reloid, att, *path)) < 0)
 		return false;
-	text = strip(((const CoerceViaIO *) text)->arg);
-	if (text == NULL || func_of(text) != F_JSONB_OBJECT_FIELD_TEXT || (doc = sift_v6_doc_chain(text, path)) == NULL || list_length(*path) < 2 || !doc_of(rel, (const Expr *) doc, &att))
-		return false;
-	leaf = rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->member_leaf != NULL ? rel->ops->jsonb->member_leaf(rel->index->indexoid, att, *path) : -1;
-	if (leaf < 0)
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = FLOAT8OID,.jleaf = leaf + 1};
+	if (sift_v6_rel_leaves(rel)->cols[leaf].parent < 0 && !jsonb_cast)
+		*path = NIL;
+	*out = (SiftV6Col) {.attno = att,.typid = typid,.jleaf = leaf + 1,.jsonb_cast = jsonb_cast};
 	return true;
 }
 
@@ -475,7 +505,7 @@ read_vatt(const SiftV6Rel *rel, const Node *n, bool values, Oid *typid)
 		*typid = TEXTOID;
 		return SIFT_V6_JTYPE_VATT + leaf;
 	}
-	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col) || col.jsonb_cast)
+	if (!values || !sift_v6_json_read(rel, (const Expr *) n, &col))
 		return InvalidAttrNumber;
 	*typid = col.typid;
 	return sift_v6_col_input_attno(&col);
@@ -485,6 +515,8 @@ typedef struct VarsCtx
 {
 	const SiftV6Rel *rel;
 	bool		values;
+	SiftV6MemberVatt member;
+	void	   *arg;
 } VarsCtx;
 
 static Node *
@@ -495,15 +527,16 @@ vars_mutator(Node *n, VarsCtx *ctx)
 
 	if (n == NULL)
 		return NULL;
-	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber)
+	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber ||
+		(ctx->values && ctx->member != NULL && (vatt = ctx->member(ctx->arg, (const Expr *) n, &typid)) != InvalidAttrNumber))
 		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
 	return expression_tree_mutator(n, vars_mutator, ctx);
 }
 
 Expr *
-sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values)
+sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, SiftV6MemberVatt member, void *arg)
 {
-	VarsCtx		ctx = {rel, values};
+	VarsCtx		ctx = {rel, values, member, arg};
 
 	return (Expr *) vars_mutator((Node *) e, &ctx);
 }
@@ -530,9 +563,9 @@ typedef struct JsonLeaves
 static void
 note_col(JsonLeaves *j, const SiftV6Col *c)
 {
-	if (c->jleaf > 0 && c->jtype && c->typid != BOOLOID)
+	if (c->jleaf > 0 && c->jmember == 0 && c->jtype && c->typid != BOOLOID)
 		j->type = bms_add_member(j->type, c->jleaf - 1);
-	else if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID || c->jint))
+	else if (c->jleaf > 0 && c->jmember == 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID || c->jint))
 		j->value = bms_add_member(j->value, c->jleaf - 1);
 }
 
@@ -541,7 +574,7 @@ note_vatt(JsonLeaves *j, int attno)
 {
 	if (sift_v6_vatt_is_type(attno) && !sift_v6_vatt_is_presence(attno))
 		j->type = bms_add_member(j->type, sift_v6_vatt_leaf(attno));
-	else if (sift_v6_vatt_raises(attno))
+	else if (sift_v6_vatt_raises(attno) && !sift_v6_vatt_is_member(attno))
 		j->value = bms_add_member(j->value, sift_v6_vatt_leaf(attno));
 }
 
@@ -695,17 +728,6 @@ sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryC
 	return s != NULL;
 }
 
-double
-sift_v6_json_cast_exception(const char *payload, uint32 len, MemoryContext cx)
-{
-	MemoryContext old = MemoryContextSwitchTo(cx);
-	Jsonb	   *jb = memcpy(palloc(len), payload, len);
-	const double f = DatumGetFloat8(DirectFunctionCall1(jsonb_float8, JsonbPGetDatum(jb)));
-
-	MemoryContextSwitchTo(old);
-	return f;
-}
-
 /* the number of the jsonb of a (doc -> 'k')::float8, as its text; NULL: a JSON null (NULL from PostgreSQL 18 on, the only version the cast is read in) or a value the cast raises for (*raises) */
 static char *
 cast_number_text(const char *payload, uint32 len, bool *raises)
@@ -737,15 +759,60 @@ text_cast_in(Oid typid)
 	}
 }
 
+/* the cast of a jsonb to an integer: of a number only, rounded half away from zero as numeric is, raising for one the type cannot hold */
+static SiftV6JsonExc
+jsonb_int_read(Oid typid, const char *payload, uint32 len, Datum *out)
+{
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+	JsonbValue	jv;
+	bool		err = false;
+	int64		v;
+
+	if (!JsonbExtractScalar(&jb->root, &jv) || (jv.type != jbvNumeric && jv.type != jbvNull))
+		return SV6JX_RAISES;
+	if (jv.type == jbvNull)
+		return SV6JX_NULL;
+	v = sift_numeric_int8(jv.val.numeric, &err);
+	if (err || (typid == INT4OID && (v < PG_INT32_MIN || v > PG_INT32_MAX)) || (typid == INT2OID && (v < PG_INT16_MIN || v > PG_INT16_MAX)))
+		return SV6JX_RAISES;
+	*out = typid == INT8OID ? Int64GetDatum(v) : typid == INT4OID ? Int32GetDatum((int32) v) : Int16GetDatum((int16) v);
+	return SV6JX_VALUE;
+}
+
+/* the cast of a jsonb to the type, whose errors are PostgreSQL's */
+static PGFunction
+jsonb_cast_fn(Oid typid)
+{
+	switch (typid)
+	{
+		case INT2OID:
+			return jsonb_int2;
+		case INT4OID:
+			return jsonb_int4;
+		case INT8OID:
+			return jsonb_int8;
+		default:
+			return jsonb_float8;
+	}
+}
+
 SiftV6JsonExc
 sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	ErrorSaveContext escontext = {T_ErrorSaveContext};
 	bool		raises = false;
-	char	   *s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
-	SiftV6JsonExc res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
+	char	   *s;
+	SiftV6JsonExc res;
 
+	if (jsonb_cast && typid != FLOAT8OID)
+	{
+		res = jsonb_int_read(typid, payload, len, &out->value);
+		MemoryContextSwitchTo(old);
+		return res;
+	}
+	s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
+	res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
 	if (res == SV6JX_VALUE && sift_v6_class(typid) == SV6C_TEXT)
 		*out = (SiftV6JsonValue) {.text = s,.tlen = strlen(s)};
 	else if (res == SV6JX_VALUE && !DirectInputFunctionCallSafe(text_cast_in(typid), s, InvalidOid, -1, (Node *) &escontext, &out->value))
@@ -761,9 +828,50 @@ sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, ui
 	char	   *s;
 
 	if (jsonb_cast)
-		(void) sift_v6_json_cast_exception(payload, len, cx);
+		(void) DirectFunctionCall1(jsonb_cast_fn(typid), PointerGetDatum(memcpy(palloc(len), payload, len)));
 	else if ((s = exception_text(payload, len)) != NULL)
 		(void) DirectFunctionCall1(text_cast_in(typid), CStringGetDatum(s));
 	MemoryContextSwitchTo(old);
 	SIFT_INVARIANT(false, "the conversion of a value of a key that does not convert raises");
+}
+
+bool
+sift_v6_json_float_int(Oid typid, double f, Datum *out)
+{
+	const double r = round(f);
+
+	if (typid == INT2OID ? !(r >= PG_INT16_MIN && r <= PG_INT16_MAX) : typid == INT4OID ? !(r >= PG_INT32_MIN && r <= PG_INT32_MAX) : !(r >= -9223372036854775808.0 && r < 9223372036854775808.0))
+		return false;
+	*out = typid == INT8OID ? Int64GetDatum((int64) r) : typid == INT4OID ? Int32GetDatum((int32) r) : Int16GetDatum((int16) r);
+	return true;
+}
+
+void
+sift_v6_json_float_int_raise(Oid typid, double f)
+{
+	const Datum num = DirectFunctionCall1(float8_numeric, Float8GetDatum(f));
+
+	(void) DirectFunctionCall1(typid == INT2OID ? numeric_int2 : typid == INT4OID ? numeric_int4 : numeric_int8, num);
+	SIFT_INVARIANT(false, "the integer cast of a number out of the range of its type raises");
+}
+
+bool
+sift_v6_json_payload_member(const char *payload, uint32 len, const List *keys, MemoryContext cx, const char **out, uint32 *outlen)
+{
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+
+	foreach_node(String, k, keys)
+	{
+		JsonbValue	key = {.type = jbvString,.val.string = {.val = strVal(k),.len = strlen(strVal(k))}};
+		JsonbValue *v = JB_ROOT_IS_OBJECT(jb) ? findJsonbValueFromContainer(&jb->root, JB_FOBJECT, &key) : NULL;
+
+		jb = v != NULL ? JsonbValueToJsonb(v) : NULL;
+		if (jb == NULL)
+			break;
+	}
+	MemoryContextSwitchTo(old);
+	*out = (const char *) jb;
+	*outlen = jb != NULL ? VARSIZE(jb) : 0;
+	return jb != NULL;
 }

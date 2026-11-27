@@ -63,7 +63,7 @@ bq_col(void *arg, const SiftV6InCol *c)
 {
 	BqCols	   *b = arg;
 	UnRun	   *u = b->u;
-	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_vatt_col(c->attno, c->attno, c->typid, c->scale) : (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale};
+	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_spec_vatt_col(u->spec, c->attno, c->typid, c->scale) : (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale};
 
 	u->bqcol[u->nbq] = sift_f2_unnest_col_index(u, b->r, &col, false);
 	return &u->bqv[u->nbq++];

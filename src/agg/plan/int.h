@@ -42,7 +42,7 @@ typedef struct V6Plan
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
 	List	   *gen_vars;		/* the columns the generic aggregates read, from any relation of the statement: the position + 1 of a column is the attribute their expressions read it as (v6_gen.h) */
 	RelOptInfo *elem_rel;		/* the relation of the unnest */
-	bool		members;		/* a member of a map of a document may be a column of the scan: no row the source gives is left out after it (no batch qual, FILTER or join), so PostgreSQL would read the document of each */
+	bool		members;		/* a member of a map of a document may be a column of the scan of a format that reads the rows its leaves cannot hold from the document (sift_v6_members_again); a format whose scan reads them from the exceptions of its chunks (SiftJsonbOps.exact_values) always may */
 	bool		score_ok;		/* an aggregate over sift.score(ctid): the scan that brings its rows brings their scores (agg/hybrid/plan.c) */
 	IndexOptInfo *text;			/* the sift index of the text queries of the statement, if it has them (v6_text.c) */
 	List	   *text_quals;		/* the clauses they come from */
@@ -60,8 +60,11 @@ extern bool sift_v6_index_usable(const IndexOptInfo *ix);
 /* Compiles the keys, aggregates and quals of the statement against p->index; false when the index does not hold what they read */
 extern bool sift_v6_compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
 
-/* Whether a row the source gives may be left out after it, by a batch qual, a FILTER or a join, or a text bridge folds the rows: a plan that read members (p->members) is compiled again without them */
-extern bool sift_v6_members_dropped(const V6Plan *p);
+/*
+ * Whether a plan that read members (p->members) is compiled again without them: the format reads the member of a row its leaves cannot hold from the document (no SiftJsonbOps.exact_values), and
+ * the plan failed (ok false) or a row the source gives may be left out after it, by a batch qual, a FILTER or a join, or a text bridge folds the rows
+ */
+extern bool sift_v6_members_again(const V6Plan *p, bool ok);
 
 /* The group path of the statement over one source: compiled with the members of a map as columns of the scan, and again without them when the plan drops rows after the source (plan_hybrid.c) */
 extern void sift_v6_source_group_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const struct SiftV6RelSource *s, GroupPathExtraData *extra, List *group_exprs);
@@ -149,7 +152,7 @@ extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
 /* the expression with each placeholder replaced by what it holds: the value the scan computes where the expression is read */
 extern Node *sift_v6_placeholder_contents(Node *n, void *context);
 /* e with the jsonb_typeof(doc -> 'key') of its shredded keys, and with values their `->>` text and its float8 cast, as virtual columns (agg/qual/jsonb.c), for a scan that reads them; e itself when this one cannot */
-extern Expr *sift_v6_plan_json_vars(const V6Plan *p, const Expr *e, bool values);
+extern Expr *sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values);
 /* The scan raises the error of a float8 cast of a key of a document for the rows PostgreSQL's own plan raises it for (agg/jsonb_order.c) */
 extern bool sift_v6_json_cast_order_ok(V6Plan *p);
 /* The statement is one the node may answer, whatever its relations; and the relation is a plain table the node may read (no inheritance, sampling or security quals) */

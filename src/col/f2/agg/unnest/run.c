@@ -61,8 +61,10 @@ sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool
 	const int	leaf = leaf_of(r, c);
 	const SiftF2Rel *f = sift_f2_rel(u->index);
 
+	if (c->jmember > 0)
+		return sift_f2_unnest_member_col(u, r, c);
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].leaf == leaf && u->cols[i].month == month && u->cols[i].jint == c->jint)
+		if (u->cols[i].leaf == leaf && !u->cols[i].member && u->cols[i].month == month && u->cols[i].jint == c->jint)
 			return i;
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
@@ -184,23 +186,26 @@ setup_cols(UnRun *u, const SiftColRel *r)
 	}
 }
 
-/* the leaves the pull reads: the columns, and of each stream the lengths of its array and its element columns (the keys and the values of the map when keyed) */
+/* the leaves the pull reads: the columns, of each stream the lengths of its array and its element columns, and of each map the statement reads members of its lengths, keys and values */
 static SiftF2PullSpec
 pull_spec(const UnRun *u)
 {
-	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = 0,.ngroups = u->x->elem.group_leaf >= 0 ? u->nst : 0,.poison_rows = u->keyed};
+	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = 0,.ngroups = u->x->elem.group_leaf >= 0 ? u->nst : 0};
+	const int	nst = ps.ngroups;
 
 	for (int i = 0; i < u->ncols; i++)
-		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = vec_type(u->cols[i].cls)};
+		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = !u->cols[i].member ? vec_type(u->cols[i].cls) : u->cols[i].map > 0 ? SVEC_I64 : SVEC_F64};
 	for (int s = 0; s < ps.ngroups; s++)
 	{
 		const UnStream *st = &u->st[s];
 
 		ps.group[s] = (SiftF2PullGroup) {.leaf = st->el->group_leaf,.nchild = st->nchild};
 		for (int c = 0; c < st->nchild; c++)
-			ps.group[s].child[c] = (SiftF2PullCol) {.leaf = u->keyed ? (c == 0 ? st->el->key_leaf : st->el->val_leaf) : st->el->col_leaf[c],.type = st->ctype[c],
-													.kind = !u->keyed && st->el->col_kind[c]};
+			ps.group[s].child[c] = (SiftF2PullCol) {.leaf = st->el->col_leaf[c],.type = st->ctype[c],.kind = st->el->col_kind[c]};
 	}
+	for (int m = 0; m < u->nmaps; m++)
+		ps.group[ps.ngroups++] = (SiftF2PullGroup) {.leaf = u->map[m].group,.nchild = 2,.child = {{.leaf = u->map[m].key,.type = SVEC_STRVIEW}, {.leaf = u->map[m].value,.type = SVEC_F64}}};
+	SIFT_INVARIANT(u->nmaps == 0 || nst > 0, "the maps of the rows of an unnest follow the arrays of its streams");
 	return ps;
 }
 
@@ -359,7 +364,9 @@ compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		const SiftVec *src = &b->col[i];
 
 		u->fv[i] = *src;
-		if (u->cols[i].json && u->cols[i].read)
+		if (u->cols[i].member)
+			sift_f2_unnest_member_column(u, i, b, bs);
+		else if (u->cols[i].json && u->cols[i].read)
 			json_column(u, i, b, bs);
 		if (!u->cols[i].month)
 			continue;
@@ -511,14 +518,10 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		return;
 	u->stats->rows += bs->n_active;
 	elem_vecs(u, 0, es, ev);
-	if (u->keyed && u->x->elem.group_leaf < 0)
-		sift_f2_unnest_run_keyed(u, b, NULL, fallback);
-	else if (u->x->row_tests)
+	if (u->x->row_tests)
 		emit_tested(u, b, fallback);
 	else if (es->layout.n_parents < (uint32) n)
 		memcpy(fallback, bs->mask, words * sizeof(uint64));
-	else if (u->keyed)
-		sift_f2_unnest_run_keyed(u, b, &ev[1], fallback);
 	else
 	{
 		uint64	   *keep = NULL;
@@ -544,9 +547,7 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 		{
 			const uint32 row = w * 64 + __builtin_ctzll(bits);
 
-			if (u->keyed)
-				sift_f2_unnest_emit_heap_keys(u, u->fv, b->tid[row], row);
-			else if (u->ntests > 0)
+			if (u->ntests > 0)
 				sift_f2_unnest_emit_test_heap_row(u, b->tid[row], row);
 			else
 				sift_f2_unnest_emit_heap_row(u, u->fv, b->tid[row], row);
@@ -749,12 +750,6 @@ setup_clauses(UnRun *u, const SiftColRel *r)
 			}
 		}
 	}
-	if (u->x->pair_where != NIL)
-	{
-		u->has_pwhere = true;
-		bound = sift_v6_unnest_elem_clause(CurrentMemoryContext, u->x->pair_where, &u->pwhere, u->pcol, &u->npvec);
-		SIFT_INVARIANT(bound, "the quals over the members of the keys of the aggregate scan compiled when it was planned");
-	}
 	if (u->x->elem_where != NIL)
 		u->eev = sift_v6_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
 	if (u->ntests == 0)
@@ -778,18 +773,15 @@ stream_init(UnRun *u, int s, AttrNumber heap_att)
 {
 	UnStream   *st = &u->st[s];
 	const SiftV6XElem *el = sift_v6_ext_stream(u->x, s);
-	const bool	keyed = el->fn == SV6E_KEYS;
 
 	st->el = el;
-	st->nchild = keyed ? (el->group_leaf >= 0 ? 2 : 0) : el->ncols;
+	st->nchild = el->ncols;
 	for (int c = 0; c < el->ncols; c++)
-		st->etype[c] = vec_type(sift_v6_class(el->col_type[c]));
-	for (int c = 0; c < st->nchild; c++)
-		st->ctype[c] = keyed ? (c == 0 ? SVEC_STRVIEW : SVEC_F64) : st->etype[c];
-	st->heap_att = keyed ? 0 : heap_att;
+		st->ctype[c] = st->etype[c] = vec_type(sift_v6_class(el->col_type[c]));
+	st->heap_att = heap_att;
 	if (el->fn == SV6E_UNNEST)
 		get_typlenbyvalalign(el->type, &st->typlen, &st->typbyval, &st->typalign);
-	else if (!keyed && el->fn != SV6E_PATH)
+	else if (el->fn != SV6E_PATH)
 		st->rec = sift_v6_recfn_new(CurrentMemoryContext, el, sift_v6_ext_stream_names(u->x, s));
 }
 
@@ -801,7 +793,6 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 	u->x = spec->ext;
 	u->stats = stats;
 	u->index = index;
-	u->keyed = u->x->elem.fn == SV6E_KEYS;
 	u->nel = u->x->elem.ncols;
 	u->ntests = u->x->ntests;
 	u->nst = 1 + u->x->nstreams;
@@ -810,7 +801,7 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 	u->bcx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 unnest batch");
 	sift_mem_init(&u->rmt, "agg_unnest_heap_row", CurrentMemoryContext, true, SIFT_BUDGET_WORK_MEM, 1, 1);
 	u->ccx = sift_mem_allocset_create(u->rmt.root_cx, "sift agg v6 unnest heap chunk");
-	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->keyed || u->ntests > 0 || u->st[0].rec != NULL)
+	if (u->x->heap_where != NIL || u->x->elem_array != NIL || u->ntests > 0 || u->st[0].rec != NULL)
 	{
 		MemoryContext old = CurrentMemoryContext;
 
@@ -820,19 +811,8 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, Relation index, SiftV6ScanStats *st
 		for (int s = 0; s < u->nst; s++)
 			u->st[s].arr = sift_v6_ext_stream_array(u->x, s) != NULL ? ExecPrepareExpr(unconstify(Expr *, sift_v6_ext_stream_array(u->x, s)), u->estate) : NULL;
 		u->probe = u->st[0].rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->st[0].rec) : NULL;
-		for (int c = 0; u->keyed && c < u->nel; c++)
-			u->cexpr[c] = ExecPrepareExpr(list_nth(u->x->col_expr, c), u->estate);
 		u->econtext = CreateExprContext(u->estate);
 		MemoryContextSwitchTo(old);
-	}
-	if (u->keyed)
-	{
-		fmgr_info(F_JSONB_OBJECT_FIELD_TEXT, &u->jtext);
-		for (int c = 0; c < u->nel; c++)
-		{
-			u->kidx[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
-			u->elem_of[c] = palloc(SIFT_VEC_LEN * sizeof(uint32));
-		}
 	}
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
 	u->eidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
@@ -883,12 +863,10 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	const SiftF2ExtBatch *b;
 	const SiftColRel *r = sift_col_rel_private(index, CurrentMemoryContext);
 
-	unrun_init(u, spec, index, stats, spec->ext->elem.fn == SV6E_KEYS ? 0 : index->rd_index->indkey.values[spec->ext->elem.attno - 1]);
+	unrun_init(u, spec, index, stats, index->rd_index->indkey.values[spec->ext->elem.attno - 1]);
 	setup_cols(u, r);
 	setup_clauses(u, r);
 	sift_f2_unnest_setup_bq(u, r);
-	for (int c = 0; c < u->nel; c++)
-		u->lcol[c] = u->keyed && u->x->elem.col_leaf[c] >= 0 ? source_col(u, r, u->x->elem.col_leaf[c], FLOAT8OID) : -1;
 	setup_pipe(u, r, g, star);
 	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);

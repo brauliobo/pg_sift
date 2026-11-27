@@ -219,7 +219,6 @@ src/agg/lateral_plan.c	src/agg/v6/v6_lateral_plan.c
 src/agg/lateral_plan.h	src/agg/v6/v6_lateral_plan.h	
 src/agg/live.c	src/agg/v6/v6_live.c	
 src/agg/live.h	src/agg/v6/v6_live.h	
-src/agg/mapkey.c	src/agg/v6/v6_mapkey.c	
 src/agg/node_hash.c	src/agg/v6/v6_node_hash.c	
 src/agg/node_hash.h	src/agg/v6/v6_node_hash.h	
 src/agg/open_scan.c	src/agg/v6/v6_open_scan.c	
@@ -888,7 +887,6 @@ src/col/v1_engine/store_ops_preagg.c	src/col/v1_engine/v1_store_ops_preagg.c
 src/col/v1_engine/store_ops_unnest.c	src/col/v1_engine/v1_store_ops_unnest.c	
 src/col/v1_engine/store_ops_unnest.h	src/col/v1_engine/v1_store_ops_unnest.h	
 src/col/v1_engine/store_ops_unnest_emit.c	src/col/v1_engine/v1_store_ops_unnest_emit.c	
-src/col/v1_engine/store_ops_unnest_keys.c	src/col/v1_engine/v1_store_ops_unnest_keys.c	
 src/core/dirchain/dirchain.c	src/core/dirchain.c	
 src/core/dirchain/dirchain.h	src/core/dirchain.h	
 src/core/dirchain/int.h	src/core/dirchain_int.h	

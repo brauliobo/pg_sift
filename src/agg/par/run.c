@@ -120,7 +120,7 @@ par_src_of(ParShape *sh, const SiftV6Spec *sp, const int *first, const SiftV6Col
 static bool
 shape_of(const SiftV6Spec *spec, const int *first, ParShape *sh)
 {
-	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || OidIsValid(spec->text_indexoid) || spec->pgexpr != NIL)
+	if (spec->nparts != 0 || spec->ext != NULL || spec->jsonqual != NIL || spec->jmembers != NIL || OidIsValid(spec->text_indexoid) || spec->pgexpr != NIL)
 		return false;
 	for (int k = 0; k < lengthof(kinds); k++)
 	{

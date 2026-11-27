@@ -83,6 +83,19 @@ lane_cols(V6Scan *s, int head)
 	}
 }
 
+/* the member of a map the column reads: the group leaf and the leaf of the keys of the map are decoded with it, as lanes of no vector of their own */
+static void
+member_cols(V6Scan *s, V6Col *n, const SiftV6Col *c)
+{
+	V6Member   *m = sift_f2_v6_member_new(s, c);
+
+	n->member = m;
+	col_init(s, m->group, &(SiftV6Col) {.attno = c->attno,.typid = INT8OID}, false, false);
+	s->cols[s->ncols - 1].lane = true;
+	col_init(s, m->key, &(SiftV6Col) {.attno = c->attno,.typid = TEXTOID}, false, false);
+	s->cols[s->ncols - 1].lane = true;
+}
+
 /* a derived column of an expression with no column in it: the scan has nothing to decode for it */
 static bool
 sourceless(const V6Scan *s, const SiftV6Col *c)
@@ -99,11 +112,12 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 	if (c.derive > 0)
 		c = s->spec->derive[c.derive - 1].src;
 	if (sift_v6_vatt_is_json(c.attno))
-		c = sift_v6_vatt_col(c.attno, c.attno, c.typid, c.scale);
+		c = sift_v6_spec_vatt_col(s->spec, c.attno, c.typid, c.scale);
 	leaf = c.attno == SIFT_V6_SCORE_ATTNO ? -1 : c.jleaf > 0 ? c.jleaf - 1 : first[c.attno];
 
 	for (int i = 0; i < s->ncols; i++)
-		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].jtype == c.jtype && s->cols[i].jsonb_cast == c.jsonb_cast && s->cols[i].jint == c.jint && s->cols[i].cls == sift_v6_col_class(&c))
+		if (s->cols[i].leaf == leaf && !s->cols[i].lane && s->cols[i].jmember == c.jmember && s->cols[i].jtype == c.jtype && s->cols[i].jsonb_cast == c.jsonb_cast && s->cols[i].jint == c.jint &&
+			s->cols[i].cls == sift_v6_col_class(&c))
 		{
 			s->cols[i].key_only &= key;
 			s->cols[i].nan_ok &= takes_nan || s->cols[i].cls == SV6C_DATUM;
@@ -111,7 +125,10 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan)
 		}
 	col_init(s, leaf, &c, key, takes_nan);
 	n = &s->cols[s->ncols - 1];
-	if (n->cls == SV6C_DATUM)
+	n->jmember = c.jmember;
+	if (c.jmember > 0 && s->defs[leaf].parent >= 0)
+		member_cols(s, n, &c);
+	else if (n->cls == SV6C_DATUM)
 	{
 		n->nan_ok = true;
 		n->def = &s->defs[leaf];

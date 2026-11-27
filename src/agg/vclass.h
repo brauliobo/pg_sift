@@ -50,10 +50,26 @@ sift_v6_attno_found(int attno)
 #define SIFT_V6_JHELD_VATT		(SIFT_V6_JVIRT_VATT + 5 * SIFT_V6_JVIRT_SPAN)
 #define SIFT_V6_JINT_VATT		(SIFT_V6_JVIRT_VATT + 6 * SIFT_V6_JVIRT_SPAN)
 
+/* the virtual attribute of a member of a document a statement reads by a path (SiftV6Col.jmember): SIFT_V6_JMEMBER_VATT + 2 * (jmember - 1), + 1 for the cast of its jsonb */
+#define SIFT_V6_JMEMBER_VATT	(SIFT_V6_JVIRT_VATT + 7 * SIFT_V6_JVIRT_SPAN)
+#define SIFT_V6_MAX_JMEMBERS	((PG_INT16_MAX - SIFT_V6_JMEMBER_VATT) / 2)
+
 static inline bool
 sift_v6_vatt_is_json(int attno)
 {
 	return attno >= SIFT_V6_JVIRT_VATT;
+}
+
+static inline bool
+sift_v6_vatt_is_member(int attno)
+{
+	return attno >= SIFT_V6_JMEMBER_VATT;
+}
+
+static inline int
+sift_v6_member_vatt(int jmember, bool jsonb_cast)
+{
+	return SIFT_V6_JMEMBER_VATT + 2 * (jmember - 1) + jsonb_cast;
 }
 
 static inline int
@@ -75,11 +91,11 @@ sift_v6_vatt_is_type(int attno)
 	return (attno >= SIFT_V6_JTYPE_VATT && attno < SIFT_V6_JTEXT_VATT) || sift_v6_vatt_is_presence(attno);
 }
 
-/* the conversion of a value of an exception that raises for a text that is no number, boolean or integer (the float8, the bool and the integer cast of the `->>` text) */
+/* the conversion of a value of an exception that raises for a text that is no number, boolean or integer (the float8, the bool and the integer cast of the `->>` text, a member read by a path) */
 static inline bool
 sift_v6_vatt_raises(int attno)
 {
-	return (attno >= SIFT_V6_JF8_VATT && attno < SIFT_V6_JPRES_VATT) || (attno >= SIFT_V6_JINT_VATT && attno < SIFT_V6_JINT_VATT + SIFT_V6_JVIRT_SPAN);
+	return (attno >= SIFT_V6_JF8_VATT && attno < SIFT_V6_JPRES_VATT) || attno >= SIFT_V6_JINT_VATT;
 }
 
 static inline bool

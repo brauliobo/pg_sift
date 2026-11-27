@@ -260,3 +260,4 @@ SIFT_U64SET_MAX_KEYS	the most keys of one id set (core/u64set.h), half its slots
 SIFT_U64SET_MAX_SLOTS	the slots of the table of one id set (core/u64set.h) that one palloc holds: an allocation bound behind SIFT_U64SET_MAX_KEYS
 FOUND_MAX_KEYS	the keys the journal of a parent may name for a dimension of a star join the found flag answers (agg/join/found.c): more, and the dimension is read from its plan; the rows are the same
 FOUND_MAX_PROBES	the changed keys the found flag answer probes in the btree of the parent (agg/join/found.c): more, and the dimension is read from its plan; the rows are the same
+SIFT_V6_MAX_JMEMBERS	the members of documents one statement reads by a path (agg/vclass.h), each a pair of virtual attributes below the largest attribute number: a statement with more is not planned by the scan and PostgreSQL plans it, the rows are the same

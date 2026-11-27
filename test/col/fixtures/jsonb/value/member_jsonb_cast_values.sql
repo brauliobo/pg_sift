@@ -1,6 +1,7 @@
--- trap: the member of an object leaf cast from its jsonb value: only numbers cast (the index flags the values its float8 leaves cannot store, so the scan keeps the normal plan)
+-- trap: the member of an object leaf cast from its jsonb value: only numbers cast (the scan reads a value its float8 leaf cannot store from the exception of its element, and converts it as PostgreSQL does) [PostgreSQL 18 on: before it the cast of a jsonb member is not read]
 -- shape: trap
--- expect: plain
+-- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: 1

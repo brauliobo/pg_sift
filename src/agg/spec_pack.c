@@ -219,10 +219,9 @@ static List *
 pack_elem(List *ints, const SiftV6XElem *e)
 {
 	ints = list_concat(ints, list_make4_int((int) e->fn, e->attno, (int) e->type, e->group_leaf));
-	ints = list_concat(ints, list_make5_int(e->left, e->semi, (int) e->vread, e->key_leaf, e->val_leaf));
-	ints = lappend_int(ints, e->ncols);
+	ints = list_concat(ints, list_make4_int(e->left, e->semi, (int) e->vread, e->ncols));
 	for (int c = 0; c < e->ncols; c++)
-		ints = list_concat(ints, list_make4_int(e->col_leaf[c], (int) e->col_type[c], e->col_kind[c], e->col_att[c]));
+		ints = list_concat(ints, list_make3_int(e->col_leaf[c], (int) e->col_type[c], e->col_kind[c]));
 	return ints;
 }
 
@@ -232,15 +231,13 @@ unpack_elem(const List *ints, int *at, SiftV6XElem *e)
 	const int	a = *at;
 
 	*e = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, a),.attno = list_nth_int(ints, a + 1),.type = (Oid) list_nth_int(ints, a + 2),.group_leaf = list_nth_int(ints, a + 3),
-	.left = list_nth_int(ints, a + 4),.semi = list_nth_int(ints, a + 5),.vread = (SiftV6ValueRead) list_nth_int(ints, a + 6),.key_leaf = list_nth_int(ints, a + 7),
-	.val_leaf = list_nth_int(ints, a + 8),.ncols = list_nth_int(ints, a + 9)};
-	*at = a + 10;
-	for (int c = 0; c < e->ncols; c++, *at += 4)
+	.left = list_nth_int(ints, a + 4),.semi = list_nth_int(ints, a + 5),.vread = (SiftV6ValueRead) list_nth_int(ints, a + 6),.ncols = list_nth_int(ints, a + 7)};
+	*at = a + 8;
+	for (int c = 0; c < e->ncols; c++, *at += 3)
 	{
 		e->col_leaf[c] = list_nth_int(ints, *at);
 		e->col_type[c] = (Oid) list_nth_int(ints, *at + 1);
 		e->col_kind[c] = list_nth_int(ints, *at + 2) != 0;
-		e->col_att[c] = list_nth_int(ints, *at + 3);
 	}
 }
 
@@ -284,7 +281,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	for (int d = 0; d < x->ndims; d++)
 		on = lappend(on, x->on[d]);
 	return list_concat(lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr),
-					   lappend(lappend(list_make5(x->pair_where, x->col_expr, x->test_quals, on, x->late_probe), list_make2(x->stream_names, x->stream_arrays)), x->jexpr));
+					   lappend(list_make5(x->test_quals, on, x->late_probe, x->stream_names, x->stream_arrays), x->jexpr));
 }
 
 SiftV6Ext *
@@ -355,15 +352,13 @@ sift_v6_ext_unpack(const List *l)
 	x->resid = list_nth(l, 5);
 	x->elem_array = list_nth(l, 6);
 	x->kexpr = list_nth(l, 7);
-	x->pair_where = list_nth(l, 8);
-	x->col_expr = list_nth(l, 9);
-	x->test_quals = list_nth(l, 10);
-	x->jexpr = list_nth(l, 14);
+	x->test_quals = list_nth(l, 8);
+	x->jexpr = list_nth(l, 13);
 	for (int d = 0; d < x->ndims; d++)
-		x->on[d] = list_nth(list_nth(l, 11), d);
-	x->late_probe = list_nth(l, 12);
-	x->stream_names = linitial(list_nth(l, 13));
-	x->stream_arrays = lsecond(list_nth(l, 13));
+		x->on[d] = list_nth(list_nth(l, 9), d);
+	x->late_probe = list_nth(l, 10);
+	x->stream_names = list_nth(l, 11);
+	x->stream_arrays = list_nth(l, 12);
 	return x;
 }
 

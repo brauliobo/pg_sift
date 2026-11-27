@@ -1,6 +1,6 @@
 /*
  * col/v1_engine/store_ops_unnest.h - the state of one pass of the aggregate scan of a LATERAL unnest over Format 1 (v1_store_ops_unnest.c), shared with the emission of its pairs
- * (v1_store_ops_unnest_emit.c), the members of a map read by key (v1_store_ops_unnest_keys.c) and the tests of the elements of a row (col/v1_engine/store_ops_unnest_test.c).
+ * (v1_store_ops_unnest_emit.c) and the tests of the elements of a row (col/v1_engine/store_ops_unnest_test.c).
  */
 #ifndef SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H
 #define SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H
@@ -87,16 +87,6 @@ typedef struct UnRun
 	bool		typbyval;
 	char		typalign;
 	SiftV6RecFn *rec;
-	bool		keyed;			/* SV6E_KEYS: a row of the table is one pair, the members its keys name */
-	int			lcol[SIFT_V6_XELEM_COLS];	/* keyed: the column of the batch that is the leaf of a column that is no member of the map (-1: a member) */
-	uint32	   *kidx[SIFT_V6_XELEM_COLS];	/* keyed: the member of the map each column of the pair has (SIFT_GATHER_NONE: none) */
-	uint32	   *elem_of[SIFT_V6_XELEM_COLS];	/* keyed: the member each key names in each row of the batch */
-	ExprState  *cexpr[SIFT_V6_XELEM_COLS];	/* keyed: the expression each column is, with which a row of the heap is given its value */
-	SiftClause	pwhere;
-	bool		has_pwhere;
-	int			pcol[SIFT_V6_MAX_FCOLS];
-	int			npvec;
-	SiftVec    *pvp[SIFT_V6_MAX_FCOLS];
 	EState	   *estate;			/* the expressions of a row read from the heap, over a virtual row of the columns they read */
 	ExprContext *econtext;
 	TupleTableSlot *heap_slot;
@@ -177,7 +167,6 @@ extern void sift_v1_unnest_heap_att(UnRun *u, AttrNumber att);
 /* a row the leaves cannot hold: the array of its heap row taken apart and its pairs */
 extern void sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row);
 /* the rows of the batch the map's leaves hold: one pair each; the rows they cannot hold are read from the heap */
-extern void sift_v1_unnest_run_keyed(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb);
 /* the tests of the rows of the batch: the rows they keep are one pair each, those the leaves cannot hold are the heap's */
 extern void sift_v1_unnest_run_tests(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb);
 extern void sift_v1_unnest_setup_tests(UnRun *u);

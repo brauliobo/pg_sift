@@ -127,6 +127,13 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	}
 }
 
+/* a column the scan keys test on the stored rows: not a member of a map, which the scan finds in each row it reads */
+static bool
+key_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *col)
+{
+	return sift_v6_plan_column(p, e, numeric_ok, col) && col->jmember == 0;
+}
+
 static Expr *
 qual_compare(V6Plan *p, OpExpr *op)
 {
@@ -150,7 +157,7 @@ qual_compare(V6Plan *p, OpExpr *op)
 		r = t;
 		q->args = list_make2(l, r);
 	}
-	if (!sift_v6_plan_column(p, (Expr *) l, true, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
+	if (!key_column(p, (Expr *) l, true, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
 		return NULL;
 	linitial(q->args) = index_var((Var *) l, col.attno - 1);
 	q->opfuncid = get_opcode(q->opno);
@@ -173,7 +180,7 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	SiftV6Col	col;
 
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !in_array_usable(p, lsecond(sa->args)) ||
-		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), p->in_filter, &col) || sift_v6_class(col.typid) == SV6C_F64 ||
+		!key_column(p, (Expr *) domain_column(linitial(sa->args)), p->in_filter, &col) || sift_v6_class(col.typid) == SV6C_F64 ||
 		(col.typid == NUMERICOID && !numeric_exact(p, BTEqualStrategyNumber, &col, (const Var *) domain_column(linitial(sa->args)), lsecond(sa->args))) ||
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
@@ -217,7 +224,7 @@ qual_null_test(V6Plan *p, NullTest *nt)
 	if (IsA(nt->arg, Var) && ((const Var *) nt->arg)->vartype == JSONBOID)
 		att = doc_null_column(p, nt->arg);
 	else
-		att = sift_v6_plan_column(p, nt->arg, true, &col) ? col.attno : 0;
+		att = key_column(p, nt->arg, true, &col) ? col.attno : 0;
 	if (att == 0)
 		return NULL;
 	q->arg = index_var((Var *) nt->arg, att - 1);
@@ -400,8 +407,6 @@ sift_v6_compile_quals(V6Plan *p)
 		if (p->index != NULL && p->index->indpred != NIL && predicate_implied_by(list_make1(ri->clause), p->index->indpred, false))
 			continue;
 		if (!ri->pseudoconstant && (sift_v6_tid_qual(p, ri) || sift_v6_text_qual(p, ri)))
-			continue;
-		if (sift_v6_mapkey_pair_qual(p, ri))
 			continue;
 		if (!compile_clause(p, &rel, ri))
 		{

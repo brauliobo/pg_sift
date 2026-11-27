@@ -53,6 +53,10 @@ unnest_spec(const SiftV6Spec *spec)
 	return copy;
 }
 
+/* the slot of a lane (a leaf decoded with the column before it): the pairs gather every fact slot, and a lane has no value of a row */
+static uint64 lane_valid[SIFT_VEC_WORDS];
+static SiftVec lane_vec = {.valid = lane_valid,.type = SVEC_I64};
+
 /* a table whose array column is unnested: the pairs of each row go through a pipe whose fact slots are the columns the scan reads and whose element slot follows them */
 static void
 unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
@@ -60,11 +64,11 @@ unnest_begin(V6Scan *s, Relation rel, Snapshot snap)
 	SiftVecType *type = palloc(Max(s->ncols, 1) * sizeof(SiftVecType));
 
 	for (int i = 0; i < s->ncols; i++)
-		type[i] = s->cols[i].vec.type;
+		type[i] = s->cols[i].lane ? lane_vec.type : s->cols[i].vec.type;
 	s->unnest = sift_v6_unnest_rows_begin(unnest_spec(s->spec), s->group, rel, snap, s->stats, s->ncols, type, unnest_slot, s);
 	s->fact = palloc(Max(s->ncols, 1) * sizeof(SiftVec *));
 	for (int i = 0; i < s->ncols; i++)
-		s->fact[i] = &s->cols[i].vec;
+		s->fact[i] = s->cols[i].lane ? &lane_vec : &s->cols[i].vec;
 }
 
 static void

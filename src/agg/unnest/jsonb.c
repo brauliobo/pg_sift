@@ -346,12 +346,6 @@ map_leaves_of(const SiftColRel *r, int att, const char *mkey, int *group, int *k
 	return *key >= 0 && *value >= 0 && sift_v6_leaf_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
 }
 
-bool
-sift_v6_map_leaves(const SiftColRel *r, int att, int *group, int *key, int *value)
-{
-	return map_leaves_of(r, att, NULL, group, key, value);
-}
-
 /* the map `col.* type` or `col.mkey.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
 static bool
 seed_each(V6Plan *p, SiftV6XElem *e, const char *mkey, int att)
@@ -551,8 +545,6 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	SiftV6Class cls;
 	int			slot;
 
-	if (el != NULL && el->fn == SV6E_KEYS)
-		return sift_v6_mapkey_column(p, e, out);
 	if (p->elem_rel == NULL || el == NULL)
 		return false;
 	if (el->fn == SV6E_MEMBERS)

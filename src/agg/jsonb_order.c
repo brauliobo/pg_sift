@@ -25,16 +25,25 @@ raising_attno(int attno)
 	return sift_v6_vatt_raises(attno);
 }
 
+/* the read of a member of a document by a path (SiftV6Col.jmember), its virtual attribute past the leaves */
+static int
+member_read(int attno)
+{
+	return SIFT_V6_JVIRT_SPAN + attno - SIFT_V6_JMEMBER_VATT;
+}
+
 /*
- * The read of a column whose conversion raises for some value, as the member of the bitmaps of reads (-1: none): the cast of a key of a document that raises (its leaf), or the cast of a member of a
- * map that the scan reads by its key (agg/mapkey.c), which raises for a value that is no number
+ * The read of a column whose conversion raises for some value, as the member of the bitmaps of reads (-1: none): the float8 or bool cast of a key of a document (its leaf), or the cast of a member
+ * that the scan reads by a path, which raises for a value that is no number
  */
 static int
-raising_read(const SiftV6Spec *s, const SiftV6Col *c)
+raising_read(const SiftV6Col *c)
 {
+	if (c->jmember > 0)
+		return member_read(sift_v6_col_input_attno(c));
 	if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID || c->jint))
 		return c->jleaf - 1;
-	return c->src == SV6SRC_ELEM && s->ext != NULL && s->ext->elem.fn == SV6E_KEYS ? SIFT_V6_ELEM_VATT + c->slot : -1;
+	return -1;
 }
 
 /* the FILTER of the aggregate is the presence of the one key it reads a value of that raises: a row the FILTER drops has not the key, so no value to convert */
@@ -63,12 +72,13 @@ typedef struct Reads
 {
 	const SiftV6Spec *s;
 	Bitmapset  *leaves;
+	bool		inputs;			/* an expression of SiftV6Spec.pgexpr, whose Vars are its inputs: the inputs read, not the reads */
 } Reads;
 
 static void
 note_col(const SiftV6Spec *s, Bitmapset **leaves, const SiftV6Col *c)
 {
-	const int	read = raising_read(s, c);
+	const int	read = raising_read(c);
 
 	if (read >= 0)
 		*leaves = bms_add_member(*leaves, read);
@@ -78,7 +88,11 @@ note_col(const SiftV6Spec *s, Bitmapset **leaves, const SiftV6Col *c)
 static void
 note_var(Reads *r, const Var *v)
 {
-	if (raising_attno(v->varattno))
+	if (r->inputs)
+		r->leaves = bms_add_member(r->leaves, v->varattno);
+	else if (sift_v6_vatt_is_member(v->varattno))
+		r->leaves = bms_add_member(r->leaves, member_read(v->varattno));
+	else if (raising_attno(v->varattno))
 		r->leaves = bms_add_member(r->leaves, sift_v6_vatt_leaf(v->varattno));
 	else if (v->varattno >= SIFT_V6_ELEM_VATT && v->varattno < SIFT_V6_ELEM_VATT + SIFT_V6_XELEM_COLS)
 		note_col(r->s, &r->leaves, &(SiftV6Col) {.typid = v->vartype,.src = SV6SRC_ELEM,.slot = v->varattno - SIFT_V6_ELEM_VATT});
@@ -159,36 +173,24 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 	for (int d = 0; d < s->nderive; d++)
 		note_col(s, &leaves, &s->derive[d].src);
 	foreach_ptr(List, item, s->pgexpr)
+	{
+		Reads		always = {s,.inputs = true};
+
+		(void) always_reads(linitial(item), &always);
 		for (int i = 1; i < list_length(lsecond(item)); i += SIFT_V6_PGX_INTS)
 		{
 			const List *ints = lsecond(item);
 			const SiftV6Col in = {.typid = (Oid) list_nth_int(ints, i + 1),.src = (SiftV6Src) list_nth_int(ints, i + 3),.slot = list_nth_int(ints, i + 4)};
-			const int	read = raising_attno(list_nth_int(ints, i)) ? sift_v6_vatt_leaf(list_nth_int(ints, i)) : raising_read(s, &in);
+			const int	attno = list_nth_int(ints, i);
+			const int	read = sift_v6_vatt_is_member(attno) ? member_read(attno) : raising_attno(attno) ? sift_v6_vatt_leaf(attno) : raising_read(&in);
 
 			if (read < 0)
 				continue;
 			leaves = bms_add_member(leaves, read);
-			*computed |= short_circuits(linitial(item), NULL);
+			*computed |= !bms_is_member(1 + (i - 1) / SIFT_V6_PGX_INTS, always.leaves) && short_circuits(linitial(item), NULL);
 		}
+	}
 	return leaves;
-}
-
-/* a value of a key of a map that a cast of a member gives: the scan raises the error of the cast for the row, whatever the FILTER of the aggregate that reads it */
-static bool
-late_col(const SiftV6Ext *x, const SiftV6Col *c)
-{
-	return c->src == SV6SRC_ELEM && x != NULL && x->elem.fn == SV6E_KEYS && c->typid != TEXTOID;
-}
-
-/* an aggregate with a FILTER reads such a value: PostgreSQL casts it only for the rows the FILTER keeps */
-static bool
-filtered_late(const SiftV6Spec *s, const SiftV6Ext *x)
-{
-	bool		late = false;
-
-	for (int a = 0; a < s->naggs; a++)
-		late |= s->agg[a].fclause != 0 && (late_col(x, &s->agg[a].arg) || late_col(x, &s->agg[a].arg2));
-	return late;
 }
 
 /* the batch quals other than the one that casts raise no error (their functions are leakproof): the cast's error is the first PostgreSQL raises, whichever row it is */
@@ -242,6 +244,25 @@ tested_before(PlannerInfo *root, const List *clauses, const RestrictInfo *cast)
 	return before;
 }
 
+/*
+ * The errors the reads raise: of a key, its leaf; of members, the conversion (the text cast to float8, the cast of the jsonb to the type), which raises the one error for the members alike, as it
+ * does for the rows of one key, whichever of them comes first
+ */
+static Bitmapset *
+conversions(const SiftV6Spec *s, const Bitmapset *reads)
+{
+	Bitmapset  *out = NULL;
+	int			r = -1;
+
+	while ((r = bms_next_member(reads, r)) >= 0)
+	{
+		const SiftV6Col c = r < SIFT_V6_JVIRT_SPAN ? (SiftV6Col) {0} : sift_v6_member_col(s, SIFT_V6_JMEMBER_VATT + r - SIFT_V6_JVIRT_SPAN);
+
+		out = bms_add_member(out, r < SIFT_V6_JVIRT_SPAN ? r : SIFT_V6_JVIRT_SPAN + (c.jsonb_cast ? (int) c.typid : 0));
+	}
+	return out;
+}
+
 bool
 sift_v6_json_cast_order_ok(V6Plan *p)
 {
@@ -263,10 +284,10 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		cast = ri;
 		cast_leaves = leaves;
 	}
-	if (((cast != NULL || other != NULL) && join_drops_rows(p->xseed)) || filtered_late(s, p->xseed))
+	if ((cast != NULL || other != NULL) && join_drops_rows(p->xseed))
 		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
 	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
-		bms_is_subset(other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
+		bms_is_subset(conversions(s, other), conversions(s, cast_leaves)) && tested_before(p->root, p->rel->baserestrictinfo, cast);
 }

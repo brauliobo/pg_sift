@@ -1,6 +1,6 @@
--- trap: the cast of a member of an object leaf in a conjunct and as a group key (the index flags the values its float8 leaves cannot store, so the scan keeps the normal plan)
+-- trap: the cast of a member of an object leaf in a conjunct and as a group key (the scan reads a value its float8 leaf cannot store from the exception of its element, and converts it as PostgreSQL does)
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: 1

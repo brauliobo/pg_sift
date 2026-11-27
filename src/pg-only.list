@@ -88,7 +88,6 @@ agg/lateral_plan.c
 agg/lateral_plan.h
 agg/live.c
 agg/live.h
-agg/mapkey.c
 agg/node_hash.c
 agg/node_hash.h
 agg/open_scan.h
@@ -411,6 +410,7 @@ col/f2/agg/source.c
 col/f2/agg/topn.c
 col/f2/agg/zones.c
 col/f2/agg/unnest/emit.c
+col/f2/agg/unnest/member.c
 col/f2/agg/unnest/int.h
 col/f2/agg/unnest/par.c
 col/f2/agg/unnest/par.h
@@ -716,7 +716,6 @@ col/v1_engine/store_ops_vet.c
 col/v1_engine/store_ops_unnest.c
 col/v1_engine/store_ops_unnest.h
 col/v1_engine/store_ops_unnest_emit.c
-col/v1_engine/store_ops_unnest_keys.c
 col/v1/verify.c
 col/v1/wbuf.h
 col/v1/wbuf/
@@ -958,6 +957,7 @@ table/v1/reader_read.c
 col/f2/agg/scan.h
 col/f2/agg/scan_arms.c
 col/f2/agg/scan_fill.c
+col/f2/agg/member.c
 col/f2/agg/scan_table.c
 agg/unique_key.c
 agg/unique_key.h

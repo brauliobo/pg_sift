@@ -118,7 +118,7 @@ elem_pg_step(const V6Plan *p, Expr *clause)
 	List	   *vars,
 			   *ints = NIL;
 
-	if (p->xseed->elem.fn == SV6E_KEYS || !sift_v6_pgexpr_plan_ok(p->root, clause) || sift_v6_pgexpr_exec((const Node *) clause) ||
+	if (!sift_v6_pgexpr_plan_ok(p->root, clause) || sift_v6_pgexpr_exec((const Node *) clause) ||
 		!sift_v6_pgexpr_vars(clause, p->elem_rel->relid, 0, &vars) || vars == NIL)
 		return NULL;
 	foreach_node(Var, v, vars)

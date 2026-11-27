@@ -275,11 +275,11 @@ poison_granule(SiftF2Pull *p)
 	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
 }
 
-/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays or poison rows, else the scan has no answer */
+/* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays, else the scan has no answer */
 static void
 unholdable(SiftF2Pull *p)
 {
-	if (p->spec.ngroups == 0 && !p->spec.poison_rows)
+	if (p->spec.ngroups == 0)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 				errhint("Read the column through a scan that decodes exceptions.")));
 	poison_granule(p);
@@ -493,17 +493,6 @@ poison_key_rows(SiftF2Pull *p)
 	}
 }
 
-/* no array column: every row has its document, and a row is poison where a leaf of a key holds a value it cannot */
-static void
-begin_rows(SiftF2Pull *p)
-{
-	p->poison = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
-	p->grp[0].doc_valid = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
-	memset(p->grp[0].doc_valid, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
-	p->grp[0].has_layout = false;
-	p->grp[0].n_elems = 0;
-}
-
 /* the layout of array column g: a row is poison when the granule keeps no layout of it, or the row's document holds no array there */
 static void
 begin_group(SiftF2Pull *p, int g)
@@ -623,8 +612,6 @@ begin_granule(SiftF2Pull *p)
 	finish_live(p, any_dead ? dead : NULL);
 	if (p->spec.ngroups > 0)
 		begin_layout(p);
-	else if (p->spec.poison_rows)
-		begin_rows(p);
 	no_elems = elems_ruled_out(p);
 	if (no_elems && !live_poison(p))
 	{
@@ -638,7 +625,7 @@ begin_granule(SiftF2Pull *p)
 		p->stats.granules_elem_elided++;
 	}
 	sift_lazy_granule_load(p->index, &p->lg, chunks, body_chunks(p, chunks));
-	if (p->spec.ngroups > 0 || p->spec.poison_rows)
+	if (p->spec.ngroups > 0)
 		poison_key_rows(p);
 	for (int g = 0; g < p->spec.ngroups; g++)
 	{
@@ -674,7 +661,7 @@ begin_slab(SiftF2Pull *p)
 	finish_live(p, NULL);
 	p->poison = palloc((((p->n + 63) / 64) + 1) * sizeof(uint64));
 	memset(p->poison, 0xff, (((p->n + 63) / 64) + 1) * sizeof(uint64));
-	for (int g = 0; g < Max(p->spec.ngroups, 1); g++)
+	for (int g = 0; g < p->spec.ngroups; g++)
 		p->grp[g] = (PullGroup) {.doc_valid = p->poison};
 	MemoryContextSwitchTo(old);
 }
@@ -863,7 +850,7 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 				p->cur_on[i] = true;
 			}
 			decode_col(p, i, off, cnt, &exc);
-			if (exc != NULL && !(p->spec.poison_rows && key_leaf_col(p, i)))
+			if (exc != NULL)
 				unholdable(p);
 			patch_col(p, i, off, cnt);
 		}
@@ -955,9 +942,9 @@ sift_f2_pull_next(SiftF2Pull *p)
 	p->slice_off = off;
 	fill_slice(p, off, cnt);
 	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
-	if (p->spec.ngroups > 0 || p->spec.poison_rows)
+	if (p->spec.ngroups > 0)
 	{
-		for (int g = 0; g < Max(p->spec.ngroups, 1); g++)
+		for (int g = 0; g < p->spec.ngroups; g++)
 			fill_elems(p, g, off, cnt);
 		p->out.elem = p->es;
 	}

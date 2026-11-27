@@ -1,5 +1,5 @@
 -- The members of a map `col.* float8` of a sift_col index of format major 2 that a statement reads by a constant key (col -> 'k', col['k'], their casts to float8 and to an integer, (col ->> 'k')::float8),
--- and a subscript of a key the index keeps as a leaf: the aggregate scan of SiftAggV6 gives one row for each row of the table, the member as its value or NULL.
+-- and a subscript of a key the index keeps as a leaf: the aggregate scan of SiftAggV6 finds the member by its key in each row of the table, its value or NULL.
 -- Every query is run with the node and without it (sift.enable_agg) and the two answers are compared, errors included; the first word says they agree, the second that the plan is the one the query
 -- expects (node: SiftAggV6; node18: SiftAggV6 where PostgreSQL gives NULL for the cast of a JSON null, the normal plan before). The plan comes from the cost of the pages, not from a setting that forces it.
 CREATE EXTENSION pg_sift;
@@ -64,7 +64,7 @@ BEGIN
 		(CASE WHEN a LIKE 'error %' THEN a ELSE 'ok' END) || ' ' || q;
 END $$;
 
--- Q-01. The plans: the members the statement names, with their types
+-- Q-01. The plans: the members the statement names are columns of the scan of the index
 EXPLAIN (COSTS OFF) SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::float8) FROM mk GROUP BY 1;
 EXPLAIN (COSTS OFF) SELECT (metrics -> 'm_total')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk WHERE (metrics -> 'quality')::bigint >= 4 AND g < 3;
@@ -116,7 +116,8 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::smallint IN (1, 2, 5) GROUP BY 1', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::int IS NULL GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, (metrics -> ''m_total'')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2', 'node18'),
-	('SELECT CAST(jsonb_extract_path(metrics, ''quality'') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS bigint) >= 3 GROUP BY 1', 'node18'),
+	-- a condition and a key that cast to two types raise two errors, and the scan cannot raise the one PostgreSQL meets first: the normal plan
+	('SELECT CAST(jsonb_extract_path(metrics, ''quality'') AS integer), count(*) FROM mk WHERE CAST(jsonb_extract_path(metrics, ''m_total'') AS bigint) >= 3 GROUP BY 1', 'plain'),
 	('SELECT (metrics[''quality''])::int, count(*) FROM mk GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int AS q, count(*) FROM mk WHERE g < 3 GROUP BY 1 HAVING count(*) > 10', 'node18'),
 	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 AND g < 3', 'node18'),
@@ -136,8 +137,9 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, count(*) FILTER (WHERE (metrics -> ''big'')::int > 0) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
-	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 AND (metrics -> ''big'')::int > 0', 'node18'),
-	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 0 AND (metrics -> ''quality'')::int >= 5', 'node18')
+	-- two conditions that cast: PostgreSQL casts the second for the rows the first keeps, which the batch quals of the scan do not follow: the normal plan
+	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 AND (metrics -> ''big'')::int > 0', 'plain'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 0 AND (metrics -> ''quality'')::int >= 5', 'plain')
 ) t(q, w);
 
 -- Q-07. A JSON null member is NULL for the casts of PostgreSQL 18 (the text and its float8 are NULL on every version), and a member that is no number is read from the table as it reads it
@@ -213,7 +215,8 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (attributes -> ''score'')::float8, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
 	('SELECT g, sum((attributes[''score''])::bigint), avg((attributes -> ''score'')::int) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
 	('SELECT attributes ->> ''channel'', count(*) FILTER (WHERE (attributes -> ''score'')::int >= 3) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
-	('SELECT count(*) FROM ms WHERE (attributes -> ''score'')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)', 'node18'),
+	-- PostgreSQL tests the cheaper cast before the list, for every row, where the scan keys of the list drop rows first: the normal plan
+	('SELECT count(*) FROM ms WHERE (attributes -> ''score'')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)', 'plain'),
 	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k IN (3, 4) GROUP BY 1', 'node18'),
 	('SELECT (attributes -> ''score'')::smallint, count(*) FROM ms WHERE k = 8 GROUP BY 1', 'node18'),
 	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1', 'node18')
