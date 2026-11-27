@@ -70,16 +70,16 @@ SELECT * FROM queries('ev');
  count_by_kind |     6 | t
  by_kind_sums  |     6 | t
  global        |     0 | t
- count_live    |     5 | t
+ count_live    |     6 | t
  range_part    |     1 | t
  by_grp_float  |     0 | t
- point_days    |     0 | t
+ point_days    |     3 | t
  live_by_kind  |     5 | t
  by_day        |     6 | t
- count_deleted |     5 | t
+ count_deleted |     6 | t
  range_covers  |     6 | t
  range_none    |     0 | t
- point_day     |     0 | t
+ point_day     |     1 | t
  int_range     |     2 | t
 (14 rows)
 
@@ -193,7 +193,7 @@ SELECT * FROM queries('tv', 5);
  count_by_kind |     6 | t
  by_kind_sums  |     6 | t
  global        |     0 | t
- count_live    |     5 | t
+ count_live    |     6 | t
  range_part    |     1 | t
 (5 rows)
 
@@ -230,7 +230,7 @@ SELECT * FROM queries('tv', 5);
  count_by_kind |     5 | t
  by_kind_sums  |     5 | t
  global        |     0 | t
- count_live    |     4 | t
+ count_live    |     5 | t
  range_part    |     1 | t
 (5 rows)
 

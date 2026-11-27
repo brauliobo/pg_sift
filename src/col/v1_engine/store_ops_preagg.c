@@ -57,6 +57,7 @@ typedef struct Pred
 	int64		val;
 	int			n;
 	int64	   *set;
+	text	  **str;			/* a test of a string leaf (= or <> of str[0], = ANY of the n of them): made on the strings of the dictionary of each group, never on the zone */
 } Pred;
 
 typedef struct CubeAgg
@@ -76,11 +77,12 @@ typedef struct SiftV1Cube
 	SiftV6Group *group;
 	SiftV6ScanStats *stats;
 	int			nkeys;
-	int			key_leaf;
+	int			key_leaf;		/* -1: no key */
 	bool		key_text;
 	int			dist_leaf;		/* no key: the leaf COUNT(DISTINCT) reads (its histogram gives the values), -1: none */
 	bool		dist_text;
-	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT); -1: none */
+	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test; -1: none */
+	bool		hist_text;		/* hist_leaf is a string leaf: its groups are codes of the dictionary of the histogram */
 	bool		by_group;		/* the unit's zones leave a test of hist_leaf undecided: each group of the histogram is tested */
 	CubeAgg    *agg;
 	int			npred;
@@ -196,7 +198,30 @@ set_of(const Const *k, Oid vartype, Pred *p)
 	return true;
 }
 
-/* The test a clause of the statement makes on one leaf, in the terms the zone of a unit decides; false for any other clause */
+/* A string leaf a clause tests by the bytes of its strings: = and <> under a deterministic collation */
+static bool
+str_test(const SiftSrcLeaf *l, Oid vartype, Oid consttype, Oid collid, CmpOp op)
+{
+	return leaf_plain(l) && l->vtype == SCV_CODE && !l->astext && vartype == TEXTOID && consttype == TEXTOID && (op == OP_EQ || op == OP_NE) &&
+		OidIsValid(collid) && get_collation_isdeterministic(collid);
+}
+
+static bool
+str_set_of(const Const *k, Pred *p)
+{
+	Datum	   *vals;
+	bool	   *nulls;
+	int			n;
+
+	deconstruct_array_builtin(DatumGetArrayTypeP(k->constvalue), TEXTOID, &vals, &nulls, &n);
+	p->str = palloc(Max(n, 1) * sizeof(text *));
+	for (int i = 0; i < n; i++)
+		if (!nulls[i])
+			p->str[p->n++] = DatumGetTextPP(vals[i]);
+	return true;
+}
+
+/* The test a clause of the statement makes on one leaf, in the terms the zone of a unit or the groups of a histogram decide; false for any other clause */
 static bool
 pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, Pred *p)
 {
@@ -218,11 +243,19 @@ pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, Pred *p)
 		const OpExpr *op = (const OpExpr *) clause;
 		const Const *k = (const Const *) lsecond(op->args);
 
-		if ((var = heap_var(linitial(op->args))) == NULL || !IsA(k, Const) || k->constisnull || !comparable(var->vartype, k->consttype) || (p->op = cmp_op(op->opno)) == 0 ||
-			(l = qual_leaf(host, lay, var->varattno)) == NULL || !leaf_int(l))
+		if ((var = heap_var(linitial(op->args))) == NULL || !IsA(k, Const) || k->constisnull || (p->op = cmp_op(op->opno)) == 0 ||
+			(l = qual_leaf(host, lay, var->varattno)) == NULL)
 			return false;
 		p->kind = PK_CMP;
 		p->leaf = l->id;
+		if (str_test(l, var->vartype, k->consttype, op->inputcollid, p->op))
+		{
+			p->str = palloc(sizeof(text *));
+			p->str[p->n++] = DatumGetTextPP(k->constvalue);
+			return true;
+		}
+		if (!comparable(var->vartype, k->consttype) || !leaf_int(l))
+			return false;
 		p->val = datum_int(k->consttype, k->constvalue);
 		return true;
 	}
@@ -231,12 +264,14 @@ pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, Pred *p)
 		const ScalarArrayOpExpr *sa = (const ScalarArrayOpExpr *) clause;
 		const Const *k = (const Const *) lsecond(sa->args);
 
-		if (!sa->useOr || cmp_op(sa->opno) != OP_EQ || list_length(sa->args) != 2 || (var = heap_var(linitial(sa->args))) == NULL || !IsA(k, Const) ||
-			(l = qual_leaf(host, lay, var->varattno)) == NULL || !leaf_int(l) || !set_of(k, var->vartype, p))
+		if (!sa->useOr || cmp_op(sa->opno) != OP_EQ || list_length(sa->args) != 2 || (var = heap_var(linitial(sa->args))) == NULL || !IsA(k, Const) || k->constisnull ||
+			(l = qual_leaf(host, lay, var->varattno)) == NULL)
 			return false;
 		p->kind = PK_ANY;
 		p->leaf = l->id;
-		return true;
+		if (str_test(l, var->vartype, get_element_type(k->consttype), sa->inputcollid, OP_EQ))
+			return str_set_of(k, p);
+		return leaf_int(l) && set_of(k, var->vartype, p);
 	}
 	return false;
 }
@@ -308,9 +343,22 @@ pred_verdict(const Pred *p, const SiftSrcUnitAgg *z)
 		return z->nnull == 0 ? V_ALL : z->nnull == z->nvals ? V_NONE : V_SOME;
 	if (z->nnull == z->nvals)
 		return V_NONE;
-	if (!z->has_minmax)
+	if (!z->has_minmax || p->str != NULL)
 		return V_SOME;
 	return p->kind == PK_CMP ? cmp_verdict(p, z) : any_verdict(p, z);
+}
+
+/* Whether the string of a group is one of the strings of a test */
+static bool
+str_in(const Pred *p, const SiftSrcHist *h, uint32 r)
+{
+	const SiftSrcDict *d = h->dict;
+	const uint32 len = d->off[h->key[r] + 1] - d->off[h->key[r]];
+
+	for (int i = 0; i < p->n; i++)
+		if (VARSIZE_ANY_EXHDR(p->str[i]) == len && memcmp(VARDATA_ANY(p->str[i]), d->bytes + d->off[h->key[r]], len) == 0)
+			return true;
+	return false;
 }
 
 static bool
@@ -320,6 +368,8 @@ group_passes(const Pred *p, const SiftSrcHist *h, uint32 r)
 		return p->kind == PK_NULL;
 	if (p->kind == PK_NULL || p->kind == PK_NOTNULL)
 		return p->kind == PK_NOTNULL;
+	if (p->str != NULL)
+		return str_in(p, h, r) == (p->kind == PK_ANY || p->op == OP_EQ);
 	if (p->kind == PK_ANY)
 		return in_set(p, h->key[r]);
 	switch (p->op)
@@ -449,7 +499,7 @@ static void
 merge(SiftV1Cube *c, int n)
 {
 	c->kvec.len = (uint16) n;
-	sift_v6_group_merge_cells(c->group, c->kvp, c->acc, (uint16) n);
+	sift_v6_group_merge_cells(c->group, c->nkeys > 0 ? c->kvp : NULL, c->acc, (uint16) n);
 }
 
 /* The state of aggregate g over the groups of h that pass the tests of its dimension; false for an aggregate other than count(*) and COUNT(DISTINCT) of the dimension */
@@ -486,7 +536,7 @@ fold_global(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUn
 static bool
 bind_hist(SiftV1Cube *c, const SiftSrcHist *h)
 {
-	if (c->key_text && h->dict == NULL)
+	if (c->hist_text && h->dict == NULL)
 		return false;
 	for (int j = 0; j < c->spec->naggs; j++)
 	{
@@ -576,7 +626,7 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 	SiftSrcHist h;
 	int			n = 0;
 
-	if (!rd->unit_hist(src, unit, c->key_leaf, &c->need, &h) || !bind_hist(c, &h))
+	if (!rd->unit_hist(src, unit, c->hist_leaf, &c->need, &h) || !bind_hist(c, &h))
 		return false;
 	for (uint32 r = 0; r < h.ngroups; r++)
 		if (h.count[r] > 0 && !group_acc(c, &h, r, c->acc))
@@ -586,7 +636,8 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 	{
 		if (h.count[r] == 0 || (c->by_group && !group_kept(c, &h, r)))
 			continue;
-		put_key(c, &h, r, n);
+		if (c->nkeys > 0)
+			put_key(c, &h, r, n);
 		group_acc(c, &h, r, &c->acc[n * c->spec->naggs]);
 		if (++n == SIFT_VEC_LEN)
 		{
@@ -616,7 +667,7 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 		return false;
 	if ((v = unit_verdict(c, rd, src, unit)) == V_SOME)
 		return false;
-	done = v == V_NONE || (c->nkeys == 0 ? fold_global(c, rd, src, unit) : fold_hist(c, rd, src, unit));
+	done = v == V_NONE || (c->nkeys == 0 && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, unit) : fold_hist(c, rd, src, unit));
 	c->stats->grans_preagg += done;
 	return done;
 }
@@ -665,7 +716,7 @@ bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 			return false;
 		if ((a->kind == SV6_MIN || a->kind == SV6_MAX || a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_TEXT)
 			return false;
-		if (c->nkeys > 0 && l != NULL && l->id != c->key_leaf)
+		if (l != NULL && l->id != c->key_leaf)
 		{
 			int			m = 0;
 
@@ -705,6 +756,14 @@ bind_preds(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay, const List *q
 	return true;
 }
 
+/* The dimension a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test, whose groups pass it or not */
+static void
+hist_of(SiftV1Cube *c, const SiftSrcLayout *lay)
+{
+	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf >= 0 ? c->dist_leaf : c->npred > 0 ? c->pred[0].leaf : -1;
+	c->hist_text = c->hist_leaf >= 0 && lay->leaf[c->hist_leaf].vtype == SCV_CODE;
+}
+
 SiftV1UnitSink *
 sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx)
 {
@@ -722,6 +781,7 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	c->group = a->group;
 	c->stats = a->stats;
 	c->nkeys = a->spec->nkeys;
+	c->key_leaf = -1;
 	c->agg = MemoryContextAlloc(cx, a->spec->naggs * sizeof(CubeAgg));
 	c->acc = MemoryContextAlloc(cx, (Size) Max(SIFT_VEC_LEN, 1) * a->spec->naggs * sizeof(V6Acc));
 	c->kdata = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
@@ -729,6 +789,6 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	c->sink = (SiftV1UnitSink) {.offer = offer,.arg = c};
 	if ((c->nkeys > 0 && !bind_key(c, lay)) || !bind_aggs(c, lay) || !bind_preds(c, a->host, lay, a->quals))
 		return NULL;
-	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf;
+	hist_of(c, lay);
 	return &c->sink;
 }
