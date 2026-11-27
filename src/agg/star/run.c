@@ -756,7 +756,7 @@ sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int
 	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
 	*n = nkeys;
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->x->dim[d].mode == SV6J_LEFT_EQUI || r->x->dim[d].mode == SV6J_FULL_EQUI)
+		if (sift_star_preserves_dim(r->x->dim[d].mode))
 			return out;
 	for (int d = 0; d < r->x->ndims; d++)
 	{
