@@ -1,8 +1,7 @@
 """The second wave of production shapes of the load gate (Spec 114): COPY streams into the three engines beside a racing unique insert and COPY FREEZE, wide out-of-line values
 and shredded JSONB under churn at a tight work_mem, tenants under row-level security reading through views while their tables change shape, a storm of every BM25 query form
 under churn, a parallel star join under timeouts and cancels at a tight work_mem, and a standby promoted while it reads tiered parts and the primary writes to a subscriber
-(scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on test/t/core/load_repl.sh). The COPY case waits on Format 2.0 for S114-05 (a COPY batch and an
-INSERT of one of its keys both commit) and S114-22 (a sift_col Top-N read beside inserts dereferences a heap it does not hold); Format 1.0 meets it, so a pass proves no fix.
+(scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on test/t/core/load_repl.sh).
 """
 from __future__ import annotations
 
@@ -424,7 +423,7 @@ def repl_inflight_promote_cdc_tier(ctx):
 
 
 WORKLOADS = (
-    LoadCase('mix_copy_stream_ingest', 'mix', mix_copy_stream_ingest, Limits(lwlock_wait_pct=35, ctx_kb_delta=1280, rss_mb_delta=16), open='S114-05,S114-22', intermittent=True),
+    LoadCase('mix_copy_stream_ingest', 'mix', mix_copy_stream_ingest, Limits(lwlock_wait_pct=35, ctx_kb_delta=1280, rss_mb_delta=16)),
     LoadCase('olap_wide_toast_jsonb_mix', 'olap', olap_wide_toast_jsonb_mix, Limits(ctx_kb_delta=2048, rss_mb_delta=24, pending_after=0)),
     LoadCase('tenant_rls_view_col_ddl', 'tenant', tenant_rls_view_col_ddl, Limits(ctx_kb_delta=1280, lock_wait_pct=25)),
     LoadCase('conc_bm25_query_storm_churn', 'conc', conc_bm25_query_storm_churn, Limits(lwlock_wait_pct=35, p99_ratio=3.5)),

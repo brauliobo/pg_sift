@@ -1,6 +1,6 @@
 """The suites of the load gate beside the core catalog (cases.py): workloads (transactions, analytics under a tight work_mem, online DDL, features, pooled sessions, the parallel pool) on a
 cluster sized for many sessions and prepared transactions (test/t/core/load_workloads.sh), and repl (a hot standby and its promotion, logical decoding to a subscriber) on a primary
-with wal_level logical (test/t/core/load_repl.sh); workloads_next adds the cases of Spec 111 to both, workloads_prod2 those of Spec 114. A case names the finding it waits for in `open` (Snnn-NN: S107-NN, S111-NN, S114-NN),
+with wal_level logical (test/t/core/load_repl.sh); workloads_next adds the cases of Spec 111 to both, workloads_prod2 those of Spec 114, workloads_prod3 those of Spec 115. A case names the finding it waits for in `open` (Snnn-NN),
 as a core case names one of Spec 106.
 """
 from __future__ import annotations
@@ -10,13 +10,13 @@ import sys
 sys.dont_write_bytecode = True
 
 import cases as catalog  # noqa: E402
-from suites import repl, workloads_next, workloads_olap, workloads_prod2, workloads_txn  # noqa: E402
+from suites import repl, workloads_next, workloads_olap, workloads_prod2, workloads_prod3, workloads_txn  # noqa: E402
 from suites.common import selftest  # noqa: E402,F401
 
 SUITES = {
-    'workloads': (workloads_txn.CASES + workloads_olap.CASES + workloads_next.WORKLOADS + workloads_prod2.WORKLOADS,
-                  ('delta', 'txn', 'ddl', 'pool', 'olap', 'feat', 'mix', 'conc', 'tenant')),
-    'repl': (repl.CASES + workloads_next.REPL + workloads_prod2.REPL, ('repl',)),
+    'workloads': (workloads_txn.CASES + workloads_olap.CASES + workloads_next.WORKLOADS + workloads_prod2.WORKLOADS + workloads_prod3.WORKLOADS,
+                  ('delta', 'txn', 'ddl', 'pool', 'olap', 'feat', 'mix', 'conc', 'tenant', 'fault')),
+    'repl': (repl.CASES + workloads_next.REPL + workloads_prod2.REPL + workloads_prod3.REPL, ('repl',)),
 }
 CLASSES = tuple(dict.fromkeys(catalog.CLASSES + tuple(c for _, classes in SUITES.values() for c in classes)))
 

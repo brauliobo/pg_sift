@@ -169,7 +169,7 @@ def ddl_part_online_mix(ctx):
 def pool_high_conn_term_shm(ctx):
     """32 pooled sessions commit rows of a sift_table and a sift_col table with a savepoint in each transaction and DISCARD ALL after it, while 1 session terminates one of them
     every 50 ms (during the commits of the combiner, the refills of the leases, the publishes of the manifest): every acknowledged row kept, the two tables agree, no refusal of
-    the shared memory, no row lock and no session left (a row lock is left in about one run of three, with the testing library: intermittent)"""
+    the shared memory, no row lock and no session left"""
     db = ctx.db
     engines(db, kinds=('tbl', 'col'))
     u0, r0 = (int(x) for x in db.row(MANIFEST))
@@ -207,6 +207,5 @@ CASES = (
              open='S107-01,S107-28', intermittent=True),
     LoadCase('txn_ssi_2pc_savepoint', 'txn', txn_ssi_2pc_savepoint, Limits()),
     LoadCase('ddl_part_online_mix', 'ddl', ddl_part_online_mix, Limits()),
-    LoadCase('pool_high_conn_term_shm', 'pool', pool_high_conn_term_shm, Limits(lwlock_wait_pct=40), formats=(2,), open='S107-20',
-             intermittent=True),
+    LoadCase('pool_high_conn_term_shm', 'pool', pool_high_conn_term_shm, Limits(lwlock_wait_pct=40), formats=(2,)),
 )
