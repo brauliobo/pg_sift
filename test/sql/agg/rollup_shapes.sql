@@ -1,6 +1,6 @@
--- Which shapes of an analytics query over the elements of a list the rollups of the units answer, and the reason when one does not (EXPLAIN (ANALYZE, VERBOSE)
--- names it). Every shape runs three ways that must agree: from the rollups, scanning every unit (sift.agg_preagg off) and the plain plan (sift.enable_agg off).
--- `pre` says how many of the units the first one answered from the rollups: all, some or none ('-': the node does not use them).
+-- Which shapes of an analytics query over the elements of a list the rollups of the units answer (the Granules line of SiftAggV6). Every shape runs three ways
+-- that must agree: from the rollups, scanning every unit (sift.agg_preagg off) and the plain plan (sift.enable_agg off).
+-- `pre` says how many of the granules the first one answered from the rollups: all, some or none ('-': no SiftAggV6 node).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
@@ -24,17 +24,7 @@ ANALYZE ev_dim;
 
 \ir test/common/sql/agg/preagg.sql
 
--- the units of the SiftAgg node, those it answered from the rollups, and the line of the verbose plan that names why it did not (NULL: no SiftAgg node)
-CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT why text) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		why := coalesce(substring(l from '^\s*Pre-aggregates: (.*)$'), why);
-	END LOOP;
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
 
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
@@ -67,8 +57,8 @@ INSERT INTO pa_q VALUES
 	(27, 'sets: empty set, test', 'SELECT e.kind, e.flag, e.band, count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.band >= 4 GROUP BY GROUPING SETS ((e.kind), (e.flag, e.band), ())'),
 	(28, 'sets: grouping()', 'SELECT e.kind, GROUPING(e.kind), count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY ROLLUP (e.kind)');
 
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
-	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
 	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
 $$;

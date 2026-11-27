@@ -1,6 +1,6 @@
--- Which shapes of an analytics query over the elements of a list the rollups of the units answer, and the reason when one does not (EXPLAIN (ANALYZE, VERBOSE)
--- names it). Every shape runs three ways that must agree: from the rollups, scanning every unit (sift.agg_preagg off) and the plain plan (sift.enable_agg off).
--- `pre` says how many of the units the first one answered from the rollups: all, some or none ('-': the node does not use them).
+-- Which shapes of an analytics query over the elements of a list the rollups of the units answer (the Granules line of SiftAggV6). Every shape runs three ways
+-- that must agree: from the rollups, scanning every unit (sift.agg_preagg off) and the plain plan (sift.enable_agg off).
+-- `pre` says how many of the granules the first one answered from the rollups: all, some or none ('-': no SiftAggV6 node).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
@@ -22,17 +22,8 @@ CREATE TABLE ev_dim AS SELECT 'k' || k AS kind, 'L' || (k % 2) AS label FROM gen
 ANALYZE ev_dim;
 \ir test/common/sql/agg/preagg.sql
 \set ECHO none
--- the units of the SiftAgg node, those it answered from the rollups, and the line of the verbose plan that names why it did not (NULL: no SiftAgg node)
-CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT why text) LANGUAGE plpgsql AS $$
-DECLARE l text;
-BEGIN
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		why := coalesce(substring(l from '^\s*Pre-aggregates: (.*)$'), why);
-	END LOOP;
-END $$;
+\ir test/common/sql/agg/preagg_units.sql
+\set ECHO none
 CREATE TABLE pa_q (n int, shape text, q text);
 INSERT INTO pa_q VALUES
 	(1, 'one key',            'SELECT e.kind, count(*), sum(e.qty), avg(e.score) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY 1'),
@@ -63,8 +54,8 @@ INSERT INTO pa_q VALUES
 	(26, 'sets: cube, derived key', 'SELECT left(e.seen, 7), e.flag, count(*), avg(e.score), max(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY CUBE (1, 2)'),
 	(27, 'sets: empty set, test', 'SELECT e.kind, e.flag, e.band, count(*), sum(e.qty) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) WHERE e.band >= 4 GROUP BY GROUPING SETS ((e.kind), (e.flag, e.band), ())'),
 	(28, 'sets: grouping()', 'SELECT e.kind, GROUPING(e.kind), count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, flag text, band int4, seen text, score float8, qty int4) GROUP BY ROLLUP (e.kind)');
-CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, why text, same bool) LANGUAGE sql AS $$
-	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END, u.why,
+CREATE FUNCTION pa_check(tbl text, lo int DEFAULT 1, hi int DEFAULT 99) RETURNS TABLE (n int, shape text, pre text, same bool) LANGUAGE sql AS $$
+	SELECT z.n, z.shape, CASE WHEN u.pre IS NULL THEN '-' WHEN u.pre = 0 THEN 'none' WHEN u.pre = u.units THEN 'all' ELSE 'some' END,
 	       pa_rows(z.q, true, true) IS NOT DISTINCT FROM pa_rows(z.q, false, true) AND pa_rows(z.q, false, true) IS NOT DISTINCT FROM pa_rows(z.q, false, false)
 	FROM (SELECT n, shape, format(q, tbl) AS q FROM pa_q WHERE n BETWEEN lo AND hi) z, LATERAL pa_units(z.q) u ORDER BY z.n
 $$;
@@ -75,142 +66,142 @@ SELECT sift.col_verify('ev_col', true);
 (1 row)
 
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | all  |                                        | t
-  2 | two keys, filter          | all  |                                        | t
-  3 | row range: zones          | some |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | all  |                                        | t
-  6 | key: month of seen        | all  |                                        | t
-  7 | key: band case            | all  |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | all  |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | all  |                                        | t
- 17 | key: band / 4             | all  |                                        | t
- 18 | key: lut and leaf, filter | all  |                                        | t
- 19 | key: month, filter on it  | all  |                                        | t
- 20 | filter on dims            | all  |                                        | t
- 21 | filter and key, where     | all  |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | all  |                                        | t
- 24 | counts of a measure only  | all  |                                        | t
- 25 | one measure, minmax only  | all  |                                        | t
- 26 | sets: cube, derived key   | all  |                                        | t
- 27 | sets: empty set, test     | all  |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | all  | t
+  2 | two keys, filter          | all  | t
+  3 | row range: zones          | some | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | all  | t
+  6 | key: month of seen        | all  | t
+  7 | key: band case            | all  | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | all  | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | all  | t
+ 17 | key: band / 4             | all  | t
+ 18 | key: lut and leaf, filter | all  | t
+ 19 | key: month, filter on it  | all  | t
+ 20 | filter on dims            | all  | t
+ 21 | filter and key, where     | all  | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | all  | t
+ 24 | counts of a measure only  | all  | t
+ 25 | one measure, minmax only  | all  | t
+ 26 | sets: cube, derived key   | all  | t
+ 27 | sets: empty set, test     | all  | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 -- rows change: the units they are on are scanned, the others answer; the derived keys follow
 UPDATE ev SET items = '[{"kind": "k1", "flag": "fa", "band": 9, "seen": "2026-02-10", "score": 1.5, "qty": 2}]' WHERE id BETWEEN 100 AND 150;
 DELETE FROM ev WHERE id BETWEEN 7000 AND 7100;
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | some |                                        | t
-  2 | two keys, filter          | some |                                        | t
-  3 | row range: zones          | none |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | some |                                        | t
-  6 | key: month of seen        | some |                                        | t
-  7 | key: band case            | some |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | some |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | some |                                        | t
- 17 | key: band / 4             | some |                                        | t
- 18 | key: lut and leaf, filter | some |                                        | t
- 19 | key: month, filter on it  | some |                                        | t
- 20 | filter on dims            | some |                                        | t
- 21 | filter and key, where     | some |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | some |                                        | t
- 24 | counts of a measure only  | some |                                        | t
- 25 | one measure, minmax only  | some |                                        | t
- 26 | sets: cube, derived key   | some |                                        | t
- 27 | sets: empty set, test     | some |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | some | t
+  2 | two keys, filter          | some | t
+  3 | row range: zones          | none | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | some | t
+  6 | key: month of seen        | some | t
+  7 | key: band case            | some | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | some | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | some | t
+ 17 | key: band / 4             | some | t
+ 18 | key: lut and leaf, filter | some | t
+ 19 | key: month, filter on it  | some | t
+ 20 | filter on dims            | some | t
+ 21 | filter and key, where     | some | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | some | t
+ 24 | counts of a measure only  | some | t
+ 25 | one measure, minmax only  | some | t
+ 26 | sets: cube, derived key   | some | t
+ 27 | sets: empty set, test     | some | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | some |                                        | t
-  2 | two keys, filter          | some |                                        | t
-  3 | row range: zones          | none |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | some |                                        | t
-  6 | key: month of seen        | some |                                        | t
-  7 | key: band case            | some |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | some |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | some |                                        | t
- 17 | key: band / 4             | some |                                        | t
- 18 | key: lut and leaf, filter | some |                                        | t
- 19 | key: month, filter on it  | some |                                        | t
- 20 | filter on dims            | some |                                        | t
- 21 | filter and key, where     | some |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | some |                                        | t
- 24 | counts of a measure only  | some |                                        | t
- 25 | one measure, minmax only  | some |                                        | t
- 26 | sets: cube, derived key   | some |                                        | t
- 27 | sets: empty set, test     | some |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | some | t
+  2 | two keys, filter          | some | t
+  3 | row range: zones          | none | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | some | t
+  6 | key: month of seen        | some | t
+  7 | key: band case            | some | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | some | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | some | t
+ 17 | key: band / 4             | some | t
+ 18 | key: lut and leaf, filter | some | t
+ 19 | key: month, filter on it  | some | t
+ 20 | filter on dims            | some | t
+ 21 | filter and key, where     | some | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | some | t
+ 24 | counts of a measure only  | some | t
+ 25 | one measure, minmax only  | some | t
+ 26 | sets: cube, derived key   | some | t
+ 27 | sets: empty set, test     | some | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 -- rows in the write buffer, then sealed
 INSERT INTO ev SELECT g, g % 7, '[{"kind": null, "flag": "fc", "band": null, "seen": "2026-03-01", "score": 2.5, "qty": 3}, {"kind": "k2", "flag": "fa", "band": 4, "seen": "2026-01-02"}]', repeat('p', 200)
 FROM generate_series(20001, 20800) g;
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | some |                                        | t
-  2 | two keys, filter          | some |                                        | t
-  3 | row range: zones          | none |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | some |                                        | t
-  6 | key: month of seen        | some |                                        | t
-  7 | key: band case            | some |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | some |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | some |                                        | t
- 17 | key: band / 4             | some |                                        | t
- 18 | key: lut and leaf, filter | some |                                        | t
- 19 | key: month, filter on it  | some |                                        | t
- 20 | filter on dims            | some |                                        | t
- 21 | filter and key, where     | some |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | some |                                        | t
- 24 | counts of a measure only  | some |                                        | t
- 25 | one measure, minmax only  | some |                                        | t
- 26 | sets: cube, derived key   | some |                                        | t
- 27 | sets: empty set, test     | some |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | some | t
+  2 | two keys, filter          | some | t
+  3 | row range: zones          | none | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | some | t
+  6 | key: month of seen        | some | t
+  7 | key: band case            | some | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | some | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | some | t
+ 17 | key: band / 4             | some | t
+ 18 | key: lut and leaf, filter | some | t
+ 19 | key: month, filter on it  | some | t
+ 20 | filter on dims            | some | t
+ 21 | filter and key, where     | some | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | some | t
+ 24 | counts of a measure only  | some | t
+ 25 | one measure, minmax only  | some | t
+ 26 | sets: cube, derived key   | some | t
+ 27 | sets: empty set, test     | some | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 SELECT sift.col_promote('ev_col') >= 0 AS promoted;
@@ -221,36 +212,36 @@ SELECT sift.col_promote('ev_col') >= 0 AS promoted;
 
 VACUUM (freeze, index_cleanup on, disable_page_skipping) ev;
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | some |                                        | t
-  2 | two keys, filter          | some |                                        | t
-  3 | row range: zones          | none |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | some |                                        | t
-  6 | key: month of seen        | some |                                        | t
-  7 | key: band case            | some |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | some |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | some |                                        | t
- 17 | key: band / 4             | some |                                        | t
- 18 | key: lut and leaf, filter | some |                                        | t
- 19 | key: month, filter on it  | some |                                        | t
- 20 | filter on dims            | some |                                        | t
- 21 | filter and key, where     | some |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | some |                                        | t
- 24 | counts of a measure only  | some |                                        | t
- 25 | one measure, minmax only  | some |                                        | t
- 26 | sets: cube, derived key   | some |                                        | t
- 27 | sets: empty set, test     | some |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | some | t
+  2 | two keys, filter          | some | t
+  3 | row range: zones          | none | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | some | t
+  6 | key: month of seen        | some | t
+  7 | key: band case            | some | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | some | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | some | t
+ 17 | key: band / 4             | some | t
+ 18 | key: lut and leaf, filter | some | t
+ 19 | key: month, filter on it  | some | t
+ 20 | filter on dims            | some | t
+ 21 | filter and key, where     | some | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | some | t
+ 24 | counts of a measure only  | some | t
+ 25 | one measure, minmax only  | some | t
+ 26 | sets: cube, derived key   | some | t
+ 27 | sets: empty set, test     | some | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 SELECT sift.col_verify('ev_col', true);
@@ -274,36 +265,36 @@ SELECT sift.col_verify('ev_col', true);
 (1 row)
 
 SELECT * FROM pa_check('ev');
- n  |           shape           | pre  |                  why                   | same 
-----+---------------------------+------+----------------------------------------+------
-  1 | one key                   | all  |                                        | t
-  2 | two keys, filter          | all  |                                        | t
-  3 | row range: zones          | none |                                        | t
-  4 | count distinct            | -    | aggregate with DISTINCT                | t
-  5 | filtered counts           | all  |                                        | t
-  6 | key: month of seen        | all  |                                        | t
-  7 | key: band case            | all  |                                        | t
-  8 | test on a measure         | -    | conjunct is not on the dims            | t
-  9 | sum of expression         | -    | aggregate argument is not a plain leaf | t
- 10 | grouping sets             | all  |                                        | t
- 11 | joined table              | -    | joined table                           | t
- 12 | key of the rows           | -    | group key is not a dim leaf            | t
- 13 | variance                  | -    | aggregate not additive over tuples     | t
- 14 | key: a measure            | -    | dim not in the rollup                  | t
- 15 | row set test              | -    | row comparison decides no unit         | t
- 16 | key: coalesce             | all  |                                        | t
- 17 | key: band / 4             | all  |                                        | t
- 18 | key: lut and leaf, filter | all  |                                        | t
- 19 | key: month, filter on it  | all  |                                        | t
- 20 | filter on dims            | all  |                                        | t
- 21 | filter and key, where     | all  |                                        | t
- 22 | filter on a measure       | -    | aggregate with FILTER                  | t
- 23 | every part of measures    | all  |                                        | t
- 24 | counts of a measure only  | all  |                                        | t
- 25 | one measure, minmax only  | all  |                                        | t
- 26 | sets: cube, derived key   | all  |                                        | t
- 27 | sets: empty set, test     | all  |                                        | t
- 28 | sets: grouping()          | -    | aggregate not additive over tuples     | t
+ n  |           shape           | pre  | same 
+----+---------------------------+------+------
+  1 | one key                   | all  | t
+  2 | two keys, filter          | all  | t
+  3 | row range: zones          | none | t
+  4 | count distinct            | none | t
+  5 | filtered counts           | all  | t
+  6 | key: month of seen        | all  | t
+  7 | key: band case            | all  | t
+  8 | test on a measure         | none | t
+  9 | sum of expression         | none | t
+ 10 | grouping sets             | all  | t
+ 11 | joined table              | none | t
+ 12 | key of the rows           | none | t
+ 13 | variance                  | none | t
+ 14 | key: a measure            | none | t
+ 15 | row set test              | none | t
+ 16 | key: coalesce             | all  | t
+ 17 | key: band / 4             | all  | t
+ 18 | key: lut and leaf, filter | all  | t
+ 19 | key: month, filter on it  | all  | t
+ 20 | filter on dims            | all  | t
+ 21 | filter and key, where     | all  | t
+ 22 | filter on a measure       | none | t
+ 23 | every part of measures    | all  | t
+ 24 | counts of a measure only  | all  | t
+ 25 | one measure, minmax only  | all  | t
+ 26 | sets: cube, derived key   | all  | t
+ 27 | sets: empty set, test     | all  | t
+ 28 | sets: grouping()          | none | t
 (28 rows)
 
 DROP TABLE ev, ev_dim, pa_q;
