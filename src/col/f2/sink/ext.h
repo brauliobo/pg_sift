@@ -1,7 +1,7 @@
 /*
- * col/f2/sink/ext.h - the rows of an index of format major 2 taken one batch at a time by the consumer instead of being pushed to a sink (col/f2/sink/sink.h): every granule of every part and the
- * slab of rows not yet in a part, decoded straight to the vectors of agg/vec.h for the leaves the consumer names, in slices of SIFT_VEC_LEN rows, with the rows the deletion vectors, the pending
- * deletes and the transaction's own deletes say are dead left out of live. Beside the columns it gives, for the leaves of a key of a jsonb document, the rows that have the key, and for an array
+ * col/f2/sink/ext.h - the rows of an index or a sift_table of format major 2 taken one batch at a time by the consumer instead of being pushed to a sink (col/f2/sink/sink.h): every granule of every
+ * part (and of an index the slab of rows not yet in a part), decoded straight to the vectors of agg/vec.h for the leaves the consumer names, in slices of SIFT_VEC_LEN rows, with the rows the
+ * deletion vectors, the pending deletes and the transaction's own deletes say are dead left out of live. Beside the columns it gives, for the leaves of a key of a jsonb document, the rows that have the key, and for an array
  * column (SIFT_COLK_GROUP) the layout of the elements of the rows of the slice and the element columns decoded for the whole granule.
  *
  * The consumer may tell the pull what its rows must satisfy (SiftF2PullSpec.pred, elem_pred): the partitions, parts and granules that hold no such row (by the key ranges, the time bounds, the key marks
@@ -9,7 +9,8 @@
  * A spec may name several array columns of a row (one group each), each read as its own layout and element columns. A group that names the lengths of an array and no element column reads no
  * element chunk: the layout is all the consumer gets.
  *
- * Visibility of the heap is the consumer's: live is what the index structures know, and a row of it may be a version the heap has since ended (a delete or an update is the index's only at the next VACUUM).
+ * Visibility of an index's rows is the consumer's: live is what the index structures know, and a row of it may be a version the heap has since ended (a delete or an update is the index's only
+ * at the next VACUUM). A sift_table decides visibility in its store: live is what the snapshot sees, with the column deltas it sees laid over the columns (SiftF2ExtBatch.visible).
  */
 #ifndef SIFT_COL_F2_SINK_EXT_H
 #define SIFT_COL_F2_SINK_EXT_H
@@ -101,6 +102,7 @@ typedef struct SiftF2ExtBatch
 	const uint64 *tid;
 	const uint64 *live;
 	const SiftF2ElemStream *elem;	/* one for each group of the spec; NULL when it names none */
+	bool		visible;		/* live is what the snapshot sees (a sift_table): no row needs the heap to say it */
 } SiftF2ExtBatch;
 
 /* What the predicates of the spec left of the index, and how the element columns were decoded */
@@ -120,8 +122,11 @@ typedef struct SiftF2PullStats
 
 typedef struct SiftF2Pull SiftF2Pull;
 
-/* A scan of the index over the snapshot (the transaction's staged rows are flushed first); every part and every slab the predicates of the spec leave */
-extern SiftF2Pull *sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec);
+/*
+ * A scan of the index or the sift_table rel over the snapshot (the transaction's staged rows are flushed first); every part and every slab the predicates of the spec leave. A group whose leaf is
+ * -1 has no layout: every row is poison. A table reads no mask and offers no granule to a sink.
+ */
+extern SiftF2Pull *sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec);
 /* The next slice, valid until the next call; NULL after the last */
 extern const SiftF2ExtBatch *sift_f2_pull_next(SiftF2Pull *p);
 /* The payload (a jsonb datum, len bytes) of row `row` of the slice just given, of column i of the spec when it is a leaf of a key of a document and the row holds a value of a JSON type the leaf cannot store (it is NULL in the column); NULL for any other row. Valid until the next slice */

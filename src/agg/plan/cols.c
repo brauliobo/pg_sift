@@ -94,11 +94,26 @@ sift_v6_plan_opfamily(const V6Plan *p, int att)
 	return p->is_table ? p->sch.att_opfamily[att] : p->index->opfamily[att - 1];
 }
 
+/* the leaves of the store of a table whose format reads the elements of its arrays from them */
+static void
+table_leaves(V6Plan *p, Oid relid)
+{
+	bool	   *json = palloc0((p->sch.natts + 1) * sizeof(bool));
+
+	if (p->sch.leaves == NULL || p->ops->jsonb == NULL || !p->ops->jsonb->table_elems)
+		return;
+	for (int a = 1; a <= p->sch.natts; a++)
+		json[a] = get_atttype(relid, (AttrNumber) a) == JSONBOID;
+	p->leaves = (SiftV6Leaves) {.schema = p->sch.leaves,.first = p->sch.att_first,.nleaves = p->sch.att_nleaves,.json = json};
+}
+
 bool
 sift_v6_plan_table(V6Plan *p, Oid relid)
 {
 	p->ops = sift_store_ops_for_oid(relid, true);
 	p->is_table = p->ops != NULL && p->ops->schema(relid, true, &p->sch);
+	if (p->is_table)
+		table_leaves(p, relid);
 #ifdef SIFT_TESTING
 	if (sift_test_col_rel_inval)
 		RelationCacheInvalidateEntry(relid);	/* the catalog lookups of the rest of the plan can take a lock that reloads the entry and drops its store */
@@ -110,6 +125,8 @@ void
 sift_v6_plan_index(V6Plan *p, Relation irel)
 {
 	p->colrel = sift_col_is_index(irel) ? sift_col_rel_private(irel, CurrentMemoryContext) : NULL;
+	if (p->colrel != NULL)
+		p->leaves = (SiftV6Leaves) {.schema = p->colrel->schema,.first = p->colrel->first,.nleaves = p->colrel->nleaves,.json = p->colrel->json};
 	p->ops = p->colrel != NULL && p->colrel->stale ? NULL : sift_store_ops_for_oid(RelationGetRelid(irel), false);
 	if (p->ops != NULL && !p->ops->schema(RelationGetRelid(irel), false, &p->sch))
 		p->ops = NULL;

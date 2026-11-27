@@ -90,6 +90,6 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.raise_after_quals = true,
 	.raise_in_groups = true,
 	.streams = true,
-	.table_heap_rows = true,
+	.table_elems = true,
 	.unnest_run = sift_v6_unnest_run
 };

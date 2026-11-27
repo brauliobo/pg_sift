@@ -374,7 +374,7 @@ build_exists(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	return one.fn == SV6E_MEMBERS || merge_declared(rte, &one, b);
 }
 
-/* a jsonpath or containment test: over an index the quals of the elements of its array, over a table the call itself decides each row */
+/* a jsonpath or containment test: over an index the quals of the elements of its array, over a table the call itself decides each row, which the scan reads again by its address */
 static bool
 build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 {
@@ -391,6 +391,7 @@ build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	}
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
+	p->heap_rows |= p->is_table;
 	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->parts) && (!sift_v6_unnest_path_keyed(e) || sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
 }
 

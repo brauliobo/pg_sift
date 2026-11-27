@@ -26,7 +26,7 @@ sift_v6_members_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *o
 }
 
 bool
-sift_v6_members_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att)
+sift_v6_members_seed(const SiftV6Leaves *r, SiftV6XElem *e, const char *key, int att)
 {
 	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0)
 		return false;
@@ -90,9 +90,12 @@ sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	}
 	if (at == el->ncols)
 	{
-		const int	leaf = p->is_table ? -1 : sift_v6_unnest_member_leaf(p->colrel, el->attno, el->group_leaf, name);
+		int			leaf = el->group_leaf >= 0 ? sift_v6_unnest_member_leaf(&p->leaves, el->attno, el->group_leaf, name) : -1;
+		const bool	held = leaf >= 0 && sift_v6_leaf_holds(type, -1, &p->leaves.schema->cols[leaf]);
 
-		if (el->ncols == SIFT_V6_XELEM_COLS || (p->is_table ? !sift_v6_table_elem_type(type) : leaf < 0 || !sift_v6_leaf_holds(type, -1, &p->colrel->schema->cols[leaf])))
+		if (p->is_table && !held)
+			el->group_leaf = leaf = -1;
+		if (el->ncols == SIFT_V6_XELEM_COLS || (el->group_leaf < 0 ? !sift_v6_table_elem_type(type) : !held))
 			return false;
 		el->col_leaf[at] = leaf;
 		el->col_type[at] = type;

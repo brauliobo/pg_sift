@@ -365,11 +365,11 @@ compile_lowered(V6Plan *p, const List *tests)
 	return true;
 }
 
-/* the scan of an unnest of a table reads every row it keeps from the heap, where the quals of the statement decide it (sift_v6_unnest_where): a clause the executor evaluates alone needs no scan key there */
+/* the scan of an unnest of a table can read every row again by its address, where the quals of the statement decide it (sift_v6_unnest_where): a clause the executor evaluates alone needs no scan key there */
 static bool
 heap_decides(const V6Plan *p, const Expr *clause)
 {
-	return p->is_table && p->xseed != NULL && p->xseed->unnest && p->ops->jsonb != NULL && p->ops->jsonb->table_heap_rows && !contain_subplans((Node *) clause) &&
+	return p->is_table && p->xseed != NULL && p->xseed->unnest && p->ops->jsonb != NULL && p->ops->jsonb->table_elems && !contain_subplans((Node *) clause) &&
 		!agg_node_has_param((const Node *) clause);
 }
 
@@ -388,8 +388,12 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 		p->spec.indexqual = lappend(p->spec.indexqual, q);
 	else if (jq != NIL)
 		p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
-	else if (!qual_batch(p, ri))
-		return heap_decides(p, ri->clause) || (!ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests));
+	else if (qual_batch(p, ri))
+		return true;
+	else if (heap_decides(p, ri->clause))
+		p->heap_rows = true;
+	else
+		return !ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests);
 	return true;
 }
 

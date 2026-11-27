@@ -309,14 +309,11 @@ scan_table_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV
 	text_end(text);
 }
 
-/* The unnest of an array column: the elements the index keeps, or those of the heap rows of the table the scan reads */
+/* The unnest of an array column: the elements the index or the table keeps */
 static void
 v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
-	if (src->index == NULL)
-		src->ops->zone->scan_table(src->spec, st->group, src->heap, src->quals, snap, NULL, 0, &st->stats, st->star, NULL, NULL);
-	else
-		src->ops->jsonb->unnest_run(src->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+	src->ops->jsonb->unnest_run(src->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
 }
 
 /* One scan of a fact table of a join or an unnest: a source of the node, the partitions of a partitioned fact being one each */

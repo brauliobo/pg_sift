@@ -22,7 +22,7 @@ sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out
 }
 
 int
-sift_v6_elems_leaf(const SiftColRel *r, int att, int group)
+sift_v6_elems_leaf(const SiftV6Leaves *r, int att, int group)
 {
 	const SiftColDef *g = &r->schema->cols[group];
 
@@ -37,7 +37,7 @@ sift_v6_elems_leaf(const SiftColRel *r, int att, int group)
 }
 
 bool
-sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names)
+sift_v6_elems_seed(const SiftV6Leaves *r, SiftV6XElem *e, const char *key, int att, List **names)
 {
 	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0 || (e->col_leaf[0] = sift_v6_elems_leaf(r, att, e->group_leaf)) < 0)
 		return false;

@@ -157,6 +157,8 @@ extern void sift_f2_store_invalidate(Relation rel);
 
 /* A leaf of a declared path of a jsonb column of a table, which a part written before the declaration does not have */
 extern bool sift_f2_leaf_is_path(const SiftF2Store *s, int leaf);
+/* [ncols], in the current context: the leaves of a table that are a top-level key of a declared path, as SiftF2Rel.key_leaf says them of an index */
+extern bool *sift_f2_path_key_leaves(const SiftF2Store *s);
 
 /* The identities of the columns of a part written from parts that lack the leaves of the paths: its leaves of paths hold no value and are named by no attribute, so that the part reads as one without them until VACUUM FULL rewrites it */
 extern const SiftPartColIdentity *sift_f2_unnamed_path_ids(const SiftF2Store *s);

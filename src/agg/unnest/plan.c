@@ -163,11 +163,22 @@ store_reads_cols(const V6Plan *p)
 	return p->ops->jsonb != NULL && (p->ops->jsonb->exact_values || !any_col(&p->spec, is_untyped));
 }
 
+/* every row of a table the scan reads again by its address: its arrays are read as the rows the leaves cannot hold */
+static void
+rows_from_heap(SiftV6Ext *x)
+{
+	x->elem.group_leaf = -1;
+	for (int s = 0; s < x->nstreams; s++)
+		x->streams[s].group_leaf = -1;
+}
+
 bool
 sift_v6_unnest_where(V6Plan *p)
 {
 	SiftClause	clause;
 
+	if (p->heap_rows)
+		rows_from_heap(p->spec.ext);
 	foreach_node(RestrictInfo, ri, sift_v6_quals_in_order(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));

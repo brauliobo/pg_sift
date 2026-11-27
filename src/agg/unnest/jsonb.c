@@ -236,7 +236,7 @@ sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6Ele
 
 /* the lengths leaf of the attribute's array (the document itself, or its key `key`) and its element leaves are the ones of a list of objects (no key leaf, which a map has) */
 int
-sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key)
+sift_v6_unnest_group_of(const SiftV6Leaves *r, int att, const char *key)
 {
 	const size_t len = key != NULL ? strlen(key) : 0;
 	int			group = -1;
@@ -253,7 +253,7 @@ sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key)
 }
 
 int
-sift_v6_unnest_member_leaf(const SiftColRel *r, int att, int group, const char *name)
+sift_v6_unnest_member_leaf(const SiftV6Leaves *r, int att, int group, const char *name)
 {
 	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
 	{
@@ -269,7 +269,7 @@ sift_v6_unnest_member_leaf(const SiftColRel *r, int att, int group, const char *
 static bool
 seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *key, int att, List **names)
 {
-	const SiftColRel *r = p->colrel;
+	const SiftV6Leaves *r = &p->leaves;
 	int			c = 0;
 
 	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0)
@@ -308,7 +308,7 @@ leaf_oid(const SiftColDef *d)
 
 /* the group of the map of attribute att: `col.* type` of the document itself (key NULL), or `col.key.* type` of its key `key` (-1: the attribute has none) */
 static int
-map_group_of(const SiftColRel *r, int att, const char *key)
+map_group_of(const SiftV6Leaves *r, int att, const char *key)
 {
 	const size_t len = key != NULL ? strlen(key) : 0;
 
@@ -325,7 +325,7 @@ map_group_of(const SiftColRel *r, int att, const char *key)
 
 /* the leaves of the map of attribute att that is the document itself (key NULL) or its key `key` */
 static bool
-map_leaves_of(const SiftColRel *r, int att, const char *mkey, int *group, int *key, int *value)
+map_leaves_of(const SiftV6Leaves *r, int att, const char *mkey, int *group, int *key, int *value)
 {
 	*key = *value = -1;
 	if (!r->json[att] || (*group = map_group_of(r, att, mkey)) < 0)
@@ -353,12 +353,12 @@ seed_each(V6Plan *p, SiftV6XElem *e, const char *mkey, int att)
 	int			key,
 				value;
 
-	if (!map_leaves_of(p->colrel, att, mkey, &e->group_leaf, &key, &value))
+	if (!map_leaves_of(&p->leaves, att, mkey, &e->group_leaf, &key, &value))
 		return false;
 	e->col_leaf[0] = key;
 	e->col_type[0] = TEXTOID;
 	e->col_leaf[1] = value;
-	e->col_type[1] = leaf_oid(&p->colrel->schema->cols[value]);
+	e->col_type[1] = leaf_oid(&p->leaves.schema->cols[value]);
 	e->ncols = 2;
 	return true;
 }
@@ -367,7 +367,7 @@ seed_each(V6Plan *p, SiftV6XElem *e, const char *mkey, int att)
 static bool
 seed_unnest_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att)
 {
-	const SiftColRel *r = p->colrel;
+	const SiftV6Leaves *r = &p->leaves;
 	const SiftV6Class cls = sift_v6_class(rte->elem);
 
 	e->group_leaf = e->col_leaf[0] = -1;
@@ -421,7 +421,7 @@ rte_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
 Oid
 sift_v6_unnest_member_type(const V6Plan *p, const SiftV6ElemRte *rte, const char *name, bool *astext)
 {
-	const SiftColRel *r = p->colrel;
+	const SiftV6Leaves *r = &p->leaves;
 	const char *key;
 	const int	i = p->is_table ? -1 : rte_column(p, rte, &key);
 	int			group,
@@ -440,25 +440,56 @@ sift_v6_unnest_doc_leaf(const V6Plan *p, const SiftV6ElemRte *rte, int *leaf)
 	const int	att = rte->key != NULL ? rte_column(p, rte, &key) + 1 : 0;
 
 	*leaf = -1;
-	for (int c = key != NULL ? p->colrel->first[att] : 0; key != NULL && c < p->colrel->first[att] + p->colrel->nleaves[att]; c++)
-		if (sift_col_def_is_present(&p->colrel->schema->cols[c]))
+	for (int c = key != NULL ? p->leaves.first[att] : 0; key != NULL && c < p->leaves.first[att] + p->leaves.nleaves[att]; c++)
+		if (sift_col_def_is_present(&p->leaves.schema->cols[c]))
 			*leaf = c;
 	return rte->key == NULL || *leaf >= 0;
+}
+
+/* the attribute of the sift_table that holds the array of rte (0: none), and the key of its document that is the array (NULL: the column is) */
+static int
+table_column(const V6Plan *p, const SiftV6ElemRte *rte, const char **key)
+{
+	const Var  *v = (const Var *) rte->base;
+
+	*key = rte->key;
+	return IsA(v, Var) && v->varattno > 0 && v->varattno <= p->sch.natts ? v->varattno : 0;
+}
+
+/* the leaves of the array of attribute att (its key `key`) that the function of rte reads */
+static bool
+fn_seed(V6Plan *p, const SiftV6ElemRte *rte, SiftV6XElem *e, const char *key, int att, List **names)
+{
+	switch (rte->fn)
+	{
+		case SV6E_RECORDSET:
+		case SV6E_PATH:
+			return seed_recordset(p, e, rte, key, att, names);
+		case SV6E_UNNEST:
+			return seed_unnest_array(p, e, rte, att);
+		case SV6E_ELEMS_TEXT:
+			return sift_v6_elems_seed(&p->leaves, e, key, att, names);
+		case SV6E_MEMBERS:
+			return sift_v6_members_seed(&p->leaves, e, key, att);
+		default:
+			return seed_each(p, e, key, att);
+	}
 }
 
 bool
 sift_v6_unnest_elem_seed(V6Plan *p, const SiftV6ElemRte *rte, bool left, SiftV6XElem *e, List **names)
 {
 	const char *key = NULL;
-	const int	i = p->is_table ? 0 : rte_column(p, rte, &key);
+	const int	att = p->is_table ? table_column(p, rte, &key) : rte_column(p, rte, &key) + 1;
+	const SiftV6XElem seed = {.fn = rte->fn,.attno = att,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
 
-	*e = (SiftV6XElem) {.fn = rte->fn,.attno = i + 1,.type = rte->fn == SV6E_UNNEST ? rte->elem : exprType((const Node *) rte->array),.left = left};
+	*e = seed;
 	*names = NIL;
-	return i >= 0 && (p->is_table ? sift_v6_table_elems_seed(p, e, rte, names) :
-					  (rte->fn == SV6E_RECORDSET || rte->fn == SV6E_PATH) ? seed_recordset(p, e, rte, key, i + 1, names) :
-					  rte->fn == SV6E_UNNEST ? seed_unnest_array(p, e, rte, i + 1) :
-					  rte->fn == SV6E_ELEMS_TEXT ? sift_v6_elems_seed(p->colrel, e, key, i + 1, names) :
-					  rte->fn == SV6E_MEMBERS ? sift_v6_members_seed(p->colrel, e, key, i + 1) : seed_each(p, e, key, i + 1));
+	if (att <= 0 || (p->leaves.schema != NULL && fn_seed(p, rte, e, key, att, names)))
+		return att > 0;
+	*e = seed;
+	*names = NIL;
+	return p->is_table && sift_v6_table_elems_seed(p, e, rte, names);
 }
 
 bool

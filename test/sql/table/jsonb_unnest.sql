@@ -71,6 +71,25 @@ SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
 SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
 
+-- the elements of a declared list come from the store of the table: a row is read again by its address only when the leaves cannot hold its array (tx has an element that is no object)
+CREATE FUNCTION reread(q text) RETURNS int8 LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+		IF l ~ 'Rows Read Again From The Heap' THEN RETURN substring(l FROM '\d+$')::int8; END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT n, reread(sql) FROM q WHERE n IN (1, 3, 4, 6, 7, 10) ORDER BY n;
+
+-- an update of a column beside the list (a column delta), a delete and an aborted insert are what the snapshot of the scan sees
+UPDATE tj SET qty = qty + 1 WHERE id % 7 = 0;
+DELETE FROM tj WHERE id % 11 = 0;
+BEGIN;
+INSERT INTO tj SELECT id + 10000, qty, doc FROM tj WHERE id <= 500;
+ROLLBACK;
+SELECT n, same(sql), pushed(sql) AS scan FROM q WHERE n IN (1, 3, 7, 11) ORDER BY n;
+
 DROP TABLE q, tj, tx, kinds;
-DROP FUNCTION used(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
+DROP FUNCTION used(text), reread(text), runq(text, bool), same(text), pushed(text), outcome(text, bool), runs_in_scan(text);
 DROP EXTENSION pg_sift;

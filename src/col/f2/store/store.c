@@ -650,6 +650,18 @@ sift_f2_leaf_is_path(const SiftF2Store *s, int leaf)
 	return s->path_def != NULL && s->path_def[leaf].path != NULL;
 }
 
+bool *
+sift_f2_path_key_leaves(const SiftF2Store *s)
+{
+	bool	   *keys = palloc0(Max(s->ncols, 1) * sizeof(bool));
+	const char *key;
+	int			len;
+
+	for (int c = 0; c < s->ncols; c++)
+		keys[c] = sift_f2_leaf_is_path(s, c) && sift_f2_def_top_key(&s->path_def[c], &key, &len);
+	return keys;
+}
+
 const SiftPartColIdentity *
 sift_f2_unnamed_path_ids(const SiftF2Store *s)
 {

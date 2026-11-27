@@ -361,6 +361,8 @@ col/f2/scope/twohop.c
 col/f2/sink/sink.h
 col/f2/sink/ext.c
 col/f2/sink/ext.h
+col/f2/sink/ext_int.h
+col/f2/sink/ext_table.c
 col/f2/slab_view.c
 col/f2/slab_view.h
 col/f2/store/store.c

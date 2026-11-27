@@ -45,7 +45,7 @@ extern bool sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k);
 extern bool sift_v6_unnest_exists_rte(const RangeTblEntry *rte, const SubPlan *sp, SiftV6ElemRte *out);
 /* e reads the fact table alone: one of its columns or an expression of them */
 extern bool sift_v6_unnest_array_ok(PlannerInfo *root, const RelOptInfo *fact, const Expr *e);
-/* The Ext of the unnest, p->xseed: the leaves of the column of the index the function takes apart, false when the index does not keep all of them as columns */
+/* The Ext of the unnest, p->xseed: the leaves of the column of the index or the table the function takes apart, false when an index does not keep all of them as columns */
 extern bool sift_v6_unnest_seed(V6Plan *p, RelOptInfo *elem_rel, const SiftV6ElemRte *rte, bool left);
 /* The element stream e of the array of rte (its leaves, or the columns the function of a table gives) and the names of its recordset columns; false when the source reads no such array */
 extern bool sift_v6_unnest_elem_seed(V6Plan *p, const SiftV6ElemRte *rte, bool left, SiftV6XElem *e, List **names);
@@ -59,7 +59,7 @@ extern SiftV6Col sift_v6_elem_vatt_col(int attno, Oid typid);
 /* The leaf holds the values of a vector of type typid (text, an integer, a boolean or a float) as they are stored */
 extern bool sift_v6_leaf_holds(Oid typid, int32 typmod, const SiftColDef *d);
 /* The group leaf of the list of attribute att (the document itself, or its key `key`): its lengths, whose children are its elements or the keys of its objects (-1: none) */
-extern int	sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key);
+extern int	sift_v6_unnest_group_of(const SiftV6Leaves *r, int att, const char *key);
 
 /*
  * agg/unnest/array_elem.c, SV6E_ELEMS_TEXT: jsonb_array_elements_text(doc) or (doc -> 'key') over a list of strings the index keeps shredded (`doc.key[] text`: a group leaf of its lengths and a
@@ -67,9 +67,9 @@ extern int	sift_v6_unnest_group_of(const SiftColRel *r, int att, const char *key
  * leaves cannot hold (a document that is no list of strings) are read with.
  */
 extern bool sift_v6_elems_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
-extern bool sift_v6_elems_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att, List **names);
+extern bool sift_v6_elems_seed(const SiftV6Leaves *r, SiftV6XElem *e, const char *key, int att, List **names);
 /* the text leaf of the elements of group (a list of scalars: the child the list itself names; an array of objects has one child per key instead), -1: none */
-extern int	sift_v6_elems_leaf(const SiftColRel *r, int att, int group);
+extern int	sift_v6_elems_leaf(const SiftV6Leaves *r, int att, int group);
 extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
 
 /*
@@ -78,15 +78,15 @@ extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
  * slot of the element is computed after the quals of the element (the cast of a member, the value of jsonb_each), which test it among the clauses of the pairs only. member_text: elem ->> name.
  */
 extern bool sift_v6_members_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
-extern bool sift_v6_members_seed(const SiftColRel *r, SiftV6XElem *e, const char *key, int att);
+extern bool sift_v6_members_seed(const SiftV6Leaves *r, SiftV6XElem *e, const char *key, int att);
 extern bool sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out);
 extern bool sift_v6_elem_late(const SiftV6XElem *e, int slot);
 extern Datum sift_v6_member_text(Datum elem, text *name, bool *isnull);
-/* agg/unnest/table_elems.c: the elements of rte over a column of the sift_table of p, which the scan takes apart from each row (no leaf); elem_type: a column of them may have the type t */
+/* agg/unnest/table_elems.c: the elements of rte over a column of the sift_table of p that no declared leaves hold, which the scan takes apart from each row; elem_type: a column of them may have the type t */
 extern bool sift_v6_table_elems_seed(const V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, List **names);
 extern bool sift_v6_table_elem_type(Oid t);
 /* the leaf of the key `name` of the objects of the group of attribute att (-1: none) */
-extern int	sift_v6_unnest_member_leaf(const SiftColRel *r, int att, int group, const char *name);
+extern int	sift_v6_unnest_member_leaf(const SiftV6Leaves *r, int att, int group, const char *name);
 
 /* the column of the elements of rte that is the member `name` of type `type` (its kind when kind): its place, added when the tests have none yet; -1 when there is no room */
 extern int	sift_v6_unnest_rte_col(SiftV6ElemRte *rte, const char *name, Oid type, bool kind);

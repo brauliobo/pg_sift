@@ -7,7 +7,7 @@
 #include "core/popcount.h"
 #include "col/f2/agg/unnest/int.h"
 
-/* the rows of the batch in the TID range of the statement whose heap row the snapshot sees */
+/* the rows of the batch in the TID range of the statement whose row the snapshot sees (a table's live are those already) */
 uint16
 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b)
 {
@@ -15,7 +15,7 @@ sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b)
 
 	if (s->tid_range && sift_v6_tid_mask(&u->vet, s->tid_lo, s->tid_hi, b->tid, 0, b->n, &u->bs) == 0)
 		return 0;
-	return sift_v6_vet_mask(&u->vet, b->tid, 0, false, b->n, &u->bs);
+	return sift_v6_vet_mask(&u->vet, b->tid, 0, b->visible, b->n, &u->bs);
 }
 
 static uint16
@@ -55,7 +55,7 @@ sift_f2_unnest_restrict_quals(UnRun *u, const SiftF2ExtBatch *b)
 typedef struct BqCols
 {
 	UnRun	   *u;
-	const SiftColRel *r;
+	const UnLeaves *r;
 } BqCols;
 
 static const SiftVec *
@@ -71,13 +71,16 @@ bq_col(void *arg, const SiftV6InCol *c)
 
 /* the quals of the table no scan key says, over the columns of the batch the pull decodes */
 void
-sift_f2_unnest_setup_bq(UnRun *u, const SiftColRel *r)
+sift_f2_unnest_setup_bq(UnRun *u, const UnLeaves *r)
 {
 	BqCols		cols = {u, r};
 	SiftV6Input in;
 
 	if (u->spec->vqual == NIL)
 		return;
-	sift_v6_input_init_rel(&in, u->index);
+	if (u->table)
+		sift_v6_input_init_table(&in, u->host);
+	else
+		sift_v6_input_init_rel(&in, u->host);
 	u->bq = sift_v6_bq_open(CurrentMemoryContext, u->spec->vqual, &in, bq_col, &cols, u->spec->exec);
 }

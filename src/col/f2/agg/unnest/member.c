@@ -14,7 +14,7 @@
 
 /* the map whose values are leaf value, among those the pull reads */
 static int
-map_of(UnRun *u, const SiftColRel *r, int value)
+map_of(UnRun *u, const UnLeaves *r, int value)
 {
 	const int	group = r->schema->cols[value].parent;
 	UnMap		m = {.group = group,.key = -1,.value = value};
@@ -34,7 +34,7 @@ map_of(UnRun *u, const SiftColRel *r, int value)
 }
 
 int
-sift_f2_unnest_member_col(UnRun *u, const SiftColRel *r, const SiftV6Col *c)
+sift_f2_unnest_member_col(UnRun *u, const UnLeaves *r, const SiftV6Col *c)
 {
 	const int	map = r->schema->cols[c->jleaf - 1].parent >= 0 ? 1 + map_of(u, r, c->jleaf - 1) : 0;
 	const int	leaf = map > 0 ? u->map[map - 1].group : c->jleaf - 1;
@@ -48,7 +48,7 @@ sift_f2_unnest_member_col(UnRun *u, const SiftColRel *r, const SiftV6Col *c)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
 	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.json = true,.typid = c->typid,.read = true,.jsonb_cast = c->jsonb_cast,
-		.heap_att = u->index->rd_index->indkey.values[c->attno - 1],.key = key,.keylen = strlen(key),.member = true,.map = map,.path = path};
+		.heap_att = heap_attno(u, c->attno),.key = key,.keylen = strlen(key),.member = true,.map = map,.path = path};
 	return u->ncols++;
 }
 
@@ -115,7 +115,7 @@ find(const UnCol *c, const SiftF2ElemStream *es, uint32 lo, uint32 hi, uint32 *a
 static void
 map_member(UnRun *u, int i, const SiftF2ExtBatch *b, uint32 r)
 {
-	const SiftF2ElemStream *es = &b->elem[(u->x->elem.group_leaf >= 0 ? u->nst : 0) + u->cols[i].map - 1];
+	const SiftF2ElemStream *es = &b->elem[u->nst + u->cols[i].map - 1];
 	uint32		at;
 
 	if (es->layout.n_parents < (uint32) b->n || ((es->poison[r >> 6] >> (r & 63)) & 1) || !find(&u->cols[i], es, es->layout.offsets[r], es->layout.offsets[r + 1], &at))

@@ -44,7 +44,6 @@
 #include "col/f2/store/schema.h"
 #include "core/memtrack.h"
 #include "col/f2/agg/scan_int.h"
-#include "col/f2/agg/unnest/run.h"
 
 /* The JSON type a row holds when the leaf holds its value: a boolean leaf a boolean, a text leaf a string, any other a number */
 static uint8
@@ -397,14 +396,6 @@ setup_spec(V6Scan *s, const int *first)
 	}
 }
 
-static void
-pair_col(void *arg, const SiftV6Col *c, bool month)
-{
-	const BqCols *b = arg;
-
-	col_for(b->s, b->first, *c, false, false);
-}
-
 void
 sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV6StarRun *star)
 {
@@ -417,10 +408,7 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
 	s->keyvec = palloc(Max(spec->nkeys, 1) * sizeof(SiftVec *));
 	s->argvec = palloc0(Max(nvec, 1) * sizeof(SiftVec *));
-	if (x != NULL && x->unnest)
-		sift_v6_unnest_attr_cols(spec, pair_col, &(BqCols) {s, first});
-	else
-		setup_spec(s, first);
+	setup_spec(s, first);
 	for (int i = 0; i < s->ncols; i++)
 		if ((s->cols[i].json || s->cols[i].cls == SV6C_DATUM) && s->batch_cx == NULL)
 			/* MEM[MEM-AGG-05]: SiftV6Scan batch_cx (the json exceptions of a batch, made only when a column reads a JSON key; was made for every scan) */
@@ -605,12 +593,6 @@ fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *t
 			return;
 	}
 	sift_f2_v6_refuse_nans(s);
-	if (s->unnest != NULL)
-	{
-		s->stats->rows += s->bs.n_active;
-		sift_v6_unnest_rows_run(s->unnest, s->fact, &s->bs, tid + off);
-		return;
-	}
 	sift_f2_v6_derive_columns(s);
 	sift_f2_v6_bin_keys(s);
 	s->stats->rows += s->bs.n_active;

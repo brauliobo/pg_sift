@@ -16,6 +16,16 @@
 
 struct SiftV6RelSource;
 
+/* The leaves an unnest reads the arrays of a relation by: those of a sift_col index, or of the store of a sift_table whose format reads its elements (SiftJsonbOps.table_elems); schema NULL: none.
+ * Attribute att (of the index or the table) is held by nleaves[att] leaves from first[att]; json[att]: it is a jsonb document */
+typedef struct SiftV6Leaves
+{
+	const SiftColSchema *schema;
+	const int  *first;
+	const int  *nleaves;
+	const bool *json;
+} SiftV6Leaves;
+
 typedef struct V6Plan
 {
 	PlannerInfo *root;
@@ -24,6 +34,7 @@ typedef struct V6Plan
 	Oid			relid;			/* the relation scanned: the index, or the table */
 	IndexOptInfo *index;		/* a sift_col: its index; NULL for a sift_table */
 	const SiftColRel *colrel;	/* a sift_col: the planner's own copy of the state of its index, which a reload of the relcache entry does not free; NULL for any other source */
+	SiftV6Leaves leaves;
 	const SiftStoreOps *ops;	/* the format of the relation; for an index NULL when it holds nothing (a stale index) */
 	bool		is_table;		/* a sift_table: sch is the schema of its store, as it is of an index, whose attributes are those of the table */
 	SiftStoreSchema sch;
@@ -51,6 +62,7 @@ typedef struct V6Plan
 	List	   *tests;			/* the tests of the elements of an array (EXISTS, jsonpath) that the scan decides itself (v6_unnest_exists.h): no clause of the table is compiled for those of a WHERE, a FILTER reads their flags */
 	const int  *elem_map;		/* the element column of the union of the tests' (SiftV6ElemRte) that column i of the relation of the test being built is; NULL: its own */
 	int			elem_stream;	/* the stream of the Ext (sift_v6_ext_stream) whose elements are the columns of elem_rel */
+	bool		heap_rows;		/* the unnest of a sift_table reads every row again by its address: a qual or a test of the statement only the row itself decides (sift_v6_unnest_ready) */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */

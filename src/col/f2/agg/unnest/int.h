@@ -95,11 +95,20 @@ typedef struct UnStream
 	SiftV6RecFn *rec;
 } UnStream;
 
+/* the leaves of the host of the pull, an index or a sift_table: their definitions, the first leaf of each attribute of the host and the leaves of the top-level keys of its documents */
+typedef struct UnLeaves
+{
+	const SiftColSchema *schema;
+	const int  *first;
+	const bool *key_leaf;
+} UnLeaves;
+
 typedef struct UnRun
 {
 	const SiftV6Spec *spec;
 	const SiftV6Ext *x;
-	Relation	index;
+	Relation	host;			/* the index, or the sift_table */
+	bool		table;
 	SiftV6ScanStats *stats;
 	SiftV6Vet	vet;
 	SiftV6Pipe *pipe;
@@ -167,10 +176,14 @@ typedef struct UnRun
 	MemoryContext bcx;			/* the columns of the rows of a batch */
 	SiftMemTracker rmt;			/* a row read from the heap, taken apart (agg_unnest_heap_row): its array or document and the rows of its function, reset after each row */
 	MemoryContext ccx;			/* a chunk of the elements of that row, at most SIFT_VEC_LEN, reset after each */
-	int			(*attr_slot) (void *arg, const SiftV6Col *c);	/* a table: the vector of the scan that holds a column of the rows, which the pairs gather from */
-	void	   *attr_arg;
-	SiftVecType ftype[SIFT_F2_PULL_MAX_COLS];	/* a table: the type of each vector of the rows of its batch */
 } UnRun;
+
+/* the attribute of the heap a column of the host is: of the index, or the table's own */
+static inline AttrNumber
+heap_attno(const UnRun *u, int att)
+{
+	return u->table ? att : u->host->rd_index->indkey.values[att - 1];
+}
 
 /* the vector of the pipe the flag of test k is: after the derivations */
 static inline int
@@ -184,15 +197,15 @@ extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftV
 extern uint16 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b);
 extern uint16 sift_f2_unnest_restrict_quals(UnRun *u, const SiftF2ExtBatch *b);
 /* the batch quals of the spec (SiftV6Spec.vqual), over the columns of the batch the pull decodes */
-extern void sift_f2_unnest_setup_bq(UnRun *u, const SiftColRel *r);
+extern void sift_f2_unnest_setup_bq(UnRun *u, const UnLeaves *r);
 /* run.c: the column of the batch that is the column c of the table (its month when month), added to those the pull decodes when it is not one of them */
-extern int	sift_f2_unnest_col_index(UnRun *u, const SiftColRel *r, const SiftV6Col *c, bool month);
+extern int	sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col *c, bool month);
 extern void sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
 /* member.c: the column of the batch that is the member c reads by a path, and its values on the rows the statement keeps */
-extern int	sift_f2_unnest_member_col(UnRun *u, const SiftColRel *r, const SiftV6Col *c);
+extern int	sift_f2_unnest_member_col(UnRun *u, const UnLeaves *r, const SiftV6Col *c);
 extern void sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
-/* the quals of the table on columns of the index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
-extern void sift_f2_unnest_where_preds(UnRun *u, const SiftColRel *r, Relation index, SiftF2PullSpec *ps);
+/* the quals of the table on columns of an index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
+extern void sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, SiftF2PullSpec *ps);
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_INT_H */

@@ -1,9 +1,11 @@
 /*
- * col/f2/sink/ext.c - the rows of an index of format major 2 taken a slice at a time (col/f2/sink/ext.h): the partitions of the plan snapshot in the order of their keys, for each the rows of
- * its slab (not yet in a part) and then its parts, for each part its granules; a granule is read for the chunks the consumer named, decoded to vectors in slices of SIFT_VEC_LEN rows.
+ * col/f2/sink/ext.c - the rows of a relation of format major 2 taken a slice at a time (col/f2/sink/ext.h). Of an index: the partitions of the plan snapshot in the order of their keys,
+ * for each the rows of its slab (not yet in a part) and then its parts, for each part its granules; a granule is read for the chunks the consumer named, decoded to vectors in slices of
+ * SIFT_VEC_LEN rows. A sift_table gives its granules through its store (ext_table.c), cut into the same slices.
  */
 #include "postgres.h"
 
+#include "catalog/pg_class_d.h"
 #include "miscadmin.h"
 #include "utils/memutils.h"
 
@@ -12,7 +14,7 @@
 #include "col/f2/cache.h"
 #include "col/f2/col_delta/idx.h"
 #include "col/f2/pull_prune.h"
-#include "col/f2/sink/ext.h"
+#include "col/f2/sink/ext_int.h"
 #include "col/f2/l0/slab.h"
 #include "col/f2/l0/stage.h"
 #include "col/f2/part/format.h"
@@ -22,76 +24,6 @@
 #include "core/memtrack.h"
 #include "core/xid_cache.h"
 #include "agg/vexpr/str.h"
-
-/* the elements of one array column of the granule being read (a group of the spec) */
-typedef struct PullGroup
-{
-	bool		has_layout;
-	SiftArrayLayout lay;
-	uint64	   *doc_valid;
-	void	   *child_data[SIFT_F2_PULL_MAX_CHILD];
-	uint64	   *child_valid[SIFT_F2_PULL_MAX_CHILD];
-	SiftVecType child_type[SIFT_F2_PULL_MAX_CHILD];
-	SiftGranuleDict *child_dict[SIFT_F2_PULL_MAX_CHILD];
-	uint32		n_elems;
-} PullGroup;
-
-struct SiftF2Pull
-{
-	Relation	index;
-	Snapshot	snap;
-	SiftXidCache xc;
-	const SiftPlanSnapshot *plan;
-	SiftF2PullSpec spec;
-	MemoryContext cx;			/* the scan */
-	MemoryContext ecx;			/* the partition entry: its pending deletes and its slab */
-	MemoryContext pcx;			/* the part: its header, directory and deletion vector */
-	MemoryContext gcx;			/* the granule or the slab: its record, ids and decoded elements */
-	const SiftPendDelIndex *staged_px;
-
-	int			ent;			/* the next partition entry */
-	int			pi;				/* the next part of its list */
-	bool		slab_pending;
-	const SiftPartitionEntry *e;
-	const SiftPlanPartList *list;
-	SiftPendDelIndex *px;
-
-	SiftPart   *part;
-	const SiftPartDesc *pd;
-	SiftGranuleDesc *dir;
-	SiftDv	   *dv;
-	SiftTidIndexEntry *tix;
-	SiftColDeltaPartMap *cd;	/* what the column deltas of the part say the snapshot sees of it */
-	const SiftColDeltaGranMap *gm;	/* of the granule being read: NULL when the snapshot sees no patch of it, and for a slab */
-	uint32		g;				/* the granule being read */
-	SiftF2PullPrune prune;
-	SiftF2PullStats stats;
-
-	uint32		n;				/* the rows of the granule or slab being sliced, and the next slice's first */
-	uint32		off;
-	bool		is_slab;
-	SiftLazyGranule lg;
-	SiftGranuleView gv;
-	SiftRowBuf *rb;
-	const uint64 *tids;
-	uint64	   *live;
-	uint64	   *poison;
-	PullGroup	grp[SIFT_F2_PULL_MAX_GROUPS];
-	SiftGranVecCursor cur[SIFT_F2_PULL_MAX_COLS];	/* the cursor of each column of the granule, opened by its first slice: the chunk is opened once for all of them */
-	bool		cur_on[SIFT_F2_PULL_MAX_COLS];
-	SiftGranVecCursor child_cur[SIFT_F2_PULL_MAX_GROUPS * SIFT_F2_PULL_MAX_CHILD];	/* the strings of an element column live as long as its cursor */
-	int			nchild_cur;
-
-	SiftVec		vec[SIFT_F2_PULL_MAX_COLS];
-	uint64	   *valid[SIFT_F2_PULL_MAX_COLS];
-	int64	   *bools[SIFT_F2_PULL_MAX_COLS];	/* a text column of a bool leaf: the booleans of the slice its `->>` texts are made of (NULL: any other column) */
-	SiftVexprMaskIn masks[SIFT_F2_PULL_MAX_MASKS];
-	uint64	   *mbits[SIFT_F2_PULL_MAX_MASKS];
-	SiftF2ElemStream es[SIFT_F2_PULL_MAX_GROUPS];
-	SiftF2ExtBatch out;
-	uint16		slice_off;		/* the first row of the slice in the granule or the slab */
-	uint8	   *xtag[SIFT_F2_PULL_MAX_COLS];	/* the JSON type each row of the granule holds of a leaf of a key of a document, read when a payload is asked of the column */
-};
 
 static Size
 esize(SiftVecType t)
@@ -112,13 +44,34 @@ esize(SiftVecType t)
 	}
 }
 
+static const SiftF2PullHost index_host;
+
+/* an index: its leaves, the transaction's staged rows flushed and its own deletes taken from the snapshot, and the manifest it is read by */
+static void
+index_begin(SiftF2Pull *p)
+{
+	const SiftF2Rel *f = sift_f2_rel(p->index);
+	int			nstaged;
+	uint64	   *staged;
+
+	p->host = &index_host;
+	p->kinds = f->kinds;
+	p->key_leaf = f->key_leaf;
+	sift_f2_pull_prune_begin(&p->prune, p->index, &p->spec);
+	sift_stage_flush(p->index);
+	staged = sift_stage_dead(p->index, p->snap, &nstaged);
+	p->staged_px = sift_f2_staged_index(staged, nstaged);
+	p->plan = sift_plan_cache_get(p->index, p->cx);
+}
+
 SiftF2Pull *
-sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
+sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 pull");
 	SiftF2Pull *p = MemoryContextAllocZero(cx, sizeof(SiftF2Pull));
+	MemoryContext old = MemoryContextSwitchTo(cx);
 
-	p->index = index;
+	p->index = rel;
 	p->snap = snap;
 	sift_xid_cache_init(&p->xc, snap);
 	p->spec = *spec;
@@ -126,22 +79,18 @@ sift_f2_pull_begin(Relation index, Snapshot snap, const SiftF2PullSpec *spec)
 	p->ecx = sift_mem_allocset_create(cx, "sift f2 pull partition");
 	p->pcx = sift_mem_allocset_create(cx, "sift f2 pull part");
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
-	sift_f2_pull_prune_begin(&p->prune, index, spec);
-	sift_stage_flush(index);
-	{
-		int			nstaged;
-		uint64	   *staged = sift_stage_dead(index, snap, &nstaged);
-
-		p->staged_px = sift_f2_staged_index(staged, nstaged);
-	}
-	p->plan = sift_plan_cache_get(index, cx);
+	if (rel->rd_rel->relkind == RELKIND_INDEX)
+		index_begin(p);
+	else
+		sift_f2_pull_table_begin(p);
+	MemoryContextSwitchTo(old);
 	for (int i = 0; i < spec->ncols; i++)
 	{
 		p->vec[i] = (SiftVec) {.type = spec->col[i].type,.scale = spec->col[i].scale};
 		p->vec[i].data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 		p->valid[i] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
 		p->vec[i].valid = p->valid[i];
-		if (spec->col[i].type == SVEC_STRVIEW && sift_f2_rel(index)->kinds[spec->col[i].leaf] == SIFT_CELL_INT)
+		if (spec->col[i].type == SVEC_STRVIEW && p->kinds[spec->col[i].leaf] == SIFT_CELL_INT)
 			p->bools[i] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
 	for (int m = 0; m < spec->nmasks; m++)
@@ -158,6 +107,8 @@ sift_f2_pull_stats(const SiftF2Pull *p)
 void
 sift_f2_pull_end(SiftF2Pull *p)
 {
+	if (p->host->end != NULL)
+		p->host->end(p);
 	MemoryContextDelete(p->cx);
 }
 
@@ -233,7 +184,8 @@ head_chunks(const SiftF2Pull *p, int *chunks)
 
 	chunks[nc++] = SIFT_COL_TID_IDX;
 	for (int g = 0; g < p->spec.ngroups; g++)
-		chunks[nc++] = p->spec.group[g].leaf + 1;
+		if (p->spec.group[g].leaf >= 0)
+			chunks[nc++] = p->spec.group[g].leaf + 1;
 	return nc;
 }
 
@@ -269,25 +221,25 @@ close_cursors(SiftF2Pull *p)
 }
 
 /* a value a vector cannot hold (an exception of a chunk): the consumer reads the rows of the granule from the heap, as it does those of a slab */
-static void
-poison_granule(SiftF2Pull *p)
+void
+sift_f2_pull_poison_granule(SiftF2Pull *p)
 {
 	memset(p->poison, 0xff, ((p->n + 63) / 64) * sizeof(uint64));
 }
 
 /* a value a vector of a column cannot hold: the rows of the granule are the consumer's when it reads arrays, else the scan has no answer */
-static void
-unholdable(SiftF2Pull *p)
+void
+sift_f2_pull_unholdable(SiftF2Pull *p)
 {
 	if (p->spec.ngroups == 0)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a column of the index holds a value its vector cannot"),
 				errhint("Read the column through a scan that decodes exceptions.")));
-	poison_granule(p);
+	sift_f2_pull_poison_granule(p);
 }
 
 /* the `->>` text of a boolean of a bool leaf */
-static SiftStrView
-bool_text(int64 b)
+SiftStrView
+sift_f2_pull_bool_text(int64 b)
 {
 	return b != 0 ? sift_vstr_make("true", 4) : sift_vstr_make("false", 5);
 }
@@ -300,7 +252,7 @@ put_patch(SiftF2Pull *p, int col, uint16 j, const SiftColDeltaPatch *pt)
 	const int64 i = isnull ? 0 : pt->val.i;
 
 	if ((pt->flags & SIFT_CDCOL_HAS_TAG) != 0 && pt->tag != 0 && pt->tag != SIFT_COLTAG_JNULL)
-		unholdable(p);
+		sift_f2_pull_unholdable(p);
 	switch (v->type)
 	{
 		case SVEC_BOOL:
@@ -317,10 +269,10 @@ put_patch(SiftF2Pull *p, int col, uint16 j, const SiftColDeltaPatch *pt)
 			((double *) v->data)[j] = isnull ? 0 : pt->val.f;
 			break;
 		case SVEC_STRVIEW:
-			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : p->bools[col] != NULL ? bool_text(i) : sift_vstr_make(pt->val.s, pt->vlen);
+			((SiftStrView *) v->data)[j] = isnull ? (SiftStrView) {0} : p->bools[col] != NULL ? sift_f2_pull_bool_text(i) : sift_vstr_make(pt->val.s, pt->vlen);
 			break;
 		default:
-			unholdable(p);
+			sift_f2_pull_unholdable(p);
 	}
 	if (isnull)
 		v->valid[j >> 6] &= ~(UINT64CONST(1) << (j & 63));
@@ -409,7 +361,7 @@ decode_child_vec(SiftF2Pull *p, int g, int c, SiftVecType type)
 
 		sift_vec_cursor_decode(&p->child_cur[p->nchild_cur - 1], at, cnt, &tmp, &exc);
 		if (exc != NULL)
-			poison_granule(p);
+			sift_f2_pull_poison_granule(p);
 		memcpy((char *) gr->child_data[c] + (Size) at * es, tmp.data, (Size) cnt * es);
 		for (uint16 i = 0; i < cnt; i++)
 			if (tmp.all_valid || ((tv[i >> 6] >> (i & 63)) & 1))
@@ -475,7 +427,7 @@ decode_children(SiftF2Pull *p, int g)
 static bool
 key_leaf_col(const SiftF2Pull *p, int i)
 {
-	return sift_f2_rel(p->index)->key_leaf[p->spec.col[i].leaf];
+	return p->key_leaf[p->spec.col[i].leaf];
 }
 
 static void
@@ -504,11 +456,11 @@ begin_group(SiftF2Pull *p, int g)
 	uint8	   *tag = palloc(p->n);
 
 	gr->doc_valid = palloc0(((p->n + 63) / 64 + 1) * sizeof(uint64));
-	gr->has_layout = sift_granule_array_layout(&p->gv, gl, &gr->lay);
+	gr->has_layout = gl >= 0 && sift_granule_array_layout(&p->gv, gl, &gr->lay);
 	gr->n_elems = 0;
 	if (!gr->has_layout)
 	{
-		poison_granule(p);
+		sift_f2_pull_poison_granule(p);
 		return;
 	}
 	sift_granule_ints(&p->gv, gl, lens, isnull);
@@ -745,7 +697,7 @@ fill_slab_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
 				((double *) v->data)[j] = p->rb->f[c][off + j];
 				break;
 			case SVEC_STRVIEW:
-				((SiftStrView *) v->data)[j] = !ok ? (SiftStrView) {0} : p->bools[i] != NULL ? bool_text(p->rb->i[c][off + j]) : sift_vstr_make(p->rb->s[c][off + j], p->rb->slen[c][off + j]);
+				((SiftStrView *) v->data)[j] = !ok ? (SiftStrView) {0} : p->bools[i] != NULL ? sift_f2_pull_bool_text(p->rb->i[c][off + j]) : sift_vstr_make(p->rb->s[c][off + j], p->rb->slen[c][off + j]);
 				break;
 			default:
 				((int64 *) v->data)[j] = p->rb->i[c][off + j];
@@ -822,7 +774,7 @@ decode_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt, const SiftVariantExcStr
 	b.data = p->bools[i];
 	sift_vec_cursor_decode(&p->cur[i], off, cnt, &b, exc);
 	for (uint16 j = 0; j < cnt; j++)
-		((SiftStrView *) v->data)[j] = b.all_valid || ((b.valid[j >> 6] >> (j & 63)) & 1) ? bool_text(p->bools[i][j]) : (SiftStrView) {0};
+		((SiftStrView *) v->data)[j] = b.all_valid || ((b.valid[j >> 6] >> (j & 63)) & 1) ? sift_f2_pull_bool_text(p->bools[i][j]) : (SiftStrView) {0};
 	memset((SiftStrView *) v->data + cnt, 0, SIFT_VEC_PAD);
 	b.type = v->type;
 	b.data = v->data;
@@ -830,7 +782,7 @@ decode_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt, const SiftVariantExcStr
 }
 
 static void
-fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
+index_fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 {
 	for (int i = 0; i < p->spec.ncols; i++)
 	{
@@ -851,7 +803,7 @@ fill_slice(SiftF2Pull *p, uint16 off, uint16 cnt)
 			}
 			decode_col(p, i, off, cnt, &exc);
 			if (exc != NULL)
-				unholdable(p);
+				sift_f2_pull_unholdable(p);
 			patch_col(p, i, off, cnt);
 		}
 	}
@@ -891,24 +843,20 @@ fill_elems(SiftF2Pull *p, int g, uint16 off, uint16 cnt)
 	es->doc_valid = gr->doc_valid + off / 64;
 }
 
-static bool
-holds_payload(uint8 tag)
+bool
+sift_f2_pull_holds_payload(uint8 tag)
 {
 	return tag >= SIFT_COLTAG_STRING && tag <= SIFT_COLTAG_ARRAY;
 }
 
-const char *
-sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len)
+static const char *
+index_payload(SiftF2Pull *p, int i, uint32 at, uint32 *len)
 {
 	const int	c = p->spec.col[i].leaf;
-	const uint32 at = (uint32) p->slice_off + row;
-	const SiftVec *v = &p->vec[i];
 
-	if (v->valid == NULL || ((v->valid[row >> 6] >> (row & 63)) & 1))
-		return NULL;
 	if (p->is_slab)
 	{
-		if (p->rb->tag == NULL || p->rb->tag[c] == NULL || p->rb->xpay[c] == NULL || !holds_payload(p->rb->tag[c][at]))
+		if (p->rb->tag == NULL || p->rb->tag[c] == NULL || p->rb->xpay[c] == NULL || !sift_f2_pull_holds_payload(p->rb->tag[c][at]))
 			return NULL;
 		*len = p->rb->xplen[c][at];
 		return p->rb->xpay[c][at];
@@ -921,7 +869,19 @@ sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len)
 		sift_granule_tags(&p->gv, c, p->xtag[i]);
 		MemoryContextSwitchTo(old);
 	}
-	return holds_payload(p->xtag[i][at]) ? sift_granule_exc_payload(&p->gv, c, (int) at, len) : NULL;
+	return sift_f2_pull_holds_payload(p->xtag[i][at]) ? sift_granule_exc_payload(&p->gv, c, (int) at, len) : NULL;
+}
+
+static const SiftF2PullHost index_host = {.advance = advance,.fill_slice = index_fill_slice,.payload = index_payload};
+
+const char *
+sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len)
+{
+	const SiftVec *v = &p->vec[i];
+
+	if (v->valid == NULL || ((v->valid[row >> 6] >> (row & 63)) & 1))
+		return NULL;
+	return p->host->payload(p, i, (uint32) p->slice_off + row, len);
 }
 
 const SiftF2ExtBatch *
@@ -933,15 +893,15 @@ sift_f2_pull_next(SiftF2Pull *p)
 	while (p->off >= p->n)
 	{
 		CHECK_FOR_INTERRUPTS();
-		if (!advance(p))
+		if (!p->host->advance(p))
 			return NULL;
 	}
 	off = (uint16) p->off;
 	cnt = (uint16) Min(SIFT_VEC_LEN, p->n - p->off);
 	p->off += cnt;
 	p->slice_off = off;
-	fill_slice(p, off, cnt);
-	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64};
+	p->host->fill_slice(p, off, cnt);
+	p->out = (SiftF2ExtBatch) {.n = cnt,.col = p->vec,.masks = p->masks,.tid = p->tids + off,.live = p->live + off / 64,.visible = p->host->visible};
 	if (p->spec.ngroups > 0)
 	{
 		for (int g = 0; g < p->spec.ngroups; g++)
