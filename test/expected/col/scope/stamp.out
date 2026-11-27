@@ -92,19 +92,19 @@ SELECT count(*) > 1 AS entity_segments FROM sift.col_segments('events_col') WHER
 (1 row)
 
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
- 2 | t    | 
+ 2 | t    | scan of the facts (the members of the key)
 (2 rows)
 
 -- the members of the old rows are granted
 INSERT INTO tenant_scope SELECT m, 3 FROM generate_series(101, 140) m;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
- 2 | t    | 
+ 2 | t    | scan of the facts (the members of the key)
 (2 rows)
 
 -- the first rows whose members have pairs
@@ -116,10 +116,10 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
- 2 | t    | 
+ 2 | t    | scan of the facts (the members of the key)
 (2 rows)
 
 -- more grants, a removed pair and a moved one, then more rows
@@ -127,10 +127,10 @@ INSERT INTO tenant_scope SELECT m, 5 FROM generate_series(141, 160) m;
 DELETE FROM tenant_scope WHERE dim_a_id IN (105, 110) AND tenant_id = 3;
 UPDATE tenant_scope SET tenant_id = 7 WHERE dim_a_id = 3;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
- 2 | t    | 
+ 2 | t    | scan of the facts (the members of the key)
 (2 rows)
 
 INSERT INTO events SELECT 200000 + i, 1 + i % 160, timestamptz '2026-04-01', i % 10, 'z' FROM generate_series(1, 3000) i;

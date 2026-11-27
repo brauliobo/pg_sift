@@ -153,7 +153,7 @@ SELECT * FROM probe('events', 'tenant_scope')
  3 | every key, min and max              | same    | join (the summary is not exact for the snapshot) | 
  4 | one key, count and sum              | same    | summary                                          | delta
  5 | one key, min and max                | same    | summary                                          | delta
- 6 | a list of keys, a row once          | same    | none                                             | 
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key)       | 
  7 | four keys, a row for each pair      | same    | summary                                          | delta
 (7 rows)
 
@@ -172,7 +172,7 @@ SELECT * FROM probe('events', 'tenant_scope')
  3 | every key, min and max              | same    | join (the summary is not exact for the snapshot) | 
  4 | one key, count and sum              | same    | summary                                          | delta
  5 | one key, min and max                | same    | summary                                          | delta
- 6 | a list of keys, a row once          | same    | none                                             | 
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key)       | 
  7 | four keys, a row for each pair      | same    | summary                                          | delta
 (7 rows)
 
@@ -191,7 +191,7 @@ SELECT * FROM probe('events', 'tenant_scope')
  3 | every key, min and max              | same    | join (the summary is not exact for the snapshot) | 
  4 | one key, count and sum              | same    | summary                                          | delta
  5 | one key, min and max                | same    | summary                                          | delta
- 6 | a list of keys, a row once          | same    | none                                             | 
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key)       | 
  7 | four keys, a row for each pair      | same    | summary                                          | delta
 (7 rows)
 
@@ -208,15 +208,15 @@ SELECT sift.col_promote('events_col')
 (1 row)
 
 SELECT * FROM probe('events', 'tenant_scope')
- n |                label                | verdict |  route  | cube  
----+-------------------------------------+---------+---------+-------
- 1 | every key, count and sum            | same    | summary | clean
- 2 | every key, count(DISTINCT dim_a_id) | same    | none    | 
- 3 | every key, min and max              | same    | summary | clean
- 4 | one key, count and sum              | same    | summary | clean
- 5 | one key, min and max                | same    | summary | clean
- 6 | a list of keys, a row once          | same    | none    | 
- 7 | four keys, a row for each pair      | same    | summary | clean
+ n |                label                | verdict |                   route                    | cube  
+---+-------------------------------------+---------+--------------------------------------------+-------
+ 1 | every key, count and sum            | same    | summary                                    | clean
+ 2 | every key, count(DISTINCT dim_a_id) | same    | none                                       | 
+ 3 | every key, min and max              | same    | summary                                    | clean
+ 4 | one key, count and sum              | same    | summary                                    | clean
+ 5 | one key, min and max                | same    | summary                                    | clean
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key) | 
+ 7 | four keys, a row for each pair      | same    | summary                                    | clean
 (7 rows)
 
 SELECT 8 AS n, 'merged' AS state
@@ -232,15 +232,15 @@ SELECT sift.col_merge('events_col', true)
 (1 row)
 
 SELECT * FROM probe('events', 'tenant_scope')
- n |                label                | verdict |  route  | cube  
----+-------------------------------------+---------+---------+-------
- 1 | every key, count and sum            | same    | summary | clean
- 2 | every key, count(DISTINCT dim_a_id) | same    | none    | 
- 3 | every key, min and max              | same    | summary | clean
- 4 | one key, count and sum              | same    | summary | clean
- 5 | one key, min and max                | same    | summary | clean
- 6 | a list of keys, a row once          | same    | none    | 
- 7 | four keys, a row for each pair      | same    | summary | clean
+ n |                label                | verdict |                   route                    | cube  
+---+-------------------------------------+---------+--------------------------------------------+-------
+ 1 | every key, count and sum            | same    | summary                                    | clean
+ 2 | every key, count(DISTINCT dim_a_id) | same    | none                                       | 
+ 3 | every key, min and max              | same    | summary                                    | clean
+ 4 | one key, count and sum              | same    | summary                                    | clean
+ 5 | one key, min and max                | same    | summary                                    | clean
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key) | 
+ 7 | four keys, a row for each pair      | same    | summary                                    | clean
 (7 rows)
 
 SELECT 9 AS n, 'rebuilt (nothing changed since the summary)' AS state
@@ -251,15 +251,15 @@ SELECT 9 AS n, 'rebuilt (nothing changed since the summary)' AS state
 
 REINDEX INDEX events_col
 SELECT * FROM probe('events', 'tenant_scope')
- n |                label                | verdict |  route  | cube  
----+-------------------------------------+---------+---------+-------
- 1 | every key, count and sum            | same    | summary | clean
- 2 | every key, count(DISTINCT dim_a_id) | same    | none    | 
- 3 | every key, min and max              | same    | summary | clean
- 4 | one key, count and sum              | same    | summary | clean
- 5 | one key, min and max                | same    | summary | clean
- 6 | a list of keys, a row once          | same    | none    | 
- 7 | four keys, a row for each pair      | same    | summary | clean
+ n |                label                | verdict |                   route                    | cube  
+---+-------------------------------------+---------+--------------------------------------------+-------
+ 1 | every key, count and sum            | same    | summary                                    | clean
+ 2 | every key, count(DISTINCT dim_a_id) | same    | none                                       | 
+ 3 | every key, min and max              | same    | summary                                    | clean
+ 4 | one key, count and sum              | same    | summary                                    | clean
+ 5 | one key, min and max                | same    | summary                                    | clean
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key) | 
+ 7 | four keys, a row for each pair      | same    | summary                                    | clean
 (7 rows)
 
 SELECT 10 AS n, 'a pair added after the rebuild, and a buffered event of it' AS state
@@ -277,7 +277,7 @@ SELECT * FROM probe('events', 'tenant_scope')
  3 | every key, min and max              | same    | join (the summary is not exact for the snapshot) | 
  4 | one key, count and sum              | same    | summary                                          | delta
  5 | one key, min and max                | same    | summary                                          | delta
- 6 | a list of keys, a row once          | same    | none                                             | 
+ 6 | a list of keys, a row once          | same    | scan of the facts (the members of the key)       | 
  7 | four keys, a row for each pair      | same    | summary                                          | delta
 (7 rows)
 

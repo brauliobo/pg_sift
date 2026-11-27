@@ -35,13 +35,13 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) W
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM reads('events');
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 INSERT INTO events SELECT i, 1 + i % 320, timestamptz '2026-06-01' + i * interval '1 minute', i % 10, 'y' FROM generate_series(6001, 8000) i;
@@ -52,26 +52,26 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM reads('events');
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 DELETE FROM events WHERE id % 4 = 0;
 UPDATE events SET v = v + 1 WHERE id % 9 = 0;
 VACUUM events;
 SELECT * FROM reads('events');
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -88,13 +88,13 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted_again;
 
 VACUUM events;
 SELECT * FROM reads('events');
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -112,13 +112,13 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) W
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM reads('events');
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);

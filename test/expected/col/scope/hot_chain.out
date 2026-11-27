@@ -36,13 +36,13 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, created_at, v) W
 REINDEX INDEX events_col;
 VACUUM (FREEZE, ANALYZE) events;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 -- more chains and a pair that changes and a member that moves: the rows of a member are keyed by the addresses of the entity segments, chains included
@@ -50,13 +50,13 @@ UPDATE events SET pad = 'z' WHERE id % 5 = 0;
 INSERT INTO tenant_scope SELECT m, 1 + (m + 5) % 12 FROM generate_series(1, 300) m WHERE m % 4 = 0 ON CONFLICT DO NOTHING;
 DELETE FROM tenant_scope WHERE dim_a_id % 6 = 1;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
@@ -66,13 +66,13 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 (1 row)
 
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -92,13 +92,13 @@ SELECT sift.col_promote('events_col') >= 0 AS promoted;
 UPDATE events SET pad = 'w' WHERE id % 3 = 0;
 VACUUM events;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_merge('events_col', true) >= 0 AS merged;
@@ -108,13 +108,13 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);
@@ -126,13 +126,13 @@ SELECT sift.col_verify('events_col', true);
 -- a rebuild over the chains
 REINDEX INDEX events_col;
 SELECT * FROM reads();
- n | same |  route  
----+------+---------
+ n | same |                   route                    
+---+------+--------------------------------------------
  1 | t    | summary
  2 | t    | summary
  3 | t    | summary
  4 | t    | summary
- 5 | t    | 
+ 5 | t    | scan of the facts (the members of the key)
 (5 rows)
 
 SELECT sift.col_verify('events_col', true);

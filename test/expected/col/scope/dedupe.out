@@ -58,32 +58,32 @@ CREATE FUNCTION once_phase() RETURNS TABLE (n int, class text, same boolean, rou
 	ORDER BY s.n, c.class
 $$;
 SELECT * FROM once_phase();
- n | class  | same | route 
----+--------+------+-------
- 1 | count  | t    | none
- 1 | groups | t    | none
+ n | class  | same |                   route                    
+---+--------+------+--------------------------------------------
+ 1 | count  | t    | scan of the facts (the members of the key)
+ 1 | groups | t    | scan of the facts (the members of the key)
  1 | top20  | t    | none
- 1 | window | t    | none
- 2 | count  | t    | none
- 2 | groups | t    | none
+ 1 | window | t    | scan of the facts (the members of the key)
+ 2 | count  | t    | scan of the facts (the members of the key)
+ 2 | groups | t    | scan of the facts (the members of the key)
  2 | top20  | t    | none
- 2 | window | t    | none
- 3 | count  | t    | none
- 3 | groups | t    | none
+ 2 | window | t    | scan of the facts (the members of the key)
+ 3 | count  | t    | scan of the facts (the members of the key)
+ 3 | groups | t    | scan of the facts (the members of the key)
  3 | top20  | t    | none
- 3 | window | t    | none
- 4 | count  | t    | none
- 4 | groups | t    | none
+ 3 | window | t    | scan of the facts (the members of the key)
+ 4 | count  | t    | scan of the facts (the members of the key)
+ 4 | groups | t    | scan of the facts (the members of the key)
  4 | top20  | t    | none
- 4 | window | t    | none
- 5 | count  | t    | none
- 5 | groups | t    | none
+ 4 | window | t    | scan of the facts (the members of the key)
+ 5 | count  | t    | scan of the facts (the members of the key)
+ 5 | groups | t    | scan of the facts (the members of the key)
  5 | top20  | t    | none
- 5 | window | t    | none
- 6 | count  | t    | none
- 6 | groups | t    | none
+ 5 | window | t    | scan of the facts (the members of the key)
+ 6 | count  | t    | scan of the facts (the members of the key)
+ 6 | groups | t    | scan of the facts (the members of the key)
  6 | top20  | t    | none
- 6 | window | t    | none
+ 6 | window | t    | scan of the facts (the members of the key)
  7 | count  | t    | none
  7 | groups | t    | none
  7 | top20  | t    | none
@@ -139,19 +139,19 @@ SELECT sift.col_merge('events_col', true) >= 0 AS merged;
 (1 row)
 
 SELECT n, class, same, route FROM once_phase() WHERE class IN ('count', 'top20');
- n | class | same | route 
----+-------+------+-------
- 1 | count | t    | none
+ n | class | same |                   route                    
+---+-------+------+--------------------------------------------
+ 1 | count | t    | scan of the facts (the members of the key)
  1 | top20 | t    | none
- 2 | count | t    | none
+ 2 | count | t    | scan of the facts (the members of the key)
  2 | top20 | t    | none
- 3 | count | t    | none
+ 3 | count | t    | scan of the facts (the members of the key)
  3 | top20 | t    | none
- 4 | count | t    | none
+ 4 | count | t    | scan of the facts (the members of the key)
  4 | top20 | t    | none
- 5 | count | t    | none
+ 5 | count | t    | scan of the facts (the members of the key)
  5 | top20 | t    | none
- 6 | count | t    | none
+ 6 | count | t    | scan of the facts (the members of the key)
  6 | top20 | t    | none
  7 | count | t    | none
  7 | top20 | t    | none
