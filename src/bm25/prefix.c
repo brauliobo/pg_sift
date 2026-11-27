@@ -731,17 +731,21 @@ cache_oldest(void)
 	return cache_lru ? cache_lru->used : UINT64_MAX;
 }
 
+static void
+cache_drop(CacheEnt *e)
+{
+	cache_unlink(e);
+	if (e->blob)
+		pfree(e->blob);
+	hash_search(cache, &e->key, HASH_REMOVE, NULL);
+}
+
 static bool
 cache_evict_one(void)
 {
-	CacheEnt   *lru = cache_lru;
-
-	if (lru == NULL)
+	if (cache_lru == NULL)
 		return false;
-	cache_unlink(lru);
-	if (lru->blob)
-		pfree(lru->blob);
-	hash_search(cache, &lru->key, HASH_REMOVE, NULL);
+	cache_drop(cache_lru);
 	return true;
 }
 
@@ -753,6 +757,20 @@ cache_evict_all(void)
 }
 
 static const SiftCacheKind prefix_kind = {"bm25_prefix", cache_oldest, cache_evict_one, cache_evict_all};
+
+/* Every entry of the file is in the list: an entry is pinned only while a union is copied out of it */
+void
+sift_prefix_drop_file(const RelFileLocator *loc)
+{
+	sift_host_cache_lock();
+	for (CacheEnt *e = cache_lru, *newer; e; e = newer)
+	{
+		newer = e->newer;
+		if (memcmp(&e->key.rel, loc, sizeof(*loc)) == 0)
+			cache_drop(e);
+	}
+	sift_host_cache_unlock();
+}
 
 /* MEM[MEM-BM25-02]: prefix cache_put (MCXT_ALLOC_HUGE, missing sift_cache_commit; 258B inline CacheKey) */
 static void

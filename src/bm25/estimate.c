@@ -79,37 +79,92 @@ memo_evict_all(void)
 
 static const SiftCacheKind estimate_kind = {"bm25_estimate", memo_oldest, memo_evict_one, memo_evict_all};
 
+static bool
+key_add(StringInfo buf, const void *data, int n)
+{
+	if (buf->len + (Size) n > ESTIMATE_MEMO_MAX_KEY)
+		return false;
+	appendBinaryStringInfo(buf, data, n);
+	return true;
+}
+
+/* The name of the estimate, NULL when the queries are too long to keep it: a longer one is not built, its texts may be up to the size of the statement */
 static char *
 estimate_key(Relation index, const SiftQuerySrc *srcs, int nqueries, Size *len)
 {
 	EstimateKey head;
 	StringInfoData buf;
+	bool		fits;
 
 	memset(&head, 0, sizeof(head));
 	head.locator = index->rd_locator;
 	head.dirver = sift_dir_version(index);
 	head.max_expansions = sift_max_expansions;
 	initStringInfo(&buf);
-	appendBinaryStringInfo(&buf, (char *) &head, sizeof(head));
-	for (int i = 0; i < nqueries; i++)
+	fits = key_add(&buf, &head, sizeof(head));
+	for (int i = 0; i < nqueries && fits; i++)
 	{
 		/* an array's texts are told from one text by the marker -1 and their number */
-		if (srcs[i].any)
-		{
-			int			marker[2] = {-1, srcs[i].ntexts};
+		int			marker[2] = {-1, srcs[i].ntexts};
 
-			appendBinaryStringInfo(&buf, (char *) marker, sizeof(marker));
-		}
-		for (int j = 0; j < srcs[i].ntexts; j++)
+		fits = !srcs[i].any || key_add(&buf, marker, sizeof(marker));
+		for (int j = 0; j < srcs[i].ntexts && fits; j++)
 		{
 			int			n = VARSIZE_ANY_EXHDR(srcs[i].texts[j]);
 
-			appendBinaryStringInfo(&buf, (char *) &n, sizeof(n));
-			appendBinaryStringInfo(&buf, VARDATA_ANY(srcs[i].texts[j]), n);
+			fits = key_add(&buf, &n, sizeof(n)) && key_add(&buf, VARDATA_ANY(srcs[i].texts[j]), n);
 		}
+	}
+	if (!fits)
+	{
+		pfree(buf.data);
+		return NULL;
 	}
 	*len = buf.len;
 	return buf.data;
+}
+
+static bool
+memo_find(const char *key, Size len, SiftEstimate *est)
+{
+	for (int i = 0; i < ESTIMATE_MEMO; i++)
+		if (estimate_memo[i].key != NULL && estimate_memo[i].len == len && memcmp(estimate_memo[i].key, key, len) == 0)
+		{
+			estimate_memo[i].tick = sift_cache_tick();
+			*est = estimate_memo[i].est;
+			return true;
+		}
+	return false;
+}
+
+static void
+memo_store(const char *key, Size len, const SiftEstimate *est)
+{
+	EstimateMemo *m = NULL;
+	MemoryContext cx;
+	char	   *kept;
+
+	if (!sift_cache_room(len + 2048))
+		return;
+	if (estimate_cx == NULL)
+	{
+		estimate_cx = sift_cache_create_context("sift cache estimates");
+		sift_cache_register(&estimate_kind);
+	}
+	/* built where an error frees it, and given to the cache when whole: the slot it takes is not touched before */
+	cx = AllocSetContextCreate(CurrentMemoryContext, "sift cache estimate", ALLOCSET_SMALL_SIZES);
+	kept = MemoryContextAlloc(cx, len);
+	memcpy(kept, key, len);
+	for (int i = 0; i < ESTIMATE_MEMO && m == NULL; i++)
+		if (estimate_memo[i].key == NULL)
+			m = &estimate_memo[i];
+	if (m == NULL)
+	{
+		m = memo_victim();
+		MemoryContextDelete(m->cx);
+	}
+	MemoryContextSetParent(cx, estimate_cx);
+	*m = (EstimateMemo) {.key = kept,.len = len,.est = *est,.cx = cx,.tick = sift_cache_tick()};
 }
 
 void
@@ -128,47 +183,28 @@ sift_estimate_cached_src(Relation index, const SiftQuerySrc *srcs, int nqueries,
 {
 	Size		len;
 	char	   *key = estimate_key(index, srcs, nqueries, &len);
-	EstimateMemo *m;
 	SiftErrCtx	ctx;
 
-	for (int i = 0; i < ESTIMATE_MEMO; i++)
-		if (estimate_memo[i].key != NULL && estimate_memo[i].len == len && memcmp(estimate_memo[i].key, key, len) == 0)
-		{
-			estimate_memo[i].tick = sift_cache_tick();
-			*est = estimate_memo[i].est;
-			pfree(key);
-			return;
-		}
-	sift_errctx_push(&ctx, RelationGetRelid(index));
-	sift_eval_estimate_src(index, srcs, nqueries, est);
-	sift_errctx_pop(&ctx);
-	if (len <= ESTIMATE_MEMO_MAX_KEY && sift_cache_room(len + 2048))
+	if (key == NULL || !memo_find(key, len, est))
 	{
-		if (estimate_cx == NULL)
-		{
-			estimate_cx = sift_cache_create_context("sift cache estimates");
-			sift_cache_register(&estimate_kind);
-		}
-		/* built where an error frees it, and given to the cache when whole: the slot it takes is not touched before */
-		MemoryContext cx = AllocSetContextCreate(CurrentMemoryContext, "sift cache estimate", ALLOCSET_SMALL_SIZES);
-		char	   *kept = MemoryContextAlloc(cx, len);
-
-		memcpy(kept, key, len);
-		m = NULL;
-		for (int i = 0; i < ESTIMATE_MEMO && m == NULL; i++)
-			if (estimate_memo[i].key == NULL)
-				m = &estimate_memo[i];
-		if (m == NULL)
-		{
-			m = memo_victim();
-			MemoryContextDelete(m->cx);
-		}
-		MemoryContextSetParent(cx, estimate_cx);
-		m->cx = cx;
-		m->key = kept;
-		m->len = len;
-		m->est = *est;
-		m->tick = sift_cache_tick();
+		sift_errctx_push(&ctx, RelationGetRelid(index));
+		sift_eval_estimate_src(index, srcs, nqueries, est);
+		sift_errctx_pop(&ctx);
+		if (key)
+			memo_store(key, len, est);
 	}
-	pfree(key);
+	if (key)
+		pfree(key);
+}
+
+/* The index file is built again in place: the version of its directory starts again */
+void
+sift_estimate_drop_file(const RelFileLocator *loc)
+{
+	for (int i = 0; i < ESTIMATE_MEMO; i++)
+		if (estimate_memo[i].key != NULL && memcmp(estimate_memo[i].key, loc, sizeof(RelFileLocator)) == 0)
+		{
+			MemoryContextDelete(estimate_memo[i].cx);
+			estimate_memo[i] = (EstimateMemo) {0};
+		}
 }

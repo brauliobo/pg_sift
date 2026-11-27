@@ -11,6 +11,7 @@
 #include "access/transam.h"
 #include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
+#include "miscadmin.h"
 #include "storage/buffile.h"
 
 #include "bm25/analyze/analyze.h"
@@ -19,6 +20,14 @@
 #include "pgshim.h"
 
 MemoryContext CurrentMemoryContext = (MemoryContext) 1;
+
+/* No cancel arrives here: a test of one defines both */
+__attribute__((weak)) volatile sig_atomic_t InterruptPending = false;
+
+__attribute__((weak)) void
+ProcessInterrupts(void)
+{
+}
 
 typedef struct Chunk
 {

@@ -134,3 +134,11 @@ sift_dirchain_memo_find(Relation index, BlockNumber root, uint64 version)
 	return e;
 }
 
+void
+sift_dirchain_memo_drop(Relation index)
+{
+	DirMemo    *e = memos == NULL ? NULL : hash_search(memos, &index->rd_locator, HASH_FIND, NULL);
+
+	if (e)
+		memo_drop(e);
+}

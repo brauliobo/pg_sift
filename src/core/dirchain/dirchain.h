@@ -59,6 +59,8 @@ typedef struct SiftDirEntries
 
 extern SiftDirEntries sift_dirchain_entries(Relation index, BlockNumber root, uint64 version);
 extern void sift_dirchain_entries_release(SiftDirEntries *e);
+/* The metapage of the index is written anew, in a truncated file whose directory versions start again: the chain kept of the directory before goes */
+extern void sift_dirchain_memo_drop(Relation index);
 /* sift_dirchain_read from the memo when it holds the version: the chain for the update that edits it; the checks of the directory read the pages */
 extern int	sift_dirchain_load(Relation index, BlockNumber root, uint64 version, SiftSegEntry **segs, SiftDirChain *chain);
 extern int	sift_dirchain_read(Relation index, BlockNumber root, uint64 version, int room, SiftSegEntry **segs, SiftDirChain *chain);

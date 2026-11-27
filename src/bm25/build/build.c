@@ -8,6 +8,10 @@
 #include "datatype/timestamp.h"
 #include "utils/timestamp.h"
 
+#include "bm25/deadkeys.h"
+#include "bm25/estimate.h"
+#include "bm25/prefix.h"
+#include "bm25/wmemo.h"
 #include "core/format_ux.h"
 #include "core/memtrack.h"
 
@@ -455,6 +459,20 @@ say_built(Relation index, double docs, int nsegs, int64 us)
 					sift_fmt_bytes(size, sizeof(size), (uint64) RelationGetNumberOfBlocks(index) * BLCKSZ), nsegs, SIFT_FORMAT_MAJOR, SIFT_FORMAT_MINOR)));
 }
 
+/*
+ * ON COMMIT DELETE ROWS, and a TRUNCATE of a table made in the transaction, build the index again in its truncated file, where the generations of the segments start
+ * again: what the backend keeps of the file's segments (their bytes, unions, dead docs, memos and estimates) names the contents before and goes with them
+ */
+static void
+forget_file(Relation index)
+{
+	sift_segcache_drop_file(&index->rd_locator);
+	sift_prefix_drop_file(&index->rd_locator);
+	sift_deadkeys_drop_file(&index->rd_locator);
+	sift_wide_memo_drop_file(&index->rd_locator);
+	sift_estimate_drop_file(&index->rd_locator);
+}
+
 IndexBuildResult *
 sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 {
@@ -470,6 +488,7 @@ sift_ambuild(Relation heap, Relation index, IndexInfo *info)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("sift indexes require a heap or sift_table table"),
 				 errhint("Index a heap table, or copy the rows into one with CREATE TABLE ... AS SELECT.")));
+	forget_file(index);
 	if (opts->build_segments == 0 && info->ii_ParallelWorkers > 0 && !index->rd_index->indisunique)
 	{
 		SiftAnalyzerConfig cfg;

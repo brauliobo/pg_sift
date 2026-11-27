@@ -259,6 +259,19 @@ sift_wide_memo_hint(const SiftPlan *p, const EvalLeaf *l, int64 k, float4 theta)
 	pfree(name);
 }
 
+void
+sift_wide_memo_drop_file(const RelFileLocator *loc)
+{
+	sift_host_cache_lock();
+	for (MemoEnt *e = memo_lru, *newer; e; e = newer)
+	{
+		newer = e->newer;
+		if (memcmp(e->name, loc, sizeof(RelFileLocator)) == 0)
+			memo_drop(e);
+	}
+	sift_host_cache_unlock();
+}
+
 /*
  * A deferred leaf the memo has a K-th score for is weighed without a pass over the dictionaries: it keeps no top terms (as if none were), its bound over every term
  * is the memo's, and sift_plan_warm_begin reads the terms that reach the score, or sift_plan_install_top chooses the top terms when the search is another one.

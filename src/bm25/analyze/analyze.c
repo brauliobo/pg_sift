@@ -470,6 +470,7 @@ analyze_doc(SiftAnalyzer *a, const char *text, int len, SiftTermFreq **out, uint
 	{
 		uint32		pos;
 
+		CHECK_FOR_INTERRUPTS();
 		ENSURE(a, buf, bufcap, used + DST_CAP);
 		if ((n = scan_token(a, s, len, &off, &start, a->buf + used)) < 0)
 			break;

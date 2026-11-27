@@ -1,0 +1,52 @@
+-- A BM25 index of a temporary table through ON COMMIT DELETE ROWS and a TRUNCATE in the transaction that made the table: both build the index again in its
+-- truncated file, where the generations of the segments start again, so nothing the backend keeps of the segments before is read again. Every batch answers
+-- what its rows give, with as many documents and words as the batch before it or not.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+\set VERBOSITY terse
+SET enable_seqscan = off;
+
+CREATE TEMP TABLE t_b (id int, body text) ON COMMIT DELETE ROWS;
+CREATE INDEX t_b_ix ON t_b USING sift (body) WITH (write_buffer_limit = 128);
+BEGIN;
+INSERT INTO t_b SELECT g, 'apple w' || g FROM generate_series(1, 20000) g;
+SELECT count(*) > 1 AS segments FROM sift.segments('t_b_ix') WHERE kind = 'immutable';
+SELECT count(*) FROM t_b WHERE body @@> 'apple';
+SELECT count(*) FROM t_b WHERE body @@> 'w1*';
+SELECT id FROM t_b WHERE body @@> 'apple AND w7' ORDER BY sift.score(ctid) DESC LIMIT 1;
+COMMIT;
+-- as many documents and words, the words of the prefix shifted by five
+BEGIN;
+INSERT INTO t_b SELECT g, 'pear w' || (g + 5) FROM generate_series(1, 20000) g;
+SELECT count(*) FROM t_b WHERE body @@> 'pear';
+SELECT count(*) FROM t_b WHERE body @@> 'apple';
+SELECT count(*) FROM t_b WHERE body @@> 'w1*';
+SELECT id FROM t_b WHERE body @@> 'pear AND w12' ORDER BY sift.score(ctid) DESC LIMIT 1;
+COMMIT;
+-- fewer
+BEGIN;
+INSERT INTO t_b SELECT g, 'kiwi u' || g FROM generate_series(1, 15000) g;
+SELECT count(*) FROM t_b WHERE body @@> 'kiwi';
+SELECT count(*) FROM t_b WHERE body @@> 'pear';
+SELECT count(*) FROM t_b WHERE body @@> 'u1*';
+COMMIT;
+SELECT count(*) FROM t_b;
+
+-- a table the transaction made keeps its file through a TRUNCATE
+BEGIN;
+CREATE TEMP TABLE t_n (id int, body text) ON COMMIT DROP;
+INSERT INTO t_n SELECT g, 'plum w' || g FROM generate_series(1, 20000) g;
+CREATE INDEX t_n_ix ON t_n USING sift (body) WITH (write_buffer_limit = 128);
+SELECT count(*) FROM t_n WHERE body @@> 'plum';
+TRUNCATE t_n;
+INSERT INTO t_n SELECT g, 'lime v' || g FROM generate_series(1, 20000) g;
+SELECT count(*) > 1 AS segments FROM sift.segments('t_n_ix') WHERE kind = 'immutable';
+SELECT count(*) FROM t_n WHERE body @@> 'lime';
+SELECT count(*) FROM t_n WHERE body @@> 'plum';
+TRUNCATE t_n;
+INSERT INTO t_n SELECT g, 'fig u' || g FROM generate_series(1, 9000) g;
+SELECT count(*) FROM t_n WHERE body @@> 'fig';
+SELECT count(*) FROM t_n WHERE body @@> 'lime';
+COMMIT;
+DROP TABLE t_b;
+DROP EXTENSION pg_sift;

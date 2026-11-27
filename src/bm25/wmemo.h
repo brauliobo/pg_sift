@@ -22,7 +22,8 @@ typedef struct SiftWideMemo
 extern bool sift_wide_memo_find(const SiftPlan *p, const EvalLeaf *l, SiftWideMemo *out, uint8 *all_mb);
 extern void sift_wide_memo_store(const SiftPlan *p, const EvalLeaf *l, double df_blend, const uint8 *all_mb);
 extern void sift_wide_memo_hint(const SiftPlan *p, const EvalLeaf *l, int64 k, float4 theta);
-
+/* The index file is built again in place: its generations start again, so the memos of the file name the contents before */
+extern void sift_wide_memo_drop_file(const RelFileLocator *loc);
 
 /* The leaf as the memo has it, when it has a K-th score for it: weighed without the dictionaries (EvalLeaf.warm) */
 extern bool sift_wide_memo_warm(SiftPlan *p, EvalLeaf *l, double *df_blend);

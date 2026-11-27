@@ -148,3 +148,12 @@ sift_dir_read_memo(Relation index)
 		memo_put(index, snap);
 	return snap;
 }
+
+void
+sift_dir_memo_drop(Relation index)
+{
+	SiftDirMemo *m = memo_find(index);
+
+	if (m)
+		memo_drop(m);
+}

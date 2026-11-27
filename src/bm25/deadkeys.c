@@ -107,3 +107,19 @@ sift_deadkeys_clear(const SiftSegment *seg, uint32 sb, int b, uint64 (*res)[SIFT
 				res[pg][w] &= ~e->off[pg][w];
 	sift_host_cache_unlock();
 }
+
+void
+sift_deadkeys_drop_file(const RelFileLocator *loc)
+{
+	HASH_SEQ_STATUS seq;
+	DeadEnt    *e;
+
+	if (tab == NULL)
+		return;
+	sift_host_cache_lock();
+	hash_seq_init(&seq, tab);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (memcmp(&e->key.rel, loc, sizeof(*loc)) == 0)
+			hash_search(tab, &e->key, HASH_REMOVE, NULL);
+	sift_host_cache_unlock();
+}

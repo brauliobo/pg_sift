@@ -222,6 +222,8 @@ extern bool sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, S
 /* Is what sift_segcache_get would return already there and filled: no entry made, nothing pinned */
 extern bool sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size);
 extern void sift_segcache_ready(void *handle);
+/* The index file is built again in place: what the backend keeps of its segments names the contents before */
+extern void sift_segcache_drop_file(const RelFileLocator *loc);
 
 /* sift_segcache_get of the segment, whose bytes are in its memory context alone when it is read once */
 static inline bool

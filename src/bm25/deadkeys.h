@@ -17,4 +17,7 @@ extern void sift_deadkeys_note(const SiftSegment *seg, SiftKey key);
 /* Clears from res (the offsets of the SIFT_BLK_PAGES pages of block b of superblock sb) the docs the backend knows dead */
 extern void sift_deadkeys_clear(const SiftSegment *seg, uint32 sb, int b, uint64 (*res)[SIFT_OFFMASK_WORDS]);
 
+/* The index file is built again in place: the docs known dead in its segments were of the contents before */
+extern void sift_deadkeys_drop_file(const RelFileLocator *loc);
+
 #endif							/* SIFT_BM25_DEADKEYS_H */

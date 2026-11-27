@@ -17,6 +17,7 @@
 #include "utils/wait_event.h"
 
 #include "core/compat.h"
+#include "core/dirchain/dirchain.h"
 #include "core/store/store.h"
 #include "core/store/int.h"
 #include "core/visibility/visibility.h"
@@ -85,6 +86,8 @@ sift_store_init_meta_ex(SiftWriteTarget *wt, float4 k1, float4 b, uint32 analyze
 	SiftMetaPageData *meta = &wt->meta;
 
 	SIFT_INVARIANT(wt->mode != SIFT_WRITE_SHARED, "sift: the metapage is written by BULK, INIT or LAYOUT write targets only");
+	sift_dir_memo_drop(wt->index);
+	sift_dirchain_memo_drop(wt->index);
 	memset(meta, 0, sizeof(SiftMetaPageData));
 	meta->magic = SIFT_MAGIC;
 	meta->format_major = SIFT_FORMAT_MAJOR;

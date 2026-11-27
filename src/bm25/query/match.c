@@ -305,6 +305,7 @@ doc_group(SiftDoc *d)
 		uint32		h = doc_slot(d, d->tok[t].str, d->tok[t].len);
 		int			id = d->slots[h] - 1;
 
+		CHECK_FOR_INTERRUPTS();
 		if (id < 0)
 		{
 			id = d->nterms++;

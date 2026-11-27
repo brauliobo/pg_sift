@@ -1,8 +1,8 @@
 /*
  * bm25/segcache.c - bytes of an immutable segment that queries read again and again, kept by the backend for the next one.
  *
- * A segment never changes, so what its relation file and generation hold is named for good (relation files are not reused, a
- * merge or a VACUUM that rewrites a segment names a new generation): the SB directory of its docmap (bm25/docdir.c) and the
+ * A segment never changes, so what its relation file and generation hold is named for good (a merge or a VACUUM that rewrites a
+ * segment names a new generation, and a build in a truncated file drops what the file held: sift_segcache_drop_file): the SB directory of its docmap (bm25/docdir.c) and the
  * blob of a term (bm25/posting/posting.c) are kept under the file, the generation, what they are, where they start and how long they
  * are, up to SEGCACHE_BYTES per backend. The reader pins the entry it uses until its memory context goes (a callback), and
  * eviction takes the least recently used one that nobody pins. What does not fit is made in the reader's memory, as before. The
@@ -216,6 +216,26 @@ sift_segcache_has(const SiftStreamReader *sr, int kind, uint64 id, Size size)
 	k.kind = kind;
 	e = hash_search(cache, &k, HASH_FIND, NULL);
 	return e != NULL && e->ready;
+}
+
+/* The file is built again in place (ON COMMIT DELETE ROWS, a TRUNCATE in the transaction that made the table): its generations start again. An entry a reader of the old contents still pins goes when it is let go */
+void
+sift_segcache_drop_file(const RelFileLocator *loc)
+{
+	HASH_SEQ_STATUS seq;
+	CacheEnt   *e;
+
+	if (cache == NULL)
+		return;
+	hash_seq_init(&seq, cache);
+	while ((e = hash_seq_search(&seq)) != NULL)
+		if (RelFileLocatorEquals(e->key.rel, *loc))
+		{
+			if (e->pins == 0)
+				ent_drop(e);
+			else
+				e->ready = false;
+		}
 }
 
 void

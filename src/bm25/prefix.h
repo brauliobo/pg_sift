@@ -18,7 +18,8 @@
 extern const uint8 *sift_prefix_union(SiftSegment *seg, SiftTermMatcher *m, const char *key, int keylen,
 									  const SiftScoreRef *ref, bool scoring, int min_bound, MemoryContext mcxt, SiftTermInfo *info,
 									  uint8 *left_out);
-
+/* The index file is built again in place: the unions kept of its segments name the contents before */
+extern void sift_prefix_drop_file(const RelFileLocator *loc);
 
 /* kB of postings one pass of a wide prefix gathers: past it the superblocks are built in windows that fit (a test GUC) */
 extern PGDLLIMPORT int sift_prefix_gather_kb;
