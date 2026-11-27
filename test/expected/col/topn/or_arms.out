@@ -58,8 +58,8 @@ NOTICE:  table "oa_b" does not exist, skipping
  same+topn 10 | (memo @@> 'cable' OR memo @@> 'wire' OR memo @@> 'box') AND status = 'paid' AND store < 20
  same+topn 10 | memo @@> 'gift' AND (memo @@> 'cable' OR memo @@> 'box') AND store <> 3
  same+topn 0  | memo @@> 'express' AND (memo @@> 'cable' OR memo @@> 'wire')
- same 10      | memo @@> '"wire cable"' OR memo @@> '"gift box"'
- same 10      | memo @@> 'gift' AND (memo @@> '"wire cable"' OR memo @@> 'red')
+ same+topn 10 | memo @@> '"wire cable"' OR memo @@> '"gift box"'
+ same+topn 10 | memo @@> 'gift' AND (memo @@> '"wire cable"' OR memo @@> 'red')
  same+topn 10 | memo @@> 'cable' AND (memo @@> 'cable' OR memo @@> 'wire')
 (11 rows)
 

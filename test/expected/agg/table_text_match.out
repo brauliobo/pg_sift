@@ -66,7 +66,7 @@ having|SiftAggV6 text|0
 like_qual|SiftAggV6 text|0
 no_match|none|0
 or_terms|SiftAggV6 text|0
-phrase|none|0
+phrase|SiftAggV6 text|0
 rare|none|0
 rows_topn|SiftAggV6 text|0
 rows_topn_or|SiftAggV6 text|0

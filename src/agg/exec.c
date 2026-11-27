@@ -258,7 +258,7 @@ v6_serve_projection(V6State *st, Snapshot snap)
 static SiftV6Text *
 text_begin(const V6State *st)
 {
-	return OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, CurrentMemoryContext) : NULL;
+	return OidIsValid(st->spec->text_indexoid) ? sift_v6_text_open(st->spec, st->sources[0].heap, st->css.ss.ps.state->es_snapshot, CurrentMemoryContext) : NULL;
 }
 
 static void

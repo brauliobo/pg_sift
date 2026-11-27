@@ -1,13 +1,16 @@
 /*
- * agg/text.c - a search (body @@> 'const'; an OR of them on one index, and ANDs of those) among the quals of an aggregate of a table with a sift_col index of format major 2. The scan of the index
- * reads the rows of the hits only: the hits of the arms on their sift index (an arm binds the queries it ANDs into one plan) are read in heap order, without scores, a row matched by several arms
- * once, into chunks of a bridge (agg/hybrid/hybrid.c, the byte budget of work_mem / 2), and each chunk is a pass of the scan, which skips the granules the chunk misses and every row not in it. The
- * groups of every pass are one. A query that needs the indexed text of its hits, or whose phrase the rows of the write buffer (which have no positions) may leave undecided, is not served: the
- * planner leaves it to the text index's own scan.
+ * agg/text.c - a search (body @@> query, the query a text constant or a parameter; an OR of them on one index, and ANDs of those) among the quals of an aggregate of a table with a sift_col index
+ * of format major 2. The scan of the index reads the rows of the hits only: the hits of the arms on their sift index (an arm binds the queries it ANDs into one plan) are read in heap order, without
+ * scores, a row matched by several arms once, into chunks of a bridge (agg/hybrid/hybrid.c, the byte budget of work_mem / 2), and each chunk is a pass of the scan, which skips the granules the chunk
+ * misses and every row not in it. The groups of every pass are one. A hit whose text the index leaves undecided (a phrase the stored positions do not decide: the rows of the write buffer, a segment
+ * without positions) is decided on the text of the visible version of its row, read from the heap as the text index's own scan rechecks it.
  */
 #include "postgres.h"
 
 #include "access/relation.h"
+#include "access/tableam.h"
+#include "catalog/index.h"
+#include "executor/executor.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
@@ -26,6 +29,7 @@
 #include "agg/settings.h"
 #include "bm25/planner/planner.h"
 #include "bm25/planner/int.h"
+#include "bm25/doc.h"
 #include "core/memtrack.h"
 #include "core/sift.h"
 
@@ -47,6 +51,11 @@ struct SiftV6Text
 	TextArm    *arm;
 	SiftPageMatch page;			/* the page of the union being handed out */
 	int			word;
+	SiftVis		vis;			/* the rows whose text decides a hit: the heap, under the snapshot of the statement */
+	IndexInfo  *info;
+	EState	   *estate;
+	TupleTableSlot *slot;
+	MemoryContext tmp;
 };
 
 static const SiftHybridStore v6_text_store = {.host = SIFT_HYB_HOST_TABLE};
@@ -57,10 +66,12 @@ sift_v6_text_index(const IndexOptInfo *ix)
 	return ix->relam == sift_catalog()->am && !ix->hypothetical && (ix->indpred == NIL || ix->predOK);
 }
 
-/* a query whose text the plan has: a text constant */
+/* a query an execution gives the text of: a text constant, or an external parameter of type text */
 static bool
 query_given(const Expr *q)
 {
+	if (IsA(q, Param))
+		return ((const Param *) q)->paramkind == PARAM_EXTERN && ((const Param *) q)->paramtype == TEXTOID;
 	return IsA(q, Const) && !((const Const *) q)->constisnull && ((const Const *) q)->consttype == TEXTOID;
 }
 
@@ -106,40 +117,6 @@ sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri)
 			return true;
 	}
 	return false;
-}
-
-/* The plan of an arm: the AND of its queries */
-static SiftPlan *
-arm_plan(SiftIndexState *ist, List *queries, int flags)
-{
-	SiftQuery **q = palloc(list_length(queries) * sizeof(SiftQuery *));
-	int			n = 0;
-
-	foreach_node(Const, c, queries)
-	{
-		const text *t = DatumGetTextPP(c->constvalue);
-
-		q[n++] = sift_state_query(ist, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
-	}
-	return sift_plan_bind(ist, q, n, flags);
-}
-
-bool
-sift_v6_text_usable(IndexOptInfo *text, List *arms)
-{
-	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 text query");
-	MemoryContext old = MemoryContextSwitchTo(cx);
-	Relation	index = index_open(text->indexoid, AccessShareLock);
-	SiftIndexState *ist = sift_state_open(index, cx);
-	bool		usable = true;
-
-	foreach_node(List, arm, arms)
-		usable &= !sift_plan_recheck_possible(arm_plan(ist, arm, SIFT_BIND_CAPPED));
-	sift_state_close(ist);
-	index_close(index, AccessShareLock);
-	MemoryContextSwitchTo(old);
-	MemoryContextDelete(cx);
-	return usable;
 }
 
 /* the operators of a posting walked and put in the bridge, at the scan's own price of a millisecond (0.41 ms more for 5,000 postings of a word than for one) */
@@ -217,15 +194,82 @@ sift_v6_search_key_first(PlannerInfo *root, RelOptInfo *rel, double postings)
 		Max(rel->tuples, 1.0) * clauselist_selectivity(root, own, rel->relid, JOIN_INNER, NULL) * SEARCH_KEY_ROW_OPS < postings * SEARCH_POSTING_OPS;
 }
 
-/* The arm's next page */
+/* The plan of an arm: the AND of its queries; NULL when one is NULL (a parameter the execution gave no text), which no row matches */
+static SiftPlan *
+arm_plan(SiftIndexState *ist, List *queries)
+{
+	SiftQuery **q = palloc(list_length(queries) * sizeof(SiftQuery *));
+	int			n = 0;
+
+	foreach_node(Const, c, queries)
+	{
+		const text *t;
+
+		if (c->constisnull)
+			return NULL;
+		t = DatumGetTextPP(c->constvalue);
+		q[n++] = sift_state_query(ist, VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t));
+	}
+	return sift_plan_bind(ist, q, n, 0);
+}
+
+/* The heap rows whose text decides the hits the index leaves undecided, read as the snapshot sees them; plan: one whose hits may need them */
+static void
+heap_text_begin(SiftV6Text *t, Relation heap, Snapshot snapshot, const SiftPlan *plan)
+{
+	sift_vis_begin(&t->vis, heap, snapshot, t->index, sift_plan_dir_version(plan));
+	t->info = BuildIndexInfo(t->index);
+	t->estate = CreateExecutorState();
+	t->slot = table_slot_create(heap, NULL);
+	t->tmp = sift_mem_allocset_create(t->cx, "sift agg v6 text recheck");
+}
+
+/* The text of the visible version of the row of the index entry (blk, off) matches the plan */
+static bool
+row_matches(SiftV6Text *t, SiftPlan *plan, BlockNumber blk, int off)
+{
+	MemoryContext old = MemoryContextSwitchTo(t->tmp);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	ItemPointerData tid;
+	text	   *doc = NULL;
+	bool		ok;
+
+	ItemPointerSet(&tid, blk, off);
+	if (sift_vis_fetch(&t->vis, &tid, t->slot))
+	{
+		GetPerTupleExprContext(t->estate)->ecxt_scantuple = t->slot;
+		FormIndexDatum(t->info, t->slot, t->estate, values, isnull);
+		doc = sift_bm25_assemble_doc(t->index, values, isnull, t->tmp);
+	}
+	ok = doc != NULL && sift_plan_recheck(plan, doc);
+	MemoryContextSwitchTo(old);
+	ResetPerTupleExprContext(t->estate);
+	MemoryContextReset(t->tmp);
+	return ok;
+}
+
+/* The arm's next page: of the hits that need the recheck (offmask but not sure), those whose rows' text does not match are dropped */
 static void
 arm_next(SiftV6Text *t, TextArm *a)
 {
-	a->has = sift_iter_next(a->it, &a->pm);
+	SiftPageMatch *pm = &a->pm;
+
+	a->has = sift_iter_next(a->it, pm);
+	if (!a->has || !pm->recheck)
+		return;
+	for (int w = 0; w < SIFT_OFFMASK_WORDS; w++)
+		for (uint64 bits = pm->offmask[w] & ~pm->sure[w]; bits != 0; bits &= bits - 1)
+		{
+			const int	bit = __builtin_ctzll(bits);
+
+			if (!row_matches(t, a->plan, pm->blk, w * 64 + bit + 1))
+				pm->offmask[w] &= ~(UINT64CONST(1) << bit);
+		}
 }
 
 SiftV6Text *
-sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent)
+sift_v6_text_open(const SiftV6Spec *spec, Relation heap, Snapshot snapshot, MemoryContext parent)
 {
 	MemoryContext cx = sift_mem_allocset_create(parent, "sift agg v6 text");
 	MemoryContext old = MemoryContextSwitchTo(cx);
@@ -241,8 +285,10 @@ sift_v6_text_open(const SiftV6Spec *spec, MemoryContext parent)
 	{
 		TextArm    *a = &t->arm[i];
 
-		a->plan = arm_plan(t->ist, list_nth_node(List, spec->text_queries, i), 0);
-		SIFT_INVARIANT(!sift_plan_recheck_needed(a->plan), "sift: the aggregate scan takes no query that needs the text of its hits");
+		if ((a->plan = arm_plan(t->ist, list_nth_node(List, spec->text_queries, i))) == NULL)
+			continue;
+		if (t->slot == NULL && sift_plan_recheck_needed(a->plan))
+			heap_text_begin(t, heap, snapshot, a->plan);
 		a->it = sift_iter_begin(a->plan);
 		arm_next(t, a);
 	}
@@ -305,7 +351,14 @@ void
 sift_v6_text_close(SiftV6Text *t)
 {
 	for (int i = 0; i < t->narms; i++)
-		sift_iter_end(t->arm[i].it);
+		if (t->arm[i].it != NULL)
+			sift_iter_end(t->arm[i].it);
+	if (t->slot != NULL)
+	{
+		ExecDropSingleTupleTableSlot(t->slot);
+		FreeExecutorState(t->estate);
+		sift_vis_end(&t->vis);
+	}
 	sift_hybrid_end(t->run);
 	sift_state_close(t->ist);
 	index_close(t->index, AccessShareLock);

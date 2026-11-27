@@ -67,6 +67,7 @@ sift_v6_bind_params(SiftV6Spec *spec, ParamListInfo params)
 
 	spec->vqual = (List *) bind_param((Node *) spec->vqual, params);
 	spec->filter = (List *) bind_param((Node *) spec->filter, params);
+	spec->text_queries = (List *) bind_param((Node *) spec->text_queries, params);
 	spec->topk_count = (List *) bind_param((Node *) spec->topk_count, params);
 	foreach_node(List, item, spec->pgexpr)
 		pgexpr = lappend(pgexpr, list_make2(bind_param(linitial(item), params), lsecond(item)));
