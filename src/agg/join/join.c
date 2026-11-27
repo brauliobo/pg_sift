@@ -425,7 +425,7 @@ load_side(MemoryContext cx, TupleTableSlot *slot, MinimalTuple *buf, Size *cap, 
 {
 	if (len > *cap)
 	{
-		*cap = Max((Size) len, *cap * 2);
+		*cap = Max((Size) len, Min(*cap * 2, MaxAllocSize));
 		*buf = *buf == NULL ? MemoryContextAlloc(cx, *cap) : repalloc(*buf, *cap);
 	}
 	memcpy(*buf, bytes, len);

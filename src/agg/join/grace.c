@@ -162,7 +162,7 @@ gj_new(MemoryContext cx, SiftJoinType type, uint64 work_mem, uint64 expect, uint
 
 	j->cx = cx;
 	j->type = type;
-	j->budget = Max(work_mem / 2, GJ_MIN_BUDGET);
+	j->budget = Max(Min(work_mem / 2, MaxAllocSize / 2), GJ_MIN_BUDGET);
 	j->expect = expect;
 	j->level = level;
 	j->emit = emit;
@@ -183,7 +183,7 @@ sift_gjoin_create(MemoryContext cx, SiftJoinType type, uint64 work_mem_bytes, ui
 static uint64
 gj_row_cost(const GjTab *t, uint32 klen, uint32 plen)
 {
-	uint64		c = klen + plen + GJ_ROW_OVERHEAD;
+	uint64		c = (uint64) klen + plen + GJ_ROW_OVERHEAD;
 
 	if (t->nrows + 1 > t->rcap)
 		c += (uint64) Max(t->rcap, 64) * (sizeof(GjRow) + sizeof(uint32));
@@ -221,7 +221,7 @@ gj_tab_insert(GjTab *t, MemoryContext cx, uint64 hash, const void *key, uint32 k
 		uint32		ncap = Max(t->rcap * 2, 64);
 
 		/* check-memory: allow the rows of the table are bounded by its budget (half of work_mem): past it the rows spill to files */
-		t->rows =t->rows ? repalloc(t->rows, sizeof(GjRow) * ncap) : MemoryContextAlloc(cx, sizeof(GjRow) * ncap);
+		t->rows = t->rows ? repalloc(t->rows, sizeof(GjRow) * ncap) : MemoryContextAlloc(cx, sizeof(GjRow) * ncap);
 		t->rcap = ncap;
 	}
 	if (t->hcap < t->rcap)
