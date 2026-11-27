@@ -14,7 +14,14 @@ sift_shrink_block_name(SiftShrinkBlock why)
 {
 	static const char *const names[] = {"none", "standby", "lock", "snapshot"};
 
+	Assert(why < lengthof(names));
 	return names[why];
+}
+
+SiftShrinkBlock
+sift_f2_shrink_block(uint16 blocked_cuts, uint64 quarantine_blocks)
+{
+	return blocked_cuts == 0 ? SIFT_SHRINK_OPEN : quarantine_blocks > 0 ? SIFT_SHRINK_SNAPSHOT : SIFT_SHRINK_LOCK;
 }
 
 typedef struct ShrinkNote

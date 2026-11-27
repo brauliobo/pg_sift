@@ -19,6 +19,7 @@
 #include "core/explain.h"
 #include "core/f2/fsm/fsm.h"
 #include "core/f2/meta.h"
+#include "core/maint/maint.h"
 #include "core/ops.h"
 #include "core/shm/lease.h"
 #include "core/sql/api.h"
@@ -215,7 +216,7 @@ space_f2(const SiftApiRel *r, SiftApiSpace *s)
 	s->dead_rows = (int64) meta.total_dead;
 	s->bytes = (int64) meta.total_bytes;
 	s->last_shrink = meta.last_shrink_at;
-	s->shrink_blocked_by = sift_api_shrink_blocked_by(meta.shrink_blocked);
+	s->shrink_blocked_by = sift_api_shrink_blocked_by(sift_f2_shrink_block(meta.shrink_blocked, st.quarantine_blocks));
 	if (r->am == SIFT_API_TABLE)
 	{
 		s->has_vblocks = true;

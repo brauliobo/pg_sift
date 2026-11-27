@@ -231,6 +231,8 @@ typedef enum SiftShrinkBlock
 	SIFT_SHRINK_SNAPSHOT
 } SiftShrinkBlock;
 extern const char *sift_shrink_block_name(SiftShrinkBlock why);
+/* Why the end of a file of Format 2.0 stays: its metapage counts the cuts that found the file busy, and the quarantine holds what a snapshot may still read */
+extern SiftShrinkBlock sift_f2_shrink_block(uint16 blocked_cuts, uint64 quarantine_blocks);
 
 /* What the cut of an index left behind goes to its metapage (sift.col_shrink_history): why blocks stay (none: the blocks that are free but not reusable yet are the snapshot's) and, when shrunk, that the file was cut now */
 extern void sift_maint_note_shrink(Relation rel, SiftShrinkBlock why, bool shrunk);

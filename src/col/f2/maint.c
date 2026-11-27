@@ -227,11 +227,12 @@ f2_shrink_history(FunctionCallInfo fcinfo)
 	Relation	index = open_f2(PG_GETARG_OID(0));
 	SiftColMetaPageData meta = sift_col_meta_read(index);
 	SiftFsmStats st = sift_fsm_check(index);
+	SiftShrinkBlock why = sift_f2_shrink_block(meta.shrink_blocked, st.quarantine_blocks);
 	Datum		v[2] = {0};
 	bool		nulls[2] = {false};
 
-	nulls[0] = meta.shrink_blocked == 0;
-	v[0] = CStringGetTextDatum(st.quarantine_blocks > 0 ? "snapshot" : "lock");
+	nulls[0] = why == SIFT_SHRINK_OPEN;
+	v[0] = CStringGetTextDatum(sift_shrink_block_name(why));
 	nulls[1] = meta.last_shrink_at == 0;
 	v[1] = TimestampTzGetDatum(meta.last_shrink_at);
 	index_close(index, AccessShareLock);
