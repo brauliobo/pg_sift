@@ -3,8 +3,8 @@
  *
  * The records that matter to a modify are the ones another transaction wrote and whose writer is not past every snapshot: they say that the row changed under it. A writer older than the
  * oldest transaction a snapshot can see is committed for all of them or never visible, and a modify finds the same without its record. The records of the transaction itself are known to it (its
- * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records: they wait aside, unsorted, and join the others once their writer
- * ended, if it is not past every snapshot by then. The log keeps the headers of the records left, and follows the chain
+ * row locks name the rows it changed), and a statement that patches a million rows writes a chain of that many records: the log keeps none of them, only their writers, and reads the
+ * chain again once one of those ended, for the records not past every snapshot by then. The log keeps the headers of the records left, and follows the chain
  * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain, and merges their records into the ones it has. A backend keeps the logs of the FOREIGN_LOGS partitions it modified last, so that a statement that goes from one
  * partition to another reads neither chain again.
  *
@@ -61,10 +61,7 @@ typedef struct ForeignLog
 	ForeignRec *recs;			/* ascending by (tid, seq) */
 	int			nskipped;
 	int			capskipped;
-	TransactionId *skipped;		/* the writers of own */
-	int			nown;
-	int			capown;
-	ForeignRec *own;			/* the records of the transaction itself, in the order of the chain */
+	TransactionId *skipped;		/* the writers of the transaction itself whose records the log left out */
 	uint64		tick;
 } ForeignLog;
 
@@ -185,7 +182,6 @@ log_reset(void)
 	flog->n = 0;
 	flog->seq = 0;
 	flog->nskipped = 0;
-	flog->nown = 0;
 	sift_col_delta_watch_reset(&flog->watch);
 }
 
@@ -239,10 +235,7 @@ log_visit(void *arg pg_attribute_unused(), const char *page, uint32 from_used)
 		ForeignRec	r = {.tid = sift_col_delta_hdr_tid(&h),.seq = flog->seq++,.hdr = h};
 
 		if (TransactionIdIsCurrentTransactionId(h.xmin))
-		{
 			log_skip(h.xmin);
-			recs_push(&flog->own, &flog->nown, &flog->capown, &r);
-		}
 		else if (!writer_settled(h.xmin))
 			recs_push(&flog->recs, &flog->n, &flog->cap, &r);
 	}
@@ -293,26 +286,12 @@ log_merge(int sorted)
 	pfree(tail);
 }
 
-/* The records of the writers of the transaction that ended since join the others, the ones not past every snapshot: the chain is not read again for them */
+/* A writer of the transaction whose records the log left out ended: the chain is read again for them */
 static void
-log_adopt_own(void)
+log_own_ended(void)
 {
-	int			sorted = flog->n,
-				kept = 0;
-
-	if (!log_skipped_gone())
-		return;
-	flog->nskipped = 0;
-	for (int i = 0; i < flog->nown; i++)
-		if (TransactionIdIsCurrentTransactionId(flog->own[i].hdr.xmin))
-		{
-			log_skip(flog->own[i].hdr.xmin);
-			flog->own[kept++] = flog->own[i];
-		}
-		else if (!writer_settled(flog->own[i].hdr.xmin))
-			recs_push(&flog->recs, &flog->n, &flog->cap, &flog->own[i]);
-	flog->nown = kept;
-	log_merge(sorted);
+	if (log_skipped_gone())
+		log_reset();
 }
 
 static void
@@ -354,7 +333,7 @@ log_of(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *
 {
 	log_open(rel, entry->part_id);
 	flog->tick = sift_cache_tick();
-	log_adopt_own();
+	log_own_ended();
 	if (!log_current(rel, anchor))
 		log_follow(rel, entry, anchor);
 	flog->tick = sift_cache_tick();
