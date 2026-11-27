@@ -75,18 +75,15 @@ lock_then_sync(Relation rel, SiftTblRel *st, Snapshot snapshot)
 }
 
 /*
- * Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale.
+ * Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again
  */
 static bool
-fetch_version(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync)
+fetch_version(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead)
 {
 	SiftTblRowVer rv;
 	bool		dead;
 
 	*all_dead = false;
-	PredicateLockRelation(rel, snapshot);
-	if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
-		sift_tomb_sync(rel, &st->tomb);
 	if (sift_tbl_deleted_by_self(st, snapshot, sift_key_from_tid(tid)))
 		return false;
 	if (!sift_tbl_fetch_lazy(rel, st, tid, &rv))
@@ -118,7 +115,7 @@ fetch_version(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 
 /*
  * The version of tid that the snapshot sees; chain: or the one of the chain a HOT update began at tid, which an index entry of tid stands for.
- * *all_dead: every version of the chain is dead for everyone (the index entry may go)
+ * *all_dead: every version of the chain is dead for everyone (the index entry may go); sync: the tombstones may be stale
  */
 static bool
 fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, bool *all_dead, bool sync, bool chain)
@@ -126,12 +123,17 @@ fetch_visible(Relation rel, SiftTblRel *st, ItemPointer tid, Snapshot snapshot, 
 	ItemPointerData cur = *tid;
 	bool		dead = true;
 
+	PredicateLockRelation(rel, snapshot);
 	for (;;)
 	{
 		bool		this_dead;
 		uint64		succ;
 
-		if (fetch_version(rel, st, &cur, snapshot, slot, &this_dead, sync))
+		if (sync && (snapshot->snapshot_type == SNAPSHOT_DIRTY || snapshot->snapshot_type == SNAPSHOT_SELF))
+			sift_tomb_sync(rel, &st->tomb);
+		if (chain)
+			sift_key_to_tid(sift_tbl_chain_skip(rel, st, snapshot, sift_key_from_tid(&cur), &dead), &cur);
+		if (fetch_version(rel, st, &cur, snapshot, slot, &this_dead))
 		{
 			if (all_dead)
 				*all_dead = false;
@@ -192,8 +194,8 @@ chain_visible(VblockTest *t, uint64 key)
 		SiftTblRowVer rv;
 		bool		vis;
 
-		sift_key_to_tid(succ, &tid);
-		key = succ;
+		key = sift_tbl_chain_skip(t->rel, t->st, t->snapshot, succ, NULL);
+		sift_key_to_tid(key, &tid);
 		if (!sift_tbl_fetch_lazy(t->rel, t->st, &tid, &rv))
 			continue;
 		vis = sift_tbl_visible(t->rel, t->st, t->snapshot, &rv);
@@ -544,8 +546,8 @@ bitmap_chains(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumb
 			SiftTblRowVer rv;
 			ItemPointerData tid;
 
-			sift_key_to_tid(succ, &tid);
-			key = succ;
+			key = sift_tbl_chain_skip(rel, s->st, s->base.rs_snapshot, succ, NULL);
+			sift_key_to_tid(key, &tid);
 			if (!sift_tbl_fetch_row(rel, s->st, &tid, &rv))
 				continue;
 			if (sift_tbl_visible(rel, s->st, s->base.rs_snapshot, &rv))

@@ -309,6 +309,11 @@ typedef struct SiftTblDel
 extern bool sift_tbl_hot_next(const SiftTblRel *st, uint64 key, uint64 *succ);
 /* The deletion state of key by the log as it is now (no snapshot: the writers' view) */
 extern void sift_tbl_del_state(const SiftTblRel *st, uint64 key, SiftTblDel *del);
+/*
+ * The first member of the HOT chain from key (key itself included) that no HOT update the snapshot sees ended: the members before it are not visible to the snapshot whatever
+ * their rows say, and no row of theirs is read. *dead (when not NULL): cleared unless every member passed is dead for every snapshot
+ */
+extern uint64 sift_tbl_chain_skip(Relation rel, const SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead);
 
 extern TableScanDesc sift_tbl_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
 										 ParallelTableScanDesc pscan, uint32 flags);

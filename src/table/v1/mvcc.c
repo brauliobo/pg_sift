@@ -117,12 +117,31 @@ sift_tbl_ver_state(Relation rel, Snapshot snapshot, const SiftColVerSum *sum)
 	return SIFT_TBL_VER_NONE;
 }
 
+/* The tombstone that deletes key for the snapshot, NULL when none does; the writers of the entries before it are a serializable conflict out */
+static const SiftTomb *
+ended_by(Relation rel, const SiftTblRel *st, Snapshot snapshot, uint64 key)
+{
+	const SiftTomb *e;
+	int			n;
+
+	if ((e = sift_tomb_find(&st->tomb, key, &n)) == NULL)
+		return NULL;
+	for (int i = 0; i < n; i++)
+	{
+		if (e[i].kind == SIFT_TOMB_LOCK)
+			continue;
+		if (sift_tomb_deletes(snapshot, &e[i]))
+			return &e[i];
+		if (snapshot->snapshot_type == SNAPSHOT_MVCC && TransactionIdIsValid(e[i].xid) && !TransactionIdDidAbort(e[i].xid))
+			CheckForSerializableConflictOut(rel, e[i].xid, snapshot);
+	}
+	return NULL;
+}
+
 bool
 sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const SiftTblRowVer *rv)
 {
 	bool		dead;
-	const SiftTomb *e;
-	int			n;
 
 	if (!sift_tbl_inserted_visible(snapshot, rv, &dead))
 	{
@@ -130,18 +149,21 @@ sift_tbl_visible(Relation rel, const SiftTblRel *st, Snapshot snapshot, const Si
 			CheckForSerializableConflictOut(rel, rv->xmin, snapshot);
 		return false;
 	}
-	if ((e = sift_tomb_find(&st->tomb, rv->key, &n)) == NULL)
-		return true;
-	for (int i = 0; i < n; i++)
+	return ended_by(rel, st, snapshot, rv->key) == NULL;
+}
+
+uint64
+sift_tbl_chain_skip(Relation rel, const SiftTblRel *st, Snapshot snapshot, uint64 key, bool *dead)
+{
+	const SiftTomb *e;
+
+	while ((e = ended_by(rel, st, snapshot, key)) != NULL && e->kind == SIFT_TOMB_UPDATE && (e->flags & SIFT_TOMB_HOT))
 	{
-		if (e[i].kind == SIFT_TOMB_LOCK)
-			continue;
-		if (sift_tomb_deletes(snapshot, &e[i]))
-			return false;
-		if (snapshot->snapshot_type == SNAPSHOT_MVCC && TransactionIdIsValid(e[i].xid) && !TransactionIdDidAbort(e[i].xid))
-			CheckForSerializableConflictOut(rel, e[i].xid, snapshot);
+		if (dead)
+			*dead &= sift_tbl_xid_removable(rel, e->xid);
+		key = e->succ;
 	}
-	return true;
+	return key;
 }
 
 /*
