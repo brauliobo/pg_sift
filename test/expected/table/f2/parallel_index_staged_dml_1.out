@@ -1,0 +1,59 @@
+-- sift_table: a parallel index scan, bitmap scan or single-copy Gather of a transaction sees what the transaction staged, as a serial one does: its deletes
+-- and one version of each row it updated. The leader writes its staged rows and its staged deletes before the workers start (S117-05).
+CREATE EXTENSION pg_sift;
+CREATE TABLE t (id int PRIMARY KEY, v text) USING sift_table;
+INSERT INTO t SELECT g, 'old' FROM generate_series(1, 2000) g;
+CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text; r text := '';
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ '(Gather|Index Scan|Bitmap Heap Scan)' THEN r := r || btrim(regexp_replace(l, ' (on|using) .*|->', '', 'g')) || ';'; END IF;
+	END LOOP;
+	RETURN r;
+END $$;
+SET debug_parallel_query = on;
+SET enable_seqscan = off;
+SET sift.enable_agg = off;
+BEGIN;
+DELETE FROM t WHERE id = 1;
+UPDATE t SET v = 'new' WHERE id = 2;
+UPDATE t SET v = repeat('x', 3000) WHERE id = 3;
+SELECT plan_of('SELECT id, v FROM t WHERE id IN (1, 2, 3)') AS bitmap;
+       bitmap       
+--------------------
+ Gather;Index Scan;
+(1 row)
+
+SELECT id, left(v, 3) AS v FROM t WHERE id IN (1, 2, 3) ORDER BY id, v;
+ id |  v  
+----+-----
+  2 | new
+  3 | xxx
+(2 rows)
+
+SET LOCAL enable_bitmapscan = off;
+SELECT plan_of('SELECT id, v FROM t WHERE id IN (1, 2, 3)') AS index;
+       index        
+--------------------
+ Gather;Index Scan;
+(1 row)
+
+SELECT id, left(v, 3) AS v FROM t WHERE id IN (1, 2, 3) ORDER BY id, v;
+ id |  v  
+----+-----
+  2 | new
+  3 | xxx
+(2 rows)
+
+ROLLBACK;
+SELECT id, v FROM t WHERE id IN (1, 2, 3) ORDER BY id;
+ id |  v  
+----+-----
+  1 | old
+  2 | old
+  3 | old
+(3 rows)
+
+DROP FUNCTION plan_of(text);
+DROP TABLE t;
+DROP EXTENSION pg_sift;

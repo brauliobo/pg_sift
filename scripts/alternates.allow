@@ -188,7 +188,14 @@ test/expected/compat/v1/unified_preagg_cube_1.out	a26d1aec4fe79345f15d6fcf374df6
 test/expected/compat/v1/unified_preagg_cube_1.out	ab2d86deb36b555b18d8a706b97ffa39ebe5622d	19	by_kind_sums  |     3 | t
 test/expected/compat/v1/unified_preagg_cube_1.out	ae41c35c543712811afc22a60d6e5e871fabcd9a	19	count_live    |     3 | t
 test/expected/core/spool_1.out	b6ee8403895cf8769c15bfdae14a5450ec1d19e6	17	ERROR:  temporary file size exceeds "temp_file_limit" (64kB)
+test/expected/table/basic_1.out	e9dca5efbb90e2e958ea48e4ce1d704a62bfe090	17	QUERY PLAN
+test/expected/table/bitmap_lazy_1.out	281df0efe1157a97dcfc7a035e40c160b70416ac	17	->  Bitmap Heap Scan on t
+test/expected/table/bitmap_lazy_1.out	3bebe8a72273692aa52a1e20b6f6f0e932216dbb	17	t
+test/expected/table/bitmap_lazy_1.out	79155da5cec25c38bf367a2700c1cd860818cba4	17	QUERY PLAN
+test/expected/table/bitmap_lazy_1.out	b1bd82d5dcf96eecdfa91ca28d26c2358089f3ee	17	f
+test/expected/table/bitmap_recheck_1.out	1ef3977a33c9e623a3603d638efa7d8da541b7bf	17	brc_f2 | t
 test/expected/table/f2/fetch_1.out	8b73b2cbd394efecc960a1f90aa319b7d66cf1c3	17	sift_lines
+test/expected/table/f2/parallel_index_staged_dml_1.out	d180d4c3f978ecfb02e590b5eb5dbcf08f455fd7	17	bitmap
 test/expected/table/f2/parity_1.out	03b666735fa26a3b749a14c9538e29a62d55f585	17	assert_eq
 test/expected/table/f2/parity_1.out	3e638e713af760fb57e5658af4017318e0527a33	17	assert_eq
 test/expected/table/f2/parity_1.out	6b44508f6bd0c0cc6f792c3bb347f24c43fb1b0b	17	assert_eq
@@ -203,6 +210,7 @@ test/expected/table/f2/returning_old_1.out	b6d24c8a7325f689d8448d6e67ec7d9dd5128
 test/expected/table/f2/returning_old_1.out	dcbec81a28eab0b462348f1a0489725227c74cf6	17	same_returning
 test/expected/table/f2/returning_old_1.out	f1b53ccb6d57e5160c8dde8f1ff2733c93d5d544	17	sift           |          heap
 test/expected/table/f2/returning_old_1.out	ff83416a98dc4d6f3dd63ec232cddcd694443042	17	same_returning
+test/expected/table/hot_update_1.out	3bebe8a72273692aa52a1e20b6f6f0e932216dbb	17	t
 test/expected/table/virtual_parity_1.out	0291bf04a5a6af438f04fc1367f6ffaaa02a7d95	17	ERROR:  relation "vgb" does not exist
 test/expected/table/virtual_parity_1.out	04e1fa807b1e4af68d1f9e091a5d7bfa6975d23e	17	stored_aggregate
 test/expected/table/virtual_parity_1.out	1a6e36cac7ada63a8cd6bc4044108623d83bc36e	17	ERROR:  syntax error at or near "VIRTUAL"
@@ -237,3 +245,4 @@ test/expected/table/virtual_parity_1.out	ea1ed796b556764c872554775dfb837759a0cd2
 test/expected/table/virtual_parity_1.out	f74a945404665096ed445239d93e99eae8b8271d	17	table_virtual_projection
 test/expected/table/virtual_parity_1.out	fcddfa8fe48dd503f981643c028534ccf24072a9	17	ERROR:  relation "vgb" does not exist
 test/expected/table/virtual_parity_1.out	ff84dcbfb922b62b6720e1e28f464cbc36aaac05	17	virtual_aggregate
+test/expected/table/writepath_1.out	d5ca03a0513682c2bd3dc7e4d3fb595fbc56e0b0	17	ok
