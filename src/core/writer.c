@@ -28,7 +28,8 @@
 #define RUN_MAX				1024
 #define RUN_BIG				8192
 #define EXTENT_TARGET		256
-#define SW_BATCH_PAGES		16
+/* Pages logged in one WAL record: each page more grows the registered buffers of the backend by 8 kB, kept for its life */
+#define SW_BATCH_PAGES		8
 
 #ifdef SIFT_TESTING
 #define TEST_KNOB(knob, normal)	((knob) > 0 ? (knob) : (normal))
