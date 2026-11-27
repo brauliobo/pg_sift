@@ -46,7 +46,7 @@
 # (docs/SAFETY.md; SIFT_POINTER_OVERFLOW=1 adds the pointer-wrap trap). install builds every flavor (SANITIZE, SIFT_TESTING, SIFT_HARDEN, the PostgreSQL it builds for...) in a directory of its own,
 # $SIFT_BUILD_ROOT/<checkout>/<flavor> (SIFT_BUILD_DIR: this one directory; SIFT_BUILD_ROOT default /tmp/sift-build): going back to a flavor compiles nothing. It is on when SIFT_BUILD_DIR, SIFT_BUILD_ROOT or
 # SIFT_TMP is set or /tmp is a tmpfs; otherwise the objects stay beside the sources and install runs make clean whenever the flavor changes. A compiler cache in RAM
-# (scripts/ccache-env.sh) is set up when CCACHE_DIR is not. start then preloads the sanitizer runtimes
+# (scripts/ccache-env.sh) is set up when CCACHE_DIR is not, and a full /tmp or /dev/shm is pruned in the background (scripts/wt-tmpfs.sh auto-prune). start then preloads the sanitizer runtimes
 # into the server, with LeakSanitizer (scripts/lsan.supp); reports go to
 # $SIFT_TMP/sanitizer/ (sanitizer-report). SIFT_INITDB_TEMPLATE, a data directory made by `initdb-template`, is copied
 # instead of running initdb for every cluster (scripts/ci.sh makes one per run, test/t/lib/common.bash uses it too).
@@ -113,6 +113,7 @@ install() {
 	elif [[ -z ${SIFT_BUILD_DIR:-} ]]; then
 		mkdir -p "$(dirname "$out")" && printf %s "$REPO" >"$(dirname "$out")/.repo"
 	fi
+	"$REPO/scripts/wt-tmpfs.sh" auto-prune
 	ccache_ram_env "$REPO"
 	# on the make command line: sudo resets the environment, which would install another flavor
 	local flavor=(USE_PGXS=1 SIFT_BUILD_DIR="$out" SIFT_TESTING="$SIFT_TESTING" SANITIZE="${SANITIZE:-}" SIFT_LTO="${SIFT_LTO:-}" SIFT_HARDEN="${SIFT_HARDEN:-}" ${SIFT_UBSAN_SET:+"SIFT_UBSAN_SET=$SIFT_UBSAN_SET"} ${SIFT_POINTER_OVERFLOW:+SIFT_POINTER_OVERFLOW=1} ${VULKAN:+VULKAN=1})

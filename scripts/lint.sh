@@ -74,7 +74,7 @@ CHECKS+=(
 	'alternates	scripts/check-alternates.sh --selftest && scripts/check-alternates.sh'
 	'quick-skip	scripts/check-quick-skip.sh --selftest && scripts/check-quick-skip.sh'
 	'undefined-symbols	scripts/check-undefined.sh --selftest'
-	'wt-tmpfs	scripts/wt-tmpfs.sh --selftest'
+	'wt-tmpfs	scripts/wt-tmpfs.sh --selftest && python3 -I scripts/tmpfs-reap.py --selftest'
 	'bench-tests	scripts/bench-tests.sh --selftest && scripts/bench-tests.sh'
 	'bench-resume	scripts/lint-cache.sh bench-resume bench/steps bench/test/resume.sh -- bash bench/test/resume.sh'
 	'bench-coverage	bench/bench cases --check'
