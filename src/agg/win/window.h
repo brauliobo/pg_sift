@@ -44,6 +44,9 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_window_plan_methods;
 extern void sift_agg_v6_window_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_window_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
+/* A finished plan node (after set_plan_refs): of a SiftAggV6Window, the scan tlist with each WindowFunc as a call EXPLAIN prints (agg/win/tlist.c) */
+extern void sift_v6_window_finish_tlist(Plan *plan);
+
 /*
  * The spec of the plan's private list (the oid of the source, rti, mode, run condition function, range frame, how the partitions are made, the source is a sift_table, order flags; partition Vars; order Vars; function nodes; run condition bound), its columns added to in; false when the engine
  * does not run it. The planner and the executor make the spec by this one function. params: the values of this execution, NULL when the plan is made (a parameter bound

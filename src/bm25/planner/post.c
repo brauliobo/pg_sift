@@ -10,6 +10,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/plannodes.h"
 
+#include "agg/win/window.h"
 #include "bm25/planner/planner.h"
 #include "core/catalog.h"
 #include "bm25/planner/int.h"
@@ -131,6 +132,7 @@ finish_walk(PlannedStmt *stmt, Plan *plan, bool scans)
 	if (plan == NULL)
 		return;
 	bitmap_recheck(plan);
+	sift_v6_window_finish_tlist(plan);
 	if (IsA(plan, ModifyTable) && ((ModifyTable *) plan)->returningLists != NIL && has_score_column((ModifyTable *) plan))
 		returning_scores((ModifyTable *) plan);
 	if (scans)
