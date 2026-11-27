@@ -314,14 +314,14 @@ SELECT ct_stat(q, 'Pruned By Zone Map') > 0 AS skipped_desc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq DESC LIMIT 10$q$ AS q) x;
  skipped_desc 
 --------------
- f
+ t
 (1 row)
 
 SELECT ct_stat(q, 'Pruned By Zone Map') > 0 AS skipped_asc
 FROM (SELECT $q$SELECT id, seq FROM ct WHERE memo @@> 'thanks' ORDER BY seq LIMIT 10$q$ AS q) x;
  skipped_asc 
 -------------
- f
+ t
 (1 row)
 
 SELECT ct_stat(q, 'Pruned By Zone Map') = 0 AS none_skipped_when_random
@@ -336,7 +336,7 @@ SELECT ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id DESC LIMIT
 	   ct_stat('SELECT id FROM ct WHERE memo @@> ''fast'' ORDER BY id LIMIT 10', 'Scanned') AS granules_asc;
  granules_desc | granules_asc 
 ---------------+--------------
-            12 |           12
+             2 |            2
 (1 row)
 
 CREATE FUNCTION ct_plan(q text) RETURNS text LANGUAGE plpgsql AS $$

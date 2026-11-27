@@ -138,6 +138,8 @@ typedef struct SiftV1Scan
 	bool		tid_range;
 	uint64		tid_lo;
 	uint64		tid_hi;
+	const SiftF2Bound *bound;	/* a row Top-N by the leaf of index attribute bound_att: the units that cannot beat it are not read (sift_col_set_bound); NULL: none */
+	int			bound_att;
 } SiftV1Scan;
 
 /* scan (NULL: none) bounded by the ctid range of spec */

@@ -108,6 +108,11 @@ rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relatio
 	const struct SiftTidBridge *bridge;
 
 	emit.fold = f;
+	if (!is_table && totals == NULL && spec->key[spec->topk_item[0].pos].jleaf == 0)
+	{
+		o.scan.bound = sift_v6_rows_bound(rows);
+		o.scan.bound_att = spec->key[spec->topk_item[0].pos].attno;
+	}
 	if (next_chunk == NULL)
 		sift_srcfold_run(f, rows_open, &o);
 	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))

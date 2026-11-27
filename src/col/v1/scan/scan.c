@@ -14,6 +14,7 @@
 #include "core/quarantine/quarantine.h"
 #include "col/v1/gorder/gorder.h"
 #include "col/v1/scan/int.h"
+#include "core/scan_types.h"
 
 #ifdef SIFT_TESTING
 /*
@@ -418,6 +419,58 @@ cursor_ahead(void *arg, uint64 *off, uint64 *len)
 }
 
 void
+sift_col_set_bound(SiftColSource *src, int col, const SiftF2Bound *bound)
+{
+	src->bound = bound;
+	src->bound_col = col;
+}
+
+/* Whether a zone of the bound's leaf holds a value that sorts before the other's: the best rows of the bound */
+static bool
+zone_better(const SiftF2Bound *b, const SiftCZone *x, const SiftCZone *y)
+{
+	return b->desc ? x->max > y->max : x->min < y->min;
+}
+
+/* Whether the last units of more segments hold better values of the bound's leaf than their first ones: the walk starts at the end then */
+static bool
+best_at_end(SiftColSource *src)
+{
+	int			votes = 0;
+
+	for (int i = 0; i < src->nseg; i++)
+	{
+		SiftColSegment *seg = src->seg[i].seg;
+		SiftCZone	first,
+					last;
+
+		if (seg->nsb < 2)
+			continue;
+		sift_cseg_zone(seg, src->bound_col, 0, &first);
+		sift_cseg_zone(seg, src->bound_col, seg->nsb - 1, &last);
+		votes += zone_better(src->bound, &last, &first) - zone_better(src->bound, &first, &last);
+	}
+	return votes > 0;
+}
+
+/* Whether no row of unit u can beat the bound: its zone holds no value that sorts before it (nor one equal to it, unless a later sort column breaks the tie) and no NULL that sorts first */
+static bool
+bound_excludes(const SiftColSource *src, ColCursor *c, uint32 u)
+{
+	const SiftF2Bound *b = src->bound;
+	SiftCZone	z;
+
+	if (b == NULL || !b->active)
+		return false;
+	sift_cseg_zone(c->seg, src->bound_col, u, &z);
+	if ((z.flags & SIFT_COLZ_OVERFLOW) || z.nnull >= z.nvals || (b->nulls_first && z.nnull > 0))
+		return false;
+	if (b->ties)
+		return b->desc ? z.max < b->value : z.min > b->value;
+	return b->desc ? z.max <= b->value : z.min >= b->value;
+}
+
+void
 sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi)
 {
 	MemoryContext old;
@@ -430,6 +483,7 @@ sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, c
 		SIFT_INVARIANT(preds[i].col >= 0 && preds[i].col < src->schema->ncols, "sift_col: predicate on leaf %d of %d", preds[i].col,
 					   src->schema->ncols);
 	cached = scan_keep_cached(src, preds, npreds, zones);
+	src->back = src->bound != NULL && best_at_end(src);
 	src->ptid = NULL;
 	src->nptid = src->capptid = 0;
 	src->ptid_unsorted = false;
@@ -462,9 +516,9 @@ sift_col_begin(SiftColSource *src, const SiftColPred *preds, int npreds, uint32 
 	sift_col_begin_zones(src, preds, npreds, NULL, 0, sb_lo, sb_hi);
 }
 
-/* The superblock of the cursor's next kept unit, false at its end */
+/* The cursor at its next kept unit from the first one (c->cur), false at its end */
 static bool
-cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
+cursor_fwd(SiftColSource *src, ColCursor *c)
 {
 	while (c->cur < c->end)
 	{
@@ -484,9 +538,52 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 		}
 		c->cur += run;
 	}
-	if (c->cur >= c->end)
+	return c->cur < c->end;
+}
+
+/* The cursor at its next kept unit from the last one (c->end - 1), false at its start */
+static bool
+cursor_prev(SiftColSource *src, ColCursor *c)
+{
+	for (uint32 u; c->end > c->cur && !sift_col_bit_test(c->keep, u = c->end - 1); c->end--)
+		if (src->counted == 0 || src->counted != src->sig_gen)
+		{
+			src->cnt.units_pruned++;
+			src->cnt.units_set += sift_col_bit_test(c->setcut, u);
+		}
+	return c->end > c->cur;
+}
+
+/* The unit the cursor is at, and the step past it, in the direction of the walk */
+static inline uint32
+cursor_unit(const SiftColSource *src, const ColCursor *c)
+{
+	return src->back ? c->end - 1 : c->cur;
+}
+
+static inline void
+cursor_step(const SiftColSource *src, ColCursor *c)
+{
+	if (src->back)
+		c->end--;
+	else
+		c->cur++;
+}
+
+/* The place of a superblock in the walk: ascending, or descending when the walk starts at the end */
+static inline uint32
+walk_rank(const SiftColSource *src, uint32 sb)
+{
+	return src->back ? PG_UINT32_MAX - 1 - sb : sb;
+}
+
+/* The rank of the superblock of the cursor's next kept unit, false at its end */
+static bool
+cursor_head(SiftColSource *src, ColCursor *c, uint32 *rank)
+{
+	if (!(src->back ? cursor_prev(src, c) : cursor_fwd(src, c)))
 		return false;
-	*sb = c->seg->sbdir[c->cur].id;
+	*rank = walk_rank(src, c->seg->sbdir[cursor_unit(src, c)].id);
 	return true;
 }
 
@@ -494,6 +591,13 @@ cursor_head(SiftColSource *src, ColCursor *c, uint32 *sb)
 static uint32
 cursor_next_kept(const ColCursor *c, uint32 u)
 {
+	if (c->src->back)
+	{
+		while (u-- > c->cur)
+			if (c->keep[u / 64] >> (u % 64) & 1)
+				return u;
+		return PG_UINT32_MAX;
+	}
 	for (u++; u < c->end; u++)
 		if (c->keep[u / 64] >> (u % 64) & 1)
 			return u;
@@ -611,7 +715,7 @@ heap_down(uint64 *h, int n, int i)
 static void
 cursor_heap_top(SiftColSource *src)
 {
-	uint32		sb;
+	uint32		rank;
 
 	if (src->chead == NULL)
 		src->chead = MemoryContextAlloc(GetMemoryChunkContext(src->seg), Max(src->nseg, 1) * sizeof(uint64));
@@ -619,8 +723,8 @@ cursor_heap_top(SiftColSource *src)
 	{
 		src->nchead = 0;
 		for (int i = 0; i < src->nseg; i++)
-			if (cursor_head(src, &src->seg[i], &sb))
-				src->chead[src->nchead++] = (uint64) sb << 32 | (uint32) i;
+			if (cursor_head(src, &src->seg[i], &rank))
+				src->chead[src->nchead++] = (uint64) rank << 32 | (uint32) i;
 		for (int i = src->nchead / 2 - 1; i >= 0; i--)
 			heap_down(src->chead, src->nchead, i);
 		src->hvalid = true;
@@ -629,8 +733,8 @@ cursor_heap_top(SiftColSource *src)
 	{
 		int			i = (uint32) src->chead[0];
 
-		if (cursor_head(src, &src->seg[i], &sb))
-			src->chead[0] = (uint64) sb << 32 | (uint32) i;
+		if (cursor_head(src, &src->seg[i], &rank))
+			src->chead[0] = (uint64) rank << 32 | (uint32) i;
 		else
 			src->chead[0] = src->chead[--src->nchead];
 		heap_down(src->chead, src->nchead, 0);
@@ -638,29 +742,57 @@ cursor_heap_top(SiftColSource *src)
 	src->hstale = false;
 }
 
+/* The cursor on top of the heap, past the units the bound ruled out since their heads were taken (the bound rises as the Top-N fills); NULL: none is left */
+static ColCursor *
+cursor_best(SiftColSource *src)
+{
+	ColCursor  *c;
+
+	for (cursor_heap_top(src); src->nchead > 0; cursor_heap_top(src))
+	{
+		c = &src->seg[(uint32) src->chead[0]];
+		if (!bound_excludes(src, c, cursor_unit(src, c)))
+			return c;
+		src->cnt.units_pruned++;
+		cursor_step(src, c);
+		src->hstale = true;
+	}
+	return NULL;
+}
+
+/* The next batch of the write buffers in the direction of the walk */
+static inline ColMem *
+mem_next(const SiftColSource *src)
+{
+	return src->order[src->back ? src->norder - 1 - src->ocur : src->ocur];
+}
+
 bool
 sift_col_next(SiftColSource *src, SiftColUnit *unit)
 {
 	ColUnit    *cu = &src->cu;
-	ColCursor  *best = NULL;
-	uint32		bsb = PG_UINT32_MAX;
+	ColCursor  *best;
+	uint32		brank = PG_UINT32_MAX,
+				bsb = 0,
+				u = 0;
 	bool		mem = false;
 	MemoryContext old;
 
 	MemoryContextReset(src->arena);
 	old = MemoryContextSwitchTo(src->arena);
-	cursor_heap_top(src);
-	if (src->nchead > 0)
+	best = cursor_best(src);
+	if (best != NULL)
 	{
-		best = &src->seg[(uint32) src->chead[0]];
-		bsb = src->chead[0] >> 32;
+		brank = src->chead[0] >> 32;
+		u = cursor_unit(src, best);
+		bsb = best->seg->sbdir[u].id;
 	}
-	if (src->ocur < src->norder && src->order[src->ocur]->b->sb < bsb)
+	if (src->ocur < src->norder && walk_rank(src, mem_next(src)->b->sb) < brank)
 	{
 		mem = true;
-		bsb = src->order[src->ocur]->b->sb;
+		brank = walk_rank(src, bsb = mem_next(src)->b->sb);
 	}
-	if (bsb == PG_UINT32_MAX)
+	if (brank == PG_UINT32_MAX)
 	{
 		MemoryContextSwitchTo(old);
 		return false;
@@ -669,17 +801,18 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	cu->src = src;
 	if (mem)
 	{
-		load_memory(cu, src->order[src->ocur++]);
+		load_memory(cu, mem_next(src));
+		src->ocur++;
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
 	else
 	{
-		load_stored(cu, best, best->cur);
-		if (sift_cseg_dirty(best->seg, best->cur))
-			src->cnt.dirty_rows += best->seg->sbdir[best->cur].nrows;
+		load_stored(cu, best, u);
+		if (sift_cseg_dirty(best->seg, u))
+			src->cnt.dirty_rows += best->seg->sbdir[u].nrows;
 		if (best->prow != NULL)
 		{
-			const SiftColSBRef *r = &best->seg->sbdir[best->cur];
+			const SiftColSBRef *r = &best->seg->sbdir[u];
 
 			uint32		lo = 0,
 						hi = best->nprow;
@@ -696,7 +829,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 			/* the units of a segment of heap addresses are its superblocks, so the addresses of a unit are those of its superblock */
 			uint32		lo = 0,
 						hi = best->nptidv,
-						usb = sift_cseg_unit_sb(best->seg, best->cur);
+						usb = sift_cseg_unit_sb(best->seg, u);
 
 			SIFT_BISECT(uint32, m, lo, hi, sift_block_sb(sift_key_block(best->ptidv[m])) < usb);
 			cu->ptid = best->ptidv + lo;
@@ -704,7 +837,7 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 				hi++;
 			cu->nptid = hi - lo;
 		}
-		best->cur++;
+		cursor_step(src, best);
 	}
 	if (!mem)
 		src->hstale = true;

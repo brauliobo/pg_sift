@@ -954,7 +954,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	if (scan->keep != NULL)
 		s->rd->select(s->src, scan->keep);
 	bind_types(s, scan);
-	sift_v1_src_prune_begin(s, range);
+	sift_v1_src_prune_begin(s, scan);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules};
 	return &s->base;

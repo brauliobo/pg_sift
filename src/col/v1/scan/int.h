@@ -266,6 +266,9 @@ struct SiftColSource
 	int			nchead;
 	bool		hvalid;			/* chead holds the heads of every cursor */
 	bool		hstale;			/* the cursor on top gave the last unit: its next head is not looked up yet */
+	const struct SiftF2Bound *bound;	/* a Top-N that keeps the best rows by leaf bound_col (sift_col_set_bound): a stored unit whose zone cannot beat it is not read; NULL: none */
+	int			bound_col;
+	bool		back;			/* the cursors walk their units from the last one (begin: the best rows of the bound are at the end) */
 	ColMem	   *mem;
 	int			nmem;
 	uint32		memseq;			/* the id of the last batch fed: it is not the place of the batch, which sift_col_drop_batches moves */

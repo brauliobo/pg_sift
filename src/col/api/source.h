@@ -264,6 +264,13 @@ typedef struct SiftColPrune
 	const struct SiftColPrune *kids;
 } SiftColPrune;
 
+/*
+ * Before sift_col_begin: the scan feeds a Top-N that keeps the best rows by the integer leaf col and holds bound up to date (it must outlive the scan). The units are walked from the
+ * end of the segments whose zones hold the best values first, and a stored unit whose zone of col holds no row that beats the bound is not read.
+ */
+struct SiftF2Bound;
+extern void sift_col_set_bound(SiftColSource *src, int col, const struct SiftF2Bound *bound);
+
 /* sift_col_begin, the units also kept by every one of the nzones tests */
 extern void sift_col_begin_zones(SiftColSource *src, const SiftColPred *preds, int npreds, const SiftColPrune *zones, int nzones, uint32 sb_lo, uint32 sb_hi);
 

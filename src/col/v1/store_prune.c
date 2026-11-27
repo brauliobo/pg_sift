@@ -64,9 +64,26 @@ set_entry(const SiftV1Src *s, int set, SiftSrcPrune *e)
 }
 
 /* A unit whose zone of an integer column lies wholly outside the bounds the program puts on it, or outside every range of an OR, is not read; the program still tests every row of the units that are */
-void
-sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Range *range)
+/* The bound of a row Top-N to the column source of an index, when the leaf of its attribute is a plain integer whose zones hold every value */
+static void
+bind_bound(SiftV1Src *s, const SiftV1Scan *scan)
 {
+	for (int i = 0; i < s->lay->nleaves; i++)
+	{
+		const SiftSrcLeaf *l = &s->lay->leaf[i];
+
+		if (l->attno == scan->bound_att && l->parent < 0 && l->path == NIL && !l->lossy && !l->wide && l->scale == 0 && (l->vtype == SCV_I32 || l->vtype == SCV_I64))
+		{
+			sift_col_set_bound(sift_v1_idx_colsource(s->src), l->id, scan->bound);
+			return;
+		}
+	}
+}
+
+void
+sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Scan *scan)
+{
+	const SiftV1Range *range = scan->range;
 	const uint32 nsb = s->rd->nsb(s->src);
 	SiftSrcBound bound[SIFT_SRC_MAX_BOUNDS];
 	SiftSrcPrune *prune = palloc0((SIFT_SRC_MAX_BOUNDS + SIFT_SRC_MAX_SETS) * sizeof(SiftSrcPrune));
@@ -82,5 +99,7 @@ sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Range *range)
 	}
 	for (int i = 0; s->quals != NULL && i < sift_srcfold_nsets(s->quals); i++)
 		np += set_entry(s, i, &prune[np]);
+	if (scan->bound != NULL && !s->in.is_table)
+		bind_bound(s, scan);
 	s->rd->begin(s->src, range ? range->sb_lo : 0, range ? Min(range->sb_hi, nsb) : nsb, prune, np);
 }
