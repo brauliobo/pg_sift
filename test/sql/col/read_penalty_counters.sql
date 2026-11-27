@@ -1,15 +1,22 @@
--- The reads count what maintenance would spare them (sift.stats), whether or not maintenance may run: rows checked in the heap, rows of units with a dead row.
+-- The reads count what maintenance would spare them (sift.stats), whether or not maintenance may run: the rows they check in the heap, those of a part whose inserts
+-- are not settled (the transaction that built the index is still open), and the rows of units with a dead row. A committed UPDATE is answered from the delete marks
+-- of the index: no row of it is checked in the heap.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.async_maintenance = off;
+BEGIN;
 CREATE TABLE rp (id int, k int, v int) WITH (autovacuum_enabled = false);
 INSERT INTO rp SELECT g, g % 50, g FROM generate_series(1, 20000) g;
 CREATE INDEX rp_c ON rp USING sift_col (id, k, v);
+SELECT k, count(*), sum(v) FROM rp GROUP BY k ORDER BY k LIMIT 2;
+SELECT name, value FROM sift.stats(local => true) WHERE name IN ('rows_vetted', 'rows_dirty_units', 'maintenance_asks') ORDER BY name;
+COMMIT;
 VACUUM (ANALYZE, FREEZE) rp;
 UPDATE rp SET v = v + 1 WHERE id % 10 = 0;
-SET max_parallel_workers_per_gather = 0;
-SET sift.async_maintenance = off;
+SELECT value AS vetted_before FROM sift.stats(local => true) WHERE name = 'rows_vetted' \gset
 SELECT k, count(*), sum(v) FROM rp GROUP BY k ORDER BY k LIMIT 2;
-SELECT name, value > 0 AS counted FROM sift.stats(local => true) WHERE name IN ('rows_vetted') ORDER BY name;
-SELECT name, value FROM sift.stats(local => true) WHERE name IN ('rows_dirty_units', 'maintenance_asks') ORDER BY name;
+SELECT value - :vetted_before AS vetted_after_the_update FROM sift.stats(local => true) WHERE name = 'rows_vetted';
 DROP TABLE rp;
 DROP EXTENSION pg_sift;

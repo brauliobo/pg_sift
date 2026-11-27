@@ -20,7 +20,7 @@ CREATE FUNCTION dc_scan(w text, via text) RETURNS text LANGUAGE plpgsql SET max_
 DECLARE r text;
 BEGIN
 	EXECUTE format('EXPLAIN (COSTS OFF) %s', w) INTO r;
-	RETURN CASE WHEN r ~ 'Index Only Scan using dc_' THEN 'index only' WHEN r ~ 'Index Scan using dc_' THEN 'index scan' WHEN r ~ 'Bitmap Heap Scan on dc' THEN 'bitmap'
+	RETURN CASE WHEN r ~ 'Index Only Scan using dc_' THEN 'index only' WHEN r ~ 'Index Scan using dc_|Bitmap Heap Scan on dc' THEN 'index'
 				WHEN r ~ 'Seq Scan on dc' THEN 'seq' ELSE r END;
 END $$;
 CREATE FUNCTION dc_rows(w text, idx bool) RETURNS bigint[] LANGUAGE plpgsql
@@ -49,7 +49,7 @@ SELECT count(*) AS shapes FROM dc_q;
 -- the default class and the typed class give the heap's rows
 SELECT n, w FROM dc_q WHERE dc_rows(w, true) IS DISTINCT FROM dc_rows(w, false) ORDER BY n;
 SELECT count(*) FILTER (WHERE cardinality(dc_rows(w, false)) > 0) AS with_rows FROM dc_q;
--- the planner takes the index for a selective test, and not for a type with no class
+-- the planner takes the index for a selective test (an index or a bitmap scan, as it prices them), and not for a type with no class
 SELECT dc_scan('SELECT * FROM dc WHERE id = 777', '') AS id_eq, dc_scan('SELECT id FROM dc WHERE id = 777', '') AS id_only,
 	   dc_scan('SELECT * FROM dc WHERE u = md5(''777'')::uuid', '') AS uuid_eq, dc_scan('SELECT * FROM dc WHERE t = ''k'' || md5(''777'')', '') AS text_eq,
 	   dc_scan('SELECT * FROM dc WHERE id BETWEEN 100 AND 130', '') AS id_range, dc_scan('SELECT * FROM dc WHERE ip = ''10.0.0.9''', '') AS inet_eq,

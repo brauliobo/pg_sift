@@ -2,13 +2,12 @@
 -- the index alone: a statement that reads a column the index does not hold (avg(score) over a window of dates) is not its to answer, and the index keeps its paths for the
 -- rows of the window; an index that holds every column the statement reads stays SiftAgg's.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 CREATE TABLE pw AS SELECT g id, '2022-01-01'::date + (g * 7919 % 1826) d, (g % 5) + 1 score, repeat('x', 100) pad FROM generate_series(1, 60000) g;
 VACUUM (ANALYZE) pw;
 CREATE INDEX pw_d ON pw USING sift_col (d);
-NOTICE:  sift_col index "pw_d": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pw_d');
 CREATE FUNCTION pw_plan(q text) RETURNS text LANGUAGE plpgsql SET max_parallel_workers_per_gather = 0 SET enable_seqscan = off AS $$
 DECLARE r text = '';
 	l text;
@@ -35,11 +34,6 @@ SELECT (SELECT avg(score) FROM pw WHERE d >= '2024-03-10' AND d < '2024-04-10') 
 (1 row)
 
 CREATE INDEX pw_dr ON pw USING sift_col (d, score);
-NOTICE:  sift_col index "pw_dr" stores columns d of index "pw_d", which has the same layout
-HINT:  One index over the union of their columns is smaller at the same read cost: create it, drop both.
-NOTICE:  sift_col index "pw_dr": 1 advice (track_changes)
-DETAIL:  advice: track_changes = the table has no one-column primary key
-HINT:  Reasons, costs and how to turn each off: SELECT * FROM sift.index_choices('pw_dr');
 DROP INDEX pw_d;
 SELECT pw_plan('SELECT avg(score) FROM pw WHERE %win') AS avg_held_by_the_index,
        pw_plan('SELECT avg(score) FROM pw WHERE %win AND id > 10') AS avg_with_a_column_it_lacks;

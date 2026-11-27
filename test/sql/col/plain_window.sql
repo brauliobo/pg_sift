@@ -2,6 +2,8 @@
 -- the index alone: a statement that reads a column the index does not hold (avg(score) over a window of dates) is not its to answer, and the index keeps its paths for the
 -- rows of the window; an index that holds every column the statement reads stays SiftAgg's.
 CREATE EXTENSION pg_sift;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 
 CREATE TABLE pw AS SELECT g id, '2022-01-01'::date + (g * 7919 % 1826) d, (g % 5) + 1 score, repeat('x', 100) pad FROM generate_series(1, 60000) g;

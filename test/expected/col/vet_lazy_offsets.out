@@ -3,7 +3,10 @@
 -- of the pages that hold a selected row are decoded, and no other. A table that was never vacuumed (or a standby, which cannot VACUUM) is in that state at once.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- Format 1: the offsets of the rows of a unit and the key cut are the storage of Format 1
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET default_statistics_target = 10000;
 SELECT setseed(0.42);
@@ -23,18 +26,18 @@ SELECT relallvisible FROM pg_class WHERE relname = 'vl';
 (1 row)
 
 CREATE FUNCTION vl_scan(q text) RETURNS TABLE (rows_equal boolean, offsets_decoded bigint, rows_scanned bigint) LANGUAGE plpgsql AS $$
-DECLARE a text; b text; ex jsonb; n bigint;
+DECLARE a text; b text; n bigint; scanned bigint;
 BEGIN
 	SET LOCAL enable_seqscan = off;
 	SET LOCAL enable_indexscan = off;
 	SET LOCAL enable_bitmapscan = off;
 	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO a;
 	PERFORM sift._test_vet_offsets(true);
-	EXECUTE 'EXPLAIN (ANALYZE, FORMAT JSON, COSTS OFF, TIMING OFF) ' || q INTO ex;
+	scanned := sift_helpers.rows_decoded(q);
 	n := sift._test_vet_offsets(true);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT md5(string_agg(t::text, '','' ORDER BY t::text)) FROM (' || q || ') t' INTO b;
-	RETURN QUERY SELECT a = b, n, (regexp_match(ex::text, '"Rows Scanned": (\d+)'))[1]::bigint;
+	RETURN QUERY SELECT a = b, n, scanned;
 END $$;
 -- one month of one entity: tens of rows selected out of the tens of thousands of the units read
 SELECT rows_equal, offsets_decoded < rows_scanned / 10 AS only_the_pages_with_a_row, rows_scanned > 10000 AS units_are_large
@@ -56,4 +59,5 @@ FROM vl_scan('SELECT foreign_id_b, avg(score) FROM vl WHERE dim_a_id = 90 AND d 
 
 DROP FUNCTION vl_scan(text);
 DROP TABLE vl;
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
