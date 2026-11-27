@@ -26,7 +26,6 @@ typedef struct Build
 	SiftV6Col  *fcol;
 	int		   *nfcols;
 	bool		add;
-	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest, the gate of a fused arm: their evaluation is sift_clause_eval alone) */
 	bool		params;			/* $n stands for a constant of its type (param_operand) */
 	int			ngroups;
 	SiftBytes  *canon;
@@ -445,7 +444,7 @@ static bool add_pred(Build *b, const Node *q, int group, SiftClause *out);
 static bool
 add_or(Build *b, const BoolExpr *q, int group, SiftClause *out)
 {
-	if (!b->or_ok || q->boolop != OR_EXPR)
+	if (q->boolop != OR_EXPR)
 		return false;
 	if (group == 0)
 		group = ++b->ngroups;
@@ -514,14 +513,6 @@ bool
 sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon)
 {
 	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.params = true,.canon = canon};
-
-	return build(&b, quals, out);
-}
-
-bool
-sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out)
-{
-	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.or_ok = true};
 
 	return build(&b, quals, out);
 }

@@ -717,7 +717,7 @@ sift_v6_unnest_elem_clause(MemoryContext cx, const List *quals, SiftClause *out,
 {
 	SiftV6Spec	tmp = {0};
 
-	if (!sift_v6_clause_make_or(cx, quals, &tmp, out))
+	if (!sift_v6_clause_make(cx, quals, &tmp, out, NULL))
 		return false;
 	for (int i = 0; i < tmp.nfcols; i++)
 		col[i] = tmp.fcol[i].attno - SIFT_V6_ELEM_VATT;

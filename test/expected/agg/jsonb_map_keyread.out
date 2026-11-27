@@ -1222,7 +1222,7 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (metrics -> ''quality'')::smallint, count(*) FROM mk GROUP BY 1', 'node18'),
 	('SELECT g, sum((metrics -> ''quality'')::int), min((metrics -> ''m_total'')::bigint), max((metrics -> ''m_total'')::int), avg((metrics -> ''quality'')::int) FROM mk GROUP BY 1', 'node18'),
 	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::int >= 4), count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk', 'node18'),
-	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5 OR g = 3) FROM mk', 'normal'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5 OR g = 3) FROM mk', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::smallint IN (1, 2, 5) GROUP BY 1', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::int IS NULL GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, (metrics -> ''m_total'')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2', 'node18'),
@@ -1240,7 +1240,7 @@ SELECT same(q, w) FROM (VALUES
  same node18 ok SELECT (metrics -> 'quality')::smallint, count(*) FROM mk GROUP BY 1
  same node18 ok SELECT g, sum((metrics -> 'quality')::int), min((metrics -> 'm_total')::bigint), max((metrics -> 'm_total')::int), avg((metrics -> 'quality')::int) FROM mk GROUP BY 1
  same node18 ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::int >= 4), count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk
- same normal ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5 OR g = 3) FROM mk
+ same node18 ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5 OR g = 3) FROM mk
  same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::smallint IN (1, 2, 5) GROUP BY 1
  same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::int IS NULL GROUP BY 1
  same node18 ok SELECT (metrics -> 'quality')::int, (metrics -> 'm_total')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2

@@ -1,6 +1,6 @@
 /*
  * agg/filter/pg.h - the clause of an aggregate's FILTER (WHERE ..) from the quals the planner of SiftAggV6 makes of it: the forms of the quals of the scan (a column and a constant compared, IN of
- * constants, IS [NOT] NULL), each over an attribute of the index (INDEX_VAR), to the SiftClause that v6_filter_eval.h evaluates. The planner calls sift_v6_clause_make, which adds the columns the clause reads to
+ * constants, IS [NOT] NULL) and ORs of them (the rows of an OR are the union of the rows of its arms), each over an attribute of the index (INDEX_VAR), to the SiftClause that v6_filter_eval.h evaluates. The planner calls sift_v6_clause_make, which adds the columns the clause reads to
  * SiftV6Spec.fcol (the vectors the scan hands the group after those of the aggregates, sift_v6_spec_fvec) and gives the canonical bytes that tell one clause from another; the executor calls
  * sift_v6_clause_bind on the spec it unpacked. A constant the column does not compare with as an integer, a double or bytes (a date against a timestamp, whose comparison is of another unit) is refused.
  */
@@ -19,8 +19,6 @@
 extern bool sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon);
 /* the same for the quals of a statement whose node binds the values of its $n as constants before it binds the clause (sift_v6_bind_params): $n stands for a constant of its type */
 extern bool sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon);
-/* the same for the clause of the elements of an unnest, whose conjuncts may be ORs of such tests (their rows are the union of the rows of the arms) */
-extern bool sift_v6_clause_make_or(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out);
 /* The aggregate with the FILTER of a, that the executor evaluates, as CASE WHEN filter THEN arg END of the same aggregate: NULL for an aggregate it does not fold (DISTINCT, ORDER BY, several arguments, a filter of native clauses) */
 extern Aggref *sift_v6_filter_fold(Aggref *a);
 /* the digits after the point of a numeric(p, s) of the type modifier (s of numeric(p, s), negative too) */

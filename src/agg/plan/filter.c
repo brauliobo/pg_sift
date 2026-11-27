@@ -56,6 +56,37 @@ bool_compare(Expr *c)
 	return make_opclause(BooleanEqualOperator, BOOLOID, false, arg, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
 }
 
+static Expr *conjunct_qual(V6Plan *p, Expr *conjunct);
+
+/* an OR of conjuncts the scan decides: the OR of their quals */
+static Expr *
+or_qual(V6Plan *p, const BoolExpr *or)
+{
+	List	   *arms = NIL;
+
+	foreach_ptr(Expr, arm, or->args)
+	{
+		Expr	   *q = conjunct_qual(p, arm);
+
+		if (q == NULL)
+			return NULL;
+		arms = lappend(arms, q);
+	}
+	return makeBoolExpr(OR_EXPR, arms, -1);
+}
+
+/* a conjunct of a FILTER as a qual the scan decides on the stored values: a test of the elements of the row, a qual of its columns, or an OR of those (NULL: none) */
+static Expr *
+conjunct_qual(V6Plan *p, Expr *conjunct)
+{
+	Expr	   *c = bool_compare(conjunct);
+	Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
+
+	if (q != NULL)
+		return q;
+	return is_orclause(c) ? or_qual(p, (const BoolExpr *) c) : filter_qual(p, c);
+}
+
 /* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)
@@ -65,11 +96,7 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	p->in_filter = true;
 	foreach_ptr(Expr, conjunct, make_ands_implicit(filter))
 	{
-		Expr	   *c = bool_compare(conjunct);
-		Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
-
-		if (q == NULL)
-			q = filter_qual(p, c);
+		Expr	   *q = conjunct_qual(p, conjunct);
 
 		if (q == NULL)
 		{

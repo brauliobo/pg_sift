@@ -180,7 +180,7 @@ qual_gateable(QualEnt *e, const SiftV6Spec *spec)
 		SiftV6Spec	scratch = *spec;
 		SiftClause	gate;
 
-		e->gate = sift_v6_clause_make_or(CurrentMemoryContext, list_make1((void *) e->q), &scratch, &gate);
+		e->gate = sift_v6_clause_make(CurrentMemoryContext, list_make1((void *) e->q), &scratch, &gate, NULL);
 	}
 	return e->gate;
 }
@@ -332,6 +332,6 @@ sift_v6_fuse_gate(MemoryContext cx, const SiftV6FuseArm *arm, const List *common
 	*pass_spec = MemoryContextAlloc(cx, sizeof(SiftV6Spec));
 	**pass_spec = *spec;
 	*gate = MemoryContextAlloc(cx, sizeof(SiftClause));
-	SIFT_INVARIANT(sift_v6_clause_make_or(cx, own, *pass_spec, *gate), "the quals of an arm of index %u are not compiled", spec->relid);
+	SIFT_INVARIANT(sift_v6_clause_make(cx, own, *pass_spec, *gate, NULL), "the quals of an arm of index %u are not compiled", spec->relid);
 	return true;
 }

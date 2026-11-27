@@ -107,6 +107,13 @@ SELECT same(q) FROM unnest(ARRAY[
 ]) q;
 RESET work_mem;
 
+-- FILTER clauses: more than eight that PostgreSQL evaluates over the datums, a boolean column and its NOT, and ORs of the forms the scan decides
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT g, count(*) FILTER (WHERE t ILIKE ''key1%''), count(*) FILTER (WHERE t ~ ''x$''), count(*) FILTER (WHERE abs(f8) > 10), count(*) FILTER (WHERE n * 2 > 50),
+		count(*) FILTER (WHERE f4 + 1 > 3), count(*) FILTER (WHERE length(t) > 5), count(*) FILTER (WHERE d + 3 > DATE ''2024-06-01''), count(*) FILTER (WHERE i4 % 3 = 1),
+		count(*) FILTER (WHERE upper(t) = ''KEY2''), count(*) FILTER (WHERE f8 IS DISTINCT FROM 0), count(*) FILTER (WHERE n > f4) FROM @T GROUP BY g',
+	'SELECT g, count(*) FILTER (WHERE b), count(*) FILTER (WHERE NOT b), count(*) FILTER (WHERE i4 = 1 OR g = 2 OR t IS NULL), sum(i4) FILTER (WHERE b OR i4 > 40) FROM @T GROUP BY g'
+]) q;
 -- a generic plan of a statement with a parameter in a qual and a float key
 CREATE FUNCTION generic_same(p int) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE a text; b text;

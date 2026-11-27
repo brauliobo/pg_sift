@@ -108,7 +108,27 @@ collect_filters(Node *n, FilterWalk *w)
 	return expression_tree_walker(n, collect_filters, w);
 }
 
-/* the tests the WHERE and the FILTERs of the statement have (a clause equal to one already found is the same test) */
+/* the tests among the conjuncts of a FILTER and the arms of its ORs, added to cands (a clause equal to one already found is the same test) */
+static List *
+filter_cands(PlannerInfo *root, Node *clause, List *cands)
+{
+	foreach_ptr(Node, conjunct, make_ands_implicit((Expr *) clause))
+	{
+		TestCand   *c = is_orclause(conjunct) ? NULL : cand_of(root, conjunct, NULL);
+		bool		seen = false;
+
+		if (is_orclause(conjunct))
+			foreach_ptr(Node, arm, ((const BoolExpr *) conjunct)->args)
+				cands = filter_cands(root, arm, cands);
+		foreach_ptr(TestCand, o, cands)
+			seen |= c != NULL && o->where == NULL && equal(o->node, c->node);
+		if (c != NULL && !seen)
+			cands = lappend(cands, c);
+	}
+	return cands;
+}
+
+/* the tests the WHERE and the FILTERs of the statement have */
 static List *
 collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra)
 {
@@ -125,16 +145,7 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 	collect_filters((Node *) out->reltarget->exprs, &w);
 	collect_filters(extra->havingQual, &w);
 	foreach_ptr(Expr, filter, w.filters)
-		foreach_ptr(Node, conjunct, make_ands_implicit(filter))
-		{
-			TestCand   *c = cand_of(root, conjunct, NULL);
-			bool		seen = false;
-
-			foreach_ptr(TestCand, o, cands)
-				seen |= c != NULL && o->where == NULL && equal(o->node, c->node);
-			if (c != NULL && !seen)
-				cands = lappend(cands, c);
-		}
+		cands = filter_cands(root, (Node *) filter, cands);
 	return list_length(cands) <= SIFT_V6_XTESTS ? cands : NIL;
 }
 
