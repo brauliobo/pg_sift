@@ -86,6 +86,13 @@ sift_v6_quals_in_order(PlannerInfo *root, List *infos)
 	return ordered;
 }
 
+/* a column of the table the scan gives as a datum: a key or argument the pipe computes (its derive) is a datum of its own, from the vectors of its inputs */
+static bool
+table_datum(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && c->derive == 0 && sift_v6_col_class(c) == SV6C_DATUM;
+}
+
 /* a sift_table's rows reach the pairs as the vectors of its scan, which hold the native classes: no datum and no binning */
 static bool
 table_rows_ok(const SiftV6Spec *s)
@@ -93,10 +100,10 @@ table_rows_ok(const SiftV6Spec *s)
 	if (s->nbins > 0)
 		return false;
 	for (int i = 0; i < s->nkeys; i++)
-		if (s->key[i].src == SV6SRC_ATTR && sift_v6_col_class(&s->key[i]) == SV6C_DATUM)
+		if (table_datum(&s->key[i]))
 			return false;
 	for (int v = 0; v < sift_v6_spec_nvec(s); v++)
-		if (sift_v6_vec_col(s, v) != NULL && sift_v6_vec_col(s, v)->src == SV6SRC_ATTR && sift_v6_col_class(sift_v6_vec_col(s, v)) == SV6C_DATUM)
+		if (sift_v6_vec_col(s, v) != NULL && table_datum(sift_v6_vec_col(s, v)))
 			return false;
 	return true;
 }
