@@ -119,6 +119,7 @@ TESTING_REGRESS += agg/jsonb/typeof
 TESTING_REGRESS += agg/jsonb_exists
 TESTING_REGRESS += agg/jsonpath_kinds
 TESTING_REGRESS += agg/key/cube_fallback
+TESTING_REGRESS += agg/kll/mvcc
 TESTING_REGRESS += agg/kll/nonfinite
 TESTING_REGRESS += agg/kll/quantiles
 TESTING_REGRESS += agg/lateral_flatten_f2

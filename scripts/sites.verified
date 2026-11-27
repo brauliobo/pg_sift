@@ -102,6 +102,7 @@ src/col/f2/kll/sql.c	f2_index_with_column	guarded	sift_col_is_index_oid(indexoid
 src/col/f2/kll/sql.c	resolve_target	guarded	the relation argument goes through sift_rel_must_exist, and the attribute number is stored in heap_att and tested against InvalidAttrNumber on the next line
 src/col/f2/kll/sql.c	exact_answer	fixed	sift_rel_must_exist(t->heap) before the names are read: a table dropped after resolve_target is the error 42P01 of the user
 src/col/f2/kll/sql.c	index_sketch	guarded	the OID is t->index, which f2_index_with_column checked with sift_col_is_index_oid and whose table resolve_target looked up in the same call
+src/col/f2/kll/sql.c	predicate_lock_heap	guarded	the OID is the table of the index the caller holds open and locked, so the table exists while the lock is held
 src/col/f2/proj/sql.c	defs_rows	unreachable	defs_relid() is tested with OidIsValid before the open; sift.projection_defs is a member of the extension, which cannot be dropped without it
 src/col/f2/proj/sql.c	def_insert	unreachable	sift.projection_defs is a member of the extension, created by the same script as sift.create_projection that calls this: PostgreSQL refuses to drop a member of an extension
 src/col/f2/proj/sql.c	def_delete	unreachable	sift.projection_defs is a member of the extension, created by the same script as sift.drop_projection that calls this: PostgreSQL refuses to drop a member of an extension

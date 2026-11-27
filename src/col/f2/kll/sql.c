@@ -9,6 +9,7 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/table.h"
 #include "catalog/index.h"
 #include "catalog/pg_index.h"
 #include "catalog/pg_class.h"
@@ -17,6 +18,9 @@
 #include "col/f2/f2.h"
 #include "col/f2/kll/kll.h"
 #include "col/f2/l0/slab.h"
+#include "col/f2/l0/stage.h"
+#include "col/f2/part/vis.h"
+#include "core/f2/col_delta_anchor.h"
 #include "col/f2/del/pend.h"
 #include "col/pg.h"
 #include "core/catname.h"
@@ -30,6 +34,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "storage/predicate.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 #include "core/memtrack.h"
@@ -203,14 +208,43 @@ index_rows(Relation idx, const SiftManifestRead *all, uint64 *rows, uint64 *dirt
 	}
 }
 
+/* The snapshot sees every row of the part as its sketch counted it: written by committed transactions it sees, and no column delta changed a value since */
+static bool
+part_sketch_seen(const SiftPartDesc *d, bool col_deltas, Snapshot snap, FullTransactionId snap_xmin)
+{
+	TransactionId xid = XidFromFullTransactionId(d->max_xid);
+
+	if (col_deltas || d->col_delta_blk != InvalidBlockNumber)
+		return false;
+	if (sift_vis_part_inserts_settled(d, snap_xmin))
+		return true;
+	return FullTransactionIdEquals(d->min_xid, d->max_xid) && !TransactionIdIsCurrentTransactionId(xid) && sift_vis_inserted(xid, FirstCommandId, snap);
+}
+
+/* A serializable statement that reads the sketches reads the whole table: it conflicts with every writer of it */
+static void
+predicate_lock_heap(Relation idx, Snapshot snap)
+{
+	Relation	heap;
+
+	if (!IsolationIsSerializable())
+		return;
+	heap = table_open(idx->rd_index->indrelid, AccessShareLock);
+	PredicateLockRelation(heap, snap);
+	table_close(heap, NoLock);
+}
+
 /*
- * The sketch of the column over the parts of the index into out; false when more than 1% of the rows are dirty: dead, pending, in a slab, or in a part with no sketch of the column (all
- * its rows). Parts are read only when the manifest says the rows may be clean enough.
+ * The sketch of the column over the parts of the index into out; false when more than 1% of the rows are dirty: dead, pending, in a slab, in a part the snapshot does not see whole or
+ * whose values a column delta changed, or in a part with no sketch of the column (all its rows), and when this transaction staged rows the parts do not hold yet. Parts are read only
+ * when the manifest says the rows may be clean enough.
  */
 static bool
 index_sketch(Oid indexoid, int leaf, SiftKll *out)
 {
 	Relation	idx = index_open(indexoid, AccessShareLock);
+	Snapshot	snap = GetActiveSnapshot();
+	FullTransactionId snap_xmin = sift_vis_snap_xmin(snap);
 	SiftManifestRead all = sift_manifest_read_range(idx, NULL, NULL);
 	uint64		rows = 0,
 				dirty = 0;
@@ -218,21 +252,22 @@ index_sketch(Oid indexoid, int leaf, SiftKll *out)
 	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift kll part"),
 				old = CurrentMemoryContext;
 
+	predicate_lock_heap(idx, snap);
 	index_rows(idx, &all, &rows, &dirty);
-	ok = sift_kll_dirty_ok(rows, dirty, SIFT_F2_KLL_DIRTY_PPM);
+	ok = !sift_stage_has_pending(idx) && sift_kll_dirty_ok(rows, dirty, SIFT_F2_KLL_DIRTY_PPM);
 	for (int i = 0; ok && i < all.n; i++)
 	{
 		int			np;
 		SiftPartDesc *pd = sift_manifest_read_parts(idx, &all.entries[i], &np);
+		bool		col_deltas = (all.entries[i].flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0;
 
 		for (int p = 0; ok && p < np; p++)
 		{
 			SiftF2KllSec sec;
-			SiftPart   *part;
 
 			MemoryContextSwitchTo(pcx);
-			part = sift_part_open_desc(idx, &pd[p], (uint32) all.entries[i].part_id);
-			if (!sift_f2_kll_load(idx, part, &sec) || !sift_f2_kll_merge_col(&sec, (uint16) leaf, out))
+			if (!part_sketch_seen(&pd[p], col_deltas, snap, snap_xmin) || !sift_f2_kll_load(idx, sift_part_open_desc(idx, &pd[p], (uint32) all.entries[i].part_id), &sec) ||
+				!sift_f2_kll_merge_col(&sec, (uint16) leaf, out))
 			{
 				dirty += pd[p].nrows;
 				ok = sift_kll_dirty_ok(rows, dirty, SIFT_F2_KLL_DIRTY_PPM);
