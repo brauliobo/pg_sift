@@ -1,6 +1,6 @@
 -- The stamps of a connected index are in the schema of each segment, so what writes the segment's header again without writing its rows keeps them (docs/COL-CONNECT.md): VACUUM writing a
--- net pre-aggregate sidecar, and the space step shifting the runs of a large segment down into free blocks. The segments keep their generation, their stamps and the fill state, and the
--- found-flag plan answers with the rows of the normal plan after each.
+-- net pre-aggregate sidecar, and the space step moving a large segment down into free blocks (a relocation copies its pages under a new generation). The segments keep their stamps and
+-- the fill state, and the found-flag plan answers with the rows of the normal plan after each.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 -- Format 1: the connection stamps and journals are Format 1.
@@ -61,7 +61,7 @@ CREATE FUNCTION file_x100() RETURNS int LANGUAGE sql AS $$
 SELECT file_x100() > 170 AS file_twice_the_segment;
 VACUUM ev;
 SELECT file_x100() < 115 AS file_near_the_segment;
-SELECT (SELECT count(*) FROM sift._test_col_conn_stamps('ev_col') n JOIN before b USING (gen, ordinal, lineage, horizon)) AS same_stamps,
+SELECT (SELECT count(*) FROM sift._test_col_conn_stamps('ev_col') n JOIN before b USING (ordinal, lineage, horizon)) AS same_stamps,
        (SELECT count(*) FROM before) AS stamps;
 SELECT fill FROM sift.col_connections WHERE child = 'ev_col'::regclass;
 SELECT * FROM check_all();
@@ -70,7 +70,7 @@ SELECT * FROM check_all();
 DELETE FROM ev WHERE id % 500 = 7;
 VACUUM ev;
 SELECT count(*) AS net_segments FROM sift.col_segments('ev_col') s WHERE kind = 'immutable' AND preagg_bytes > 0 AND dead_rows > 0;
-SELECT (SELECT count(*) FROM sift._test_col_conn_stamps('ev_col') n JOIN before b USING (gen, ordinal, lineage, horizon)) AS same_stamps,
+SELECT (SELECT count(*) FROM sift._test_col_conn_stamps('ev_col') n JOIN before b USING (ordinal, lineage, horizon)) AS same_stamps,
        (SELECT count(*) FROM before) AS stamps;
 SELECT fill FROM sift.col_connections WHERE child = 'ev_col'::regclass;
 SELECT * FROM check_all();

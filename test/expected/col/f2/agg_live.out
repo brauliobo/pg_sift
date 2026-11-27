@@ -82,8 +82,8 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT g, count(*) FROM lv WHERE t IS NOT NULL AND t = 'key3' GROUP BY g
  same node SELECT g, count(*) FROM lv WHERE id > 29000 GROUP BY g
  same node SELECT g, count(*) FROM lv WHERE d >= '2020-06-01' AND d < '2020-07-01' GROUP BY g
- same normal SELECT g, count(*) FROM lv WHERE n > 1000 GROUP BY g
- same normal SELECT count(*), sum(v) FROM lv WHERE n > 1000
+ same node SELECT g, count(*) FROM lv WHERE n > 1000 GROUP BY g
+ same node SELECT count(*), sum(v) FROM lv WHERE n > 1000
 (8 rows)
 
 -- 3. count(DISTINCT) of integers, dates and long texts, alone and per group
@@ -128,7 +128,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT g, b, count(*), sum(n) FROM lv GROUP BY ROLLUP (g, b)
  same node SELECT g, b, count(*), grouping(g, b) FROM lv GROUP BY CUBE (g, b)
  same node SELECT g, t, count(*), sum(n), grouping(t) FROM lv GROUP BY GROUPING SETS ((g), (t), ())
- same normal SELECT g, count(*) FROM lv WHERE n > 1000 GROUP BY GROUPING SETS ((g), ())
+ same node SELECT g, count(*) FROM lv WHERE n > 1000 GROUP BY GROUPING SETS ((g), ())
  same node SELECT g, d, count(DISTINCT t) FROM lv GROUP BY ROLLUP (g, d)
  same node SELECT g, count(*) FROM lv GROUP BY GROUPING SETS ((g), (g))
  same node SELECT g, count(*) FROM lv GROUP BY DISTINCT GROUPING SETS ((g), (g))
@@ -170,9 +170,9 @@ SELECT same(q) FROM unnest(ARRAY[
                                          same                                         
 --------------------------------------------------------------------------------------
  same node SELECT g, count(*) FROM lv WHERE n BETWEEN 10 AND 20 AND g <> 3 GROUP BY g
- same normal SELECT sum(n::int8 * 0 + id) FROM lv
+ same node SELECT sum(n::int8 * 0 + id) FROM lv
  same node SELECT g, count(*) FILTER (WHERE n > 5) FROM lv GROUP BY g
- same normal SELECT g, string_agg(t, ',') IS NOT NULL FROM lv GROUP BY g
+ same node SELECT g, string_agg(t, ',') IS NOT NULL FROM lv GROUP BY g
 (4 rows)
 
 -- 8. Groups beyond the memory of the statement are spilled to files by the hash of their key and merged a partition at a time: low and high cardinality, one key and several, a distinct set, ROLLUP
@@ -193,7 +193,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT id, count(DISTINCT t), count(*) FROM lv GROUP BY id
  same node SELECT id, g, count(*) FROM lv GROUP BY ROLLUP (id, g)
  same node SELECT d, ts, count(*), sum(n) FROM lv GROUP BY d, ts
- same normal SELECT t, id, count(*) FROM lv GROUP BY t, id
+ same node SELECT t, id, count(*) FROM lv GROUP BY t, id
  same node SELECT t, count(DISTINCT id), sum(n) FROM lv GROUP BY t
  same node SELECT g, count(*), sum(v) FROM lv GROUP BY g
 (7 rows)
@@ -217,17 +217,17 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT g, count(*), sum(n) FROM mix GROUP BY g',
 	'SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)'
 ]) q;
-                                   same                                   
---------------------------------------------------------------------------
- same normal SELECT g, count(*), sum(n) FROM mix GROUP BY g
- same normal SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)
+                                  same                                  
+------------------------------------------------------------------------
+ same node SELECT g, count(*), sum(n) FROM mix GROUP BY g
+ same node SELECT g, count(*) FROM mix WHERE n > 20 GROUP BY ROLLUP (g)
 (2 rows)
 
 DROP INDEX mix_v2;
 SELECT same('SELECT g, count(*), sum(n) FROM mix GROUP BY g');
-                            same                            
-------------------------------------------------------------
- same normal SELECT g, count(*), sum(n) FROM mix GROUP BY g
+                           same                           
+----------------------------------------------------------
+ same node SELECT g, count(*), sum(n) FROM mix GROUP BY g
 (1 row)
 
 -- 10. A join of the facts with the pairs of a scope of the index (src/agg/scope/plan.c): the cube of the scope key, read from the summary of the index without a row of the facts, when
@@ -562,12 +562,12 @@ SELECT scope_same(q) FROM scope_queries2() q;
  same scope summary SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
  same scope summary SELECT date_trunc('month', e.created_at), count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY 1
  same scope summary SELECT s.tenant_id, date_trunc('month', e.created_at) AS m, count(*), max(e.kind) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY 1, 2
- same normal - SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
+ same scope scan of the facts SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
  same scope summary SELECT date_trunc('month', e.created_at), count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01' GROUP BY 1
  same scope summary SELECT s.tenant_id, count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY s.tenant_id
  same scope summary SELECT s.tenant_id, count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 999 GROUP BY s.tenant_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
  same normal - SELECT count(*) FROM ev2 e JOIN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7 OFFSET 0) ps ON ps.dim_a_id = e.dim_a_id
  same scope scan of the facts SELECT count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NOT NULL
  same scope scan of the facts SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.kind = 3
@@ -579,7 +579,7 @@ SELECT scope_same(q) FROM scope_queries2() q WHERE q LIKE '%date_trunc%';
 --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same scope join SELECT date_trunc('month', e.created_at), count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY 1
  same scope join SELECT s.tenant_id, date_trunc('month', e.created_at) AS m, count(*), max(e.kind) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY 1, 2
- same normal - SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
+ same scope scan of the facts SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
  same scope join SELECT date_trunc('month', e.created_at), count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01' GROUP BY 1
 (4 rows)
 
@@ -593,7 +593,7 @@ SELECT scope_same(q) FROM scope_queries2() q WHERE q LIKE '%deleted_at IS NULL%'
  same scope summary SELECT count(*), sum(e.amount), max(e.id) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL
  same scope summary SELECT s.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE e.deleted_at IS NULL GROUP BY s.tenant_id
  same scope summary SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
- same normal - SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
+ same scope scan of the facts SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
  same scope scan of the facts SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.kind = 3
 (6 rows)
 
@@ -609,12 +609,12 @@ SELECT scope_same(q) FROM scope_queries2() q;
  same scope summary SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
  same scope summary SELECT date_trunc('month', e.created_at), count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY 1
  same scope summary SELECT s.tenant_id, date_trunc('month', e.created_at) AS m, count(*), max(e.kind) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY 1, 2
- same normal - SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
+ same scope scan of the facts SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
  same scope summary SELECT date_trunc('month', e.created_at), count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01' GROUP BY 1
  same scope summary SELECT s.tenant_id, count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY s.tenant_id
  same scope summary SELECT s.tenant_id, count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 999 GROUP BY s.tenant_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
  same normal - SELECT count(*) FROM ev2 e JOIN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7 OFFSET 0) ps ON ps.dim_a_id = e.dim_a_id
  same scope scan of the facts SELECT count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NOT NULL
  same scope scan of the facts SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.kind = 3
@@ -635,12 +635,12 @@ SELECT scope_same(q) FROM scope_queries2() q;
  same scope summary SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01'
  same scope summary SELECT date_trunc('month', e.created_at), count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY 1
  same scope summary SELECT s.tenant_id, date_trunc('month', e.created_at) AS m, count(*), max(e.kind) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id GROUP BY 1, 2
- same normal - SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
+ same scope scan of the facts SELECT date_trunc('month', e.event_date), count(*), sum(e.price) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL GROUP BY 1
  same scope summary SELECT date_trunc('month', e.created_at), count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.created_at >= '2026-02-01' AND e.created_at < '2026-04-01' GROUP BY 1
  same scope summary SELECT s.tenant_id, count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 GROUP BY s.tenant_id
  same scope summary SELECT s.tenant_id, count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 999 GROUP BY s.tenant_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
- same normal - WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7) SELECT count(*), sum(e.amount) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id
+ same scope summary WITH ps AS MATERIALIZED (SELECT dim_a_id, tenant_id FROM tenant_scope) SELECT ps.tenant_id, count(*), sum(e.price) FROM ev2 e JOIN ps ON ps.dim_a_id = e.dim_a_id GROUP BY ps.tenant_id
  same normal - SELECT count(*) FROM ev2 e JOIN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 7 OFFSET 0) ps ON ps.dim_a_id = e.dim_a_id
  same scope scan of the facts SELECT count(*) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NOT NULL
  same scope scan of the facts SELECT count(*), sum(e.amount) FROM ev2 e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 7 AND e.deleted_at IS NULL AND e.kind = 3
@@ -693,7 +693,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT g, sum(amount), avg(amount), min(amount), max(amount), sum(w), max(w) FROM nm GROUP BY g
  same node SELECT g, sum(amount) FROM nm WHERE v > 15000 GROUP BY g
  same node SELECT g, sum(amount) FROM nm WHERE amount > 10 GROUP BY g
- same normal SELECT amount, count(*) FROM nm GROUP BY amount
+ same node SELECT amount, count(*) FROM nm GROUP BY amount
 (5 rows)
 
 DROP TABLE nm;

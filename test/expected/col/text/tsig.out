@@ -2,6 +2,8 @@
 -- only the blocks whose signature has the bit of every trigram, and the rows are the normal plan's for every needle, through promotion, merge, delete and REINDEX.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the trigram signatures of dictionary blocks are Format 1 (column format minor 29).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;

@@ -542,7 +542,7 @@ SET client_min_messages = notice;
 \set VERBOSITY default
 REINDEX INDEX ch_spill_idx;
 NOTICE:  sift_col index "ch_spill_idx": rows taken from the index it replaces, no heap read and no row files
-DETAIL:  index it replaces: 36000 entries in 130 blocks, no heap block, no temporary files for the rows, 0.08 s. btree "ch_spill_k": 544 heap blocks, 1 at random, at 80.0 us (set), no temporary files for the rows, 0.18 s with 1 process. key ranges: 544 heap blocks, temporary files not priced. Btrees: ch_spill_k 544 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
+DETAIL:  index it replaces: 36000 entries in 243 blocks, no heap block, no temporary files for the rows, 0.09 s. btree "ch_spill_k": 544 heap blocks, 1 at random, at 80.0 us (set), no temporary files for the rows, 0.18 s with 1 process. key ranges: 544 heap blocks, temporary files not priced. Btrees: ch_spill_k 544 reads. The segment writer sorts the entries of 1 leaf (order arrays and point directories) on temporary files, from whichever path the rows come.
 HINT:  SET sift.col_build_source = heap reads the heap, as releases before 5.1 did.
 NOTICE:  sift_col index "ch_spill_idx": 2 automatic choices, 1 advice, 1 limit
 DETAIL:  advice: track_changes = the table has no one-column primary key; limit: rollup_columns = g, note;

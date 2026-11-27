@@ -1,9 +1,11 @@
--- The invariant behind col_dsm_write_statements and col_wbuf_reads_write_path, for every table the backends share (the dictionaries, the choices of the
--- planner; the reads of the write buffers are in the metapage of the index, not shared): sift_dsm_attach (col/dsmreg.c) does not start the subtransaction of the registry while a statement that modifies data runs, because its commit advances the command id under
+-- The invariant behind col_dsm_write_statements and col_wbuf_reads_write_path, for every table the backends share (the dictionaries; the reads of the write buffers are
+-- in the metapage of the index, not shared): sift_dsm_attach (col/dsmreg.c) does not start the subtransaction of the registry while a statement that modifies data runs, because its commit advances the command id under
 -- the statement. Every case is a backend whose first statements write and reach an attach point: sift._test_dsm_deferred says which tables it went without, and the aggregate through
 -- the index (heap-free and checked) gives the rows of the heap (the oracle).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the supersede of an update reads the shared dictionaries of Format 1 segments.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 
@@ -44,8 +46,8 @@ BEGIN
 	checked_equals_heap := answer(qt, 1) = answer(qt, 2) AND answer(qo, 1) = answer(qo, 2);
 END $$;
 -- which tables this backend went without under a write
-CREATE FUNCTION deferred(OUT dictionary bool, OUT planner_choices bool) LANGUAGE sql AS $$
-	SELECT coalesce(bool_or(name LIKE '%dict%'), false), coalesce(bool_or(name LIKE '%verdict%'), false) FROM sift._test_dsm_deferred()
+CREATE FUNCTION deferred(OUT dictionary bool) LANGUAGE sql AS $$
+	SELECT coalesce(bool_or(name LIKE '%dict%'), false) FROM sift._test_dsm_deferred()
 $$;
 
 -- the dictionary of a text key, read by the supersede of the first UPDATE
