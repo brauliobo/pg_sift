@@ -41,7 +41,7 @@ END $$;
 SELECT 'built' AS step, * FROM pm_state('pm');
  step  | all_units | some_exact | same 
 -------+-----------+------------+------
- built | f         | f          | t
+ built | t         | t          | t
 (1 row)
 
 -- 10% of the rows deleted, 10% updated (the new versions go to the write buffer)
@@ -60,7 +60,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'vacuumed' AS step, * FROM pm_state('pm');
    step   | all_units | some_exact | same 
 ----------+-----------+------------+------
- vacuumed | f         | f          | t
+ vacuumed | f         | t          | t
 (1 row)
 
 SELECT sift.col_promote('pm_col') > 0 AS promoted, sift.col_promote('pm_off_col') > 0 AS promoted_off;
@@ -73,7 +73,7 @@ VACUUM (freeze, index_cleanup on, disable_page_skipping) pm, pm_off;
 SELECT 'maintained' AS step, * FROM pm_state('pm');
     step    | all_units | some_exact | same 
 ------------+-----------+------------+------
- maintained | f         | f          | t
+ maintained | t         | t          | t
 (1 row)
 
 SELECT sum(dead_rows) AS dead_rows, count(*) FILTER (WHERE dirty) AS dirty_segments FROM sift.col_segments('pm_col');
@@ -98,7 +98,7 @@ SELECT sift.col_verify('pm_col', true);
 SELECT 'never' AS step, * FROM pm_state('pm_off');
  step  | all_units | some_exact | same 
 -------+-----------+------------+------
- never | f         | f          | t
+ never | f         | t          | t
 (1 row)
 
 SELECT sift.col_merge('pm_off_col') AS merge_step;
@@ -110,7 +110,7 @@ SELECT sift.col_merge('pm_off_col') AS merge_step;
 SELECT 'never, after merge' AS step, * FROM pm_state('pm_off');
         step        | all_units | some_exact | same 
 --------------------+-----------+------------+------
- never, after merge | f         | f          | t
+ never, after merge | f         | t          | t
 (1 row)
 
 DROP TABLE pm, pm_off;

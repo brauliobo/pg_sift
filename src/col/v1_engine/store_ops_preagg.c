@@ -152,6 +152,13 @@ leaf_plain(const SiftSrcLeaf *l)
 	return l != NULL && !l->wide && !l->lossy && l->typid != NUMERICOID;
 }
 
+/* A leaf whose stored measures the aggregate reads: a numeric one is held as the integer of its scale, which must be the scale of the aggregate's argument, and has no set of distinct values */
+static bool
+leaf_measure(const SiftSrcLeaf *l, const SiftV6Agg *a)
+{
+	return l != NULL && !l->wide && !l->lossy && (l->typid != NUMERICOID || (a->kind != SV6_COUNT_DISTINCT && l->vtype == SCV_I64 && l->scale == a->arg.scale));
+}
+
 static bool
 leaf_int(const SiftSrcLeaf *l)
 {
@@ -644,7 +651,7 @@ bind_aggs(SiftV1Cube *c, const SiftSrcLayout *lay)
 
 		*g = (CubeAgg) {.a = a,.leaf = l == NULL ? -1 : l->id,.is_float = cls == SV6C_F64,.slot = -1};
 		g->linear = sift_v6_agg_linear(c->spec, a, &g->lin);
-		if (a->kind != SV6_COUNT_STAR && (!leaf_plain(l) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE)))
+		if (a->kind != SV6_COUNT_STAR && (!leaf_measure(l, a) || (cls == SV6C_F64) != (l->vtype == SCV_F64) || (cls == SV6C_TEXT && l->vtype != SCV_CODE)))
 			return false;
 		if (a->kind == SV6_COUNT_DISTINCT)
 		{
