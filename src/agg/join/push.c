@@ -412,7 +412,7 @@ static Plan *
 push_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
-	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
+	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private), NULL);
 	List	   *join = lfourth(best->custom_private);
 	List	   *scope = list_nth(best->custom_private, 4);
 	const Var  *dim_var = lsecond(join);
@@ -468,8 +468,7 @@ push_begin(CustomScanState *node, EState *estate, int eflags)
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 	List	   *join = lsecond(cs->custom_private);
 
-	st->spec = sift_v6_spec_unpack(linitial(cs->custom_private));
-	sift_v6_bind_params(st->spec, estate->es_param_list_info);
+	st->spec = sift_v6_spec_unpack(linitial(cs->custom_private), estate->es_param_list_info);
 	st->key = linitial(join);
 	st->resno = intVal(lsecond(join));
 	st->elemtype = (Oid) intVal(lthird(join));

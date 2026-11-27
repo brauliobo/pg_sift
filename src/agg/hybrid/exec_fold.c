@@ -533,7 +533,7 @@ agg_begin(CustomScanState *node, EState *estate, int eflags)
 	Oid			store_oid = (Oid) list_nth_int(ints, SIFT_HYBP_STORE_OID);
 	Oid			heap_oid = list_nth_int(ints, SIFT_HYBP_HOST) == SIFT_HYB_HOST_TABLE ? store_oid : IndexGetRelation(store_oid, false);
 
-	st->spec = sift_v6_spec_unpack(lfourth(cs->custom_private));
+	st->spec = sift_v6_spec_unpack(lfourth(cs->custom_private), estate->es_param_list_info);
 	st->ngroup = intVal(list_nth(cs->custom_private, 4));
 	st->group_desc = CreateTemplateTupleDesc(st->ngroup);
 	for (int i = 0; i < st->ngroup; i++)

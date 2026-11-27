@@ -493,7 +493,8 @@ extern bool sift_v6_ext_kind(const char *name, Oid argtype, SiftV6Kind *kind);
 /* the methods of the path of the aggregate scan (v6_plan_rewrite.c makes the paths of its Top-K) */
 extern const CustomPathMethods *sift_v6_group_path_methods(void);
 extern List *sift_v6_spec_pack(const SiftV6Spec *s);
-extern SiftV6Spec *sift_v6_spec_unpack(const List *l);
+/* The spec of a plan; with the parameters of an execution (NULL: while planning), the external parameters its PostgreSQL expressions read are their values */
+extern SiftV6Spec *sift_v6_spec_unpack(const List *l, ParamListInfo params);
 
 
 /* The groups: keys and aggregates folded from batches, then every group once */

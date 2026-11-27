@@ -126,8 +126,8 @@ extern bool sift_v6_cmp_op_of(const char *name, int *op);
 /* The value this execution gives the parameter; false while the path is made (no parameters) or when it is not of the type the plan was made for */
 extern bool sift_v6_param_value(ParamListInfo params, const Param *p, Datum *value, bool *isnull);
 
-/* The quals of the spec with the values this execution gives their parameters ($n) as constants: what the batch quals, and the quals of the table an unnest reads, of a generic plan run with
- * (a node started only to be explained has none) */
+/* The quals and PostgreSQL expressions of the spec with the values this execution gives their parameters ($n) as constants: what the batch quals, the FILTER clauses, the computed sort keys and the
+ * quals of the table an unnest reads, of a generic plan run with (sift_v6_spec_unpack; while planning, and in a node started only to be explained, there are none) */
 extern void sift_v6_bind_params(SiftV6Spec *spec, ParamListInfo params);
 
 /* Adds to bound[0 .. *n - 1] the bounds a conjunct gives (at most SIFT_V6_MAX_BOUNDS), the columns it reads added to in */

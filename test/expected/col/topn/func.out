@@ -200,9 +200,9 @@ SELECT tb_check_p($q$SELECT id, g FROM tb ORDER BY g + $1, id LIMIT 25$q$, 'int'
 	   tb_check_p($q$SELECT id, s FROM tb ORDER BY left(s, $1), id LIMIT 25$q$, 'int', '2', 2) AS with_workers_asked;
 NOTICE:  table "tb_a0" does not exist, skipping
 NOTICE:  table "tb_b0" does not exist, skipping
-  plus   | in_case | coalesce_default | text_appended | with_workers_asked 
----------+---------+------------------+---------------+--------------------
- same 25 | same 25 | same 25          | same 25       | same+par 25
+     plus     |   in_case    | coalesce_default | text_appended | with_workers_asked 
+--------------+--------------+------------------+---------------+--------------------
+ same+topn 25 | same+topn 25 | same+topn 25     | same+topn 25  | same+topn 25
 (1 row)
 
 -- rows of the write buffer and dirty units: new rows, updated and deleted ones are not in the stored units yet

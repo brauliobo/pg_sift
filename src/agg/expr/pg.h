@@ -49,7 +49,8 @@ typedef struct SiftV6PgExpr
 
 /*
  * The expression can run over the native vectors: no volatile function, no set-returning function, no aggregate or window, and only the Vars of the inputs. A sub-plan or an executor parameter it holds
- * is one the scan may start when a row first needs it (lut_subplan_ok, initplan_ok of agg/safety.h), and only when root is given: the scan of a node that prepares them (sift_v6_exec_begin)
+ * is one the scan may start when a row first needs it (lut_subplan_ok, initplan_ok of agg/safety.h), and only when root is given: the scan of a node that prepares them (sift_v6_exec_begin).
+ * So is an external parameter, which the spec of the node has the value of (sift_v6_spec_unpack)
  */
 extern bool sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e);
 /* the same for a batch qual, whose $n the node binds as constants before it opens it (sift_v6_bind_params) */

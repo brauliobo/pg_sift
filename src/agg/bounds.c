@@ -63,8 +63,13 @@ bind_param(Node *n, void *context)
 void
 sift_v6_bind_params(SiftV6Spec *spec, ParamListInfo params)
 {
+	List	   *pgexpr = NIL;
+
 	spec->vqual = (List *) bind_param((Node *) spec->vqual, params);
 	spec->filter = (List *) bind_param((Node *) spec->filter, params);
+	foreach_node(List, item, spec->pgexpr)
+		pgexpr = lappend(pgexpr, list_make2(bind_param(linitial(item), params), lsecond(item)));
+	spec->pgexpr = pgexpr;
 	if (spec->ext == NULL)
 		return;
 	spec->ext->where = (List *) bind_param((Node *) spec->ext->where, params);

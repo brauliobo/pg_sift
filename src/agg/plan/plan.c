@@ -950,7 +950,7 @@ Plan *
 sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans)
 {
 	CustomScan *cs = makeNode(CustomScan);
-	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private));
+	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private), NULL);
 
 	sift_agg_arm_used("single");
 	cs->scan.plan.targetlist = rewrite_tlist(tlist);

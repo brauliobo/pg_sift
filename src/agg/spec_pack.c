@@ -13,6 +13,7 @@
 #include "agg/ext.h"
 #include "agg/plan/int.h"
 #include "agg/plan/rewrite.h"
+#include "agg/vexpr.h"
 #include "core/errctx.h"
 
 static List *
@@ -120,7 +121,7 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 }
 
 SiftV6Spec *
-sift_v6_spec_unpack(const List *l)
+sift_v6_spec_unpack(const List *l, ParamListInfo params)
 {
 	const List *ints = linitial(l);
 	SiftV6Spec *s = palloc0(sizeof(SiftV6Spec));
@@ -203,6 +204,7 @@ sift_v6_spec_unpack(const List *l)
 	s->join_desc = list_nth(l, 11) != NIL ? strVal(linitial(list_nth(l, 11))) : NULL;
 	s->jmembers = list_nth(l, 12);
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
+	sift_v6_bind_params(s, params);
 	return s;
 }
 

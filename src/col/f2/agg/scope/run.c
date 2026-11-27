@@ -90,7 +90,7 @@ scope_begin(CustomScanState *node, EState *estate, int eflags)
 	if (st->spec->hi_strat != 0)
 		st->hi = ExecInitExpr(list_nth(cs->custom_exprs, st->spec->key_given + (st->lo != NULL)), &node->ss.ps);
 	if (st->spec->topk)
-		st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private));
+		st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private), estate->es_param_list_info);
 }
 
 static int64

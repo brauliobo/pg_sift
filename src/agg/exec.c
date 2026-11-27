@@ -212,8 +212,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	V6State    *st = (V6State *) node;
 
 	SIFT_TEST_GATE(sift_test_par_gate && IsParallelWorker(), 10);
-	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
-	sift_v6_bind_params(st->spec, estate->es_param_list_info);
+	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private, estate->es_param_list_info);
 	sift_v6_exec_begin(st->spec, &node->ss.ps);
 	st->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
 	st->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];

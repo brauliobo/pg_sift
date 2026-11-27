@@ -49,7 +49,7 @@ plan_ok_walker(Node *n, PlanOkCtx *c)
 	switch (nodeTag(n))
 	{
 		case T_Param:
-			if (c->bound && ((const Param *) n)->paramkind == PARAM_EXTERN)
+			if (((const Param *) n)->paramkind == PARAM_EXTERN && (c->bound || c->root != NULL))
 				return false;
 			if (((const Param *) n)->paramkind != PARAM_EXEC ||
 				(!list_member_int(c->subparams, ((const Param *) n)->paramid) && (c->root == NULL || !initplan_ok(c->root, (Param *) n))))

@@ -614,7 +614,7 @@ sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 
 		if (!IsA(path, CustomPath) || cp->methods != sift_v6_group_path_methods() || !equal(path->pathtarget->exprs, target->exprs))
 			continue;
-		s = sift_v6_spec_unpack(linitial(cp->custom_private));
+		s = sift_v6_spec_unpack(linitial(cp->custom_private), NULL);
 		if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
 			continue;
 		s->topk = k;

@@ -58,6 +58,22 @@ SELECT same(q) FROM unnest(ARRAY['EXECUTE f1(0)', 'EXECUTE f1(''NaN'')', 'EXECUT
 	'EXECUTE f4(0)', 'EXECUTE f4(''NaN'')', 'EXECUTE f4(''Infinity'')']) q;
 RESET plan_cache_mode;
 
+-- parameters of a generic plan in a clause the scan runs over its batches (a numeric, an IN list that is an array, an expression of a column) and in a FILTER: the node takes the values
+-- of the execution when it starts, NULL, NaN and the infinities included
+CREATE TABLE fn (id int PRIMARY KEY, g int, n numeric(12, 2), v bigint) WITH (autovacuum_enabled = false);
+INSERT INTO fn SELECT i, i % 5, CASE WHEN i % 499 = 0 THEN 'NaN' WHEN i % 97 = 0 THEN NULL ELSE (i % 300) * 0.25 - 20 END, i * 3 FROM generate_series(1, 6000) i;
+CREATE INDEX fn_col ON fn USING sift_col (g, n, id, v);
+VACUUM ANALYZE fn;
+SET plan_cache_mode = force_generic_plan;
+PREPARE b1(numeric) AS SELECT g, count(*), sum(v) FROM fn WHERE n > $1 GROUP BY g;
+PREPARE b2(numeric[]) AS SELECT g, count(*) FROM fn WHERE n = ANY ($1) GROUP BY g;
+PREPARE b3(numeric) AS SELECT g, count(*) FILTER (WHERE n < $1), sum(v) FILTER (WHERE n >= $1) FROM fn GROUP BY g;
+PREPARE b4(bigint) AS SELECT g, count(*) FROM fn WHERE v + $1 > id * 4 GROUP BY g;
+SELECT same(q) FROM unnest(ARRAY['EXECUTE b1(10.5)', 'EXECUTE b1(''NaN'')', 'EXECUTE b1(NULL)', 'EXECUTE b1(-1e20)', 'EXECUTE b2(ARRAY[0.25, 7, NULL, ''NaN''])',
+	'EXECUTE b2(NULL)', 'EXECUTE b3(3)', 'EXECUTE b3(''NaN'')', 'EXECUTE b3(NULL)', 'EXECUTE b4(3000)', 'EXECUTE b4(NULL)']) q;
+RESET plan_cache_mode;
+DROP TABLE fn;
+
 -- PARAM_EXEC of a lateral join: each outer row rescans the aggregate with its own value
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT l.k, x.g, x.c FROM generate_series(10, 90, 40) l(k), LATERAL (SELECT g, count(*) c FROM fp WHERE n > l.k GROUP BY g) x',

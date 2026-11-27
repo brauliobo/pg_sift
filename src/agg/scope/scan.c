@@ -60,7 +60,7 @@ scan_begin(CustomScanState *node, EState *estate, int eflags)
 	CustomScan *cs = (CustomScan *) node->ss.ps.plan;
 
 	st->spec = sift_v6_scope_spec_unpack(linitial(cs->custom_private));
-	st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private));
+	st->v6 = sift_v6_spec_unpack(lsecond(cs->custom_private), estate->es_param_list_info);
 	st->open = floatVal(linitial(lthird(cs->custom_private)));
 	st->body = floatVal(lsecond(lthird(cs->custom_private)));
 	st->out = floatVal(lthird(lthird(cs->custom_private)));
