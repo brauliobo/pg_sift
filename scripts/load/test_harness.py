@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), 'bench',
 import collect  # noqa: E402
 import run  # noqa: E402
 import tmpfs  # noqa: E402,F401  (tempfile on tmpfs)
-from cases import Ceilings, LoadCase, local  # noqa: E402
+from cases import SETTLE, Ceilings, LoadCase, local  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(HERE))
 
@@ -248,7 +248,9 @@ class Harness(unittest.TestCase):
         self.assertEqual(re.findall(r"(?<!LOCAL )statement_timeout = '\d+ms'|RESET statement_timeout", sources()), [])
 
     def test_a_cancel_never_leaves_a_worker_in_an_aborted_transaction(self):
-        self.assertEqual(local('SELECT 1', statement_timeout='25ms', lock_timeout='5ms'), "SET LOCAL statement_timeout = '25ms' \\; SET LOCAL lock_timeout = '5ms' \\; SELECT 1")
+        self.assertEqual(local('SELECT 1', lock_timeout='5ms'), "SET LOCAL lock_timeout = '5ms' \\; SELECT 1")
+        self.assertEqual(local('SELECT 1', statement_timeout='25ms', lock_timeout='5ms'),
+                         "SET LOCAL statement_timeout = '25ms' \\; SET LOCAL lock_timeout = '5ms' \\; SELECT 1 \\; " + SETTLE)
         self.assertEqual(re.findall(r'BEGIN; SET LOCAL [a-z_]+ = [^;]+; [^;]+; COMMIT', sources()), [], 'a SET LOCAL around one statement is local(), not BEGIN ... COMMIT')
 
     def test_s117_l3_the_log_carries_the_sqlstate_and_an_internal_error_is_a_finding(self):

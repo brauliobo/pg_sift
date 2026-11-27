@@ -21,13 +21,16 @@ CLASSES = ('conc', 'pool', 'tenant', 'mix', 'bp', 'fault')
 HARD = ('lost_rows', 'dup_rows', 'oracle_mismatch', 'verify_errors', 'false_quarantines', 'health_errors', 'unexpected_errors', 'tmp_files_left', 'traps_and_leaks')
 KILLED = ('57014', '55P03', '57P01', '08006')
 STATUS = f'FROM sift.status() WHERE relation::oid {IN_CASE}'
+SETTLE = "SET LOCAL statement_timeout = 0 \\; DO 'BEGIN PERFORM pg_sleep(0); END'"
 DRAINED = "SELECT count(*) FILTER (WHERE kind = 'queued') + max(workers_active) FROM sift.activity()"
 
 
 def local(sql: str, **settings: str) -> str:
     """SQL under SET LOCAL of SETTINGS, sent as one implicit transaction (psql \\;): a cancel that lands anywhere in it ends the transaction, where one that lands on
-    the COMMIT of a BEGIN ... COMMIT leaves the session in an aborted transaction block that the next statement of the harness fails in"""
-    return ''.join(f"SET LOCAL {k} = '{v}' \\; " for k, v in settings.items()) + sql
+    the COMMIT of a BEGIN ... COMMIT leaves the session in an aborted transaction block that the next statement of the harness fails in. Under a statement_timeout the
+    transaction ends in a check for interrupts with the timeout off (SETTLE): a timeout that fires after the last check of SQL (while its parallel workers exit, with
+    interrupts held) stays pending past the statement, and PostgreSQL raises it in the next command of the session instead"""
+    return ''.join(f"SET LOCAL {k} = '{v}' \\; " for k, v in settings.items()) + sql + (f' \\; {SETTLE}' if 'statement_timeout' in settings else '')
 
 
 @dataclass(frozen=True)
