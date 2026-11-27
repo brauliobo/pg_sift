@@ -15,6 +15,7 @@
 #include "utils/numeric.h"
 
 #include "col/shred/pg.h"
+#include "core/compat.h"
 
 /* An object with more than this many members per declared key is searched by key, else walked */
 #define LOOKUP_RATIO 3
@@ -125,6 +126,22 @@ walk_number(SiftShred *sh, Numeric num)
 		text = numeric_normalize(num);
 	sift_shred_number(sh, text, strlen(text));
 	pfree(text);
+}
+
+/* the integer the value an integer leaf keeps aside equals, as jsonb compares numbers (3.0 is 3): a JSON number of an integral value of int8 */
+bool
+sift_shred_held_int(const char *payload, uint32 len, int64 *out)
+{
+	Jsonb	   *jb = memcpy(palloc(len), payload, len);
+	JsonbValue	v;
+	bool		err = false;
+	bool		held = JsonbExtractScalar(&jb->root, &v) && v.type == jbvNumeric;
+
+	if (held)
+		*out = sift_numeric_int8(v.val.numeric, &err);
+	held = held && !err && DatumGetBool(DirectFunctionCall2(numeric_eq, NumericGetDatum(v.val.numeric), NumericGetDatum(int64_to_numeric(*out))));
+	pfree(jb);
+	return held;
 }
 
 static void

@@ -68,6 +68,10 @@ extern void sift_shred_container_rc(SiftShred *sh, JsonbContainer *c, SiftShredR
 
 /* SiftShred.pay_fn of a jsonb walk: the value (a JsonbValue) as a palloc'd jsonb datum */
 extern const char *sift_shred_pay_jsonb(const void *ev, uint32 *len);
+
+/* The integer the jsonb payload of a value an integer leaf kept aside equals (3.0 is 3); false: none (a fraction, a value out of int8, no number) */
+extern bool sift_shred_held_int(const char *payload, uint32 len, int64 *out);
+
 extern void sift_shred_recheck_begin(SiftShredRecheck *rc);
 /* column col is read as the cast of the member of key to the type cast */
 extern void sift_shred_recheck_member(SiftShredRecheck *rc, int col, const char *key, Oid cast);

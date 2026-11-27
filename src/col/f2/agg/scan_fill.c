@@ -13,6 +13,7 @@
 #include "agg/expr/str.h"
 #include "agg/qual/bqual.h"
 #include "col/f2/agg/scan_int.h"
+#include "col/shred/pg.h"
 #include "table/f2/blob.h"
 
 static SiftStrView
@@ -181,6 +182,18 @@ is_exception(const ColView *cv, int r)
 	return cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY;
 }
 
+/* the integer an integer leaf holds, of the numbers it kept aside for their text (3.0): a containment test compares the value */
+static void
+fill_held(V6Scan *s, V6Col *c, const ColView *cv, int off, int n)
+{
+	MemoryContext old = MemoryContextSwitchTo(s->batch_cx);
+
+	for (int i = 0; i < n; i++)
+		if (is_exception(cv, off + i) && ((s->bs.mask[i >> 6] >> (i & 63)) & 1) && sift_shred_held_int(cv->xpay[off + i], cv->xplen[off + i], &((int64 *) c->vec.data)[i]))
+			c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
+	MemoryContextSwitchTo(old);
+}
+
 /*
  * A row of a leaf of a key of a document whose value the leaf could not hold has it in the payload of its exception: the rows the batch keeps are read from there, the others stay NULL. A value whose
  * cast raises stays NULL too: the rows of those are returned (NULL: none), for the scan to raise once it knows which rows its batch quals keep
@@ -193,6 +206,11 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 
 	if (cv->xpay == NULL)
 		return NULL;
+	if (c->cls == SV6C_I64)
+	{
+		fill_held(s, c, cv, off, n);
+		return NULL;
+	}
 	for (int i = 0; i < n; i++)
 	{
 		const int	r = off + i;
