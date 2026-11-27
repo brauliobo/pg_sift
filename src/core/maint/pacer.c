@@ -227,18 +227,20 @@ sift_pacer_snapshot(SiftPacerSnapshot *out)
 	out->delay_ms = (int) pg_atomic_read_u32(&t->w.eff_delay_ms);
 }
 
-void
-sift_pacer_record_foreground(int64 usecs)
+static TimestampTz fg_recorded_at;
+static uint32 fg_scans;
+
+/* An operation of the foreground that took usecs ended at now: a backend feeds the averages at most once per FG_RECORD_EVERY_US */
+static void
+feed_foreground(int64 usecs, TimestampTz now)
 {
-	static TimestampTz recorded_at;
 	SiftPacerTelemetry *t = telemetry();
-	TimestampTz now = GetCurrentTimestamp();
 	uint64		ewma,
 				base;
 
-	if (now - recorded_at < FG_RECORD_EVERY_US)
+	if (now - fg_recorded_at < FG_RECORD_EVERY_US)
 		return;
-	recorded_at = now;
+	fg_recorded_at = now;
 	ewma = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us);
 	base = pg_atomic_read_u64(&t->fg.fg_lat_base_us);
 
@@ -248,11 +250,15 @@ sift_pacer_record_foreground(int64 usecs)
 }
 
 void
+sift_pacer_record_foreground(int64 usecs)
+{
+	feed_foreground(usecs, GetCurrentTimestamp());
+}
+
+void
 sift_pacer_note_foreground(int64 usecs)
 {
-	static uint32 scans;
-
-	if (++scans % FOREGROUND_EVERY == 0)
+	if (++fg_scans % FOREGROUND_EVERY == 0)
 		sift_pacer_record_foreground(usecs);
 }
 
@@ -362,6 +368,14 @@ sift_pacer_test_state(uint64 *ewma_us, uint64 *base_us)
 
 	*ewma_us = pg_atomic_read_u64(&t->fg.fg_lat_ewma_us);
 	*base_us = pg_atomic_read_u64(&t->fg.fg_lat_base_us);
+}
+
+/* A scan of the foreground took usecs, the window of the last record past: the averages a test feeds do not depend on how fast it runs */
+void
+sift_pacer_test_note_foreground(int64 usecs)
+{
+	if (++fg_scans % FOREGROUND_EVERY == 0)
+		feed_foreground(usecs, Max(GetCurrentTimestamp(), fg_recorded_at + FG_RECORD_EVERY_US));
 }
 
 void

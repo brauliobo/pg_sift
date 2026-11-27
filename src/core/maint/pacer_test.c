@@ -58,7 +58,7 @@ sift_test_pacer_foreground(PG_FUNCTION_ARGS)
 				base;
 
 	for (int64 i = 0; i < PG_GETARG_INT64(1); i++)
-		sift_pacer_note_foreground(PG_GETARG_INT64(0));
+		sift_pacer_test_note_foreground(PG_GETARG_INT64(0));
 	sift_pacer_test_state(&ewma, &base);
 	PG_RETURN_TEXT_P(cstring_to_text(psprintf("%llu %llu", (unsigned long long) ewma, (unsigned long long) base)));
 }

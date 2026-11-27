@@ -126,6 +126,7 @@ extern void sift_maint_ring_open(void);
 #ifdef SIFT_TESTING
 /* The telemetry as the tests read and reset it */
 extern void sift_pacer_test_state(uint64 *ewma_us, uint64 *base_us);
+extern void sift_pacer_test_note_foreground(int64 usecs);
 extern void sift_pacer_test_reset(void);
 #endif
 
