@@ -227,7 +227,7 @@ SELECT count(*) AS partitions, sum(n) AS opens, max(n) AS most_opens
 FROM (SELECT pg_stat_get_xact_numscans(i.indexrelid) AS n FROM pg_partition_tree('pm') t JOIN pg_index i ON i.indrelid = t.relid WHERE t.isleaf) x;
  partitions | opens | most_opens 
 ------------+-------+------------
-       1201 |  2402 |          2
+       1201 |  1201 |          1
 (1 row)
 
 COMMIT;
