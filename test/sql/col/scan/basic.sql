@@ -4,6 +4,7 @@
 -- btrees (sc_b, a copy that gets the same statements). Over the build, the write buffer, updates, deletes, a rollback, the promotion of the
 -- buffer and a merge. The cut and the point directories are not under test (a table that was never analyzed has them chosen when the rewrite sees its statistics): off.
 CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 
 -- pad makes a page hold about 15 rows: 10000 rows are about 3 superblocks
