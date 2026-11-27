@@ -852,6 +852,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
 	ex.grans_scanned = st->stats.grans;
 	ex.grans_pruned_zone = st->stats.grans_pruned_zone;
+	ex.src_filters = st->stats.src_filters;
 	ex.grans_pruned_skip = st->stats.grans_pruned_skip;
 	ex.grans_preagg = st->stats.grans_preagg;
 	ex.grans_preagg_delta = st->stats.grans_preagg_delta;

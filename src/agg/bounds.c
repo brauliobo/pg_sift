@@ -276,7 +276,7 @@ ranges_of(BoundCtx *c, const Node *d, SiftV6RangeSet *out)
 }
 
 bool
-sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out)
+sift_v6_or_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out)
 {
 	BoundCtx	c = {.relid = relid,.params = params,.in = in};
 
@@ -286,4 +286,12 @@ sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamList
 		return false;
 	*out = (SiftV6RangeSet) {.range = MemoryContextAlloc(keep, SIFT_V6_MAX_RANGES * sizeof(SiftV6Range))};
 	return ranges_of(&c, clause, out);
+}
+
+bool
+sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out)
+{
+	if (IsA(clause, RestrictInfo))
+		clause = (const Node *) ((const RestrictInfo *) clause)->clause;
+	return sift_v6_or_ranges_of(keep, clause, relid, params, in, out) || sift_v6_periodic_ranges(keep, clause, relid, params, in, out);
 }

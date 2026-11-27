@@ -72,6 +72,7 @@ typedef struct SiftV6RangeSet
 {
 	int			nranges;
 	SiftV6Range *range;
+	bool		periodic;		/* the ranges of an equality of a periodic calendar step (agg/periodic.c), which EXPLAIN counts as a filter in source */
 } SiftV6RangeSet;
 
 /* A compiled expression with the columns and booleans it reads (slots of the input it was compiled against) */
@@ -133,7 +134,15 @@ extern void sift_v6_bounds_of(const Node *clause, Index relid, ParamListInfo par
  * The ranges of a conjunct that is an OR (its arrays in keep), each disjunct an AND of comparisons, BETWEENs, IS NULL tests or an IN list (one range a value) of the columns bound_of takes, the columns added to in;
  * a disjunct no row passes adds none. false when the clause is no OR, or a disjunct bounds no column or has more ranges than SIFT_V6_MAX_RANGES: then the OR rules nothing out.
  */
+extern bool sift_v6_or_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out);
+/* The ranges a source leaves the granules outside of unread when it starts: those of an OR, or of an equality of a periodic calendar step (sift_v6_periodic_ranges) */
 extern bool sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out);
+/*
+ * The ranges of an equality of a periodic calendar step of a timestamp column with a constant or a parameter (extract(month|doy|day|hour|minute ..), to_char of the numeric fields in order)
+ * (agg/periodic.c): the windows of the span of the column in the statistics of the index, read in the session's zone, and the values outside that span. false for any other conjunct, a span
+ * of more windows than it enumerates, or ranges that keep more than an eighth of it.
+ */
+extern bool sift_v6_periodic_ranges(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out);
 
 /*
  * e (an Expr, or a RestrictInfo) over the columns of relid, read through the index of in, to a program; the columns it needs are added to in. params: the values of this execution, NULL where the

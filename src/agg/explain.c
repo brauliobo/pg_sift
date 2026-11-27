@@ -441,6 +441,10 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 		xl_int(&l, "Pruned By Dictionary", "pruned_dict", st->grans_pruned_dict, false);
 		xl_int(&l, "Answered By Pre-aggregate", "preagg", st->grans_preagg, false);
 		xl_int(&l, "Corrected For Dead Rows", "preagg_delta", st->grans_preagg_delta, false);
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+			ExplainPropertyUInteger("Filters In Source", NULL, st->src_filters, es);
+		else if (st->src_filters > 0)
+			xl_item(&l, "(" UINT64_FORMAT " filters in source)", st->src_filters);
 		xl_end(&l);
 	}
 	if (st->sip_probes > 0)

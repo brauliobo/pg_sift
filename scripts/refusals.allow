@@ -3,7 +3,7 @@
 # gives the arm up names the refusal. A reason recorded in a try would be the first of the arm and would hide the one that follows it (the arm keeps
 # the first reason it gets), so a try never names one.
 
-bounds.c: bound_add bound_operand ranges_of ranges_of_any range_add sift_v6_param_value sift_v6_ranges_of v6_range_empty # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
+bounds.c: bound_add bound_operand ranges_of ranges_of_any range_add sift_v6_or_ranges_of sift_v6_param_value v6_range_empty # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 cost/card.c: compare_pred in_pred leaf_value op_pred sift_v6_card_rel # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 cost/card_est.c: mcv_find vals_ordered # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 cube.c: agg_cubeable linear_of sift_v6_agg_linear sift_v6_linear_sum sift_v6_spec_cubeable # shape tests of the statements a stored cube can answer: false is not this shape, and the scan reads the units as it always did
@@ -40,6 +40,7 @@ open_scan.c: agg_ok sift_v6_open_scan_ok # shape and cost predicates and walkers
 osa/mode.c: count_pair countable v6_mode_take # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 osa/osa.c: sift_v6_osa_eligible # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 pct.c: sift_v6_pct_cont_of # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
+periodic.c: column_span equality_of operand_of sift_v6_periodic_ranges step_of # shape tests of an equality of a periodic calendar step: false is not this shape, and the source reads the granules the other quals leave
 plan/cols.c: column_of datum_column_of document_of index_expr_of join_derive_ok member_of sift_v6_derived_col sift_v6_pg_derived_col undeclared_doc_walker # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 plan/cte.c: agg_scan_in cte_walker outer_ref_walker reads_scannable_walker reads_walker runs_agg_scan scannable_rel # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 plan/filter.c: sift_v6_compile_filter # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal

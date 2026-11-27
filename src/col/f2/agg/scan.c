@@ -691,7 +691,7 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 {
 	IndexScanDesc scan = sift_index_beginscan(heap, index, snap, nkeys);
 	int			nzones;
-	const SiftColPrune *zones = sift_f2_v6_zone_tests(s->spec, index, &nzones);
+	const SiftColPrune *zones = sift_f2_v6_zone_tests(s->spec, index, &nzones, s->stats);
 
 	index_rescan(scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_skip_parts(scan, skip, nskip);
@@ -865,7 +865,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	index_rescan(s->scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_set_dict_leaves(s->scan, dict_leaves(s));
 	sift_f2_scan_count_granules(s->scan, &s->grans);
-	zones = sift_f2_v6_zone_tests(spec, index, &nzones);
+	zones = sift_f2_v6_zone_tests(spec, index, &nzones, stats);
 	sift_f2_scan_set_zones(s->scan, zones, nzones);
 	s->preagg = emit != NULL && !spec->tid_range && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
 	if (s->preagg != NULL)

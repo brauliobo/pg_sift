@@ -267,7 +267,7 @@ source_decides(MemoryContext cx, const SiftSrcFold *f, Node *clause)
 	return ok;
 }
 
-/* The ranges of the OR quals the fold tests: the source leaves unread the units outside all the ranges of one */
+/* The ranges of the OR quals the fold tests, and of its equalities of a periodic calendar step: the source leaves unread the units outside all the ranges of one */
 static void
 setup_ranges(SiftSrcFold *f)
 {
@@ -282,6 +282,7 @@ setup_ranges(SiftSrcFold *f)
 		if (f->quals->nsets == SIFT_V6_MAX_SETS)
 			return;
 		f->quals->set[f->quals->nsets++] = set;
+		f->a.stats->src_filters += set.periodic;
 	}
 }
 

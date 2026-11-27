@@ -774,7 +774,7 @@ sift_v6_vexpr_quals(MemoryContext cxt, const List *clauses, Index relid, ParamLi
 		SiftVexprNode *x;
 
 		sift_v6_bounds_of(clause, c.relid, c.params, c.in, &c.nbounds, c.bound);
-		if (c.nsets < SIFT_V6_MAX_SETS && sift_v6_ranges_of(cxt, clause, c.relid, c.params, c.in, &c.set[c.nsets]))
+		if (c.nsets < SIFT_V6_MAX_SETS && sift_v6_or_ranges_of(cxt, clause, c.relid, c.params, c.in, &c.set[c.nsets]))
 			c.nsets++;
 		if (c.ninsets < SIFT_V6_MAX_INSETS && sift_v6_inset_of(cxt, clause, c.relid, c.params, c.in, &c.inset[c.ninsets]))
 		{

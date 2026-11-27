@@ -1,6 +1,6 @@
 /*
- * col/f2/agg/zones.c - the OR quals of the aggregate scan of an index of format major 2 (SiftV6Spec.vqual) as zone tests of its granules (sift_f2_scan_set_zones): a granule that lies
- * outside every range of an OR holds no row that passes it and is not read. The quals still test every row of the granules that are.
+ * col/f2/agg/zones.c - the OR quals of the aggregate scan of an index of format major 2 (SiftV6Spec.vqual), and its equalities of a periodic calendar step, as zone tests of its granules
+ * (sift_f2_scan_set_zones): a granule that lies outside every range of one holds no row that passes it and is not read. The quals still test every row of the granules that are.
  */
 #include "postgres.h"
 
@@ -42,7 +42,7 @@ range_test(const SiftV6Input *in, const int *first, const SiftV6Range *r, SiftCo
 }
 
 const SiftColPrune *
-sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n)
+sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n, SiftV6ScanStats *stats)
 {
 	SiftColPrune *zones = palloc(SIFT_V6_MAX_SETS * sizeof(SiftColPrune));
 	const int  *first = sift_col_rel(index)->first;
@@ -64,6 +64,7 @@ sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n)
 			ok = range_test(&in, first, &set.range[i], &kids[i]);
 		if (ok)
 			zones[(*n)++] = (SiftColPrune) {.any = true,.nkids = set.nranges,.kids = kids};
+		stats->src_filters += ok && set.periodic;
 	}
 	return zones;
 }

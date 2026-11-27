@@ -53,6 +53,7 @@ agg/acc_wide.c
 agg/acc_wide.h
 agg/batch.h
 agg/bounds.c
+agg/periodic.c
 agg/bridge_test.c
 agg/bytes.h
 agg/cube.c
