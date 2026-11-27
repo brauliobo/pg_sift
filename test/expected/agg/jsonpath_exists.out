@@ -111,22 +111,26 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT o.grp, count(*) FILTER (WHERE o.items @> '[{"kind": null}]'), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4)) FROM @T o GROUP BY 1
 (22 rows)
 
--- containment of a JSON null member and of values
+-- containment of a JSON null member and of values, and of several objects (each by some element, the same one or not)
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"kind": null}]'' GROUP BY 1',
+	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"kind": "gift"}, {"qty": null}]'' GROUP BY 1',
+	'SELECT o.grp, count(*) FROM @T o WHERE NOT o.items @> ''[{"kind": "gift"}, {"qty": 3}, {"flag": true}]'' GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"kind": "gift", "qty": 3}]'' GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"flag": true}]'' GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE ''[{"qty": null}]'' <@ o.items GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE NOT o.items @> ''[{"kind": null}]'' GROUP BY 1'
 ]) q;
-                                                 same                                                  
--------------------------------------------------------------------------------------------------------
+                                                            same                                                             
+-----------------------------------------------------------------------------------------------------------------------------
  same node SELECT o.grp, count(*) FROM @T o WHERE o.items @> '[{"kind": null}]' GROUP BY 1
+ same node SELECT o.grp, count(*) FROM @T o WHERE o.items @> '[{"kind": "gift"}, {"qty": null}]' GROUP BY 1
+ same node SELECT o.grp, count(*) FROM @T o WHERE NOT o.items @> '[{"kind": "gift"}, {"qty": 3}, {"flag": true}]' GROUP BY 1
  same node SELECT o.grp, count(*) FROM @T o WHERE o.items @> '[{"kind": "gift", "qty": 3}]' GROUP BY 1
  same node SELECT o.grp, count(*) FROM @T o WHERE o.items @> '[{"flag": true}]' GROUP BY 1
  same node SELECT o.grp, count(*) FROM @T o WHERE '[{"qty": null}]' <@ o.items GROUP BY 1
  same node SELECT o.grp, count(*) FROM @T o WHERE NOT o.items @> '[{"kind": null}]' GROUP BY 1
-(5 rows)
+(7 rows)
 
 -- the same as the flags of an aggregate's FILTER
 SELECT same(q) FROM unnest(ARRAY[
@@ -143,13 +147,12 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT count(*), count(*) FILTER (WHERE jsonb_path_exists(o.items, '$[*] ? (@.kind == null)')) AS eq_null, count(*) FILTER (WHERE jsonb_path_exists(o.items, '$[*] ? (@.kind != null)')) AS ne_null FROM @T o
 (2 rows)
 
--- a literal of another JSON type than the member's, a number the leaf does not hold, !() in strict mode and a second element of the pattern keep the normal plan
+-- a literal of another JSON type than the member's, a number the leaf does not hold, and !() in strict mode keep the normal plan
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.qty == "3")'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != 3)'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.qty > 1.5)'') GROUP BY 1',
-	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.arr, ''strict $[*] ? (!(@.kind == "gift"))'') GROUP BY 1',
-	'SELECT o.grp, count(*) FROM @T o WHERE o.items @> ''[{"kind": "gift"}, {"qty": null}]'' GROUP BY 1'
+	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.arr, ''strict $[*] ? (!(@.kind == "gift"))'') GROUP BY 1'
 ]) q;
                                                              same                                                              
 -------------------------------------------------------------------------------------------------------------------------------
@@ -157,8 +160,7 @@ SELECT same(q) FROM unnest(ARRAY[
  same normal SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, '$[*] ? (@.kind != 3)') GROUP BY 1
  same normal SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, '$[*] ? (@.qty > 1.5)') GROUP BY 1
  same normal SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.arr, 'strict $[*] ? (!(@.kind == "gift"))') GROUP BY 1
- same normal SELECT o.grp, count(*) FROM @T o WHERE o.items @> '[{"kind": "gift"}, {"qty": null}]' GROUP BY 1
-(5 rows)
+(4 rows)
 
 -- EXISTS and NOT EXISTS over the elements against a column of their row: = <> < <= > >= of int4 members against int4 and bigint columns, float8 against float8, NULLs and a NaN
 SELECT same(format('SELECT o.grp, count(*) FROM @T o WHERE %s EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int, q8 bigint, f float8) WHERE %s) GROUP BY 1', n, c))

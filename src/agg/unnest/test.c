@@ -203,8 +203,11 @@ struct SiftV6RowTests
 {
 	MemoryContext cx;
 	const SiftV6Ext *x;
-	SiftV6ElemEval *ee[SIFT_V6_XTESTS];
+	int			nparts[SIFT_V6_XTESTS];
+	SiftV6ElemEval *ee[SIFT_V6_XTESTS][SIFT_V6_XPARTS];	/* the quals of each part of a test (NULL: none, every element passes) */
 	List	   *ors[SIFT_V6_XTESTS];	/* of each disjunction of test k: the evaluator of its arms over the element columns (NULL: it has none) */
+	uint64		prior[SIFT_VEC_WORDS];	/* the rows every part before the one tested holds of */
+	uint64		scratch[SIFT_VEC_WORDS];
 	uint64	   *keep;
 	uint64	   *any;			/* the elements a disjunction keeps */
 	uint64	   *arm;			/* those one arm of it keeps */
@@ -226,8 +229,8 @@ sift_v6_row_tests_open(MemoryContext cx, const SiftV6Ext *x)
 	t->gdata = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	foreach_ptr(List, tq, x->test_quals)
 	{
-		if (linitial(tq) != NIL)
-			t->ee[k] = sift_v6_elem_eval_open(cx, linitial(tq));
+		foreach_ptr(List, quals, (List *) linitial(tq))
+			t->ee[k][t->nparts[k]++] = quals != NIL ? sift_v6_elem_eval_open(cx, quals) : NULL;
 		foreach_ptr(List, arms, lthird(tq))
 			t->ors[k] = lappend(t->ors[k], arms != NIL ? sift_v6_elem_eval_open(cx, list_make1(sift_v6_unnest_or_arms(arms))) : NULL);
 		k++;
@@ -247,12 +250,12 @@ reserve(SiftV6RowTests *t, uint32 n)
 	t->par = t->par == NULL ? MemoryContextAllocZero(t->cx, (Size) t->cap * sizeof(uint32)) : repalloc(t->par, (Size) t->cap * sizeof(uint32));
 }
 
-/* the elements [lo, hi) that pass the quals of test k (all of them for a test with none) */
+/* the elements [lo, hi) that pass the quals of part i of test k (all of them for a part with none) */
 static void
-keep_quals(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 lo, uint32 hi)
+keep_quals(SiftV6RowTests *t, int k, int i, const SiftVec *ev, uint32 lo, uint32 hi)
 {
-	if (t->ee[k] != NULL)
-		sift_v6_elem_eval(t->ee[k], ev, lo, hi, NULL, t->keep);
+	if (t->ee[k][i] != NULL)
+		sift_v6_elem_eval(t->ee[k][i], ev, lo, hi, NULL, t->keep);
 	else
 		memset(t->keep + lo / 64, 0xff, ((hi + 63) / 64 - lo / 64) * sizeof(uint64));
 }
@@ -349,15 +352,19 @@ sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftV6StreamIn *in, const SiftVe
 		const SiftVec *cols[SIFT_V6_XCMPS];
 
 		reserve(t, st->lay->n_elems);
-		keep_quals(t, k, st->ev, lo, hi);
 		if (xt->ncmps > 0 && par_of != xt->stream)
 			parents_of(t, st->lay);
 		if (xt->ncmps > 0)
 			par_of = xt->stream;
 		for (int c = 0; c < xt->ncmps; c++)
 			cols[c] = &col[outer[k * SIFT_V6_XCMPS + c]];
-		keep_cmps(t, k, st->ev, cols, t->par, lo, hi);
-		sift_unnest_any(st->lay, t->keep, rows, st->doc_valid, yes[k], known[k]);
+		for (int i = 0; i < t->nparts[k]; i++)
+		{
+			keep_quals(t, k, i, st->ev, lo, hi);
+			keep_cmps(t, k, st->ev, cols, t->par, lo, hi);
+			sift_unnest_any(st->lay, t->keep, i == 0 ? rows : t->prior, st->doc_valid, yes[k], i == 0 ? known[k] : t->scratch);
+			memcpy(t->prior, yes[k], sizeof(t->prior));
+		}
 	}
 }
 
@@ -369,12 +376,18 @@ sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, co
 	const SiftVec *cols[SIFT_V6_XCMPS];
 
 	reserve(t, nel);
-	keep_quals(t, k, ev, 0, nel);
 	for (int c = 0; c < xt->ncmps; c++)
 		cols[c] = &outer[c];
-	keep_cmps(t, k, ev, cols, NULL, 0, nel);
-	for (uint32 e = 0; e < nel; e++)
-		if ((t->keep[e / 64] >> (e % 64)) & 1)
-			return true;
-	return false;
+	for (int i = 0; i < t->nparts[k]; i++)
+	{
+		bool		found = false;
+
+		keep_quals(t, k, i, ev, 0, nel);
+		keep_cmps(t, k, ev, cols, NULL, 0, nel);
+		for (uint32 e = 0; !found && e < nel; e++)
+			found = (t->keep[e / 64] >> (e % 64)) & 1;
+		if (!found)
+			return false;
+	}
+	return true;
 }

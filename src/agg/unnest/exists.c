@@ -45,8 +45,9 @@ typedef struct TestBuilt
 	const TestCand *cand;
 	int			index;
 	SiftV6XTest test;
-	List	   *quals;
+	List	   *quals;			/* of an EXISTS: the one part, built after its stream is seeded */
 	List	   *ors;			/* of each disjunction of the comparisons with the row: its other arms */
+	List	   *parts;			/* of a jsonpath or a containment */
 	Expr	   *heap;
 	int			map[SIFT_V6_XELEM_COLS];
 	RelOptInfo *elem_rel;
@@ -346,7 +347,7 @@ build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 		sift_v6_unnest_array_rte(array, rte);
 	b->test.nullable = true;
 	b->heap = copyObject(unconstify(Expr *, (const Expr *) e));
-	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->quals) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
+	return p->is_table || (sift_v6_unnest_path_quals(p, rte, e, &b->parts) && (sift_v6_unnest_doc_leaf(p, rte, &b->test.doc_leaf) || b->test.need == 1));
 }
 
 /* the tests of the plan for the candidates: their streams, their columns among those of the elements of the stream, and their quals */
@@ -412,7 +413,7 @@ store_tests(V6Plan *p)
 	foreach_ptr(TestBuilt, b, p->tests)
 	{
 		x->test[x->ntests++] = b->test;
-		x->test_quals = lappend(x->test_quals, list_make3(b->quals, b->heap != NULL ? list_make1(b->heap) : NIL, b->ors));
+		x->test_quals = lappend(x->test_quals, list_make3(b->cand->sp != NULL ? list_make1(b->quals) : b->parts, b->heap != NULL ? list_make1(b->heap) : NIL, b->ors));
 	}
 }
 

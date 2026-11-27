@@ -21,7 +21,10 @@
 extern bool sift_v6_unnest_path_call(const Node *e);
 /* the array the call tests, doc or doc -> 'key'; NULL when e is no such call */
 extern const Expr *sift_v6_unnest_path_array(const Node *e);
-/* the quals over the element columns of rte (which gains the members they read) that are true of a row whose document the leaves hold exactly when the call is; false: the leaves do not decide it */
-extern bool sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **quals);
+/*
+ * The parts of the test over the element columns of rte (which gains the members they read), each a list of quals some element passes: the test is true of a row whose document the leaves hold
+ * exactly when the call is (every object of a containment's pattern is a part, one element passes the whole filter of a jsonpath); false: the leaves do not decide it
+ */
+extern bool sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **parts);
 
 #endif							/* SIFT_AGG_V6_UNNEST_PATH_H */

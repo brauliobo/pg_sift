@@ -344,23 +344,15 @@ path_clauses(PathCtx *c, const Node *e)
 	return filter_cnf(c, &expr, false);
 }
 
-/* doc @> '[{"k": v, ..}]': the element of the array that contains the object, whose members all have the value: one clause for each */
+/* the object obj of the pattern of a containment: the element that contains it, whose members all have the value, one clause for each (NIL: none the leaves decide) */
 static List *
-contains_clauses(PathCtx *c, const Node *e)
+object_clauses(PathCtx *c, JsonbContainer *obj)
 {
-	List	   *args = func_args(unconstify(Node *, e));
-	const Node *rhs = strip_relabel(call_func(e) == F_JSONB_CONTAINED ? linitial(args) : lsecond(args));
-	JsonbIterator *it;
+	JsonbIterator *it = JsonbIteratorInit(obj);
 	JsonbValue	v,
 				key;
 	List	   *out = NIL;
 
-	if (!IsA(rhs, Const) || ((const Const *) rhs)->constisnull)
-		return NIL;
-	it = JsonbIteratorInit(&DatumGetJsonbP(((const Const *) rhs)->constvalue)->root);
-	if (JsonbIteratorNext(&it, &v, true) != WJB_BEGIN_ARRAY || v.val.array.rawScalar || v.val.array.nElems != 1 || JsonbIteratorNext(&it, &v, true) != WJB_ELEM || v.type != jbvBinary)
-		return NIL;
-	it = JsonbIteratorInit(v.val.binary.data);
 	if (JsonbIteratorNext(&it, &v, true) != WJB_BEGIN_OBJECT)
 		return NIL;
 	while (JsonbIteratorNext(&it, &key, true) == WJB_KEY)
@@ -378,16 +370,53 @@ contains_clauses(PathCtx *c, const Node *e)
 	return out;
 }
 
+/* doc @> '[{"k": v, ..}, ..]': each object of the pattern is contained by some element of the array, the same or another one: the clauses of each object are one part */
+static List *
+contains_parts(PathCtx *c, const Node *e)
+{
+	List	   *args = func_args(unconstify(Node *, e));
+	const Node *rhs = strip_relabel(call_func(e) == F_JSONB_CONTAINED ? linitial(args) : lsecond(args));
+	JsonbIterator *it;
+	JsonbValue	v;
+	List	   *parts = NIL;
+
+	if (!IsA(rhs, Const) || ((const Const *) rhs)->constisnull)
+		return NIL;
+	it = JsonbIteratorInit(&DatumGetJsonbP(((const Const *) rhs)->constvalue)->root);
+	if (JsonbIteratorNext(&it, &v, true) != WJB_BEGIN_ARRAY || v.val.array.rawScalar || v.val.array.nElems == 0 || v.val.array.nElems > SIFT_V6_XPARTS)
+		return NIL;
+	while (JsonbIteratorNext(&it, &v, true) == WJB_ELEM)
+	{
+		List	   *part = v.type == jbvBinary ? object_clauses(c, v.val.binary.data) : NIL;
+
+		if (part == NIL)
+			return NIL;
+		parts = lappend(parts, part);
+	}
+	return parts;
+}
+
+/* the clauses of a part as its quals: a clause of several tests is their OR */
+static List *
+part_quals(const List *clauses)
+{
+	List	   *quals = NIL;
+
+	foreach_ptr(List, clause, clauses)
+		quals = lappend(quals, list_length(clause) == 1 ? linitial(clause) : makeBoolExpr(OR_EXPR, clause, -1));
+	return quals;
+}
+
 bool
-sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **quals)
+sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, List **parts)
 {
 	PathCtx		c = {.p = p,.rte = rte,.ok = true};
 	const Oid	fid = call_func(e);
-	List	   *clauses = fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED ? contains_clauses(&c, e) : path_clauses(&c, e);
+	List	   *clauses = fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED ? contains_parts(&c, e) : list_make1(path_clauses(&c, e));
 
-	if (!c.ok || clauses == NIL)
+	if (!c.ok || clauses == NIL || list_member(clauses, NIL))
 		return false;
-	foreach_ptr(List, clause, clauses)
-		*quals = lappend(*quals, list_length(clause) == 1 ? linitial(clause) : makeBoolExpr(OR_EXPR, clause, -1));
+	foreach_ptr(List, part, clauses)
+		*parts = lappend(*parts, part_quals(part));
 	return true;
 }

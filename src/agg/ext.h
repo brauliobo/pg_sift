@@ -26,6 +26,7 @@ sift_v6_col_is_flag(const SiftV6Col *c)
 	return c->src == SV6SRC_ATTR && c->derive == 0 && c->jleaf == 0 && c->attno >= SIFT_V6_XFLAG_VATT && c->attno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS;
 }
 #define SIFT_V6_XCMPS		4		/* the comparisons of an element with a column of its row one test has */
+#define SIFT_V6_XPARTS		8		/* the parts of one test, each passed by some element of the row (the objects of the pattern of a containment) */
 
 /* A dimension of a star join: the fact attributes and the columns of the plan of the dimension its keys and payload are */
 typedef struct SiftV6XDim
@@ -109,7 +110,8 @@ typedef struct SiftV6XCmp
 } SiftV6XCmp;
 
 /*
- * A test of the elements of the array of a row, a boolean of the row: some element passes the quals (test_quals[i]: over the element columns, v6_unnest_jsonb.h) and the comparisons with the columns of the row.
+ * A test of the elements of the array of a row, a boolean of the row: for each of its parts some element passes the quals of the part (test_quals[i]: the parts, each a list of quals over the
+ * element columns, v6_unnest_jsonb.h) and the comparisons with the columns of the row.
  * A row whose document the leaves cannot hold is decided from the heap. need: the rows the statement keeps (0 all: a FILTER reads the flag as the virtual attribute SIFT_V6_XFLAG_VATT + the test;
  * 1 those where it is true; 2 those where it is false). nullable: a jsonpath is NULL for a row with no document, an EXISTS is false; doc_leaf: the presence leaf of the document whose key the array
  * of a jsonpath is, which says the rows with no document (a document without the key has no array either; -1: a NULL array is a NULL document).
@@ -145,8 +147,8 @@ typedef struct SiftV6Ext
 								 * columns (v6_unnest_jsonb.h), or a clause PostgreSQL evaluates as (the clause over the inputs of SIFT_V6_PGX_RELID, the slot and type of each input) */
 	int			ntests;			/* tests of the row's elements: the scan gives each row once, with a flag for each test (the attribute SIFT_V6_XFLAG_VATT + i of a FILTER) */
 	SiftV6XTest test[SIFT_V6_XTESTS];
-	List	   *test_quals;		/* of each test: its quals over the element columns, the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function), and its
-								 * disjunctions: of each, the arms over the element columns that are no comparison with the row (SiftV6XCmp.group) */
+	List	   *test_quals;		/* of each test: its parts over the element columns, the expression a row the leaves cannot hold is decided by (a jsonpath; NIL for an EXISTS, decided by the function),
+								 * and its disjunctions: of each, the arms over the element columns that are no comparison with the row (SiftV6XCmp.group) */
 	List	   *elem_names;		/* recordset: the name of each column, as String nodes */
 	List	   *elem_array;		/* unnest: the array of a row as an expression of the table's columns when it is not the column of elem.attno itself (doc -> 'key', or an expression of the index), which the rows read from the heap evaluate; NIL otherwise */
 	List	   *stream_names;	/* of each stream after the first: the elem_names of its array */
