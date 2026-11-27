@@ -1,7 +1,8 @@
 /*
  * agg/plan/cte.c - a CTE that several readers share, or that the statement writes MATERIALIZED, planned inline when that puts the readers in the aggregate scan: PostgreSQL keeps such a
  * CTE as one shared copy (a CTE Scan), which no scan of the index reads. The statement is planned both ways and the inline plan stays when it runs the scan and costs less. An IN
- * sub-select of the inlined body that aggregates and reads nothing of the query around it would run once per copy: it becomes a MATERIALIZED CTE of the same WITH, computed once.
+ * sub-select of the inlined body that aggregates and reads nothing of the query around it would run once per copy: it becomes a MATERIALIZED CTE of the same WITH, computed once;
+ * one that restates the condition the CTE it reads keeps its rows by drops it (agg/plan/lineage.h).
  */
 #include "postgres.h"
 
@@ -14,6 +15,7 @@
 
 #include "agg/agg.h"
 #include "agg/plan/flat_rewrite.h"
+#include "agg/plan/lineage.h"
 #include "agg/safety.h"
 #include "agg/settings.h"
 #include "core/catalog.h"
@@ -292,6 +294,8 @@ mark_ctes(Query *q, CteWalk *w)
 		if (shared_cte(q, cte) && w->mark)
 		{
 			cte->ctematerialized = CTEMaterializeNever;
+			if (body->cteList == NIL)
+				sift_agg_cte_drop_restated(body->jointree->quals, ctes);
 			foreach_ptr(Node, qual, make_ands_implicit((Expr *) body->jointree->quals))
 				if (IsA(qual, SubLink) && hoistable((SubLink *) qual))
 					ctes = lappend(ctes, hoist((SubLink *) qual, ++w->hoisted));
