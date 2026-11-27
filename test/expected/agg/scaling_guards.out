@@ -1,4 +1,4 @@
--- Complexity guards without a clock: the counters of EXPLAIN (ANALYZE, BUFFERS) of one query at 2,000 and at 16,000 rows (8 times the rows, 1 granule of the column index of format major 2 against 8)
+-- Complexity guards without a clock: the counters of EXPLAIN (ANALYZE, BUFFERS) of one query at 2,000 and at 16,000 rows (8 times the rows, 1 granule of 8192 rows of the column index of format major 2 against 2)
 -- the scan of a column index of format major 2) must grow as the algorithm says: a point or a short range lookup reads the same index blocks, a scan reads each row once (rows scanned and
 -- aggregated are the row counts, exactly) and its blocks grow no faster than its rows, a high-cardinality group holds one group for each key, a filter keeps exactly the rows that pass,
 -- a BM25 top-k search reads far fewer blocks than 8 times the ones of the small index. A return to a quadratic or per-row-linear step in these paths changes a counter, not a time.
@@ -46,7 +46,7 @@ SELECT index_scan('SELECT * FROM t16k WHERE id BETWEEN 12000 AND 12099') <= inde
  t
 (1 row)
 
--- a full scan reads every granule once (1 granule, 8 granules) and returns every group
+-- a full scan reads every granule once (1 granule, 2 granules) and returns every group
 CREATE FUNCTION granules(shape text) RETURNS TABLE (scanned_small numeric, scanned_big numeric, pruned_zone_big numeric, pruned_dict_big numeric, rows_big numeric)
 LANGUAGE plpgsql AS $$
 DECLARE qs text := format(shape, 't2k'); qb text := format(shape, 't16k');
@@ -57,7 +57,7 @@ END $$;
 SELECT 'every granule once' AS shape, (granules('SELECT w, count(*) FROM %s GROUP BY w')).*;
        shape        | scanned_small | scanned_big | pruned_zone_big | pruned_dict_big | rows_big 
 --------------------+---------------+-------------+-----------------+-----------------+----------
- every granule once |             1 |           8 |               0 |               0 |    16000
+ every granule once |             1 |           2 |               0 |               0 |    16000
 (1 row)
 
 -- the memory of a high-cardinality group grows with its groups (8 times the groups, no more than 8 times the memory), no spill, one group for each key, and the blocks grow no faster than the rows

@@ -1,4 +1,4 @@
--- Complexity guards without a clock: the counters of EXPLAIN (ANALYZE, BUFFERS) of one query at 2,000 and at 16,000 rows (8 times the rows, 1 granule of the column index of format major 2 against 8)
+-- Complexity guards without a clock: the counters of EXPLAIN (ANALYZE, BUFFERS) of one query at 2,000 and at 16,000 rows (8 times the rows, 1 granule of 8192 rows of the column index of format major 2 against 2)
 -- the scan of a column index of format major 2) must grow as the algorithm says: a point or a short range lookup reads the same index blocks, a scan reads each row once (rows scanned and
 -- aggregated are the row counts, exactly) and its blocks grow no faster than its rows, a high-cardinality group holds one group for each key, a filter keeps exactly the rows that pass,
 -- a BM25 top-k search reads far fewer blocks than 8 times the ones of the small index. A return to a quadratic or per-row-linear step in these paths changes a counter, not a time.
@@ -40,7 +40,7 @@ END $$;
 SELECT index_scan('SELECT * FROM t16k WHERE id = 12345') <= index_scan('SELECT * FROM t2k WHERE id = 1234') + 8 AS point_blocks_flat;
 SELECT index_scan('SELECT * FROM t16k WHERE id BETWEEN 12000 AND 12099') <= index_scan('SELECT * FROM t2k WHERE id BETWEEN 1200 AND 1299') + 8 AS range_blocks_flat;
 
--- a full scan reads every granule once (1 granule, 8 granules) and returns every group
+-- a full scan reads every granule once (1 granule, 2 granules) and returns every group
 CREATE FUNCTION granules(shape text) RETURNS TABLE (scanned_small numeric, scanned_big numeric, pruned_zone_big numeric, pruned_dict_big numeric, rows_big numeric)
 LANGUAGE plpgsql AS $$
 DECLARE qs text := format(shape, 't2k'); qb text := format(shape, 't16k');
