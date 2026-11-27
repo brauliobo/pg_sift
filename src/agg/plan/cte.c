@@ -24,6 +24,7 @@
 #include "core/catalog.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
+#include "core/sql/sql.h"
 
 static planner_hook_type prev_planner_hook;
 
@@ -367,9 +368,9 @@ plan_query(SIFT_PLANNER_PARAMS)
 }
 
 /*
- * The statement with its unread laterals dropped planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c or of agg/scope/rewrite.c apply, the plan with the CTEs inline and
- * the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs less unless it only moved HAVING conditions to WHERE; the loser's memory
- * goes with its context
+ * The statement with its unread laterals dropped and its json_build_object calls on sift.json_build_object planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c or
+ * of agg/scope/rewrite.c apply, the plan with the CTEs inline and the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs less
+ * unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
  */
 static PlannedStmt *
 plan_statement(SIFT_PLANNER_PARAMS)
@@ -388,6 +389,8 @@ plan_statement(SIFT_PLANNER_PARAMS)
 		return plan_query(SIFT_PLANNER_ARGS(parse));
 	if (parse->commandType == CMD_SELECT)
 		sift_agg_drop_unused_laterals(parse);
+	if (parse->commandType == CMD_SELECT && sift_json_build_object_calls(parse))
+		sift_json_build_object_swap(parse);
 	cte_walker((Node *) parse, &w);
 	priced = w.found > 0 || sift_agg_flat_decorrelate(parse, false);
 	scoped = !priced && sift_agg_scope && sift_v6_scope_rewrite(parse, false);
