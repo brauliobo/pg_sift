@@ -122,9 +122,13 @@ static bool
 column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	const Var  *v = (const Var *) e;
+	Oid			typid;
 	int			att;
 
-	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0 || (v->vartype == NUMERICOID && !numeric_ok))
+	if (e == NULL || !IsA(e, Var) || v->varno != p->rel->relid || v->varlevelsup != 0)
+		return false;
+	typid = getBaseType(v->vartype);
+	if (typid == NUMERICOID && !numeric_ok)
 		return false;
 	if (sift_v6_vatt_is_json(v->varattno))
 	{
@@ -133,9 +137,9 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 		return sift_v6_json_type_col(&rel, v, out);
 	}
 	att = host_attno(p, v->varattno);
-	if (att == 0 || !host_holds(p, att, sift_v6_class(v->vartype)))
+	if (att == 0 || !host_holds(p, att, sift_v6_class(typid)))
 		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = v->vartype,.scale = v->vartype == NUMERICOID ? host_scale(p, att) : 0};
+	*out = (SiftV6Col) {.attno = att,.typid = typid,.scale = typid == NUMERICOID ? host_scale(p, att) : 0};
 	return true;
 }
 

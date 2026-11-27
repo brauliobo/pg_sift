@@ -108,6 +108,13 @@ sift_v6_input_attno(const SiftV6Input *in, int col)
 	return in->is_table ? col : in->keys[col - 1];
 }
 
+/* a column of a domain holds the values of its base type */
+static Oid
+var_type(const Var *v)
+{
+	return getBaseType(v->vartype);
+}
+
 static int
 input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 {
@@ -119,7 +126,7 @@ input_add(SiftV6Input *in, const Var *v, SiftV6InCol col)
 	for (int k = 0; k < in->ncols; k++)
 		if (in->col[k].attno == col.attno)
 			return k;
-	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_input_holds(in, col.attno, sift_v6_class(v->vartype)))
+	if (in->ncols == SIFT_V6_MAX_COLS || !sift_v6_input_holds(in, col.attno, sift_v6_class(var_type(v))))
 		return -1;
 	in->col[in->ncols] = col;
 	return in->ncols++;
@@ -130,13 +137,15 @@ sift_v6_input_add_var(SiftV6Input *in, const Var *v)
 {
 	SiftV6InCol col;
 
-	return sift_v6_vec_type(v->vartype, v->vartypmod, &col) ? input_add(in, v, col) : -1;
+	return sift_v6_vec_type(var_type(v), v->vartypmod, &col) ? input_add(in, v, col) : -1;
 }
 
 int
 sift_v6_input_add_text(SiftV6Input *in, const Var *v)
 {
-	return v->vartype == TEXTOID || v->vartype == VARCHAROID ? input_add(in, v, (SiftV6InCol) {.typid = v->vartype,.type = SVEC_STRVIEW}) : -1;
+	const Oid	typid = var_type(v);
+
+	return typid == TEXTOID || typid == VARCHAROID ? input_add(in, v, (SiftV6InCol) {.typid = typid,.type = SVEC_STRVIEW}) : -1;
 }
 
 typedef enum Domain
@@ -153,7 +162,7 @@ typedef enum Domain
 static Domain
 domain_of(Oid typid)
 {
-	switch (typid)
+	switch (getBaseType(typid))
 	{
 		case INT2OID:
 		case INT4OID:

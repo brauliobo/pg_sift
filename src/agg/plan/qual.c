@@ -52,10 +52,19 @@ is_operand(const Node *n)
 	return IsA(n, Const) || IsA(n, Param) || stable_operand(n);
 }
 
+/* a column of a domain, which the operator of its base type reads through a relabeling */
+static Node *
+domain_column(Node *n)
+{
+	const RelabelType *r = (const RelabelType *) n;
+
+	return IsA(n, RelabelType) && IsA(r->arg, Var) && getBaseType(exprType((Node *) r->arg)) == r->resulttype ? (Node *) r->arg : n;
+}
+
 static Expr *
 index_var(const Var *v, int col)
 {
-	return (Expr *) makeVar(INDEX_VAR, sift_v6_vatt_is_json(v->varattno) ? v->varattno : col + 1, v->vartype, v->vartypmod, v->varcollid, 0);
+	return (Expr *) makeVar(INDEX_VAR, sift_v6_vatt_is_json(v->varattno) ? v->varattno : col + 1, getBaseType(v->vartype), v->vartypmod, v->varcollid, 0);
 }
 
 /* the operator family the comparisons of the column are of: what a key of a document reads as is a text or a float8 */
@@ -117,8 +126,8 @@ qual_compare(V6Plan *p, OpExpr *op)
 
 	if (list_length(op->args) != 2)
 		return NULL;
-	l = linitial(q->args);
-	r = lsecond(q->args);
+	l = domain_column(linitial(q->args));
+	r = domain_column(lsecond(q->args));
 	if (IsA(r, Var) && is_operand(l))
 	{
 		Node	   *t = l;
@@ -144,11 +153,11 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	SiftV6Col	col;
 
 	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
-		!sift_v6_plan_column(p, linitial(sa->args), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
+		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;
-	linitial(q->args) = index_var(linitial(sa->args), col.attno - 1);
+	linitial(q->args) = index_var((Var *) domain_column(linitial(sa->args)), col.attno - 1);
 	return (Expr *) q;
 }
 

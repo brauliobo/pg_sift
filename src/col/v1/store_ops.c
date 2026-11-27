@@ -65,7 +65,7 @@ sift_v1_att_typid(const SiftSrcLayout *lay, int att)
 	if (att >= SIFT_V6_JLEAF_VATT)
 		return lay->leaf[att - SIFT_V6_JLEAF_VATT].typid;
 
-	return e == NULL ? InvalidOid : exprType(e);
+	return e == NULL ? InvalidOid : getBaseType(exprType(e));
 }
 
 AttrNumber

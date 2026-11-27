@@ -14,6 +14,7 @@
 static bool
 is_text_type(Oid t)
 {
+	t = getBaseType(t);
 	return t == TEXTOID || t == VARCHAROID;
 }
 

@@ -564,7 +564,7 @@ heap_var(Relation index, int att)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("a scan key of index \"%s\" is on an expression the stored columns do not give", RelationGetRelationName(index)),
 						errhint("Run the statement with sift.enable_agg = off.")));
 	get_atttypetypmodcoll(index->rd_index->indrelid, heap_att, &typid, &typmod, &coll);
-	return makeVar(1, heap_att, typid, typmod, coll, 0);
+	return makeVar(1, heap_att, getBaseType(typid), typmod, coll, 0);
 }
 
 /* The operator of a key: the class's, or the negator of its = or LIKE for the strategies the aggregate scan makes of <> and NOT LIKE (col/am/preds.h) */

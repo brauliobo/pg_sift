@@ -163,6 +163,7 @@ renumber_mutator(Node *n, RenumberCtx *c)
 				v->varnosyn = SIFT_V6_PGX_RELID;
 				v->varattno = (AttrNumber) (k + 1);
 				v->varattnosyn = v->varattno;
+				v->vartype = getBaseType(v->vartype);	/* the scan hands a column of a domain over as its base type */
 				return (Node *) v;
 			}
 		SIFT_INVARIANT(false, "a column of an expression of the aggregate scan is not among its inputs");
@@ -336,8 +337,8 @@ sift_v6_pgexpr_open(MemoryContext cx, PlanState *ps, Expr *e, int nin, const Sif
 	memcpy(x->in, in, nin * sizeof(SiftV6PgIn));
 	for (int i = 0; i < nin; i++)
 	{
-		TupleDescInitEntry(desc, (AttrNumber) (i + 1), NULL, in[i].typid, -1, 0);
 		x->in[i].typid = getBaseType(in[i].typid);
+		TupleDescInitEntry(desc, (AttrNumber) (i + 1), NULL, x->in[i].typid, -1, 0);
 	}
 	if (nin == 0)
 		TupleDescInitEntry(desc, 1, NULL, INT4OID, -1, 0);
