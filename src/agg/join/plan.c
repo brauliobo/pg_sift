@@ -446,6 +446,8 @@ place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 	return true;
 }
 
+/* the conditions of the join in the shape. An EXISTS of the fact row alone is the semi unnest of the join when each main dimension matches a row once (the unnest counts the row once);
+ * else it stays a qual of the table, which the tests of the scan decide (seed_dims) */
 static bool
 join_clauses(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
@@ -468,8 +470,15 @@ join_clauses(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		}
 	}
 	foreach_node(RestrictInfo, ri, sh->fact->baserestrictinfo)
-		if (sift_v6_exists_clause(ri) && sift_v6_exists_join(root, sh, ri))
+	{
+		SiftV6JoinShape trial = *sh;
+
+		if (sift_v6_exists_clause(ri) && sift_v6_exists_join(root, &trial, ri) && sift_v6_exists_main_unique(root, &trial))
+		{
+			*sh = trial;
 			sh->sub_qual = ri;
+		}
+	}
 	return true;
 }
 
@@ -613,6 +622,8 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 	{
 		if (!sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
 			return false;
+		if (extra != NULL)
+			sift_v6_unnest_tests_beside(p, &sh->rte, p->out, extra);
 		x = p->xseed;
 		x->elem.semi = sh->semi;
 	}
