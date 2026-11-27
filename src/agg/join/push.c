@@ -307,7 +307,7 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	if (ix != NULL)
 		sift_v6_agg_cost(root, j->fact, ix, &spec, groups, &open, &scan);
 	else
-		sift_v6_scan_price(root, j->fact, NULL, j->fact_attno, &open, &scan);
+		sift_v6_table_spec_cost(root, j->fact, planner_rt_fetch(j->fact->relid, root)->relid, &spec, groups, &open, &scan);
 	cp->path.startup_cost = dim_path->total_cost + open;
 	cp->path.total_cost = dim_path->total_cost + scan + cpu_tuple_cost * groups + cpu_operator_cost * (dim_path->rows + 2.0 * j->fact->rows);
 	cp->methods = &push_path_methods;

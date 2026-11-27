@@ -105,6 +105,17 @@ sift_v6_source_filter_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelS
 		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
 
+void
+sift_v6_table_spec_cost(PlannerInfo *root, RelOptInfo *rel, Oid relid, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total)
+{
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
+	const AttrNumber lead = ops->order != NULL ? ops->order->lead_att(relid, true) : 0;
+	const SiftV6CostIn in = {.tuples = rel->tuples,.pages = rel->pages,.rows = rel->rows,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, lead),.groups = groups,
+	.ncols_read = sift_v6_spec_ncols_read(spec)};
+
+	sift_v6_scan_cost(&in, startup, total);
+}
+
 int
 sift_v6_rel_sources(PlannerInfo *root, RelOptInfo *rel, SiftV6RelSource *out, int max_out)
 {

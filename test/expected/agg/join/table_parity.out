@@ -77,7 +77,7 @@ SELECT shape, sum(tried) AS tried, sum(pushed) AS pushed, sum(bad) AS mismatches
  having       |    24 |      0 |          0
  repeating    |    24 |      0 |          0
  semi         |    24 |     24 |          0
- semi grouped |    24 |     19 |          0
+ semi grouped |    24 |     24 |          0
  window       |    24 |      0 |          0
 (8 rows)
 
