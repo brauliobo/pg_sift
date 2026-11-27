@@ -3,6 +3,9 @@
  */
 #include "postgres.h"
 
+#include "miscadmin.h"
+#include "utils/memutils.h"
+
 #include "col/codec/codec.h"
 #include "col/compress.h"
 #include "core/catname.h"
@@ -192,14 +195,15 @@ raw_block(Packer *pk, StringInfo b, int from, int n)
 	pfree(off);
 }
 
-/* The block on disk: LZ4 of the raw bytes when it is smaller; its entry */
-static SiftRowPackBlockEntry
-pack_block(const StringInfoData *raw, int n, StringInfo payload)
+/* The block on disk appended to out, whose blocks start at data_off: LZ4 of the raw bytes when it is smaller; false when out would pass the size of an allocation */
+static bool
+pack_block(const StringInfoData *raw, int n, StringInfo out, int data_off, SiftRowPackBlockEntry *e)
 {
-	SiftRowPackBlockEntry e = {.off_qwords = payload->len / 8,.comp_len = raw->len,.raw_len = raw->len,.nrows = (uint16) n,.codec_flags = SIFT_RPACK_CODEC_RAW};
 	const char *bytes = raw->data;
 	char	   *comp = NULL;
+	bool		fits;
 
+	*e = (SiftRowPackBlockEntry) {.off_qwords = (out->len - data_off) / 8,.comp_len = raw->len,.raw_len = raw->len,.nrows = (uint16) n,.codec_flags = SIFT_RPACK_CODEC_RAW};
 	if (sift_colz_available(SIFT_CC_ALG_LZ4))
 	{
 		Size		cap = sift_colz_bound(SIFT_CC_ALG_LZ4, raw->len),
@@ -210,31 +214,44 @@ pack_block(const StringInfoData *raw, int n, StringInfo payload)
 		if (clen > 0 && clen < raw->len)
 		{
 			bytes = comp;
-			e.comp_len = (uint32) clen;
-			e.codec_flags = SIFT_RPACK_CODEC_LZ4;
+			e->comp_len = (uint32) clen;
+			e->codec_flags = SIFT_RPACK_CODEC_LZ4;
 		}
 	}
-	appendBinaryStringInfo(payload, bytes, e.comp_len);
-	pad8(payload);
+	fits = (Size) out->len + e->comp_len + 8 < MaxAllocSize;
+	if (fits)
+	{
+		appendBinaryStringInfo(out, bytes, e->comp_len);
+		pad8(out);
+	}
 	if (comp != NULL)
 		pfree(comp);
-	return e;
+	return fits;
+}
+
+/* The header, the columns and the directory of the blocks, at the head of out: the blocks come after them (data_off) */
+static int
+reserve_head(StringInfo out, const SiftRows *rows, int nblocks)
+{
+	appendStringInfoSpaces(out, sizeof(SiftRowPackHdr) + rows->ncols * sizeof(SiftRowPackCol));
+	pad8(out);
+	appendStringInfoSpaces(out, nblocks * sizeof(SiftRowPackBlockEntry));
+	pad8(out);
+	return out->len;
 }
 
 static void
-assemble(StringInfo out, const Packer *pk, const SiftRowPackBlockEntry *entries, int nblocks, const StringInfoData *payload)
+write_head(StringInfo out, const Packer *pk, const SiftRowPackBlockEntry *entries, int nblocks, int data_off)
 {
-	SiftRowPackHdr hdr = {SIFT_ROW_PACK_MAGIC, SIFT_ROW_PACK_VER, pk->has_wide ? SIFT_RPACK_FLAG_HAS_WIDE : SIFT_RPACK_FLAG_NONE, (uint16) pk->rows->ncols, SIFT_ROW_PACK_ROWS, nblocks, (uint32) pk->rows->nrows};
+	const int	ncols = pk->rows->ncols,
+				dir_off = TYPEALIGN(8, sizeof(SiftRowPackHdr) + ncols * sizeof(SiftRowPackCol));
+	SiftRowPackHdr hdr = {SIFT_ROW_PACK_MAGIC, SIFT_ROW_PACK_VER, pk->has_wide ? SIFT_RPACK_FLAG_HAS_WIDE : SIFT_RPACK_FLAG_NONE, (uint16) ncols, SIFT_ROW_PACK_ROWS, nblocks, (uint32) pk->rows->nrows};
 
-	appendStringInfoSpaces(out, sizeof(hdr));
-	appendBinaryStringInfo(out, (const char *) pk->cols, pk->rows->ncols * sizeof(SiftRowPackCol));
-	pad8(out);
-	hdr.dir_off = out->len;
-	appendBinaryStringInfo(out, (const char *) entries, nblocks * sizeof(SiftRowPackBlockEntry));
-	pad8(out);
-	hdr.data_off = out->len;
+	hdr.dir_off = dir_off;
+	hdr.data_off = data_off;
 	memcpy(out->data, &hdr, sizeof(hdr));
-	appendBinaryStringInfo(out, payload->data, payload->len);
+	memcpy(out->data + sizeof(hdr), pk->cols, ncols * sizeof(SiftRowPackCol));
+	memcpy(out->data + dir_off, entries, nblocks * sizeof(SiftRowPackBlockEntry));
 }
 
 bool
@@ -244,10 +261,10 @@ sift_row_pack_build(const SiftRows *rows, uint64 granules_len, StringInfo out)
 				ncols = rows->ncols;
 	Packer		pk = {.rows = rows};
 	SiftRowPackBlockEntry *entries;
-	StringInfoData raw,
-				payload;
+	StringInfoData raw;
 	uint64		sampled = 0;
 	bool		built = true;
+	int			data_off;
 
 	if (ncols == 0 || ncols > UINT16_MAX)
 		return false;
@@ -259,23 +276,25 @@ sift_row_pack_build(const SiftRows *rows, uint64 granules_len, StringInfo out)
 	/* check-memory: allow 16 bytes a block of 64 rows of one part, whose rows the writer holds */
 	entries = palloc(nblocks * sizeof(SiftRowPackBlockEntry));
 	initStringInfo(&raw);
-	initStringInfo(&payload);
+	data_off = reserve_head(out, rows, nblocks);
 	for (int b = 0; b < nblocks && built; b++)
 	{
 		const int	from = b * SIFT_ROW_PACK_ROWS,
 					n = Min(SIFT_ROW_PACK_ROWS, rows->nrows - from);
 
+		CHECK_FOR_INTERRUPTS();
 		raw_block(&pk, &raw, from, n);
-		entries[b] = pack_block(&raw, n, &payload);
+		built = pack_block(&raw, n, out, data_off, &entries[b]);
 		if (b < SIFT_ROW_PACK_SAMPLE_BLOCKS)
 			sampled += entries[b].comp_len;
-		if (b == Min(SIFT_ROW_PACK_SAMPLE_BLOCKS, nblocks) - 1)
+		if (built && b == Min(SIFT_ROW_PACK_SAMPLE_BLOCKS, nblocks) - 1)
 			built = (double) sampled * nblocks / Min(SIFT_ROW_PACK_SAMPLE_BLOCKS, nblocks) * 100 <= (double) granules_len * ROW_PACK_SHARE_PERCENT;
 	}
 	if (built)
-		assemble(out, &pk, entries, nblocks, &payload);
+		write_head(out, &pk, entries, nblocks, data_off);
+	else
+		resetStringInfo(out);
 	pfree(raw.data);
-	pfree(payload.data);
 	pfree(entries);
 	pfree(pk.cols);
 	pfree(pk.null_bm);

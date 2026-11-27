@@ -278,17 +278,18 @@ entry_for_write(int si, const SiftRowLockKey *k, Outside *o)
 /* ---- what this transaction touched, to settle at its end (f2_lock_touched.c) ---- */
 
 /*
- * The stripes with chunks whose oldest committed update no snapshot can wait on any more, whichever transaction ended: what is past the horizon goes, and the chunks it
- * empties go with it. A backend that does not map the chunks frees none, and a stripe another backend holds is left to a later end: the ends of transactions do not queue on the stripes.
+ * The stripes with chunks whose oldest committed update no snapshot can wait on any more, at the end of a transaction that touched rows or whose snapshot
+ * came before one of them (no other end moves the horizon past it, and the process array is not read for it): what is past the horizon goes, and the chunks it empties go with it. A backend that does not map the chunks frees none, and a stripe another backend holds is left to a later end: the ends of transactions do not queue on the stripes.
  */
 static void
 reclaim_kept(void)
 {
 	Outside		o = OUTSIDE_INIT(NULL);
+	bool		touched = sift_touched_count() > 0;
 
 	for (int si = 0; sift_rowlock_area_mapped() && si < SIFT_ROWLOCK_PARTITIONS; si++)
 	{
-		FullTransactionId kept = sift_rowlock_kept(rows, si);
+		FullTransactionId kept = sift_rowlock_kept_at_end(rows, si, touched, TransactionXmin);
 
 		o.horizon = FullTransactionIdIsValid(o.horizon) || !FullTransactionIdIsValid(kept) ? o.horizon : oldest_needed();
 		if (!FullTransactionIdIsValid(kept) || !FullTransactionIdPrecedes(kept, o.horizon) || !LWLockConditionalAcquire(stripe_lock(si), LW_EXCLUSIVE))

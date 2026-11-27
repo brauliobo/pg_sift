@@ -369,6 +369,14 @@ sift_rowlock_kept(SiftRowLockTable *t, int si)
 	return FullTransactionIdFromU64(pg_atomic_read_u64(&t->kept[si]));
 }
 
+FullTransactionId
+sift_rowlock_kept_at_end(SiftRowLockTable *t, int si, bool touched, TransactionId xmin)
+{
+	FullTransactionId kept = sift_rowlock_kept(t, si);
+
+	return touched || TransactionIdPrecedesOrEquals(xmin, XidFromFullTransactionId(kept)) ? kept : InvalidFullTransactionId;
+}
+
 /* The committed update no snapshot may need yet that the entry keeps, if older than *oldest */
 static void
 note_kept(const SiftRowLockEntry *e, FullTransactionId *oldest)

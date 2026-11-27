@@ -333,6 +333,7 @@ tx_fetch_for(Relation rel)
 
 	if (f == NULL || f->base.rel != rel || tx_relid != RelationGetRelid(rel) || tx_manifest_version != version || f->store != store)
 	{
+		tx_fetch = NULL;
 		if (f != NULL)
 		{
 			fetch_drop_granule(f);

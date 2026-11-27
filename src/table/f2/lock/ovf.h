@@ -5,8 +5,8 @@
  * is never refused for the room it needs (a refusal would make the writer hold the whole relation and wait for it). A chunk is given back as soon as its last entry goes, and the entries of the
  * stripe are one array to a caller: the last of the table (of the head chunk for an entry in a chunk) takes the place of the one removed, and a new entry goes to the table first. Everything here
  * runs under the lock of the stripe. A remove from the table of a stripe that has chunks moves the last entry of the head chunk into the slot it frees, so that the chunks drain as the table
- * empties. The committed updates a chunked stripe keeps for the snapshots that may still wait on them are known by the oldest of them (kept): the end of any transaction sweeps the stripes whose
- * oldest is past every snapshot, so that no chunk outlives the last of them.
+ * empties. The committed updates a chunked stripe keeps for the snapshots that may still wait on them are known by the oldest of them (kept): the end of a transaction that may move the horizon past it
+ * (it touched rows, or its snapshot came before) sweeps the stripes whose oldest is past every snapshot, so that no chunk outlives the last of them.
  *
  * The lock, the counts, the head of the chunks and one tag byte for each entry of the table are the header of the stripe, one cache line that no other stripe shares: a find compares the tags of
  * the stripe eight at a time and reads the entries whose tag is the key's, and a reader that finds the count of the stripe zero has nothing to look for and takes no lock. A chunk comes from the
@@ -119,6 +119,9 @@ extern SiftRowLockEntry *sift_rowlock_add(SiftRowLockTable *t, int si, const Sif
 /* The committed update of updater that the entry of stripe si keeps, noted where the stripe has chunks; the oldest of them, InvalidFullTransactionId where there is none */
 extern void sift_rowlock_keep(SiftRowLockTable *t, int si, FullTransactionId updater);
 extern FullTransactionId sift_rowlock_kept(SiftRowLockTable *t, int si);
+
+/* What stripe si keeps that the end of a transaction may free: none for one that touched no row and whose snapshot (xmin) came after it, as that end moves no horizon past it */
+extern FullTransactionId sift_rowlock_kept_at_end(SiftRowLockTable *t, int si, bool touched, TransactionId xmin);
 
 /* The entry e of the stripe, zeroed, takes the key k: the slot of an entry that no snapshot can wait for any more */
 extern void sift_rowlock_reset(SiftRowLockTable *t, int si, SiftRowLockEntry *e, const SiftRowLockKey *k);
