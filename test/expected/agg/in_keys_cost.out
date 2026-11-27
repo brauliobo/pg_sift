@@ -1,6 +1,6 @@
--- The test of an IN list on an integer column is a byte table over the range of its values (a bit table for a long list over a wider range, a hash table past
--- that: agg/pred_in.c), allocated and cleared when the scan starts: a list of 256 keys over a range of a million costs the scan about 2 ms before it reads a row,
--- the same 256 keys in a range of 256 nothing visible. The scan is priced for the table, and a list over a wide range on a small result keeps the index plan.
+-- The scan tests a row against the constants of an IN list on an integer column by a binary search of them (a bitmap where the values of a chunk span few enough:
+-- col/granule/cfilt/kern.c): about 6 ns a level for each row it reads, so 256 keys spread over a range of a million cost the scan 7.5 ms of 200,000 rows where 8 keys
+-- cost it 0.4 ms. The scan is priced for the search, and a list on a small result keeps the index plan (0.2 ms), over a wide range or a narrow one.
 -- The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -23,28 +23,18 @@ CREATE FUNCTION in_query(span int, n int) RETURNS text LANGUAGE sql AS $$
 $$;
 CREATE FUNCTION scan_cost(q text) RETURNS numeric LANGUAGE sql AS $$ SELECT scan_cost::numeric FROM sift.explain_why(q) LIMIT 1 $$;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
--- 256 keys over a range of 1,000,000 values against 256 keys over 256 values (the table of a million bytes against none to speak of): the scan costs more
--- by a good share of the normal plan's price, and a list of 8 keys over the same range too
-SELECT n, scan_cost(in_query(1000000, n)) - scan_cost(in_query(256, n)) > 500 AS table_priced
-FROM (VALUES (8), (256)) v(n) ORDER BY n;
-  n  | table_priced 
------+--------------
-   8 | t
- 256 | t
-(2 rows)
-
--- and the table grows with the range
-SELECT scan_cost(in_query(1000000, 256)) - scan_cost(in_query(100000, 256)) > 500 AS wider_costs_more;
- wider_costs_more 
-------------------
+-- 256 keys against 8 over the same range: the search of the longer list costs more by a good share of the normal plan's price
+SELECT scan_cost(in_query(1000000, 256)) - scan_cost(in_query(1000000, 8)) > 500 AS search_priced;
+ search_priced 
+---------------
  t
 (1 row)
 
--- 256 keys over the wide range keep the index plan, over the narrow range (the table is 256 bytes) the scan
+-- 256 keys over the wide range and over the narrow one keep the index plan
 SELECT span, bool_or(used) AS scan FROM (VALUES (256), (1000000)) v(span), LATERAL sift.explain_why(in_query(span, 256)) GROUP BY span ORDER BY span;
   span   | scan 
 ---------+------
-     256 | t
+     256 | f
  1000000 | f
 (2 rows)
 
@@ -56,9 +46,8 @@ SELECT differences(in_query(1000000, 256)) AS differences_wide, differences(in_q
 
 DROP FUNCTION in_query(int, int), scan_cost(text), differences(text);
 -- A generic plan does not see the array of `key = ANY($1)`: its scan is priced for the param_set_elems limit elements, as the paths that fetch the rows
--- one key at a time are charged them. That covers the rows the scan selects and the table the scan clears to test the list, a byte table over the range of
--- the values (a list that is not known is taken over the whole range of the column). A scan priced for the 10 elements PostgreSQL assumes and no table took the
--- generic plan at 256 keys over a range of a million, where the index plan is several times faster; the plan cache then keeps the custom plans.
+-- one key at a time are charged them. A scan priced for the 10 elements PostgreSQL assumes took the generic plan at 256 keys over a range of a million,
+-- where the index plan is several times faster; the plan cache then keeps the custom plans.
 CREATE FUNCTION key_list(n int) RETURNS text LANGUAGE sql AS $$
 	SELECT (SELECT string_agg(key::text, ',') FROM (SELECT key FROM items ORDER BY id LIMIT n) k)
 $$;

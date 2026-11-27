@@ -24,6 +24,9 @@
 #define SIFT_TABLE_FETCH_OPS	32.0
 /* ... and of its visibility alone, the vet of a row that decodes no cell (0.25 us warm) */
 #define SIFT_TABLE_VET_OPS		8.0
+/* a level of the binary search of the constants of an IN list a row is tested against (5.8 ns warm, the branch of each level mispredicted), and the span of the values of a chunk below which the test is a bitmap (SET_BITMAP_BITS of col/granule/cfilt/kern.c) */
+#define SIFT_IN_LEVEL_OPS		2.3
+#define SIFT_IN_BITMAP_SPAN		262144.0
 
 typedef struct SiftCostInputs
 {
@@ -35,7 +38,7 @@ typedef struct SiftCostInputs
 	double		r_bw_cpu;		/* cpu_operator_costs per 64 bytes decoded (12: about 2.7 GB/s, what a warm scan of a column of numbers measures) */
 	double		f_cold;			/* share of those bytes that is not in shared buffers or the cache of the operating system, and costs a page read */
 	double		n_ship;			/* records the workers hand to the merge when they ship more than the groups (a count(DISTINCT) ships its values), else 0 */
-	Cost		pg_qual;		/* what PostgreSQL's executor costs to evaluate the quals it runs for the scan (agg/qual/pg.h) on a row decoded */
+	Cost		qual_row;		/* what the tests of a row decoded cost beyond its decode: the quals PostgreSQL's executor runs (agg/qual/pg.h), the search of an IN list */
 } SiftCostInputs;
 
 #define SIFT_COST_R_BW_CPU		12.0

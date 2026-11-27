@@ -10,6 +10,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/bitmapset.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -389,6 +390,43 @@ pg_qual_cost(PlannerInfo *root, const IndexOptInfo *ix, const List *vqual)
 	return per_row;
 }
 
+/*
+ * The operators of the test of a row against the constants of an IN list on an integer column: a bit of a bitmap where the values of a chunk span fewer than SIFT_IN_BITMAP_SPAN, else a
+ * binary search of the constants (col/granule/cfilt/kern.c). The span of a chunk is that of the column, narrowed by how little its zones overlap.
+ */
+static double
+in_test_ops(const SiftCardStatsView *view, const IndexOptInfo *ix, bool index_cols, const ScalarArrayOpExpr *sa)
+{
+	const Node *arg = linitial(sa->args);
+	const int	att = IsA(arg, Var) ? ((const Var *) arg)->varattno : 0;
+	const int	leaf = index_cols ? index_leaf(ix, att) : heap_leaf(ix, att);
+	const SiftColCardStats *c = leaf >= 0 && view != NULL && (uint32) leaf < view->ncols ? &view->cols[leaf] : NULL;
+	const Oid	type = exprType(arg);
+	const double n = sift_v6_const_array_len(lsecond(sa->args));
+
+	if (n <= 1 || !sa->useOr || type == NUMERICOID || (sift_v6_class(type) != SV6C_I32 && sift_v6_class(type) != SV6C_I64))
+		return 0;
+	if (c != NULL && ((double) c->max_i64 - (double) c->min_i64) * Max(c->zone_overlap_ratio, 1.0 / Max(view->total_granules, 1)) < SIFT_IN_BITMAP_SPAN)
+		return 1.0;
+	return SIFT_IN_LEVEL_OPS * log2(n + 1);
+}
+
+/* per row decoded, the search of the constants of the IN lists among the clauses (RestrictInfos, or bare clauses on the index columns when index_cols) */
+static Cost
+in_lists_cost(const SiftCardStatsView *view, const IndexOptInfo *ix, bool index_cols, const List *clauses)
+{
+	double		ops = 0;
+
+	foreach_ptr(Node, n, clauses)
+	{
+		const Node *clause = IsA(n, RestrictInfo) ? (const Node *) ((const RestrictInfo *) n)->clause : n;
+
+		if (IsA(clause, ScalarArrayOpExpr))
+			ops += in_test_ops(view, ix, index_cols, (const ScalarArrayOpExpr *) clause);
+	}
+	return ops * cpu_operator_cost;
+}
+
 SiftV6AggPrice
 sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups)
 {
@@ -408,7 +446,7 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
-	price.in.pg_qual = pg_qual_cost(root, ix, spec->vqual);
+	price.in.qual_row = pg_qual_cost(root, ix, spec->vqual) + in_lists_cost(b.view, ix, true, spec->indexqual);
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
 	price.open = open_cost(scan_parts(&b));
 	return price;
@@ -440,6 +478,7 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 	b.filter_io_row = cols_bytes(b.view, filter, ix, false, NULL, NULL, true, b.io_col_row);
 	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, NULL, true, b.io_col_row);
 	in = scan_inputs(&b);
+	in.qual_row = in_lists_cost(b.view, ix, false, rel->baserestrictinfo);
 	*open = open_cost(scan_parts(&b));
 	sift_agg_choose_workers(&in, Min(b.surv / (in.g_eff * SIFT_GRANULE_ROWS), 1.0), false, false, *open, 0, &startup, total);
 }

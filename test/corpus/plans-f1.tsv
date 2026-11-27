@@ -44,7 +44,7 @@ join_set_bigdim_cte	SiftAggV6	single:t
 semi_exists	SiftAggV6Push	index:t
 anti_not_exists	SiftAggV6	single:t
 anti_not_in	SiftAggV6	single:t
-in_array_10	SiftAggV6	single:t
+in_array_10	-	single:f:cost
 in_values_1k	-	single:f:cost
 in_array_1k_gen	-	single:f:cost
 in_array_100k	-	single:f:cost

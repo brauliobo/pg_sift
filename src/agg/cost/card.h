@@ -66,6 +66,9 @@ extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOp
 /* What a scan pays to give one row it fetches by its tag: of a sift_table its locate and decode (SIFT_TABLE_FETCH_OPS), of an index the tuple of the heap */
 extern Cost sift_v6_fetch_cost(bool is_table);
 
+/* The elements of a constant array (0: NULL or no constant) */
+extern uint32 sift_v6_const_array_len(const Node *e);
+
 /* What a sequential read of the relation with its own conditions costs, less the page reads of the share of its pages the cache holds, as sift_v6_dim_cost prices a dimension */
 extern Cost sift_v6_rel_read_cost(const RelOptInfo *rel);
 

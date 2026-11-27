@@ -119,7 +119,7 @@ stock	partitions_join	scan	0.14	0.57
 stock	partitions_top	either	0.15	0.59
 stock	point_day_count	normal	0.98	3.9
 stock	point_days_ten	scan	0.31	1.2
-stock	point_days_three	scan	0.40	1.6
+stock	point_days_three	normal	0.53	2.1
 stock	range_only_by_month	either	0.18	0.72
 stock	rank_within_month	scan	0.17	0.68
 stock	running_total	scan	0.13	0.51
@@ -277,7 +277,7 @@ stock4t	partitions_join	scan	0.14	0.57
 stock4t	partitions_top	either	0.15	0.59
 stock4t	point_day_count	normal	0.98	3.9
 stock4t	point_days_ten	scan	0.29	1.2
-stock4t	point_days_three	scan	0.39	1.6
+stock4t	point_days_three	normal	0.53	2.1
 stock4t	range_only_by_month	either	0.18	0.72
 stock4t	rank_within_month	scan	0.17	0.68
 stock4t	running_total	scan	0.13	0.51
@@ -1241,7 +1241,7 @@ tuned	count_live	scan	0.13	0.54
 tuned	count_of_groups	scan	0.036	0.14
 tuned	deleted_rows	scan	0.038	0.15
 tuned	dimexpr_dim_c	scan	0.23	0.92
-tuned	dimexpr_few_sets	scan	0.47	1.9
+tuned	dimexpr_few_sets	normal	0.61	2.4
 tuned	dimexpr_two	scan	0.22	0.87
 tuned	dimfull_dim_b	scan	0.10	0.41
 tuned	dimrate_one	scan	0.013	0.054

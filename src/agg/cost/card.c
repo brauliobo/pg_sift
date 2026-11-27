@@ -205,8 +205,8 @@ null_pred(SiftV6CardQuery *o, const NullTest *nt, Index relid, const IndexOptInf
 	return leaf >= 0 && pred_add(o, nt->nulltesttype == IS_NULL ? SCP_IS_NULL : SCP_IS_NOT_NULL, leaf) != NULL;
 }
 
-static uint32
-const_array_len(const Node *e)
+uint32
+sift_v6_const_array_len(const Node *e)
 {
 	const ArrayType *a;
 
@@ -224,7 +224,7 @@ values_bound(const List *clauses)
 
 	foreach_ptr(RestrictInfo, ri, (List *) clauses)
 		if (IsA(ri->clause, ScalarArrayOpExpr))
-			n += const_array_len(lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
+			n += sift_v6_const_array_len(lsecond(((ScalarArrayOpExpr *) ri->clause)->args));
 	return (uint32) Min(n, MaxAllocSize / sizeof(uint64));
 }
 
