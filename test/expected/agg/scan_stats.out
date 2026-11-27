@@ -32,9 +32,9 @@ $$;
 CREATE PROCEDURE flush_stats() LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_stat_force_next_flush(); END $$;
 SELECT engine($$SELECT sum(bal) FROM st_tbl WHERE grp = 1$$) AS table_aggregate, engine($$SELECT sum(bal) FROM st_col WHERE grp = 1$$) AS col_aggregate,
 	engine($$SELECT id FROM st_tbl ORDER BY bal DESC LIMIT 3$$) AS table_top_n;
- table_aggregate | col_aggregate |  table_top_n  
------------------+---------------+---------------
- SiftAggV6       | SiftAggV6     | SiftAggV6TopN
+ table_aggregate | col_aggregate | table_top_n 
+-----------------+---------------+-------------
+ SiftAggV6       | SiftAggV6     | SiftAggV6
 (1 row)
 
 SELECT * FROM scans();

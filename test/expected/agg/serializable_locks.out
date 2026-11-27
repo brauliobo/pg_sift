@@ -37,9 +37,9 @@ SELECT engine($$SELECT sum(bal) FROM acct WHERE grp = 1$$) AS table_aggregate,
 	engine($$SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY grp ORDER BY bal) rn FROM acct) s WHERE rn <= 2$$) AS table_window,
 	engine($$SELECT sum(bal) FROM hacct WHERE grp = 1$$) AS col_aggregate,
 	engine($$SELECT count(*) FROM hacct WHERE grp IN (SELECT grp FROM adim WHERE tier = 1)$$) AS col_semi_join;
- table_aggregate |  table_top_n  |  table_window   | col_aggregate | col_semi_join 
------------------+---------------+-----------------+---------------+---------------
- SiftAggV6       | SiftAggV6TopN | SiftAggV6Window | SiftAggV6     | SiftAggV6
+ table_aggregate | table_top_n |  table_window   | col_aggregate | col_semi_join 
+-----------------+-------------+-----------------+---------------+---------------
+ SiftAggV6       | SiftAggV6   | SiftAggV6Window | SiftAggV6     | SiftAggV6
 (1 row)
 
 BEGIN ISOLATION LEVEL SERIALIZABLE;
