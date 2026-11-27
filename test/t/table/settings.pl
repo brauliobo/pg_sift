@@ -15,7 +15,7 @@ my $inline = 12000;		# rows that close several write buffers, promoted while the
 my $settled = 6000;		# rows that stay in the write buffer (inline_promote = off) until a VACUUM
 
 my $node = sift_node('scope');
-$node->append_conf('postgresql.conf', "sift.test_create_format1 = on\nautovacuum_naptime = 1s\nlog_autovacuum_min_duration = 0\nautovacuum_vacuum_insert_threshold = 500\nautovacuum_vacuum_insert_scale_factor = 0\n"
+$node->append_conf('postgresql.conf', "sift.test_create_format1 = on\nautovacuum = off\nautovacuum_naptime = 1s\nlog_autovacuum_min_duration = 0\nautovacuum_vacuum_insert_threshold = 500\nautovacuum_vacuum_insert_scale_factor = 0\n"
 	. "autovacuum_vacuum_threshold = 500\nautovacuum_vacuum_scale_factor = 0");
 $node->start;
 install_sift($node);
@@ -78,6 +78,10 @@ sub background
 		$node->safe_psql('postgres', "SELECT string_agg(pid || ':' || coalesce(wait_event, '-') || ':' || state, ' ') FROM pg_stat_activity WHERE backend_type LIKE 'autovacuum%'"));
 	return policy($t, $auto);
 }
+
+# the subtests above promote in the writer and in VACUUM: a worker's snapshot (the ANALYZE of a catalog) would leave the last rows unsettled
+$node->append_conf('postgresql.conf', 'autovacuum = on');
+$node->reload;
 
 subtest 'autovacuum reads the option of the table' => sub {
 	is(background('a_none', compression => 'none'), 'plain', 'compression = none');
