@@ -17,7 +17,7 @@
 
 #include "agg/vec.h"
 
-#define SIFT_STAR_MAX_DIMS		4
+#define SIFT_STAR_MAX_DIMS		16
 #define SIFT_STAR_MAX_KEYS		4
 #define SIFT_STAR_MAX_PAY		16
 #define SIFT_STAR_RANGE_MAX		256

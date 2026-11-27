@@ -1,5 +1,5 @@
 -- SiftAggV6 over an index of format major 2 beyond one table of plain columns: the shredded scalars of a jsonb column (doc->>'k' and (doc->>'k')::float8), star joins of the fact
--- table with inner and left dimensions (unique or not, up to four, and a dimension that does not fit work_mem in one pass), and LATERAL unnest of an array column.
+-- table with inner and left dimensions (unique or not, up to sixteen, and a dimension that does not fit work_mem in one pass), and LATERAL unnest of an array column.
 -- Every query is run with the node and without it (sift.enable_agg) and the two answers are compared; the first word says they agree, the second that the plan is the node's.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
@@ -87,13 +87,14 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT count(*), count(d1.name) FROM sf LEFT JOIN d1 ON sf.k = d1.k WHERE sf.v < 10'
 ]) q;
 
--- Q-C03. A dimension with a key more than once expands the rows; two to four dimensions go through one batch of pairs after the other
+-- Q-C03. A dimension with a key more than once expands the rows; two to eight dimensions go through one batch of pairs after the other
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT d2.tag, count(*), sum(sf.v), sum(d2.z) FROM sf JOIN d2 ON sf.g = d2.g GROUP BY d2.tag',
 	'SELECT d2.tag, count(*) FROM sf LEFT JOIN d2 ON sf.g = d2.g AND d2.z > 5 GROUP BY d2.tag',
 	'SELECT d1.name, d3.cat, count(*), sum(sf.v) FROM sf JOIN d1 ON sf.k = d1.k LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1, 2',
 	'SELECT d1.name, d2.tag, d3.cat, count(*), sum(sf.v) FROM sf JOIN d1 ON sf.k = d1.k JOIN d2 ON sf.g = d2.g LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1, 2, 3',
-	'SELECT d1.name, d2.tag, d3.cat, d4.band, count(*) FROM sf JOIN d1 ON sf.k = d1.k JOIN d2 ON sf.g = d2.g JOIN d3 ON sf.g = d3.g JOIN d4 ON sf.v = d4.v GROUP BY 1, 2, 3, 4'
+	'SELECT d1.name, d2.tag, d3.cat, d4.band, count(*) FROM sf JOIN d1 ON sf.k = d1.k JOIN d2 ON sf.g = d2.g JOIN d3 ON sf.g = d3.g JOIN d4 ON sf.v = d4.v GROUP BY 1, 2, 3, 4',
+	'SELECT d1.name, d2.tag, d3.cat, d4.band, e.w, f.cat, h.band, count(*), sum(sf.v), max(i.name) FROM sf JOIN d1 ON sf.k = d1.k JOIN d2 ON sf.g = d2.g JOIN d3 ON sf.g = d3.g JOIN d4 ON sf.v = d4.v LEFT JOIN d1 e ON sf.k = e.k LEFT JOIN d3 f ON sf.g = f.g AND f.cat <> ''c1'' LEFT JOIN d4 h ON sf.v = h.v + 1 LEFT JOIN d1 i ON sf.k = i.k AND i.w = 1 GROUP BY 1, 2, 3, 4, 5, 6, 7'
 ]) q;
 
 -- Q-C04. A dimension of more rows than the planner counted does not fit work_mem in one pass: the fact table is read once per part of its keys
