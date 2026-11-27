@@ -51,6 +51,8 @@ extern int	xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v);
 
 /* A pattern with no literal prefix but a literal run of this many bytes is a substring test of the leaf when ColKeys.infix */
 #define SIFT_LIKE_INFIX_MIN	3
+/* The longest run of literal bytes between the wildcards of a LIKE pattern, into best: the string every match holds; 0 for a pattern that ends in a backslash */
+extern int	sift_like_longest_run(const char *pat, int len, char *best);
 extern void like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool infix);
 
 /* The predicates of the keys of a scan, one for each key, on the leaves of k; false: a key no leaf can decide and no recheck covers (the scan finds no row) */

@@ -1,19 +1,24 @@
 /*
  * agg/plan/prednorm.c - the comparison of one column a WHERE clause implies when the clause is no index qual itself: the leading column of a row comparison ((a, b) > (x, y) implies
  * a >= x), the column of a coalesce whose default fails the comparison (coalesce(a, k) < c is a < c when k < c is not true), the column of a nullif under a strict operator
- * (nullif(a, k) = c implies a = c) and a IS NOT DISTINCT FROM of a constant that is not NULL (a = c). The scan prunes and filters by the implied comparison, and the clause still
+ * (nullif(a, k) = c implies a = c), a IS NOT DISTINCT FROM of a constant that is not NULL (a = c) and the longest literal run r of a LIKE pattern (a LIKE '%x%r%' implies
+ * a LIKE '%r%'). The scan prunes and filters by the implied comparison, and the clause still
  * decides every row it keeps.
  */
 #include "postgres.h"
 
 #include "access/stratnum.h"
+#include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
+#include "lib/stringinfo.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
 #include "agg/plan/int.h"
+#include "col/am/preds.h"
 #include "core/compat.h"
 
 /* (a, b, ..) op (x, y, ..): the leading pair under the operator of its family that also holds on the ties of the leading column */
@@ -76,6 +81,35 @@ nullif_column(OpExpr *op, int side)
 	return IsA(linitial(ni->args), Var) && op_strict(op->opno) ? with_operand(op, side, linitial(ni->args)) : NULL;
 }
 
+/* a LIKE pattern: '%r%' of its longest literal run r, its wildcards escaped, which every match holds */
+static Expr *
+like_run(const OpExpr *op)
+{
+	const Const *c = lsecond(op->args);
+	const text *t;
+	char	   *run;
+	int			n;
+	StringInfoData pat;
+
+	if (op->opno != OID_TEXT_LIKE_OP || !IsA(c, Const) || c->constisnull)
+		return NULL;
+	t = DatumGetTextPP(c->constvalue);
+	run = palloc(VARSIZE_ANY_EXHDR(t) + 1);
+	if ((n = sift_like_longest_run(VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), run)) < SIFT_LIKE_INFIX_MIN)
+		return NULL;
+	initStringInfo(&pat);
+	appendStringInfoChar(&pat, '%');
+	for (int i = 0; i < n; i++)
+	{
+		if (run[i] == '%' || run[i] == '_' || run[i] == '\\')
+			appendStringInfoChar(&pat, '\\');
+		appendStringInfoChar(&pat, run[i]);
+	}
+	appendStringInfoChar(&pat, '%');
+	return make_opclause(op->opno, BOOLOID, false, copyObject((Expr *) linitial(op->args)),
+						 (Expr *) makeConst(TEXTOID, -1, c->constcollid, -1, PointerGetDatum(cstring_to_text_with_len(pat.data, pat.len)), false, false), InvalidOid, op->inputcollid);
+}
+
 static Expr *
 op_implied(PlannerInfo *root, OpExpr *op)
 {
@@ -90,7 +124,7 @@ op_implied(PlannerInfo *root, OpExpr *op)
 		if (IsA(n, NullIfExpr))
 			return nullif_column(op, side);
 	}
-	return NULL;
+	return like_run(op);
 }
 
 /* NOT (a IS DISTINCT FROM c) with c not NULL: a = c */

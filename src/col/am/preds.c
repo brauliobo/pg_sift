@@ -234,9 +234,8 @@ strategy_op(StrategyNumber s)
 	return 0;
 }
 
-/* The longest run of literal bytes between the wildcards of a LIKE pattern, into best: the string every match holds; 0 for a pattern that ends in a backslash */
-static int
-like_longest_run(const char *pat, int len, char *best)
+int
+sift_like_longest_run(const char *pat, int len, char *best)
 {
 	char	   *run = palloc(len + 1);
 	int			n = 0,
@@ -299,7 +298,7 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 			break;
 		buf[n++] = pat[i++];
 	}
-	if (n == 0 && infix && (run = like_longest_run(pat, len, buf)) >= SIFT_LIKE_INFIX_MIN)
+	if (n == 0 && infix && (run = sift_like_longest_run(pat, len, buf)) >= SIFT_LIKE_INFIX_MIN)
 	{
 		uint32		litlen;
 
