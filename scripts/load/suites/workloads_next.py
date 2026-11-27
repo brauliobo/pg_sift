@@ -315,7 +315,7 @@ def repl_standby_conflict_storm(ctx):
 
 WORKLOADS = (
     LoadCase('olap_v6_ops_tight_mem', 'olap', olap_v6_ops_tight_mem, Limits(ctx_kb_delta=1280, rss_mb_delta=16)),
-    LoadCase('ddl_rewrite_split_merge', 'ddl', ddl_rewrite_split_merge, Limits(), formats=(2,), open='S111-04'),
+    LoadCase('ddl_rewrite_split_merge', 'ddl', ddl_rewrite_split_merge, Limits(), formats=(2,)),
     LoadCase('conc_upsert_fk_unique', 'conc', conc_upsert_fk_unique, Limits(), formats=(2,), open='S111-34', intermittent=True),
     LoadCase('feat_tier_cache_evict_storm', 'feat', feat_tier_cache_evict_storm, Limits(fd_delta=0), formats=(2,)),
     LoadCase('pool_high_procno_shm', 'pool', pool_high_procno_shm, Limits(), formats=(2,)),
