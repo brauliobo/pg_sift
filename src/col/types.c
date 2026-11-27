@@ -109,6 +109,22 @@ sift_col_def_typid(TupleDesc desc, const SiftColDef *def)
 	return type_of_tag(def->type);
 }
 
+/* The name sift.col_leaves gives a leaf: its path, else the column it is */
+char *
+sift_col_leaf_path(TupleDesc desc, const SiftColDef *def)
+{
+	return def->path[0] ? pstrdup(def->path) : pstrdup(NameStr(TupleDescAttr(desc, def->attno - 1)->attname));
+}
+
+/* The type sift.col_leaves gives a leaf: the type the leaf holds, and the lane of a range or network */
+char *
+sift_col_leaf_type(TupleDesc desc, const SiftColDef *def)
+{
+	char	   *type = format_type_be(sift_col_def_typid(desc, def));
+
+	return def->lane > 0 ? psprintf("%s (lane %d)", type, def->lane) : type;
+}
+
 /*
  * numeric(p, s) has three forms: p <= 18 and 0 <= s <= 18 a scaled int64 (one INT leaf, the 3.1 form, and the one sift_table keeps); p <= 38 and
  * 0 <= s <= 38 otherwise a scaled 128-bit integer (two INT lanes, at most p digits so it fits); anything else (no typmod, more digits, a negative

@@ -391,8 +391,8 @@ f2_leaves(FunctionCallInfo fcinfo)
 	for (int c = 0; c < schema->ncols; c++)
 	{
 		const SiftColDef *d = &schema->cols[c];
-		Datum		v[11] = {Int32GetDatum(c), CStringGetTextDatum(d->path != NULL ? d->path : ""), CStringGetTextDatum(d->kind == SIFT_COLK_SCALAR ? "scalar" : "group"),
-		CStringGetTextDatum(format_type_be(TupleDescAttr(index->rd_att, d->attno - 1)->atttypid)), Int64GetDatum(lc[c].nconst), Int64GetDatum(lc[c].nfor), Int64GetDatum(lc[c].npack), Int64GetDatum(lc[c].ncodec),
+		Datum		v[11] = {Int32GetDatum(c), CStringGetTextDatum(sift_col_leaf_path(index->rd_att, d)), CStringGetTextDatum(d->kind == SIFT_COLK_SCALAR ? "scalar" : "group"),
+		CStringGetTextDatum(sift_col_leaf_type(index->rd_att, d)), Int64GetDatum(lc[c].nconst), Int64GetDatum(lc[c].nfor), Int64GetDatum(lc[c].npack), Int64GetDatum(lc[c].ncodec),
 		Int64GetDatum(lc[c].ninline), Int64GetDatum(lc[c].bytes), Int64GetDatum(0)};
 		bool		nulls[11] = {false};
 

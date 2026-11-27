@@ -90,6 +90,8 @@ extern Node *sift_col_att_expr(Relation index, int attno);
 /* The format's type tag of a PostgreSQL type (OTHER for one the tags do not name), and the type a leaf yields to SQL (desc: the relation the leaf's attno refers to) */
 extern uint8 sift_col_type_of_oid(Oid typid);
 extern Oid	sift_col_def_typid(TupleDesc desc, const SiftColDef *def);
+extern char *sift_col_leaf_path(TupleDesc desc, const SiftColDef *def);
+extern char *sift_col_leaf_type(TupleDesc desc, const SiftColDef *def);
 
 /* Is relam the sift_col access method (the catalog lookup is cached) */
 extern bool sift_col_is_index(Relation index);
