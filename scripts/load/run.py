@@ -310,10 +310,10 @@ def judge(case: LoadCase, m: dict | None, bad: list, lim: Ceilings | None = None
 
 
 SHOWN = (('ops', 'ops', 'd'), ('lost_rows', 'lost', 'd'), ('dup_rows', 'dup', 'd'), ('oracle_mismatch', 'orc', 'd'), ('unexpected_errors', 'err', 'd'),
-         ('verify_errors', 'chk', 'd'), ('false_quarantines', 'q', 'd'), ('lock_wait_pct', 'lock', '.1f'), ('lwlock_wait_pct', 'lw', '.1f'),
-         ('coarse_escalations', 'esc', 'd'), ('p99_ratio', 'rp99', '.2f'), ('scale_ratio', 'scale', '.2f'), ('ctx_kb_delta', 'ctx', 'd'),
-         ('rss_mb_delta', 'rss', '.1f'), ('shm_used_after', 'shm', 'd'), ('tmp_files_left', 'tmp', 'd'), ('deadlocks', 'dl', 'd'),
-         ('peak', 'peak', 'd'), ('l0_per_kop', 'l0k', '.1f'), ('pending_after', 'pend', 'd'), ('quarantine_missed', 'qmiss', 'd'), ('not_restarted', 'norestart', 'd'), ('meta_corrupt', 'meta', 'd'), ('unconverged', 'unconv', 'd'), ('maint_failures', 'mf', 'd'), ('traps_and_leaks', 'trap', 'd'),
+         ('verify_errors', 'chk', 'd'), ('false_quarantines', 'q', 'd'), ('health_errors', 'health', 'd'), ('lock_wait_pct', 'lock', '.1f'), ('lwlock_wait_pct', 'lw', '.1f'),
+         ('coarse_escalations', 'esc', 'd'), ('p99_ratio', 'rp99', '.2f'), ('p99_read_ratio', 'rrp99', '.2f'), ('scale_ratio', 'scale', '.2f'), ('ctx_kb_delta', 'ctx', 'd'),
+         ('rss_mb_delta', 'rss', '.1f'), ('shm_used_after', 'shm', 'd'), ('shm_refusals', 'shmref', 'd'), ('tmp_files_left', 'tmp', 'd'), ('deadlocks', 'dl', 'd'),
+         ('peak', 'peak', 'd'), ('l0_per_kop', 'l0k', '.1f'), ('pending_after', 'pend', 'd'), ('quarantine_missed', 'qmiss', 'd'), ('not_restarted', 'norestart', 'd'), ('meta_corrupt', 'meta', 'd'), ('unconverged', 'unconv', 'd'), ('maint_failures', 'mf', 'd'), ('drop_in_use', 'dropbusy', 'd'), ('rowlock_left', 'rowlk', 'd'), ('blocks_kept', 'blk', 'd'), ('traps_and_leaks', 'trap', 'd'),
          ('prepared_left', 'prep', 'd'), ('write_skew', 'skew', 'd'), ('unpriv_waits', 'uwait', 'd'), ('standby_mismatch', 'sbm', 'd'), ('promoted_errors', 'perr', 'd'),
          ('fault_unseen', 'unseen', 'd'), ('wedged', 'wedged', 'd'), ('fd_delta', 'fd', 'd'), ('par_workers_peak', 'parw', 'd'))
 
@@ -372,7 +372,7 @@ def selftest():
     for name, (cases, classes) in suites.SUITES.items():
         expect(not catalog_problems(cases, classes) and {c.cls for c in cases} == set(classes), f'suite {name}: {catalog_problems(cases, classes)}')
     every = suites.cases('all')
-    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 33, 'the suites share no id: 17 core, 13 workloads, 3 repl')
+    expect(not catalog_problems(every, suites.CLASSES) and len(every) == 39, 'the suites share no id: 17 core, 18 workloads, 4 repl')
     suites.selftest(expect)
     m = {'lost_rows': 0, 'lock_wait_pct': 5.0, 'scale_ratio': 3.0}
     expect(judge(c0, m, []) == ('PASS', []), judge(c0, m, []))
@@ -404,6 +404,9 @@ def selftest():
     print(f'selftest ok: {len(catalog.CASES)} core cases, ' + ', '.join(f'{len(c)} {n}' for n, (c, _) in suites.SUITES.items()))
 
 
+CALIBRATED = ('lock_wait_pct', 'lwlock_wait_pct', 'p99_ratio', 'p99_read_ratio', 'ctx_kb_delta', 'rss_mb_delta', 'peak', 'l0_per_kop')
+
+
 def report(a, ctx: Ctx, selected: list, runs: list) -> int:
     failed = 0
     for c in selected:
@@ -418,7 +421,7 @@ def report(a, ctx: Ctx, selected: list, runs: list) -> int:
             for n, r in enumerate(runs if vary else []):
                 print(f'LOAD_RUN{n} ' + line(c, ctx, r[c.id][0], *judge(c, r[c.id][0], r[c.id][1], effective(c, ctx)), r[c.id][2])[5:])
         if a.calibrate and m:
-            worst = {k: max(r[c.id][0].get(k) or 0 for r in runs if r[c.id][0]) for k in ('lock_wait_pct', 'lwlock_wait_pct', 'p99_ratio', 'ctx_kb_delta', 'peak')}
+            worst = {k: max(r[c.id][0].get(k) or 0 for r in runs if r[c.id][0]) for k in CALIBRATED}
             print(f'LOAD_CAL {c.id} ' + ' '.join(f'{k}={v * 1.5:.1f}' for k, v in worst.items() if k in m))
         print(line(c, ctx, m, verdict, over, secs))
     print(f'LOAD_OPEN {sum(bool(c.open) for c in selected)} ' + ','.join(c.open for c in selected if c.open))
