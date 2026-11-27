@@ -15,6 +15,7 @@
 #include "col/f2/vacuum/run.h"
 #include "col/f2/l0/shard_dir.h"
 #include "col/f2/l0/stage_int.h"
+#include "col/f2/uniq/shm.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
 
@@ -296,7 +297,8 @@ largest_buffer(SiftTxnStage *st)
  * The buffer of a partition that holds the flush count is written at once; the largest buffer when all of them hold the budget (checked for each row: the memory of the buffers is counted as rows
  * are added). The part is written in a context of its own, which goes with it: what the write holds (the encoded granules, the dictionaries, the zones) is the size of the part, which a
  * statement that loads a whole table would keep to its end otherwise. The flush count was estimated from the first rows, which carry the fixed memory of the buffers: a buffer that reaches it counts
- * again from its own rows, and holds more of them when the budget does.
+ * again from its own rows, and holds more of them when the budget does. When no row is left in the stage, every key it held is in the partitions and the entries of the index in the
+ * registry of unique keys (col/f2/uniq/shm.h) go.
  */
 void
 sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
@@ -324,6 +326,8 @@ sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p)
 		sift_stage_renew_part(st, victim);
 	else
 		sift_stage_flush_rows(rel, st, false);
+	if (st->total_rows == 0)
+		sift_uniq_shm_release(&rel->rd_locator);
 }
 
 /* The run of the deletes of the partition: the runs ascend by the lower bound of their entry, as the parts do */

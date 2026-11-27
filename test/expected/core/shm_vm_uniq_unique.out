@@ -87,10 +87,11 @@ SELECT pg_temp.active() - :base AS left_in_the_registry;
                     0
 (1 row)
 
--- a transaction that stages more keys than the work memory flushes the stage, and the entries of what it flushed are let go
+-- a transaction that stages more keys than the work memory loads them in parts of the maintenance memory, and the entries of the rows it flushed are let go
 CREATE TABLE af (id int, v text);
 CREATE UNIQUE INDEX af_i ON af USING sift_col (id);
 SET work_mem = '64kB';
+SET maintenance_work_mem = '1MB';
 BEGIN;
 INSERT INTO af SELECT g, repeat('x', 100) FROM generate_series(1, 20000) g;
 SELECT pg_temp.active() - :base < 10000 AS entries_of_flushed_rows_let_go;
@@ -107,6 +108,7 @@ SELECT count(*) AS rows, pg_temp.active() - :base AS left_in_the_registry FROM a
 (1 row)
 
 RESET work_mem;
+RESET maintenance_work_mem;
 -- the first check of a deferred constraint inserts the row it reports a conflict for: the check of the end of the transaction finds the row to judge
 CREATE TABLE pt (id int);
 CREATE UNIQUE INDEX pt_i ON pt USING sift_col (id);
