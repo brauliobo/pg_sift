@@ -3,6 +3,8 @@
 -- declared type cannot hold overflow: the row stays a candidate and the heap decides.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: write_buffer_limit and the column source API it reads are Format 1.
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 

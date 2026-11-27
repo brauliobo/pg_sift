@@ -3,6 +3,8 @@
 -- declared type cannot hold overflow: the row stays a candidate and the heap decides.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: write_buffer_limit and the column source API it reads are Format 1.
+SET sift.test_create_format1 = on;
 CREATE EXTENSION pg_sift_test;
 SET sift.async_maintenance = off;
 CREATE FUNCTION col_cmp(idx regclass, preds text, heapwhere text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.col_index_matches_heap(idx, preds, heapwhere) $$;
@@ -295,9 +297,9 @@ FROM odd o WHERE o.ctid IN (SELECT tid FROM sift._test_col_tids('odd_col', 'g0:1
 
 SELECT string_agg(o.id::text, ',' ORDER BY o.id) AS candidates_no_x
 FROM odd o WHERE o.ctid IN (SELECT tid FROM sift._test_col_tids('odd_col', 'g0!:1:eq:x'));
-  candidates_no_x  
--------------------
- 5,7,8,10,11,12,13
+   candidates_no_x   
+---------------------
+ 5,7,8,9,10,11,12,13
 (1 row)
 
 DROP TABLE odd;
