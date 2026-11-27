@@ -9,6 +9,7 @@
 #include "agg/batch.h"
 #include "agg/win/partsort.h"
 #include "agg/win/spill.h"
+#include "core/memtrack.h"
 
 #define PS_CHUNK	65536
 #define PS_MIN_CAP	256
@@ -227,7 +228,7 @@ arena_copy(PartSort *ps, const char *p, uint32 len)
 
 	if (ch == NULL || ch->used + len > PS_CHUNK)
 	{
-		ch = MemoryContextAlloc(ps->cx, Max(sizeof(PsChunk), offsetof(PsChunk, bytes) + len));
+		ch = MemoryContextAlloc(ps->cx, sift_alloc_grow(0, Max(sizeof(PsChunk), offsetof(PsChunk, bytes) + (Size) len), "a value of a row of a window"));
 		ch->next = ps->chunks;
 		ch->used = 0;
 		ps->chunks = ch;
@@ -379,6 +380,13 @@ start_spill(PartSort *ps)
 		resize(ps, PS_MIN_CAP);
 }
 
+/* the rows held are past 2 * keep + 1, which is computed without overflow for any keep a run condition gives */
+static inline bool
+over_keep(const PartSort *ps)
+{
+	return ps->spec.keep > 0 && ps->n / 2 > ps->spec.keep;
+}
+
 static void
 add_row(PartSort *ps, uint32 r)
 {
@@ -414,7 +422,7 @@ add_row(PartSort *ps, uint32 r)
 	ps->tag[i] = ps->ib.tag != NULL ? ps->ib.tag[r] : 0;
 	ps->bytes += sizeof(uint64) + sizeof(uint32) + sizeof(int64) * ps->spec.n_ord;
 	ps->n++;
-	if ((ps->bytes > ps->spec.max_bytes || arrays_full(ps)) && (ps->spec.keep == 0 || ps->n < 2 * ps->spec.keep + 2))
+	if ((ps->bytes > ps->spec.max_bytes || arrays_full(ps)) && !over_keep(ps))
 		start_spill(ps);
 }
 
@@ -473,7 +481,7 @@ fill_partition(PartSort *ps)
 				return true;
 			add_row(ps, r);
 			ps->ipos++;
-			if (ps->spec.keep > 0 && ps->n >= 2 * ps->spec.keep + 2)
+			if (over_keep(ps))
 				compact(ps);
 		}
 	}

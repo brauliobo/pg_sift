@@ -237,7 +237,7 @@ enlargeStringInfo(StringInfo s, int needed)
 	if (s->len + needed + 1 <= s->maxlen)
 		return;
 	while (s->len + needed + 1 > s->maxlen)
-		s->maxlen *= 2;
+		s->maxlen = (int) Min((Size) s->maxlen * 2, MaxAllocSize);
 	s->data = repalloc(s->data, s->maxlen);
 }
 

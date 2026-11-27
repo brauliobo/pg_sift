@@ -20,6 +20,7 @@
 #include "agg/batch.h"
 #include "agg/win/spill.h"
 #include "core/compat.h"
+#include "core/memtrack.h"
 
 #define INT2_LT			95
 #define INT8_GT			413
@@ -276,7 +277,7 @@ payload_datum(const SiftWinSpill *sp, uint64 tag, const uint8 *state, const char
 
 	for (int c = 0; c < sp->spec.ncols; c++)
 		len += 1 + (state[c] == SIFT_CELL_STATE_VALUE ? sp->esz[c] + long_len(sp->spec.type[c], cell[c]) : 0);
-	b = palloc(VARHDRSZ + len);
+	b = palloc(sift_alloc_grow(0, VARHDRSZ + len, "a row of a window that spills"));
 	SET_VARSIZE(b, VARHDRSZ + len);
 	p = VARDATA(b);
 	memcpy(p, &tag, sizeof(tag));

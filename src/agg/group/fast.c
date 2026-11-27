@@ -305,7 +305,7 @@ slab_take(SiftStrSlab *sl, uint32 len)
 	if (sl->head == NULL || sl->head->cap - sl->head->used < len)
 	{
 		const size_t cap = Max((size_t) SLAB_CHUNK, (size_t) len);
-		SlabChunk  *c = MemoryContextAlloc(sl->cx, offsetof(SlabChunk, data) + cap);
+		SlabChunk  *c = MemoryContextAlloc(sl->cx, sift_alloc_grow(0, offsetof(SlabChunk, data) + cap, "the text MIN or MAX value of a group"));
 
 		*c = (SlabChunk) {.next = sl->head,.cap = cap};
 		sl->head = c;
@@ -351,7 +351,7 @@ strmm_put(SiftStrSlab *sl, SiftStrMM *a, uint64 pfx, const uint8 *p, uint32 len)
 	{
 		if (!owns || len > a->cap)
 		{
-			const uint32 cap = len > (1u << 30) ? len : Max(32u, pg_nextpower2_32(len));
+			const uint32 cap = len > (1u << 29) ? len : Max(32u, pg_nextpower2_32(len));
 
 			a->u.ptr = slab_take(sl, cap);
 			a->cap = cap;

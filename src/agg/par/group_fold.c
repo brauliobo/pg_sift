@@ -144,7 +144,7 @@ record_room(ParLocal *l, Size len)
 {
 	if (len > l->rec_cap)
 	{
-		l->rec_cap = Max(len, 2 * l->rec_cap);
+		l->rec_cap = sift_alloc_grow(l->rec_cap, len, "a record of a parallel aggregate");
 		l->rec = l->rec == NULL ? MemoryContextAlloc(l->cx, l->rec_cap) : repalloc(l->rec, l->rec_cap);
 	}
 	return l->rec;
@@ -320,7 +320,7 @@ par_local_load(const void *local)
 {
 	const ParLocal *l = local;
 	const SiftV6Group *g = l->g;
-	uint64		bytes = g->tx.cap + (g->slab != NULL ? sift_strslab_bytes(g->slab) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0);
+	uint64		bytes = g->tx.cap + (g->slab != NULL ? sift_strslab_bytes(g->slab) : 0) + (g->gen != NULL ? v6_gen_bytes(g->gen) : 0) + l->rec_cap + l->tail.maxlen;
 
 	if (l->scanning)
 		bytes += l->env->lean ? sift_v6_par_dist_load(l->dist_out) : sift_distinct_bytes(l->seen) + v6g_dist_dict_load(g) * SEEN_ENTRY_BYTES;
@@ -329,10 +329,21 @@ par_local_load(const void *local)
 	return bytes;
 }
 
-/* What an export leaves: the tables at the size a spill leaves them, the text winners gone with the groups that held them, so that the next groups start from nothing and a table that was full is not full again */
+/* What an export leaves: the tables at the size a spill leaves them, the text winners gone with the groups that held them, so that the next groups start from nothing and a table that was full is not full again;
+ * the record and tail buffers go too, as large as the widest record of the export */
 static void
-release_exported(SiftV6Group *g)
+release_exported(ParLocal *l)
 {
+	SiftV6Group *g = l->g;
+	MemoryContext old = MemoryContextSwitchTo(l->cx);
+
+	if (l->rec != NULL)
+		pfree(l->rec);
+	l->rec = NULL;
+	l->rec_cap = 0;
+	pfree(l->tail.data);
+	initStringInfo(&l->tail);
+	MemoryContextSwitchTo(old);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk > 0)
 			sift_ht_shrink_to(&g->set[s].ht, SIFT_SPILL_LOCAL_CAP);
@@ -359,9 +370,9 @@ export_plain(ParLocal *l, int s, SiftV6RecPut put, void *arg)
 	if (l->env->has_tail)
 		tail_build(l, set->plain, &l->tail);
 	len = MAXALIGN(sizeof(SiftV6RecHdr) + accs + l->tail.len);
+	sift_v6_par_check_record_size((uint32) len);
 	h.len = (uint32) len;
 	rec = record_room(l, len);
-	sift_v6_par_check_record_size((uint32) len);
 	memcpy(rec, &h, sizeof(h));
 	memcpy(rec + sizeof(h), set->plain, accs);
 	memset(rec + sizeof(h) + accs, 0, len - sizeof(h) - accs);
@@ -453,7 +464,7 @@ par_local_export(void *local, const SiftV6RecSink *sink)
 			export_groups(l, s, sink);
 	if (l->g->gen != NULL)
 		v6_gen_release(l->g->gen);
-	release_exported(l->g);
+	release_exported(l);
 }
 
 /* Merges one record into the state, in the memory context of its group; true when it was a group record (the memory of the groups is then to be checked) */

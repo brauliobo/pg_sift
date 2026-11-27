@@ -117,7 +117,7 @@ bound_value(const List *bound, ParamListInfo params)
 
 		k = prm->isnull ? 0 : prm->ptype == INT4OID ? DatumGetInt32(prm->value) : DatumGetInt64(prm->value);
 	}
-	return k - strict;
+	return Max(k, 0) - strict;
 }
 
 /* ORDER BY keys of a window that sorts its partitions: the flags of key j in the private ints */
@@ -412,7 +412,7 @@ run_condition(WinPlan *p)
 			const bool	strict = name != NULL && strcmp(name, rc->wfunc_left ? "<" : ">") == 0;
 			int64		k;
 
-			if (p->topk_func >= 0 || !(upper || strict) || !count_node((Node *) rc->arg, &k) || (IsA(rc->arg, Const) && k - strict < 1))
+			if (p->topk_func >= 0 || !(upper || strict) || !count_node((Node *) rc->arg, &k) || (IsA(rc->arg, Const) && k < 1 + strict))
 				return false;
 			p->topk_func = i;
 			p->bound = list_make2(copyObject(rc->arg), makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(strict), false, true));

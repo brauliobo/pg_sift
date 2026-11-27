@@ -199,6 +199,7 @@ gj_tab_rehash(GjTab *t, MemoryContext cx, uint32 hcap)
 	{
 		uint32		b = (uint32) t->rows[i].hash & (hcap - 1);
 
+		CHECK_FOR_INTERRUPTS();
 		t->rows[i].next = h[b];
 		h[b] = i + 1;
 	}
@@ -211,7 +212,7 @@ gj_tab_rehash(GjTab *t, MemoryContext cx, uint32 hcap)
 static void
 gj_tab_insert(GjTab *t, MemoryContext cx, uint64 hash, const void *key, uint32 klen, const void *payload, uint32 plen)
 {
-	uint32		len = klen + plen;
+	const Size	len = (Size) klen + plen;
 	GjChunk    *c = t->chunks;
 	uint8	   *dst;
 	GjRow	   *r;
@@ -228,10 +229,10 @@ gj_tab_insert(GjTab *t, MemoryContext cx, uint64 hash, const void *key, uint32 k
 		gj_tab_rehash(t, cx, t->rcap);
 	if (c == NULL || c->size - c->used < len)
 	{
-		uint32		sz = Max(t->chunk_size, (uint32) sizeof(GjChunk) + len);
+		const Size	sz = Max(t->chunk_size, sizeof(GjChunk) + len);
 
 		c = MemoryContextAlloc(cx, sz);
-		c->size = sz - (uint32) sizeof(GjChunk);
+		c->size = (uint32) (sz - sizeof(GjChunk));
 		c->used = 0;
 		c->next = t->chunks;
 		t->chunks = c;
@@ -253,6 +254,17 @@ gj_tab_insert(GjTab *t, MemoryContext cx, uint64 hash, const void *key, uint32 k
 	t->head[(uint32) hash & (t->hcap - 1)] = ++t->nrows;
 }
 
+/* a row is held, and spilled, as one allocation of its key and payload */
+static void
+gj_check_row(uint32 klen, uint32 plen)
+{
+	const uint64 need = (uint64) klen + plen + Max(sizeof(GjChunk), sizeof(GjRecHdr));
+
+	if (need > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a hash join of %llu bytes is over 1 GB", (unsigned long long) need),
+						errhint("Join on a shorter key or select fewer columns.")));
+}
+
 /* the pairs of one probe row: every match for inner and left, the row once for semi, none for anti; true when it matched */
 static bool
 gj_pairs(SiftGraceJoin *j, const GjTab *t, uint64 h, const void *key, uint32 klen, const uint8 *probe, uint32 plen, bool semi_done)
@@ -265,6 +277,7 @@ gj_pairs(SiftGraceJoin *j, const GjTab *t, uint64 h, const void *key, uint32 kle
 	{
 		const GjRow *r = &t->rows[i - 1];
 
+		CHECK_FOR_INTERRUPTS();
 		if (r->hash != h || r->klen != klen || (klen > 0 && memcmp(r->data, key, klen) != 0))
 			continue;
 		matched = true;
@@ -325,6 +338,7 @@ gj_evict(SiftGraceJoin *j)
 		const GjRow *r = &old.rows[i];
 		uint32		part = sift_spill_part_of(r->hash, nparts);
 
+		CHECK_FOR_INTERRUPTS();
 		if (part == keep)
 			gj_tab_insert(&j->tab, j->cx, r->hash, r->data, r->klen, r->data + r->klen, r->plen);
 		else
@@ -342,6 +356,7 @@ sift_gjoin_build(SiftGraceJoin *j, const void *key, uint32 klen, bool key_null, 
 	SIFT_INVARIANT(!j->probing, "hash join: build row after the probe began");
 	if (key_null)
 		return;
+	gj_check_row(klen, plen);
 	j->st.build_rows++;
 	h = gj_hash(j->level, key, klen);
 	for (;;)
@@ -387,6 +402,7 @@ sift_gjoin_probe(SiftGraceJoin *j, const void *key, uint32 klen, bool key_null, 
 		gj_unmatched(j, payload, plen);
 		return;
 	}
+	gj_check_row(klen, plen);
 	h = gj_hash(j->level, key, klen);
 	if (j->pset != NULL)
 	{

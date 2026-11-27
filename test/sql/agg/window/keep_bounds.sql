@@ -1,0 +1,51 @@
+-- A row_number() run condition at the edges of bigint: rn <= K for a K no partition reaches holds every row, rn < K for the smallest bigint holds none, and a K past 2^32 is not cut
+-- to 32 bits. The window sorts its one partition in memory (SiftAggV6Window) and answers the rows of the normal plan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET enable_sort = off;
+
+CREATE TABLE wkb (id int, k int) WITH (autovacuum_enabled = false);
+INSERT INTO wkb SELECT i, (i * 7) % 5 FROM generate_series(1, 5) i;
+CREATE INDEX wkb_col ON wkb USING sift_col (id, k);
+VACUUM ANALYZE wkb;
+
+\ir test/common/sql/agg/rows.sql
+
+CREATE FUNCTION win_node(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l LIKE '%SiftAggV6Window%' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE wkb_q (q text);
+INSERT INTO wkb_q VALUES
+	('SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn <= 9223372036854775807'),
+	('SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn < 9223372036854775807'),
+	('SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn <= 4294967296'),
+	('SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn <= 2147483649'),
+	('SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb WHERE id = 1) s WHERE rn <= 9223372036854775807');
+
+SELECT right(q, 45) AS q, win_node(q) AS windowed, agg_rows(q, true) IS NOT DISTINCT FROM agg_rows(q, false) AS same, agg_rows(q, true) AS got FROM wkb_q ORDER BY q;
+
+SET plan_cache_mode = force_generic_plan;
+SET sift.enable_agg = on;
+PREPARE wkb_lt(bigint) AS SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn < $1;
+EXPLAIN (COSTS OFF) EXECUTE wkb_lt(-9223372036854775808);
+EXECUTE wkb_lt(-9223372036854775808);
+EXECUTE wkb_lt(0);
+EXECUTE wkb_lt(3);
+EXECUTE wkb_lt(9223372036854775807);
+PREPARE wkb_le(bigint) AS SELECT * FROM (SELECT id, row_number() OVER (ORDER BY k, id) rn FROM wkb) s WHERE rn <= $1;
+EXECUTE wkb_le(-9223372036854775808);
+EXECUTE wkb_le(4294967296);
+EXECUTE wkb_le(9223372036854775807);
+DEALLOCATE wkb_lt;
+DEALLOCATE wkb_le;
+DROP TABLE wkb, wkb_q;
+DROP FUNCTION agg_rows, agg_pushed, win_node;
+DROP EXTENSION pg_sift;
