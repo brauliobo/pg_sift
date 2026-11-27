@@ -30,6 +30,7 @@ collected(IndexScanDesc scan, TIDBitmap *tbm)
 			s->tbm = MemoryContextAllocZero(s->cx, sizeof(F2TbmSink));
 			s->tbm->tbm = tbm;
 		}
+		sift_f2_scan_count(scan);
 		sift_f2_scan_collect(scan, s);
 	}
 	sift_errctx_pop(&ctx);

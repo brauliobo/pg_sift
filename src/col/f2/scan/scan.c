@@ -934,7 +934,6 @@ sift_f2_scan_collect(IndexScanDesc scan, F2Scan *s)
 	int			nstaged;
 	uint64	   *staged;
 
-	sift_f2_scan_count(scan);
 	s->collected = true;
 	if (!s->possible)
 		return;
