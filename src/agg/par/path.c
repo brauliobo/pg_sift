@@ -18,6 +18,7 @@
 #include "catalog/pg_statistic.h"
 #include "utils/syscache.h"
 
+#include "agg/cost/cost.h"
 #include "agg/cost/model.h"
 #include "agg/safety.h"
 #include "agg/cost/card.h"
@@ -341,7 +342,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	strategy = sift_v6_par_choose_strategy(&in, &nworkers);
 	if (strategy == SV6P_SERIAL)
 		return;
-	total_groups = gather_rows(&pick, nworkers);
+	total_groups = gather_rows(&pick, nworkers) * (having == NIL ? 1.0 : sift_v6_quals_sel(root, having, 0));
 	spec.par_strategy = strategy;
 	spec.par_workers = nworkers;
 	cp = makeNode(CustomPath);
