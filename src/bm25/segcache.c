@@ -123,6 +123,29 @@ ent_evict_all(void)
 
 static const SiftCacheKind seg_kind = {"bm25_segcache", ent_oldest, ent_evict_one, ent_evict_all};
 
+/* A new entry nobody pins yet, or NULL when the cache has no room or no memory for it: the reader then makes the bytes in its own memory */
+static CacheEnt *
+ent_new(const CacheKey *k)
+{
+	CacheEnt   *e;
+
+	if (!sift_cache_room(k->size))
+		return NULL;
+	e = hash_search(cache, k, HASH_ENTER, NULL);
+	e->obj = MemoryContextAllocAligned(cache_cx, k->size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE | MCXT_ALLOC_NO_OOM);
+	if (e->obj == NULL)
+	{
+		hash_search(cache, k, HASH_REMOVE, NULL);
+		return NULL;
+	}
+	e->pins = 0;
+	e->ready = false;
+	dlist_push_tail(&pinned, &e->node);
+	cache_bytes += k->size;
+	sift_cache_commit();
+	return e;
+}
+
 /* MEM[MEM-BM25-03]: segcache entry (MCXT_ALLOC_HUGE, missing sift_cache_commit; 256-entry HTAB) */
 bool
 sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, MemoryContext mcxt, void **obj, void **handle)
@@ -149,37 +172,19 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 		k.id = id;
 		k.size = size;
 		k.kind = kind;
+		/* the pin is made first: once an entry is pinned, nothing fails before its callback unpins it */
+		u = MemoryContextAlloc(mcxt, sizeof(Unpin));
 		e = hash_search(cache, &k, HASH_FIND, NULL);
 		if (e == NULL)
+			e = ent_new(&k);
+		else if (e->pins == 0)
 		{
-			if (sift_cache_room(size))
-			{
-				void	   *p = MemoryContextAllocAligned(cache_cx, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
-
-				e = hash_search(cache, &k, HASH_ENTER, NULL);
-				e->obj = p;
-				e->pins = 0;
-				e->ready = false;
-				e->used = sift_cache_tick();
-				dlist_push_tail(&pinned, &e->node);
-				cache_bytes += size;
-				sift_cache_commit();
-			}
-			else
-				SEGCACHE_STAT(refused);
-		}
-		else
-		{
-			e->used = sift_cache_tick();
-			if (e->pins == 0)
-			{
-				dlist_delete(&e->node);
-				dlist_push_tail(&pinned, &e->node);
-			}
+			dlist_delete(&e->node);
+			dlist_push_tail(&pinned, &e->node);
 		}
 		if (e)
 		{
-			u = MemoryContextAlloc(mcxt, sizeof(Unpin));
+			e->used = sift_cache_tick();
 			e->pins++;
 			u->cb = (MemoryContextCallback) {ent_unpin, u, NULL};
 			u->key = k;
@@ -188,9 +193,9 @@ sift_segcache_get(const SiftStreamReader *sr, int kind, uint64 id, Size size, Me
 			*handle = e;
 			return e->ready;
 		}
+		pfree(u);
 	}
-	else
-		SEGCACHE_STAT(refused);
+	SEGCACHE_STAT(refused);
 	*obj = MemoryContextAllocAligned(mcxt, size, SIFT_SIMD_ALIGN, MCXT_ALLOC_HUGE);
 	return false;
 }

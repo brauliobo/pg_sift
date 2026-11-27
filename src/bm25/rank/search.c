@@ -49,12 +49,21 @@ hot_forget(SiftRanker *r)
 	r->hot = NULL;
 }
 
-/* The hits a search holds (the K best, the ties and the candidates waiting) must fit work_mem: K is unbounded without a limit, and one search then holds every match */
+/*
+ * The hits a search holds (the K best, the ties and the candidates waiting) must fit work_mem, and one allocation, as each array of them is one: K is unbounded
+ * without a limit, and one search then holds every match
+ */
 static void
 rank_budget(const SiftTopK *tk, int64 hits)
 {
-	sift_budget_check((hits + tk->tiecap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit), work_mem,
-					  "a ranked search of the matches", "work_mem", "add a LIMIT that the search can take (a filter after the search keeps every match)");
+	Size		bytes = (hits + tk->tiecap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit);
+	const char *hint = "add a LIMIT that the search can take (a filter after the search keeps every match)";
+
+	sift_budget_check(bytes, work_mem, "a ranked search of the matches", "work_mem", hint);
+	if (bytes > MaxAllocSize)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+						errmsg("a ranked search of the matches needs %zu kB, more than one allocation holds (%zu kB)", bytes / 1024, MaxAllocSize / 1024),
+						errhint("Use a smaller LIMIT, or %s.", hint)));
 }
 
 /*
@@ -64,7 +73,7 @@ rank_budget(const SiftTopK *tk, int64 hits)
 static bool
 rank_spill_flush(SiftRanker *r, SiftTopK *tk)
 {
-	if (!r->spill_ok || ((int64) Min(tk->k, 2 * tk->cap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit)) / 1024 <= work_mem / 2)
+	if (!r->spill_ok || ((int64) Min(tk->k, 2 * tk->cap) * sizeof(SiftHit) + tk->lazycap * sizeof(SiftLazyHit)) / 1024 <= Min(work_mem, (int) (MaxAllocSize / 1024)) / 2)
 		return false;
 	if (r->spill == NULL && (r->spill = sift_hitspill_begin(r->plan->mcxt, work_mem / 2)) == NULL)
 	{
@@ -770,6 +779,7 @@ rank_merge_shared(SiftRanker *r)
 	while (r->ties && r->nhit < n && all[r->nhit].score == all[r->K - 1].score)
 		r->nhit++;
 	r->complete = r->ties || n < r->K;
+	rank_budget(&(SiftTopK) {0}, r->nhit);
 	if (r->nhit > r->hitcap)
 		r->hit = repalloc(r->hit, (r->hitcap = r->nhit) * sizeof(SiftHit));
 	for (int64 i = 0; i < r->nhit; i++)
