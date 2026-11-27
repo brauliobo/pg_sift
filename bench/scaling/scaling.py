@@ -73,6 +73,13 @@ def node(plan):
     return (m.group(1) or m.group(0).split(' on ')[0].split(' using ')[0]).replace(' ', '_') if m else 'other'
 
 
+def uses_sift(plan, name):
+    """a sift node, or a scan of an index of a sift access method (an index scan of sift_col names only the index)"""
+    idx = ', '.join(f"'{i}'" for i in set(re.findall(r'(?: using|Bitmap Index Scan on) (\w+)', plan)))
+    return 'sift' in plan.lower() or bool(idx) and psql(f"select bool_or(a.amname like 'sift%') from pg_class c join pg_am a on a.oid = c.relam "
+                                                        f"where c.relnamespace = 'scal_{name}'::regnamespace and c.relname in ({idx})").strip() == 't'
+
+
 def run(args):
     cases = load_cases(args.gate)
     only = args.only.split(',') if args.only else list(cases)
@@ -128,13 +135,13 @@ def run_case(name, c, args, rows, sizes_override):
                 prev = rows.get((name, q.name, eng, q.target), [None])[-1]
                 for _ in range(RETRIES if eng == 'sift' and q.target and c.per_size and prev else 0):
                     # the schema of a size is gone once the next is built, so a point that grew more than the bound allows is measured again now, and keeps its best time
-                    if p + e < FLOOR_MS or p + e <= prev[1] * (size / prev[0]) ** TARGETS[q.target] or 'sift' not in plan.lower():
+                    if p + e < FLOOR_MS or p + e <= prev[1] * (size / prev[0]) ** TARGETS[q.target] or not uses_sift(plan, name):
                         break
                     r2, _ = explain(q.sql(size), [f'search_path = scal_{name}, public'] + ENGINES[eng], args.reps)
                     print(f'# {name}/{q.name}@{size}: {p + e:.3f} ms against {prev[1]:.3f} at {prev[0]}, measured again' + (f': {med(r2[0]) + med(r2[1]):.3f} ms' if r2 else ''), file=sys.stderr, flush=True)
                     if r2 and med(r2[0]) + med(r2[1]) < p + e:
                         p, e = med(r2[0]), med(r2[1])
-                if eng == 'sift' and q.needs_sift and 'sift' not in plan.lower() and 'SiftAgg' not in plan:
+                if eng == 'sift' and q.needs_sift and not uses_sift(plan, name):
                     print(f'# {name}/{q.name}@{size}: the plan does not use sift ({node(plan)}): the time below is not the index', file=sys.stderr)
                     nosift.add((name, q.name))
                     failed = True
