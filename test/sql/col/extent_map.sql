@@ -1,6 +1,8 @@
 -- Where the blocks of a sift_col file are: sift.col_extents lists every run (segments, buffers, free list, free extents), sift.col_space sums them and says
 -- what the shrink of VACUUM has still to move. The runs tile the file up to its high-water mark, with no overlap, before and after churn and a VACUUM.
 CREATE EXTENSION pg_sift;
+-- Format 1: the runs of segments, buffers and free lists are Format 1.
+SET sift.test_create_format1 = on;
 CREATE FUNCTION tiles(idx regclass) RETURNS bool LANGUAGE sql AS $$
 	SELECT sum(nblocks) = (SELECT high_water FROM sift.col_index_info(idx))
 		AND bool_and(first_block >= end_prev) AND min(first_block) = 0

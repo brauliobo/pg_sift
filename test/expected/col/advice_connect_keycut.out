@@ -2,6 +2,8 @@
 -- child holds, counts the rows that came in whatever its partitions were merged into, and the journal counts the keys that went. Updates of other columns and the maintenance of the parent never advise.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: key_cut partitions are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off; SET sift.test_col_partition_kb = 64;
 SET work_mem = '16MB';

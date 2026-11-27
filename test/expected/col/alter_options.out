@@ -4,6 +4,8 @@
 -- late for the check.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the column options it checks are Format 1 options; Format 2.0 ignores them.
+SET sift.test_create_format1 = on;
 CREATE TABLE ao (id int, pid int, d date, ts timestamptz, cc text, f float8, metrics jsonb, parts jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ao SELECT i, i % 50, date '2024-01-01' + i % 300, timestamptz '2024-01-01' + i * interval '1 minute', 'c' || i % 7, i % 10,
 	jsonb_build_object('a', i % 10), jsonb_build_array(jsonb_build_object('kind', 't' || i % 3))

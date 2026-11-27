@@ -3,6 +3,8 @@
 -- The rule is on what a rewrite changes: units with a dead row, units listed per superblock covered, rows
 -- in the write buffer. Nothing starts the rewrite but sift.col_maintain; the end state after it is the one of a REINDEX of the same table, and the answers never change.
 CREATE EXTENSION pg_sift;
+-- Format 1: the dirty units the rewrite takes are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.async_maintenance = off;
 SET max_parallel_workers_per_gather = 0;

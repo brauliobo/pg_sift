@@ -2,6 +2,8 @@
 -- appended, so the older build stops with an error and a hint instead (sift.test_col_log_max_read stands in for the older build).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the tombstone log and its column format are Format 1.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE t (id int PRIMARY KEY, v int NOT NULL) WITH (autovacuum_enabled = false);
 INSERT INTO t SELECT i, i FROM generate_series(1, 1000) i;

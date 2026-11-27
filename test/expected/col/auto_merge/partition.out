@@ -2,6 +2,8 @@
 -- takes one of them, the one the churn left dirty, and the partitions it did not touch are not written at all; the small segments the promotions left over
 -- the partitions are merged into the ones they share superblocks with. The answers never change and the index verifies after every step.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments of a partition size are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET sift.async_maintenance = off;
 -- the overlays are cut by superblock here: the units a TID-range overlay (sift.test_col_unit_floor, col_unit_floor) lists are no fragmentation to fold
