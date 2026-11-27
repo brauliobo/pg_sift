@@ -39,6 +39,7 @@ src/col/scope/decl.c	open_table	guarded	roid is the result of RangeVarGetRelid w
 src/col/scope/decl.c	recorded_btree	guarded	GetSysCacheHashValue1 only hashes the OID for the invalidation callback; it needs no tuple
 src/col/scope/decl.c	relation_column	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
 src/col/scope/decl.c	sift_scope_relation	guarded	the relation is open (a valid OID); get_attnum returns InvalidAttrNumber for an unknown column and the function tests it right after
+src/col/scope/decl.c	sift_scope_legs_find	guarded	the heap of an index this function is given open with a lock (sift_scope_fact_oid): DROP TABLE needs AccessExclusiveLock on the table and its indexes, so it waits for the lock held
 src/col/scope/guard.c	journal_scan	guarded	the index OID comes from RelationGetIndexList of a heap this function holds open with a lock; DROP INDEX waits for the lock on the heap
 src/col/scope/guard.c	sift_scope_index_predicate	guarded	its callers pass an index of a table whose scope they read, from the dependency scan under the table's lock
 src/col/scope/guard.c	sift_scope_users	unreachable	the OID is the constant of a system catalog, which cannot be dropped

@@ -569,6 +569,7 @@ sift_v6_scope_matches(ScopePlan *p, int ord)
 {
 	SiftScopeLeg legs[2];
 	const int	nlegs = sift_scope_legs(p->irel, ord, legs);
+	AttrNumber	fk;
 
 	if (p->pairs_raw != NULL)
 		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
@@ -577,5 +578,13 @@ sift_v6_scope_matches(ScopePlan *p, int ord)
 		return false;
 	p->leg = legs[0];
 	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);
-	return p->scope->key_codes(p->spec.key_type, p->spec.key_type) && joined_by_member(p, sift_v6_scope_fact_attno(p, p->layout.member_col));
+	if (!p->scope->key_codes(p->spec.key_type, p->spec.key_type))
+		return false;
+	fk = sift_v6_scope_fact_attno(p, p->layout.member_col);
+	if (joined_by_member(p, fk))
+		return true;
+	if (p->why == NULL)
+		p->why = psprintf("the join is not by the declared member column %s and the declared column %s of the scanned table", get_attname(p->leg.rel, p->leg.member, false),
+						  get_attname(planner_rt_fetch(p->fact->relid, p->root)->relid, fk, false));
+	return false;
 }

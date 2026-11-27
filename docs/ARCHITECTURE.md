@@ -76,6 +76,7 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | `jsonb` | semantic | the statement reads both the JSON type and the value of a key, and the leaf of the key cannot hold the values of the other types its type test leaves out | Test the type in the WHERE clause (jsonb_typeof(doc -> 'k') = 'number'), whose scan keys drop the other rows before the value is read. |
 | `json_order` | semantic | a cast of a JSON value that can raise would run for a row the normal plan tests first and drops | Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to. |
 | `format` | semantic | the format of the index or sift_table lacks a capability the statement needs | Rebuild the index or sift_table in the current format (REINDEX, VACUUM FULL), or compute the part the detail names in an outer query. |
+| `scope` | semantic | a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written | Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
 <!-- refusals:end -->
 

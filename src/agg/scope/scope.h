@@ -10,6 +10,7 @@
 #include "nodes/execnodes.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
+#include "nodes/plannodes.h"
 #include "nodes/pg_list.h"
 
 #include "agg/engine.h"
@@ -80,6 +81,7 @@ typedef struct ScopePlan
 	List	   *v6_tlist;
 	int			cap_aggs;
 	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
+	const char *why;			/* why the pairs side the statement names is not the scope: the first reason a check found (sift.explain_why, arm scope) */
 	bool		once;			/* the statement wrote IN or EXISTS over the pairs (a semi join, or the inner join PostgreSQL made of it): a fact counts once */
 } ScopePlan;
 
@@ -125,6 +127,9 @@ typedef struct ScopeShow
 
 struct ExplainState;
 extern void sift_v6_scope_show(const ScopeShow *s, PlanState *ps, List *ancestors, struct ExplainState *es);
+
+/* unread.c: why the statement, which holds a relation of a scope of an index of a table it scans, reads no scope summary (NULL: it reads one, or holds none) */
+extern const char *sift_v6_scope_unread(const PlannedStmt *ps);
 
 /* scan.c: the executor of the plans that scan the facts of the members of a key (ScopeSpec.scan), for every format */
 extern PGDLLIMPORT const CustomScanMethods sift_v6_scope_scan_methods;

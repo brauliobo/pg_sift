@@ -26,6 +26,7 @@
 	X(JSONB, "jsonb", "the statement reads both the JSON type and the value of a key, and the leaf of the key cannot hold the values of the other types its type test leaves out", 0, 0, "Test the type in the WHERE clause (jsonb_typeof(doc -> 'k') = 'number'), whose scan keys drop the other rows before the value is read.") \
 	X(JSON_ORDER, "json_order", "a cast of a JSON value that can raise would run for a row the normal plan tests first and drops", 0, 0, "Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to.") \
 	X(FORMAT, "format", "the format of the index or sift_table lacks a capability the statement needs", 0, 0, "Rebuild the index or sift_table in the current format (REINDEX, VACUUM FULL), or compute the part the detail names in an outer query.") \
+	X(SCOPE, "scope", "a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written", 0, 0, "Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.") \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1, "None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale.")
 
 typedef enum AggRefusal

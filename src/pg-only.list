@@ -107,6 +107,7 @@ agg/scope/plan.c
 agg/scope/scan.c
 agg/scope/scope.h
 agg/scope/show.c
+agg/scope/unread.c
 agg/settings.c
 agg/settings.h
 agg/sip_scan.c

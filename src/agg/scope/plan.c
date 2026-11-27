@@ -33,6 +33,7 @@
 #include "agg/agg.h"
 #include "agg/cost/card.h"
 #include "agg/cost/model.h"
+#include "agg/refuse.h"
 #include "agg/safety.h"
 #include "agg/scope/scope.h"
 #include "agg/settings.h"
@@ -746,6 +747,7 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 {
 	int			a = -1,
 				b;
+	const char *why = NULL;
 
 	if (!sift_agg_scope || !shape_ok(root, input_rel) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
 		return;
@@ -771,7 +773,10 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 				return;
 			}
 		}
+		why = why != NULL ? why : p.why;
 	}
+	if (why != NULL)
+		sift_agg_arm_refused_by("scope", AGG_REFUSE_SCOPE, why);
 }
 
 static Plan *

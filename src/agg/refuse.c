@@ -34,6 +34,7 @@
 #include "utils/tuplestore.h"
 
 #include "agg/refuse.h"
+#include "agg/scope/scope.h"
 #include "agg/stats.h"
 #include "core/limits.h"
 #include "core/sift.h"
@@ -208,6 +209,19 @@ arm_why(const ArmPrice *a)
 	if (a->used)
 		return AGG_REFUSE_NONE;
 	return isinf(a->scan) ? a->why : AGG_REFUSE_COST;
+}
+
+/* the row of the scope arm when no site of the planner named why the statement reads no scope summary */
+static void
+why_scope_arm(const PlannedStmt *ps)
+{
+	const char *why;
+
+	foreach_ptr(ArmPrice, a, arms)
+		if (strcmp(a->name, "scope") == 0)
+			return;
+	if ((why = sift_v6_scope_unread(ps)) != NULL)
+		agg_report("scope", AGG_REFUSE_SCOPE, why, false, 0, -1);
 }
 
 /* the rows of the arms that priced a path for the statement just planned; false: none did */
@@ -480,6 +494,7 @@ why_execute(const ExecuteStmt *es, const char *sql)
 				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
 				if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 					why_index_arm(copyObject(psrc->raw_parse_tree), psrc->query_string, ps, psrc->param_types, psrc->num_params, params);
+				why_scope_arm(ps);
 			}
 		ReleaseCachedPlan(cplan, CurrentResourceOwner);
 	}
@@ -525,6 +540,7 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 					ExecCheckPermissions(ps->rtable, ps->permInfos, true);
 					if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 						why_index_arm(again_raw, sql, ps, NULL, 0, NULL);
+					why_scope_arm(ps);
 				}
 		}
 	}
