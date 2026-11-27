@@ -49,6 +49,12 @@ struct SiftV6Text
 
 static const SiftHybridStore v6_text_store = {.host = SIFT_HYB_HOST_TABLE};
 
+bool
+sift_v6_text_index(const IndexOptInfo *ix)
+{
+	return ix->relam == sift_catalog()->am && !ix->hypothetical && (ix->indpred == NIL || ix->predOK);
+}
+
 /* the index of a partitioned table is no storage: only a partition's own index has hits to read */
 static IndexOptInfo *
 arm_index(RelOptInfo *rel, Node *clause, Const **query)
@@ -57,7 +63,7 @@ arm_index(RelOptInfo *rel, Node *clause, Const **query)
 	{
 		Expr	   *q;
 
-		if (ix->relam == sift_catalog()->am && !ix->hypothetical && get_rel_relkind(ix->indexoid) == RELKIND_INDEX && sift_match_clause(clause, ix, &q) && IsA(q, Const) && !((Const *) q)->constisnull &&
+		if (sift_v6_text_index(ix) && get_rel_relkind(ix->indexoid) == RELKIND_INDEX && sift_match_clause(clause, ix, &q) && IsA(q, Const) && !((Const *) q)->constisnull &&
 			((Const *) q)->consttype == TEXTOID)
 		{
 			*query = (Const *) q;

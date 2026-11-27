@@ -517,6 +517,8 @@ typedef struct SiftV6ScanStats
 typedef bool (*SiftV6ChunkFn) (void *arg, const SiftTidBridge **bridge);
 
 /* v6_text.c: the text query of a statement of the aggregate (the planner reads it from the quals, the executor feeds it to the scan as chunks) */
+/* A text index of the rel that holds every row the query reads: the whole table, or the rows of a predicate the query implies */
+extern bool sift_v6_text_index(const IndexOptInfo *ix);
 extern IndexOptInfo *sift_v6_text_match(RelOptInfo *rel, RestrictInfo *ri, List **queries);
 /* The clause is a match of a text index of the relation, which no scan key or batch qual decides */
 extern bool sift_v6_text_clause(RelOptInfo *rel, RestrictInfo *ri);

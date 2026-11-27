@@ -289,7 +289,7 @@ find_match(HybridPlan *h)
 		RestrictInfo *found = NULL;
 		Expr	   *q;
 
-		if (ix->relam != sift_catalog()->am || ix->hypothetical)
+		if (!sift_v6_text_index(ix))
 			continue;
 		foreach_node(RestrictInfo, ri, h->rel->baserestrictinfo)
 			if (sift_match_clause((Node *) ri->clause, ix, &q))
@@ -323,13 +323,6 @@ static bool
 has_param(Node *node, void *context)
 {
 	return node != NULL && (IsA(node, Param) || expression_tree_walker(node, has_param, context));
-}
-
-/* The index of the store does not hold the rows the qual is false of: the qual is true of every row it returns */
-static bool
-implied_by_index(IndexOptInfo *ix, Expr *clause)
-{
-	return ix->indpred != NIL && predicate_implied_by(list_make1(clause), ix->indpred, false);
 }
 
 /* (col = ANY (set)) IS NOT UNKNOWN: the hint of hybrid_semi_plan.c, which no row fails */
@@ -373,8 +366,6 @@ classify_quals(HybridPlan *h)
 			continue;
 		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri->clause))
 			return false;
-		if (implied_by_index(h->store.index, ri->clause))
-			continue;
 		if (is_key_set(ri->clause))
 		{
 			h->keyset = ri->clause;
@@ -430,7 +421,7 @@ find_or_match(HybridPlan *h)
 {
 	foreach_ptr(IndexOptInfo, ix, h->rel->indexlist)
 	{
-		if (ix->relam != sift_catalog()->am || ix->hypothetical)
+		if (!sift_v6_text_index(ix))
 			continue;
 		foreach_node(RestrictInfo, ri, h->rel->baserestrictinfo)
 		{

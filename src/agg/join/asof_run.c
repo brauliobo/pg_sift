@@ -277,7 +277,7 @@ sift_agg_v6_asof_paths(PlannerInfo *root, RelOptInfo *joinrel, RelOptInfo *outer
 	if (rte->rtekind != RTE_SUBQUERY)
 		return;
 	id.shape.type = jointype == JOIN_LEFT ? SSJ_LEFT : jointype == JOIN_INNER ? SSJ_INNER : SSJ_FULL;
-	id.shape.on_true = extra->restrictlist == NIL;
+	id.shape.on_true = extra->restrictlist == NIL && innerrel->baserestrictinfo == NIL;
 	if (!describe(outerrel, rte->subquery, &id) || sift_shape_asof(&id.shape, &spec) != SSV_OK)
 		return;
 	if (agg_rte_has_rls(innerrel->subroot, planner_rt_fetch(1, innerrel->subroot)) || !sorted_host(innerrel->subroot, &id, &host) || !resolvable(joinrel, innerrel, fact, &id) ||
