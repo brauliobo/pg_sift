@@ -4,6 +4,8 @@
 -- of 1,000,000 rows. The repeats of a scan open the index and walk its pages once, the unit a probe finds is looked up, and the units a probe finds by an equality with a
 -- parameter are the widths of the zones over the range of the column.
 CREATE EXTENSION pg_sift;
+-- Format 1: a probe is priced by the units and zones of Format 1 segments.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

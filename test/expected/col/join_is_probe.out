@@ -5,6 +5,8 @@
 -- The same join written as a LATERAL (the sub-select a parent query passes the key to) was priced as a correlated subplan, at 0.9 of the sequential scan of the table for each
 -- probe (6,160 units against 22 for a constant key, 190 M instructions and 27 ms for 1,000 keys of 300,000 rows against 20 M and 4.3 ms with the plain scan): the loops of a join are its rows.
 CREATE EXTENSION pg_sift;
+-- Format 1: the plain probe is priced by the units of Format 1 segments.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
