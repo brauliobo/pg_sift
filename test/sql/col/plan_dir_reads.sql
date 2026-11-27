@@ -2,6 +2,8 @@
 -- access for each index), and the metapage and the segments only when the version is not the one the statistics were made for. The statistics follow every change of the directory:
 -- a write that is promoted, a REINDEX, an ALTER INDEX that changes the leaves the index keeps, a DROP INDEX. Counts of buffer accesses and of validations only, no timings.
 CREATE EXTENSION pg_sift;
+-- Format 1: the leaf statistics are those of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
@@ -25,6 +27,12 @@ BEGIN
 END $$;
 
 \set q 'SELECT a, count(*), sum(amount) FROM pd WHERE id > 100 GROUP BY a'
+-- a new backend: the VACUUM above validated the statistics in this one
+\c -
+SET sift.test_create_format1 = on;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
 SELECT dir_read > 0 AS first_plan_of_the_backend_reads_directories FROM plan_stats(:'q');
 SELECT checked = 4 AS indexes_validated, dir_read = 0 AS directories_not_read, built = 0 AS statistics_kept FROM plan_stats(:'q');
 

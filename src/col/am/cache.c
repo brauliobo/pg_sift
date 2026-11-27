@@ -402,18 +402,16 @@ leaf_cache_entry(Relation index, const SiftDirSnapshot *snap)
 	LeafEntry  *e;
 	LeafEntry	fresh;
 
-	if (am_leaf_plan != 0 && dir == NULL && leaf_cache != NULL)
+	if (am_leaf_plan != 0 && leaf_cache != NULL)
 	{
 		e = hash_search(leaf_cache, &key, HASH_FIND, NULL);
-		if (e != NULL && e->checked == am_leaf_plan && e->ncols == ncols)
-		{
+		if (e != NULL && e->checked == am_leaf_plan && e->ncols == ncols && (dir == NULL || e->dirver == dir->version))
 			return e;
-		}
 	}
 	sift_stat_add(SIFT_STAT_LEAF_CHECKED, 1);
 	base = stamp * 31 + sift_col_pagg_hash(index);	/* the sections of the units are counted against the options */
 	e = leaf_cache == NULL ? NULL : hash_search(leaf_cache, &key, HASH_FIND, NULL);
-	if (dir == NULL && e != NULL && e->base == base && e->ncols == ncols && e->dirver == sift_dir_version(index))
+	if (e != NULL && e->base == base && e->ncols == ncols && e->dirver == (dir != NULL ? dir->version : sift_dir_version(index)))
 	{
 		e->checked = am_leaf_plan;
 		leaf_touch(e);

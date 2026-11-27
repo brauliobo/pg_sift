@@ -2,6 +2,8 @@
 -- for them three times and the source another, and each validation reads the metapage and the directory page under share locks (leaf_stats_checked). A group by over
 -- 12 partitions validates each index once or twice (the first plan of a backend may build them), and the plan after a write sees it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the leaf statistics are those of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE pv (id int NOT NULL, kind text NOT NULL, amount float8 NOT NULL, ts date NOT NULL, deleted_at timestamptz) PARTITION BY RANGE (ts);

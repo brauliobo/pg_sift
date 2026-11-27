@@ -18,6 +18,7 @@
 #include "agg/plan/lineage.h"
 #include "agg/safety.h"
 #include "agg/settings.h"
+#include "col/am.h"
 #include "core/catalog.h"
 #include "core/compat.h"
 #include "core/memtrack.h"
@@ -364,7 +365,7 @@ plan_query(SIFT_PLANNER_PARAMS)
  * that one runs the aggregate scan, and costs less unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
  */
 static PlannedStmt *
-agg_planner(SIFT_PLANNER_PARAMS)
+plan_statement(SIFT_PLANNER_PARAMS)
 {
 	CteWalk		w = {0};
 	MemoryContext caller = CurrentMemoryContext;
@@ -398,6 +399,25 @@ agg_planner(SIFT_PLANNER_PARAMS)
 		return rewritten;
 	MemoryContextDelete(cx);
 	return plain;
+}
+
+/* a planning validates the statistics of each column index once, and reads its directory only when it changed (sift_col_plan_begin) */
+static PlannedStmt *
+agg_planner(SIFT_PLANNER_PARAMS)
+{
+	const bool	col_plan = sift_col_plan_begin();
+	PlannedStmt *stmt;
+
+	PG_TRY();
+	{
+		stmt = plan_statement(SIFT_PLANNER_ARGS(parse));
+	}
+	PG_FINALLY();
+	{
+		sift_col_plan_end(col_plan);
+	}
+	PG_END_TRY();
+	return stmt;
 }
 
 void
