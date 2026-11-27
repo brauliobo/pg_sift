@@ -46,10 +46,11 @@ typedef struct SnapKey
 	int			cap;
 } SnapKey;
 
+/* The subxids a snapshot lists: an overflowed one outside recovery has none worth reading, and CopySnapshot leaves its subxip NULL */
 static int
 snap_nsubxids(Snapshot snap)
 {
-	return Max(snap->subxcnt, 0);
+	return snap->suboverflowed && !snap->takenDuringRecovery ? 0 : Max(snap->subxcnt, 0);
 }
 
 typedef struct SiftTblF2Fetch

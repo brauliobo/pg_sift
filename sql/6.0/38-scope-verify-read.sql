@@ -1,5 +1,5 @@
 -- sift.col_scope_verify reads each key from the scope summary (EXPLAIN "Scope Read"): the count of the key's facts and the sum of the first column of the index, against the join.
--- sift.agg_force stays off: it prices the plain aggregate scan below the scope read, and that scan reads the pairs through its own dimension cache, not the scope index.
+-- sift.agg_force stays off and sift.agg_scope on where a test build defines them (a release build has neither, and reads as they are set here): agg_force prices the plain aggregate scan below the scope read, and that scan reads the pairs through its own dimension cache, not the scope index.
 CREATE OR REPLACE FUNCTION sift._col_scope_unread(stmt text, k text) RETURNS text LANGUAGE plpgsql SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
 	plan jsonb;
@@ -40,12 +40,13 @@ DECLARE
 	why      text;
 	a        record;
 	b        record;
+	gucs     text[] := ARRAY['sift.enable_agg', 'sift.agg_force', 'sift.agg_scope'];
 	saved    text[];
 	ident    text := '[\w."$]+';
 BEGIN
 	-- the first use of the library in a session plans its statement before the planner hook exists: load it first
 	PERFORM sift.version();
-	saved := ARRAY[current_setting('sift.enable_agg'), current_setting('sift.agg_force'), current_setting('sift.agg_scope')];
+	saved := ARRAY(SELECT current_setting(g, true) FROM unnest(gucs) WITH ORDINALITY u(g, i) ORDER BY i);
 	SELECT x.indrelid::regclass, n.nspname, (SELECT o FROM unnest(c.reloptions) o WHERE o LIKE 'scope=%'),
 		   (SELECT quote_ident(attname) FROM pg_attribute WHERE attrelid = x.indrelid AND attnum = x.indkey[0] AND x.indkey[0] > 0 AND atttypid IN ('int2'::regtype, 'int4'::regtype, 'int8'::regtype, 'numeric'::regtype))
 	INTO tbl, schema, opts, sig_col
@@ -58,9 +59,7 @@ BEGIN
 	IF opts IS NULL OR substr(opts, 7) = 'off' THEN
 		RAISE EXCEPTION 'col_scope_verify: % has no scope', col_scope_verify.index USING ERRCODE = 'object_not_in_prerequisite_state';
 	END IF;
-	PERFORM set_config('sift.enable_agg', 'on', true);
-	PERFORM set_config('sift.agg_force', 'off', true);
-	PERFORM set_config('sift.agg_scope', 'on', true);
+	PERFORM set_config(g, v, true) FROM unnest(gucs, ARRAY['on', 'off', 'on'], saved) u(g, v, s) WHERE s IS NOT NULL;
 	FOREACH clause IN ARRAY string_to_array(substr(opts, 7), ';') LOOP
 		m := regexp_match(btrim(regexp_replace(clause, '\s*cols\s*\([^)]*\)\s*$', '')), '^\s*(' || ident || ')\s*:\s*(' || ident || ')\s*->\s*(.+)$');
 		IF m IS NULL THEN RAISE EXCEPTION 'col_scope_verify: cannot read the scope declaration "%"', btrim(clause) USING ERRCODE = 'syntax_error'; END IF;
@@ -119,9 +118,7 @@ BEGIN
 			END IF;
 		END LOOP;
 	END LOOP;
-	PERFORM set_config('sift.enable_agg', saved[1], true);
-	PERFORM set_config('sift.agg_force', saved[2], true);
-	PERFORM set_config('sift.agg_scope', saved[3], true);
+	PERFORM set_config(g, s, true) FROM unnest(gucs, saved) u(g, s) WHERE s IS NOT NULL;
 END $$;
 
 COMMENT ON FUNCTION sift.col_scope_verify(regclass, int, text[]) IS 'Checks the scope summary of a sift_col index against the plain join for a sample of scope keys (or the keys named), in the snapshot of the caller: the count (and the sum of the first column) of the rows of a key differs (problem differs) or the key was not read from the summary (unverified, with the reason); no row: every sampled key equals the join';

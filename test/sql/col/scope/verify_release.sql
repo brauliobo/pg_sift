@@ -1,0 +1,21 @@
+-- sift.col_scope_verify on the library users get: it sets only the settings the build defines (the release library has no sift.agg_force nor sift.agg_scope) and gives them back.
+CREATE EXTENSION pg_sift;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+SET client_min_messages = warning;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
+
+CREATE TABLE tenant_scope (dim_a_id int NOT NULL, tenant_id int NOT NULL, PRIMARY KEY (dim_a_id, tenant_id)) WITH (autovacuum_enabled = false);
+INSERT INTO tenant_scope SELECT m, 1 + m % 6 FROM generate_series(1, 60) m;
+CREATE INDEX tenant_scope_journal ON tenant_scope USING sift_col (dim_a_id, tenant_id) WITH (track_changes = 'ctid');
+CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, value_num int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO events SELECT i, 1 + i % 60, i % 100 FROM generate_series(1, 1200) i;
+CREATE INDEX events_col ON events USING sift_col (id, dim_a_id, value_num) WITH (scope = 'tenant_id: dim_a_id -> tenant_scope(dim_a_id, tenant_id)');
+VACUUM (FREEZE, ANALYZE) events, tenant_scope;
+
+SET sift.enable_agg = off;
+SELECT count(*) AS problems FROM sift.col_scope_verify('events_col', 6);
+SELECT current_setting('sift.enable_agg') AS enable_agg_after;
+
+DROP TABLE events, tenant_scope;
+DROP EXTENSION pg_sift;
