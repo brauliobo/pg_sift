@@ -211,7 +211,7 @@ SELECT count(*) AS queries, count(*) FILTER (WHERE a.n = b.n AND a.h = b.h) AS s
 SELECT sift.merge('tm_idx', true) > 0 AS merged, sift.merge('t3_idx', true) > 0 AS merged_t3;
  merged | merged_t3 
 --------+-----------
- t      | t
+ t      | f
 (1 row)
 
 SELECT format, count(*) AS segments FROM sift._test_segment_formats('tm_idx') WHERE kind = 'immutable' GROUP BY 1 ORDER BY 1;

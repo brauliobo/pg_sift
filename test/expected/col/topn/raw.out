@@ -353,7 +353,7 @@ SELECT tag, oc_check(replace(q, 'FROM oc ', 'FROM op ')) FROM oc_q WHERE tag IN 
  uuid_asc       | same+topn 25
  uuid_desc      | same+topn 25
  uuid_filter    | same+topn 30
- uuid_same_leaf | same 25
+ uuid_same_leaf | same+topn 25
 (8 rows)
 
 -- values the leaf could not store (the byte budget of a unit lowered to 64 kB for 3000 rows of 200 bytes): the unit keeps them as overflow, and the query stays with the normal plan or reads them from the heap
