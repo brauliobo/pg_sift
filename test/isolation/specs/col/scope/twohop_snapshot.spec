@@ -5,7 +5,7 @@
 
 setup
 {
-	SET sift.test_create_format1 = on;
+	SET sift.test_create_format1 = off;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_grants (id int PRIMARY KEY, tenant_id int NOT NULL, dim_a_id int, group_id int, deleted_at timestamptz) WITH (autovacuum_enabled = off);
@@ -31,7 +31,7 @@ setup
 
 setup
 {
-	CREATE FUNCTION iso_read(OUT tenant int, OUT from_units bigint, OUT from_join bigint, OUT units_read boolean) RETURNS SETOF record LANGUAGE plpgsql AS $$
+	CREATE FUNCTION iso_read(OUT tenant int, OUT from_units bigint, OUT from_join bigint, OUT v6 boolean) RETURNS SETOF record LANGUAGE plpgsql AS $$
 	DECLARE
 		p jsonb;
 		t int;
@@ -41,7 +41,7 @@ setup
 			tenant := t;
 			PERFORM set_config('sift.enable_agg', 'on', true);
 			EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) SELECT count(*) FROM iso_facts f WHERE sift.in_scope(''iso_facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s)', tenant) INTO p;
-			units_read := jsonb_path_exists(p, '$.**."Scope Units Read"');
+			v6 := p::text LIKE '%SiftAggV6%';
 			EXECUTE format('SELECT count(*) FROM iso_facts f WHERE sift.in_scope(''iso_facts_col''::regclass, ''tenant_id'', f.dim_a_id, %s)', tenant) INTO from_units;
 			PERFORM set_config('sift.enable_agg', 'off', true);
 			EXECUTE format('SELECT count(*) FROM iso_facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM iso_grants WHERE tenant_id = %1$s AND deleted_at IS NULL AND dim_a_id IS NOT NULL
@@ -58,13 +58,13 @@ teardown
 }
 
 session reader
-setup		{ SET sift.test_create_format1 = on; }
+setup		{ SET sift.test_create_format1 = off; }
 step rbegin	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) AS snapshot_taken FROM iso_facts WHERE id = 1; }
 step rread	{ SELECT * FROM iso_read(); }
 step rend	{ COMMIT; }
 
 session writer
-setup		{ SET sift.test_create_format1 = on; }
+setup		{ SET sift.test_create_format1 = off; }
 step wedit	{ UPDATE iso_memberships SET group_id = 3 WHERE dim_a_id = 5 AND group_id = 1; INSERT INTO iso_grants VALUES (4, 3, NULL, 4, NULL); }
 step wundo	{ UPDATE iso_memberships SET group_id = 1 WHERE dim_a_id = 5 AND group_id = 3; DELETE FROM iso_grants WHERE id = 4; }
 

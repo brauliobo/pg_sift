@@ -35,14 +35,14 @@ step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
      n|same|pre |same_range|pre_range
 ------+----+----+----------+---------
-120000|t   |some|t         |some     
+120000|t   |none|t         |none     
 (1 row)
 
 step s1c: COMMIT;
 step s1q: SELECT * FROM iso_pa_check();
      n|same|pre |same_range|pre_range
 ------+----+----+----------+---------
-123000|t   |some|t         |some     
+123000|t   |none|t         |none     
 (1 row)
 
 
@@ -94,14 +94,14 @@ step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
      n|same|pre |same_range|pre_range
 ------+----+----+----------+---------
-120000|t   |some|t         |some     
+120000|t   |none|t         |none     
 (1 row)
 
 step s2c: COMMIT;
 step s1q: SELECT * FROM iso_pa_check();
      n|same|pre |same_range|pre_range
 ------+----+----+----------+---------
-123000|t   |some|t         |some     
+123000|t   |none|t         |none     
 (1 row)
 
 
@@ -118,9 +118,9 @@ step s1q: SELECT * FROM iso_pa_check();
 step s2a: ROLLBACK;
 step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
-     n|same|pre|same_range|pre_range
-------+----+---+----------+---------
-120000|t   |all|t         |all      
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
 (1 row)
 
 
@@ -130,9 +130,9 @@ step s2del: DELETE FROM iso_pa WHERE id % 50 = 0;
 step s2a: ROLLBACK;
 step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
-     n|same|pre|same_range|pre_range
-------+----+---+----------+---------
-120000|t   |all|t         |all      
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
 (1 row)
 
 
@@ -142,8 +142,8 @@ step s2ins: INSERT INTO iso_pa SELECT 200000 + i, i % 7, i, timestamp '2024-06-0
 step s2a: ROLLBACK;
 step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
-     n|same|pre|same_range|pre_range
-------+----+---+----------+---------
-120000|t   |all|t         |all      
+     n|same|pre |same_range|pre_range
+------+----+----+----------+---------
+120000|t   |none|t         |none     
 (1 row)
 

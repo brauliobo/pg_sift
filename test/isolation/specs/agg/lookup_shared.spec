@@ -1,6 +1,5 @@
-# The rows a Custom Scan (SiftAgg) kept of a joined table in shared memory (sift.shared_cache_kb) serve the queries of the other backends only while the table
-# is what it was: a write in flight, committed or rolled back, an update, a delete, and a snapshot older than a committed write all give the rows of the normal plan.
-# The sessions keep nothing of their own (sift.backend_cache_kb = 0): a cached table is one another backend loaded.
+# A Custom Scan (SiftAggV6) that joins a dimension table through a lookup, run by two backends in turn, reads the dimension in the snapshot of each statement:
+# a write in flight, committed or rolled back, an update, a delete, and a snapshot older than a committed write all give the rows of the normal plan.
 # requires: build col
 
 setup
@@ -22,12 +21,10 @@ setup
 	DECLARE
 		l text;
 		nodes int := 0;
-		kept int := 0;
 		differences bigint;
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 			IF l LIKE '%Custom Scan (SiftAggV6)%' THEN nodes := nodes + 1; END IF;
-			IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_ls_on AS ' || q;
 		PERFORM set_config('sift.enable_agg', 'off', true);
@@ -35,7 +32,7 @@ setup
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		differences := (SELECT count(*) FROM ((TABLE iso_ls_on EXCEPT TABLE iso_ls_off) UNION ALL (TABLE iso_ls_off EXCEPT TABLE iso_ls_on)) d);
 		DROP TABLE iso_ls_on, iso_ls_off;
-		RETURN format('%s SiftAgg nodes, %s cached tables, %s differences from the normal plan', nodes, kept, differences);
+		RETURN format('%s SiftAgg nodes, %s differences from the normal plan', nodes, differences);
 	END $$;
 	CREATE FUNCTION iso_ls_run() RETURNS text LANGUAGE sql AS $$
 		SELECT iso_ls_check('SELECT d.label, f.kind, count(*) AS n FROM iso_ls f JOIN iso_ls_dim d ON d.id = f.dim_a_id WHERE d.country = 1 GROUP BY d.label, f.kind') $$;
@@ -71,15 +68,15 @@ step s3commit	{ COMMIT; }
 step s3abort	{ ROLLBACK; }
 step s3vacuum	{ VACUUM iso_ls_dim; }
 
-# one backend loads the table, the other reads it, and so does the first one again (each backend of them has nothing of its own)
+# one backend, the other, and the first one again
 permutation s1run s2run s1run s2run
-# a write in flight, then committed: the rows are loaded again by whoever runs next; vacuumed, they are kept again for the other
+# a write in flight, then committed, then vacuumed
 permutation s1run s2run s3begin s3upd s3ins s2run s3commit s1run s3vacuum s2run s1run s2run
 # rolled back
 permutation s1run s2run s3begin s3ins s3del s3abort s2run s3vacuum s1run s2run
 # a delete, committed
 permutation s1run s2run s3del s1run s3vacuum s2run s1run
-# a snapshot older than a committed write and its vacuum reads the rows of its own snapshot, whatever the other backend kept
+# a snapshot older than a committed write and its vacuum reads the rows of its own snapshot
 permutation s1run s2run s2rr s3upd s3del s3vacuum s2run s1run s2end s2run s1run
-# a text key: a changed label and key give the rows of the normal plan, and the rows are kept again once vacuumed
+# a text key: a changed label and key give the rows of the normal plan, vacuumed or not
 permutation s1runt s2runt s3begin s3updt s2runt s3commit s1runt s3vacuum s2runt s1runt

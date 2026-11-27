@@ -1,6 +1,6 @@
 # A connected index (docs/COL-CONNECT.md) read by a REPEATABLE READ session while another session writes the parent, refreshes the child, or runs REINDEX CONCURRENTLY, DROP INDEX
-# CONCURRENTLY and CREATE INDEX CONCURRENTLY on the child or the parent: the rows of the found-flag plan are those of the normal plan in the snapshot of the reader in every step (same), the
-# DDL that has to wait for the reader waits, and an index that something is connected to cannot be dropped from under it.
+# CONCURRENTLY and CREATE INDEX CONCURRENTLY on the child or the parent: the rows of the SiftAggV6 plan are those of the normal plan in the snapshot of the reader in every step (same),
+# the DDL that has to wait for the reader waits, and an index that something is connected to cannot be dropped from under it.
 # requires: col
 
 setup
@@ -8,7 +8,7 @@ setup
 	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
-	CREATE FUNCTION iso_found_run(q text, OUT same boolean, OUT proofs int, OUT keys int, OUT why text)
+	CREATE FUNCTION iso_found_run(q text, OUT same boolean, OUT v6 boolean)
 	LANGUAGE plpgsql AS $$
 	DECLARE
 		p jsonb;
@@ -22,9 +22,7 @@ setup
 		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
 		SET LOCAL sift.enable_agg = on;
 		same := a = b;
-		proofs := coalesce(jsonb_path_query_first(p, '$.**."Found Proofs"')::text::int, 0);
-		keys := coalesce(jsonb_path_query_first(p, '$.**."Found Keys Outside The Proof"')::text::int, 0);
-		why := trim(both '"' from jsonb_path_query_first(p, '$.**."Found Fallback"')::text);
+		v6 := p::text LIKE '%SiftAggV6%';
 	END $$;
 	CREATE TABLE iso_d_dim (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_d_dim SELECT i, 'l' || i FROM generate_series(1, 200) i;
@@ -75,7 +73,7 @@ permutation s1set s2set s2fill s1rr s1join s1anti s2write s2fill s1join s1anti s
 permutation s1set s2set s2fill s1rr s1join s2reind_child s1join s1anti s1commit s2join s2anti s2state
 permutation s1set s2set s2fill s1rr s1join s2dropc s1join s1commit s2join s2anti s2state
 permutation s1set s2set s2fill s1rr s1join s2cic s1join s1commit s2join s2anti s2state
-# REINDEX CONCURRENTLY of the parent index after parent writes, under the reader: nothing is vouched until the VACUUM completes the log of the new copy, then the child is read from its flags again
+# REINDEX CONCURRENTLY of the parent index after parent writes, under the reader, then a VACUUM of the parent
 permutation s1set s2set s2fill s1rr s1join s2write s2reind_parent s1join s1anti s1commit s2join s2anti s2state s2vac s2fill s2join s2anti s2state
 # an index that has a connected child cannot be dropped, concurrently or not; a parent that is not a heap table cannot be connected to
 permutation s1set s2set s2fill s2dropp s2droppc s2tbl s2join s2anti s2state

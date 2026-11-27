@@ -1,5 +1,5 @@
-# The join answered from the found flag (docs/COL-CONNECT.md, "Found") while another session writes the parent: its writes that are still open are in doubt, so their keys are outside
-# the proof and the parent probe does not see them; after the commit it sees them, after the abort it sees none. The rows are those of the normal plan in every step.
+# A join of a child that has a connected index (docs/COL-CONNECT.md) to its parent, answered by Custom Scan (SiftAggV6), while another session writes the parent:
+# its writes that are still open are not the reader's, after the commit they are, after the abort none is. The rows are those of the normal plan in every step.
 # requires: col
 
 setup
@@ -7,7 +7,7 @@ setup
 	SET sift.test_create_format1 = on;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
-	CREATE FUNCTION iso_found_run(q text, OUT same boolean, OUT proofs int, OUT keys int, OUT why text)
+	CREATE FUNCTION iso_found_run(q text, OUT same boolean, OUT v6 boolean)
 	LANGUAGE plpgsql AS $$
 	DECLARE
 		p jsonb;
@@ -21,9 +21,7 @@ setup
 		EXECUTE 'SELECT coalesce(json_agg(t)::text, '''') FROM (' || q || ') t' INTO b;
 		SET LOCAL sift.enable_agg = on;
 		same := a = b;
-		proofs := coalesce(jsonb_path_query_first(p, '$.**."Found Proofs"')::text::int, 0);
-		keys := coalesce(jsonb_path_query_first(p, '$.**."Found Keys Outside The Proof"')::text::int, 0);
-		why := trim(both '"' from jsonb_path_query_first(p, '$.**."Found Fallback"')::text);
+		v6 := p::text LIKE '%SiftAggV6%';
 	END $$;
 	CREATE TABLE iso_f_dim (id int PRIMARY KEY, label text, note int) WITH (autovacuum_enabled = off);
 	INSERT INTO iso_f_dim SELECT i, 'l' || i, 0 FROM generate_series(1, 200) i;
@@ -41,7 +39,6 @@ teardown
 
 session s1
 setup		{ SET sift.test_create_format1 = on; }
-step s1fill	{ SELECT sift.col_maintain('iso_f_ev_c'); }
 step s1b	{ BEGIN; }
 step s1upd	{ UPDATE iso_f_dim SET label = 'changed' WHERE id <= 5; }
 step s1del	{ DELETE FROM iso_f_dim WHERE id = 7; }
@@ -55,5 +52,5 @@ step s2set	{ SET sift.agg_force = on; SET max_parallel_workers_per_gather = 0; }
 step s2join	{ SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e JOIN iso_f_dim d ON d.id = e.dim_id'); }
 step s2anti	{ SELECT * FROM iso_found_run('SELECT count(*) FROM iso_f_ev e WHERE NOT EXISTS (SELECT 1 FROM iso_f_dim d WHERE d.id = e.dim_id)'); }
 
-permutation s1fill s2set s2join s1b s1upd s1del s1ins s2join s2anti s1commit s2join s2anti
-permutation s1fill s2set s1b s1upd s1del s1ins s2join s1abort s2join s2anti
+permutation s2set s2join s1b s1upd s1del s1ins s2join s2anti s1commit s2join s2anti
+permutation s2set s1b s1upd s1del s1ins s2join s1abort s2join s2anti

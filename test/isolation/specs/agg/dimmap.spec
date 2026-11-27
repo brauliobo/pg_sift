@@ -1,6 +1,6 @@
-# The dimension map (sift.shared_cache_kb) that one backend read from the leaves of a dimension's index serves the queries of the others only while the table is what it was:
-# a write in flight, committed or rolled back, an update, a delete, an insert, and a snapshot older than a committed write all give the rows of the normal plan; the map
-# is made again after the next VACUUM. The sessions keep nothing of their own (sift.backend_cache_kb = 0): a shared map is one another backend made.
+# A Custom Scan (SiftAggV6) that joins a dimension with a column index of its own, run by two backends in turn, reads the dimension in the snapshot of each
+# statement: a write in flight, committed or rolled back, an update, a delete, an insert, and a snapshot older than a committed write all give the rows of the normal
+# plan, vacuumed or not.
 # requires: build col
 
 setup
@@ -18,17 +18,15 @@ setup		{ VACUUM (FREEZE, ANALYZE) iso_dm_dim; }
 
 setup
 {
-	-- the maps the node shared and made, and whether its rows are those of the normal plan, in the snapshot of the statement
+	-- the SiftAggV6 nodes of the plan, and whether its rows are those of the normal plan, in the snapshot of the statement
 	CREATE FUNCTION iso_dm_check(q text) RETURNS text LANGUAGE plpgsql AS $$
 	DECLARE
 		l text;
-		shared int := 0;
-		built int := 0;
+		nodes int := 0;
 		differences bigint;
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l ~ '(\d+) maps shared' THEN shared := substring(l from '(\d+) maps shared')::int; END IF;
-			IF l ~ '(\d+) maps built' THEN built := substring(l from '(\d+) maps built')::int; END IF;
+			IF l LIKE '%Custom Scan (SiftAggV6)%' THEN nodes := nodes + 1; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_dm_on AS ' || q;
 		PERFORM set_config('sift.enable_agg', 'off', true);
@@ -36,7 +34,7 @@ setup
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		differences := (SELECT count(*) FROM ((TABLE iso_dm_on EXCEPT TABLE iso_dm_off) UNION ALL (TABLE iso_dm_off EXCEPT TABLE iso_dm_on)) d);
 		DROP TABLE iso_dm_on, iso_dm_off;
-		RETURN format('%s maps shared, %s made, %s differences from the normal plan', shared, built, differences);
+		RETURN format('%s SiftAgg nodes, %s differences from the normal plan', nodes, differences);
 	END $$;
 	CREATE FUNCTION iso_dm_run() RETURNS text LANGUAGE sql AS $$
 		SELECT iso_dm_check('SELECT d.a, d.b, count(*) AS n, sum(f.v) AS s FROM iso_dm f JOIN iso_dm_dim d ON d.k = f.k GROUP BY d.a, d.b') $$;
@@ -71,13 +69,13 @@ step s3commit	{ COMMIT; }
 step s3abort	{ ROLLBACK; }
 step s3vacuum	{ VACUUM iso_dm_dim; }
 
-# one backend makes the map, the other reads it, and so does the first one again
+# one backend, the other, and the first one again
 permutation s1run s2run s1run s2run
-# a write in flight, then committed: no map is the table's; vacuumed, one is made again and the other backend shares it
+# a write in flight, then committed, then vacuumed
 permutation s1run s2run s3begin s3upd s3ins s2run s3commit s1run s3vacuum s2run s1run s2run
 # rolled back
 permutation s1run s2run s3begin s3ins s3del s3abort s2run s3vacuum s1run s2run
 # a delete, committed; the facts of the deleted key are dropped by the join and kept by the left join
 permutation s1run s1runl s2runl s3del s1runl s2run s3vacuum s2runl s1runl s2run
-# a snapshot older than a committed write and its vacuum reads the rows of its own snapshot, whatever the other backend made
+# a snapshot older than a committed write and its vacuum reads the rows of its own snapshot
 permutation s1run s2run s2rr s3upd s3del s3vacuum s2run s1run s2end s2run s1run

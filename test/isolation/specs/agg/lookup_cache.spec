@@ -1,4 +1,4 @@
-# The rows a Custom Scan (SiftAgg) kept of a joined table for the next query (sift.backend_cache_kb) serve it only while the table is what it was: a write
+# A Custom Scan (SiftAggV6) that joins a dimension table through a lookup (Lookup Joins) reads the dimension in the snapshot of the statement: a write
 # that is in flight, committed or rolled back, an update, a delete, and a snapshot older than a committed write all give the rows of the normal plan.
 # requires: build col
 
@@ -16,17 +16,15 @@ setup		{ VACUUM (FREEZE, ANALYZE) iso_lc_dim; }
 
 setup
 {
-	-- the tables the node took from an earlier query, and whether its rows are those of the normal plan, in the snapshot of the statement
+	-- the SiftAggV6 nodes of the plan, and whether its rows are those of the normal plan, in the snapshot of the statement
 	CREATE FUNCTION iso_lc_check(q text) RETURNS text LANGUAGE plpgsql AS $$
 	DECLARE
 		l text;
 		nodes int := 0;
-		kept int := 0;
 		differences bigint;
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 			IF l LIKE '%Custom Scan (SiftAggV6)%' THEN nodes := nodes + 1; END IF;
-			IF l ~ '(\d+) cached tables' THEN kept := kept + substring(l from '(\d+) cached tables')::int; END IF;
 		END LOOP;
 		EXECUTE 'CREATE TEMP TABLE iso_lc_on AS ' || q;
 		PERFORM set_config('sift.enable_agg', 'off', true);
@@ -34,7 +32,7 @@ setup
 		PERFORM set_config('sift.enable_agg', 'on', true);
 		differences := (SELECT count(*) FROM ((TABLE iso_lc_on EXCEPT TABLE iso_lc_off) UNION ALL (TABLE iso_lc_off EXCEPT TABLE iso_lc_on)) d);
 		DROP TABLE iso_lc_on, iso_lc_off;
-		RETURN format('%s SiftAgg nodes, %s cached tables, %s differences from the normal plan', nodes, kept, differences);
+		RETURN format('%s SiftAgg nodes, %s differences from the normal plan', nodes, differences);
 	END $$;
 	-- an integer key, and a text key whose rows keep their label and code as distinct values
 	CREATE FUNCTION iso_lc_run() RETURNS text LANGUAGE sql AS $$
@@ -66,9 +64,9 @@ step s2commit	{ COMMIT; }
 step s2abort	{ ROLLBACK; }
 step s2vacuum	{ VACUUM iso_lc_dim; }
 
-# the first query loads the table, the second uses it
+# two queries in a row
 permutation s1run s1run
-# a write in flight, then committed: the rows are loaded again; vacuumed, they are kept again
+# a write in flight, then committed, then vacuumed
 permutation s1run s1run s2begin s2upd s2ins s1run s2commit s1run s2vacuum s1run s1run
 # rolled back
 permutation s1run s1run s2begin s2ins s2del s2abort s1run s2vacuum s1run s1run
@@ -76,5 +74,5 @@ permutation s1run s1run s2begin s2ins s2del s2abort s1run s2vacuum s1run s1run
 permutation s1run s1run s2del s1run s2vacuum s1run s1run
 # a snapshot older than a committed write and its vacuum reads the rows of its own snapshot
 permutation s1run s1run s1rr s2upd s2del s2vacuum s1run s1end s1run s1run
-# a text key: a changed label and key give the rows of the normal plan, and the rows are kept again once vacuumed
+# a text key: a changed label and key give the rows of the normal plan, vacuumed or not
 permutation s1runt s1runt s2begin s2updt s1runt s2commit s1runt s2vacuum s1runt s1runt

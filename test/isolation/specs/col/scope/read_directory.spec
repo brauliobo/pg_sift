@@ -5,7 +5,7 @@
 
 setup
 {
-	SET sift.test_create_format1 = on;
+	SET sift.test_create_format1 = off;
 	CREATE EXTENSION IF NOT EXISTS pg_sift;
 	CREATE EXTENSION IF NOT EXISTS pg_sift_test;
 	CREATE TABLE iso_sd_pairs (dim_a_id int, group_id int, PRIMARY KEY (dim_a_id, group_id));
@@ -34,7 +34,7 @@ setup
 {
 	INSERT INTO iso_sd SELECT 6000 + g, 1 + (g * 31) % 200, 1, 'y' FROM generate_series(1, 300) g;
 
-	CREATE FUNCTION iso_sd_q(gate int, OUT agree bool, OUT stored bool) LANGUAGE plpgsql AS $$
+	CREATE FUNCTION iso_sd_q(gate int, OUT agree bool, OUT v6 bool) LANGUAGE plpgsql AS $$
 	DECLARE
 		a text;
 		b text;
@@ -46,7 +46,7 @@ setup
 		EXECUTE 'SELECT count(*) || '':'' || sum(v) FROM iso_sd s WHERE sift.in_scope(''iso_sd_idx''::regclass, ''group_id'', s.dim_a_id, 3)' INTO a;
 		PERFORM set_config('sift.test_col_open_gate', '0', true);
 		EXECUTE 'EXPLAIN (COSTS OFF, TIMING OFF, SUMMARY OFF, ANALYZE, FORMAT JSON) SELECT count(*), sum(v) FROM iso_sd s WHERE sift.in_scope(''iso_sd_idx''::regclass, ''group_id'', s.dim_a_id, 3)' INTO p;
-		stored := p LIKE '%Scope Units Read%';
+		v6 := p LIKE '%SiftAggV6%';
 		PERFORM set_config('sift.enable_agg', 'off', true);
 		EXECUTE 'SELECT count(*) || '':'' || sum(v) FROM iso_sd s WHERE s.dim_a_id IN (SELECT dim_a_id FROM iso_sd_pairs WHERE group_id = 3)' INTO b;
 		agree := a = b;
@@ -60,18 +60,18 @@ teardown
 }
 
 session s1
-setup		{ SET sift.test_create_format1 = on; }
+setup		{ SET sift.test_create_format1 = off; }
 step s1b	{ BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_sd; }
-step s1q	{ SELECT agree, stored FROM iso_sd_q(7003); }
+step s1q	{ SELECT agree, v6 FROM iso_sd_q(7003); }
 step s1c	{ COMMIT; }
 
 session s2
-setup		{ SET sift.test_create_format1 = on; }
+setup		{ SET sift.test_create_format1 = off; }
 step s2l	{ SELECT pg_advisory_lock(7003); }
 step s2u	{ SELECT pg_advisory_unlock(7003); }
 
 session s3
-setup		{ SET sift.test_create_format1 = on; }
+setup		{ SET sift.test_create_format1 = off; }
 step s3p	{ SELECT sift.col_promote('iso_sd_idx') >= 0 AS promoted; }
 
 permutation s1b s2l s1q s3p s2u s1c
