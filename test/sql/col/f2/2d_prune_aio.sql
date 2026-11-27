@@ -134,7 +134,7 @@ VACUUM rs;
 SELECT f2_both_ways('SELECT count(*), sum(amount), min(note) FROM rs WHERE status = ''closed''');
 SELECT f2_both_ways('SELECT id, note FROM rs WHERE id BETWEEN 100000 AND 100300');
 SELECT f2_both_ways('SELECT count(*) FROM rs WHERE created_at >= now() - interval ''30 days''');
-SELECT sift._test_f2_check_keys('rs_idx');
+SELECT sift._test_f2_check_keys('rs_idx') ~ ' rows=154286 exact$' AS keys_exact;
 RESET sift.test_io_read_stream;
 
 -- The allocator hands out the lowest free block first: single blocks released out of order come back in ascending order

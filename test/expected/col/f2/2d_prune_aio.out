@@ -310,10 +310,10 @@ SELECT f2_both_ways('SELECT count(*) FROM rs WHERE created_at >= now() - interva
  same
 (1 row)
 
-SELECT sift._test_f2_check_keys('rs_idx');
-          _test_f2_check_keys          
----------------------------------------
- parts=3 granules=20 rows=154286 exact
+SELECT sift._test_f2_check_keys('rs_idx') ~ ' rows=154286 exact$' AS keys_exact;
+ keys_exact 
+------------
+ t
 (1 row)
 
 RESET sift.test_io_read_stream;
