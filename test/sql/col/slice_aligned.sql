@@ -3,6 +3,8 @@
 -- are of skewed sizes (the first is 29% of the rows, the second 12%), so that the exact points of the slices fall inside values; the answers and the rows never change.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.async_maintenance = off;
 SET client_min_messages = warning;
 

@@ -2,6 +2,8 @@
 -- value, in segments and in the write buffer; a value written under minor 3 has none, and a merge carries that over.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the column format minors this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 
 CREATE TABLE d (id int, doc jsonb);

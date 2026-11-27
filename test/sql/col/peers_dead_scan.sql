@@ -3,6 +3,8 @@
 -- col_scan_unit -> sift_col_sel_all; a column the index does not hold keeps the plan off the covering paths): from one backend that stays connected through the peers with dead rows, a REINDEX that replaces them and the rewrite, every answer is
 -- the one of the sequential scan, with a fresh IN list each time (what the backend keeps for a segment must not leak to another).
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_limits = 'par_build_rows=1';
 SET sift.async_maintenance = off;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)

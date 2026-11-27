@@ -3,6 +3,8 @@
 -- stayed at the size of both until a VACUUM found no rewrite due. The merge of the segments of a stream of small batches cuts the end it leaves as well: a merge
 -- writes its output into the lowest free blocks, and the segments it replaced, the last ones of the file, are the free end.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;

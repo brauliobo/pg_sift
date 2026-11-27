@@ -5,6 +5,8 @@
 -- A VACUUM does not wait for a page another backend holds pinned (a checkpoint writing it) unless a row version of the page has to be frozen, and leaves the dead row versions
 -- of the page in the index, which a merge then counts: the VACUUMs here freeze, so that they wait for the page.
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET sift.test_col_net = off;	-- this test is of the dirty units and their rewrite (col_net_agg is of the sidecar VACUUM writes for them)
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;

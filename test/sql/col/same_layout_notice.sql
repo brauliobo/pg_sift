@@ -1,6 +1,8 @@
 -- CREATE INDEX of a sift_col index that lists columns another index of the table lists, with the same predicate and the same layout (key_order, key_cut, rollup_columns,
 -- order arrays), says so once: one index over the union of the columns is smaller at the same read cost. Advice only: the index is built as written.
 CREATE EXTENSION pg_sift;
+-- Format 1: the build choices and advice this test reads are those of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 \set VERBOSITY terse
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int, kind int, qty int, status text, created_at timestamptz);

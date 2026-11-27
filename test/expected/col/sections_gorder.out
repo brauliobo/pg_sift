@@ -1,6 +1,8 @@
 -- sift.col_sections lists the order array of a timestamp sorted by an entity column (order_array_group, the second slot of the leaf, next to the plain order) with the
 -- order arrays, not with the point directories: the two indexes keep the same point directories, and the one with the group has the arrays of both orders.
 CREATE EXTENSION pg_sift;
+-- Format 1: the order arrays this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 CREATE TABLE gs (id int, ent_id int, ts timestamp, pad text) WITH (autovacuum_enabled = false);

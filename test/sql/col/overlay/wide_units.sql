@@ -2,6 +2,8 @@
 -- index's (here one unit of 30,000 rows over the 400 keys), so that sparing the request that unit is worth its rows and not the 46,000 instructions of a narrow one. The merge of
 -- two such overlays is due after hundreds of requests, not the thousands the units alone would ask for.
 CREATE EXTENSION pg_sift;
+-- Format 1: the overlays this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.test_col_merge_wal_pct = 5;

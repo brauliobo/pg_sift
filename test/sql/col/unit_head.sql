@@ -3,6 +3,8 @@
 -- scan needs the pages or the TIDs. The answers are those of the normal plan in all of them, before and after the changes of a unit.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the segments and units this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

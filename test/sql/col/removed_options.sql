@@ -2,6 +2,8 @@
 -- one, a dump that names one and an ALTER INDEX of another option of such an index keep working: the layout is the one of an index without the option, a NOTICE says
 -- so where it is written, and RESET drops it.
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test names are those of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

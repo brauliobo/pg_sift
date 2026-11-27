@@ -2,6 +2,8 @@
 -- a name; a name that is not a column of the index is named in the error; a repeated name is the same column. The deprecated options accept any value.
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test names are those of a Format 1 index.
+SET sift.test_create_format1 = on;
 DO $$ BEGIN
 	EXECUTE format('CREATE TABLE cn (id int, %I date, %I int, amount int, %I int, %I int, %I text) WITH (autovacuum_enabled = off)',
 		'Order Date', 'Cust Id', E'ta\tb', 'a,b', 'Cust Name');

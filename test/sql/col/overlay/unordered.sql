@@ -2,6 +2,8 @@
 -- share of the values the arrays cover stays above what the order planner asks, the top-N and the groups answer from the order of the large segments and the rows of the overlay. A promotion
 -- that takes them over a tenth keeps its arrays. Answers are the same all along, with dead rows in the overlay and after the merge, which writes the arrays again.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the overlays this test reads are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

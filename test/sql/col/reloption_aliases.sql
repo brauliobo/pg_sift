@@ -2,6 +2,8 @@
 -- the new one wins when both are set, CREATE INDEX and ALTER INDEX say which spelling to use, and the options of the index keep the name they were given.
 -- (write_buffer_alias covers mutable_limit.)
 CREATE EXTENSION pg_sift;
+-- Format 1: the options this test names are those of a Format 1 index.
+SET sift.test_create_format1 = on;
 CREATE TABLE ra (id int, g int, h int, v int, items jsonb) WITH (autovacuum_enabled = off);
 INSERT INTO ra SELECT i, i % 5, i % 7, i, jsonb_build_array(jsonb_build_object('kind', 'k' || i % 3)) FROM generate_series(1, 3000) i;
 

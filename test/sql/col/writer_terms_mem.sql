@@ -3,6 +3,8 @@
 -- sift.test_col_segment_kb makes the budget 256 kB for the build and 2 MB for the merge. The directory has no number of segments the build or the merge fits the rows to: no segment
 -- is cut larger than the budget says, so no context holds bytes in proportion to the rows of the table.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the segment writer this test measures is that of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;

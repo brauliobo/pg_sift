@@ -2,6 +2,8 @@
 -- (col_writer_spool while the units come, col_writer_order while the blocks are built) are the same for 20,000 rows as for 36,000 once the runs are on their file, to a file buffer of 8 kB
 -- (the sets that spilled), a build and a merge alike. eset_rows = 256 makes the runs of 256 entries; a build with no limit holds all the entries as arrays (about 1 MB more at 36,000 rows) and fails each check.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: the segment writer this test measures is that of Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
