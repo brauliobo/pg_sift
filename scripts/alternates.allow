@@ -19,6 +19,11 @@ test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
 test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
 test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
+test/expected/agg/jsonb_each_key_map_1.out	001be1fb5cfa2a44600fc4dfd9fc3a141466d133	17	5 | same | t    | t
+test/expected/agg/jsonb_each_key_map_1.out	24e5adfa6de17b3d77b06f72ae735c45c5ab8543	17	10 | same | t    | t
+test/expected/agg/jsonb_each_key_map_1.out	65e68a0f361373a54beec446c5a2677eba2b0379	17	1 | same | t    | t
+test/expected/agg/jsonb_each_key_map_1.out	8911085bcfe68d929308e8743f585407237fa498	17	8 | same | t    | t
+test/expected/agg/jsonb_each_key_map_1.out	ac27de949a87492106bd9e7065ab031ee4bc570c	17	same | t
 test/expected/agg/jsonb_each_map_1.out	13200387f333b1fdd22fd1cdfd10a1cf2fe2e529	17	same node ok SELECT kv.key, sum(kv.value::float8) FILTER (WHERE kv.key LIKE 'm%
 test/expected/agg/jsonb_each_map_1.out	1583d64df7350e94e402635b2541e8752109e9de	17	
 test/expected/agg/jsonb_each_map_1.out	2477bcf7fb44c7ba1a84f0cceee69b89b2f92426	17	same node ok SELECT kv.key, sum(kv.value::int4), count(*) FROM ei o, jsonb_each
@@ -43,6 +48,7 @@ test/expected/agg/jsonb_map_keyread_1.out	f8a4f310c1d62b3ecd31a5447fae91dd16cd99
 test/expected/agg/lateral_flatten_f2_1.out	6f540c46750276a381d5c0b16ae5a727f774094b	17	cast of an excluded row | t    | t    | [{"n": 1, "day": "2026-02-01", "total":
 test/expected/agg/lateral_flatten_f2_1.out	7c04f665678c062b18861951cfda5e346f850c1c	17	mapping below an outer join | t    | t    | [{"day": "2026-01-01", "score": 2,
 test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874d9d	17	cast out of range | t    | t    | 22003 integer out of range
+test/expected/agg/lateral_table_params_1.out	cf6e13eb70caae21f5b356b92c8b038ae0c6c868	17	id | fmt |     engine     | result_rows | vs_heap
 test/expected/agg/matrix_join_parity_1.out	739fe00e0cd47b533ec99b08c5e8f34891517d84	19	32 | SiftAggV6 |           2 |       0
 test/expected/agg/matrix_join_parity_1.out	94c8419784ad5e0be51a841d71c5b87544879197	19	32 | SiftAggV6 |           3 |       0
 test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	json map key     | v6 same
@@ -98,6 +104,9 @@ test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	
 test/expected/agg/subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
 test/expected/agg/subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
 test/expected/agg/subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/table_text_match_1.out	f0c7915f000eb2d84dbeead4ba6cedd642583560	17	no_match|none|0
+test/expected/agg/table_text_match_1.out	f90c16b017231e407aec6f12ce195efdb88ec056	17	rare|none|0
+test/expected/agg/unnest_int_cast_scale_1.out	0ebcce9191420918a25619f394c021983ee5b60c	17	4 | [{"sum": 6000}]                                    | t    | t
 test/expected/bm25/conflict_1.out	015a9ef6270ad8053a855f788e25b1ff423d7afe	17	id  | code
 test/expected/bm25/conflict_1.out	206942de823ad6dbb4c89c5d6ff9dc62cd18e0ed	17	2 |      1
 test/expected/bm25/conflict_1.out	241da297e9ff1d28770020bf954de33b99a4218f	17	id  |  code   |  n
