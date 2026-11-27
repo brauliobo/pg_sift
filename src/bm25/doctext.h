@@ -50,7 +50,7 @@ typedef struct DocText
 } DocText;
 
 extern bool sift_doc_next(DocCursor *c);
-extern DocText *sift_doctext_open(Relation index);
+extern DocText *sift_doctext_open(Relation index, bool windowed);
 extern void sift_doctext_close(DocText *d);
 extern void sift_doctext_prime(DocText *d, DocCursor *c);
 extern bool sift_doctext_terms(DocText *d, const ItemPointerData *tid, SiftTermFreq **terms, int *nterms, uint32 *dl, int *len);

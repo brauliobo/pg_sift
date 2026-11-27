@@ -189,6 +189,7 @@ TESTING_REGRESS += bm25/lang_chain
 TESTING_REGRESS += bm25/lang_memo
 TESTING_REGRESS += bm25/lazy_tail_maxscore
 TESTING_REGRESS += bm25/merge/heal
+TESTING_REGRESS += bm25/merge/heal_table
 TESTING_REGRESS += bm25/merge/parts
 TESTING_REGRESS += bm25/par_part_ranked
 TESTING_REGRESS += bm25/position_blocks

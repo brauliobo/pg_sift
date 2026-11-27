@@ -226,7 +226,7 @@ sift_match_any(PG_FUNCTION_ARGS)
 		bool		isvarlena;
 
 		getTypeOutputInfo(get_fn_expr_argtype(fcinfo->flinfo, 0), &outfunc, &isvarlena);
-		fmgr_info_cxt(outfunc, &c->outfn, c->mcxt);
+		fmgr_info_cxt(outfunc, &c->outfn, fcinfo->flinfo->fn_mcxt);
 		c->outfn_set = true;
 	}
 	doc = OutputFunctionCall(&c->outfn, PG_GETARG_DATUM(0));

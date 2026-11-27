@@ -90,10 +90,11 @@ sift_doc_next(DocCursor *c)
 /*
  * The text of the docs of a promotion. The write buffer keeps the terms of a doc and their counts, not where in the text they are, and
  * a segment of an index with positions needs the position records of its terms: a merge keeps them only when every segment it merges has
- * them, so one segment without would take them from all.
+ * them, so one segment without would take them from all. windowed: the docs come from a cursor that sift_doctext_prime reads ahead (a
+ * promotion); a merge hands out the docs of a segment in its own order, with no cursor to read ahead.
  */
 DocText *
-sift_doctext_open(Relation index)
+sift_doctext_open(Relation index, bool windowed)
 {
 	SiftAnalyzerConfig cfg;
 	DocText    *d;
@@ -117,7 +118,7 @@ sift_doctext_open(Relation index)
 	sift_analyzer_set_positions(d->an, true);
 	sift_bm25_doc_keys(index, &d->keys, CurrentMemoryContext);
 	d->nblocks = sift_vis_nblocks(d->heap);
-	if (index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
+	if (windowed && index->rd_index->indnkeyatts == 1 && sift_tbl_is_table(d->heap) && ((SiftTblFetchHeader *) d->fetch)->ops->fetch_order != NULL)
 	{
 		d->wcx = sift_mem_allocset_create(CurrentMemoryContext, "sift doctext window");
 		d->wkey = palloc(DOCTEXT_WINDOW * sizeof(SiftKey));

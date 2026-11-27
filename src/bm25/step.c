@@ -408,7 +408,7 @@ promote_one(Relation index, SiftWriteTarget *wt, const void *arg)
 
 	sift_mem_init_sub(&mt_bm25_promote, "bm25_promote", cx, false, sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 1));
 	Tuplesortstate *sort;
-	DocText    *dt = sift_doctext_open(index);
+	DocText    *dt = sift_doctext_open(index, true);
 	SiftSegEntry neu;
 	bool		any;
 	SiftExtent *pages;
@@ -703,7 +703,7 @@ merge_segments(Relation index, SiftWriteTarget *wt, const void *arg)
 	}
 	for (int i = 0; i < in->n && dt == NULL; i++)
 		if (!(in->seg[i].flags & SIFT_SEG_POSITIONS))
-			dt = sift_doctext_open(index);
+			dt = sift_doctext_open(index, false);
 	/* the segments that get their positions from the heap are merged by this process */
 	if (dt == NULL)
 		written = sift_merge_ranges(index, wt, in->seg, in->n, &ref, &neu) > 0;

@@ -1,0 +1,38 @@
+-- The bm25 functions called with a context of their own: a cache across rows, no scan of a relation.
+CREATE EXTENSION pg_sift;
+-- @@> on a column of any type (S119-03): the cache of its output function outlives a new query on the next row. A long query first, then
+-- short ones, so the memory of the previous query is not handed out again (the valgrind lane reads a freed chunk there)
+CREATE TABLE facts (id int, tags_a text[], span int4range, label text);
+INSERT INTO facts SELECT g, ARRAY['v' || g % 5, 'w' || g % 3], int4range(g, g + 10),
+	   CASE WHEN g = 1 THEN (SELECT string_agg('v' || k, ' OR ') FROM generate_series(1, 60) k) ELSE 'v' || g % 4 END
+FROM generate_series(1, 40) g;
+SELECT count(*) FILTER (WHERE tags_a @@> label) AS tags_hits,
+	   count(*) FILTER (WHERE (tags_a @@> label) IS DISTINCT FROM (tags_a::text @@> label)) AS tags_other,
+	   count(*) FILTER (WHERE (span @@> label) IS DISTINCT FROM (span::text @@> label)) AS span_other,
+	   count(*) FILTER (WHERE (ROW(id, label) @@> label) IS DISTINCT FROM (ROW(id, label)::text @@> label)) AS row_other
+FROM (SELECT * FROM facts ORDER BY id) f;
+ tags_hits | tags_other | span_other | row_other 
+-----------+------------+------------+-----------
+         8 |          0 |          0 |         0
+(1 row)
+
+DROP TABLE facts;
+-- sift.score and sift.max_score as the final function of an aggregate (S119-04): the executor gives the call a FuncExpr of Params, an error
+SET client_min_messages = warning;
+CREATE AGGREGATE pg_temp.agg_score(tid) (SFUNC = pg_catalog.tidlarger, STYPE = tid, FINALFUNC = sift.score);
+CREATE AGGREGATE pg_temp.agg_max_score(tid) (SFUNC = pg_catalog.tidlarger, STYPE = tid, FINALFUNC = sift.max_score);
+\set VERBOSITY terse
+SELECT pg_temp.agg_score('(0,1)'::tid);
+ERROR:  sift.score() must be computed by a sift scan of the same relation
+SELECT pg_temp.agg_max_score(t) OVER () FROM (VALUES ('(0,1)'::tid)) v(t);
+ERROR:  sift.max_score() must be computed by a sift scan of the same relation
+\set VERBOSITY default
+SELECT sift.score('(0,1)'::tid) AS typed_in_scores_zero;
+ typed_in_scores_zero 
+----------------------
+                    0
+(1 row)
+
+DROP AGGREGATE pg_temp.agg_score(tid), pg_temp.agg_max_score(tid);
+RESET client_min_messages;
+DROP EXTENSION pg_sift;
