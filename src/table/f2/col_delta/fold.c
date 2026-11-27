@@ -520,17 +520,31 @@ wanted_in(const uint64 *want, int n, uint64 lo, uint64 hi)
 	return a < n && want[a] <= hi;
 }
 
-/* Every row of the outputs that a record to move names, found by the TID index of each part and the addresses of the granules it cannot exclude */
-static Placement
-place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, const uint64 *want, int nwant)
+/* Whether two rows of the placement have one address: a record that names it is for one of them, and nothing says which */
+static bool
+placed_twice(const Placement *pl)
 {
-	Placement	pl = {.v = palloc(sizeof(Placed) * Max(nwant, 1))};
+	for (int i = 1; i < pl->n; i++)
+		if (pl->v[i].tid == pl->v[i - 1].tid)
+			return true;
+	return false;
+}
+
+/*
+ * Every row of the outputs that a record to move names, found by the TID index of each part and the addresses of the granules it cannot exclude, in *pl: false when two rows have one address.
+ * The addresses wanted are distinct, so a row found when every one of them has its row is a second row of one of them.
+ */
+static bool
+place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, const uint64 *want, int nwant, Placement *pl)
+{
+	bool		twice = false;
 	/* MEM[MEM-TBL-02]: col_delta fold per-granule scratch ctx (reset each granule in place_rows) */
 	MemoryContext pcx = sift_mem_allocset_create(CurrentMemoryContext, "sift column delta fold part"),
 				gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift column delta fold granule"),
 				outer = CurrentMemoryContext;
 
-	for (int k = 0; k < nout && nwant > 0; k++)
+	*pl = (Placement) {.v = palloc(sizeof(Placed) * Max(nwant, 1))};
+	for (int k = 0; k < nout && nwant > 0 && !twice; k++)
 	{
 		SiftPart   *part;
 		SiftGranuleDesc *dir;
@@ -542,7 +556,7 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 		dir = sift_part_granule_dir(rel, part);
 		tix = sift_part_read_section(rel, part, SEC_TID_INDEX, &len);
 		SIFT_INVARIANT(tix != NULL && len == (uint64) part->hdr.ngranules * sizeof(*tix), "a part written by a compaction has no TID index");
-		for (uint32 g = 0; g < part->hdr.ngranules; g++)
+		for (uint32 g = 0; g < part->hdr.ngranules && !twice; g++)
 		{
 			uint64	   *tids;
 
@@ -551,9 +565,9 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 				continue;
 			MemoryContextSwitchTo(gcx);
 			tids = sift_part_read_tids(rel, part, dir, g);
-			for (uint16 r = 0; r < dir[g].nrows; r++)
-				if (in_sorted(want, nwant, tids[r]))
-					pl.v[pl.n++] = (Placed) {tids[r], out[k].part_gen, g, r};
+			for (uint16 r = 0; r < dir[g].nrows && !twice; r++)
+				if (in_sorted(want, nwant, tids[r]) && !(twice = pl->n == nwant))
+					pl->v[pl->n++] = (Placed) {tids[r], out[k].part_gen, g, r};
 			MemoryContextReset(gcx);
 			MemoryContextSwitchTo(pcx);
 		}
@@ -562,18 +576,8 @@ place_rows(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout, cons
 	}
 	MemoryContextDelete(gcx);
 	MemoryContextDelete(pcx);
-	qsort(pl.v, pl.n, sizeof(Placed), placed_cmp);
-	return pl;
-}
-
-/* Whether two rows of the placement have one address: a record that names it is for one of them, and nothing says which */
-static bool
-placed_twice(const Placement *pl)
-{
-	for (int i = 1; i < pl->n; i++)
-		if (pl->v[i].tid == pl->v[i - 1].tid)
-			return true;
-	return false;
+	qsort(pl->v, pl->n, sizeof(Placed), placed_cmp);
+	return !twice && !placed_twice(pl);
 }
 
 static bool
@@ -606,8 +610,7 @@ fold_commit(void *fold, const SiftPartitionEntry *entry, const SiftPartDesc *par
 		return true;
 	}
 	sift_col_delta_compact_stream(&src, f->gens, f->ngens, live, nparts, &f->hz, f->nrecords, &plan);
-	pl = place_rows(f->rel, entry->part_id, out, nout, plan.want, plan.nwant);
-	if (placed_twice(&pl))
+	if (!place_rows(f->rel, entry->part_id, out, nout, plan.want, plan.nwant, &pl))
 	{
 		pfree(pl.v);
 		sift_col_delta_compact_plan_free(&plan);
