@@ -1,5 +1,5 @@
 -- The paths a sift_table of format major 2 declares with sift.table_set_paths are leaves of its store, beside the exact bytes of the document, and SiftAggV6 reads them as it reads those of a sift_col index:
--- the text of a key, its float8 cast, jsonb_typeof of a key, a group key and a conjunct, over a document of every JSON type. Every statement runs over the table and over a heap twin (the truth):
+-- the text of a key, its float8 cast, jsonb_typeof of a key, a group key and a conjunct (a type test that guards the value of its key is a test of the scan, decided before the value is read), over a document of every JSON type. Every statement runs over the table and over a heap twin (the truth):
 -- the first word says that the answers agree, the second whether the plan is the node's. A part written before the declaration lacks the leaves, and the table keeps the normal plan until a
 -- rewrite (VACUUM FULL) has taken those parts out; neither a compaction nor a freeze makes a part that lacks them look as if it had them.
 CREATE EXTENSION pg_sift;
@@ -55,7 +55,9 @@ INSERT INTO queries VALUES
 	('SELECT jsonb_typeof(doc->''a'') AS ty, jsonb_typeof(doc->''m'') AS tm, count(*) FROM @T GROUP BY 1, 2'),
 	('SELECT doc->>''a'' AS a, count(*) FROM @T GROUP BY 1'),
 	('SELECT grp, count(*) FROM @T WHERE doc->>''a'' = ''x1'' GROUP BY grp'),
-	('SELECT doc->>''m'' AS m, count(*) FROM @T WHERE grp = 0 GROUP BY 1');
+	('SELECT doc->>''m'' AS m, count(*) FROM @T WHERE grp = 0 GROUP BY 1'),
+	('SELECT grp, count(*), sum((doc->>''m'')::float8), max((doc->>''m'')::float8) FROM @T WHERE jsonb_typeof(doc->''m'') = ''number'' GROUP BY grp'),
+	('SELECT grp, count(*), min(doc->>''a'') FROM @T WHERE doc ? ''a'' AND jsonb_typeof(doc->''a'') = ''string'' GROUP BY grp');
 SELECT same(q, 'tp', 'hp') FROM queries ORDER BY q;
 
 -- the same after the write buffer is written out, a delete, an update and the rows written next to the parts

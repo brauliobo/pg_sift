@@ -285,3 +285,56 @@ sift_f2_undecided(const SiftColDef *d, const SiftColPred *p)
 		(p->op == SIFT_COLOP_ICONTAINS && (p->collid == InvalidOid || !sift_ctype_is_c(p->collid))) || (d->store == SIFT_COLS_STR && sift_f2_collation_undecided(p));
 }
 
+/* a numeric NaN is above every number and equals itself, whatever constant (a number) a comparison holds */
+static Verdict
+numeric_nan_verdict(SiftColOp op)
+{
+	switch (op)
+	{
+		case SIFT_COLOP_GT:
+		case SIFT_COLOP_GE:
+		case SIFT_COLOP_NOTNULL:
+			return V_YES;
+		case SIFT_COLOP_EQ:
+		case SIFT_COLOP_LT:
+		case SIFT_COLOP_LE:
+		case SIFT_COLOP_IN:
+		case SIFT_COLOP_ISNULL:
+			return V_NO;
+		default:
+			return V_MAYBE;
+	}
+}
+
+Verdict
+sift_f2_pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r)
+{
+	bool		isnull;
+
+	if (p->op == SIFT_COLOP_KEY_EXISTS)
+		return cv->keyp[r] ? V_YES : V_NO;
+	isnull = cv->isnull[r];
+	if (p->op == SIFT_COLOP_JSON_TYPE)
+	{
+		uint8		type = sift_f2_json_type(d, isnull, cv->tag != NULL ? cv->tag[r] : 0);
+
+		return type == SIFT_COLTAG_UNSURE ? V_MAYBE : (p->vals[0].v.i >> type) & 1 ? V_YES : V_NO;
+	}
+	if (isnull && cv->tag != NULL && cv->tag[r] == SIFT_COLTAG_UNSURE && d->type == SIFT_COLT_NUMERIC)
+		return numeric_nan_verdict(p->op);
+	if (isnull && cv->tag != NULL && cv->tag[r] != 0)
+		return V_MAYBE;
+	if (p->op == SIFT_COLOP_ISNULL)
+		return isnull ? V_YES : V_NO;
+	if (p->op == SIFT_COLOP_NOTNULL)
+		return isnull ? V_NO : V_YES;
+	if (isnull)
+		return V_NO;
+	if (sift_f2_undecided(d, p))
+		return V_MAYBE;
+	if (cv->kind == SIFT_CELL_STR)
+		return (Verdict) (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN ? (sift_f2_str_pred_in(ps, p, cv->s[r], cv->slen[r]) ? SIFT_LIKE_YES : SIFT_LIKE_NO) : sift_f2_str_verdict(p, cv->s[r], cv->slen[r]));
+	if (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN)
+		return (cv->kind == SIFT_CELL_INT ? sift_f2_in_i64(ps, p, cv->i[r]) : sift_f2_in_f8(ps, p, cv->f[r])) == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
+	return sift_f2_cmp_op(p->op, cv->kind == SIFT_CELL_INT ? (cv->i[r] < p->vals[0].v.i ? -1 : cv->i[r] > p->vals[0].v.i) : sift_f2_f8_cmp(cv->f[r], p->vals[0].v.f)) ? V_YES : V_NO;
+}

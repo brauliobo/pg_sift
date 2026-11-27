@@ -83,7 +83,7 @@ prune_of(Relation rel, const List *qual)
 	}
 	if (quals == NIL)
 		return NULL;
-	sift_f2_store_compile_quals(rel, sift_f2_store_open(rel), quals, CurrentMemoryContext, &q);
+	sift_f2_store_compile_quals(rel, sift_f2_store_open(rel), quals, NIL, CurrentMemoryContext, &q);
 	if (!q.possible || q.npreds == 0)
 		return NULL;
 	p = palloc(sizeof(SiftTblF2Prune));

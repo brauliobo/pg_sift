@@ -5,7 +5,16 @@
 #define SIFT_F2_PRED_H
 
 #include "col/am.h"
+#include "core/scan_types.h"
 #include "col/like/simd.h"
+
+typedef enum Verdict
+{
+	V_NO,
+	V_YES,
+	V_MAYBE
+} Verdict;
+
 
 /* The order of the floats (a NaN is the greatest and equal to itself) and of the bytes (then the length) */
 extern int	sift_f2_f8_cmp(double a, double b);
@@ -22,6 +31,9 @@ typedef struct SiftPredSet
 	uint32		mask;
 	uint32	   *slots;			/* the place in vals plus one, 0: empty */
 } SiftPredSet;
+
+/* What the predicate p on the leaf d says of row r of the stored values cv: yes, no, or undecided for the heap (ps: its set of constants, or NULL); the one verdict of every scan of the format */
+extern Verdict sift_f2_pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r);
 
 extern bool sift_f2_in_i64(SiftPredSet *ps, const SiftColPred *p, int64 v);
 extern bool sift_f2_in_f8(SiftPredSet *ps, const SiftColPred *p, double v);

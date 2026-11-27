@@ -151,13 +151,6 @@ extern const SiftLfOps sift_f2_granule_filter_ops;
 /* The rows of the granule that pass every predicate the chunks could tell, and the predicates they decided */
 extern uint32 sift_f2_filter_chunks(Relation rel, F2Scan *s, uint32 g, SiftLazyGranule *lg, const SiftGranuleView *v, const PartPreds *pp, const bool *exceptions, bool *decided, uint64 *active);
 
-typedef enum Verdict
-{
-	V_NO,
-	V_YES,
-	V_MAYBE
-} Verdict;
-
 #define SIFT_F2_HEAP_DECIDE_ROWS	64
 
 /* col/f2/scan/zones.c: the leaves the zone tests of the scan read are set in leaves (the patches of a column delta on them are exceptions of their zones); granule g of the pinned part, of nrows rows, holds no row that passes one of the zone tests of the scan */

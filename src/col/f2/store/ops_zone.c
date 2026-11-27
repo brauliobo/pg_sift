@@ -10,11 +10,11 @@
 #include "col/f2/agg/scan.h"
 
 static struct SiftStoreQuals *
-zone_compile_quals(Relation heap, List *indexqual, MemoryContext cx)
+zone_compile_quals(Relation heap, List *indexqual, List *jsonqual, MemoryContext cx)
 {
 	SiftStoreQuals *q = MemoryContextAllocZero(cx, sizeof(SiftStoreQuals));
 
-	sift_f2_store_compile_quals(heap, sift_f2_store_open(heap), indexqual, cx, q);
+	sift_f2_store_compile_quals(heap, sift_f2_store_open(heap), indexqual, jsonqual, cx, q);
 	return q;
 }
 

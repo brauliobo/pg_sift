@@ -42,28 +42,6 @@
 /* ---- the predicates on the stored values ---- */
 
 static Verdict
-pred_row(const SiftColDef *d, const SiftColPred *p, SiftPredSet *ps, const ColView *cv, int r)
-{
-	bool		isnull = cv->isnull[r];
-
-	if (isnull && cv->tag != NULL && cv->tag[r] != 0)
-		return V_MAYBE;
-	if (p->op == SIFT_COLOP_ISNULL)
-		return isnull ? V_YES : V_NO;
-	if (p->op == SIFT_COLOP_NOTNULL)
-		return isnull ? V_NO : V_YES;
-	if (isnull)
-		return V_NO;
-	if (sift_f2_undecided(d, p))
-		return V_MAYBE;
-	if (cv->kind == SIFT_CELL_STR)
-		return sift_f2_str_pred_in(ps, p, cv->s[r], cv->slen[r]) ? V_YES : V_NO;
-	if (p->op == SIFT_COLOP_IN || p->op == SIFT_COLOP_NOTIN)
-		return (cv->kind == SIFT_CELL_INT ? sift_f2_in_i64(ps, p, cv->i[r]) : sift_f2_in_f8(ps, p, cv->f[r])) == (p->op == SIFT_COLOP_IN) ? V_YES : V_NO;
-	return sift_f2_cmp_op(p->op, cv->kind == SIFT_CELL_INT ? (cv->i[r] < p->vals[0].v.i ? -1 : cv->i[r] > p->vals[0].v.i) : sift_f2_f8_cmp(cv->f[r], p->vals[0].v.f)) ? V_YES : V_NO;
-}
-
-static Verdict
 row_verdict(const SiftStorePart *p, int r)
 {
 	const SiftStoreScan *s = p->s;
@@ -72,7 +50,7 @@ row_verdict(const SiftStorePart *p, int r)
 	for (int k = 0; k < s->o->npreds; k++)
 	{
 		const SiftColPred *pr = &s->o->preds[k];
-		Verdict		v = pred_row(&s->store->schema->cols[pr->col], pr, &s->psets[k], &p->r->views[pr->col], r);
+		Verdict		v = sift_f2_pred_row(&s->store->schema->cols[pr->col], pr, &s->psets[k], &p->r->views[pr->col], r);
 
 		if (v == V_NO)
 			return V_NO;

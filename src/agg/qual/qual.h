@@ -25,7 +25,7 @@ extern bool sift_v6_qual_like_exact(const Const *pattern);
  */
 extern void sift_v6_qual_scankeys(PlanState *ps, List *jsonqual, Relation index, List *quals, ScanKey *keys, int *nkeys, IndexRuntimeKeyInfo **rtkeys, int *nrt);
 
-/* The scan keys of the jsonb quals written at keys[*nkeys], which has room for list_length(jsonqual) more (agg/qual/jsonb.c) */
-extern void sift_v6_json_append_scankeys(List *jsonqual, Relation index, ScanKey keys, int *nkeys);
+/* The scan keys of the jsonb quals of the index or the sift_table reloid written at keys[*nkeys], which has room for list_length(jsonqual) more (agg/qual/jsonb.c) */
+extern void sift_v6_json_append_scankeys(List *jsonqual, Oid reloid, bool is_table, ScanKey keys, int *nkeys);
 
 #endif							/* SIFT_AGG_V6_QUAL_H */

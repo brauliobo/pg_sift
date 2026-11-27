@@ -2,6 +2,7 @@
  * col/f2/store/quals.c - the quals of the scan of a sift_table as the keys of an index scan and as predicates on its leaves (col/f2/store/scan.h), through the one conversion a sift_col index scan
  * uses (sift_col_key_preds). The clauses are those a plan keeps for the scan of an index: a comparison, an IN list or a null test on an INDEX_VAR attribute, which for a table is the attribute of the table.
  * The operand of a comparison is a constant, a parameter or a stable expression: the last two take their value when the scan starts (sift_f2_store_bind_quals), as the runtime keys of an index scan do.
+ * The JSON type and key tests (SiftV6Spec.jsonqual) follow as the keys an index scan makes of them, over the leaves of the table's declared paths.
  */
 #include "postgres.h"
 
@@ -93,10 +94,11 @@ sift_f2_store_key_preds(Relation rel, const SiftF2Store *store, const ScanKeyDat
 }
 
 void
-sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *quals, MemoryContext cx, SiftStoreQuals *out)
+sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *quals, List *jsonqual, MemoryContext cx, SiftStoreQuals *out)
 {
-	ScanKeyData *keys = MemoryContextAlloc(cx, Max(list_length(quals), 1) * sizeof(ScanKeyData));
+	ScanKeyData *keys = MemoryContextAlloc(cx, Max(list_length(quals) + list_length(jsonqual), 1) * sizeof(ScanKeyData));
 	List	   *runtime = NIL;
+	int			nkeys = list_length(quals);
 
 	for (int i = 0; i < list_length(quals); i++)
 	{
@@ -104,12 +106,13 @@ sift_f2_store_compile_quals(Relation rel, const SiftF2Store *store, const List *
 		if (is_runtime_comparison(list_nth(quals, i)))
 			runtime = lappend_int(runtime, i);
 	}
+	sift_v6_json_append_scankeys(jsonqual, RelationGetRelid(rel), true, keys, &nkeys);
 	if (runtime == NIL)
 	{
-		sift_f2_store_key_preds(rel, store, keys, list_length(quals), cx, out);
+		sift_f2_store_key_preds(rel, store, keys, nkeys, cx, out);
 		return;
 	}
-	*out = (SiftStoreQuals) {.keys = keys,.nkeys = list_length(quals),.cx = AllocSetContextCreate(cx, "sift store quals", ALLOCSET_SMALL_SIZES),
+	*out = (SiftStoreQuals) {.keys = keys,.nkeys = nkeys,.cx = AllocSetContextCreate(cx, "sift store quals", ALLOCSET_SMALL_SIZES),
 	.nrt = list_length(runtime),.rt = MemoryContextAlloc(cx, list_length(runtime) * sizeof(SiftStoreRuntimeKey))};
 	for (int i = 0; i < out->nrt; i++)
 	{

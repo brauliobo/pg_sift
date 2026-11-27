@@ -93,7 +93,7 @@ begin_table(V6State *st, EState *estate, SiftV6ScanSrc *src, Oid tableoid)
 	src->heap = table_open(tableoid, AccessShareLock);
 	src->ops = sift_store_ops_for_oid(tableoid, true);
 	if (src->ops->zone != NULL)
-		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, estate->es_query_cxt);
+		src->quals = src->ops->zone->compile_quals(src->heap, st->spec->indexqual, st->spec->jsonqual, estate->es_query_cxt);
 }
 
 static void

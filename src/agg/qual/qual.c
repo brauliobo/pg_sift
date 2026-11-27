@@ -90,5 +90,5 @@ sift_v6_qual_scankeys(PlanState *ps, List *jsonqual, Relation index, List *quals
 		};
 	}
 	*nkeys = at;
-	sift_v6_json_append_scankeys(jsonqual, index, *keys, nkeys);
+	sift_v6_json_append_scankeys(jsonqual, RelationGetRelid(index), false, *keys, nkeys);
 }

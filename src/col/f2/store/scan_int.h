@@ -19,13 +19,6 @@
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/tbl.h"
 
-typedef enum Verdict
-{
-	V_NO,
-	V_YES,
-	V_MAYBE
-} Verdict;
-
 /* What decides, per host, which rows of a granule are there for the snapshot: granule (when not NULL) is called when the granule is loaded, row for each of its rows */
 typedef struct RowVis
 {

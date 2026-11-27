@@ -173,7 +173,7 @@ sift_test_v1_topn(PG_FUNCTION_ARGS)
 							   typid == INT4OID ? Int32GetDatum((int32) PG_GETARG_INT64(6)) : Int64GetDatum(PG_GETARG_INT64(6)));
 	rows = sift_v6_rows_new(CurrentMemoryContext, spec);
 	ops->order->scan_rows(spec, rows, NULL, NULL, heap, is_table ? NULL : rel, &key, !PG_ARGISNULL(6) && !is_table ? 1 : 0,
-						  is_table ? ops->zone->compile_quals(heap, spec->indexqual, CurrentMemoryContext) : NULL, GetActiveSnapshot(), &stats, NULL, NULL);
+						  is_table ? ops->zone->compile_quals(heap, spec->indexqual, spec->jsonqual, CurrentMemoryContext) : NULL, GetActiveSnapshot(), &stats, NULL, NULL);
 	sift_v6_rows_finish(rows);
 	getTypeOutputInfo(typid, &outfn, &varlena);
 	fetch = sift_table_index_fetch_begin(heap);

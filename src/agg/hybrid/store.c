@@ -461,7 +461,7 @@ sift_hybrid_open(HybridState *st, CustomScan *cs, EState *estate, Relation heap)
 	st->cxt = sift_mem_allocset_create(estate->es_query_cxt, "sift hybrid scan");
 	init_quals(st, cs);
 	if (st->is_table)
-		st->table_quals = st->ops->zone->compile_quals(heap, st->std_quals, st->cxt);
+		st->table_quals = st->ops->zone->compile_quals(heap, st->std_quals, NIL, st->cxt);
 	else
 	{
 		ExecIndexBuildScanKeys(ps, st->store_index, st->std_quals, false, &st->keys, &st->nkeys, &st->rtkeys, &st->nrt, &arrkeys, &narr);

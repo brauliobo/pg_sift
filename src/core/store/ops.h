@@ -258,7 +258,7 @@ typedef struct SiftGpuOps
 
 /*
  * 7. Zone-pruned scan: the aggregate scan of the parts of a relation (the granules its zones, dictionaries and skipping indexes leave, the rows its visibility shows), and the predicates of
- * the statement's quals a sift_table decides on its leaves. compile_quals makes them from the index quals (a struct the format owns, in cx); bind_quals gives them the values of the
+ * the statement's quals a sift_table decides on its leaves. compile_quals makes them from the index quals and the JSON type and key tests (SiftV6Spec.jsonqual) (a struct the format owns, in cx); bind_quals gives them the values of the
  * runtime keys; quals_keys says whether any row can qualify and the keys of the scan as an index scan's.
  */
 typedef struct SiftZoneOps
@@ -266,7 +266,7 @@ typedef struct SiftZoneOps
 	bool		table_text;		/* scan_table reads the rows of a text match by the chunks of its hits (next_chunk) */
 	bool		table_star;		/* scan_table reads the rows beside the dimensions of a star join (star) */
 	int			batch_cols;		/* the most columns a batch of the scan holds: a statement that reads more is not planned (0: no limit) */
-	struct SiftStoreQuals *(*compile_quals) (Relation heap, List *indexqual, MemoryContext cx);
+	struct SiftStoreQuals *(*compile_quals) (Relation heap, List *indexqual, List *jsonqual, MemoryContext cx);
 	void		(*bind_quals) (Relation heap, struct SiftStoreQuals *q, ExprContext *econtext);
 	bool		(*quals_keys) (const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys);
 	void		(*scan_table) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation rel, const struct SiftStoreQuals *quals, Snapshot snap, const uint64 *skip,

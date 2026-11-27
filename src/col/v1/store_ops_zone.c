@@ -37,10 +37,12 @@ open_source(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const st
 }
 
 static struct SiftStoreQuals *
-zone_compile_quals(Relation heap, List *indexqual, MemoryContext cx)
+zone_compile_quals(Relation heap, List *indexqual, List *jsonqual, MemoryContext cx)
 {
 	MemoryContext old = MemoryContextSwitchTo(cx);
 	struct SiftStoreQuals *q = palloc0(sizeof(struct SiftStoreQuals));
+
+	Assert(jsonqual == NIL);
 
 	q->clauses = sift_srcfold_heap_quals(heap, indexqual);
 	MemoryContextSwitchTo(old);

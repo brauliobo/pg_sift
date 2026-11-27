@@ -145,7 +145,7 @@ sift_test_store_agg(PG_FUNCTION_ARGS)
 	if (q.is_table)
 	{
 		spec->indexqual = q.qual_att > 0 ? table_qual(&q) : NIL;
-		ops->zone->scan_table(spec, g, rel, ops->zone->compile_quals(rel, spec->indexqual, CurrentMemoryContext), snap, NULL, 0, &stats, NULL, NULL, NULL);
+		ops->zone->scan_table(spec, g, rel, ops->zone->compile_quals(rel, spec->indexqual, spec->jsonqual, CurrentMemoryContext), snap, NULL, 0, &stats, NULL, NULL, NULL);
 	}
 	else
 	{
