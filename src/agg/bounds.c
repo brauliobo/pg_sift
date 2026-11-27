@@ -104,15 +104,16 @@ bound_operand(const BoundCtx *c, const Node *e, Oid vartype, int64 *v)
 	return true;
 }
 
-static void
+static bool
 bound_add(BoundCtx *c, const Var *var, bool has_lo, int64 lo, bool has_hi, int64 hi)
 {
 	int			slot;
 
 	if (*c->n == SIFT_V6_MAX_BOUNDS || var->varno != c->relid || var->varlevelsup != 0 || var->varattno <= 0 || !bound_type(var->vartype) ||
 		(slot = sift_v6_input_add_var(c->in, var)) < 0 || c->in->col[slot].scale != 0)
-		return;
+		return false;
 	c->bound[(*c->n)++] = (SiftV6Bound) {.slot = slot,.has_lo = has_lo,.lo = lo,.has_hi = has_hi,.hi = hi};
+	return true;
 }
 
 static void
@@ -170,4 +171,114 @@ sift_v6_bounds_of(const Node *clause, Index relid, ParamListInfo params, SiftV6I
 	BoundCtx	c = {.relid = relid,.params = params,.in = in,.n = n,.bound = bound};
 
 	bounds_of(&c, clause);
+}
+
+/* ---- the ranges of the disjuncts of an OR ---- */
+
+/* no value lies in every bound the range puts on one of its columns */
+static bool
+v6_range_empty(const SiftV6Range *r)
+{
+	for (int i = 0; i < r->nbounds; i++)
+		for (int j = 0; j < r->nbounds; j++)
+			if (r->bound[i].slot == r->bound[j].slot && r->bound[i].has_lo && r->bound[j].has_hi && r->bound[i].lo > r->bound[j].hi)
+				return true;
+	return false;
+}
+
+static bool
+range_add(SiftV6RangeSet *out, const SiftV6Range *r)
+{
+	if (r->nbounds == 0 || out->nranges == SIFT_V6_MAX_RANGES)
+		return false;
+	if (!v6_range_empty(r))
+		out->range[out->nranges++] = *r;
+	return true;
+}
+
+/* `col = ANY (array)`: a range for each value while they fit, else one from the least to the greatest */
+static bool
+ranges_of_any(BoundCtx *c, const ScalarArrayOpExpr *sa, SiftV6RangeSet *out)
+{
+	const char *name = get_opname(sa->opno);
+	const Var  *var = linitial(sa->args);
+	const int64 *vals;
+	int			n;
+	SiftV6Range r = {0};
+
+	if (!sa->useOr || name == NULL || strcmp(name, "=") != 0 || !IsA(var, Var) || !bound_type(var->vartype) ||
+		!sift_v6_array_ints(CurrentMemoryContext, lsecond(sa->args), var->vartype, c->params, &vals, &n))
+		return false;
+	if (out->nranges + n > SIFT_V6_MAX_RANGES)
+	{
+		c->n = &r.nbounds;
+		c->bound = r.bound;
+		bound_of_any(c, sa);
+		return range_add(out, &r);
+	}
+	for (int i = 0; i < n; i++)
+	{
+		r.nbounds = 0;
+		c->n = &r.nbounds;
+		c->bound = r.bound;
+		bound_add(c, var, true, vals[i], true, vals[i]);
+		if (!range_add(out, &r))
+			return false;
+	}
+	return true;
+}
+
+/* the bounds of a conjunct of a disjunct: IS NULL of a column too, which a zone with no NULL rules out */
+static void
+range_bounds_of(BoundCtx *c, const Node *clause)
+{
+	const NullTest *nt = (const NullTest *) clause;
+	const Var  *var = (const Var *) nt->arg;
+
+	if (!IsA(clause, NullTest) || nt->nulltesttype != IS_NULL || nt->argisrow || !IsA(var, Var))
+	{
+		bounds_of(c, clause);
+		return;
+	}
+	if (bound_add(c, var, false, 0, false, 0))
+		c->bound[*c->n - 1].isnull = true;
+}
+
+static bool
+ranges_of(BoundCtx *c, const Node *d, SiftV6RangeSet *out)
+{
+	SiftV6Range r = {0};
+
+	if (IsA(d, RestrictInfo))
+		d = (const Node *) ((const RestrictInfo *) d)->clause;
+	if (is_orclause(d))
+	{
+		foreach_ptr(Node, arg, ((const BoolExpr *) d)->args)
+			if (!ranges_of(c, arg, out))
+				return false;
+		return true;
+	}
+	if (IsA(d, ScalarArrayOpExpr))
+		return ranges_of_any(c, (const ScalarArrayOpExpr *) d, out);
+	c->n = &r.nbounds;
+	c->bound = r.bound;
+	if (is_andclause(d))
+		foreach_ptr(Node, arg, ((const BoolExpr *) d)->args)
+			range_bounds_of(c, arg);
+	else
+		range_bounds_of(c, d);
+	return range_add(out, &r);
+}
+
+bool
+sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out)
+{
+	BoundCtx	c = {.relid = relid,.params = params,.in = in};
+
+	if (IsA(clause, RestrictInfo))
+		clause = (const Node *) ((const RestrictInfo *) clause)->clause;
+	if (!is_orclause(clause))
+		return false;
+	*out = (SiftV6RangeSet) {.range = MemoryContextAlloc(keep, SIFT_V6_MAX_RANGES * sizeof(SiftV6Range))};
+	return ranges_of(&c, clause, out);
 }

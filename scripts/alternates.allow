@@ -73,18 +73,18 @@ test/expected/col/f2/limits_ios_1.out	249561578dcfd0c9b91abb490c1d15337fe25019	1
 test/expected/col/f2/limits_ios_1.out	8481a0645a2c954df0f872340fa448023a6bfd4c	17	stored_column
 test/expected/col/f2/limits_ios_1.out	95619856ce9edbf838a0448ef76078d4c93be62e	17	virtual_column_by_heap
 test/expected/col/f2/limits_ios_1.out	d7ad5c22599ccafaf004618b1835ddbd7c3d2a8b	17	ERROR:  indexes on virtual generated columns are not supported
-test/expected/col/skip_map_1.out	00641ebb33c7c6511aaf2f35636ec594b321b6b6	18	sm_o | avg(f)  | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	310229bb75fed7d92e9f81b502d4d02752b523ef	18	sm_z | avg(f)  | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	54d3c84f97bf32bd42bd3f2c096772e8eb8b4bee	18	sm   | avg(f)  | 3 | k = 500               | normal          |           0 |
-test/expected/col/skip_map_1.out	5ccc4ae3de880728565e5f99c35f760935e28ee5	18	sm_z | sum(id) | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	8450a582b8070972520164e453e6114ab117e484	18	sm   | sum(id) | 3 | k = 500               | normal          |           0 |
-test/expected/col/skip_map_1.out	8903d643da0cf1d1dde1f58c3d0c421a9fa11508	18	sm_o | sum(id) | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	9fd49aa21f9c1c5c6ddfc2bf7e6681c40e0f45cc	18	sm_z | avg(f)  | 3 | k = 500               | normal          |           0 |
-test/expected/col/skip_map_1.out	b4287ab97155eaadb93f8881f886873659f1aa25	18	sm   | avg(f)  | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	bfc62eefacdc9811cdaa5b4db3dc4fa45b7a7556	18	sm   | sum(id) | 6 | k < 0                 | normal          |           0 |
-test/expected/col/skip_map_1.out	c7f82b76fd1a27d37c3b76c6d16e9b69e9f456c2	18	sm_o | sum(id) | 3 | k = 500               | normal          |           0 |
-test/expected/col/skip_map_1.out	c97dadb16f164c5a73acb7bc30f23e2f33219ded	18	sm_z | sum(id) | 3 | k = 500               | normal          |           0 |
-test/expected/col/skip_map_1.out	ca97667a4e48d45dec5a4ab731a9a2387fd5413f	18	sm_o | avg(f)  | 3 | k = 500               | normal          |           0 |
+test/expected/col/skip_map_1.out	200271921995c65698d6521f4cb726bcc492fec3	18	sm_o | avg(f)  | 6 | k < 0                 | normal                    |
+test/expected/col/skip_map_1.out	42c9691c59600b08f1427499788fe9278580ae86	18	sm_o | avg(f)  | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	5a8f08ada73519eef481c9df90c4f91e234796f7	18	sm   | sum(id) | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	5ef6953edc4b2591cc2c68976cea5563a93ee04c	18	sm_z | sum(id) | 6 | k < 0                 | normal                    |
+test/expected/col/skip_map_1.out	60a3463251d3ceb306f8068934533c335b3379af	18	sm_z | avg(f)  | 6 | k < 0                 | normal                    |
+test/expected/col/skip_map_1.out	737bd28b5a214ff92508448bd1621b2916acdff9	18	sm_o | sum(id) | 6 | k < 0                 | normal                    |
+test/expected/col/skip_map_1.out	89d0733fc9c84dfbff26d4fab9a68bf299c5af49	18	sm_z | sum(id) | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	ad30310d90016a13ffa29715823792c3d247d23f	18	sm_o | sum(id) | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	bfde826c67f6f744a27ca4d008cd34e0ccf69546	18	sm   | avg(f)  | 6 | k < 0                 | normal                    |
+test/expected/col/skip_map_1.out	d90b0b4dfa757a4884a224c2f7433556ab57ef1b	18	sm   | avg(f)  | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	f8f4825b56bd92ba01a2773d6c6cb884eb7b03df	18	sm_z | avg(f)  | 3 | k = 500               | normal                    |
+test/expected/col/skip_map_1.out	fcfb8eb492b07fe4cc2646c01efefe1e869aae9d	18	sm   | sum(id) | 6 | k < 0                 | normal                    |
 test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
 test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index

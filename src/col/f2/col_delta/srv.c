@@ -86,6 +86,7 @@ scan_state(F2Scan *s, const SiftColSchema *schema, Snapshot snap)
 		s->cd->pruned_leaf[s->preds[k].col] = true;
 	if (s->bound != NULL)
 		s->cd->pruned_leaf[s->sink_leaves[s->bound_sink_leaf]] = true;
+	sift_f2_zones_leaves(s, s->cd->pruned_leaf);
 	sift_xid_cache_init(&s->cd->xc, snap);
 	s->cd->own.cx = s->cx;
 	MemoryContextSwitchTo(old);

@@ -3,7 +3,7 @@
 # gives the arm up names the refusal. A reason recorded in a try would be the first of the arm and would hide the one that follows it (the arm keeps
 # the first reason it gets), so a try never names one.
 
-bounds.c: bound_operand sift_v6_param_value # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
+bounds.c: bound_add bound_operand ranges_of ranges_of_any range_add sift_v6_param_value sift_v6_ranges_of v6_range_empty # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 cost/card.c: compare_pred in_pred leaf_value op_pred sift_v6_card_rel # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 cost/card_est.c: mcv_find vals_ordered # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 cube.c: agg_cubeable linear_of sift_v6_agg_linear sift_v6_linear_sum sift_v6_spec_cubeable # shape tests of the statements a stored cube can answer: false is not this shape, and the scan reads the units as it always did

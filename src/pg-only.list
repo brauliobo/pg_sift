@@ -406,6 +406,7 @@ col/f2/agg/read.h
 col/f2/agg/datum.c
 col/f2/agg/source.c
 col/f2/agg/topn.c
+col/f2/agg/zones.c
 col/f2/agg/unnest/emit.c
 col/f2/agg/unnest/int.h
 col/f2/agg/unnest/par.c
@@ -475,6 +476,7 @@ col/f2/scan/stream.c
 col/f2/scan/stream.h
 col/f2/scan/survey.c
 col/f2/scan/verdict.c
+col/f2/scan/zones.c
 col/f2/scan/ord_cursor.c
 col/f2/scan/ord_int.h
 col/f2/scan/ord_stream.c
@@ -685,6 +687,7 @@ col/v1/store_ops_member.c
 col/v1/reader_meta.c
 col/v1/reader_unit.c
 col/v1/store_ops.c
+col/v1/store_prune.c
 col/v1/store_ops.h
 col/v1/store_src.h
 col/v1/store_ops_par.c

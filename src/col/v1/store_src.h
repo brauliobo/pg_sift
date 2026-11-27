@@ -116,4 +116,7 @@ extern void sift_v1_src_put_type(SiftV1Src *s, int i, uint32 r, int n);
 extern void sift_v1_src_read_presence(SiftV1Src *s, int i);
 extern void sift_v1_src_put_presence(SiftV1Src *s, int i, uint32 r, int n);
 
+/* Begins the reader over the range (NULL: every superblock), its units pruned by the bounds and the OR sets of the quals (col/v1/store_prune.c) */
+extern void sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Range *range);
+
 #endif							/* SIFT_COL_V1_STORE_SRC_H */

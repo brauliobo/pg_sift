@@ -307,9 +307,10 @@ load_rest(Relation rel, const F2Scan *s, SiftLazyGranule *lg, const bool *decide
 
 /* Whether granule g is ruled out before it is read: by the tid bridge, by the scope router, by the zones of the predicates or by the skipping indexes; decided says which predicates they found true of every row of it */
 static bool
-granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftZone *const *zones, uint32 g0, uint32 g,
+granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftZone *const *zones, uint32 g0, uint32 g,
 				  const SiftVariantExcSummary *exc, int nexc, const SiftTidIndexEntry *tix, bool *decided)
 {
+	const SiftPart *part = pin->part;
 	const bool	bridge_miss = sift_f2_scan_bridge_granule_miss(s, g, tix);
 	const bool	ruled = bridge_miss || (s->router != NULL && !sift_scope_router_wants(s->router, part->hdr.part_gen, g));
 	bool		skip = ruled;
@@ -327,6 +328,7 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, const Si
 		skip = zv == Z_NONE;
 		decided[k] = zv == Z_ALL;
 	}
+	skip = skip || (s->nzones > 0 && sift_f2_zones_exclude(rel, s, schema, pin, g, dir != NULL ? dir[g].nrows : 0, exc, nexc));
 	if (s->bridge_seen)
 		(*s->bridge_seen)++;
 	if (bridge_miss && s->bridge_skipped)
@@ -351,7 +353,7 @@ typedef struct GranuleWindow
 
 /* The granules of the window that stay are found first, and their pages are asked of the storage together (key range or not); a scan whose filter leaves most granules nothing reads no further ahead than the first window */
 static void
-prune_window(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPart *part, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftGranuleDesc *pf_dir, const SiftZone *const *zones,
+prune_window(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, const PartPreds *pp, const SiftGranuleDesc *dir, const SiftGranuleDesc *pf_dir, const SiftZone *const *zones,
 			 uint32 g0, uint32 wb, uint32 wn, uint32 widx, const SiftVariantExcSummary *exc, int nexc, const SiftTidIndexEntry *tix, GranuleWindow *w)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 window");
@@ -362,10 +364,10 @@ prune_window(Relation rel, F2Scan *s, const SiftColSchema *schema, const SiftPar
 
 	memset(w->decided, 0, SIFT_PF_WINDOW_GRANULES * np);
 	for (uint32 i = 0; i < wn; i++)
-		w->skipped[i] = granule_ruled_out(rel, s, schema, part, pp, dir, zones, g0, wb + i, exc, nexc, tix, w->decided + i * np);
+		w->skipped[i] = granule_ruled_out(rel, s, schema, pin, pp, dir, zones, g0, wb + i, exc, nexc, tix, w->decided + i * np);
 	ns = sift_pf_survivor_spans(w->skipped, wb, wn, spans);
 	if (pf_dir != NULL && ns > 0 && sift_pf_window_wanted(widx, sift_afilt_dense(&s->lf.af)))
-		F2_STAT_ADD(prefetched, sift_f2_prefetch_spans(rel, part, pf_dir, (const uint32 (*)[2]) spans, ns));
+		F2_STAT_ADD(prefetched, sift_f2_prefetch_spans(rel, pin->part, pf_dir, (const uint32 (*)[2]) spans, ns));
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -462,7 +464,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 
 		CHECK_FOR_INTERRUPTS();
 		if (wi == 0)
-			prune_window(rel, s, schema, part, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
+			prune_window(rel, s, schema, pin, pp, dir, dir, zones, g0, g, Min(SIFT_PF_WINDOW_GRANULES, g1 - g), (g - g0) / SIFT_PF_WINDOW_GRANULES, exc, nexc, tix, &win);
 		if (win.skipped[wi] || (bound_zones != NULL && bound_excludes(s->bound, &bound_zones[g], sift_f2_exc_has(exc, nexc, g, s->sink_leaves[s->bound_sink_leaf]))))
 			continue;
 		if (s->survey)

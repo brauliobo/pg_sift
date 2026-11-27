@@ -204,6 +204,8 @@ typedef struct Comp
 	SiftV6Bound bound[SIFT_V6_MAX_BOUNDS];
 	int			ninsets;
 	SiftV6InSet inset[SIFT_V6_MAX_INSETS];
+	int			nsets;
+	SiftV6RangeSet set[SIFT_V6_MAX_SETS];
 } Comp;
 
 static SiftVexprNode *conv(Comp *c, const Node *e);
@@ -738,9 +740,10 @@ finish(Comp *c, SiftVexprNode *root, SiftV6Vexpr *out)
 {
 	bool		ok;
 
-	*out = (SiftV6Vexpr) {.zone = c->zone,.nbounds = c->nbounds,.ninsets = c->ninsets};
+	*out = (SiftV6Vexpr) {.zone = c->zone,.nbounds = c->nbounds,.ninsets = c->ninsets,.nsets = c->nsets};
 	memcpy(out->bound, c->bound, sizeof(out->bound));
 	memcpy(out->inset, c->inset, sizeof(out->inset));
+	memcpy(out->set, c->set, sizeof(out->set));
 	ok = (root != NULL || c->ninsets > 0) && (root == NULL || sift_vexpr_compile(root, &out->prog));
 	MemoryContextDelete(c->cxt);
 	return ok;
@@ -771,6 +774,8 @@ sift_v6_vexpr_quals(MemoryContext cxt, const List *clauses, Index relid, ParamLi
 		SiftVexprNode *x;
 
 		sift_v6_bounds_of(clause, c.relid, c.params, c.in, &c.nbounds, c.bound);
+		if (c.nsets < SIFT_V6_MAX_SETS && sift_v6_ranges_of(cxt, clause, c.relid, c.params, c.in, &c.set[c.nsets]))
+			c.nsets++;
 		if (c.ninsets < SIFT_V6_MAX_INSETS && sift_v6_inset_of(cxt, clause, c.relid, c.params, c.in, &c.inset[c.ninsets]))
 		{
 			c.ninsets++;

@@ -6,6 +6,8 @@ CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
 SET default_statistics_target = 10000;
 SET max_parallel_workers_per_gather = 0;
+-- one build process: the index is one part, whose granules are the units of the heap (8192 rows)
+SET max_parallel_maintenance_workers = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
 -- events in day order, and an owner that changes every 25000 events: both leaves have narrow zones; the padding makes a unit of about 8000 rows
@@ -78,16 +80,21 @@ INSERT INTO ev SELECT 300000 + i, 13, date '2020-03-15', 'a', 1, 'x' FROM genera
 DELETE FROM ev WHERE id BETWEEN 5000 AND 5100;
 SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
 
--- rows moved by UPDATE leave a dead version in an old unit and a new one elsewhere: both sides of an OR see only the live row
+-- rows moved by UPDATE leave a dead version in an old unit and a new one elsewhere: both sides of an OR see only the live row. From here on a format may read one unit
+-- more or prune one less than another (Format 2 patches the moved cells in their granule, which its zones no longer decide; Format 1 writes the new version to a unit
+-- of its own): within() checks the reads and the pruned units against those bounds
+CREATE FUNCTION within(plan text, max_read int, min_pruned int) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE WHEN m[1]::int <= max_read AND m[2]::int >= min_pruned THEN format('SiftAgg read <= %s pruned >= %s', max_read, min_pruned) ELSE plan END
+	FROM (SELECT regexp_match(plan, '^SiftAgg read (\d+) pruned (\d+)$') m) x $$;
 UPDATE ev SET day = date '2021-03-10' WHERE id BETWEEN 100000 AND 100200;
 UPDATE ev SET day = date '2020-01-02' WHERE day >= '2020-03-10' AND day <= '2020-03-12';
-SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
-SELECT * FROM same($$day >= '2020-01-01' AND day <= '2020-01-05' OR day = '2021-03-10'$$);
+SELECT within(plan, 6, 32) AS plan, result_rows, vs_normal_plan FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT within(plan, 5, 33) AS plan, result_rows, vs_normal_plan FROM same($$day >= '2020-01-01' AND day <= '2020-01-05' OR day = '2021-03-10'$$);
 
--- a NULL day matches no disjunct, and a disjunct of IS NULL leaves every unit
+-- a NULL day matches no disjunct, and a disjunct of IS NULL keeps the units that hold a NULL
 INSERT INTO ev SELECT 400000 + i, 14, NULL, 'b', 2, 'x' FROM generate_series(1, 30) i;
-SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
-SELECT * FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day IS NULL$$);
+SELECT within(plan, 6, 32) AS plan, result_rows, vs_normal_plan FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT within(plan, 4, 34) AS plan, result_rows, vs_normal_plan FROM same($$day >= '2020-03-01' AND day <= '2020-03-31' OR day IS NULL$$);
 
 -- units answered from the pre-aggregates (a grouped dictionary leaf, no test) and the OR that scans: the same rows
 VACUUM (FREEZE, ANALYZE) ev;
@@ -104,11 +111,11 @@ BEGIN
 	vs_normal_plan := (SELECT count(*) FROM ((SELECT * FROM k_on EXCEPT ALL SELECT * FROM k_off) UNION ALL (SELECT * FROM k_off EXCEPT ALL SELECT * FROM k_on)) d);
 	RETURN NEXT;
 END $$;
-SELECT * FROM same_kind($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
-SELECT * FROM same_kind($$set_id < 3 OR set_id > 11$$);
-SELECT * FROM same_kind($$(set_id < 3 OR set_id > 11) AND day >= '2020-01-01'$$);
+SELECT within(plan, 6, 32) AS plan, result_rows, vs_normal_plan FROM same_kind($$day >= '2020-03-01' AND day <= '2020-03-31' OR day >= '2021-03-01' AND day <= '2021-03-31'$$);
+SELECT within(plan, 13, 26) AS plan, result_rows, vs_normal_plan FROM same_kind($$set_id < 3 OR set_id > 11$$);
+SELECT within(plan, 13, 26) AS plan, result_rows, vs_normal_plan FROM same_kind($$(set_id < 3 OR set_id > 11) AND day >= '2020-01-01'$$);
 
-DROP FUNCTION same_kind(text), same(text), units_of(text);
+DROP FUNCTION same_kind(text), same(text), units_of(text), within(text, int, int);
 DROP TABLE ev;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

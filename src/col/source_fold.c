@@ -267,6 +267,24 @@ source_decides(MemoryContext cx, const SiftSrcFold *f, Node *clause)
 	return ok;
 }
 
+/* The ranges of the OR quals the fold tests: the source leaves unread the units outside all the ranges of one */
+static void
+setup_ranges(SiftSrcFold *f)
+{
+	foreach_ptr(Node, clause, f->a.spec->vqual)
+	{
+		SiftV6RangeSet set;
+
+		if (!sift_v6_ranges_of(f->cx, clause, 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &f->in, &set))
+			continue;
+		if (f->quals == NULL)
+			f->quals = palloc0(sizeof(SiftV6Vexpr));
+		if (f->quals->nsets == SIFT_V6_MAX_SETS)
+			return;
+		f->quals->set[f->quals->nsets++] = set;
+	}
+}
+
 static void
 setup_quals(SiftSrcFold *f)
 {
@@ -283,11 +301,13 @@ setup_quals(SiftSrcFold *f)
 			source = lappend(source, clause);
 		else
 			f->residual = lappend(f->residual, clause);
-	if (source == NIL)
-		return;
-	f->quals = palloc0(sizeof(SiftV6Vexpr));
-	if (!sift_v6_vexpr_quals(f->cx, source, 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &f->in, f->quals))
-		SIFT_INVARIANT(false, "the quals of the aggregate scan of %s compiled when each was tried alone", sift_rel_label(f->a.spec->relid));
+	if (source != NIL)
+	{
+		f->quals = palloc0(sizeof(SiftV6Vexpr));
+		if (!sift_v6_vexpr_quals(f->cx, source, 1, f->a.estate != NULL ? f->a.estate->es_param_list_info : NULL, &f->in, f->quals))
+			SIFT_INVARIANT(false, "the quals of the aggregate scan of %s compiled when each was tried alone", sift_rel_label(f->a.spec->relid));
+	}
+	setup_ranges(f);
 }
 
 static bool
@@ -532,6 +552,7 @@ sift_srcfold_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, const Sif
 }
 
 StaticAssertDecl(SIFT_SRC_MAX_BOUNDS == SIFT_V6_MAX_BOUNDS + SIFT_V6_MAX_INSETS, "a source takes the bounds and lists the program gives");
+StaticAssertDecl(SIFT_SRC_MAX_SETS == SIFT_V6_MAX_SETS && SIFT_SRC_MAX_BOUNDS >= SIFT_V6_MAX_BOUNDS, "a source takes the OR sets and the bounds of a range the program gives");
 
 int
 sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out)
@@ -542,6 +563,28 @@ sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out)
 		out[quals->nbounds + i] = (SiftSrcBound) {.slot = quals->inset[i].slot,.has_lo = true,.lo = quals->inset[i].vmin,.has_hi = true,.hi = quals->inset[i].vmax,
 			.nvals = quals->inset[i].n,.vals = quals->inset[i].vals};
 	return quals->nbounds + quals->ninsets;
+}
+
+int
+sift_srcfold_nsets(const SiftV6Vexpr *quals)
+{
+	return quals->nsets;
+}
+
+int
+sift_srcfold_nranges(const SiftV6Vexpr *quals, int set)
+{
+	return quals->set[set].nranges;
+}
+
+int
+sift_srcfold_range(const SiftV6Vexpr *quals, int set, int range, SiftSrcBound *out)
+{
+	const SiftV6Range *r = &quals->set[set].range[range];
+
+	for (int i = 0; i < r->nbounds; i++)
+		out[i] = (SiftSrcBound) {.slot = r->bound[i].slot,.has_lo = r->bound[i].has_lo,.has_hi = r->bound[i].has_hi,.lo = r->bound[i].lo,.hi = r->bound[i].hi,.isnull = r->bound[i].isnull};
+	return r->nbounds;
 }
 
 void

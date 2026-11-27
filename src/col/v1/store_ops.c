@@ -872,28 +872,6 @@ bind_types(SiftV1Src *s, const SiftV1Scan *scan)
 		}
 }
 
-/* A unit whose zone of an integer column lies wholly outside the bounds the program puts on it is not read; the program still tests every row of the units that are */
-static void
-prune_begin(SiftV1Src *s, const SiftV1Range *range)
-{
-	const uint32 nsb = s->rd->nsb(s->src);
-	SiftSrcBound bound[SIFT_SRC_MAX_BOUNDS];
-	SiftSrcPrune *prune = palloc0(SIFT_SRC_MAX_BOUNDS * sizeof(SiftSrcPrune));
-	const int	nb = s->quals != NULL ? sift_srcfold_bounds(s->quals, bound) : 0;
-	int			np = 0;
-
-	for (int i = 0; i < nb; i++)
-	{
-		const SiftSrcLeaf *l = s->col_leaf[bound[i].slot];
-
-		if (l == NULL || l->wide || (l->vtype != SCV_I32 && l->vtype != SCV_I64))
-			continue;
-		prune[np++] = (SiftSrcPrune) {.leaf = l->id,.lo = bound[i].has_lo ? bound[i].lo : PG_INT64_MIN,.hi = bound[i].has_hi ? bound[i].hi : PG_INT64_MAX,
-			.nvals = bound[i].nvals,.vals = bound[i].vals};
-	}
-	s->rd->begin(s->src, range ? range->sb_lo : 0, range ? Min(range->sb_hi, nsb) : nsb, prune, np);
-}
-
 SiftV6Source *
 sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, const SiftV6Vexpr *quals, const SiftV1Scan *scan)
 {
@@ -931,7 +909,7 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	if (scan->keep != NULL)
 		s->rd->select(s->src, scan->keep);
 	bind_types(s, scan);
-	prune_begin(s, range);
+	sift_v1_src_prune_begin(s, range);
 	MemoryContextSwitchTo(old);
 	s->base = (SiftV6Source) {.next = v1_next,.fetch = sift_v1_src_fetch,.close = v1_close,.granules = v1_granules};
 	return &s->base;

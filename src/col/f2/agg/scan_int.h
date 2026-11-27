@@ -130,6 +130,8 @@ extern void sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *
 extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
 extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
 extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
+/* zones.c: the OR quals of the spec as zone tests of the granules of the index (*n of them) */
+extern const SiftColPrune *sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n);
 /* The granules the scan counted since the last call, added to its stats */
 extern void sift_f2_v6_flush_grans(V6Scan *s);
 extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);

@@ -52,9 +52,27 @@ typedef struct SiftV6Bound
 	bool		has_hi;
 	int64		lo;
 	int64		hi;
+	bool		isnull;			/* a disjunct of an OR range set: the column IS NULL (lo and hi unused) */
 } SiftV6Bound;
 
 #define SIFT_V6_MAX_INSETS	4
+
+/* A disjunct of an OR conjunct as the bounds it puts on the columns (an AND of them) */
+typedef struct SiftV6Range
+{
+	int			nbounds;
+	SiftV6Bound bound[SIFT_V6_MAX_BOUNDS];
+} SiftV6Range;
+
+#define SIFT_V6_MAX_RANGES	64
+#define SIFT_V6_MAX_SETS	4
+
+/* An OR conjunct as the ranges of its disjuncts: a row passes it only inside one of them, so a source may leave unread what lies outside all of them (none: no row passes) */
+typedef struct SiftV6RangeSet
+{
+	int			nranges;
+	SiftV6Range *range;
+} SiftV6RangeSet;
 
 /* A compiled expression with the columns and booleans it reads (slots of the input it was compiled against) */
 struct SiftV6Vexpr
@@ -65,6 +83,8 @@ struct SiftV6Vexpr
 	SiftV6Bound bound[SIFT_V6_MAX_BOUNDS];
 	int			ninsets;
 	SiftV6InSet inset[SIFT_V6_MAX_INSETS];
+	int			nsets;
+	SiftV6RangeSet set[SIFT_V6_MAX_SETS];
 };
 
 /* The decoding of a column of the type of the Var: false for a type the engine does not decode (SiftV6Class SV6C_NONE) or a numeric without a precision of at most 38 digits */
@@ -108,6 +128,11 @@ extern List *sift_v6_bind_params(List *clauses, ParamListInfo params);
 
 /* Adds to bound[0 .. *n - 1] the bounds a conjunct gives (at most SIFT_V6_MAX_BOUNDS), the columns it reads added to in */
 extern void sift_v6_bounds_of(const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, int *n, SiftV6Bound *bound);
+/*
+ * The ranges of a conjunct that is an OR (its arrays in keep), each disjunct an AND of comparisons, BETWEENs, IS NULL tests or an IN list (one range a value) of the columns bound_of takes, the columns added to in;
+ * a disjunct no row passes adds none. false when the clause is no OR, or a disjunct bounds no column or has more ranges than SIFT_V6_MAX_RANGES: then the OR rules nothing out.
+ */
+extern bool sift_v6_ranges_of(MemoryContext keep, const Node *clause, Index relid, ParamListInfo params, SiftV6Input *in, SiftV6RangeSet *out);
 
 /*
  * e (an Expr, or a RestrictInfo) over the columns of relid, read through the index of in, to a program; the columns it needs are added to in. params: the values of this execution, NULL where the

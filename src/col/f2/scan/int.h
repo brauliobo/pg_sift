@@ -131,6 +131,8 @@ typedef struct F2Scan
 	uint32		rescans;		/* the keys the scan was given: one given others again reads decoded granules */
 	struct SiftRescanScan *rescan;	/* what it keeps between the rescans (scan/rescan_cache.c) */
 
+	const SiftColPrune *zones;	/* the zone tests beyond the predicates (sift_f2_scan_set_zones): a granule one of them rules out is not read */
+	int			nzones;
 	SiftF2GranCounts *grans;	/* not NULL: the granules the scan read and those it ruled out are counted here (sift_f2_scan_count_granules) */
 	struct SiftPinWin *pinwin;	/* the granules the compute threads of the backend filter and decode: the scan hands them over instead of reading them (col/f2/pin_win.h) */
 } F2Scan;
@@ -157,6 +159,10 @@ typedef enum Verdict
 } Verdict;
 
 #define SIFT_F2_HEAP_DECIDE_ROWS	64
+
+/* col/f2/scan/zones.c: the leaves the zone tests of the scan read are set in leaves (the patches of a column delta on them are exceptions of their zones); granule g of the pinned part, of nrows rows, holds no row that passes one of the zone tests of the scan */
+extern void sift_f2_zones_leaves(const F2Scan *s, bool *leaves);
+extern bool sift_f2_zones_exclude(Relation rel, const F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, uint32 g, uint32 nrows, const SiftVariantExcSummary *exc, int nexc);
 
 /* col/f2/scan/verdict.c */
 extern Verdict sift_f2_heap_verdict(const F2Scan *s, const bool *decided);

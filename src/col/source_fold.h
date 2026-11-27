@@ -67,9 +67,17 @@ typedef struct SiftSrcBound
 	int64		hi;
 	int			nvals;
 	const int64 *vals;
+	bool		isnull;			/* a bound of a range of an OR: the column IS NULL */
 } SiftSrcBound;
 
 extern int	sift_srcfold_bounds(const SiftV6Vexpr *quals, SiftSrcBound *out);
+
+#define SIFT_SRC_MAX_SETS	4
+
+/* The OR conjuncts of the quals (sift_srcfold_nsets of them, at most SIFT_SRC_MAX_SETS) as their ranges: a row passes one only inside a range of it, each an AND of the bounds sift_srcfold_range gives (into out, at most SIFT_SRC_MAX_BOUNDS) */
+extern int	sift_srcfold_nsets(const SiftV6Vexpr *quals);
+extern int	sift_srcfold_nranges(const SiftV6Vexpr *quals, int set);
+extern int	sift_srcfold_range(const SiftV6Vexpr *quals, int set, int range, SiftSrcBound *out);
 
 /* The clauses an index scan's keys say, as conjuncts over the heap attributes (Vars of varno 1) of the table of index: scan keys on a column of the index that is no attribute of the table are refused */
 extern List *sift_srcfold_scankey_quals(Relation index, ScanKey keys, int nkeys);
