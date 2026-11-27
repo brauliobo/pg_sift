@@ -80,9 +80,8 @@ BEGIN
   same := a IS NOT DISTINCT FROM b;
   RETURN NEXT;
 END $$;
--- PostgreSQL 19 folds coalesce(a, NULL) into a before the planner hook sees it, so that statement is native there, which the column says as it is on the other versions (the rows are the same on all)
 -- grouped by the key and ungrouped; the FILTER of an aggregate takes the same condition
-SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting('server_version_num')::int >= 190000) AS native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(id) FROM pn WHERE ' || s.cond || ' GROUP BY g') c ORDER BY s.ord;
+SELECT s.name, c.native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(id) FROM pn WHERE ' || s.cond || ' GROUP BY g') c ORDER BY s.ord;
            name            | native | engaged | same 
 ---------------------------+--------+---------+------
  coalesce > false          | t      | t       | t
@@ -91,21 +90,21 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  coalesce >= negative      | t      | t       | t
  coalesce <> int           | t      | t       | t
  coalesce on the right     | t      | t       | t
- coalesce NULL default     | f      | t       | t
+ coalesce NULL default     | t      | t       | t
  coalesce stable default   | t      | t       | t
  coalesce under AND        | t      | t       | t
  coalesce under OR         | t      | t       | t
  NOT of coalesce           | t      | t       | t
  NOT of coalesce true      | t      | t       | t
  coalesce NULL arg dropped | t      | t       | t
- coalesce of an expression | f      | t       | t
+ coalesce of an expression | t      | t       | t
  nullif =                  | t      | t       | t
  nullif >                  | t      | t       | t
  nullif <>                 | t      | t       | t
  nullif float              | t      | t       | t
  nullif hits the value     | t      | t       | t
  nullif NULL               | t      | t       | t
- nullif IS NULL            | f      | t       | t
+ nullif IS NULL            | t      | t       | t
  distinct                  | t      | t       | t
  not distinct              | t      | t       | t
  not distinct NULL         | t      | t       | t
@@ -115,18 +114,18 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  NOT not distinct          | t      | t       | t
  distinct under OR         | t      | t       | t
  distinct text             | t      | t       | t
- bool column               | f      | t       | t
- bool = true               | f      | t       | t
- bool = false              | f      | t       | t
- NOT bool                  | f      | t       | t
- bool IS TRUE              | f      | t       | t
- bool IS NOT TRUE          | f      | t       | t
- bool IS FALSE             | f      | t       | t
- bool IS NOT FALSE         | f      | t       | t
- bool IS UNKNOWN           | f      | t       | t
- bool IS NOT UNKNOWN       | f      | t       | t
- NOT bool IS TRUE          | f      | t       | t
- bool AND                  | f      | t       | t
+ bool column               | t      | t       | t
+ bool = true               | t      | t       | t
+ bool = false              | t      | t       | t
+ NOT bool                  | t      | t       | t
+ bool IS TRUE              | t      | t       | t
+ bool IS NOT TRUE          | t      | t       | t
+ bool IS FALSE             | t      | t       | t
+ bool IS NOT FALSE         | t      | t       | t
+ bool IS UNKNOWN           | t      | t       | t
+ bool IS NOT UNKNOWN       | t      | t       | t
+ NOT bool IS TRUE          | t      | t       | t
+ bool AND                  | t      | t       | t
  NOT bool OR               | t      | t       | t
  widening =                | t      | t       | t
  widening <                | t      | t       | t
@@ -134,11 +133,11 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  widening smallint bigint  | t      | t       | t
  widening on the right     | t      | t       | t
  widening beyond int4      | t      | t       | t
- widening NULL constant    | f      | t       | t
- float cast stays          | f      | t       | t
+ widening NULL constant    | t      | t       | t
+ float cast stays          | t      | t       | t
 (51 rows)
 
-SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting('server_version_num')::int >= 190000) AS native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT count(*), sum(i) FROM pn WHERE ' || s.cond) c ORDER BY s.ord;
+SELECT s.name, c.native, c.engaged, c.same FROM shapes s, LATERAL shape_check('SELECT count(*), sum(i) FROM pn WHERE ' || s.cond) c ORDER BY s.ord;
            name            | native | engaged | same 
 ---------------------------+--------+---------+------
  coalesce > false          | t      | t       | t
@@ -147,21 +146,21 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  coalesce >= negative      | t      | t       | t
  coalesce <> int           | t      | t       | t
  coalesce on the right     | t      | t       | t
- coalesce NULL default     | f      | t       | t
+ coalesce NULL default     | t      | t       | t
  coalesce stable default   | t      | t       | t
  coalesce under AND        | t      | t       | t
  coalesce under OR         | t      | t       | t
  NOT of coalesce           | t      | t       | t
  NOT of coalesce true      | t      | t       | t
  coalesce NULL arg dropped | t      | t       | t
- coalesce of an expression | f      | t       | t
+ coalesce of an expression | t      | t       | t
  nullif =                  | t      | t       | t
  nullif >                  | t      | t       | t
  nullif <>                 | t      | t       | t
  nullif float              | t      | t       | t
  nullif hits the value     | t      | t       | t
  nullif NULL               | t      | t       | t
- nullif IS NULL            | f      | t       | t
+ nullif IS NULL            | t      | t       | t
  distinct                  | t      | t       | t
  not distinct              | t      | t       | t
  not distinct NULL         | t      | t       | t
@@ -171,18 +170,18 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  NOT not distinct          | t      | t       | t
  distinct under OR         | t      | t       | t
  distinct text             | t      | t       | t
- bool column               | f      | t       | t
- bool = true               | f      | t       | t
- bool = false              | f      | t       | t
- NOT bool                  | f      | t       | t
- bool IS TRUE              | f      | t       | t
- bool IS NOT TRUE          | f      | t       | t
- bool IS FALSE             | f      | t       | t
- bool IS NOT FALSE         | f      | t       | t
- bool IS UNKNOWN           | f      | t       | t
- bool IS NOT UNKNOWN       | f      | t       | t
- NOT bool IS TRUE          | f      | t       | t
- bool AND                  | f      | t       | t
+ bool column               | t      | t       | t
+ bool = true               | t      | t       | t
+ bool = false              | t      | t       | t
+ NOT bool                  | t      | t       | t
+ bool IS TRUE              | t      | t       | t
+ bool IS NOT TRUE          | t      | t       | t
+ bool IS FALSE             | t      | t       | t
+ bool IS NOT FALSE         | t      | t       | t
+ bool IS UNKNOWN           | t      | t       | t
+ bool IS NOT UNKNOWN       | t      | t       | t
+ NOT bool IS TRUE          | t      | t       | t
+ bool AND                  | t      | t       | t
  NOT bool OR               | t      | t       | t
  widening =                | t      | t       | t
  widening <                | t      | t       | t
@@ -190,8 +189,8 @@ SELECT s.name, c.native <> (s.name = 'coalesce NULL default' AND current_setting
  widening smallint bigint  | t      | t       | t
  widening on the right     | t      | t       | t
  widening beyond int4      | t      | t       | t
- widening NULL constant    | f      | t       | t
- float cast stays          | f      | t       | t
+ widening NULL constant    | t      | t       | t
+ float cast stays          | t      | t       | t
 (51 rows)
 
 SELECT s.name, c.same FROM shapes s, LATERAL shape_check('SELECT g, count(*) FILTER (WHERE ' || s.cond || '), sum(i) FILTER (WHERE ' || s.cond || ') FROM pn GROUP BY g') c WHERE NOT c.same ORDER BY s.ord;
