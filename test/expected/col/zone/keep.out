@@ -4,6 +4,8 @@
 -- keep their unit alive for an OR arm on their k); sm_k is cut by the key (a unit holds a stretch of k from the whole table).
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the unit counts are of a Format 1 index (a page a row, 256 rows a unit).
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

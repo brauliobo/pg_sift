@@ -5,6 +5,8 @@
 SET client_min_messages = warning;
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: calendar_columns is an option of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;

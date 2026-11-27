@@ -3,6 +3,8 @@
 -- index with the option hll_columns keeps in its units. count(DISTINCT) is exact whatever the options say, in the
 -- same query as the estimate too. An index without the option writes no sketch and is the one it was before.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: hll_columns and the sketches of the units are of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

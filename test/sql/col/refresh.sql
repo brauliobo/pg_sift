@@ -3,6 +3,8 @@
 -- the index for the units that hold the section: the share of them that have it is a counter read by sift._test_col_pre_stats. Read back by sift.col_verify; the damaged-blob
 -- regress of the census it takes is in col_preagg_minmax.
 CREATE EXTENSION pg_sift_test CASCADE;
+-- Format 1: sift.col_refresh and the options it applies are of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

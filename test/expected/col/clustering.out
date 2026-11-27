@@ -1,6 +1,8 @@
 -- sift.col_clustering reports, per integer leaf, how many units an equality or a range touches on the zone maps of the index, and so whether sorting
 -- the table by the leaf would let the scans skip more. Its figures are those of Custom Scan (SiftAgg): the units read of a statement are checked against them.
 CREATE EXTENSION pg_sift;
+-- Format 1: sift.col_clustering reads the units of a Format 1 index.
+SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- rows in id order, padded to about 1800 rows a unit; each leaf lays its values out differently

@@ -3,6 +3,8 @@
 -- them (the VACUUM holds the index exclusively for that, so what it released is reusable at once) and the free end is cut. The
 -- thresholds are on block counts, not on timings. vacuum_truncate = false keeps the file.
 CREATE EXTENSION pg_sift;
+-- Format 1: the order arrays and the space steps of VACUUM are of a Format 1 index.
+SET sift.test_create_format1 = on;
 CREATE FUNCTION blocks(idx regclass) RETURNS bigint LANGUAGE sql
 	AS $$ SELECT relation_blocks FROM sift.col_index_info(idx) $$;
 CREATE TABLE cs (id int PRIMARY KEY, grp int, amount numeric(10,2), note text) WITH (autovacuum_enabled = off);
