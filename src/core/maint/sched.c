@@ -152,18 +152,19 @@ sift_maint_end(SiftMaintShmem *m)
 	sift_shm_unlock(&m->lock);
 }
 
-/* The slot of a key is looked up in hash_idx (open addressing, linear probing, a removal shifts its cluster back: no tombstones, so a probe never runs long) */
+/* The slot of a key is looked up in hash_idx (open addressing, linear probing, a removal shifts its cluster back: no tombstones); an entry is read once, as covered() reads without the lock */
 static int
 find(const SiftMaintShmem *m, uint32 h, const SiftMaintReq *r)
 {
-	for (uint32 p = h & (SIFT_MAINT_HASH_SIZE - 1); m->hash_idx[p] >= 0; p = (p + 1) & (SIFT_MAINT_HASH_SIZE - 1))
+	for (uint32 p = h & (SIFT_MAINT_HASH_SIZE - 1);; p = (p + 1) & (SIFT_MAINT_HASH_SIZE - 1))
 	{
-		int			i = m->hash_idx[p];
+		int			i = ((const volatile int16 *) m->hash_idx)[p];
 
+		if (i < 0)
+			return -1;
 		if (m->khash[i] == h && m->slot[i].db == r->db && m->slot[i].rel == r->rel && m->slot[i].kind == r->kind)
 			return i;
 	}
-	return -1;
 }
 
 static int
@@ -723,6 +724,14 @@ workers_taken(const SiftMaintShmem *m)
 	return n;
 }
 
+/* A reservation given back: its slot may have been reaped and reserved again meanwhile, when the caller held no lock */
+static void
+ticket_free_locked(SiftMaintShmem *m, SiftMaintTicket t)
+{
+	if (m->worker[t.worker].state == 1 && m->worker[t.worker].gen == t.gen)
+		sift_maint_worker_free(m, t.worker);
+}
+
 static SiftMaintTicket
 reserve_locked(SiftMaintShmem *m, Oid db, TimestampTz now, int effective_max)
 {
@@ -744,14 +753,14 @@ reserve_locked(SiftMaintShmem *m, Oid db, TimestampTz now, int effective_max)
  * one sees both and gives its own back: the limit is never passed, even for a moment. The caller holds no lock of the table
  */
 static bool
-reserve_over_shared_limit(SiftMaintShmem *m, const SiftMaintHost *host, int w)
+reserve_over_shared_limit(SiftMaintShmem *m, const SiftMaintHost *host, SiftMaintTicket t)
 {
 	bool		over = (int) pg_atomic_read_u32(&m->active_workers) + (host->other_workers != NULL ? host->other_workers() : 0) > (int) pg_atomic_read_u32(&m->max_workers);
 
 	if (over)
 	{
 		sift_maint_begin(m);
-		sift_maint_worker_free(m, w);
+		ticket_free_locked(m, t);
 		sift_maint_end(m);
 	}
 	return over;
@@ -774,7 +783,7 @@ sift_maint_worker_reserve(SiftMaintShmem *m, const SiftMaintHost *host, Oid db)
 	sift_maint_begin(m);
 	t = reserve_locked(m, db, now, cap);
 	sift_maint_end(m);
-	return t.worker >= 0 && reserve_over_shared_limit(m, host, t.worker) ? (SiftMaintTicket) {-1} : t;
+	return t.worker >= 0 && reserve_over_shared_limit(m, host, t) ? (SiftMaintTicket) {-1} : t;
 }
 
 bool
@@ -819,8 +828,7 @@ sift_maint_worker_unconnected(SiftMaintShmem *m, const SiftMaintHost *host, Sift
 	TimestampTz now = host->now();
 
 	sift_maint_begin(m);
-	if (m->worker[t.worker].state == 1 && m->worker[t.worker].gen == t.gen)
-		sift_maint_worker_free(m, t.worker);
+	ticket_free_locked(m, t);
 	sift_maint_end(m);
 	if (sift_maint_db_connect_failed(m, now, db) >= SIFT_MAINT_CONNECT_GIVE_UP)
 		sift_maint_db_purge(m, db);
@@ -927,7 +935,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		res = !needs_worker(m, db, cold_ok, now) ? SIFT_KICK_WOKE : (t = reserve_locked(m, db, now, cap)).worker >= 0 ? SIFT_KICK_SPAWNED : SIFT_KICK_NOSLOT;
 		sift_maint_end(m);
 	}
-	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, t.worker))
+	if (res == SIFT_KICK_SPAWNED && reserve_over_shared_limit(m, host, t))
 		res = SIFT_KICK_NOSLOT;
 	if (procno >= 0)
 		host->wake(procno);
@@ -945,7 +953,7 @@ sift_maint_kick(SiftMaintShmem *m, const SiftMaintHost *host)
 		return res;
 	}
 	sift_maint_begin(m);
-	sift_maint_worker_free(m, t.worker);
+	ticket_free_locked(m, t);
 	m->stats.spawn_failed++;
 	sift_maint_end(m);
 	if (busy)

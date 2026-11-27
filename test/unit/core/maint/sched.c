@@ -1,7 +1,8 @@
 /*
  * test/unit/core/maint/sched.c - the queue of core/maint/sched.c on a fake host: one busy database gets as many workers as it has runnable requests (up to the cap), a request that
  * coalesces into a stranded one (no worker is there for it) still starts one, a request put back for a busy lock keeps the worker of its database, and the queue holds a request for every
- * partition of a large server. A worker that starts after its lease lapsed runs for its database on a slot no one took again, and never takes or gives back the slot reserved for another.
+ * partition of a large server. A worker that starts after its lease lapsed runs for its database on a slot no one took again, and never takes or gives back the slot reserved for another,
+ * nor does a kick or a reservation over the shared limit whose slot was reaped meanwhile. A lookup without the lock never reads the queue at a key removed while it probes.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -266,6 +267,85 @@ test_late_worker_no_hijack(void)
 	SIFT_CHECKF(m->worker[t2.worker].state == 1, "a late worker that cannot connect frees no reservation of another");
 }
 
+/* The host calls of a kick run without the lock: the lease lapses in them and the slot is reaped, and maybe reserved again for db 6 */
+static bool reserve_again;
+
+static void
+lapse_and_reap(void)
+{
+	clock_now += SIFT_MAINT_LEASE_US + 1;
+	sift_maint_reap(m, &host);
+	if (reserve_again)
+		SIFT_CHECK(sift_maint_worker_reserve(m, &host, 6).worker >= 0);
+}
+
+static bool race_spawn(Oid db, SiftMaintTicket t) { lapse_and_reap(); return false; }
+static int	race_other_workers(void) { lapse_and_reap(); return SIFT_MAINT_MAX_WORKERS; }
+
+/* A reservation given back after its slot was reaped frees neither the count twice nor the reservation of another */
+static void
+test_reaped_ticket_not_freed(void)
+{
+	SiftMaintHost spawn_host = host, over_host = host;
+
+	spawn_host.spawn = race_spawn;
+	over_host.other_workers = race_other_workers;
+	for (int again = 0; again <= 1; again++)
+	{
+		reserve_again = again;
+		fresh(4);
+		(void) enq(5, 1, SIFT_MK_SLAB_FLUSH);
+		(void) sift_maint_kick(m, &spawn_host);
+		SIFT_CHECKF(pg_atomic_read_u32(&m->active_workers) == (uint32) again && m->worker[0].state == again,
+					"a failed spawn of a reaped slot: %u active, slot state %u", pg_atomic_read_u32(&m->active_workers), m->worker[0].state);
+		fresh(4);
+		SIFT_CHECK(sift_maint_worker_reserve(m, &over_host, 5).worker < 0);
+		SIFT_CHECKF(pg_atomic_read_u32(&m->active_workers) == (uint32) again && m->worker[0].state == again,
+					"a reservation over the shared limit of a reaped slot: %u active, slot state %u", pg_atomic_read_u32(&m->active_workers), m->worker[0].state);
+	}
+	reserve_again = false;
+}
+
+/* Readers look a key up without the lock while a writer takes and frees its slot: a probe that saw the key never indexes the queue with the -1 the writer left */
+static pg_atomic_uint32 probing;
+
+static void
+probe_while_freed(void *arg, int worker)
+{
+	SiftMaintReq r = req(5, 1, SIFT_MK_SLAB_FLUSH);
+	uint32		h = key_hash(r.db, r.rel, r.kind);
+
+	sift_shm_procno = worker;
+	if (worker > 0)
+	{
+		for (int k = 0; k < 2000000; k++)
+			(void) covered(m, &r, 0);
+		pg_atomic_fetch_sub_u32(&probing, 1);
+		return;
+	}
+	while (pg_atomic_read_u32(&probing) > 0)
+	{
+		int			i;
+
+		sift_maint_begin(m);
+		slot_take(m, i = first_free(m), h);
+		m->slot[i] = (SiftMaintSlot) {.db = r.db,.rel = r.rel,.kind = r.kind,.state = SIFT_SLOT_QUEUED};
+		sift_maint_end(m);
+		sift_maint_begin(m);
+		slot_free(m, i);
+		sift_maint_end(m);
+	}
+}
+
+static void
+test_probe_while_freed(void)
+{
+	fresh(4);
+	pg_atomic_init_u32(&probing, 3);
+	unit_run_workers(4, probe_while_freed, NULL);
+	SIFT_CHECK(m->nqueued == 0 && m->khash[0] == 0);
+}
+
 int
 main(void)
 {
@@ -278,6 +358,11 @@ main(void)
 	test_capacity_and_drop();
 	test_late_worker_keeps_db();
 	test_late_worker_no_hijack();
+	test_reaped_ticket_not_freed();
+#ifndef __SANITIZE_THREAD__
+	/* the read of covered() races the writer by design (a seqlock): ThreadSanitizer reports every one */
+	test_probe_while_freed();
+#endif
 	free(m);
 	return sift_check_summary();
 }
