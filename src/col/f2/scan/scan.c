@@ -560,7 +560,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			if (views[leaf].isnull == NULL)
 				views[leaf] = sift_f2_decode_view(&schema->cols[leaf], &v, leaf, n, s->sink_dict != NULL && s->sink_dict[j], rows, nrows);
 			if (schema->cols[leaf].path[0] != '\0')
-				sift_f2_decode_payloads(&v, leaf, n, &views[leaf]);
+				sift_f2_decode_payloads(&v, leaf, &views[leaf]);
 		}
 		for (int k = 0; k < s->npreds && !few; k++)
 			if (!decided[k] && s->preds[k].op == SIFT_COLOP_KEY_EXISTS && views[s->preds[k].col].keyp == NULL)

@@ -8,8 +8,9 @@
 
 /* The rows of a leaf of a key of a document that hold a value of a JSON type it could not store: its value is the payload of their exception */
 void
-sift_f2_decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv)
+sift_f2_decode_payloads(const SiftGranuleView *v, int c, ColView *cv)
 {
+	const int	n = sift_granule_chunk_len(v, c);
 	const char **xp = NULL;
 	uint32	   *xl = NULL;
 
@@ -127,9 +128,16 @@ static ColView
 decode_view(const SiftStrMemo *memo, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows)
 {
 	ColView		cv = {0};
-	bool	   *nl = sift_alloc0(n);
-	uint8	   *tg = sift_alloc(n);
+	bool	   *nl;
+	uint8	   *tg;
 
+	if (d->parent >= 0 || d->kind == SIFT_COLK_GROUP)
+	{
+		n = sift_granule_chunk_len(v, c);
+		rows = NULL;
+	}
+	nl = sift_alloc0(n);
+	tg = sift_alloc(n);
 	cv.kind = d->store == SIFT_COLS_INT ? SIFT_CELL_INT : (d->store == SIFT_COLS_STR || d->store == SIFT_COLS_VAR) ? SIFT_CELL_STR : SIFT_CELL_F8;
 	if (rows != NULL)
 		sparse_view(memo, v, c, n, codes, rows, nrows, nl, &cv);

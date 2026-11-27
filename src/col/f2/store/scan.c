@@ -567,7 +567,7 @@ sift_f2_store_scan_open(const SiftStoreScanOpts *o)
 		s->want[o->preds[k].col] = true;
 	s->check_cols = MemoryContextAlloc(cx, sizeof(int) * Max(o->store->ncols, 1));
 	for (int leaf = 0; leaf < o->store->ncols && table; leaf++)
-		if (s->want[leaf] && !(o->nan_leaves != NULL && o->nan_leaves[leaf]))
+		if (s->want[leaf] && !(o->nan_leaves != NULL && o->nan_leaves[leaf]) && o->store->schema->cols[leaf].parent < 0 && o->store->schema->cols[leaf].kind != SIFT_COLK_GROUP)
 			s->check_cols[s->ncheck++] = leaf;
 	s->offer_decided = MemoryContextAllocZero(cx, Max(o->npreds, 1));
 	s->offer_zones = MemoryContextAllocZero(cx, sizeof(SiftZone *) * Max(o->npreds, 1));

@@ -10,6 +10,7 @@
 
 #include "col/f2/store/scan_int.h"
 #include "col/f2/store/schema.h"
+#include "col/f2/view.h"
 #include "table/f2/blob.h"
 
 static void
@@ -113,7 +114,7 @@ decoded_view(SiftStorePart *p, int leaf, int phys, SiftCellKind kind)
 		v.isnull = nulls;
 	}
 	if (sift_f2_leaf_is_path(s->store, leaf) && v.tag != NULL)
-		sift_f2_decode_payloads(&gb->view, phys, gb->nrows, &v);
+		sift_f2_decode_payloads(&gb->view, phys, &v);
 	return v;
 }
 
@@ -157,6 +158,19 @@ widened_view(SiftStorePart *p, int leaf, int phys, uint8 scale)
 	return (ColView) {.kind = SIFT_CELL_STR,.isnull = nulls,.s = ss,.slen = lens};
 }
 
+/* A leaf of the elements of the arrays or maps of the rows: a value for each element of the granule, which the lengths of its group leaf give to the rows; no column delta patches one */
+static ColView
+element_view(SiftStorePart *p, int leaf, int phys)
+{
+	SiftF2GranuleBuf *gb = p->r->gb;
+	MemoryContext old = MemoryContextSwitchTo(p->r->gcx);
+	ColView		v = sift_f2_decode_view(&p->s->store->schema->cols[leaf], &gb->view, phys, gb->nrows, false, NULL, 0);
+
+	sift_f2_decode_payloads(&gb->view, phys, &v);
+	MemoryContextSwitchTo(old);
+	return v;
+}
+
 void
 sift_store_scan_load_views(SiftStorePart *p)
 {
@@ -173,6 +187,8 @@ sift_store_scan_load_views(SiftStorePart *p)
 			unsupported_form(s->store, leaf);
 		else if (phys < 0)
 			p->r->views[leaf] = constant_view(p, leaf, map);
+		else if (s->store->schema->cols[leaf].parent >= 0)
+			p->r->views[leaf] = element_view(p, leaf, phys);
 		else if (map != NULL && map->phys_kind[leaf] == SIFT_CELL_INT && s->store->kinds[leaf] == SIFT_CELL_STR)
 			p->r->views[leaf] = widened_view(p, leaf, phys, map->old_scale[leaf]);
 		else

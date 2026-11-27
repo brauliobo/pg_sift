@@ -12,7 +12,8 @@
 
 /*
  * The column c of a granule of n rows. A string column the sink asked for as codes (codes) is given as them when its chunk is a dictionary of the granule. rows (nrows of them, ascending, nrows <
- * SIFT_POINT_ROWS_MAX) are the only rows that will be read: only their values are made, and the arrays hold nothing for the others; NULL: every row.
+ * SIFT_POINT_ROWS_MAX) are the only rows that will be read: only their values are made, and the arrays hold nothing for the others; NULL: every row. The lengths of the arrays of a group leaf are
+ * made for every row and the leaf of their elements has a value for each element of the granule, so that a reader finds the elements of a row by the lengths before it.
  */
 extern ColView sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows);
 
@@ -20,7 +21,7 @@ extern ColView sift_f2_decode_view(const SiftColDef *d, const SiftGranuleView *v
  * memo: the strings the filters of the worker kept (col/granule/cfilt/str_simd.h), NULL for none */
 extern bool sift_f2_decode_view_a(SiftArena *a, SiftErr *err, const SiftStrMemo *memo, const SiftColDef *d, const SiftGranuleView *v, int c, int n, bool codes, const uint16 *rows, int nrows, ColView *out);
 
-/* The rows of the leaf of a path of a document that hold a value of a JSON type it could not store: their value is the payload of their exception, which the view then has (xpay) */
-extern void sift_f2_decode_payloads(const SiftGranuleView *v, int c, int n, ColView *cv);
+/* The rows (the elements) of the leaf of a path of a document that hold a value of a JSON type it could not store: their value is the payload of their exception, which the view then has (xpay) */
+extern void sift_f2_decode_payloads(const SiftGranuleView *v, int c, ColView *cv);
 
 #endif							/* SIFT_F2_VIEW_H */
