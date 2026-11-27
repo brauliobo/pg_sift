@@ -12,6 +12,7 @@
 
 #include "postgres.h"
 
+#include "commands/explain.h"
 #include "executor/executor.h"
 
 #include "agg/ext.h"
@@ -49,5 +50,8 @@ extern void sift_v6_resid_free(SiftV6Resid *r);
 extern bool sift_v6_resid_has(const SiftV6Resid *r, int dim);
 /* cols[i] is the vector of x->rcol[i], read only for the columns the conditions name; clears the rows of bs the conditions do not keep (NULL is not true) */
 extern void sift_v6_resid_filter(SiftV6Resid *r, int dim, const SiftVec *const *cols, SiftBatchSel *bs);
+
+/* The Lookup line of EXPLAIN ANALYZE: the rows the plans of the dimensions (dims, their PlanStates) read and passed on, and the index scans they ran */
+extern void sift_v6_explain_lookup_reads(List *dims, ExplainState *es);
 
 #endif							/* SIFT_AGG_V6_JOIN_LOOKUP_H */

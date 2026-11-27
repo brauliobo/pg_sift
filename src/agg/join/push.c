@@ -32,6 +32,7 @@
 #include "agg/cost/card.h"
 #include "agg/dim_keys.h"
 #include "agg/join/join.h"
+#include "agg/join/lookup.h"
 #include "agg/settings.h"
 #include "agg/join/push.h"
 #include "agg/source_rel.h"
@@ -303,7 +304,10 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	cp->path.parent = out;
 	cp->path.pathtarget = out->reltarget;
 	cp->path.rows = clamp_row_est(groups);
-	sift_v6_scan_price(root, j->fact, ix, j->fact_attno, &open, &scan);
+	if (ix != NULL)
+		sift_v6_agg_cost(root, j->fact, ix, &spec, groups, &open, &scan);
+	else
+		sift_v6_scan_price(root, j->fact, NULL, j->fact_attno, &open, &scan);
 	cp->path.startup_cost = dim_path->total_cost + open;
 	cp->path.total_cost = dim_path->total_cost + scan + cpu_tuple_cost * groups + cpu_operator_cost * (dim_path->rows + 2.0 * j->fact->rows);
 	cp->methods = &push_path_methods;
@@ -311,6 +315,7 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	cp->custom_private = list_make5(sift_v6_spec_pack(&spec), scan_tlist, ((GroupPathExtraData *) extra)->havingQual,
 									list_make2(key_template(j, int_col, get_atttype(planner_rt_fetch(j->fact->relid, root)->relid, j->fact_attno)), copyObject(j->dim_var)),
 									scope_route(root, j, ix));
+	sift_v6_force_price(&cp->path);
 	add_path(out, &cp->path);
 }
 
@@ -692,6 +697,7 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ExplainPropertyText("Join", "pushed into the scan as a key", es);
 	if (st->ran)
 		ExplainPropertyInteger("Join Keys Pushed", NULL, st->nvalues, es);
+	sift_v6_explain_lookup_reads(node->custom_ps, es);
 	if (st->router != NULL)
 	{
 		int64		kept,

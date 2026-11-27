@@ -6,6 +6,7 @@
 
 #include "access/tupdesc.h"
 #include "catalog/pg_type_d.h"
+#include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
@@ -13,6 +14,8 @@
 
 #include "agg/join/lookup.h"
 #include "agg/vexpr/str.h"
+#include "core/compat.h"
+#include "core/explain.h"
 #include "core/memtrack.h"
 
 void
@@ -313,4 +316,48 @@ void
 sift_v6_shared_dim_abort(SiftV6SharedDim *h)
 {
 	MemoryContextDelete(h->cx);
+}
+
+typedef struct LookupReads
+{
+	double		read;
+	double		loaded;
+	double		index_scans;
+} LookupReads;
+
+static bool
+lookup_reads(PlanState *ps, LookupReads *r)
+{
+	const Plan *plan = ps->plan;
+	SiftNodeInstr *in = ps->instrument;
+
+	if (in != NULL)
+	{
+		InstrEndLoop(in);
+		if (IsA(plan, SeqScan) || IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapHeapScan))
+		{
+			r->read += in->ntuples + in->nfiltered1 + in->nfiltered2;
+			r->loaded += in->ntuples;
+		}
+		if (IsA(plan, IndexScan) || IsA(plan, IndexOnlyScan) || IsA(plan, BitmapIndexScan))
+			r->index_scans += in->nloops;
+	}
+	return planstate_tree_walker(ps, lookup_reads, r);
+}
+
+void
+sift_v6_explain_lookup_reads(List *dims, ExplainState *es)
+{
+	LookupReads r = {0};
+	SiftExplainLine ln;
+
+	if (!es->analyze)
+		return;
+	foreach_ptr(PlanState, ps, dims)
+		lookup_reads(ps, &r);
+	sift_explain_begin(&ln, es, "Lookup");
+	sift_explain_int(&ln, "Lookup Rows Read", NULL, "rows read", (int64) r.read, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Lookup Rows Loaded", NULL, "rows loaded", (int64) r.loaded, SIFT_XI_KEEP);
+	sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", (int64) r.index_scans, SIFT_XI_OPT);
+	sift_explain_end(&ln);
 }
