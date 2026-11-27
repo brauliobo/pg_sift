@@ -1,5 +1,5 @@
 -- The members of a map `col.* float8` of a sift_col index of format major 2 that a statement reads by a constant key (col -> 'k', col['k'], their casts to float8 and to an integer, (col ->> 'k')::float8),
--- and a subscript of a key the index keeps as a leaf: the aggregate scan of SiftAggV6 gives one row for each row of the table, the member as its value or NULL.
+-- and a subscript of a key the index keeps as a leaf: the aggregate scan of SiftAggV6 finds the member by its key in each row of the table, its value or NULL.
 -- Every query is run with the node and without it (sift.enable_agg) and the two answers are compared, errors included; the first word says they agree, the second that the plan is the one the query
 -- expects (node: SiftAggV6; node18: SiftAggV6 where PostgreSQL gives NULL for the cast of a JSON null, the normal plan before). The plan comes from the cost of the pages, not from a setting that forces it.
 CREATE EXTENSION pg_sift;
@@ -59,7 +59,7 @@ BEGIN
 	RETURN (CASE WHEN a IS DISTINCT FROM b THEN 'DIFFERENT' ELSE 'same' END) || ' ' || (CASE WHEN node = expect_node THEN want ELSE 'UNEXPECTED ' || plan END) || ' ' ||
 		(CASE WHEN a LIKE 'error %' THEN a ELSE 'ok' END) || ' ' || q;
 END $$;
--- Q-01. The plans: the members the statement names, with their types
+-- Q-01. The plans: the members the statement names are columns of the scan of the index
 EXPLAIN (COSTS OFF) SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::float8) FROM mk GROUP BY 1;
                              QUERY PLAN                             
 --------------------------------------------------------------------
@@ -1224,7 +1224,7 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (metrics -> ''quality'')::smallint, count(*) FROM mk GROUP BY 1', 'node18'),
 	('SELECT g, sum((metrics -> ''quality'')::int), min((metrics -> ''m_total'')::bigint), max((metrics -> ''m_total'')::int), avg((metrics -> ''quality'')::int) FROM mk GROUP BY 1', 'node18'),
 	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::int >= 4), count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk', 'node18'),
-	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5 OR g = 3) FROM mk', 'normal'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint = 5 OR g = 3) FROM mk', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::smallint IN (1, 2, 5) GROUP BY 1', 'node18'),
 	('SELECT g, count(*) FROM mk WHERE (metrics -> ''quality'')::int IS NULL GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, (metrics -> ''m_total'')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2', 'node18'),
@@ -1242,7 +1242,7 @@ SELECT same(q, w) FROM (VALUES
  same node18 ok SELECT (metrics -> 'quality')::smallint, count(*) FROM mk GROUP BY 1
  same node18 ok SELECT g, sum((metrics -> 'quality')::int), min((metrics -> 'm_total')::bigint), max((metrics -> 'm_total')::int), avg((metrics -> 'quality')::int) FROM mk GROUP BY 1
  same node18 ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::int >= 4), count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5), count(*) FILTER (WHERE g = 3) FROM mk
- same normal ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5 OR g = 3) FROM mk
+ same node18 ok SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint = 5 OR g = 3) FROM mk
  same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::smallint IN (1, 2, 5) GROUP BY 1
  same node18 ok SELECT g, count(*) FROM mk WHERE (metrics -> 'quality')::int IS NULL GROUP BY 1
  same node18 ok SELECT (metrics -> 'quality')::int, (metrics -> 'm_total')::int, count(*) FROM mk WHERE g < 3 GROUP BY 1, 2
@@ -1266,8 +1266,9 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''big'')::int, count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 4 GROUP BY 1', 'node18'),
 	('SELECT (metrics -> ''quality'')::int, count(*) FILTER (WHERE (metrics -> ''big'')::int > 0) FROM mk WHERE (metrics -> ''quality'')::int >= 5 GROUP BY 1', 'node18'),
-	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 AND (metrics -> ''big'')::int > 0', 'node18'),
-	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 0 AND (metrics -> ''quality'')::int >= 5', 'node18')
+	-- two conditions that cast: PostgreSQL casts the second for the rows the first keeps, which the batch quals of the scan do not follow: the normal plan
+	('SELECT count(*) FROM mk WHERE (metrics -> ''quality'')::int >= 5 AND (metrics -> ''big'')::int > 0', 'plain'),
+	('SELECT count(*) FROM mk WHERE (metrics -> ''big'')::int > 0 AND (metrics -> ''quality'')::int >= 5', 'plain')
 ) t(q, w);
                                                                                same                                                                               
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1282,8 +1283,8 @@ SELECT same(q, w) FROM (VALUES
  same node18 ok SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 5 GROUP BY 1
  same node18 error 22003 integer out of range SELECT (metrics -> 'big')::int, count(*) FROM mk WHERE (metrics -> 'quality')::int >= 4 GROUP BY 1
  same node18 ok SELECT (metrics -> 'quality')::int, count(*) FILTER (WHERE (metrics -> 'big')::int > 0) FROM mk WHERE (metrics -> 'quality')::int >= 5 GROUP BY 1
- same node18 ok SELECT count(*) FROM mk WHERE (metrics -> 'quality')::int >= 5 AND (metrics -> 'big')::int > 0
- same node18 error 22003 integer out of range SELECT count(*) FROM mk WHERE (metrics -> 'big')::int > 0 AND (metrics -> 'quality')::int >= 5
+ same plain ok SELECT count(*) FROM mk WHERE (metrics -> 'quality')::int >= 5 AND (metrics -> 'big')::int > 0
+ same plain error 22003 integer out of range SELECT count(*) FROM mk WHERE (metrics -> 'big')::int > 0 AND (metrics -> 'quality')::int >= 5
 (13 rows)
 
 -- Q-07. A JSON null member is NULL for the casts of PostgreSQL 18 (the text and its float8 are NULL on every version), and a member that is no number is read from the table as it reads it
@@ -1398,7 +1399,8 @@ SELECT same(q, w) FROM (VALUES
 	('SELECT (attributes -> ''score'')::float8, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
 	('SELECT g, sum((attributes[''score''])::bigint), avg((attributes -> ''score'')::int) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
 	('SELECT attributes ->> ''channel'', count(*) FILTER (WHERE (attributes -> ''score'')::int >= 3) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1', 'node18'),
-	('SELECT count(*) FROM ms WHERE (attributes -> ''score'')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)', 'node18'),
+	-- PostgreSQL tests the cheaper cast before the list, for every row, where the scan keys of the list drop rows first: the normal plan
+	('SELECT count(*) FROM ms WHERE (attributes -> ''score'')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)', 'plain'),
 	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k IN (3, 4) GROUP BY 1', 'node18'),
 	('SELECT (attributes -> ''score'')::smallint, count(*) FROM ms WHERE k = 8 GROUP BY 1', 'node18'),
 	('SELECT (attributes -> ''score'')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1', 'node18')
@@ -1410,12 +1412,135 @@ SELECT same(q, w) FROM (VALUES
  same node18 error 22023 cannot cast jsonb null to type double precision SELECT (attributes -> 'score')::float8, count(*) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
  same node18 error 22023 cannot cast jsonb null to type bigint SELECT g, sum((attributes['score'])::bigint), avg((attributes -> 'score')::int) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
  same node18 error 22023 cannot cast jsonb null to type integer SELECT attributes ->> 'channel', count(*) FILTER (WHERE (attributes -> 'score')::int >= 3) FROM ms WHERE k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100) GROUP BY 1
- same node18 error 22023 cannot cast jsonb null to type integer SELECT count(*) FROM ms WHERE (attributes -> 'score')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)
+ same plain error 22023 cannot cast jsonb null to type integer SELECT count(*) FROM ms WHERE (attributes -> 'score')::int IS NULL AND k IN (0, 1, 2, 4, 5, 7, 9, 10, 11, 100)
  same node18 error 22023 cannot cast jsonb string to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k IN (3, 4) GROUP BY 1
  same node18 error 22003 smallint out of range SELECT (attributes -> 'score')::smallint, count(*) FROM ms WHERE k = 8 GROUP BY 1
  same node18 error 22023 cannot cast jsonb boolean to type integer SELECT (attributes -> 'score')::int, count(*) FROM ms WHERE k = 6 GROUP BY 1
 (9 rows)
 
-DROP FUNCTION same(text, text), answer(text), plan_of(text);
-DROP TABLE mk, mn, md, mx, ms;
+-- Q-11. The `->>` text of a boolean key beside a member read by key: the leaf holds booleans, the key is their text ('true', 'false'), before and after the rows change
+CREATE TABLE mb (id int PRIMARY KEY, attributes jsonb, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mb SELECT i, CASE i % 10 WHEN 0 THEN '{"channel": "web"}'::jsonb WHEN 1 THEN NULL ELSE jsonb_build_object('channel', CASE i % 3 WHEN 0 THEN 'web' ELSE 'app' END, 'normalized', i % 10 < 7) END,
+	jsonb_build_object('m_total', i % 9 + 0.5)
+FROM generate_series(1, 3000) i;
+CREATE INDEX mb_col ON mb USING sift_col (id, attributes, metrics) WITH (paths = 'attributes->channel text, attributes->normalized bool, metrics.* float8');
+ANALYZE mb;
+SELECT attributes ->> 'channel' AS channel, attributes ->> 'normalized' AS normalized, count(*) AS n, avg((metrics ->> 'm_total')::float8) AS m_total FROM mb GROUP BY 1, 2 ORDER BY 1, 2 NULLS FIRST;
+ channel | normalized |  n   | m_total 
+---------+------------+------+---------
+ app     | false      |  600 |       5
+ app     | true       | 1000 |   5.006
+ web     |            |  300 |    4.48
+ web     | false      |  300 |    3.47
+ web     | true       |  500 |   3.518
+         |            |  300 |    4.48
+(6 rows)
+
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node'),
+	('SELECT attributes ->> ''normalized'', sum((metrics[''m_total''])::float8) FROM mb GROUP BY 1', 'node')
+) t(q, w);
+                                                                                                                                  same                                                                                                                                   
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+ same UNEXPECTED GroupAggregate  Group Key: ((attributes ->> 'normalized'::text))  ->  Sort        Sort Key: ((attributes ->> 'normalized'::text))        ->  Seq Scan on mb ok SELECT attributes ->> 'normalized', sum((metrics['m_total'])::float8) FROM mb GROUP BY 1
+(2 rows)
+
+UPDATE mb SET attributes = attributes || '{"normalized": false}' WHERE id % 50 = 3;
+UPDATE mb SET attributes = attributes || '{"normalized": "yes"}' WHERE id % 70 = 4;
+INSERT INTO mb SELECT 3000 + i, jsonb_build_object('channel', 'pos', 'normalized', i % 2 = 0), jsonb_build_object('m_total', i) FROM generate_series(1, 200) i;
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node'),
+	('SELECT attributes ->> ''normalized'', sum((metrics[''m_total''])::float8) FROM mb GROUP BY 1', 'node')
+) t(q, w);
+                                                                                                                                  same                                                                                                                                   
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+ same UNEXPECTED GroupAggregate  Group Key: ((attributes ->> 'normalized'::text))  ->  Sort        Sort Key: ((attributes ->> 'normalized'::text))        ->  Seq Scan on mb ok SELECT attributes ->> 'normalized', sum((metrics['m_total'])::float8) FROM mb GROUP BY 1
+(2 rows)
+
+VACUUM mb;
+SELECT same(q, w) FROM (VALUES
+	('SELECT attributes ->> ''channel'', attributes ->> ''normalized'', count(*), avg((metrics ->> ''m_total'')::float8) FROM mb GROUP BY 1, 2', 'node')
+) t(q, w);
+                                                                      same                                                                       
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT attributes ->> 'channel', attributes ->> 'normalized', count(*), avg((metrics ->> 'm_total')::float8) FROM mb GROUP BY 1, 2
+(1 row)
+
+-- Q-12. A key longer than the index keeps of a map (255 bytes) has no leaf: a row whose member the other keys do not name is read again from the table and answered from its
+-- document, before and after the rows change (the slab and the parts)
+CREATE TABLE ml (id int PRIMARY KEY, g int, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO ml SELECT i, i % 4, CASE i % 5 WHEN 0 THEN jsonb_build_object(repeat('k', 300), 1, 'm_total', i % 7 + 0.5) WHEN 1 THEN jsonb_build_object(repeat('z', 300), 2)
+	WHEN 2 THEN jsonb_build_object(repeat('y', 300), 'm_total') ELSE jsonb_build_object('m_total', i % 3, 'quality', 1) END
+FROM generate_series(1, 3000) i;
+CREATE INDEX ml_col ON ml USING sift_col (id, g, metrics) WITH (paths = 'metrics.* float8');
+ANALYZE ml;
+CREATE FUNCTION reread(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	SET LOCAL sift.enable_agg = on;
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l LIKE '%Read Again%' THEN RETURN btrim(l); END IF;
+	END LOOP;
+	RETURN NULL;
+END $$;
+SELECT same(q, w), reread(q) FROM (VALUES
+	('SELECT g, count((metrics ->> ''m_total'')::float8), sum((metrics ->> ''m_total'')::float8) FROM ml GROUP BY 1', 'node'),
+	('SELECT (metrics ->> ''m_total'')::float8 AS t, count(*) FROM ml WHERE g < 2 GROUP BY 1', 'node')
+) t(q, w);
+                                                          same                                                          |               reread                
+------------------------------------------------------------------------------------------------------------------------+-------------------------------------
+ same node ok SELECT g, count((metrics ->> 'm_total')::float8), sum((metrics ->> 'm_total')::float8) FROM ml GROUP BY 1 | Rows Read Again From The Heap: 1200
+ same node ok SELECT (metrics ->> 'm_total')::float8 AS t, count(*) FROM ml WHERE g < 2 GROUP BY 1                      | Rows Read Again From The Heap: 600
+(2 rows)
+
+INSERT INTO ml SELECT 3000 + i, i % 4, jsonb_build_object(repeat('w', 300), i, 'quality', 2) FROM generate_series(1, 40) i;
+SELECT same(q, w) FROM (VALUES
+	('SELECT g, count((metrics ->> ''m_total'')::float8), sum((metrics ->> ''m_total'')::float8) FROM ml GROUP BY 1', 'node')
+) t(q, w);
+                                                          same                                                          
+------------------------------------------------------------------------------------------------------------------------
+ same node ok SELECT g, count((metrics ->> 'm_total')::float8), sum((metrics ->> 'm_total')::float8) FROM ml GROUP BY 1
+(1 row)
+
+-- Q-13. A condition and a read of the rows it keeps that cast to two types raise two errors: of the first row that raises, the one PostgreSQL meets first in it (the condition, then
+-- the read), whichever cast comes first in the scan
+CREATE TABLE mo (id int PRIMARY KEY, metrics jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO mo SELECT i, CASE i WHEN 10 THEN '{"m_total": 5, "quality": "q"}' WHEN 20 THEN '{"m_total": "t", "quality": 1}' WHEN 30 THEN '{"m_total": "u", "quality": "v"}'
+	ELSE jsonb_build_object('m_total', i % 9, 'quality', i % 4) END::jsonb FROM generate_series(1, 2000) i;
+CREATE INDEX mo_col ON mo USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+VACUUM ANALYZE mo;
+SELECT same(q, w) FROM (VALUES
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 AND id <> 10 GROUP BY 1', 'node18'),
+	('SELECT (metrics -> ''quality'')::bigint, count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0 AND id > 25 GROUP BY 1', 'node18'),
+	('SELECT count(*) FILTER (WHERE (metrics -> ''quality'')::bigint > 1), count(*) FROM mo WHERE (metrics -> ''m_total'')::int >= 0', 'node18')
+) t(q, w);
+                                                                                            same                                                                                            
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node18 error 22023 cannot cast jsonb string to type bigint SELECT (metrics -> 'quality')::bigint, count(*) FROM mo WHERE (metrics -> 'm_total')::int >= 0 GROUP BY 1
+ same node18 error 22023 cannot cast jsonb string to type integer SELECT (metrics -> 'quality')::bigint, count(*) FROM mo WHERE (metrics -> 'm_total')::int >= 0 AND id <> 10 GROUP BY 1
+ same node18 error 22023 cannot cast jsonb string to type integer SELECT (metrics -> 'quality')::bigint, count(*) FROM mo WHERE (metrics -> 'm_total')::int >= 0 AND id > 25 GROUP BY 1
+ same node18 error 22023 cannot cast jsonb string to type bigint SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint > 1), count(*) FROM mo WHERE (metrics -> 'm_total')::int >= 0
+(4 rows)
+
+-- Q-14. A star join that drops fact rows: the cast of a member raises for a row that reaches the groups through the join, and not for a row the join drops
+CREATE TABLE mt (id int PRIMARY KEY, kind text);
+INSERT INTO mt SELECT i, 'k' || i % 3 FROM generate_series(1, 25) i;
+ANALYZE mt;
+SELECT same(q, w) FROM (VALUES
+	('SELECT t.kind, count(*), sum((o.metrics ->> ''m_total'')::float8) FROM mt t JOIN mo o ON o.id = t.id GROUP BY 1', 'node'),
+	('SELECT t.kind, count(*), sum((o.metrics ->> ''m_total'')::float8) FROM mt t JOIN mo o ON o.id = t.id + 100 GROUP BY 1', 'node'),
+	('SELECT t.kind, count(o.id), sum((o.metrics ->> ''m_total'')::float8) FROM mt t LEFT JOIN mo o ON o.id = t.id + 100 GROUP BY 1', 'node')
+) t(q, w);
+                                                                                          same                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node error 22P02 invalid input syntax for type double precision: "t" SELECT t.kind, count(*), sum((o.metrics ->> 'm_total')::float8) FROM mt t JOIN mo o ON o.id = t.id GROUP BY 1
+ same node ok SELECT t.kind, count(*), sum((o.metrics ->> 'm_total')::float8) FROM mt t JOIN mo o ON o.id = t.id + 100 GROUP BY 1
+ same node ok SELECT t.kind, count(o.id), sum((o.metrics ->> 'm_total')::float8) FROM mt t LEFT JOIN mo o ON o.id = t.id + 100 GROUP BY 1
+(3 rows)
+
+DROP FUNCTION same(text, text), answer(text), plan_of(text), reread(text);
+DROP TABLE mk, mn, md, mx, ms, mb, ml, mo, mt;
 DROP EXTENSION pg_sift;

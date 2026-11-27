@@ -39,13 +39,15 @@ test/expected/agg/jsonb_each_map_1.out	c6b6503f68a596b55ef5cd81660a0d0aea2c7bbd	
 test/expected/agg/jsonb_each_map_1.out	d26252bc94006016fd657c2b2efd341aa01d851c	17	same
 test/expected/agg/jsonb_each_map_1.out	dbeadf12287f441a7377d6e8e125eeee37d91ee4	17	same node error 22023 cannot cast jsonb boolean to type double precision SELECT
 test/expected/agg/jsonb_map_keyread_1.out	037aa4c0ada0392d3e71dee50bfc856f3213981a	17	same node ok SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::f
+test/expected/agg/jsonb_map_keyread_1.out	28b3388e177383583944c1d378c6b3f4c4ddcf8c	17	same
 test/expected/agg/jsonb_map_keyread_1.out	6b8fd9e0475211bc048938b872bf09a7996a8843	17	Custom Scan (SiftAggV6)
 test/expected/agg/jsonb_map_keyread_1.out	813ac5b3ef5f04cccb10aeb54a3609e24ebfea59	17	QUERY PLAN
 test/expected/agg/jsonb_map_keyread_1.out	86e5aa6f0148a47c30e423ce3f4458fc05ad8856	17	same
-test/expected/agg/jsonb_map_keyread_1.out	9dfda98e77a82af5844248d4444f0a481f21154b	17	
+test/expected/agg/jsonb_map_keyread_1.out	87e16f6e9eb650ce5a28fed11d9cea72c7aba8fa	17	same node ok SELECT attributes ->> 'normalized', sum((metrics['m_total'])::floa
+test/expected/agg/jsonb_map_keyread_1.out	9245d4f0897cd9f9fa32d61ddbf32078fcf08853	17	QUERY PLAN
+test/expected/agg/jsonb_map_keyread_1.out	9bf66451cf116570e385726fa65e41ea07343c27	17	
 test/expected/agg/jsonb_map_keyread_1.out	a1d884e7164f7a95109acf72bc8a21bb08d521a3	17	same node18 ok SELECT (metrics -> 'tip')::int, count(*) FROM mn GROUP BY 1
 test/expected/agg/jsonb_map_keyread_1.out	dca4d93920e74ec2c453e930608bf5a86a9d5382	17	
-test/expected/agg/jsonb_map_keyread_1.out	f8a4f310c1d62b3ecd31a5447fae91dd16cd99c4	17	QUERY PLAN
 test/expected/agg/lateral_flatten_f2_1.out	6f540c46750276a381d5c0b16ae5a727f774094b	17	cast of an excluded row | t    | t    | [{"n": 1, "day": "2026-02-01", "total":
 test/expected/agg/lateral_flatten_f2_1.out	7c04f665678c062b18861951cfda5e346f850c1c	17	mapping below an outer join | t    | t    | [{"day": "2026-01-01", "score": 2,
 test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874d9d	17	cast out of range | t    | t    | 22003 integer out of range
