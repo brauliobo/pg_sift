@@ -59,9 +59,6 @@ const TableAmRoutine sift_tbl_v2_methods = {
 	.relation_estimate_size = sift_tbl_f2_relation_estimate_size,
 #if PG_VERSION_NUM >= 180000
 	.scan_bitmap_next_tuple = sift_tbl_f2_scan_bitmap_next_tuple,
-#else
-	.scan_bitmap_next_block = sift_tbl_f2_scan_bitmap_next_block,
-	.scan_bitmap_next_tuple = sift_tbl_f2_scan_bitmap_next_tuple_17,
 #endif
 	.scan_sample_next_block = sift_tbl_f2_scan_sample_next_block,
 	.scan_sample_next_tuple = sift_tbl_f2_scan_sample_next_tuple,

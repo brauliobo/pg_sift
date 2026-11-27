@@ -343,9 +343,6 @@ extern TransactionId sift_tbl_index_delete_tuples(Relation rel, TM_IndexDeleteOp
 #if PG_VERSION_NUM >= 180000
 extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *recheck,
 											uint64 *lossy_pages, uint64 *exact_pages);
-#else
-extern bool sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres);
-extern bool sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot);
 #endif
 extern bool sift_tbl_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream);
 extern bool sift_tbl_scan_analyze_next_tuple(TableScanDesc scan, SIFT_TAM_ANALYZE_XMIN double *liverows,

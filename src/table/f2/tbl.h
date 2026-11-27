@@ -378,9 +378,6 @@ extern bool sift_tbl_f2_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *s
 extern TransactionId sift_tbl_f2_index_delete_tuples(Relation rel, TM_IndexDeleteOp *delstate);
 #if PG_VERSION_NUM >= 180000
 extern bool sift_tbl_f2_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *recheck, uint64 *lossy_pages, uint64 *exact_pages);
-#else
-extern bool sift_tbl_f2_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres);
-extern bool sift_tbl_f2_scan_bitmap_next_tuple_17(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot);
 #endif
 extern bool sift_tbl_f2_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate);
 extern bool sift_tbl_f2_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanState *scanstate, TupleTableSlot *slot);

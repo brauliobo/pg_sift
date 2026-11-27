@@ -701,6 +701,7 @@ bitmap_page(Relation rel, SiftTblScan *s, BlockNumber vblock, const OffsetNumber
 	sift_errctx_pop(&ctx);
 }
 
+#if PG_VERSION_NUM >= 180000
 static bool
 next_row(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 {
@@ -739,6 +740,7 @@ bitmap_emit(Relation rel, SiftTblScan *s, TupleTableSlot *slot)
 	sift_errctx_pop(&ctx);
 	return found;
 }
+#endif
 
 static int
 cmp_offset(const void *a, const void *b)
@@ -826,24 +828,6 @@ sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *
 		}
 		*recheck = tbmres.recheck;
 	}
-}
-
-#else
-
-bool
-sift_tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
-{
-	SiftTblScan *s = (SiftTblScan *) scan;
-
-	CHECK_FOR_INTERRUPTS();
-	bitmap_page(scan->rs_rd, s, tbmres->blockno, tbmres->ntuples < 0 ? NULL : tbmres->offsets, tbmres->ntuples, true);
-	return s->nbrows > 0;
-}
-
-bool
-sift_tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot)
-{
-	return bitmap_emit(scan->rs_rd, (SiftTblScan *) scan, slot);
 }
 
 #endif

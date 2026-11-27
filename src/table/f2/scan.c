@@ -890,22 +890,6 @@ sift_tbl_f2_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, boo
 	}
 }
 
-#else
-
-bool
-sift_tbl_f2_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
-{
-	CHECK_FOR_INTERRUPTS();
-	page_load((SiftTblF2Scan *) scan, tbmres->blockno, tbmres->ntuples < 0 ? NULL : tbmres->offsets, tbmres->ntuples);
-	return ((SiftTblF2Scan *) scan)->page->n > 0;
-}
-
-bool
-sift_tbl_f2_scan_bitmap_next_tuple_17(TableScanDesc scan, TBMIterateResult *tbmres pg_attribute_unused(), TupleTableSlot *slot)
-{
-	return page_emit((SiftTblF2Scan *) scan, slot);
-}
-
 #endif
 
 uint64

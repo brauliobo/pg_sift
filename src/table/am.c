@@ -419,23 +419,15 @@ tbl_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages,
 	REL_TAM(rel)->relation_estimate_size(rel, attr_widths, pages, tuples, allvisfrac);
 }
 
+/*
+ * Bitmap heap scans from 18 on: before 18 the executor prefetches the blocks of the bitmap itself, and a TID of a sift_table names a virtual block that may be past the end of its file
+ * ("previous segment is only N blocks"). Without scan_bitmap_next_block the planner offers no bitmap scan of the table.
+ */
 #if PG_VERSION_NUM >= 180000
 static bool
 tbl_scan_bitmap_next_tuple(TableScanDesc scan, TupleTableSlot *slot, bool *recheck, uint64 *lossy_pages, uint64 *exact_pages)
 {
 	return SCAN_TAM(scan)->scan_bitmap_next_tuple(scan, slot, recheck, lossy_pages, exact_pages);
-}
-#else
-static bool
-tbl_scan_bitmap_next_block(TableScanDesc scan, TBMIterateResult *tbmres)
-{
-	return SCAN_TAM(scan)->scan_bitmap_next_block(scan, tbmres);
-}
-
-static bool
-tbl_scan_bitmap_next_tuple(TableScanDesc scan, TBMIterateResult *tbmres, TupleTableSlot *slot)
-{
-	return SCAN_TAM(scan)->scan_bitmap_next_tuple(scan, tbmres, slot);
 }
 #endif
 
@@ -492,10 +484,9 @@ static const TableAmRoutine sift_tbl_methods = {
 	.relation_size = tbl_relation_size,
 	.relation_needs_toast_table = tbl_relation_needs_toast_table,
 	.relation_estimate_size = tbl_relation_estimate_size,
-#if PG_VERSION_NUM < 180000
-	.scan_bitmap_next_block = tbl_scan_bitmap_next_block,
-#endif
+#if PG_VERSION_NUM >= 180000
 	.scan_bitmap_next_tuple = tbl_scan_bitmap_next_tuple,
+#endif
 	.scan_sample_next_block = tbl_scan_sample_next_block,
 	.scan_sample_next_tuple = tbl_scan_sample_next_tuple,
 };

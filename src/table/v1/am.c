@@ -541,10 +541,9 @@ const TableAmRoutine sift_tbl_v1_methods = {
 	.index_build_range_scan = sift_tbl_index_build_range_scan,
 	.index_validate_scan = sift_tbl_index_validate_scan,
 	.relation_estimate_size = tbl_relation_estimate_size,
-#if PG_VERSION_NUM < 180000
-	.scan_bitmap_next_block = sift_tbl_scan_bitmap_next_block,
-#endif
+#if PG_VERSION_NUM >= 180000
 	.scan_bitmap_next_tuple = sift_tbl_scan_bitmap_next_tuple,
+#endif
 	.scan_sample_next_block = sift_tbl_scan_sample_next_block,
 	.scan_sample_next_tuple = sift_tbl_scan_sample_next_tuple,
 };
