@@ -460,13 +460,6 @@ sift_col_delta_page_check(const char *page)
 
 /* ---- growing the chain ---- */
 
-static uint16
-anchor_flags_of(uint16 page_flags)
-{
-	return (uint16) (((page_flags & SIFT_CDPG_DIRTY_TIME0) != 0 ? SIFT_CDLA_DIRTY_TIME0 : 0) | ((page_flags & SIFT_CDPG_DIRTY_TIME1) != 0 ? SIFT_CDLA_DIRTY_TIME1 : 0) |
-					((page_flags & SIFT_CDPG_DIRTY_SCOPE) != 0 ? SIFT_CDLA_DIRTY_SCOPE : 0));
-}
-
 static FullTransactionId
 xid_min(FullTransactionId a, FullTransactionId b)
 {
@@ -505,7 +498,7 @@ sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, 
 	bool		fresh = !sift_col_delta_anchor_has_chain(a),
 				leaves = (b->page_flags & SIFT_CDPG_LEAVES) != 0,
 				indexed = (a->flags & SIFT_CDLA_INDEXED_DIR) != 0;
-	uint16		flags = a->flags | anchor_flags_of(b->page_flags);
+	uint16		flags = a->flags | sift_col_delta_anchor_flags_of(b->page_flags);
 	FullTransactionId bmin = b->min_xid,
 				bmax = b->max_xid;
 	BlockNumber data_head = fresh || !indexed ? a->delta_head_blkno : w->dir_data_head(w->ctx, a->delta_head_blkno);

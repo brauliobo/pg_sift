@@ -118,6 +118,9 @@ typedef struct SiftColDeltaDiskChain
 /* The protocol's host for a chain on disk, under the partition lock; the pages are written with generic WAL and the anchor is the manifest's, or the caller's to publish (capture) */
 extern SiftColDeltaWriter sift_col_delta_disk_writer(SiftColDeltaDiskChain *d);
 
+/* All the records of b appended in place to the newest page of the chain of anchor a, which they leave as it is (its flags, its pages); false, and nothing written, when they would change it */
+extern bool sift_col_delta_disk_append_in_place(SiftColDeltaDiskChain *d, const SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next);
+
 /* The directory pages on disk (generic WAL, the partition lock held) */
 extern BlockNumber sift_cddir_io_newest_data(Relation rel, uint32 part_id, BlockNumber dir_head);
 extern BlockNumber sift_cddir_io_promote(Relation rel, uint32 part_id, BlockNumber data_head, int npages);

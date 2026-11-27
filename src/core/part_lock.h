@@ -3,7 +3,8 @@
  *
  * Two tiers. The fast tier is SiftPartLockShm: 1024 stripes, a cache line each (the lock and the wait list of the group commit of the L0 shards that hash to it), in a table of the dynamic shared memory registry; the partition of a relation takes the stripe its
  * (relation, partition) hash picks, shared by the appends of the writers of a partition and exclusive by the flush, the split and the compaction that rewrite it. The heavy tier is the page lock
- * of the relation at SIFT_PART_LOCK_BLKNO(part_id): for a hold that spans buffer I/O or waits for a transaction, where the deadlock detector has to see the wait.
+ * of the relation at SIFT_PART_LOCK_BLKNO(part_id): for a hold that spans buffer I/O or waits for a transaction, where the deadlock detector has to see the wait. The writers of the column deltas
+ * of a partition that only add to the newest page of its chain hold that page lock in ShareLock, which every other holder's ExclusiveLock excludes, and take turns on the content lock of the page.
  * The block numbers of every virtual lock of a format 2 relation are at the top of the block number space, 0xFFFFE000 and up, above any block a relation has (the 32 bit block number of a
  * relation ends at 0xFFFFFFFE, the relation size limit of the server is far below 0xFFFF0000), so none of them is a block of the relation.
  *

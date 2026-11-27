@@ -277,6 +277,14 @@ typedef struct SiftColDeltaWriter
 } SiftColDeltaWriter;
 
 /* All the records of b into the chain a names: the newest page first, then pages of their own, all published with one anchor; a is the chain's anchor after, b empty */
+/* The flags of the anchor a chain takes for records written with the flags of their page */
+static inline uint16
+sift_col_delta_anchor_flags_of(uint16 page_flags)
+{
+	return (uint16) (((page_flags & SIFT_CDPG_DIRTY_TIME0) != 0 ? SIFT_CDLA_DIRTY_TIME0 : 0) | ((page_flags & SIFT_CDPG_DIRTY_TIME1) != 0 ? SIFT_CDLA_DIRTY_TIME1 : 0) |
+					((page_flags & SIFT_CDPG_DIRTY_SCOPE) != 0 ? SIFT_CDLA_DIRTY_SCOPE : 0));
+}
+
 extern void sift_col_delta_chain_append(const SiftColDeltaWriter *w, SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next);
 
 /* An empty page of the chain of the partition: prev_blk and the depth of the page it follows */

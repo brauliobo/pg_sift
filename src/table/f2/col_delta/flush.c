@@ -156,6 +156,42 @@ run_still_placed(Relation rel, const SiftPartitionEntry *locked, const SiftColDe
 	return placed;
 }
 
+/* The partition of the run under its lock is the one the run was encoded for: the same manifest generation, or every part the run names still a part of it */
+static bool
+run_stable(Relation rel, const SiftPartitionEntry *e, const SiftColDeltaStage *cd, const int *ord, int lo, int hi, SiftPartitionEntry *locked)
+{
+	return sift_manifest_find_entry(rel, e->part_id, e->key_lo, locked) && (locked->manifest_gen == e->manifest_gen || run_still_placed(rel, locked, cd, ord, lo, hi));
+}
+
+/*
+ * The run appended in place to the newest page of the chain of a stable partition, under the page lock of the partition in ShareLock: the writers of one partition take turns on the content lock
+ * of that page and none queues behind another for the page lock. False, and nothing written, when the run needs more (a new page, a new chain, new flags of the anchor), which the page lock in
+ * ExclusiveLock does. *npages: the pages of the chain
+ */
+static bool
+append_shared(Relation rel, SiftColDeltaStage *cd, const int *ord, int lo, int hi, const SiftPartitionEntry *e, SiftColDeltaBatch *b, FullTransactionId next, uint32 *npages)
+{
+	SiftPartitionEntry locked;
+	bool		done = false;
+
+	LockPage(rel, SIFT_PART_LOCK_BLKNO(e->part_id), ShareLock);
+	if (b->nentries > 0 && run_stable(rel, e, cd, ord, lo, hi, &locked))
+	{
+		SiftColDeltaAnchor a = sift_manifest_read_col_delta(rel, &locked);
+
+		done = sift_col_delta_disk_append_in_place(&(SiftColDeltaDiskChain) {.rel = rel,.entry = &locked}, &a, b, next);
+		*npages = a.npages;
+	}
+	if (done)
+	{
+		release_run(cd, ord, lo, hi);
+		SIFT_CRASH_POINT(f2_col_delta_post_append_pre_commit);
+		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA);
+	}
+	UnlockPage(rel, SIFT_PART_LOCK_BLKNO(e->part_id), ShareLock);
+	return done;
+}
+
 /* The records of ord[lo..hi), all of one partition, into its chain. Returns 0, or the records that a merge of the partitions since they were staged sent to the partition that holds their rows
  * now: nothing is written then, and the stage is grouped again. The lookups of the rows and the encoding of the run are made before the lock of the partition, on the parts the manifest has then;
  * under the lock every part the run names must still be a part of the partition, or a compaction, a split or a merge rewrote them and the work is made again (a part another writer added, or the
@@ -184,9 +220,14 @@ flush_part(Relation rel, SiftF2Store *store, SiftColDeltaStage *cd, const int *o
 			break;
 		b = run_batch(cd, ord, lo, hi, next);
 		SIFT_F2_GATE(SIFT_F2_GATE_COL_DELTA_RUN);
+		if (append_shared(rel, cd, ord, lo, hi, &e, &b, next, &npages))
+		{
+			sift_col_delta_batch_free(&b);
+			pfree(parts);
+			break;
+		}
 		LockPage(rel, SIFT_PART_LOCK_BLKNO(part_id), ExclusiveLock);
-		stable = sift_manifest_find_entry(rel, part_id, key_lo, &locked)
-			&& (locked.manifest_gen == e.manifest_gen || run_still_placed(rel, &locked, cd, ord, lo, hi));
+		stable = run_stable(rel, &e, cd, ord, lo, hi, &locked);
 		if (stable)
 		{
 			if (b.nentries > 0)

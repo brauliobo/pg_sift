@@ -293,10 +293,10 @@ disk_commit_anchor(void *ctx, const SiftColDeltaAnchor *a)
 		sift_manifest_commit(d->rel, &edit);
 }
 
+/* The records of b that fit the newest page, appended to it in place; with whole, all of them or none */
 static bool
-disk_append_head(void *ctx, BlockNumber head, BlockNumber dir_head, SiftColDeltaBatch *b, FullTransactionId next)
+append_in_place(SiftColDeltaDiskChain *d, BlockNumber head, BlockNumber dir_head, SiftColDeltaBatch *b, FullTransactionId next, bool whole)
 {
-	SiftColDeltaDiskChain  *d = ctx;
 	Relation	rel = d->rel;
 	uint32		part_id = (uint32) d->entry->part_id;
 	Buffer		buf = sift_blk_read(rel, head, BUFFER_LOCK_EXCLUSIVE),
@@ -310,6 +310,11 @@ disk_append_head(void *ctx, BlockNumber head, BlockNumber dir_head, SiftColDelta
 	if (!sift_page_sum_ok(page))
 		SIFT_CORRUPT(rel, "Block %u of the column delta chain does not match its checksum.", head);
 	room = (sift_col_delta_page_hdr(page)->flags & SIFT_CDPG_SEALED) != 0 ? 0 : SIFT_PAGE_PAYLOAD - SiftPageGetUsed(page);
+	if (whole && b->nbytes > room)
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
 	sift_col_delta_batch_split(b, room, next, &part);
 	if (part.nentries == 0)
 	{
@@ -327,12 +332,31 @@ disk_append_head(void *ctx, BlockNumber head, BlockNumber dir_head, SiftColDelta
 	return true;
 }
 
+static bool
+disk_append_head(void *ctx, BlockNumber head, BlockNumber dir_head, SiftColDeltaBatch *b, FullTransactionId next)
+{
+	return append_in_place(ctx, head, dir_head, b, next, false);
+}
+
 static BlockNumber
 disk_dir_data_head(void *ctx, BlockNumber dir_head)
 {
 	SiftColDeltaDiskChain  *d = ctx;
 
 	return sift_cddir_io_newest_data(d->rel, (uint32) d->entry->part_id, dir_head);
+}
+
+bool
+sift_col_delta_disk_append_in_place(SiftColDeltaDiskChain *d, const SiftColDeltaAnchor *a, SiftColDeltaBatch *b, FullTransactionId next)
+{
+	bool		indexed = (a->flags & SIFT_CDLA_INDEXED_DIR) != 0;
+	uint16		flags = a->flags | sift_col_delta_anchor_flags_of(b->page_flags);
+
+	if ((b->page_flags & SIFT_CDPG_LEAVES) != 0)
+		flags &= (uint16) ~SIFT_CDLA_TID_ONLY;
+	if (!sift_col_delta_anchor_has_chain(a) || flags != a->flags)
+		return false;
+	return append_in_place(d, indexed ? disk_dir_data_head(d, a->delta_head_blkno) : a->delta_head_blkno, indexed ? a->delta_head_blkno : InvalidBlockNumber, b, next, true);
 }
 
 static BlockNumber
