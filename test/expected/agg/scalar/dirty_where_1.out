@@ -102,6 +102,9 @@ INSERT INTO w_q VALUES
 	('dropped by id',        'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND id <> 1234 GROUP BY grp'),
 	('dropped by grp',       'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp <> 4 GROUP BY grp'),
 	('dropped, written 1st', 'SELECT grp, count(*) FROM w_t WHERE id <> 1234 AND (doc ->> ''v'')::float8 > 3 GROUP BY grp'),
+	-- the cheaper condition is another qual the scan tests on its batches: the cast raises for the rows it keeps
+	('dropped by a list',    'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp NOT IN (2, 4) GROUP BY grp'),
+	('kept by a list',       'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp NOT IN (1, 2) GROUP BY grp'),
 	-- the same cost: PostgreSQL tests them in the order they are written
 	('same cost, c first',   'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''c'')::int4 <> 1 AND (doc ->> ''v'')::float8 > 3 GROUP BY grp'),
 	('same cost, c after',   'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND (doc ->> ''c'')::int4 <> 1 GROUP BY grp'),
@@ -114,6 +117,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
 ----------------------+--------+----------------------------------------------------------------------
  a clean leaf         | scan   | same rows
  cast of jsonb raises | scan   | same ERR 22023 cannot cast jsonb string to type double precision
+ dropped by a list    | scan   | same rows
  dropped by grp       | scan   | same rows
  dropped by id        | scan   | same rows
  dropped, int4        | scan   | same rows
@@ -121,13 +125,14 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
  in list raises       | scan   | same ERR 22P02 invalid input syntax for type integer: "3.5"
  int4 raises          | scan   | same ERR 22P02 invalid input syntax for type integer: "3.5"
  is null raises       | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
+ kept by a list       | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  kept by the rest     | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  raises               | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  raises, in a range   | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  same cost, c after   | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  same cost, c first   | scan   | same rows
  the other leaf only  | scan   | same ERR 22P02 invalid input syntax for type integer: "3.5"
-(15 rows)
+(17 rows)
 
 -- the cast could run before a condition that drops the row, or a condition raises too: the normal plan, rows or error as the heap
 TRUNCATE w_q;

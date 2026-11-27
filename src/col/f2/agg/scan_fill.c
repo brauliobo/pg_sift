@@ -245,7 +245,7 @@ reads_attno(Node *n, void *attno)
 	return n != NULL && ((IsA(n, Var) && ((const Var *) n)->varattno == *(const int *) attno) || expression_tree_walker(n, reads_attno, attno));
 }
 
-/* the batch quals read the column: PostgreSQL tests them on every row the scan keys keep, so it casts the value of each of those */
+/* the batch quals read the column: PostgreSQL casts the value of each row the scan keys and the quals it tests first (the ones that convert no such value) keep */
 static bool
 quals_read(const V6Scan *s, const V6Col *c)
 {
@@ -258,22 +258,25 @@ quals_read(const V6Scan *s, const V6Col *c)
 void
 sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, int off, int n)
 {
-	SiftBatchSel kept = s->bs;
+	SiftBatchSel kept = s->bs,
+				uncast = s->bs;
 
 	if (raises == NULL)
 		return;
 	if (s->bq != NULL)
 		sift_v6_bq_filter(s->bq, &kept);
+	if (s->bq_uncast != NULL)
+		sift_v6_bq_filter(s->bq_uncast, &uncast);
 	for (int k = 0; k < s->ncols; k++)
 	{
 		const V6Col *c = &s->cols[k];
 		const ColView *cv = &views[c->leaf];
-		const bool	all = s->bq == NULL || quals_read(s, c);
+		const uint64 *cast = s->bq == NULL || quals_read(s, c) ? uncast.mask : kept.mask;
 
 		for (int w = 0; raises[k] != NULL && w < (n + 63) / 64; w++)
-			if ((raises[k][w] & (all ? s->bs.mask[w] : kept.mask[w])) != 0)
+			if ((raises[k][w] & cast[w]) != 0)
 			{
-				const int	r = off + w * 64 + __builtin_ctzll(raises[k][w] & (all ? s->bs.mask[w] : kept.mask[w]));
+				const int	r = off + w * 64 + __builtin_ctzll(raises[k][w] & cast[w]);
 
 				sift_v6_json_exception_raise(c->cls, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx);
 			}

@@ -85,6 +85,9 @@ INSERT INTO w_q VALUES
 	('dropped by id',        'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND id <> 1234 GROUP BY grp'),
 	('dropped by grp',       'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp <> 4 GROUP BY grp'),
 	('dropped, written 1st', 'SELECT grp, count(*) FROM w_t WHERE id <> 1234 AND (doc ->> ''v'')::float8 > 3 GROUP BY grp'),
+	-- the cheaper condition is another qual the scan tests on its batches: the cast raises for the rows it keeps
+	('dropped by a list',    'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp NOT IN (2, 4) GROUP BY grp'),
+	('kept by a list',       'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND grp NOT IN (1, 2) GROUP BY grp'),
 	-- the same cost: PostgreSQL tests them in the order they are written
 	('same cost, c first',   'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''c'')::int4 <> 1 AND (doc ->> ''v'')::float8 > 3 GROUP BY grp'),
 	('same cost, c after',   'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND (doc ->> ''c'')::int4 <> 1 GROUP BY grp'),

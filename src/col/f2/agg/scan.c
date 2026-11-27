@@ -10,6 +10,7 @@
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
 #include "executor/tuptable.h"
+#include "nodes/nodeFuncs.h"
 #include "port/pg_bitutils.h"
 #include "storage/bufmgr.h"
 #include "utils/lsyscache.h"
@@ -305,12 +306,19 @@ pg_col(void *arg, const SiftV6InCol *c)
 	return input_col(arg, c, true);
 }
 
+static bool
+reads_raising(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && sift_v6_vatt_raises(((const Var *) n)->varattno)) || expression_tree_walker(n, reads_raising, context));
+}
+
 /* the quals no scan key says: their input is the relation's, their columns are decoded with the others */
 static void
 setup_bq(V6Scan *s, const int *first)
 {
 	BqCols		cols = {s, first};
 	SiftV6Input in;
+	List	   *uncast = NIL;
 
 	if (s->spec->vqual == NIL)
 		return;
@@ -319,6 +327,11 @@ setup_bq(V6Scan *s, const int *first)
 	else
 		sift_v6_input_init_rel(&in, s->host);
 	s->bq = sift_v6_bq_open(CurrentMemoryContext, s->spec->vqual, &in, bq_col, &cols, s->spec->exec);
+	foreach_ptr(Node, q, s->spec->vqual)
+		if (!reads_raising((Node *) q, NULL))
+			uncast = lappend(uncast, q);
+	if (uncast != NIL && list_length(uncast) < list_length(s->spec->vqual))
+		s->bq_uncast = sift_v6_bq_open(CurrentMemoryContext, uncast, &in, bq_col, &cols, s->spec->exec);
 }
 
 /* the keys, arguments, derivations, quals and bins of the spec over the columns of the relation */

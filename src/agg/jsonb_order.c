@@ -2,12 +2,14 @@
  * agg/jsonb_order.c - where the scan may raise the error of `(doc ->> 'key')::float8` (or `::bool`, `::int4`) for a row whose key holds a text that is no number (no boolean) or a container (the leaf of the key cannot
  * hold it: the scan reads it from the exception of its chunk and converts it as PostgreSQL does). PostgreSQL raises only for a row that reaches the cast: one that the conditions of the WHERE it tests
  * before, which its own plan orders by cost and then by position, keep. The scan decides its scan keys on every row first and converts the others on the rows they keep, so it raises for the same rows
- * only when no other condition of the statement can drop a row after the cast has run; a format that raises only for the rows its batch quals keep (SiftJsonbOps.raise_after_quals) lets those run too.
+ * only when no other condition of the statement can drop a row after the cast has run; a format that raises only for the rows its batch quals keep (SiftJsonbOps.raise_after_quals) lets those run too, and
+ * converts the value of a WHERE clause on the rows its other batch quals keep, which PostgreSQL tests before it, when those raise no error of their own.
  */
 /* check-memory: allow-allocs every list here follows the quals of one statement, not the rows of the table */
 #include "postgres.h"
 
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 
@@ -128,6 +130,16 @@ filtered_late(const SiftV6Spec *s, const SiftV6Ext *x)
 	return late;
 }
 
+/* the batch quals other than the one that casts raise no error (their functions are leakproof): the cast's error is the first PostgreSQL raises, whichever row it is */
+static bool
+others_quiet(const List *vqual)
+{
+	foreach_ptr(Node, q, vqual)
+		if (expr_leaves((const Expr *) q) == NULL && contain_leaked_vars(q))
+			return false;
+	return true;
+}
+
 /* a join of dimensions that drops fact rows after the scan converted them: an inner, semi, anti or right one, or a condition of the join no key says */
 static bool
 join_drops_rows(const SiftV6Ext *x)
@@ -194,6 +206,6 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
-	return list_length(s->vqual) == 1 && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
+	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s->vqual))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
 		bms_is_subset(other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
 }

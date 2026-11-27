@@ -94,6 +94,7 @@ struct SiftV6Scan
 	bool		is_table;		/* the host is a sift_table: the cells of its leaves are the datum of the attribute */
 	Relation	host;			/* the index, or the sift_table, the scan reads: the columns of the quals the keys do not say are those of its input */
 	SiftV6Bq   *bq;				/* those quals (SiftV6Spec.vqual), run over every batch */
+	SiftV6Bq   *bq_uncast;		/* those of them that convert no value of a JSON key that can raise: the rows PostgreSQL keeps before the cast of the others runs (NULL: none) */
 	SiftBatchSel bs;
 	MemoryContext batch_cx;
 	bool		count_only;

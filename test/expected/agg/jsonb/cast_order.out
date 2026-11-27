@@ -59,7 +59,7 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co     |  4 | text qual and scan key | scan same why
  co     |  5 | or of the flag         | scan same why
  co     |  6 | key of the read        | scan same why
- co     |  7 | cast in the where      | plain same
+ co     |  7 | cast in the where      | scan same why
  co     |  8 | case guard             | plain same
  co     |  9 | filter guard           | plain same
  co     | 10 | no qual                | error: invalid input syntax for type double precision: "bad" why
@@ -69,7 +69,7 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co_ok  |  4 | text qual and scan key | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  5 | or of the flag         | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  6 | key of the read        | error: invalid input syntax for type double precision: "bad" why
- co_ok  |  7 | cast in the where      | error: invalid input syntax for type double precision: "bad"
+ co_ok  |  7 | cast in the where      | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  8 | case guard             | error: invalid input syntax for type double precision: "bad"
  co_ok  |  9 | filter guard           | plain same
  co_ok  | 10 | no qual                | error: invalid input syntax for type double precision: "bad" why
@@ -79,7 +79,7 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co_num |  4 | text qual and scan key | scan same why
  co_num |  5 | or of the flag         | scan same why
  co_num |  6 | key of the read        | scan same why
- co_num |  7 | cast in the where      | plain same
+ co_num |  7 | cast in the where      | scan same why
  co_num |  8 | case guard             | plain same
  co_num |  9 | filter guard           | plain same
  co_num | 10 | no qual                | error: invalid input syntax for type double precision: "[1, 2]" why
