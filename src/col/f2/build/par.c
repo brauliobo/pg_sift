@@ -19,9 +19,6 @@
 #include "core/f2/gate.h"
 #include "core/parbuild.h"
 
-/* the phase of sift.test_phase_gate a worker waits in before its scan, so that a test finds one that is still scanning (the phase of the build of format major 1 too) */
-#define BUILD_GATE_SCAN 2
-
 typedef struct F2BuildShared
 {
 	SiftParCommon common;
@@ -149,7 +146,7 @@ sift_f2_build_worker(dsm_segment *seg, shm_toc *toc)
 	bs = sift_f2_build_begin(w.heap, w.index, sh->nparticipants);
 	sift_f2_build_share(bs, hand_of(w.parts), &sh->gens);
 	worker_ready(sh);
-	SIFT_F2_GATE(BUILD_GATE_SCAN);
+	SIFT_F2_GATE(SIFT_F2_GATE_BUILD_SCAN);	/* the workers wait, the leader does not: a test that holds the gate finds a worker still scanning */
 	reltuples = sift_f2_build_scan(bs, w.info, sift_table_beginscan_parallel(w.heap, SCAN_OF(sh)), false);
 	add_counts(sh, reltuples, sift_f2_build_rows(bs));
 	sift_f2_build_end(bs);
