@@ -11,7 +11,6 @@
 #include "commands/explain.h"
 #include "lib/stringinfo.h"
 #include "executor/nodeIndexscan.h"
-#include "nodes/nodeFuncs.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -28,7 +27,6 @@
 #include "agg/par/node.h"
 #include "agg/part_prune.h"
 #include "agg/star/run.h"
-#include "agg/qual/bqual.h"
 #include "agg/qual/qual.h"
 #include "agg/scan_src.h"
 #include "agg/stats.h"
@@ -187,47 +185,6 @@ begin_par(V6State *st, CustomScanState *node, EState *estate)
 									 node->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 }
 
-/* The attribute of the parent that a column of the plan names, in the relation of the source the node reads */
-static AttrNumber
-source_attno(const SiftV6Spec *spec, int source, AttrNumber attno)
-{
-	return spec->nparts > 0 && attno > 0 && attno <= spec->part_ncols ? spec->part_attno[source * spec->part_ncols + attno - 1] : attno;
-}
-
-typedef struct SourceVars
-{
-	const SiftV6Spec *spec;
-	int			source;
-} SourceVars;
-
-static Node *
-source_vars(Node *n, SourceVars *sv)
-{
-	Var		   *v;
-
-	if (n == NULL || !IsA(n, Var) || ((Var *) n)->varno != SIFT_V6_BQ_RELID)
-		return expression_tree_mutator(n, source_vars, sv);
-	v = copyObject((Var *) n);
-	v->varattno = source_attno(sv->spec, sv->source, v->varattno);
-	v->varattnosyn = v->varattno;
-	return (Node *) v;
-}
-
-/* The plan as a partition reads it: its batch quals name the attributes of the partition, which numbers its columns as it was made */
-static const SiftV6Spec *
-source_spec(const SiftV6Spec *spec, int source)
-{
-	SourceVars	sv = {spec, source};
-	SiftV6Spec *own;
-
-	if (spec->nparts == 0 || spec->vqual == NIL)
-		return spec;
-	own = palloc(sizeof(SiftV6Spec));
-	*own = *spec;
-	own->vqual = (List *) source_vars((Node *) spec->vqual, &sv);
-	return own;
-}
-
 static void
 v6_begin(CustomScanState *node, EState *estate, int eflags)
 {
@@ -247,7 +204,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 		else
 			begin_index(st, node, &st->sources[k], sift_v6_spec_part_oid(st->spec, k));
 	for (int k = 0; k < st->nsources; k++)
-		st->sources[k].spec = source_spec(st->spec, k);
+		st->sources[k].spec = sift_v6_spec_of_source(st->spec, k);
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 		begin_star(st, node, estate, eflags);
 	if (!(eflags & EXEC_FLAG_EXPLAIN_ONLY))
@@ -607,7 +564,7 @@ v6_next_row(V6State *st, TupleTableSlot *slot)
 	foreach_node(TargetEntry, te, ((CustomScan *) st->css.ss.ps.plan)->custom_scan_tlist)
 	{
 		const SiftV6RowOut *out = &spec->out[i];
-		const AttrNumber attno = out->from != SV6OUT_HEAP ? 0 : source_attno(spec, (int) source, ((Var *) te->expr)->varattno);
+		const AttrNumber attno = out->from != SV6OUT_HEAP ? 0 : sift_v6_spec_source_attno(spec, (int) source, ((Var *) te->expr)->varattno);
 
 		if (out->from == SV6OUT_HEAP)
 			slot->tts_values[i] = slot_getattr(src->fetch_slot, attno, &slot->tts_isnull[i]);

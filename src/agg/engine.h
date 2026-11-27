@@ -561,6 +561,15 @@ extern const CustomPathMethods *sift_v6_group_path_methods(void);
 extern List *sift_v6_spec_pack(const SiftV6Spec *s);
 /* The spec of a plan; with the parameters of an execution (NULL: while planning), the external parameters its PostgreSQL expressions read are their values */
 extern SiftV6Spec *sift_v6_spec_unpack(const List *l, ParamListInfo params);
+/* The attribute of the parent that a column of the plan names, in the relation of partition source the node reads */
+static inline AttrNumber
+sift_v6_spec_source_attno(const SiftV6Spec *spec, int source, AttrNumber attno)
+{
+	return spec->nparts > 0 && attno > 0 && attno <= spec->part_ncols ? spec->part_attno[source * spec->part_ncols + attno - 1] : attno;
+}
+
+/* The plan as partition source of the node reads it: its batch quals name the attributes of the partition, which numbers its columns as it was made */
+extern const SiftV6Spec *sift_v6_spec_of_source(const SiftV6Spec *spec, int source);
 
 
 /* The groups: keys and aggregates folded from batches, then every group once */

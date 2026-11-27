@@ -13,6 +13,7 @@
 #include "agg/ext.h"
 #include "agg/plan/int.h"
 #include "agg/plan/rewrite.h"
+#include "agg/qual/bqual.h"
 #include "agg/vexpr.h"
 #include "core/errctx.h"
 
@@ -286,6 +287,39 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 		on = lappend(on, x->on[d]);
 	return list_concat(lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr),
 					   lappend(list_make5(x->test_quals, on, x->late_probe, x->stream_names, x->stream_arrays), x->jexpr));
+}
+
+typedef struct SourceVars
+{
+	const SiftV6Spec *spec;
+	int			source;
+} SourceVars;
+
+static Node *
+source_vars(Node *n, SourceVars *sv)
+{
+	Var		   *v;
+
+	if (n == NULL || !IsA(n, Var) || ((Var *) n)->varno != SIFT_V6_BQ_RELID)
+		return expression_tree_mutator(n, source_vars, sv);
+	v = copyObject((Var *) n);
+	v->varattno = sift_v6_spec_source_attno(sv->spec, sv->source, v->varattno);
+	v->varattnosyn = v->varattno;
+	return (Node *) v;
+}
+
+const SiftV6Spec *
+sift_v6_spec_of_source(const SiftV6Spec *spec, int source)
+{
+	SourceVars	sv = {spec, source};
+	SiftV6Spec *own;
+
+	if (spec->nparts == 0 || spec->vqual == NIL)
+		return spec;
+	own = palloc(sizeof(SiftV6Spec));
+	*own = *spec;
+	own->vqual = (List *) source_vars((Node *) spec->vqual, &sv);
+	return own;
 }
 
 SiftV6Ext *
