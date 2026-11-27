@@ -36,6 +36,8 @@ agg/hybrid/state.h
 agg/hybrid/store.c
 agg/kern/test.c
 agg/par/
+agg/part_prune.c
+agg/part_prune.h
 agg/refuse.c
 agg/refuse.h
 agg/sip.c

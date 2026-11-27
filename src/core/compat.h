@@ -622,6 +622,18 @@ sift_collation_deterministic(Oid collid)
 #define ROWCMP_GE	ROWCOMPARE_GE
 #endif
 
+/* make_partition_pruneinfo adds its info to root->partPruneInfos and gives its index from 18 on (-1: none), and gives the info itself before (NULL: none) */
+#if PG_VERSION_NUM >= 180000
+static inline PartitionPruneInfo *
+sift_pruneinfo_at(PlannerInfo *root, int at)
+{
+	return at < 0 ? NULL : list_nth_node(PartitionPruneInfo, root->partPruneInfos, at);
+}
+#define sift_make_partition_pruneinfo(root, parent, subpaths, quals)	sift_pruneinfo_at(root, make_partition_pruneinfo(root, parent, subpaths, quals))
+#else
+#define sift_make_partition_pruneinfo(root, parent, subpaths, quals)	make_partition_pruneinfo(root, parent, subpaths, quals)
+#endif
+
 /* The cast of a JSON null to a number or a boolean is NULL from 18 and an error before */
 #define SIFT_JSON_NULL_CAST_RAISES	(PG_VERSION_NUM < 180000)
 

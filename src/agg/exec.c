@@ -26,6 +26,7 @@
 #include "agg/gpu.h"
 #include "agg/open_scan.h"
 #include "agg/par/node.h"
+#include "agg/part_prune.h"
 #include "agg/star/run.h"
 #include "agg/qual/bqual.h"
 #include "agg/qual/qual.h"
@@ -235,6 +236,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	SIFT_TEST_GATE(sift_test_par_gate && IsParallelWorker(), 10);
 	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private, estate->es_param_list_info);
 	sift_v6_exec_begin(st->spec, &node->ss.ps);
+	sift_v6_part_prune_exec(st->spec, &node->ss.ps, eflags);
 	st->dict_shared0[0] = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS];
 	st->dict_shared0[1] = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES];
 	st->nsources = Max(st->spec->nparts, 1);
@@ -868,7 +870,11 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 
 	ExplainPropertyText(st->sources[0].index == NULL ? "Table" : "Index", RelationGetRelationName(st->sources[0].index == NULL ? st->sources[0].heap : st->sources[0].index), es);
 	if (st->spec->nparts > 0)
+	{
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
+		if (st->spec->parts_removed > 0)
+			ExplainPropertyInteger("Partitions Removed", NULL, st->spec->parts_removed, es);
+	}
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
 	if (st->spec->rows)
 		sift_v6_rows_explain(es, st->spec);

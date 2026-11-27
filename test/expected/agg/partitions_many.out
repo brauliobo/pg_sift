@@ -90,9 +90,9 @@ SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET plan_cache_mode = force_generic_plan;
 PREPARE pm_d (date[]) AS SELECT g, count(*) AS n, sum(v) AS s FROM pm WHERE d = ANY ($1) GROUP BY g;
 SELECT * FROM many_scan('EXECUTE pm_d(ARRAY[DATE ''2020-02-02'', DATE ''2022-06-06'', DATE ''2030-01-01''])');
-  scan  | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
---------+-------------------+--------------------+-------------+----------------
- normal |                 0 |                  0 |           7 |              0
+  scan   | partitions_listed | partitions_removed | result_rows | vs_normal_plan 
+---------+-------------------+--------------------+-------------+----------------
+ SiftAgg |                 1 |                  0 |           7 |              0
 (1 row)
 
 RESET plan_cache_mode;

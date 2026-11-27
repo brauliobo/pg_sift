@@ -17,6 +17,7 @@
 
 #include "agg/safety.h"
 #include "agg/plan/int.h"
+#include "agg/part_prune.h"
 #include "agg/cost/card.h"
 #include "agg/source_rel.h"
 #include "core/memtrack.h"
@@ -367,6 +368,7 @@ sift_v6_compile_partitions(PlannerInfo *root, RelOptInfo *parent, RelOptInfo *ou
 		return false;
 	}
 	*like = *template;
+	sift_v6_part_prune_plan(root, parent, pp.leaves, &first->spec);
 	return true;
 }
 

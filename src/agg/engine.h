@@ -268,6 +268,10 @@ typedef struct SiftV6Spec
 	int			part_ncols;		/* the attributes of the partitioned table, and the attribute of each in every partition (part_attno[partition * part_ncols + attno - 1], 0 for a dropped one) */
 	AttrNumber *part_attno;
 	bool	   *part_is_table;	/* of each partition: its sift_table is read, not an index of it (the other fields of a partition are those of part_index) */
+	struct PartitionPruneInfo *prune;	/* a generic plan: PostgreSQL's steps that prune the partitions on the values of the execution (agg/part_prune.c); NULL without them */
+	List	   *prune_rels;		/* the partitioned table of each PartitionedRelPruneInfo of prune, in order */
+	Expr	   *prune_array;	/* the array of `key = ANY (array)` whose elements the steps take one by one (agg/part_prune.c); NULL without one */
+	int			parts_removed;	/* the partitions the steps ruled out when the scan began */
 	int			nkeys;
 	SiftV6Col  *key;
 	int			naggs;

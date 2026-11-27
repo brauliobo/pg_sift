@@ -143,7 +143,7 @@ SELECT plan_of('EXECUTE pt_pruned(DATE ''2024-05-01'')') AS pruned, plan_of('EXE
        plan_of('EXECUTE pt_in(ARRAY[DATE ''2024-02-02'', DATE ''2024-11-08''])') AS in_list, plan_of('EXECUTE pt_hash(7)') AS hash_key;
   pruned   |   other   |  in_list  | hash_key  
 -----------+-----------+-----------+-----------
- SiftAgg 3 | SiftAgg 6 | SiftAgg 6 | SiftAgg 6
+ SiftAgg 3 | SiftAgg 6 | SiftAgg 2 | SiftAgg 5
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_pruned(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
@@ -369,7 +369,7 @@ PREPARE pt_in_par (date[]) AS SELECT g, count(*) AS n FROM pt WHERE d = ANY ($1)
 SELECT plan_of('EXECUTE pt_pruned_par(DATE ''2024-05-01'')'), plan_of('EXECUTE pt_in_par(ARRAY[DATE ''2024-02-02''])');
   plan_of  |  plan_of  
 -----------+-----------
- SiftAgg 3 | SiftAgg 6
+ SiftAgg 3 | SiftAgg 1
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_pruned_par(DATE ''2024-05-01'')', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-05-01'' AND d < DATE ''2024-07-01'' GROUP BY g');
@@ -707,7 +707,7 @@ SELECT plan_of('EXECUTE ph_k(7)') AS equality, plan_of('EXECUTE ph_ks(ARRAY[7, 8
        plan_of('EXECUTE ph_gt(7)') AS range_test, plan_of('EXECUTE ph_and(7, 50)') AS with_filter, plan_of('EXECUTE phx_e(8)') AS expression_key;
  equality  | any_list  | other_type | range_test | with_filter | expression_key 
 -----------+-----------+------------+------------+-------------+----------------
- SiftAgg 8 | SiftAgg 8 | SiftAgg 8  | SiftAgg 8  | SiftAgg 8   | SiftAgg 4
+ SiftAgg 1 | SiftAgg 2 | SiftAgg 1  | SiftAgg 8  | SiftAgg 1   | SiftAgg 1
 (1 row)
 
 -- a value, a list (duplicates, a NULL element, none, a NULL array), a NULL value, a value no row has, the rows whose key is NULL
@@ -794,7 +794,7 @@ SELECT * FROM same_exec('SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k IN (7
 SELECT plan_of('EXECUTE phm_ab(3, ''cat_b'')') AS both, plan_of('EXECUTE phm_a(3)') AS one, plan_of('EXECUTE phm_abs(ARRAY[3, 4, 5], ''cat_b'')') AS list_and_value;
    both    |    one    | list_and_value 
 -----------+-----------+----------------
- SiftAgg 4 | SiftAgg 4 | SiftAgg 4
+ SiftAgg 1 | SiftAgg 4 | SiftAgg 3
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE phm_ab(3, ''cat_b'')', 'SELECT count(*) AS n, sum(v) AS s FROM phm WHERE a = 3 AND b = ''cat_b''');
@@ -852,7 +852,7 @@ PREPARE pt_dh (date, int) AS SELECT g, count(*) AS n FROM pt WHERE d >= $1 AND d
 SELECT plan_of('EXECUTE pt_dh(DATE ''2024-07-02'', 31)');
   plan_of  
 -----------
- SiftAgg 5
+ SiftAgg 4
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE pt_dh(DATE ''2024-07-02'', 31)', 'SELECT g, count(*) AS n FROM pt WHERE d >= DATE ''2024-07-02'' AND d < DATE ''2024-10-01'' AND id = 31 GROUP BY g');
@@ -873,7 +873,7 @@ SET max_parallel_workers_per_gather = 2;
 SELECT plan_of('EXECUTE ph_ks(ARRAY[7, 8])');
   plan_of  
 -----------
- SiftAgg 8
+ SiftAgg 2
 (1 row)
 
 SELECT * FROM same_exec('EXECUTE ph_ks(ARRAY[7, 8])', 'SELECT count(*) AS n, sum(v) AS s FROM ph WHERE k = ANY (ARRAY[7, 8])');
