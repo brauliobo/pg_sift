@@ -104,9 +104,9 @@ extern bool sift_pend_del_place(SiftXlog *x, Relation rel, uint64 part_id, Block
 
 /*
  * The records as plain deletes, in place: the successors go and the flags of the others (the number left). The pairs whose deleter some snapshot may still wait for are copied to keep
- * (nkeep records, room for n), to be appended again to the chain the fold leaves.
+ * (nkeep records, room for spare more), to be appended again to the chain the fold leaves.
  */
-extern int	sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nkeep);
+extern int	sift_pend_del_unpair(SiftPendDelRec *recs, int n, int spare, SiftPendDelRec **keep, int *nkeep);
 
 /* The stamp of the chain at head: one page header read for each page, no record copied */
 extern SiftChainStamp sift_pend_del_stamp(Relation rel, uint64 part_id, BlockNumber head);

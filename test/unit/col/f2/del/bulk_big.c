@@ -24,6 +24,8 @@ volatile sig_atomic_t InterruptPending = false;
 static int	interrupts;
 static SiftPartitionEntry entry = {.pend_del_blk = 1,.l0_slab_blk = InvalidBlockNumber};
 static int	merged;
+static FormData_pg_class table_form = {.relkind = RELKIND_RELATION};
+static RelationData table = {.rd_rel = &table_form};
 
 void
 ProcessInterrupts(void)
@@ -69,9 +71,10 @@ sift_pend_del_read_unsettled(Relation rel, uint64 part_id, BlockNumber head, Blo
 }
 
 int
-sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nkeep)
+sift_pend_del_unpair(SiftPendDelRec *recs, int n, int spare, SiftPendDelRec **keep, int *nkeep)
 {
 	merged = n;
+	SIFT_CHECKF(spare == 0, "a valid relation asks for no spare room");
 	SIFT_CHECKF(recs[n - 1].tid == 7 && recs[PENDING - 1].tid == PENDING - 1, "the deletes follow the pending ones");
 	ereport(ERROR, (errmsg("unpaired")));
 	return n;
@@ -82,7 +85,7 @@ bulk(void *arg)
 {
 	SiftPendDelRec mine = {.tid = 7};
 
-	(void) sift_del_bulk(NULL, 1, NULL, &mine, 1, true, NULL);
+	(void) sift_del_bulk(&table, 1, NULL, &mine, 1, true, NULL);
 }
 
 static void

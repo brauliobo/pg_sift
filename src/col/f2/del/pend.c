@@ -235,7 +235,7 @@ pair_kept(const SiftPendDelRec *recs, int i, int n)
 }
 
 int
-sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nkeep)
+sift_pend_del_unpair(SiftPendDelRec *recs, int n, int spare, SiftPendDelRec **keep, int *nkeep)
 {
 	int			out = 0;
 
@@ -243,7 +243,7 @@ sift_pend_del_unpair(SiftPendDelRec *recs, int n, SiftPendDelRec **keep, int *nk
 	for (int i = 0; i < n; i++)
 		*nkeep += 2 * ((recs[i].tid & SIFT_PD_TID_SUCC) == 0 && pair_kept(recs, i, n));
 	/* check-memory: allow the pairs a fold keeps of one chain */
-	*keep = MemoryContextAllocHuge(CurrentMemoryContext, (Size) Max(*nkeep, 1) * sizeof(SiftPendDelRec));
+	*keep = MemoryContextAllocHuge(CurrentMemoryContext, (Size) Max(*nkeep + spare, 1) * sizeof(SiftPendDelRec));
 	*nkeep = 0;
 	for (int i = 0; i < n; i++)
 	{

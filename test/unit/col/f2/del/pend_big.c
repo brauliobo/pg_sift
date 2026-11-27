@@ -86,7 +86,7 @@ read_unpair(void *arg)
 
 	r->recs = sift_pend_del_read(NULL, 1, 0, &r->n, &pages, &npages);
 	pfree(pages);
-	r->kept = sift_pend_del_unpair(r->recs, r->n, &r->keep, &r->n);
+	r->kept = sift_pend_del_unpair(r->recs, r->n, 0, &r->keep, &r->n);
 }
 
 static void

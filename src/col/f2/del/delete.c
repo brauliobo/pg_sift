@@ -452,8 +452,9 @@ del_bulk(Relation rel, uint64 part_id, const uint8 *key_lo, const SiftPendDelRec
 	recs = del_array((Size) n_in + npend, sizeof(SiftPendDelRec), 0);
 	if (npend > 0)
 		memcpy(recs, pend, npend * sizeof(SiftPendDelRec));
-	memcpy(recs + npend, recs_in, n_in * sizeof(SiftPendDelRec));
-	n = sift_pend_del_unpair(recs, npend + n_in, &keep, &nkeep);
+	if (n_in > 0)
+		memcpy(recs + npend, recs_in, n_in * sizeof(SiftPendDelRec));
+	n = sift_pend_del_unpair(recs, npend + n_in, index_unbuilt(rel) ? npend + n_in : 0, &keep, &nkeep);
 	nsettle = fold ? nkeep : 0;
 	npin = sift_pend_del_settleable(rel, part_id, pend_pages, fold ? npend_pages : 0, &nin_recs);
 	done = del_array(n, sizeof(bool), MCXT_ALLOC_ZERO);
