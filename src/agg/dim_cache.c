@@ -4,6 +4,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/tupdesc.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -34,12 +35,16 @@ typedef struct DimEnt
 	uint32		rel_hash;		/* the syscache hash values of the pg_class rows of the table and of the index whose journal vouches for it */
 	uint32		index_hash;
 	RelFileLocator loc;
+	Oid			index;
+	RelFileLocator index_loc;
+	TupleDesc	desc;			/* the columns, defaults and constraints of the table */
 	SiftConnStamp stamp;
 	SiftStarDim *dim;
 	MemoryContext cx;			/* the table: the arrays of dim, this entry */
 	uint64		used;
 	int			pins;
 	bool		dead;			/* its table or index changed under a statement that holds it: no statement finds it, the last to let go drops it */
+	bool		stale;			/* the pg_class row of its table or index changed (a VACUUM's statistics too): found only while both keep their storage and the table its columns */
 } DimEnt;
 
 struct SiftDimTry
@@ -49,6 +54,7 @@ struct SiftDimTry
 	Snapshot	snap;
 	Relation	heap;
 	Oid			index;
+	RelFileLocator index_loc;
 	SiftConnStamp stamp;
 	char	   *key;
 };
@@ -99,19 +105,20 @@ match_key(const DimEnt *e, const void *arg)
 	return strcmp(e->key, (const char *) arg) == 0;
 }
 
-static bool
-match_rel(const DimEnt *e, const void *arg)
-{
-	const uint32 hash = *(const uint32 *) arg;
-
-	return hash == 0 || e->rel_hash == hash || e->index_hash == hash;
-}
-
-/* a change of the pg_class row of a table or of its index (DROP, TRUNCATE, ALTER, REINDEX, a rewrite), or of every one (hash 0) */
+/* a change of the pg_class row of a table or of its index, or of every one (hash 0): DDL gives it new storage or new columns, VACUUM only new statistics */
 static void
 dimcache_inval(Datum arg, int cacheid, uint32 hash)
 {
-	ent_retire(match_rel, &hash);
+	foreach_ptr(DimEnt, e, entries)
+		e->stale |= hash == 0 || e->rel_hash == hash || e->index_hash == hash;
+}
+
+/* the table and the index of the try are those of the entry, with the storage and the columns they had when it was kept */
+static bool
+same_storage(const DimEnt *e, const SiftDimTry *t)
+{
+	return RelFileLocatorEquals(e->loc, t->heap->rd_locator) && e->index == t->index &&
+		(!e->stale || (RelFileLocatorEquals(e->index_loc, t->index_loc) && equalTupleDescs(e->desc, RelationGetDescr(t->heap))));
 }
 
 static DimEnt *
@@ -293,6 +300,7 @@ sift_dimcache_try(PlanState *ps, const SiftV6XDim *xd, const SiftStarShape *sh, 
 	t->heap = s.heap;
 	t->index = ioid;
 	index = index_open(ioid, NoLock);
+	t->index_loc = index->rd_locator;
 	stamped = sift_jrnl_take(s.heap, index, t->snap, &t->stamp) == SIFT_CONN_OK;
 	index_close(index, NoLock);
 	if (!stamped)
@@ -313,7 +321,7 @@ sift_dimcache_find(SiftDimTry *t, uint64 budget, SiftStarDim *out)
 	foreach_ptr(DimEnt, e, entries)
 		if (!e->dead && strcmp(e->key, t->key) == 0)
 			found = e;
-	if (found == NULL || found->dim->bytes > budget || !RelFileLocatorEquals(found->loc, t->heap->rd_locator))
+	if (found == NULL || found->dim->bytes > budget || !same_storage(found, t))
 		return false;
 	pin = ent_pin(found, t->mcx);
 	if (!readable(t, &found->stamp) || found->dead)
@@ -344,6 +352,9 @@ sift_dimcache_keep(SiftDimTry *t, const SiftStarDim *dim)
 	e->key = MemoryContextStrdup(t->rcx, t->key);
 	e->dim = MemoryContextAlloc(t->rcx, sizeof(SiftStarDim));
 	*e->dim = *dim;
+	old = MemoryContextSwitchTo(t->rcx);
+	e->desc = CreateTupleDescCopyConstr(RelationGetDescr(t->heap));
+	MemoryContextSwitchTo(old);
 	if (!sift_cache_room(MemoryContextMemAllocated(t->rcx, true)))
 		return false;
 	if (cache_cx == NULL)
@@ -355,6 +366,8 @@ sift_dimcache_keep(SiftDimTry *t, const SiftStarDim *dim)
 	e->rel_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(RelationGetRelid(t->heap)));
 	e->index_hash = GetSysCacheHashValue1(RELOID, ObjectIdGetDatum(t->index));
 	e->loc = t->heap->rd_locator;
+	e->index = t->index;
+	e->index_loc = t->index_loc;
 	e->stamp = t->stamp;
 	e->cx = t->rcx;
 	ent_retire(match_key, t->key);
