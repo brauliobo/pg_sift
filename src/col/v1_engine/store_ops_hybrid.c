@@ -23,6 +23,7 @@
 #include "core/memtrack.h"
 #include "core/tidbridge.h"
 #include "table/v1/rel.h"
+#include "table/v1/table.h"
 
 /* what the host asks of one leaf: the slot of the column in the input of the source, and what the leaf holds */
 typedef struct HybCol
@@ -42,6 +43,7 @@ typedef struct HybScan
 	SiftV6Vexpr quals;
 	bool		source_quals;
 	bool		heap_decides;	/* a predicate the source does not decide: every row it keeps is the heap's to judge */
+	const SiftTombLog *hot;		/* a sift_table with HOT chains: a row is handed over by the TID of its chain's root, the one its index entries hold */
 } HybScan;
 
 static const SiftV1ReaderOps *
@@ -204,19 +206,33 @@ batch_live(const SiftV6Batch *b, uint64 *live)
 		live[words - 1] &= (UINT64CONST(1) << (b->n & 63)) - 1;
 }
 
+static const uint64 *
+batch_tids(const HybScan *h, const SiftV6Batch *b)
+{
+	uint64	   *root;
+
+	if (h->hot == NULL)
+		return b->tag;
+	root = palloc(Max(b->n, 1) * sizeof(uint64));
+	for (int r = 0; r < b->n; r++)
+		for (root[r] = b->tag[r]; sift_tomb_hot_pred(h->hot, root[r], &root[r]);)
+			;
+	return root;
+}
+
 static void
 scan_batch(const HybScan *h, const SiftV6Batch *b, void (*sink) (void *arg, const SiftHybridBatch *batch), void *arg)
 {
 	uint64		live[SIFT_VEC_WORDS],
 				kept[SIFT_VEC_WORDS];
 	float4		score[SIFT_VEC_LEN];
-	SiftHybridBatch hb = {.tid = b->tag,.live = live,.n = b->n,.exact_vis = true};
+	SiftHybridBatch hb = {.tid = batch_tids(h, b),.live = live,.n = b->n,.exact_vis = true};
 
 	batch_live(b, live);
 	if (h->s->bridge != NULL)
 	{
 		hb.score = score;
-		if (sift_tidbridge_probe_vec(h->s->bridge, b->tag, live, b->n, kept, score) == 0)
+		if (sift_tidbridge_probe_vec(h->s->bridge, hb.tid, live, b->n, kept, score) == 0)
 			return;
 		hb.live = kept;
 	}
@@ -241,6 +257,8 @@ hybrid_scan(const SiftHybridScan *s, void (*sink) (void *arg, const SiftHybridBa
 	scan_columns(&h, lay);
 	scan_quals(&h, cx);
 	src = sift_v1_source_open(cx, s->snap, &h.in, h.source_quals ? &h.quals : NULL, NULL);
+	if (s->index == NULL && sift_tomb_has_hot(&sift_tbl_rel(r.rel)->tomb))
+		h.hot = &sift_tbl_rel(r.rel)->tomb;
 	while (src->next(src, &b))
 	{
 		MemoryContextSwitchTo(batch_cx);

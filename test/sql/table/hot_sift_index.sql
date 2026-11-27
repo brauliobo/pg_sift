@@ -103,7 +103,7 @@ SELECT same('SELECT id, v FROM # WHERE grp = 2 AND body @@> ''n42''') AS by_bm25
 VACUUM t, h;
 SELECT same_all() AS after_vacuum;
 -- the chains VACUUM kept (their roots are frozen log entries) do not send the superblocks to the per-row check of the snapshot: the aggregate that
--- reads the table (it is chosen at this size and selectivity) checks no row against the snapshot, in another session than the VACUUM (one UPDATE
+-- reads the table (forced: a format may cost the text scan below it) checks no row against the snapshot, in another session than the VACUUM (one UPDATE
 -- leaves chains of a root alone: nothing is dropped from the log, and the frozen roots must still be written)
 SELECT current_database() AS orig \gset
 CREATE TABLE big (id int PRIMARY KEY, body text, v int) USING sift_table WITH (autovacuum_enabled = false);
@@ -123,18 +123,20 @@ DECLARE
 	l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l LIKE pat THEN RETURN true; END IF;
+		IF l ~ pat THEN RETURN true; END IF;
 	END LOOP;
 	RETURN false;
 END
 $$;
 CREATE EXTENSION pg_sift_test;
 -- the chains of the matches are found from the entries of the log, one walk for the statement: no probe of the log for each page the matches lie in
+SET sift.agg_force = on;
 SELECT sift._test_tbl_hot_probes() >= 0 AS probes_reset;
-SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%SiftAgg%') AS reads_the_table;
+SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', 'Custom Scan \(Sift\w*Agg\w*\)') AS reads_the_table;
 SELECT sift._test_tbl_hot_probes() = 0 AS probes_no_page;
-SELECT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', '%vetted by heap%') AS vets_rows;
+SELECT NOT plan_has('SELECT count(*), sum(v) FROM big WHERE body @@> ''smart''', 'Heap Vet Rows: [1-9]') AS vets_no_row;
 SELECT count(*), sum(v) FROM big WHERE body @@> 'smart';
+RESET sift.agg_force;
 DROP FUNCTION plan_has(text, text);
 DROP TABLE big;
 UPDATE t SET v = v + 1 WHERE id % 3 = 0;

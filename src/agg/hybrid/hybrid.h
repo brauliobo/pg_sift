@@ -30,7 +30,7 @@ typedef enum SiftHybridDir
 typedef enum SiftHybridHost
 {
 	SIFT_HYB_HOST_COL = 0,				/* a sift_col index on a heap: the heap decides visibility and may hold HOT chains */
-	SIFT_HYB_HOST_TABLE					/* a sift_table: the store decides visibility, no chain */
+	SIFT_HYB_HOST_TABLE					/* a sift_table: the store decides visibility and hands a row over by the TID of its HOT chain's root, as its indexes do */
 } SiftHybridHost;
 
 /* What the planner knows. sel_* are fractions of rows; sel_col is 1 without a structured qual */
