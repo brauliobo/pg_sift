@@ -9,7 +9,7 @@
 --   served            the plan has the scan node
 --   verdict           'sift', or the arm:slug of every arm sift.explain_why refuses
 --   where_in_scan     the conditions of the rows (WHERE) are tested by the scan before the rows are grouped (a `Filters:` line of the node)
---   having_on_groups  the node tests a condition on the groups after they are aggregated (a `Filter:` line of the node)
+--   having_on_groups  the node tests a condition on the groups after they are aggregated (a `Filter:` line of a node other than a table scan, whose filter tests rows)
 --   rows_same         the rows of the two runs are the same (sorted, or in the order they come when `ordered`); floats at extra_float_digits = -5, as a float sum is added in another order
 --   n                 how many rows q returns (so no statement passes by returning nothing in both)
 -- having_same(a, b, expect) sets a with the scan on against b with the scan on (a_vs_b: same or differs; as_expected: it is what `expect` says, 'same' unless the pair is
@@ -62,12 +62,17 @@ BEGIN
 END $$;
 CREATE FUNCTION having_run(q text, ordered bool DEFAULT false) RETURNS TABLE (served bool, verdict text, where_in_scan bool, having_on_groups bool, rows_same bool, n bigint)
 LANGUAGE plpgsql AS $$
-DECLARE plan text; a text;
+DECLARE plan text; a text; l text; table_scan bool := false;
 BEGIN
   plan := having_plan(q);
   served := plan LIKE '%Custom Scan (SiftAgg%';
   where_in_scan := CASE WHEN served THEN plan ~ E'\n +Filters: ' END;
-  having_on_groups := CASE WHEN served THEN plan ~ E'\n +Filter: ' END;
+  having_on_groups := CASE WHEN served THEN false END;
+  FOR l IN SELECT regexp_split_to_table(plan, E'\n') LOOP
+    IF l ~ '^(\S| *->)' THEN table_scan := l ~ '(Seq|Index|Index Only|Bitmap Heap) Scan';
+    ELSIF served AND NOT table_scan AND l ~ '^ +Filter: ' THEN having_on_groups := true;
+    END IF;
+  END LOOP;
   verdict := CASE WHEN served THEN 'sift' ELSE (SELECT string_agg(arm || ':' || slug, ',' ORDER BY arm) FROM sift.explain_why(q) WHERE NOT used) END;
   a := having_rows(q, true, ordered);
   rows_same := a = having_rows(q, false, ordered);
