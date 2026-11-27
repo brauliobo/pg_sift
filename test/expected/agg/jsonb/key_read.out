@@ -183,7 +183,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kr        | 36 | compare, key test and null | plain same
  kr        | 37 | guard in a filter          | plain same
  kr        | 38 | guard and jsonb cast       | plain same
- kr        | 39 | guard of a text key        | plain same
+ kr        | 39 | guard of a text key        | scan same
  kr        | 40 | guard of an int key        | plain same
  kr        | 41 | guard keeps strings        | plain same
  kr        | 42 | guard in a case, grouped   | plain same
@@ -226,7 +226,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kb_text   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "abc"
  kb_text   | 37 | guard in a filter          | plain same
  kb_text   | 38 | guard and jsonb cast       | plain same
- kb_text   | 39 | guard of a text key        | plain same
+ kb_text   | 39 | guard of a text key        | scan same
  kb_text   | 40 | guard of an int key        | plain same
  kb_text   | 41 | guard keeps strings        | error: invalid input syntax for type double precision: "abc"
  kb_text   | 42 | guard in a case, grouped   | plain same
@@ -269,7 +269,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kb_bool   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "true"
  kb_bool   | 37 | guard in a filter          | plain same
  kb_bool   | 38 | guard and jsonb cast       | plain same
- kb_bool   | 39 | guard of a text key        | plain same
+ kb_bool   | 39 | guard of a text key        | scan same
  kb_bool   | 40 | guard of an int key        | plain same
  kb_bool   | 41 | guard keeps strings        | plain same
  kb_bool   | 42 | guard in a case, grouped   | plain same
@@ -312,7 +312,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kb_array  | 36 | compare, key test and null | error: invalid input syntax for type double precision: "[1, 2]"
  kb_array  | 37 | guard in a filter          | plain same
  kb_array  | 38 | guard and jsonb cast       | plain same
- kb_array  | 39 | guard of a text key        | plain same
+ kb_array  | 39 | guard of a text key        | scan same
  kb_array  | 40 | guard of an int key        | plain same
  kb_array  | 41 | guard keeps strings        | plain same
  kb_array  | 42 | guard in a case, grouped   | plain same
@@ -355,7 +355,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kb_object | 36 | compare, key test and null | error: invalid input syntax for type double precision: "{"a": 1}"
  kb_object | 37 | guard in a filter          | plain same
  kb_object | 38 | guard and jsonb cast       | plain same
- kb_object | 39 | guard of a text key        | plain same
+ kb_object | 39 | guard of a text key        | scan same
  kb_object | 40 | guard of an int key        | plain same
  kb_object | 41 | guard keeps strings        | plain same
  kb_object | 42 | guard in a case, grouped   | plain same
@@ -398,7 +398,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  kb_range  | 36 | compare, key test and null | error: value "3000000000" is out of range for type integer
  kb_range  | 37 | guard in a filter          | plain same
  kb_range  | 38 | guard and jsonb cast       | plain same
- kb_range  | 39 | guard of a text key        | plain same
+ kb_range  | 39 | guard of a text key        | scan same
  kb_range  | 40 | guard of an int key        | error: value "3000000000" is out of range for type integer
  kb_range  | 41 | guard keeps strings        | plain same
  kb_range  | 42 | guard in a case, grouped   | error: value "3000000000" is out of range for type integer
@@ -441,7 +441,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  ko        | 36 | compare, key test and null | plain same
  ko        | 37 | guard in a filter          | plain same
  ko        | 38 | guard and jsonb cast       | plain same
- ko        | 39 | guard of a text key        | plain same
+ ko        | 39 | guard of a text key        | scan same
  ko        | 40 | guard of an int key        | plain same
  ko        | 41 | guard keeps strings        | plain same
  ko        | 42 | guard in a case, grouped   | plain same
@@ -484,7 +484,7 @@ FROM tbls, shapes, LATERAL (SELECT sift_helpers.agg_check_outcome(replace(q, '@'
  ko_text   | 36 | compare, key test and null | error: invalid input syntax for type double precision: "abc"
  ko_text   | 37 | guard in a filter          | plain same
  ko_text   | 38 | guard and jsonb cast       | plain same
- ko_text   | 39 | guard of a text key        | plain same
+ ko_text   | 39 | guard of a text key        | scan same
  ko_text   | 40 | guard of an int key        | plain same
  ko_text   | 41 | guard keeps strings        | error: invalid input syntax for type double precision: "abc"
  ko_text   | 42 | guard in a case, grouped   | plain same

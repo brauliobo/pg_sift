@@ -1,0 +1,229 @@
+-- doc @> '{..}' (and its NOT, constant <@ doc, doc -> 'k' = 'scalar') and doc IS [NOT] NULL on an index of format major 2: SiftAggV6 tests the leaves of the paths the constant names. A
+-- string or a boolean is the JSON type and the `->>` text of its leaf, an integer the one an integer leaf holds (3.0 is 3, 42.5 and a string "42" are none), a JSON null the type null; IS NULL is
+-- the presence leaf of the document. A float, an array, an empty object or an undeclared path keeps the normal plan, and so does Format 1. The documents hold values of other JSON types than their
+-- leaves, documents that are no object and SQL NULL documents. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows are the same; `why`: an arm the plan uses.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE FUNCTION cv_doc(i int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+	SELECT CASE i % 12
+		WHEN 0 THEN jsonb_build_object('k', i % 50, 's', 's' || i % 5, 'f', i % 4 = 0, 'o', jsonb_build_object('a', i % 7, 'b', 'x' || i % 3), 'n', NULL)
+		WHEN 1 THEN '{"k": 42.0, "s": "42", "f": "true", "o": {"a": 3.0}}'::jsonb
+		WHEN 2 THEN '{"k": "42", "s": 42, "f": 1, "o": "x"}'::jsonb
+		WHEN 3 THEN '{"k": 42.5, "s": true, "f": null, "o": [{"a": 3}]}'::jsonb
+		WHEN 4 THEN '{"k": 9999999999, "s": null, "o": {"a": null}, "n": "null"}'::jsonb
+		WHEN 5 THEN '[{"k": 42, "s": "s1"}]'::jsonb
+		WHEN 6 THEN '"s1"'::jsonb
+		WHEN 7 THEN '42'::jsonb
+		WHEN 8 THEN 'null'::jsonb
+		WHEN 9 THEN '{"k": [42], "s": ["s1"], "f": [true], "o": {"a": [3]}}'::jsonb
+		WHEN 10 THEN '{}'::jsonb
+		ELSE '{"k": 42, "s": "s1", "f": true, "o": {"a": 3, "b": "x1"}, "n": null}'::jsonb
+	END
+$$;
+CREATE FUNCTION cv_make(tbl text, nn bool, f1 bool) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+	PERFORM set_config('sift.test_create_format1', f1::text, true);
+	EXECUTE format('CREATE TABLE %I (id int, g int, doc jsonb %s) WITH (autovacuum_enabled = false)', tbl, CASE WHEN nn THEN 'NOT NULL' ELSE '' END);
+	EXECUTE format('INSERT INTO %I SELECT i, i %% 5, CASE WHEN i %% 29 = 0 AND NOT %L THEN NULL ELSE cv_doc(i) END FROM generate_series(1, 1200) i', tbl, nn);
+	EXECUTE format('CREATE INDEX %I ON %I USING sift_col (id, g, doc) WITH (paths = ''doc.k int4, doc.s text, doc.f bool, doc.o.a int4, doc.o.b text, doc.n text'')', tbl || '_col', tbl);
+END $$;
+SELECT cv_make('cv', false, false), cv_make('cv_nn', true, false), cv_make('cv_f1', false, true);
+ cv_make | cv_make | cv_make 
+---------+---------+---------
+         |         | 
+(1 row)
+
+VACUUM ANALYZE cv, cv_nn, cv_f1;
+SELECT sift._test_index_format('cv_col') AS f2, sift._test_index_format('cv_f1_col') AS f1;
+ f2 | f1 
+----+----
+  2 |  1
+(1 row)
+
+CREATE FUNCTION cv_check(q text) RETURNS text LANGUAGE sql AS $$
+	SELECT sift_helpers.agg_check_outcome(q) || CASE WHEN EXISTS (SELECT 1 FROM sift.explain_why(q) WHERE used) THEN ' why' ELSE '' END
+$$;
+CREATE TABLE shapes (n int, label text, q text);
+INSERT INTO shapes VALUES
+  (1,  'integer',              $q$SELECT count(*) FROM $T WHERE doc @> '{"k": 42}'$q$),
+  (2,  'string',               $q$SELECT g, count(*), sum(id) FROM $T WHERE doc @> '{"s": "s1"}' GROUP BY g$q$),
+  (3,  'string of a number',   $q$SELECT count(*) FROM $T WHERE doc @> '{"s": "42"}'$q$),
+  (4,  'boolean',              $q$SELECT count(*) FROM $T WHERE doc @> '{"f": true}'$q$),
+  (5,  'boolean false',        $q$SELECT count(*) FROM $T WHERE doc @> '{"f": false}'$q$),
+  (6,  'json null',            $q$SELECT count(*) FROM $T WHERE doc @> '{"n": null}'$q$),
+  (7,  'nested integer',       $q$SELECT g, count(*) FROM $T WHERE doc @> '{"k": 42, "o": {"a": 3}}' GROUP BY g$q$),
+  (8,  'nested string',        $q$SELECT count(*) FROM $T WHERE doc @> '{"o": {"b": "x1"}}'$q$),
+  (9,  'nested null',          $q$SELECT count(*) FROM $T WHERE doc @> '{"o": {"a": null}}'$q$),
+  (10, 'contained by',         $q$SELECT count(*) FROM $T WHERE '{"s": "s1", "f": true}'::jsonb <@ doc$q$),
+  (11, 'path below the doc',   $q$SELECT count(*) FROM $T WHERE doc -> 'o' @> '{"a": 3}'$q$),
+  (12, 'not',                  $q$SELECT g, count(*) FROM $T WHERE NOT (doc @> '{"s": "s1"}') GROUP BY g$q$),
+  (13, 'not nested',           $q$SELECT count(*), sum(id) FROM $T WHERE NOT (doc @> '{"k": 42, "o": {"a": 3}}')$q$),
+  (14, 'beside a filter',      $q$SELECT count(*) FROM $T WHERE doc @> '{"f": true}' AND g < 3$q$),
+  (15, 'member equal',         $q$SELECT count(*) FROM $T WHERE doc -> 'k' = '42'$q$),
+  (16, 'nested member equal',  $q$SELECT count(*) FROM $T WHERE doc -> 'o' -> 'a' = '3'$q$),
+  (17, 'member equal string',  $q$SELECT count(*) FROM $T WHERE '"s1"' = doc -> 's'$q$),
+  (18, 'is null',              $q$SELECT count(*) FROM $T WHERE doc IS NULL$q$),
+  (19, 'is not null',          $q$SELECT g, count(*) FROM $T WHERE doc IS NOT NULL GROUP BY g$q$),
+  (20, 'float',                $q$SELECT count(*) FROM $T WHERE doc @> '{"k": 42.5}'$q$),
+  (21, 'out of the leaf',      $q$SELECT count(*) FROM $T WHERE doc @> '{"k": 9999999999}'$q$),
+  (22, 'number on a text leaf', $q$SELECT count(*) FROM $T WHERE doc @> '{"s": 42}'$q$),
+  (23, 'array',                $q$SELECT count(*) FROM $T WHERE doc @> '{"s": ["s1"]}'$q$),
+  (24, 'empty object',         $q$SELECT count(*) FROM $T WHERE doc @> '{"o": {}}'$q$),
+  (25, 'undeclared',           $q$SELECT count(*) FROM $T WHERE doc @> '{"s": "s1", "zz": 1}'$q$),
+  (26, 'under or',             $q$SELECT count(*) FROM $T WHERE doc @> '{"s": "s1"}' OR g = 3$q$),
+  (27, 'not of a member',      $q$SELECT count(*) FROM $T WHERE NOT (doc -> 'k' = '42')$q$);
+SELECT tbl, n, label, cv_check(replace(q, '$T', tbl)) AS outcome
+FROM (VALUES (1, 'cv'), (2, 'cv_nn'), (3, 'cv_f1')) t(ord, tbl), shapes ORDER BY ord, n;
+  tbl  | n  |         label         |    outcome    
+-------+----+-----------------------+---------------
+ cv    |  1 | integer               | scan same why
+ cv    |  2 | string                | scan same why
+ cv    |  3 | string of a number    | scan same why
+ cv    |  4 | boolean               | scan same why
+ cv    |  5 | boolean false         | scan same why
+ cv    |  6 | json null             | scan same why
+ cv    |  7 | nested integer        | scan same why
+ cv    |  8 | nested string         | scan same why
+ cv    |  9 | nested null           | scan same why
+ cv    | 10 | contained by          | scan same why
+ cv    | 11 | path below the doc    | scan same why
+ cv    | 12 | not                   | scan same why
+ cv    | 13 | not nested            | scan same why
+ cv    | 14 | beside a filter       | scan same why
+ cv    | 15 | member equal          | scan same why
+ cv    | 16 | nested member equal   | scan same why
+ cv    | 17 | member equal string   | scan same why
+ cv    | 18 | is null               | scan same why
+ cv    | 19 | is not null           | scan same why
+ cv    | 20 | float                 | plain same
+ cv    | 21 | out of the leaf       | plain same
+ cv    | 22 | number on a text leaf | plain same
+ cv    | 23 | array                 | plain same
+ cv    | 24 | empty object          | plain same
+ cv    | 25 | undeclared            | plain same
+ cv    | 26 | under or              | plain same
+ cv    | 27 | not of a member       | plain same
+ cv_nn |  1 | integer               | scan same why
+ cv_nn |  2 | string                | scan same why
+ cv_nn |  3 | string of a number    | scan same why
+ cv_nn |  4 | boolean               | scan same why
+ cv_nn |  5 | boolean false         | scan same why
+ cv_nn |  6 | json null             | scan same why
+ cv_nn |  7 | nested integer        | scan same why
+ cv_nn |  8 | nested string         | scan same why
+ cv_nn |  9 | nested null           | scan same why
+ cv_nn | 10 | contained by          | scan same why
+ cv_nn | 11 | path below the doc    | scan same why
+ cv_nn | 12 | not                   | scan same why
+ cv_nn | 13 | not nested            | scan same why
+ cv_nn | 14 | beside a filter       | scan same why
+ cv_nn | 15 | member equal          | scan same why
+ cv_nn | 16 | nested member equal   | scan same why
+ cv_nn | 17 | member equal string   | scan same why
+ cv_nn | 18 | is null               | scan same why
+ cv_nn | 19 | is not null           | scan same why
+ cv_nn | 20 | float                 | plain same
+ cv_nn | 21 | out of the leaf       | plain same
+ cv_nn | 22 | number on a text leaf | plain same
+ cv_nn | 23 | array                 | plain same
+ cv_nn | 24 | empty object          | plain same
+ cv_nn | 25 | undeclared            | plain same
+ cv_nn | 26 | under or              | plain same
+ cv_nn | 27 | not of a member       | plain same
+ cv_f1 |  1 | integer               | plain same
+ cv_f1 |  2 | string                | plain same
+ cv_f1 |  3 | string of a number    | plain same
+ cv_f1 |  4 | boolean               | plain same
+ cv_f1 |  5 | boolean false         | plain same
+ cv_f1 |  6 | json null             | plain same
+ cv_f1 |  7 | nested integer        | plain same
+ cv_f1 |  8 | nested string         | plain same
+ cv_f1 |  9 | nested null           | plain same
+ cv_f1 | 10 | contained by          | plain same
+ cv_f1 | 11 | path below the doc    | plain same
+ cv_f1 | 12 | not                   | plain same
+ cv_f1 | 13 | not nested            | plain same
+ cv_f1 | 14 | beside a filter       | plain same
+ cv_f1 | 15 | member equal          | plain same
+ cv_f1 | 16 | nested member equal   | plain same
+ cv_f1 | 17 | member equal string   | plain same
+ cv_f1 | 18 | is null               | plain same
+ cv_f1 | 19 | is not null           | plain same
+ cv_f1 | 20 | float                 | plain same
+ cv_f1 | 21 | out of the leaf       | plain same
+ cv_f1 | 22 | number on a text leaf | plain same
+ cv_f1 | 23 | array                 | plain same
+ cv_f1 | 24 | empty object          | plain same
+ cv_f1 | 25 | undeclared            | plain same
+ cv_f1 | 26 | under or              | plain same
+ cv_f1 | 27 | not of a member       | plain same
+(81 rows)
+
+SELECT count(*) FILTER (WHERE doc @> '{"k": 42, "o": {"a": 3}}') AS nested, count(*) FILTER (WHERE NOT (doc @> '{"s": "s1"}')) AS negated, count(*) FILTER (WHERE doc IS NULL) AS nulls FROM cv;
+ nested | negated | nulls 
+--------+---------+-------
+    194 |    1043 |    41
+(1 row)
+
+-- after writes and after the vacuum that rewrites the segments
+INSERT INTO cv SELECT 2000 + i, i % 5, CASE WHEN i % 13 = 0 THEN NULL ELSE cv_doc(i + 5) END FROM generate_series(1, 300) i;
+UPDATE cv SET doc = cv_doc(id + 1) WHERE id % 7 = 0;
+DELETE FROM cv WHERE id % 11 = 0;
+SELECT 'after writes' AS stage, n, cv_check(replace(q, '$T', 'cv')) AS outcome FROM shapes WHERE n <= 19 ORDER BY n;
+    stage     | n  |    outcome    
+--------------+----+---------------
+ after writes |  1 | scan same why
+ after writes |  2 | scan same why
+ after writes |  3 | scan same why
+ after writes |  4 | scan same why
+ after writes |  5 | scan same why
+ after writes |  6 | scan same why
+ after writes |  7 | scan same why
+ after writes |  8 | scan same why
+ after writes |  9 | scan same why
+ after writes | 10 | scan same why
+ after writes | 11 | scan same why
+ after writes | 12 | scan same why
+ after writes | 13 | scan same why
+ after writes | 14 | scan same why
+ after writes | 15 | scan same why
+ after writes | 16 | scan same why
+ after writes | 17 | scan same why
+ after writes | 18 | scan same why
+ after writes | 19 | scan same why
+(19 rows)
+
+VACUUM cv;
+SELECT 'after vacuum' AS stage, n, cv_check(replace(q, '$T', 'cv')) AS outcome FROM shapes WHERE n <= 19 ORDER BY n;
+    stage     | n  |    outcome    
+--------------+----+---------------
+ after vacuum |  1 | scan same why
+ after vacuum |  2 | scan same why
+ after vacuum |  3 | scan same why
+ after vacuum |  4 | scan same why
+ after vacuum |  5 | scan same why
+ after vacuum |  6 | scan same why
+ after vacuum |  7 | scan same why
+ after vacuum |  8 | scan same why
+ after vacuum |  9 | scan same why
+ after vacuum | 10 | scan same why
+ after vacuum | 11 | scan same why
+ after vacuum | 12 | scan same why
+ after vacuum | 13 | scan same why
+ after vacuum | 14 | scan same why
+ after vacuum | 15 | scan same why
+ after vacuum | 16 | scan same why
+ after vacuum | 17 | scan same why
+ after vacuum | 18 | scan same why
+ after vacuum | 19 | scan same why
+(19 rows)
+
+DROP TABLE shapes, cv, cv_nn, cv_f1;
+DROP FUNCTION cv_check(text), cv_make(text, bool, bool), cv_doc(int);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test;
+DROP EXTENSION pg_sift;

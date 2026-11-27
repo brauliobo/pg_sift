@@ -83,7 +83,7 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(i
  contained by               | t       | t
  with another condition     | t       | t
  under OR                   | f       | t
- under NOT                  | f       | t
+ under NOT                  | t       | t
  undeclared                 | f       | t
  undeclared with boolean    | f       | t
 (22 rows)
@@ -110,7 +110,7 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT count(*) FROM jc W
  contained by               | t       | t
  with another condition     | t       | t
  under OR                   | f       | t
- under NOT                  | f       | t
+ under NOT                  | t       | t
  undeclared                 | f       | t
  undeclared with boolean    | f       | t
 (22 rows)
@@ -119,26 +119,26 @@ SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT count(*) FROM jc W
 SELECT s.name, c.* FROM shapes s, LATERAL shape_check('SELECT g, count(*), sum(id) FROM jd WHERE ' || s.cond || ' GROUP BY g') c ORDER BY s.ord;
             name            | engaged | same 
 ----------------------------+---------+------
- string                     | f       | t
+ string                     | t       | t
  boolean true               | t       | t
  boolean false              | t       | t
- string and boolean         | f       | t
+ string and boolean         | t       | t
  json null                  | t       | t
- json null and string       | f       | t
+ json null and string       | t       | t
  nested boolean             | t       | t
  nested boolean string      | t       | t
- nested null                | f       | t
- nested both                | f       | t
- integer member             | f       | t
+ nested null                | t       | t
+ nested both                | t       | t
+ integer member             | t       | t
  string that reads true     | t       | t
  string that reads false    | t       | t
  string that reads a number | t       | t
  number in a text leaf      | f       | t
  empty nested object        | f       | t
- contained by               | f       | t
+ contained by               | t       | t
  with another condition     | t       | t
  under OR                   | f       | t
- under NOT                  | f       | t
+ under NOT                  | t       | t
  undeclared                 | f       | t
  undeclared with boolean    | f       | t
 (22 rows)

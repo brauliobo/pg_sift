@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "access/stratnum.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_collation_d.h"
 #include "catalog/pg_opfamily_d.h"
 #include "nodes/makefuncs.h"
@@ -49,15 +50,60 @@ sift_v6_unnest_path_call(const Node *e)
 	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED;
 }
 
+/* the array whose elements the filter of a jsonpath tests: $[*] of the document, or $.key[*] of doc -> 'key', which is the array on a document that is an object (the call decides any other row) */
+static bool
+path_head(const JsonPath *jp, JsonPathItem *any, char **key)
+{
+	JsonPathItem root,
+				item;
+	int32		len;
+
+	jspInit(&root, unconstify(JsonPath *, jp));
+	*key = NULL;
+	if (root.type != jpiRoot || !jspGetNext(&root, any))
+		return false;
+	if (any->type == jpiKey)
+	{
+		*key = jspGetString(any, &len);
+		*key = pnstrdup(*key, len);
+		item = *any;
+		if (!jspGetNext(&item, any))
+			return false;
+	}
+	return any->type == jpiAnyArray;
+}
+
+static const JsonPath *
+call_path(const Node *e)
+{
+	const Node *path = strip_relabel(lsecond(func_args(unconstify(Node *, e))));
+
+	return IsA(path, Const) && !((const Const *) path)->constisnull ? DatumGetJsonPathP(((const Const *) path)->constvalue) : NULL;
+}
+
 const Expr *
 sift_v6_unnest_path_array(const Node *e)
 {
 	List	   *args;
+	const JsonPath *jp;
+	JsonPathItem any;
+	char	   *key;
+	OpExpr	   *field;
 
 	if (!sift_v6_unnest_path_call(e))
 		return NULL;
 	args = func_args(unconstify(Node *, e));
-	return (const Expr *) strip_relabel(call_func(e) == F_JSONB_CONTAINED ? lsecond(args) : linitial(args));
+	if (call_func(e) == F_JSONB_CONTAINS || call_func(e) == F_JSONB_CONTAINED)
+		return (const Expr *) strip_relabel(call_func(e) == F_JSONB_CONTAINED ? lsecond(args) : linitial(args));
+	if ((jp = call_path(e)) == NULL || !path_head(jp, &any, &key))
+		return NULL;
+	if (key == NULL)
+		return (const Expr *) strip_relabel(linitial(args));
+	field = (OpExpr *) make_opclause(OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("->")), JSONBOID, TEXTOID), JSONBOID, false,
+									 copyObject((Expr *) strip_relabel(linitial(args))), (Expr *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(key), false, false),
+									 InvalidOid, DEFAULT_COLLATION_OID);
+	set_opfuncid(field);
+	return (const Expr *) field;
 }
 
 /* ---- one comparison of a member with a literal, as the kinds and values of the member it holds ---- */
@@ -261,17 +307,16 @@ filter_cnf(PathCtx *c, JsonPathItem *v, bool neg)
 	return c->ok ? list_make1(a) : NIL;
 }
 
-/* jsonb_path_exists(doc, '$[*] ? (filter)'[, vars[, silent]]) and doc @? '$[*] ? (filter)' */
+/* jsonb_path_exists(doc, '$[*] ? (filter)'[, vars[, silent]]) and doc @? '$[*] ? (filter)', or '$.key[*] ? (filter)' of the array doc -> 'key' */
 static List *
 path_clauses(PathCtx *c, const Node *e)
 {
 	List	   *args = func_args(unconstify(Node *, e));
-	const Node *path = strip_relabel(lsecond(args));
-	JsonPathItem root,
-				any,
+	const JsonPath *jp = call_path(e);
+	JsonPathItem any,
 				filt,
 				expr;
-	JsonPath   *jp;
+	char	   *key;
 
 	if (call_func(e) == F_JSONB_PATH_EXISTS)
 	{
@@ -281,12 +326,10 @@ path_clauses(PathCtx *c, const Node *e)
 			return NIL;
 		c->vars = jsonpath_vars(lthird(args), &c->ok);
 	}
-	if (!c->ok || !IsA(path, Const) || ((const Const *) path)->constisnull)
+	if (!c->ok || jp == NULL)
 		return NIL;
-	jp = DatumGetJsonPathP(((const Const *) path)->constvalue);
-	jspInit(&root, jp);
 	c->strict = !(jp->header & JSONPATH_LAX);
-	if (root.type != jpiRoot || !jspGetNext(&root, &any) || any.type != jpiAnyArray || !jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
+	if (!path_head(jp, &any, &key) || !jspGetNext(&any, &filt) || filt.type != jpiFilter || jspHasNext(&filt))
 		return NIL;
 	jspGetArg(&filt, &expr);
 	return filter_cnf(c, &expr, false);

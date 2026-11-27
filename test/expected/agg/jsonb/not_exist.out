@@ -470,33 +470,33 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  376 | jo: document not null, filter not   | plain same
  377 | jo: document not null, is false     | plain same
  378 | jo: document not null, case else 0  | plain same
- 379 | jd: text leaf, where                | plain same
- 380 | jd: text leaf, not                  | plain same
- 381 | jd: text leaf, not and              | plain same
+ 379 | jd: text leaf, where                | scan same
+ 380 | jd: text leaf, not                  | scan same
+ 381 | jd: text leaf, not and              | scan same
  382 | jd: text leaf, filter not           | plain same
  383 | jd: text leaf, is false             | plain same
  384 | jd: text leaf, case else 0          | plain same
- 385 | jd: integer leaf, where             | plain same
- 386 | jd: integer leaf, not               | plain same
- 387 | jd: integer leaf, not and           | plain same
+ 385 | jd: integer leaf, where             | scan same
+ 386 | jd: integer leaf, not               | scan same
+ 387 | jd: integer leaf, not and           | scan same
  388 | jd: integer leaf, filter not        | plain same
  389 | jd: integer leaf, is false          | plain same
  390 | jd: integer leaf, case else 0       | plain same
- 391 | jd: nested text leaf, where         | plain same
- 392 | jd: nested text leaf, not           | plain same
- 393 | jd: nested text leaf, not and       | plain same
+ 391 | jd: nested text leaf, where         | scan same
+ 392 | jd: nested text leaf, not           | scan same
+ 393 | jd: nested text leaf, not and       | scan same
  394 | jd: nested text leaf, filter not    | plain same
  395 | jd: nested text leaf, is false      | plain same
  396 | jd: nested text leaf, case else 0   | plain same
- 397 | jd: two keys, where                 | plain same
- 398 | jd: two keys, not                   | plain same
- 399 | jd: two keys, not and               | plain same
+ 397 | jd: two keys, where                 | scan same
+ 398 | jd: two keys, not                   | scan same
+ 399 | jd: two keys, not and               | scan same
  400 | jd: two keys, filter not            | plain same
  401 | jd: two keys, is false              | plain same
  402 | jd: two keys, case else 0           | plain same
- 403 | jd: contained by, where             | plain same
- 404 | jd: contained by, not               | plain same
- 405 | jd: contained by, not and           | plain same
+ 403 | jd: contained by, where             | scan same
+ 404 | jd: contained by, not               | scan same
+ 405 | jd: contained by, not and           | scan same
  406 | jd: contained by, filter not        | plain same
  407 | jd: contained by, is false          | plain same
  408 | jd: contained by, case else 0       | plain same
@@ -548,25 +548,25 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  454 | jd: array equal, filter not         | scan same
  455 | jd: array equal, is false           | scan same
  456 | jd: array equal, case else 0        | scan same
- 457 | jd: both containments, where        | plain same
+ 457 | jd: both containments, where        | scan same
  458 | jd: both containments, not          | plain same
  459 | jd: both containments, not and      | plain same
  460 | jd: both containments, filter not   | plain same
  461 | jd: both containments, is false     | plain same
  462 | jd: both containments, case else 0  | plain same
  463 | jd: either containment, where       | plain same
- 464 | jd: either containment, not         | plain same
- 465 | jd: either containment, not and     | plain same
+ 464 | jd: either containment, not         | scan same
+ 465 | jd: either containment, not and     | scan same
  466 | jd: either containment, filter not  | plain same
  467 | jd: either containment, is false    | plain same
  468 | jd: either containment, case else 0 | plain same
  469 | jd: containment or g, where         | plain same
- 470 | jd: containment or g, not           | plain same
- 471 | jd: containment or g, not and       | plain same
+ 470 | jd: containment or g, not           | scan same
+ 471 | jd: containment or g, not and       | scan same
  472 | jd: containment or g, filter not    | plain same
  473 | jd: containment or g, is false      | plain same
  474 | jd: containment or g, case else 0   | plain same
- 475 | jd: containment and g, where        | plain same
+ 475 | jd: containment and g, where        | scan same
  476 | jd: containment and g, not          | plain same
  477 | jd: containment and g, not and      | plain same
  478 | jd: containment and g, filter not   | plain same

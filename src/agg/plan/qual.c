@@ -19,10 +19,12 @@
 #include "agg/plan/int.h"
 #include "agg/ext.h"
 #include "agg/qual/bqual.h"
+#include "agg/qual/contains.h"
 #include "agg/qual/qual.h"
 #include "agg/refuse.h"
 #include "agg/unnest/jsonb.h"
 #include "col/am/preds.h"
+#include "col/col.h"
 
 /* an expression of constants and stable functions: its value is the same for the whole scan, which reads it when it starts */
 static bool
@@ -149,15 +151,45 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	return (Expr *) q;
 }
 
+/* the leaf "<doc>#present" of the column att of the index, which a scan key IS [NOT] NULL of the document reads (col/am/preds.c) */
+static bool
+has_present_leaf(const V6Plan *p, int att)
+{
+	const SiftColSchema *sch = p->colrel->schema;
+
+	for (int c = 0; c < sch->ncols; c++)
+		if (sch->cols[c].attno == att && sift_col_def_is_present(&sch->cols[c]))
+			return true;
+	return false;
+}
+
+/* the column of the index a shredded document of a WHERE clause is, whose presence leaf says which rows are SQL NULL to a format that reads the documents as the heap does (0: none) */
+static int
+doc_null_column(const V6Plan *p, const Expr *arg)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	int			att;
+
+	return !p->in_filter && !p->is_table && p->colrel != NULL && p->ops->jsonb != NULL && p->ops->jsonb->exact_values && sift_v6_json_doc_att(&rel, arg, &att) && has_present_leaf(p, att) ?
+		att : 0;
+}
+
 static Expr *
 qual_null_test(V6Plan *p, NullTest *nt)
 {
 	NullTest   *q = copyObject(nt);
 	SiftV6Col	col;
+	int			att;
 
-	if (nt->argisrow || !sift_v6_plan_column(p, nt->arg, true, &col))
+	if (nt->argisrow)
 		return NULL;
-	q->arg = index_var((Var *) nt->arg, col.attno - 1);
+	if (IsA(nt->arg, Var) && ((const Var *) nt->arg)->vartype == JSONBOID)
+		att = doc_null_column(p, nt->arg);
+	else
+		att = sift_v6_plan_column(p, nt->arg, true, &col) ? col.attno : 0;
+	if (att == 0)
+		return NULL;
+	q->arg = index_var((Var *) nt->arg, att - 1);
 	return (Expr *) q;
 }
 
@@ -199,23 +231,41 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 }
 
 /* a qual no scan key says (a column against a column, an OR, a numeric against a constant): the scan runs it over the columns of each batch (agg/qual/bqual.h) */
+/* the index qual a batch qual implies: the scan prunes its units by it too */
+static void
+add_implied_qual(V6Plan *p, Expr *clause)
+{
+	Expr	   *implied = p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_implied_qual(p->root, clause);
+	Expr	   *q = implied == NULL ? NULL : sift_v6_index_qual(p, implied);
+
+	if (q != NULL)
+		p->spec.indexqual = lappend(p->spec.indexqual, q);
+}
+
 static bool
-qual_batch(V6Plan *p, RestrictInfo *ri)
+batch_clause(V6Plan *p, Expr *where)
 {
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
 	Expr	   *clause;
 
-	if (!p->batch_ok || contain_volatile_functions((Node *) ri->clause) || agg_node_has_extern_param((Node *) ri->clause) || sift_v6_text_clause(p->rel, ri))
+	if (!p->batch_ok || contain_volatile_functions((Node *) where) || agg_node_has_extern_param((Node *) where))
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
-	clause = sift_v6_plan_json_vars(p, ri->clause, true);
-	clause = clause == ri->clause ? copyObject(clause) : clause;
+	clause = sift_v6_plan_json_vars(p, where, true);
+	clause = clause == where ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
 	if (!sift_v6_bq_plan_ok(p->root, &in, clause))
 		return false;
 	p->spec.vqual = lappend(p->spec.vqual, clause);
+	add_implied_qual(p, where);
 	return true;
+}
+
+static bool
+qual_batch(V6Plan *p, RestrictInfo *ri)
+{
+	return !sift_v6_text_clause(p->rel, ri) && batch_clause(p, ri->clause);
 }
 
 /* the clauses of the query imply the predicate of a partial index: every row the query reads is in the index */
@@ -246,15 +296,37 @@ unsafe_initplan_walker(Node *n, PlannerInfo *root)
 	return expression_tree_walker(n, unsafe_initplan_walker, root);
 }
 
-/* the index qual a batch qual implies: the scan prunes its units by it too */
-static void
-add_implied_qual(V6Plan *p, Expr *clause)
+/* a test of the leaves of a document that a WHERE clause is the conjunction of (agg/qual/contains.h): a scan key or a batch qual */
+static bool
+compile_lowered(V6Plan *p, const List *tests)
 {
-	Expr	   *implied = p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_implied_qual(p->root, clause);
-	Expr	   *q = implied == NULL ? NULL : sift_v6_index_qual(p, implied);
+	foreach_ptr(Expr, t, tests)
+	{
+		Expr	   *q = IsA(t, NullTest) ? qual_null_test(p, (NullTest *) t) : NULL;
+
+		if (q != NULL)
+			p->spec.indexqual = lappend(p->spec.indexqual, q);
+		else if (IsA(t, NullTest) || !batch_clause(p, t))
+			return false;
+	}
+	return true;
+}
+
+/* a clause of the WHERE that is none of the special ones: a scan key, a key of the JSON leaves, a batch qual, or tests of the leaves of a document */
+static bool
+compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
+{
+	Expr	   *q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
+	List	   *jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(rel, ri->clause);
+	List	   *tests;
 
 	if (q != NULL)
 		p->spec.indexqual = lappend(p->spec.indexqual, q);
+	else if (jq != NIL)
+		p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
+	else if (!qual_batch(p, ri))
+		return !ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests);
+	return true;
 }
 
 bool
@@ -264,9 +336,6 @@ sift_v6_compile_quals(V6Plan *p)
 
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 	{
-		Expr	   *q;
-		List	   *jq;
-
 		if (unsafe_initplan_walker((Node *) ri->clause, p->root))
 			return false;
 		if (sift_v6_unnest_test_ri(p, ri))
@@ -277,22 +346,11 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		if (sift_v6_mapkey_pair_qual(p, ri))
 			continue;
-		q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
-		jq = ri->pseudoconstant || q != NULL || p->is_table ? NIL : sift_v6_json_qual(&rel, ri->clause);
-		if (q == NULL && jq == NIL && qual_batch(p, ri))
-		{
-			add_implied_qual(p, ri->clause);
-			continue;
-		}
-		if (q == NULL && jq == NIL)
+		if (!compile_clause(p, &rel, ri))
 		{
 			sift_agg_arm_refused("single", AGG_REFUSE_WHERE);
 			return false;
 		}
-		if (q != NULL)
-			p->spec.indexqual = lappend(p->spec.indexqual, q);
-		else
-			p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
 	}
 	return sift_v6_compile_text(p) && !(p->spec.tid_range && p->text != NULL);
 }

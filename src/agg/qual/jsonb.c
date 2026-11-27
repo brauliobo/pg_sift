@@ -84,6 +84,12 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 	return false;
 }
 
+bool
+sift_v6_json_doc_att(const SiftV6Rel *rel, const Expr *e, int *att)
+{
+	return doc_of(rel, e, att);
+}
+
 /* the leaf of the format of the index that keeps whether the key is on the rows of the document attribute att (-1: none keeps it) */
 static int
 key_leaf(const SiftV6Rel *rel, int att, const char *key)
@@ -131,17 +137,43 @@ path_key(const Expr *e)
 	return n == 1 && !nl[0] ? TextDatumGetCString(el[0]) : NULL;
 }
 
+/* a key that a path or a subscript reads as the key of an object whatever the document is: one an array would read as the index of an element is not */
+static bool
+object_key(const char *key)
+{
+	return key != NULL && strchr(" +-0123456789", key[strspn(key, " ")]) == NULL;
+}
+
 /* doc -> 'k' as a call with a path of one key: jsonb_extract_path(doc, 'k') or doc #> '{k}' (as_text false), jsonb_extract_path_text(doc, 'k') or doc #>> '{k}' (as_text true) */
 static bool
 path_member(const Expr *e, bool as_text, const Var **doc, const char **key)
 {
 	const List *args = e != NULL ? args_of(e) : NIL;
 
-	if (e == NULL || func_of(e) != (as_text ? F_JSONB_EXTRACT_PATH_TEXT : F_JSONB_EXTRACT_PATH) || list_length(args) != 2 || (*key = path_key(lsecond(args))) == NULL ||
-		strchr(" +-0123456789", (*key)[strspn(*key, " ")]) != NULL)
+	if (e == NULL || func_of(e) != (as_text ? F_JSONB_EXTRACT_PATH_TEXT : F_JSONB_EXTRACT_PATH) || list_length(args) != 2 || !object_key(*key = path_key(lsecond(args))))
 		return false;
 	*doc = (const Var *) strip(linitial(args));
 	return *doc != NULL && IsA(*doc, Var);
+}
+
+/* the keys of doc['k1']['k2'].. that reads the members of objects (doc -> 'k1' -> 'k2'), NIL for any other subscript */
+static List *
+subscript_keys(const Expr *e)
+{
+	const SubscriptingRef *sr = (const SubscriptingRef *) e;
+	List	   *keys = NIL;
+
+	if (sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL)
+		return NIL;
+	foreach_ptr(Expr, k, sr->refupperindexpr)
+	{
+		const char *key = text_const(k);
+
+		if (!object_key(key))
+			return NIL;
+		keys = lappend(keys, makeString(pstrdup(key)));
+	}
+	return keys;
 }
 
 bool
@@ -159,13 +191,11 @@ sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **k
 	}
 	if (e != NULL && IsA(e, SubscriptingRef))
 	{
-		const SubscriptingRef *sr = (const SubscriptingRef *) e;
+		List	   *keys = subscript_keys(e);
 
-		if (as_text || sr->refcontainertype != JSONBOID || sr->refassgnexpr != NULL || sr->reflowerindexpr != NIL || list_length(sr->refupperindexpr) != 1)
-			return false;
-		*doc = (const Var *) strip(sr->refexpr);
-		*key = text_const(linitial(sr->refupperindexpr));
-		return *doc != NULL && IsA(*doc, Var) && *key != NULL;
+		*doc = (const Var *) strip(((const SubscriptingRef *) e)->refexpr);
+		*key = list_length(keys) == 1 ? strVal(linitial(keys)) : NULL;
+		return !as_text && *key != NULL && IsA(*doc, Var);
 	}
 	args = e != NULL ? args_of(e) : NIL;
 	if (e == NULL || func_of(e) != (as_text ? F_JSONB_OBJECT_FIELD_TEXT : F_JSONB_OBJECT_FIELD) || list_length(args) != 2)
@@ -190,13 +220,24 @@ const Var *
 sift_v6_doc_chain(const Expr *e, List **path)
 {
 	*path = NIL;
-	for (e = strip(e); e != NULL && (func_of(e) == F_JSONB_OBJECT_FIELD || func_of(e) == F_JSONB_OBJECT_FIELD_TEXT) && list_length(args_of(e)) == 2; e = strip(linitial(args_of(e))))
+	for (e = strip(e); e != NULL; e = strip(e))
 	{
-		const char *key = text_const(lsecond(args_of(e)));
+		if (IsA(e, SubscriptingRef))
+		{
+			List	   *keys = subscript_keys(e);
 
-		if (key == NULL)
+			if (keys == NIL)
+				return NULL;
+			*path = list_concat(keys, *path);
+			e = ((const SubscriptingRef *) e)->refexpr;
+			continue;
+		}
+		if ((func_of(e) != F_JSONB_OBJECT_FIELD && func_of(e) != F_JSONB_OBJECT_FIELD_TEXT) || list_length(args_of(e)) != 2)
+			break;
+		if (text_const(lsecond(args_of(e))) == NULL)
 			return NULL;
-		*path = lcons(makeString(pstrdup(key)), *path);
+		*path = lcons(makeString(pstrdup(text_const(lsecond(args_of(e))))), *path);
+		e = linitial(args_of(e));
 	}
 	return e != NULL && IsA(e, Var) && ((const Var *) e)->vartype == JSONBOID ? (const Var *) e : NULL;
 }
@@ -460,29 +501,27 @@ sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out)
 
 typedef struct JsonLeaves
 {
-	Bitmapset  *value;			/* the leaves the statement reads the values of (`->>`, its float8 cast) */
+	Bitmapset  *value;			/* the leaves the statement reads a value of that raises for some JSON value (the float8 and the bool casts) */
 	Bitmapset  *type;			/* the leaves it reads the JSON type of, anywhere but in a scan key */
 } JsonLeaves;
 
-/* the presence of a key is no test of a type: a row that has not the key has no value to read either */
+/* the presence of a key is no test of a type: a row that has not the key has no value to read either; a read that raises for no value (the `->>` text, the integer a leaf holds) clashes with none */
 static void
 note_col(JsonLeaves *j, const SiftV6Col *c)
 {
-	if (c->jleaf > 0 && !(c->jtype && c->typid == BOOLOID))
-	{
-		Bitmapset **set = c->jtype ? &j->type : &j->value;
-
-		*set = bms_add_member(*set, c->jleaf - 1);
-	}
+	if (c->jleaf > 0 && c->jtype && c->typid != BOOLOID)
+		j->type = bms_add_member(j->type, c->jleaf - 1);
+	else if (c->jleaf > 0 && !c->jtype && (c->typid == FLOAT8OID || c->typid == BOOLOID))
+		j->value = bms_add_member(j->value, c->jleaf - 1);
 }
 
 static void
 note_vatt(JsonLeaves *j, int attno)
 {
-	Bitmapset **set = sift_v6_vatt_is_type(attno) ? &j->type : &j->value;
-
-	if (!sift_v6_vatt_is_presence(attno))
-		*set = bms_add_member(*set, sift_v6_vatt_leaf(attno));
+	if (sift_v6_vatt_is_type(attno) && !sift_v6_vatt_is_presence(attno))
+		j->type = bms_add_member(j->type, sift_v6_vatt_leaf(attno));
+	else if (sift_v6_vatt_raises(attno))
+		j->value = bms_add_member(j->value, sift_v6_vatt_leaf(attno));
 }
 
 static bool
@@ -663,11 +702,17 @@ cast_number_text(const char *payload, uint32 len, bool *raises)
 SiftV6JsonExc
 sift_v6_json_exception_read(SiftV6Class cls, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out)
 {
-	MemoryContext old = MemoryContextSwitchTo(cx);
+	MemoryContext old;
 	ErrorSaveContext escontext = {T_ErrorSaveContext};
 	bool		raises = false;
-	char	   *s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
-	SiftV6JsonExc res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
+	char	   *s;
+	SiftV6JsonExc res;
+
+	if (cls == SV6C_I64)
+		return SV6JX_NULL;
+	old = MemoryContextSwitchTo(cx);
+	s = jsonb_cast ? cast_number_text(payload, len, &raises) : exception_text(payload, len);
+	res = raises ? SV6JX_RAISES : s == NULL ? SV6JX_NULL : SV6JX_VALUE;
 
 	if (res == SV6JX_VALUE && cls == SV6C_TEXT)
 		*out = (SiftV6JsonValue) {.text = s,.tlen = strlen(s)};

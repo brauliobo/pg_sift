@@ -111,25 +111,25 @@ FROM (VALUES ('co_clean'), ('co_dirty')) t(name), patterns p ORDER BY 1, p.name;
  co_dirty | array and member             | f    | t
  co_dirty | array of objects             | f    | t
  co_dirty | array two                    | f    | t
- co_dirty | bool                         | f    | t
- co_dirty | bool false                   | f    | t
+ co_dirty | bool                         | t    | t
+ co_dirty | bool false                   | t    | t
  co_dirty | empty                        | f    | t
  co_dirty | empty array                  | f    | t
  co_dirty | empty object                 | f    | t
  co_dirty | float                        | f    | t
- co_dirty | int                          | f    | t
- co_dirty | int absent                   | f    | t
- co_dirty | integral float               | f    | t
+ co_dirty | int                          | t    | t
+ co_dirty | int absent                   | t    | t
+ co_dirty | integral float               | t    | t
  co_dirty | key of another type          | f    | t
- co_dirty | nested                       | f    | t
- co_dirty | nested path of the attribute | f    | t
- co_dirty | nested two                   | f    | t
+ co_dirty | nested                       | t    | t
+ co_dirty | nested path of the attribute | t    | t
+ co_dirty | nested two                   | t    | t
  co_dirty | root array                   | f    | t
  co_dirty | root scalar                  | f    | t
- co_dirty | string                       | f    | t
- co_dirty | string like a number         | f    | t
- co_dirty | three dim_b                  | f    | t
- co_dirty | two dim_b                    | f    | t
+ co_dirty | string                       | t    | t
+ co_dirty | string like a number         | t    | t
+ co_dirty | three dim_b                  | t    | t
+ co_dirty | two dim_b                    | t    | t
  co_dirty | unknown key                  | f    | t
 (50 rows)
 
