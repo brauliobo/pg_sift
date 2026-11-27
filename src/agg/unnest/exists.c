@@ -53,6 +53,25 @@ typedef struct TestBuilt
 	RelOptInfo *elem_rel;
 } TestBuilt;
 
+/* the one relation the sub-select scans, NULL when it scans several: a sub-select PostgreSQL pulled up into it leaves its entry in the range table, but no relation */
+static RelOptInfo *
+sub_rel(const PlannerInfo *sub)
+{
+	RelOptInfo *one = NULL;
+
+	for (int r = 1; r < sub->simple_rel_array_size; r++)
+	{
+		RelOptInfo *rel = sub->simple_rel_array[r];
+
+		if (rel == NULL)
+			continue;
+		if (one != NULL || rel->reloptkind != RELOPT_BASEREL)
+			return NULL;
+		one = rel;
+	}
+	return one;
+}
+
 /* the sub-plan of an EXISTS whose sub-select is a single function scan, and the root it was planned under; NULL for any other clause */
 static const SubPlan *
 exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
@@ -64,7 +83,7 @@ exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
 		return NULL;
 	*sub = list_nth(root->glob->subroots, sp->plan_id - 1);
 	q = (*sub)->parse;
-	if (list_length(q->rtable) != 1 || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->hasSubLinks || q->groupClause != NIL || q->havingQual != NULL || q->limitCount != NULL || q->limitOffset != NULL ||
+	if (sub_rel(*sub) == NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->hasSubLinks || q->groupClause != NIL || q->havingQual != NULL || q->limitCount != NULL || q->limitOffset != NULL ||
 		q->distinctClause != NIL || q->rowMarks != NIL || q->setOperations != NULL || q->cteList != NIL)
 		return NULL;
 	return sp;
@@ -346,8 +365,8 @@ build_exists(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 	SiftV6ElemRte one;
 	SiftV6ElemRte *rte;
 
-	b->elem_rel = c->sub->simple_rel_array[1];
-	if (b->elem_rel == NULL || !sift_v6_unnest_exists_rte(planner_rt_fetch(1, (PlannerInfo *) c->sub), c->sp, &one) || !sift_v6_unnest_array_ok(p->root, p->rel, one.array) ||
+	b->elem_rel = sub_rel(c->sub);
+	if (!sift_v6_unnest_exists_rte(planner_rt_fetch(b->elem_rel->relid, (PlannerInfo *) c->sub), c->sp, &one) || !sift_v6_unnest_array_ok(p->root, p->rel, one.array) ||
 		(rte = stream_of(p, st, one.array, one.fn == SV6E_MEMBERS ? SV6E_MEMBERS : SV6E_RECORDSET, &b->test.stream)) == NULL)
 		return false;
 	if (one.fn == SV6E_MEMBERS && rte->array == NULL)

@@ -73,6 +73,12 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT length(o.doc ->> ''k'') AS l, i.category, count(*) FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(category text, kind text, qty int) WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(o.items) AS j(kind text) WHERE j.kind = ''gift'') GROUP BY 1, 2'
 ]) q;
 
+-- an EXISTS over the elements through a sub-select PostgreSQL pulls up: the sub-select is no relation of the sub-plan any more, the function scan is its one
+SELECT same(q) FROM unnest(ARRAY[
+	'SELECT o.grp, count(*) FROM @T o WHERE EXISTS (SELECT * FROM LATERAL (SELECT kind, qty FROM jsonb_to_recordset(o.items) AS j(kind text, qty int) WHERE j.qty IS NOT NULL) s WHERE s.kind = ''gift'') GROUP BY 1',
+	'SELECT o.region, count(*) FROM @T o WHERE NOT EXISTS (SELECT * FROM (SELECT kind FROM jsonb_to_recordset(o.items) AS j(kind text, qty int) WHERE j.qty > 1) s WHERE s.kind = ''box'') GROUP BY 1'
+]) q;
+
 DROP FUNCTION same(text);
 DROP TABLE sc, sh;
 DROP EXTENSION pg_sift;
