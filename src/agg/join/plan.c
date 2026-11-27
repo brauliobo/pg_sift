@@ -28,6 +28,7 @@
 #include "agg/dim_keys.h"
 #include "agg/ext.h"
 #include "agg/exists_plan.h"
+#include "agg/join/pairs.h"
 #include "agg/join/plan.h"
 #include "agg/join/push.h"
 #include "agg/source_rel.h"
@@ -665,82 +666,30 @@ probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col
 	return ok && sift_v6_key_type_ok(out->typid);
 }
 
-typedef struct ResidCtx
-{
-	V6Plan	   *p;
-	SiftV6Ext  *x;
-	Index		varno[SIFT_V6_RESID_COLS];
-	AttrNumber	attno[SIFT_V6_RESID_COLS];
-	bool		ok;
-} ResidCtx;
-
-/* the virtual attribute (1-based) of the column a Var of a condition is on the pairs: the Var read from the slot of its column */
-static Node *
-resid_var(Node *n, ResidCtx *c)
-{
-	Var		   *v,
-			   *nv;
-	int			i;
-
-	if (n == NULL || !c->ok)
-		return n;
-	if (IsA(n, PlaceHolderVar) || IsA(n, Param) || IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, Aggref) || IsA(n, WindowFunc))
-	{
-		c->ok = false;
-		return n;
-	}
-	if (!IsA(n, Var))
-		return expression_tree_mutator(n, resid_var, c);
-	v = (Var *) n;
-	for (i = 0; i < c->x->nrcol && (c->varno[i] != v->varno || c->attno[i] != v->varattno); i++)
-		;
-	if (i == c->x->nrcol)
-	{
-		SiftV6Col  *col = &c->x->rcol[Min(i, SIFT_V6_RESID_COLS - 1)];
-
-		if (v->varlevelsup != 0 || i == SIFT_V6_RESID_COLS)
-			c->ok = false;
-		else if (c->p->elem_rel != NULL && v->varno == c->p->elem_rel->relid)
-			c->ok = sift_v6_unnest_column(c->p, (const Expr *) v, col);
-		else
-			c->ok = sift_v6_plan_read_column(c->p, (const Expr *) v, true, col);
-		if (!c->ok)
-			return n;
-		c->varno[i] = v->varno;
-		c->attno[i] = v->varattno;
-		c->x->nrcol++;
-	}
-	nv = copyObject(v);
-	nv->varno = nv->varnosyn = 1;
-	nv->varattno = nv->varattnosyn = i + 1;
-	nv->varnullingrels = NULL;
-	return (Node *) nv;
-}
-
 /* a key probed by an expression: the expression over the virtual attributes of the columns of the pairs, each one a column the join can give before the dimension is probed */
 static bool
-seed_key_expr(ResidCtx *rc, const SiftV6JoinShape *sh, int dim, const Node *probe, SiftV6XDim *xd, int k)
+seed_key_expr(V6Plan *p, const SiftV6JoinShape *sh, int dim, const Node *probe, SiftV6XDim *xd, int k)
 {
-	Node	   *e = resid_var(copyObject((Node *) probe), rc);
+	Node	   *e = sift_v6_pair_expr(p, (Node *) probe);
 
-	if (!rc->ok)
+	if (e == NULL)
 		return false;
 	foreach_node(Var, v, pull_var_clause(e, 0))
 	{
-		const SiftV6Col *col = &rc->x->rcol[v->varattno - 1];
+		const SiftV6Col *col = &p->xseed->rcol[v->varattno - 1];
 
 		if (sift_v6_class(col->typid) == SV6C_NONE || (col->src == SV6SRC_DIM && !(col->dim < dim && (sh->dim[col->dim].mode == SV6J_INNER_EQUI || sh->dim[col->dim].mode == SV6J_LEFT_EQUI))))
 			return false;
 	}
-	rc->x->kexpr = lappend(rc->x->kexpr, e);
-	xd->kx[k] = list_length(rc->x->kexpr);
+	p->xseed->kexpr = lappend(p->xseed->kexpr, e);
+	xd->kx[k] = list_length(p->xseed->kexpr);
 	xd->ftype[k] = exprType(probe);
 	return true;
 }
 
 /* the unnest of the join: the pairs of a sift_table's rows go through a pipe of their own (agg/unnest/jsonb.h), which no dimension is probed in */
 static bool
-seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
+seed_dims(V6Plan *p, const SiftV6JoinShape *sh)
 {
 	SiftV6Ext  *x;
 
@@ -754,7 +703,6 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 	else
 		p->xseed = x = sift_v6_ext_new();
 	p->spec.ext = x;
-	rc->x = x;
 	for (int d = 0; d < sh->nd; d++)
 	{
 		const SiftV6JoinDim *jd = &sh->dim[d];
@@ -770,7 +718,7 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 				return false;
 			if (!IsA(jd->probe[k], Var))
 			{
-				if (!seed_key_expr(rc, sh, d, jd->probe[k], xd, k))
+				if (!seed_key_expr(p, sh, d, jd->probe[k], xd, k))
 					return false;
 			}
 			else if (probe_col(p, sh, (const Var *) jd->probe[k], d, &col))
@@ -795,26 +743,26 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, ResidCtx *rc)
 }
 
 static bool
-seed_conditions(ResidCtx *rc, const List *quals, List **out)
+seed_conditions(V6Plan *p, const List *quals, List **out)
 {
 	foreach_node(RestrictInfo, ri, quals)
 	{
-		if (contain_volatile_functions((Node *) ri->clause))
+		Node	   *e;
+
+		if (contain_volatile_functions((Node *) ri->clause) || (e = sift_v6_pair_expr(p, (Node *) ri->clause)) == NULL)
 			return false;
-		*out = lappend(*out, resid_var((Node *) ri->clause, rc));
-		if (!rc->ok)
-			return false;
+		*out = lappend(*out, e);
 	}
 	return true;
 }
 
 static bool
-seed_resid(const SiftV6JoinShape *sh, ResidCtx *rc)
+seed_resid(V6Plan *p, const SiftV6JoinShape *sh)
 {
-	if (!seed_conditions(rc, sh->resid, &rc->x->resid))
+	if (!seed_conditions(p, sh->resid, &p->xseed->resid))
 		return false;
 	for (int d = 0; d < sh->nd; d++)
-		if (!seed_conditions(rc, sh->dim[d].on, &rc->x->on[d]))
+		if (!seed_conditions(p, sh->dim[d].on, &p->xseed->on[d]))
 			return false;
 	return true;
 }
@@ -893,11 +841,9 @@ static bool
 join_compile(V6Plan *p, const void *arg)
 {
 	const JoinStmt *js = arg;
-	ResidCtx	rc = {.p = p,.ok = true};
 
 	p->sub_qual = js->sh->sub_qual;
-	return seed_dims(p, js->sh, &rc) && sift_v6_compile_on(p, js->extra, js->group_exprs) &&
-		(js->sh->elem == NULL || sift_v6_unnest_ready(p)) && seed_resid(js->sh, &rc);
+	return seed_dims(p, js->sh) && sift_v6_compile_on(p, js->extra, js->group_exprs) && (js->sh->elem == NULL || sift_v6_unnest_ready(p)) && seed_resid(p, js->sh);
 }
 
 static void

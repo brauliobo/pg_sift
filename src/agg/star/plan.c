@@ -11,7 +11,6 @@
 
 #include "catalog/pg_operator.h"
 #include "catalog/pg_statistic.h"
-#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
@@ -31,6 +30,7 @@
 #include "agg/expr/pg.h"
 #include "agg/ht/generic.h"
 #include "agg/join/found.h"
+#include "agg/join/pairs.h"
 #include "agg/source_rel.h"
 #include "agg/star/run.h"
 
@@ -592,49 +592,6 @@ sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *ou
 	try_facts(root, input_rel, output_rel, &goal);
 }
 
-typedef struct JoinedCtx
-{
-	V6Plan	   *p;
-	bool		ok;
-} JoinedCtx;
-
-/* the column of the joined rows a Var reads: of the fact table, of the element of its unnest or the payload of a dimension */
-static bool
-joined_column(V6Plan *p, const Var *v, SiftV6Col *col)
-{
-	if (v->varlevelsup != 0)
-		return false;
-	if (v->varno == p->rel->relid)
-		return sift_v6_plan_column(p, (const Expr *) v, false, col);
-	if (p->elem_rel != NULL && v->varno == p->elem_rel->relid)
-		return sift_v6_unnest_column(p, (const Expr *) v, col);
-	return sift_v6_star_column(p, (const Expr *) v, col);
-}
-
-/* a Var as the virtual attribute (1-based) of its column among those of the joined rows, x->rcol, which the conditions of the join read too (agg/join/plan.c) */
-static Node *
-joined_var(Node *n, JoinedCtx *c)
-{
-	SiftV6Ext  *x = c->p->spec.ext;
-	const Var  *v = (const Var *) n;
-	SiftV6Col	col = {0};
-	int			i = 0;
-
-	if (n == NULL || !c->ok)
-		return n;
-	if (!IsA(n, Var))
-		return expression_tree_mutator(n, joined_var, c);
-	c->ok = joined_column(c->p, v, &col);
-	while (c->ok && i < x->nrcol && !sift_v6_col_same(&x->rcol[i], &col))
-		i++;
-	c->ok &= i < SIFT_V6_RESID_COLS;
-	if (!c->ok)
-		return n;
-	if (i == x->nrcol)
-		x->rcol[x->nrcol++] = col;
-	return (Node *) makeVar(SIFT_V6_PGX_RELID, (AttrNumber) (i + 1), v->vartype, v->vartypmod, v->varcollid, 0);
-}
-
 /*
  * e is a key or argument of the joined rows: an expression of columns of the fact table, of the element of its unnest and of the dimensions, which PostgreSQL's evaluator computes after the last
  * dimension on the values each joined row has (the NULLs of the unmatched side of an outer join too). col is its column, a slot of the pipe after the payload of the dimensions
@@ -644,14 +601,12 @@ sift_v6_star_joined_col(V6Plan *p, Expr *e, bool key, SiftV6Col *out)
 {
 	SiftV6Ext  *x = p->spec.ext;
 	const Oid	restype = getBaseType(exprType((Node *) e));
-	JoinedCtx	c = {p, true};
 	Node	   *je;
 
 	if (x == NULL || x->ndims == 0 || !sift_v6_pgexpr_plan_ok(NULL, e) || !contain_var_clause((Node *) e) ||
 		!(sift_v6_type_native(restype) || (key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))))
 		return false;
-	je = joined_var(copyObject((Node *) e), &c);
-	if (!c.ok)
+	if ((je = sift_v6_pair_expr(p, (Node *) e)) == NULL)
 		return false;
 	x->jexpr = lappend(x->jexpr, je);
 	*out = (SiftV6Col) {.typid = restype,.scale = sift_v6_type_native(restype) ? 0 : SIFT_V6_SCALE_DATUM,.src = SV6SRC_DIM,.dim = SIFT_V6_JOINED_DIM,

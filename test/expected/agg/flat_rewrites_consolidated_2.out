@@ -515,8 +515,7 @@ $q$);
  t      |           0
 (1 row)
 
--- the other side of the quarter (PLAIN_READER_SHARE, cte/hook.c): the same statement over so few entries that the ordinary read of the members is over a quarter of the flat plan. The two plans are then
--- weighed by their total costs, and the normal plan, cheaper for a few hundred rows, wins (not pushed); the rows are the same either way
+-- the same statement over a few hundred entries: the scan joins the labels on its pairs and computes the coalesce of a label and a key after the join (pushed); the rows are the same
 CREATE TABLE entries_few (LIKE entries INCLUDING DEFAULTS);
 INSERT INTO entries_few SELECT * FROM entries WHERE dim_b_id <= 100 AND id % 200 = 0;
 CREATE INDEX entries_few_col ON entries_few USING sift_col (id, dim_b_id, foreign_id, day, metrics_a) WITH (key_cut = 'dim_b_id', paths = 'metrics_a.* float8');
@@ -534,7 +533,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | differences 
 --------+-------------
- f      |           0
+ t      |           0
 (1 row)
 
 DROP FUNCTION check_query(text);

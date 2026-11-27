@@ -9,6 +9,7 @@
 #include "nodes/pathnodes.h"
 
 #include "agg/engine.h"
+#include "agg/ext.h"
 #include "agg/plan/shape.h"
 #include "agg/refuse.h"
 #include "col/am.h"
@@ -50,6 +51,8 @@ typedef struct V6Plan
 	Node	   *why_at;
 	bool		batch_ok;		/* the quals no scan key says may be run over the batches of the scan (SiftV6Spec.vqual): the scan of one relation that no other operator reads the rows of, or the unnest of its array by a store that runs them (SiftJsonbOps.row_quals) */
 	struct SiftV6Ext *xseed;	/* the dimensions or the unnest the join of the statement makes of its relations (v6_ext.h); NULL for a scan of the fact relation alone */
+	Index		pair_varno[SIFT_V6_RESID_COLS];	/* the Var each column xseed->rcol[i] of the pairs is (agg/join/pairs.h) */
+	AttrNumber	pair_attno[SIFT_V6_RESID_COLS];
 	List	   *dim_rels;		/* the RelOptInfo of each dimension, in the order of xseed->dim */
 	List	   *gen_vars;		/* the columns the generic aggregates read, from any relation of the statement: the position + 1 of a column is the attribute their expressions read it as (v6_gen.h) */
 	RelOptInfo *elem_rel;		/* the relation of the unnest */
