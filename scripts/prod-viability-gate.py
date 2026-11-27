@@ -78,6 +78,8 @@ class Case(NamedTuple):
     workers: bool = False
     kind: str = "scale"         # scale, av, disk, cleanup
     weight: int = 3             # seconds the case takes, to cut the lanes
+    settled: bool = False       # its ops start once the rows its setup deleted are dead to every snapshot: a function such as sift.maintain runs in one, whose xmin is the
+                                # oldest transaction of any database, so a statement of the other lane would leave them for later
 
 
 def tbl(name, extra=""):
@@ -132,7 +134,7 @@ CASES = [
     Case("maint_f2_tbl_vacuum_freeze", "C", 2, "zero", 12, ("vacuum (freeze) c3_{s}",), setup=tbl("c3"), drop=drops("c3"),
          settings=Z1, post="select not coalesce(bool_or(unfrozen), false) from sift.parts('c3_{s}')"),
     Case("maint_f2_maintain_api", "C", 2, "zero", 12, ("select * from sift.maintain('c4h_{s}_col')", "select * from sift.maintain('c4t_{s}')"), settings=Z1,
-         setup=heap("c4h", "delete from c4h_{s} where k_lo < 2;") + tbl("c4t", "delete from c4t_{s} where k_lo < 2;"), drop=drops("c4h", "c4t")),
+         setup=heap("c4h", "delete from c4h_{s} where k_lo < 2;") + tbl("c4t", "delete from c4t_{s} where k_lo < 2;"), drop=drops("c4h", "c4t"), settled=True),
     Case("maint_f2_check_verify", "C", 2, "zero", 12, ("select count(*) from sift.check('c5_{s}_col', true)",), setup=heap("c5"), drop=drops("c5"), settings=Z1),
     Case("maint_bm25_vacuum_bound", "C", 2, "cap", 12, ("vacuum c6_{s}",), setup=segments("c6", expr="title || ' ' || txt"), drop=drops("c6"), cap_mb=2.5,
          settings="set sift.vacuum_rewrite_limit=1;"),
@@ -306,6 +308,13 @@ def postmaster(ctl):
     return int(open(os.path.join(ctl.value("show data_directory"), "postmaster.pid")).readline())
 
 
+def settle_horizon(ctl):
+    """returns once no transaction older than this call runs in any database"""
+    xid = ctl.value("select pg_current_xact_id()")
+    if not wait_until(lambda: ctl.value(f"select pg_snapshot_xmin(pg_current_snapshot()) > '{xid}'::xid8") == "t", 120):
+        raise RuntimeError(f"transactions before {xid} still run after 120 s")
+
+
 def wait_until(cond, seconds):
     """true as soon as cond() holds: polled at 5 ms to 100 ms, so that a loaded host only makes it longer"""
     end, d = time.monotonic() + seconds, 0.005
@@ -338,6 +347,8 @@ def trial(env, ctl, c, s, n, dump, pm):
     An operation that fails keeps what was measured up to there (a crash restarts the server first)"""
     dump = dump.replace("{s}", s)
     script(env, BUILD + fill(c.drop + c.setup, s, n, dump))
+    if c.settled:
+        settle_horizon(ctl)
     me = Psql(env)
     sampler = Sampler(pm, "parallel worker") if c.workers else None
     failure, peak, exact, secs, pid = "", 0.0, 0.0, 0.0, 0
