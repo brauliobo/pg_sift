@@ -676,12 +676,10 @@ resid_var(Node *n, ResidCtx *c)
 
 		if (v->varlevelsup != 0 || i == SIFT_V6_RESID_COLS)
 			c->ok = false;
-		else if (v->varno == c->p->rel->relid)
-			c->ok = sift_v6_plan_column(c->p, (const Expr *) v, false, col);
 		else if (c->p->elem_rel != NULL && v->varno == c->p->elem_rel->relid)
 			c->ok = sift_v6_unnest_column(c->p, (const Expr *) v, col);
 		else
-			c->ok = sift_v6_star_column(c->p, (const Expr *) v, col);
+			c->ok = sift_v6_plan_read_column(c->p, (const Expr *) v, true, col);
 		if (!c->ok)
 			return n;
 		c->varno[i] = v->varno;

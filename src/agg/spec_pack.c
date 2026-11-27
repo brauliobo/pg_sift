@@ -236,7 +236,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	}
 	ints = lappend_int(ints, x->nrcol);
 	for (int c = 0; c < x->nrcol; c++)
-		ints = list_concat(ints, list_make5_int(x->rcol[c].attno, (int) x->rcol[c].typid, (int) x->rcol[c].src, x->rcol[c].dim, x->rcol[c].slot));
+		ints = put_col(ints, &x->rcol[c]);
 	ints = lappend_int(ints, x->unnest);
 	ints = list_concat(ints, list_make4_int((int) x->elem.fn, x->elem.attno, (int) x->elem.type, x->elem.group_leaf));
 	ints = list_concat(ints, list_make5_int(x->elem.left, x->elem.semi, (int) x->elem.vread, x->ntests, x->elem.ncols));
@@ -298,9 +298,8 @@ sift_v6_ext_unpack(const List *l)
 		}
 	}
 	x->nrcol = list_nth_int(ints, at++);
-	for (int c = 0; c < x->nrcol; c++, at += 5)
-		x->rcol[c] = (SiftV6Col) {.attno = list_nth_int(ints, at),.typid = (Oid) list_nth_int(ints, at + 1),.src = (SiftV6Src) list_nth_int(ints, at + 2),
-		.dim = list_nth_int(ints, at + 3),.slot = list_nth_int(ints, at + 4)};
+	for (int c = 0; c < x->nrcol; c++)
+		x->rcol[c] = take_col(ints, &at);
 	x->unnest = list_nth_int(ints, at++);
 	x->elem = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, at),.attno = list_nth_int(ints, at + 1),.type = (Oid) list_nth_int(ints, at + 2),
 	.group_leaf = list_nth_int(ints, at + 3),.left = list_nth_int(ints, at + 4),.semi = list_nth_int(ints, at + 5),
