@@ -5,10 +5,13 @@
 #                                       (exit 124 wall, 125 tmpfs) with the slowest steps of $BUDGET_STEPS. Without SIFT_TMP the run gets a scratch
 #                                       directory of its own on tmpfs, removed on exit; on failure only its logs and repro files (at most 20 MB) are kept in
 #                                       $BUDGET_KEEP/NAME.<time> (default /dev/shm/sift-budget-fail, or under $TMPDIR where there is no /dev/shm). A scratch directory the caller made is the caller's to remove.
+#   scripts/budget.sh prune [DIR]       bounds the kept failures of DIR (default $BUDGET_KEEP): the newest BUDGET_KEEP_MAX (25), none older than BUDGET_KEEP_TTL_MIN (60) minutes,
+#                                       at most BUDGET_KEEP_MB (128) MB in all, the oldest removed first; every kept failure runs it
 #   scripts/budget.sh tap FILE          for prove --exec: the TAP file under tap:<name>, else tap:default
 #   scripts/budget.sh step NAME CMD...  CMD, its wall seconds appended to $BUDGET_STEPS (the slowest steps of a budget failure)
 #   scripts/budget.sh limits NAME       "SECONDS MB" of NAME
 #   scripts/budget.sh list              the table
+#   scripts/budget.sh --selftest        the retention of the kept failures
 # BUDGET_RESULTS=FILE appends "label rc wall_s limit_s peak_mb limit_mb" per run (the label is BUDGET_LABEL, else the name). The budget is the owner's: raise a row only with the measurement that justifies it.
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 command -v timeout >/dev/null || { echo 'needs timeout (macOS: brew install coreutils, then put gtimeout on PATH as timeout)' >&2; exit 1; }
@@ -26,6 +29,8 @@ limits() {
 		|| { echo "budget: no row for '$1' in $TABLE: every entry point needs one (scripts/check-budgets.sh)" >&2; return 2; }
 }
 
+shm_dir() { [[ -d /dev/shm && -w /dev/shm ]] && echo /dev/shm || echo "${TMPDIR:-/tmp}"; }
+
 peak_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
 keep_failure() { # SCRATCH NAME: logs and small repro files only
@@ -35,6 +40,31 @@ keep_failure() { # SCRATCH NAME: logs and small repro files only
 		(( $(du -sk "$dst" | cut -f1) < 20480 )) && (cd "$1" && mkdir -p "$dst/${f%/*}" && cp "$f" "$dst/$f")
 	done
 	echo "budget: failure files in $dst"
+	prune "$BUDGET_KEEP"
+}
+
+prune() { # DIR: the kept failures, newest first, are dropped past the count, the age or the size
+	local dir=$1 n=0 total=0 kb d
+	[[ -d $dir ]] || return 0
+	find "$dir" -mindepth 1 -maxdepth 1 -mmin +"${BUDGET_KEEP_TTL_MIN:-60}" -exec rm -rf {} +
+	while read -r d; do
+		kb=$(du -sk "$dir/$d" | cut -f1)
+		if (( ++n > ${BUDGET_KEEP_MAX:-25} || total + kb > ${BUDGET_KEEP_MB:-128} * 1024 )); then rm -rf "${dir:?}/$d"; else (( total += kb )); fi
+	done < <(ls -t "$dir")
+	return 0
+}
+
+selftest() {
+	local t; t=$(mktemp -d); trap "rm -rf '$t'" EXIT
+	mkdir -p "$t"/{old,a,b,c,big}
+	touch -d '-2 hours' "$t/old"; touch -d '-3 min' "$t/a"; touch -d '-2 min' "$t/b"; touch -d '-1 min' "$t/c"
+	BUDGET_KEEP_MAX=2 prune "$t"
+	[[ $(ls "$t" | sort | tr '\n' ' ') == 'big c ' ]] || { echo "budget selftest: count/age retention kept: $(ls "$t")"; return 1; }
+	head -c 3145728 /dev/urandom >"$t/big/f"; touch -d '-5 min' "$t/big"; mkdir "$t/d"; head -c 1048576 /dev/urandom >"$t/d/f"
+	BUDGET_KEEP_MB=2 prune "$t"
+	[[ $(ls "$t" | sort | tr '\n' ' ') == 'c d ' ]] || { echo "budget selftest: the size cap kept: $(ls "$t")"; return 1; }
+	prune "$t/none" || { echo "budget selftest: a missing directory fails"; return 1; }
+	echo "budget selftest: ok"
 }
 
 run() {
@@ -48,8 +78,7 @@ run() {
 		return "$rc"
 	fi
 	export BUDGET_ACTIVE=$name
-	local shm=/dev/shm
-	[[ -d $shm && -w $shm ]] || shm=${TMPDIR:-/tmp}
+	local shm; shm=$(shm_dir)
 	BUDGET_KEEP=${BUDGET_KEEP:-$shm/sift-budget-fail}
 	if [[ -z ${SIFT_TMP:-} ]]; then
 		scratch=$(mktemp -d "$shm/sift-budget-${name//[^A-Za-z0-9_.-]/_}.XXXXXX") && OWN=$scratch
@@ -105,5 +134,7 @@ case ${1:-} in
 	step) shift; step "$@" ;;
 	limits) limits "${2:?}" ;;
 	list) grep -v '^#' "$TABLE" ;;
-	*) sed -n '2,13p' "$0"; exit 2 ;;
+	prune) prune "${2:-${BUDGET_KEEP:-$(shm_dir)/sift-budget-fail}}" ;;
+	--selftest) selftest ;;
+	*) sed -n '2,16p' "$0"; exit 2 ;;
 esac
