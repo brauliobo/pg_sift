@@ -3,10 +3,11 @@
  *
  * A writer that finds the queue lock busy parks its request in a slot of a shared pool and pushes the slot on the queue's
  * Treiber stack. The first writer to push (the stack was empty) is the leader: it takes the queue lock, detaches the whole
- * stack in one exchange, hands the requests that belong to its group to apply() in batches of at most max_batch, releases the lock
- * and only then wakes the followers. A writer that finds the lock free applies its own request and the followers that arrived meanwhile.
- * The requests of other groups (apply() runs with the leader's context) go back on the stack, oldest at the bottom, and where they
- * are all that is on it the oldest is woken to lead them (SIFT_COMB_LEAD): one wake-up, and they stay one batch.
+ * stack in one exchange, hands its own request and the oldest of its group to apply() as one batch of at most max_batch, releases the
+ * lock and only then wakes the followers. A writer that finds the lock free applies its own request and the followers that arrived meanwhile.
+ * A leader applies no batch it is not in: an error of apply() is the leader's own. The requests it did not apply (of other groups, apply()
+ * runs with the leader's context, or past the batch) go back on the stack, oldest at the bottom, and where they are all that is on it the
+ * oldest is woken to lead them (SIFT_COMB_LEAD): one wake-up.
  * apply() runs under the queue lock, writes hdr.result (and hdr.out) of every request of the batch and must not submit.
  */
 #ifndef SIFT_SHM_COMBINER_H
@@ -18,7 +19,6 @@
 #define SIFT_COMB_POOL_SLOTS	64		/* the slots of one shard of the pool */
 #define SIFT_COMB_SHARDS		4
 #define SIFT_COMB_MAX_SLOTS		(SIFT_COMB_POOL_SLOTS * SIFT_COMB_SHARDS)
-#define SIFT_COMB_ROUNDS		4
 #define SIFT_COMB_HOT_EPOCHS	4
 #define SIFT_COMB_HOT_STREAK	2
 

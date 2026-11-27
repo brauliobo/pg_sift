@@ -178,29 +178,34 @@ requeue(const SiftCombArena *a, SiftCombQueue *q, CombLead *ld)
 	ld->n = kept;
 }
 
+static bool
+holds(SiftCombHdr *const *batch, uint32 nb, const SiftCombHdr *key)
+{
+	for (uint32 b = 0; b < nb; b++)
+		if (batch[b] == key)
+			return true;
+	return false;
+}
+
+/*
+ * A leader applies one batch: the one of its group that holds its own request, so that an error of apply() is always of a batch the leader is in and never undoes a batch of its own
+ * already applied. A parked leader whose request another leader detached applies none. The requests it detached besides go back on the stack, the oldest woken to lead them
+ */
 static void
-leader_rounds(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key,
-			  bool key_local)
+leader_round(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, void *ctx, SiftCombHdr *key, bool key_local)
 {
 	CombLead   *ld = &lead_state;
+	SiftCombHdr *batch[SIFT_COMB_MAX_SLOTS + 1] = {key};
+	uint32		sel[SIFT_COMB_MAX_SLOTS + 1];
+	uint32		nb;
 
-	for (uint32 round = 0; round < SIFT_COMB_ROUNDS; round++)
+	gather(q, ops);
+	detach(a, q, ld);
+	nb = select_group(a, ld, ops, key, batch, sel, key_local ? 1 : 0);
+	if (holds(batch, nb, key))
 	{
-		SiftCombHdr *batch[SIFT_COMB_MAX_SLOTS + 1];
-		uint32		sel[SIFT_COMB_MAX_SLOTS + 1];
-		uint32		nb = 0;
-		bool		own = round == 0 && key_local;
-
-		if (own)
-			batch[nb++] = key;
-		if (round == 0)
-			gather(q, ops);
-		detach(a, q, ld);
-		nb = select_group(a, ld, ops, key, batch, sel, nb);
-		if (nb == 0)
-			break;
 		ops->apply(ctx, batch, nb);
-		for (uint32 b = own ? 1 : 0; b < nb; b++)
+		for (uint32 b = key_local ? 1 : 0; b < nb; b++)
 			ld->fin[sel[b]] = SIFT_COMB_DONE;
 	}
 	requeue(a, q, ld);
@@ -259,7 +264,7 @@ run_leader(const SiftCombArena *a, SiftCombQueue *q, const SiftCombOps *ops, voi
 	ld->own = key_idx;
 	SIFT_SHM_TRY();
 	{
-		leader_rounds(a, q, ops, ctx, key, key_local);
+		leader_round(a, q, ops, ctx, key, key_local);
 	}
 	SIFT_SHM_CATCH();
 	{

@@ -74,19 +74,30 @@ pids_has(const Pids *p, int pid)
 	return bsearch(&pid, p->pid, p->n, sizeof(int), pid_order) != NULL;
 }
 
+/* What the reaper read under the lock: a worker slot that was not running then (gen -1), or one started again since (another gen), is never taken for a pid found gone */
+typedef struct Owners
+{
+	uint32		gen_seen;
+	bool		lapsed;
+	int32		worker_gen[SIFT_MAINT_MAX_WORKERS];
+} Owners;
+
 /* The distinct pids that run a worker or own a claim, sorted; lapsed says a worker that never started has overstayed its lease */
 static void
-owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, bool *lapsed, uint32 *gen_seen)
+owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, Owners *o)
 {
 	int			n = 0;
 
-	*lapsed = false;
+	o->lapsed = false;
 	sift_shm_lock(&m->lock);
-	*gen_seen = m->next_gen;
+	o->gen_seen = m->next_gen;
 	for (int w = 0; w < SIFT_MAINT_MAX_WORKERS; w++)
 	{
-		*lapsed |= m->worker[w].state == 1 && m->worker[w].lease_until < now;
-		if (m->worker[w].state == 2)
+		bool		running = m->worker[w].state == 2;
+
+		o->lapsed |= m->worker[w].state == 1 && m->worker[w].lease_until < now;
+		o->worker_gen[w] = running ? m->worker[w].gen : -1;
+		if (running)
 			p->pid[n++] = m->worker[w].pid;
 	}
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
@@ -101,7 +112,7 @@ owner_pids(SiftMaintShmem *m, TimestampTz now, Pids *p, bool *lapsed, uint32 *ge
 }
 
 static int
-reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, uint32 gen_seen)
+reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, const Owners *o)
 {
 	int			n = 0;
 
@@ -115,11 +126,11 @@ reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, uint32 gen_seen)
 			sift_maint_worker_free(m, w);
 			m->stats.lease_lapsed++;
 		}
-		else if (ws->state == 2 && pids_has(dead, ws->pid))
+		else if (ws->state == 2 && ws->gen == o->worker_gen[w] && pids_has(dead, ws->pid))
 			sift_maint_worker_free(m, w);
 	}
 	for (int i = 0; i < SIFT_MAINT_SLOTS; i++)
-		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= gen_seen && pids_has(dead, m->slot[i].pid))
+		if (m->slot[i].state == SIFT_SLOT_CLAIMED && m->slot[i].gen <= o->gen_seen && pids_has(dead, m->slot[i].pid))
 		{
 			m->nclaimed--;
 			m->slot[i].failures++;
@@ -134,7 +145,7 @@ reap_dead(SiftMaintShmem *m, TimestampTz now, const Pids *dead, uint32 gen_seen)
 
 /*
  * Liveness is asked once for each distinct pid and outside the lock (the host may take locks of its own); what is given back is then taken in one pass over the table. A claim made after
- * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone: the number may be a new process's.
+ * the owners were read (a generation past gen_seen) is never taken for the claim of a pid that is gone, nor a worker started since on a slot: the number may be a new process's.
  */
 int
 sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
@@ -142,20 +153,19 @@ sift_maint_reap(SiftMaintShmem *m, const SiftMaintHost *host)
 	TimestampTz now = host->now();
 	Pids		owners;
 	Pids		dead;
-	bool		lapsed;
-	uint32		gen_seen;
+	Owners		o;
 	int			n = 0;
 
 	if (sift_maint_idle(m))
 		return 0;
 	owners = pids_new();
 	dead = pids_new();
-	owner_pids(m, now, &owners, &lapsed, &gen_seen);
+	owner_pids(m, now, &owners, &o);
 	for (int k = 0; k < owners.n; k++)
 		if (!host->pid_alive(owners.pid[k]))
 			dead.pid[dead.n++] = owners.pid[k];
-	if (dead.n > 0 || lapsed)
-		n = reap_dead(m, now, &dead, gen_seen);
+	if (dead.n > 0 || o.lapsed)
+		n = reap_dead(m, now, &dead, &o);
 	pfree(owners.pid);
 	pfree(dead.pid);
 	return n;

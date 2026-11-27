@@ -2,7 +2,8 @@
  * test/unit/core/maint/sched.c - the queue of core/maint/sched.c on a fake host: one busy database gets as many workers as it has runnable requests (up to the cap), a request that
  * coalesces into a stranded one (no worker is there for it) still starts one, a request put back for a busy lock keeps the worker of its database, and the queue holds a request for every
  * partition of a large server. A worker that starts after its lease lapsed runs for its database on a slot no one took again, and never takes or gives back the slot reserved for another,
- * nor does a kick or a reservation over the shared limit whose slot was reaped meanwhile. A lookup without the lock never reads the queue at a key removed while it probes.
+ * nor does a kick or a reservation over the shared limit whose slot was reaped meanwhile. A worker that starts on the pid of one that died while the reaper asked is never reaped. A lookup
+ * without the lock never reads the queue at a key removed while it probes.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -306,6 +307,33 @@ test_reaped_ticket_not_freed(void)
 	reserve_again = false;
 }
 
+/* The worker on pid 4242 exits while the reaper asks for it, and the next worker starts on the same slot with the same pid: the live worker keeps its slot */
+static bool
+reuse_pid_alive(int pid)
+{
+	SiftMaintTicket t;
+
+	sift_maint_worker_exit(m, 0, pid);
+	t = sift_maint_worker_reserve(m, &host, 5);
+	SIFT_CHECK(t.worker == 0 && sift_maint_worker_started(m, t, 5, pid, 2));
+	return false;
+}
+
+static void
+test_reused_pid_not_reaped(void)
+{
+	SiftMaintHost reuse_host = host;
+	SiftMaintTicket t;
+
+	reuse_host.pid_alive = reuse_pid_alive;
+	fresh(4);
+	t = sift_maint_worker_reserve(m, &host, 5);
+	SIFT_CHECK(t.worker == 0 && sift_maint_worker_started(m, t, 5, 4242, 1));
+	(void) sift_maint_reap(m, &reuse_host);
+	SIFT_CHECKF(m->worker[0].state == 2 && pg_atomic_read_u32(&m->active_workers) == 1,
+				"a worker on a reused pid keeps its slot: state %u, %u active", m->worker[0].state, pg_atomic_read_u32(&m->active_workers));
+}
+
 /* Readers look a key up without the lock while a writer takes and frees its slot: a probe that saw the key never indexes the queue with the -1 the writer left */
 static pg_atomic_uint32 probing;
 
@@ -359,6 +387,7 @@ main(void)
 	test_late_worker_keeps_db();
 	test_late_worker_no_hijack();
 	test_reaped_ticket_not_freed();
+	test_reused_pid_not_reaped();
 #ifndef __SANITIZE_THREAD__
 	/* the read of covered() races the writer by design (a seqlock): ThreadSanitizer reports every one */
 	test_probe_while_freed();

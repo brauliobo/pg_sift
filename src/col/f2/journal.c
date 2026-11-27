@@ -216,6 +216,7 @@ static struct
 	Held	   *recs;
 	int			n;
 	int			cap;
+	int			flushed;		/* of the flush under way: the first records (in its order) that are written */
 	bool		hooked;
 	bool		flushing;
 } held;
@@ -231,7 +232,7 @@ held_cmp(const void *a, const void *b)
 	return (x->slot > y->slot) - (x->slot < y->slot);
 }
 
-/* Appends n records of one slot to its page; a full page is emptied first and its trim says which transactions' records went */
+/* Appends n records of one slot to its page, counting each page's in held.flushed once it is written; a full page is emptied first and its trim says which transactions' records went */
 static void
 append_run(Relation index, const SiftKeyJrnlHeader *h, uint32 slot, const Held *run, int n)
 {
@@ -265,6 +266,7 @@ append_run(Relation index, const SiftKeyJrnlHeader *h, uint32 slot, const Held *
 		slot_seal(pg);
 		sift_xlog_done(&x);
 		done += take;
+		held.flushed += take;
 	}
 }
 
@@ -274,7 +276,10 @@ flush_index(Relation index, Held *recs, int n)
 	SiftKeyJrnlHeader h;
 
 	if (!read_header(index, &h))
+	{
+		held.flushed += n;
 		return;
+	}
 	for (int i = 0, j; i < n; i = j)
 	{
 		for (j = i; j < n && recs[j].slot == recs[i].slot; j++)
@@ -283,6 +288,7 @@ flush_index(Relation index, Held *recs, int n)
 	}
 }
 
+/* The records written leave the held ones as the flush goes: those of an index whose lock or page fails stay held, for a savepoint rolled back over the error and the commit after it */
 void
 sift_f2_journal_flush(void)
 {
@@ -292,7 +298,7 @@ sift_f2_journal_flush(void)
 	if (n == 0 || held.flushing)
 		return;
 	held.flushing = true;
-	held.n = 0;
+	held.flushed = 0;
 	PG_TRY();
 	{
 		qsort(recs, n, sizeof(Held), held_cmp);
@@ -303,7 +309,9 @@ sift_f2_journal_flush(void)
 			for (j = i; j < n && recs[j].index == recs[i].index; j++)
 				;
 			index = try_index_open(recs[i].index, RowExclusiveLock);
-			if (index != NULL)
+			if (index == NULL)
+				held.flushed += j - i;
+			else
 			{
 				flush_index(index, recs + i, j - i);
 				index_close(index, NoLock);
@@ -312,6 +320,8 @@ sift_f2_journal_flush(void)
 	}
 	PG_FINALLY();
 	{
+		held.n -= held.flushed;
+		memmove(held.recs, held.recs + held.flushed, held.n * sizeof(Held));
 		held.flushing = false;
 	}
 	PG_END_TRY();

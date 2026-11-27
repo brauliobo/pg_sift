@@ -1,9 +1,9 @@
 /*
- * test/unit/core/shm/combiner.c - the combiner of core/shm/combiner.c when an apply() fails or its backend exits: a parked leader whose apply() fails keeps its slot until the leader that detached
- * it gave it its state (the slot is not handed to another writer while that leader still writes it), and the followers of a leader that exits in apply() are given RETRY and finish. A leader applies
- * every request of its group it detached, however many batches they take, and puts the requests of other groups back on the stack with one of them woken to lead them; writers of two groups
- * that share a queue have every request applied once, in batches of one group. A parked leader that exits in apply() gives its slot back, and a leader that exits after it handed the requests
- * of other groups back to the stack wakes the one it told to lead them.
+ * test/unit/core/shm/combiner.c - the combiner of core/shm/combiner.c when an apply() fails or its backend exits: a parked leader whose apply() fails gives its followers RETRY, its slot back and
+ * the error to its writer; one whose request another leader detached applies nothing and waits for that leader to give it its state; and the followers of a leader that exits in apply() are given
+ * RETRY and finish. A leader applies the one batch that holds its own request, never one of the requests that arrived while it applied (an error of those is not its own), and puts the requests it
+ * did not apply back on the stack with the oldest woken to lead them; writers of two groups that share a queue have every request applied once, in batches of one group. A parked leader that
+ * exits in apply() gives its slot back, and a leader that exits after it handed requests back to the stack wakes the one it told to lead them.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -42,8 +42,7 @@ static const SiftCombArena arena = {.pool = &pool,.slots = (char *) slots,.strid
 static int	scenario;
 static int	t0_round;
 static pg_atomic_uint32 f_done;
-static bool held_once;
-static bool f_slot_given_back;
+static bool f_threw;
 static int32 f_idx = -1;
 static int32 manual[3];
 static int	nmanual;
@@ -70,17 +69,9 @@ sleep_ms(int ms)
 	nanosleep(&ts, NULL);
 }
 
-/* The first wake-up of the first leader waits for the parked leader to give up: what it finds is whether that one gave its slot back before it had its state */
 void
 sift_shm_wake(int procno)
 {
-	if (sift_shm_procno == T0 && scenario == 1 && !held_once)
-	{
-		held_once = true;
-		for (int i = 0; i < HOLD_MS && pg_atomic_read_u32(&f_done) == 0; i++)
-			sleep_ms(1);
-		f_slot_given_back = slot_free(f_idx);
-	}
 	pg_atomic_fetch_add_u32(&wakes[procno], 1);
 	sem_post(&sift_shm_sems[procno]);
 }
@@ -118,6 +109,7 @@ f_main(void *arg)
 	}
 	SIFT_SHM_CATCH();
 	{
+		f_threw = true;
 	}
 	SIFT_SHM_END_TRY();
 	pg_atomic_write_u32(&f_done, 1);
@@ -133,31 +125,16 @@ start_f(const SiftCombOps *ops)
 	f_idx = (int32) pg_atomic_read_u32(&queue.wait_head);
 }
 
-static const SiftCombOps ops_fail;
 static const SiftCombOps ops_exit;
 
-/*
- * Scenario 1: T0 leads four rounds: its own request, a request on the stack, F (which pushed on an empty stack: a parked leader) and another; a last request is left on the stack. F takes the
- * lock while T0 wakes the first of its list, detaches the last request and its apply() fails.
- */
+/* Scenarios 1 and 8: the apply() of F fails; scenario 9: T0 applies its own request while another lands on the stack, and an apply() of that one would fail */
 static void
 apply_fail(void *ctx, SiftCombHdr *const *batch, uint32 n)
 {
-	if (sift_shm_procno == F)
+	if (sift_shm_procno == F || t0_round++ > 0)
 		SIFT_SHM_RETHROW();
-	switch (t0_round++)
-	{
-		case 0:
-			push_manual();
-			break;
-		case 1:
-			start_f(&ops_fail);
-			break;
-		case 2:
-		case 3:
-			push_manual();
-			break;
-	}
+	if (scenario == 9)
+		push_manual();
 }
 
 /* Scenario 2: T0 detaches F (a parked leader) and its backend exits in apply(): its exit callbacks run and its locks are released (LWLockReleaseAll) */
@@ -166,11 +143,6 @@ apply_exit(void *ctx, SiftCombHdr *const *batch, uint32 n)
 {
 	if (sift_shm_procno != T0)
 		return;
-	if (t0_round++ == 0)
-	{
-		start_f(&ops_exit);
-		return;
-	}
 	if (exit_fn != NULL)
 		exit_fn(1, (Datum) 0);
 	sift_shm_unlock(&queue.lock);
@@ -178,15 +150,39 @@ apply_exit(void *ctx, SiftCombHdr *const *batch, uint32 n)
 }
 
 static const SiftCombOps ops_fail = {.same_group = same_group,.apply = apply_fail,.max_batch = 8};
+
+static bool
+t0_submit(const SiftCombOps *ops)
+{
+	TestSlot	req = {.who = T0};
+	bool		threw = false;
+
+	sift_shm_procno = T0;
+	SIFT_SHM_TRY();
+	{
+		sift_comb_submit(&arena, &queue, ops, NULL, &req.hdr, sizeof(req));
+	}
+	SIFT_SHM_CATCH();
+	{
+		threw = true;
+	}
+	SIFT_SHM_END_TRY();
+	return threw;
+}
+
 static const SiftCombOps ops_exit = {.same_group = same_group,.apply = apply_exit,.max_batch = 8};
 
+/* T0 takes the lock, F parks on the empty stack, and T0 leads as sift_comb_submit does once it holds the lock */
 static void *
-t0_main(void *arg)
+t0_exit_main(void *arg)
 {
 	TestSlot	req = {.who = T0};
 
 	sift_shm_procno = T0;
-	sift_comb_submit(&arena, &queue, (const SiftCombOps *) arg, NULL, &req.hdr, sizeof(req));
+	sift_shm_before_exit(lead_exit);
+	SIFT_CHECK(sift_shm_lock_try(&queue.lock));
+	start_f(&ops_exit);
+	leader_locked(&arena, &queue, &ops_exit, NULL, &req.hdr);
 	return NULL;
 }
 
@@ -200,7 +196,7 @@ reset(int which)
 	memset(slots, 0, sizeof(slots));
 	scenario = which;
 	t0_round = 0;
-	held_once = f_slot_given_back = false;
+	f_threw = false;
 	pg_atomic_init_u32(&f_done, 0);
 	nmanual = 0;
 	f_idx = -1;
@@ -226,20 +222,72 @@ join_f(void)
 	return rc == 0;
 }
 
+/* Scenario 1: F parks on an empty stack while the lock is held, a request lands on the stack after it, and the apply() of F fails once F leads them */
 static void
 test_failed_parked_leader(void)
 {
-	pthread_t	t0;
-
 	reset(1);
-	SIFT_CHECK(pthread_create(&t0, NULL, t0_main, (void *) &ops_fail) == 0);
-	SIFT_CHECK(pthread_join(t0, NULL) == 0);
+	SIFT_CHECK(sift_shm_lock_try(&queue.lock));
+	start_f(&ops_fail);
+	push_manual();
+	sift_shm_unlock(&queue.lock);
 	SIFT_CHECK(join_f());
-	SIFT_CHECKF(!f_slot_given_back, "a parked leader whose apply() failed gave its slot back before the leader that detached it wrote its state");
-	SIFT_CHECKF(pg_atomic_read_u32(&slots[manual[2]].hdr.state) == SIFT_COMB_RETRY, "the request the failed apply() held is given RETRY");
-	SIFT_CHECKF(pg_atomic_read_u32(&slots[manual[0]].hdr.state) == SIFT_COMB_DONE && pg_atomic_read_u32(&slots[manual[1]].hdr.state) == SIFT_COMB_DONE,
-				"the requests the first leader applied are DONE");
+	SIFT_CHECKF(f_threw, "the error of the batch of a parked leader reaches its writer");
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[manual[0]].hdr.state) == SIFT_COMB_RETRY, "the request the failed apply() held is given RETRY");
 	SIFT_CHECKF(slot_free(f_idx) && sift_shm_lock_try(&queue.lock), "the slot of the failed leader is free at the end and the queue lock is not held");
+}
+
+/*
+ * Scenario 8: a leader detached the request of F (a parked leader) and let the lock go, and has not written its state yet; F takes the lock and finds another request on the stack. F applies
+ * nothing (its own request is not there), puts that request back for its writer to lead, and keeps its slot until the leader that holds its request writes its state
+ */
+static void *
+f_parked_main(void *arg)
+{
+	sift_shm_procno = F;
+	SIFT_SHM_TRY();
+	{
+		leader_parked(&arena, &queue, &ops_fail, NULL, &slots[f_idx].hdr, (uint32) f_idx);
+	}
+	SIFT_SHM_CATCH();
+	{
+		f_threw = true;
+	}
+	SIFT_SHM_END_TRY();
+	pg_atomic_write_u32(&f_done, 1);
+	return NULL;
+}
+
+static void
+test_detached_parked_leader(void)
+{
+	reset(8);
+	f_idx = pool_claim(&pool);
+	slots[f_idx].hdr.procno = F;
+	pg_atomic_write_u32(&slots[f_idx].hdr.state, SIFT_COMB_WAITING);
+	push_manual();
+	SIFT_CHECK(pthread_create(&f_thread, NULL, f_parked_main, NULL) == 0);
+	for (int i = 0; i < HOLD_MS && pg_atomic_read_u32(&slots[manual[0]].hdr.state) != SIFT_COMB_LEAD; i++)
+		sleep_ms(1);
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[manual[0]].hdr.state) == SIFT_COMB_LEAD && pg_atomic_read_u32(&wakes[0]) == 1,
+				"the request on the stack goes back to its writer to lead (state %u)", pg_atomic_read_u32(&slots[manual[0]].hdr.state));
+	SIFT_CHECKF(t0_round == 0 && pg_atomic_read_u32(&f_done) == 0, "a parked leader whose request another leader holds applies nothing and waits for its state");
+	pg_atomic_write_u32(&slots[f_idx].hdr.state, SIFT_COMB_DONE);
+	sem_post(&sift_shm_sems[F]);
+	SIFT_CHECK(pthread_join(f_thread, NULL) == 0);
+	SIFT_CHECKF(!f_threw && !slot_free(f_idx) && sift_shm_lock_try(&queue.lock), "F has no error, its slot stays its own, and the queue lock is not held");
+}
+
+/* Scenario 9: T0 applies its own request; a request lands on the stack meanwhile, whose apply() fails. T0 never applies it: its own batch was applied, and it returns with no error */
+static void
+test_leader_keeps_applied_batch(void)
+{
+	reset(9);
+	SIFT_CHECKF(!t0_submit(&ops_fail), "a leader whose own batch was applied returns with no error");
+	SIFT_CHECKF(t0_round == 1, "the leader applies its own batch only: %d applies", t0_round);
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[manual[0]].hdr.state) == SIFT_COMB_WAITING && pg_atomic_read_u32(&queue.wait_head) == (uint32) manual[0],
+				"the request that arrived meanwhile is left on the stack for its writer to lead");
+	SIFT_CHECKF(sift_shm_lock_try(&queue.lock), "the queue lock is not held");
 }
 
 static void
@@ -248,7 +296,7 @@ test_leader_exits(void)
 	pthread_t	t0;
 
 	reset(2);
-	SIFT_CHECK(pthread_create(&t0, NULL, t0_main, (void *) &ops_exit) == 0);
+	SIFT_CHECK(pthread_create(&t0, NULL, t0_exit_main, NULL) == 0);
 	SIFT_CHECK(pthread_join(t0, NULL) == 0);
 	SIFT_CHECKF(join_f(), "a follower of a leader that exited in apply() finishes within a second");
 }
@@ -279,7 +327,7 @@ push_grp(uint32 grp, int n)
 	return idx;
 }
 
-/* Scenario 3: T0 (group A) applies its own request; meanwhile three requests of A and three of B land on the stack, with batches of two */
+/* Scenario 3: three requests of group A and three of B are on the stack when T0 (group A) takes the lock, with batches of two */
 static void
 apply_groups(void *ctx, SiftCombHdr *const *batch, uint32 n)
 {
@@ -289,12 +337,6 @@ apply_groups(void *ctx, SiftCombHdr *const *batch, uint32 n)
 		SIFT_CHECKF(((TestSlot *) batch[i])->grp == grp, "a batch holds requests of two groups");
 	grp_applies[grp]++;
 	grp_items[grp] += n;
-	if (t0_round++ == 0)
-		for (int i = 0; i < 3; i++)
-		{
-			grp_slot[GRP_A][i] = push_grp(GRP_A, 2 * i);
-			grp_slot[GRP_B][i] = push_grp(GRP_B, 2 * i + 1);
-		}
 }
 
 static const SiftCombOps ops_groups = {.same_group = same_grp,.apply = apply_groups,.max_batch = 2};
@@ -303,26 +345,36 @@ static void
 test_leftover_groups(void)
 {
 	TestSlot	req = {.who = T0,.grp = GRP_A};
-	uint32		woken_b = 0,
+	uint32		woken = 0,
 				stacked = 0;
+	int32		left[5];
 
 	reset(3);
 	memset(grp_applies, 0, sizeof(grp_applies));
 	memset(grp_items, 0, sizeof(grp_items));
+	for (int i = 0; i < 3; i++)
+	{
+		grp_slot[GRP_A][i] = push_grp(GRP_A, 2 * i);
+		grp_slot[GRP_B][i] = push_grp(GRP_B, 2 * i + 1);
+	}
+	left[0] = grp_slot[GRP_B][0];
+	for (int i = 1; i < 3; i++)
+	{
+		left[2 * i - 1] = grp_slot[GRP_A][i];
+		left[2 * i] = grp_slot[GRP_B][i];
+	}
 	sift_shm_procno = T0;
 	sift_comb_submit(&arena, &queue, &ops_groups, NULL, &req.hdr, sizeof(req));
-	for (int i = 0; i < 3; i++)
-		SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_A][i]].hdr.state) == SIFT_COMB_DONE, "request %d of the leader's group is applied (state %u)", i,
-					pg_atomic_read_u32(&slots[grp_slot[GRP_A][i]].hdr.state));
-	SIFT_CHECKF(grp_items[GRP_A] == 4 && grp_applies[GRP_A] == 3, "the leader applies the 4 requests of its group in 3 batches (%d in %d)", grp_items[GRP_A], grp_applies[GRP_A]);
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_A][0]].hdr.state) == SIFT_COMB_DONE, "the oldest request of the leader's group is applied with its own");
+	SIFT_CHECKF(grp_items[GRP_A] == 2 && grp_applies[GRP_A] == 1, "the leader applies one batch of two (%d in %d)", grp_items[GRP_A], grp_applies[GRP_A]);
 	SIFT_CHECKF(grp_items[GRP_B] == 0, "the leader applies no request of another group with its context");
-	for (int i = 0; i < 3; i++)
-		woken_b += pg_atomic_read_u32(&wakes[MANUAL_PROC + 2 * i + 1]);
-	SIFT_CHECKF(woken_b == 1, "one writer of the other group is woken, not %u", woken_b);
-	SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_B][0]].hdr.state) == SIFT_COMB_LEAD, "the oldest of the other group is woken to lead it");
+	for (int i = 1; i < 6; i++)
+		woken += pg_atomic_read_u32(&wakes[MANUAL_PROC + i]);
+	SIFT_CHECKF(woken == 1 && pg_atomic_read_u32(&wakes[MANUAL_PROC + 1]) == 1, "the writer of the oldest request left is woken, and no other (%u)", woken);
+	SIFT_CHECKF(pg_atomic_read_u32(&slots[grp_slot[GRP_B][0]].hdr.state) == SIFT_COMB_LEAD, "the oldest request left is woken to lead the rest");
 	for (uint32 i = pg_atomic_read_u32(&queue.wait_head); i != SIFT_COMB_NONE; i = slots[i].hdr.next)
-		SIFT_CHECKF(slots[i].grp == GRP_B && (int32) i == grp_slot[GRP_B][2 - stacked++], "the other group is back on the stack, oldest at the bottom");
-	SIFT_CHECKF(stacked == 3, "the 3 requests of the other group are on the stack (%u)", stacked);
+		SIFT_CHECKF((int32) i == left[4 - stacked++], "the requests left are back on the stack, oldest at the bottom");
+	SIFT_CHECKF(stacked == 5, "the 5 requests left are on the stack (%u)", stacked);
 }
 
 enum { STRESS_THREADS = 16, STRESS_ITERS = 400 };
@@ -469,7 +521,12 @@ test_fresh_backend_exits(void)
 int
 main(void)
 {
+#ifndef __SANITIZE_THREAD__
+	/* ThreadSanitizer cannot follow the longjmp of an error out of apply() */
 	test_failed_parked_leader();
+#endif
+	test_detached_parked_leader();
+	test_leader_keeps_applied_batch();
 	test_leader_exits();
 	test_leftover_groups();
 	test_two_groups_stress();
