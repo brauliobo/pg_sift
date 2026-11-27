@@ -84,6 +84,7 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.table_key_leaf = jsonb_table_key_leaf,
 	.path_declared = sift_f2_jsonb_path_declared,
 	.key_exists = true,
+	.key_presence = true,
 	.exact_values = true,
 	.row_quals = true,
 	.raise_after_quals = true,

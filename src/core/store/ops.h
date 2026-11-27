@@ -305,6 +305,7 @@ typedef struct SiftJsonbOps
 	int			(*member_leaf) (Oid indexoid, int att, const List *path);	/* the leaf of the float8 values of the members of the map `path` (its last key is the member's) of the document attribute att, -1: none */
 	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
 	bool		key_exists;		/* the scan tests jsonb_exists(document, key) on the leaf of the key (SIFT_COLOP_KEY_EXISTS), the documents that are no object included */
+	bool		key_presence;	/* the scan reads whether a document has a key as a column of its batches (SIFT_V6_JPRES_VATT), the documents that are no object included */
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes;
 								 * its unnest reads any column of the table beside the elements (without it, the typed leaves only: no whole document, no numeric read as datums) */
 	bool		row_quals;		/* its unnest narrows the rows of the table by the quals no scan key says (SiftV6Spec.vqual, agg/qual/bqual.h) */

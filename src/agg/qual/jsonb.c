@@ -340,7 +340,7 @@ sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause)
 	int			att;
 
 	clause = strip(clause);
-	if (rel->table != NULL || func_of(clause) != F_JSONB_EXISTS || list_length(args_of(clause)) != 2 || (key = text_const(lsecond(args_of(clause)))) == NULL ||
+	if (rel->table != NULL || rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->key_presence || func_of(clause) != F_JSONB_EXISTS || list_length(args_of(clause)) != 2 || (key = text_const(lsecond(args_of(clause)))) == NULL ||
 		!doc_of(rel, linitial(args_of(clause)), &att) || !exists_leaf(rel, att, key))
 		return InvalidAttrNumber;
 	return SIFT_V6_JPRES_VATT + key_leaf(rel, att, key);
