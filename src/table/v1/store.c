@@ -134,7 +134,14 @@ sift_tbl_rel(Relation rel)
 	Oid			relid = RelationGetRelid(rel);
 	bool		found;
 	CacheEnt   *e;
+	const SiftTableFormatOps *ops = sift_tbl_ops(rel);
 
+	/* a function of Format 1 asked about a table of another format: its relcache entry must keep that format's state */
+	if (ops != &sift_tbl_v1_ops)
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("sift_table \"%s\" is a table of Format %u.0, which this function does not read", RelationGetRelationName(rel), ops->format_major),
+						errdetail("The function reads the segments of a sift_table of Format 1."),
+						errhint("sift.parts, sift.space and sift.check describe a table of any format.")));
 	if (cache_tab == NULL)
 	{
 		HASHCTL		ctl = {.keysize = sizeof(Oid),.entrysize = sizeof(CacheEnt),.hcxt = CacheMemoryContext};
