@@ -1,6 +1,6 @@
 -- The arms of a UNION ALL that scan the same rows and join the same correlated LIMIT 1 lookup run in one pass (agg_fuse_arms) also when the lookup is read as
 -- a table (a key that may repeat, a condition on the parameters alone): the arms read different columns of it and the planner numbers their Params apart, which
--- is not a difference of the join. Arms whose conditions on the parameters differ are two joins and run apart. The rows are the normal plan's either way.
+-- is not a difference of the join. Arms whose conditions on the parameters differ are two joins, each arm with its own, over the one pass. The rows are the normal plan's either way.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -49,17 +49,17 @@ INSERT INTO ff_cases VALUES
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
                               name                              | arms_in_one_pass | differences 
 ----------------------------------------------------------------+------------------+-------------
- arms with another condition on the parameters are two joins    |                0 |           0
- the same with a condition on the parameters alone in every arm |                2 |           0
- three arms, a key that repeats: each reads other columns       |                2 |           0
+ arms with another condition on the parameters are two joins    |                2 |           0
+ the same with a condition on the parameters alone in every arm |                3 |           0
+ three arms, a key that repeats: each reads other columns       |                3 |           0
 (3 rows)
 
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
                               name                              | arms_in_one_pass | differences 
 ----------------------------------------------------------------+------------------+-------------
- arms with another condition on the parameters are two joins    |                0 |           0
- the same with a condition on the parameters alone in every arm |                2 |           0
- three arms, a key that repeats: each reads other columns       |                2 |           0
+ arms with another condition on the parameters are two joins    |                2 |           0
+ the same with a condition on the parameters alone in every arm |                3 |           0
+ three arms, a key that repeats: each reads other columns       |                3 |           0
 (3 rows)
 
 SET sift.backend_cache_kb = 0;
@@ -67,9 +67,9 @@ SET sift.shared_cache_kb = 0;
 SELECT name, (ff_check(q)).* FROM ff_cases ORDER BY name;
                               name                              | arms_in_one_pass | differences 
 ----------------------------------------------------------------+------------------+-------------
- arms with another condition on the parameters are two joins    |                0 |           0
- the same with a condition on the parameters alone in every arm |                2 |           0
- three arms, a key that repeats: each reads other columns       |                2 |           0
+ arms with another condition on the parameters are two joins    |                2 |           0
+ the same with a condition on the parameters alone in every arm |                3 |           0
+ three arms, a key that repeats: each reads other columns       |                3 |           0
 (3 rows)
 
 DROP FUNCTION ff_check(text);

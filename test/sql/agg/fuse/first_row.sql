@@ -1,6 +1,6 @@
 -- The arms of a UNION ALL that scan the same rows and join the same correlated LIMIT 1 lookup run in one pass (agg_fuse_arms) also when the lookup is read as
 -- a table (a key that may repeat, a condition on the parameters alone): the arms read different columns of it and the planner numbers their Params apart, which
--- is not a difference of the join. Arms whose conditions on the parameters differ are two joins and run apart. The rows are the normal plan's either way.
+-- is not a difference of the join. Arms whose conditions on the parameters differ are two joins, each arm with its own, over the one pass. The rows are the normal plan's either way.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

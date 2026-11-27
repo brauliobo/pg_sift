@@ -3,7 +3,9 @@
  */
 #include "postgres.h"
 
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 
 #include "agg/join/pairs.h"
 
@@ -13,36 +15,62 @@ typedef struct PairCtx
 	bool		ok;
 } PairCtx;
 
-/* the place of the column a Var is among the columns of the pairs, which it is added to when new; -1 when the pairs cannot carry it */
+/* a column the pairs carry: a column of the fact table, of the element or of a dimension, or what the index holds of an expression of the fact table (jsonb_exists(doc, 'k') of an expression column) */
+static bool
+pair_source(V6Plan *p, Node *n, SiftV6Col *out)
+{
+	const Var  *v = (const Var *) n;
+
+	if (!IsA(n, Var))
+		return bms_equal(pull_varnos(p->root, n), p->rel->relids) && sift_v6_read_of(p, (const Expr *) n, false, out) && out->src == SV6SRC_ATTR;
+	if (v->varlevelsup != 0)
+		return false;
+	if (p->elem_rel != NULL && v->varno == p->elem_rel->relid)
+		return sift_v6_unnest_column(p, (const Expr *) v, out);
+	return sift_v6_plan_read_column(p, (const Expr *) v, true, out);
+}
+
+/* the place of the column n is among the columns of the pairs, which it is added to when new; -1 when the pairs cannot carry it */
 static int
-pair_col(V6Plan *p, const Var *v)
+pair_col(V6Plan *p, Node *n)
 {
 	SiftV6Ext  *x = p->xseed;
 	int			i;
-	bool		ok;
 
 	for (i = 0; i < x->nrcol; i++)
-		if (p->pair_varno[i] == v->varno && p->pair_attno[i] == v->varattno)
+		if (equal(p->pair_src[i], n))
 			return i;
-	if (v->varlevelsup != 0 || i == SIFT_V6_RESID_COLS)
+	if (i == SIFT_V6_RESID_COLS || !pair_source(p, n, &x->rcol[i]))
 		return -1;
-	if (p->elem_rel != NULL && v->varno == p->elem_rel->relid)
-		ok = sift_v6_unnest_column(p, (const Expr *) v, &x->rcol[i]);
-	else
-		ok = sift_v6_plan_read_column(p, (const Expr *) v, true, &x->rcol[i]);
-	if (!ok)
-		return -1;
-	p->pair_varno[i] = v->varno;
-	p->pair_attno[i] = v->varattno;
+	p->pair_src[i] = n;
 	x->nrcol++;
 	return i;
+}
+
+/* n as the column of the pairs it is (a Var without the outer joins that null it, which the pairs carry as NULLs, or a call the index holds), or NULL when it is none */
+static Var *
+pair_column(PairCtx *c, Node *n)
+{
+	Node	   *src = copyObject(n);
+	Var		   *nv;
+	int			i;
+
+	if (IsA(src, Var))
+		((Var *) src)->varnullingrels = NULL;
+	else if (!(IsA(src, FuncExpr) || IsA(src, OpExpr)) || !contain_var_clause(src))
+		return NULL;
+	if ((i = pair_col(c->p, src)) < 0)
+		return NULL;
+	nv = makeVar(1, (AttrNumber) (i + 1), exprType(n), exprTypmod(n), exprCollation(n), 0);
+	nv->varnosyn = 1;
+	nv->varattnosyn = nv->varattno;
+	return nv;
 }
 
 static Node *
 pair_var(Node *n, PairCtx *c)
 {
 	Var		   *nv;
-	int			i;
 
 	if (n == NULL || !c->ok)
 		return n;
@@ -51,18 +79,12 @@ pair_var(Node *n, PairCtx *c)
 		c->ok = false;
 		return n;
 	}
+	if ((nv = pair_column(c, n)) != NULL)
+		return (Node *) nv;
 	if (!IsA(n, Var))
 		return expression_tree_mutator(n, pair_var, c);
-	if ((i = pair_col(c->p, (const Var *) n)) < 0)
-	{
-		c->ok = false;
-		return n;
-	}
-	nv = copyObject((Var *) n);
-	nv->varno = nv->varnosyn = 1;
-	nv->varattno = nv->varattnosyn = i + 1;
-	nv->varnullingrels = NULL;
-	return (Node *) nv;
+	c->ok = false;
+	return n;
 }
 
 Node *

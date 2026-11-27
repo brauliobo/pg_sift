@@ -3,7 +3,8 @@
  *
  *   LEFT JOIN LATERAL (SELECT cols FROM dim d WHERE d.k = o.c [AND tests of dim alone] [ORDER BY ..] LIMIT 1) s ON true
  *
- * returns, for a row of o, the first row of dim with k = o.c, as the left join of o to `SELECT k, cols FROM dim` (one row for each k) on k = o.c does. PostgreSQL has no plan of the sub-select that
+ * returns, for a row of o, the first row of dim with k = o.c, as the left join of o to `SELECT k, cols FROM dim` (one row for each k) on k = o.c does. A condition of the sub-select over the
+ * relations before it alone (a gate) gives the row that fails it no row of dim: its probe is then NULL, which matches none. PostgreSQL has no plan of the sub-select that
  * takes no parameter, so the dimension is planned here as a query of its own: its keys are the columns the equalities name, the rows of a key that dim repeats are cut to the first one (DISTINCT ON,
  * in the order of the sub-select, then of the table), and the plan stands for the relation of the sub-select in the plan of the node.
  *
@@ -27,6 +28,7 @@ typedef struct SiftV6LateralDim
 	const Node *probe[SIFT_STAR_MAX_KEYS];	/* the expression of the relations before the sub-select that each key is probed with, in the terms of the planner of the node */
 	const Var  *key[SIFT_STAR_MAX_KEYS];	/* the column of rel that holds the key */
 	Oid			coll[SIFT_STAR_MAX_KEYS];	/* the collation the equality compares the key by */
+	List	   *gates;			/* the conditions of the sub-select over the relations before it alone (NOT jsonb_exists(f.doc, 'k')), in the terms of the planner of the node */
 } SiftV6LateralDim;
 
 /*

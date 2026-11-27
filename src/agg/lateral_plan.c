@@ -104,6 +104,7 @@ typedef struct Ties
 	List	   *probes;			/* the expression of the outer relations it is equal to, in the terms of the planner of the node */
 	List	   *colls;			/* the collation each equality compares by */
 	List	   *rest;
+	List	   *gates;			/* the conditions of the outer relations alone, in the terms of the planner of the node: a row that fails one has no row of the sub-select */
 	const Index *map;
 } Ties;
 
@@ -127,6 +128,17 @@ tie_sides(Ties *t, Node *inner, Node *outer, Oid inputcollid)
 }
 
 static bool
+gate_clause(Ties *t, Node *qual, Levels r)
+{
+	Lift		l = {t->map, true};
+	const bool	outer_only = !r.local && !(r.up2 && t->map == NULL) && !contain_volatile_functions(qual);
+
+	if (outer_only)
+		t->gates = lappend(t->gates, lift_columns(qual, &l));
+	return outer_only && l.ok;
+}
+
+static bool
 tie_clause(Ties *t, Node *qual)
 {
 	const OpExpr *op = (const OpExpr *) qual;
@@ -139,8 +151,10 @@ tie_clause(Ties *t, Node *qual)
 		t->rest = lappend(t->rest, qual);
 		return true;
 	}
-	return IsA(qual, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))) &&
-		(tie_sides(t, linitial(op->args), lsecond(op->args), op->inputcollid) || tie_sides(t, lsecond(op->args), linitial(op->args), op->inputcollid));
+	if (IsA(qual, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))) &&
+		(tie_sides(t, linitial(op->args), lsecond(op->args), op->inputcollid) || tie_sides(t, lsecond(op->args), linitial(op->args), op->inputcollid)))
+		return true;
+	return gate_clause(t, qual, r);
 }
 
 /* the parser leaves the LIMIT as the cast of its constant to bigint */
@@ -531,6 +545,7 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 		return false;
 	sub = sift_subquery_planner(root->glob, dq, root, lrte->eref->aliasname);
 	out->nkeys = list_length(t.keys);
+	out->gates = t.gates;
 	out->rel = dimension_rel(root, lateral, relid, sub, &t, out);
 	if (out->rel == NULL || !dimension_quals(out->rel, lateral, map))
 		return false;
@@ -544,6 +559,24 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 	return true;
 }
 
+/* the probe of the first key where the outer row passes the gates, else NULL, which matches no row of the sub-select: a row that fails a gate has none, as the sub-select gives it no row */
+static const Node *
+gated_probe(const Node *probe, List *gates)
+{
+	CaseExpr   *c = makeNode(CaseExpr);
+	CaseWhen   *w = makeNode(CaseWhen);
+
+	w->expr = make_ands_explicit(gates);
+	w->result = (Expr *) copyObject(probe);
+	w->location = -1;
+	c->casetype = exprType(probe);
+	c->casecollid = exprCollation(probe);
+	c->args = list_make1(w);
+	c->defresult = (Expr *) makeNullConst(c->casetype, exprTypmod(probe), c->casecollid);
+	c->location = -1;
+	return (const Node *) c;
+}
+
 bool
 sift_v6_lateral_join_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelOptInfo *lateral, Index relid, SiftV6JoinShape *sh, int at)
 {
@@ -552,6 +585,8 @@ sift_v6_lateral_join_dim(PlannerInfo *root, PlannerInfo *home, const Index *map,
 
 	if (!sift_v6_lateral_dim(root, home, map, lateral, relid, &ld))
 		return false;
+	if (ld.gates != NIL)
+		ld.probe[0] = gated_probe(ld.probe[0], ld.gates);
 	d->rel = ld.rel;
 	d->lateral = true;
 	for (int k = 0; k < ld.nkeys; k++)
