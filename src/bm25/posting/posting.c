@@ -78,14 +78,13 @@ SiftPostStats sift_post_stats;
 #endif
 
 /*
- * The buffer a cursor decodes its groups into. A sparse term (a LIST blob or inline keys) has a row per
- * page of a group, at most as many as it has postings (post_attach bounds their width); SIFT_CUR_BUF is for a group of
- * a GROUPED term
+ * The buffer a cursor decodes its groups into: the rows of one group (the second group of SIFT_CUR_BUF is the operators'). A sparse term
+ * (a LIST blob or inline keys) has a row per page of a group, at most as many as it has postings (post_attach bounds their width)
  */
 static uint8 *
 cursor_buf(MemoryContext mcxt, const SiftTermInfo *info)
 {
-	Size		size = SIFT_CUR_BUF;
+	Size		size = SIFT_GRP_BYTES + SIFT_KERN_PAD;
 
 	if (info->flags & (SIFT_TERM_INLINE | SIFT_TERM_SPARSE))
 		size = Min(size, (Size) Min(info->df, SIFT_GROUP_PAGES) * SIFT_MAX_W + SIFT_KERN_PAD);
