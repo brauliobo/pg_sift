@@ -649,6 +649,20 @@ sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardE
 }
 
 double
+sift_card_mean(const SiftColCardStats *cs)
+{
+	double		sum = 0;
+
+	if (!(cs->flags & SIFT_CSTAT_HAS_RANGE))
+		return -1;
+	if (!(cs->flags & SIFT_CSTAT_HAS_HIST) || cs->n_hist == 0)
+		return ((double) cs->min_i64 + (double) cs->max_i64) / 2.0;
+	for (int b = 0; b < cs->n_hist; b++)
+		sum += ((double) cs->hist_bounds[b] + (double) cs->hist_bounds[b + 1]) / 2.0;
+	return sum / cs->n_hist;
+}
+
+double
 sift_card_ndv(double d, double n, double r_out)
 {
 	const double r = Min(r_out, n);

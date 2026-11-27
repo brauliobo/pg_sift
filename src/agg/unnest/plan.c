@@ -19,6 +19,8 @@
 #include "agg/bytes.h"
 #include "agg/filter/pg.h"
 #include "agg/plan/int.h"
+#include "agg/cost/card_est.h"
+#include "agg/vexpr.h"
 #include "agg/expr/pg.h"
 #include "agg/ext.h"
 #include "agg/pipe.h"
@@ -241,6 +243,23 @@ known_quals(const RelOptInfo *rel)
 	return known;
 }
 
+/*
+ * the rows the join of a row with its elements makes: PostgreSQL prices a set-returning function at a constant count of rows a call (100 for the jsonb ones), the lengths leaf of the
+ * array in the index says how many elements a row has (rows with no array have none)
+ */
+double
+sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel)
+{
+	const SiftCardStatsView *v = p->index != NULL ? sift_v6_rel_card_view(p->index->indexoid) : NULL;
+	const int	gl = p->xseed->elem.group_leaf;
+	const SiftColCardStats *cs = v != NULL && gl >= 0 && (uint32) gl < v->ncols ? &v->cols[gl] : NULL;
+	const double mean = cs != NULL && cs->total_rows > 0 ? sift_card_mean(cs) : -1;
+
+	if (mean < 0 || p->elem_rel->tuples <= 0)
+		return input_rel->rows;
+	return clamp_row_est(input_rel->rows / p->elem_rel->tuples * mean * (1.0 - (double) cs->null_rows / cs->total_rows));
+}
+
 /* the pairs of the whole table: the scan skips only the granules the zones of the quals of the table rule out, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
@@ -270,7 +289,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 		Relation	rel = sift_v6_source_open(src[i].reloid, src[i].is_table, AccessShareLock, NULL);
 
 		if (sift_v6_plan_bind(&p, &src[i], rel) && sift_v6_unnest_seed(&p, elem_rel, &rte, left) && sift_v6_compile_on(&p, extra, group_exprs) && sift_v6_unnest_ready(&p))
-			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_pairs_cost(&p, input_rel), input_rel->rows);
+			sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_pairs_cost(&p, input_rel), sift_v6_unnest_rows(&p, input_rel));
 		sift_v6_source_close(rel, src[i].is_table, NoLock);
 	}
 }

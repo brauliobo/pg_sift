@@ -34,6 +34,16 @@ RESET sift.enable_agg;
 SELECT (SELECT count(*) FROM (TABLE su_on EXCEPT TABLE su_off) d) + (SELECT count(*) FROM (TABLE su_off EXCEPT TABLE su_on) d) AS rows_unlike_normal;
 SELECT orders AS total_orders FROM su_on WHERE g_kind = 1;
 
+-- The same per row and per kind as the arms of a UNION ALL, with count(DISTINCT id) and two outputs of the arms above them: the plan sorts the groups of the arms by id, at the
+-- rows the arrays of the index hold (two elements a row), not at PostgreSQL's 100 a call to the function, so the arms are scans under page costs that make a sort that spills dear
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+SELECT su_scan($q$SELECT count(DISTINCT id) AS orders, sum(n) AS n, max(q) AS q
+	FROM (SELECT o.id, i.kind, count(*) AS n, sum(i.qty) AS q FROM su_orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(kind text, qty int) GROUP BY 1, 2
+		  UNION ALL SELECT o.id, NULL, count(*), sum(i.qty) FROM su_orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(kind text, qty int) GROUP BY 1) x$q$) AS arms_scan;
+RESET seq_page_cost;
+RESET random_page_cost;
+
 DROP FUNCTION su_scan(text), su_q();
 DROP TABLE su_orders;
 DROP EXTENSION pg_sift;

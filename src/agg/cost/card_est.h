@@ -184,6 +184,8 @@ typedef struct SiftCardEst
 
 extern void sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out);
 
+/* The mean of the values of an integer leaf that are not NULL: of the midpoints of its equal-depth buckets, or of its range when it has none; -1 without a range */
+extern double sift_card_mean(const SiftColCardStats *cs);
 /* The distinct values of a leaf of d (of n rows) that r_out rows keep */
 extern double sift_card_ndv(double d, double n, double r_out);
 /* The groups of several keys, each with the distinct values d[i] it keeps, over r_out rows; cells: the groups the pre-aggregate has (0: none) */
