@@ -47,7 +47,9 @@ BEGIN
 	RETURN name || ': ok';
 END $$;
 
-CREATE FUNCTION file_of(n text) RETURNS text LANGUAGE sql AS $$ SELECT '/tmp/sift_copy_schema_evol_' || n || '.tsv' $$;
+-- the files of one cluster: two clusters of a host may run the test at once
+CREATE FUNCTION file_of(n text) RETURNS text LANGUAGE sql AS $$ SELECT '/tmp/sift_copy_schema_evol_' || current_setting('port') || '_' || n || '.tsv' $$;
+SELECT file_of('main') AS main_tsv, file_of('small') AS small_tsv, file_of('more') AS more_tsv, file_of('main') || ' ' || file_of('small') || ' ' || file_of('more') AS copy_files \gset
 
 CREATE VIEW src AS
 SELECT i AS id, i % 10 AS g, (i / 4.0)::numeric(10,2) AS v, 'row ' || i AS s, date '2020-01-01' + i % 700 AS d, i * 0.5::float8 AS f, CASE WHEN i % 11 = 0 THEN NULL ELSE i % 1000 END AS k
@@ -56,9 +58,9 @@ FROM generate_series(1, 6000) i;
 -- 1. the direct route: COPY and CREATE TABLE AS of 6000 rows (batches of 1000 slots), against a heap oracle
 CREATE TABLE tb (id int, g int, v numeric(10,2), s text, d date, f float8, k int) USING :am;
 CREATE TABLE ob (LIKE tb) USING heap;
-COPY (SELECT * FROM src) TO '/tmp/sift_copy_schema_evol_main.tsv';
-COPY tb FROM '/tmp/sift_copy_schema_evol_main.tsv';
-COPY ob FROM '/tmp/sift_copy_schema_evol_main.tsv';
+COPY (SELECT * FROM src) TO :'main_tsv';
+COPY tb FROM :'main_tsv';
+COPY ob FROM :'main_tsv';
 SELECT sift_helpers.assert_eq('copy count', count(*)::int, 6000) FROM tb;
 SELECT sift_helpers.assert_eq('copy sum', sum(v), (SELECT sum(v) FROM src)) FROM tb;
 SELECT same('copy rows', 'tb', 'ob');
@@ -72,9 +74,9 @@ SELECT sift_helpers.assert_eq('probe of a loaded row', s, 'row 1234') FROM tb WH
 -- 2. the staged route: a small COPY, a single INSERT, INSERT ... SELECT, a trigger
 CREATE TABLE ts (LIKE tb) USING :am;
 CREATE TABLE os (LIKE tb) USING heap;
-COPY (SELECT * FROM src WHERE id <= 10) TO '/tmp/sift_copy_schema_evol_small.tsv';
-COPY ts FROM '/tmp/sift_copy_schema_evol_small.tsv';
-COPY os FROM '/tmp/sift_copy_schema_evol_small.tsv';
+COPY (SELECT * FROM src WHERE id <= 10) TO :'small_tsv';
+COPY ts FROM :'small_tsv';
+COPY os FROM :'small_tsv';
 INSERT INTO ts SELECT * FROM src WHERE id BETWEEN 11 AND 40;
 INSERT INTO os SELECT * FROM src WHERE id BETWEEN 11 AND 40;
 SELECT on_both('INSERT INTO %1$I SELECT * FROM src WHERE id = 41', 'ts', 'os');
@@ -84,24 +86,24 @@ CREATE TABLE klog (n int);
 CREATE FUNCTION klog_row() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN INSERT INTO klog VALUES (1); RETURN NULL; END $$;
 CREATE TABLE tk (LIKE tb) USING :am;
 CREATE TRIGGER tk_after AFTER INSERT ON tk FOR EACH ROW EXECUTE FUNCTION klog_row();
-COPY tk FROM '/tmp/sift_copy_schema_evol_main.tsv';
+COPY tk FROM :'main_tsv';
 SELECT sift_helpers.assert_eq('row trigger fired for every row', (SELECT count(*)::int FROM klog), 6000);
 SELECT same('rows with a trigger', 'tk', 'ob');
 
 -- 3. rollback, subtransactions and a read of the transaction's own rows
 CREATE TABLE tr (LIKE tb) USING :am;
 BEGIN;
-COPY tr FROM '/tmp/sift_copy_schema_evol_main.tsv';
+COPY tr FROM :'main_tsv';
 SELECT sift_helpers.assert_eq('own bulk rows are read', count(*)::int, 6000) FROM tr;
 SELECT sift_helpers.assert_eq('own bulk rows by key', s, 'row 777') FROM tr WHERE id = 777;
 ROLLBACK;
 SELECT sift_helpers.assert_eq('rolled back copy', count(*)::int, 0) FROM tr;
 BEGIN;
 SAVEPOINT a;
-COPY tr FROM '/tmp/sift_copy_schema_evol_main.tsv';
+COPY tr FROM :'main_tsv';
 ROLLBACK TO a;
 SELECT sift_helpers.assert_eq('rolled back savepoint', count(*)::int, 0) FROM tr;
-COPY tr FROM '/tmp/sift_copy_schema_evol_main.tsv';
+COPY tr FROM :'main_tsv';
 SAVEPOINT b;
 DELETE FROM tr WHERE g = 3;
 RELEASE b;
@@ -109,7 +111,7 @@ COMMIT;
 SELECT sift_helpers.assert_eq('committed copy after a savepoint', count(*)::int, 5400) FROM tr;
 SELECT sift_helpers.assert_eq('deleted by the same transaction', count(*)::int, 0) FROM tr WHERE g = 3;
 CREATE TABLE tcheck (LIKE tb, CHECK (id < 5990)) USING :am;
-SELECT fails('COPY tcheck FROM ''/tmp/sift_copy_schema_evol_main.tsv''', '23514');
+SELECT fails('COPY tcheck FROM ':'main_tsv''', '23514');
 SELECT sift_helpers.assert_eq('a failed copy leaves nothing', count(*)::int, 0) FROM tcheck;
 INSERT INTO tr SELECT * FROM src WHERE g = 3;
 SELECT sift_helpers.assert_eq('a later insert after the rollbacks', count(*)::int, 6000) FROM tr;
@@ -141,9 +143,9 @@ SELECT agg_same('aggregate over added columns', 'SELECT g, sum(c1), max(c3), cou
 SELECT agg_same('filter on an added column', 'SELECT id, c1 FROM %s WHERE c1 = 7 AND c2 = ''abc'' AND id %% 997 = 0', 'tb', 'ob');
 
 -- new rows after the columns were added are written with their values; old and new rows are read together
-COPY (SELECT id + 6000, g, v, s, d, f, k, 9, 'new ' || id, 1.5::float8, id, date '2021-01-01', 2.75::numeric, false, '00000000-0000-0000-0000-000000000001'::uuid, 'y' FROM src) TO '/tmp/sift_copy_schema_evol_more.tsv';
-COPY tb FROM '/tmp/sift_copy_schema_evol_more.tsv';
-COPY ob FROM '/tmp/sift_copy_schema_evol_more.tsv';
+COPY (SELECT id + 6000, g, v, s, d, f, k, 9, 'new ' || id, 1.5::float8, id, date '2021-01-01', 2.75::numeric, false, '00000000-0000-0000-0000-000000000001'::uuid, 'y' FROM src) TO :'more_tsv';
+COPY tb FROM :'more_tsv';
+COPY ob FROM :'more_tsv';
 SELECT sift_helpers.assert_eq('rows after the columns', count(*)::int, 12000) FROM tb;
 SELECT sift_helpers.assert_eq('new rows keep their values', count(*) FILTER (WHERE c1 = 9 AND c2 LIKE 'new %' AND NOT c7)::int, 6000) FROM tb;
 SELECT same('old and new rows', 'tb', 'ob');
@@ -182,7 +184,8 @@ VACUUM FULL ob;
 SELECT same('after vacuum full', 'tb', 'ob');
 SELECT sift_helpers.assert_eq('the oracle count', (SELECT count(*)::int FROM ob), (SELECT count(*)::int FROM tb));
 
-\! rm -f /tmp/sift_copy_schema_evol_main.tsv /tmp/sift_copy_schema_evol_small.tsv /tmp/sift_copy_schema_evol_more.tsv
+\setenv COPY_FILES :copy_files
+\! rm -f $COPY_FILES
 DROP SCHEMA f2c CASCADE;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test;

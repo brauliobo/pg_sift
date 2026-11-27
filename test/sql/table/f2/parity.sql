@@ -75,14 +75,16 @@ ROLLBACK;
 
 -- 3. COPY, COPY FREEZE, multi_insert, CTAS
 CREATE TABLE c (id int, s text, n numeric(12,3)) USING sift_table;
-COPY (SELECT i, 'c' || i, i / 8.0 FROM generate_series(1, 30000) i) TO '/tmp/f2p_copy.csv' CSV;
-COPY c FROM '/tmp/f2p_copy.csv' CSV;
+SELECT '/tmp/f2p_copy_' || current_setting('port') || '.csv' AS copy_csv \gset
+\setenv COPY_CSV :copy_csv
+COPY (SELECT i, 'c' || i, i / 8.0 FROM generate_series(1, 30000) i) TO :'copy_csv' CSV;
+COPY c FROM :'copy_csv' CSV;
 SELECT sift_helpers.assert_eq('copy count', count(*)::int, 30000) FROM c;
 SELECT sift_helpers.assert_eq('copy sum', sum(n), (SELECT sum(i / 8.0) FROM generate_series(1, 30000) i)::numeric) FROM c;
 TRUNCATE c;
 BEGIN;
 TRUNCATE c;
-COPY c FROM '/tmp/f2p_copy.csv' CSV FREEZE;
+COPY c FROM :'copy_csv' CSV FREEZE;
 COMMIT;
 SELECT sift_helpers.assert_eq('copy freeze count', count(*)::int, 30000) FROM c;
 CREATE TABLE ctas USING sift_table AS SELECT * FROM c WHERE id % 2 = 0;
@@ -90,7 +92,7 @@ SELECT sift_helpers.assert_eq('ctas count', count(*)::int, 15000) FROM ctas;
 SELECT sift_helpers.assert_eq('ctas format', format_major('ctas'), 2);
 INSERT INTO c SELECT * FROM ctas;
 SELECT sift_helpers.assert_eq('insert select', count(*)::int, 45000) FROM c;
-\! rm -f /tmp/f2p_copy.csv
+\! rm -f $COPY_CSV
 
 -- 4. ON CONFLICT
 CREATE TABLE oc (id int PRIMARY KEY, n int, s text) USING sift_table;
