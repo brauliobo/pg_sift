@@ -1,8 +1,7 @@
 """The third wave of production shapes of the load gate (Spec 115): MERGE, deferred keys, generated columns and transition triggers on a sift_table, column type changes,
 tablespace moves and UNLOGGED switches under writers, concurrent index builds, reindexes and parallel VACUUM of the three engines, quantile sketches and every observability
 surface beside temporary-table churn, a kill -9 with UNLOGGED objects of every engine, and logical decoding of a REPLICA IDENTITY FULL sift_table and of primary-key updates
-through changes of the table shape (scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on test/t/core/load_repl.sh). The observability case waits for
-S115-35: sift.indexes opens the temporary relations of other sessions (0A000) and relations dropped while it reads (42P01); the logical decoding case waits for S115-36:
+through changes of the table shape (scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on test/t/core/load_repl.sh). The logical decoding case waits for S115-36:
 the apply worker of a subscriber never finds the old row of an UPDATE or DELETE of a sift_table under REPLICA IDENTITY FULL (it scans the granules without end); the
 column type case waits for S115-37: a rewrite of a sift_table (ALTER COLUMN ... TYPE) after ADD COLUMN ... NOT NULL DEFAULT finds the column NULL (23502), and the session
 that ran it reads the column NULL afterwards (one session alone meets it every time; under the load of the case, about one run of three).
@@ -386,7 +385,7 @@ WORKLOADS = (
     LoadCase('txn_merge_trig_gen_defer', 'txn', txn_merge_trig_gen_defer, Wave3(), formats=(2,)),
     LoadCase('ddl_alter_type_tblspc_live', 'ddl', ddl_alter_type_tblspc_live, Wave3(), formats=(2,), open='S115-37', intermittent=True),
     LoadCase('ddl_cic_ric_parvac_storm', 'ddl', ddl_cic_ric_parvac_storm, Wave3()),
-    LoadCase('feat_kll_obs_poll_ddl_storm', 'feat', feat_kll_obs_poll_ddl_storm, Wave3(ctx_kb_delta=1280, rss_mb_delta=16), formats=(2,), open='S115-35'),
+    LoadCase('feat_kll_obs_poll_ddl_storm', 'feat', feat_kll_obs_poll_ddl_storm, Wave3(ctx_kb_delta=1280, rss_mb_delta=16), formats=(2,)),
     LoadCase('fault_unlogged_kill9_reset', 'fault', fault_unlogged_kill9_reset, Wave3(), formats=(2,), last=True),
 )
 REPL = (

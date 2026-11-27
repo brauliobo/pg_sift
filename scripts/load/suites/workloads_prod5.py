@@ -2,11 +2,10 @@
 sift_table), cursors held across commits, VACUUM and maintenance beside spilling cursors closed early, high-cardinality analytics that spill under cancels and timeouts,
 databases cloned from a template that holds every engine beside busy sibling databases, MERGE with NOT MATCHED BY SOURCE and COPY that skips bad rows beside hybrid readers,
 access method, column type and tablespace changes under a concurrent pg_dump, and temporary and unlogged objects through a kill -9. Every case runs on Format 2.0 and Format
-1.0 and on the release library; what only Format 2.0 has (projections, tiering) joins on Format 2.0. Two cases wait for a finding, each intermittent (met on one format
-or one plan only): the write skew case for S117-21 (a SERIALIZABLE read of a sift_table through its btree primary key misses the rw-conflict with a concurrent DELETE: both
-transactions of a pair commit and the shift is left empty, on Format 2.0 by index, index-only and bitmap scans, on Format 1.0 by index and index-only scans), the temporary
-tables for S117-20 (on Format 2.0 the commit of a temporary table ON COMMIT DELETE ROWS with a sift_col index fails with XX002 "Metadata block 5 is freed twice" in
-col/f2 chain.c flip and quarantines the index, from the first commit that wrote a row).
+1.0 and on the release library; what only Format 2.0 has (projections, tiering) joins on Format 2.0. The temporary tables wait for S120-25, intermittent (Format 1.0 is
+clean): on Format 2.0 the second commit of a session's temporary table ON COMMIT DELETE ROWS with a sift_col index in one batch fails with XX002 (the index is corrupted)
+or XX001 (a read of block 10 past the end of the truncated file of the index) while 4 sessions cycle every kind of temporary table and DISCARD ALL beside 40 other
+connected sessions; one session, the table alone or fewer sessions connected are clean.
 """
 from __future__ import annotations
 
@@ -432,7 +431,7 @@ SUM = {n: f'SELECT count(*), sum(v) FROM load_base_fact WHERE id <= {n}' for n i
 TEMPS = ('BEGIN; CREATE TEMP TABLE t_d (id int8 PRIMARY KEY, grp int, v int8, body text) USING sift_table ON COMMIT DROP; '
          'INSERT INTO t_d SELECT * FROM load_base_fact WHERE id <= 512; SELECT count(*), sum(v) FROM t_d; COMMIT',
          'CREATE TEMP TABLE IF NOT EXISTS t_r (id int8, grp int, v int8, body text) ON COMMIT DELETE ROWS; CREATE INDEX IF NOT EXISTS t_r_ix ON t_r USING sift_col (id, grp, v); '
-         'BEGIN; INSERT INTO t_r SELECT * FROM load_base_fact WHERE id <= 256; SET LOCAL enable_seqscan = off; SELECT count(*), sum(v) FROM t_r WHERE id > 0; COMMIT',
+         + 2 * 'BEGIN; INSERT INTO t_r SELECT * FROM load_base_fact WHERE id <= 256; SET LOCAL enable_seqscan = off; SELECT count(*), sum(v) FROM t_r WHERE id > 0; COMMIT; ',
          'CREATE TEMP TABLE IF NOT EXISTS t_p (id int8, grp int, v int8, body text); CREATE INDEX IF NOT EXISTS t_p_ix ON t_p USING sift (body); '
          "TRUNCATE t_p; INSERT INTO t_p SELECT * FROM load_base_fact WHERE id <= 256; SELECT count(*), sum(v) FROM t_p WHERE body @@> 'tail*'",
          'DISCARD ALL; SET search_path = load_case, public')
@@ -453,8 +452,8 @@ def fault_temp_unlogged_crash_shm(ctx):
 
     def temp(w, i):
         out = w.do(TEMPS[(w.seed + i) % len(TEMPS)])
-        n = (512, 256, 256, None)[(w.seed + i) % len(TEMPS)]
-        w.ledger += out is not None and n is not None and out != want[n]
+        rows = (want[512], 2 * want[256], want[256], None)[(w.seed + i) % len(TEMPS)]
+        w.ledger += out is not None and rows is not None and out != rows
 
     temps = ctx.phase({'t': (ws, temp)}, 1.5)
     ctx.close_sessions()
@@ -489,11 +488,11 @@ def fault_temp_unlogged_crash_shm(ctx):
 
 
 STRESS = (
-    LoadCase('txn_ssi_all_engines_proj', 'txn', txn_ssi_all_engines_proj, Wave5(), open='S117-21', intermittent=True),
+    LoadCase('txn_ssi_all_engines_proj', 'txn', txn_ssi_all_engines_proj, Wave5()),
     LoadCase('txn_with_hold_cursor_maint', 'txn', txn_with_hold_cursor_maint, Wave5(ctx_kb_delta=1280, rss_mb_delta=16, fd_delta=0)),
     LoadCase('olap_highcard_spill_cancel', 'olap', olap_highcard_spill_cancel, Wave5(ctx_kb_delta=2048, rss_mb_delta=24)),
     LoadCase('tenant_template_db_tier_iso', 'tenant', tenant_template_db_tier_iso, Wave5()),
     LoadCase('mix_merge_copy_err_hybrid', 'mix', mix_merge_copy_err_hybrid, Wave5(ctx_kb_delta=1280, rss_mb_delta=16)),
     LoadCase('ddl_am_type_tblspc_dump', 'ddl', ddl_am_type_tblspc_dump, Wave5()),
-    LoadCase('fault_temp_unlogged_crash_shm', 'fault', fault_temp_unlogged_crash_shm, Wave5(shm_used_after=0), last=True, open='S117-20', intermittent=True),
+    LoadCase('fault_temp_unlogged_crash_shm', 'fault', fault_temp_unlogged_crash_shm, Wave5(shm_used_after=0), last=True, open='S120-25', intermittent=True),
 )

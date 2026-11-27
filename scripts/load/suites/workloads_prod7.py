@@ -2,12 +2,10 @@
 parallel ranked scans under cancels, a sift_col index with a pre-aggregate cube, HyperLogLog sketches and a Bloom skip index under churn and rolled-back outliers,
 materialized views stored as sift_tables refreshed beside bitmap scans of a bulk-written table, every row-lock mode across 20 sift_tables in one transaction (past the
 16 fast-path slots of a backend), a hybrid of BM25, a column index and an as-of join of a time series beside sift.explain_why, and index-only scans of a hot standby
-through VACUUM (FREEZE) and checkpoints. Every case runs on Format 2.0 and Format 1.0 and on the release library. Three cases wait for a finding, each intermittent (met
+through VACUUM (FREEZE) and checkpoints. Every case runs on Format 2.0 and Format 1.0 and on the release library. Two cases wait for a finding, each intermittent (met
 on the other format): the large documents for S119-27 (on Format 2.0 a BM25 index of a sift_table with write_buffer_limit = 64 over documents larger than its buffer loses
 entries when 2 sessions insert while VACUUM and sift.maintain run, or while they update the same rows: sift.check finds a heap tuple with no entry in the index and a
-query finds fewer documents than the heap twin; one writer, small documents or the default buffer are clean), the row-lock modes for S119-28 (on Format 2.0 a
-transaction that locks one row in each of more than 16 sift_tables turns row locks into locks of their relations: 3 coarse locks at 17 tables, 6 at 18, 12 to 40 at
-20, in every mode; none at 16), and the hot standby for S119-29 (on Format 1.0 a REPEATABLE READ snapshot of a hot standby answers a GROUP BY of a sift_table
+query finds fewer documents than the heap twin; one writer, small documents or the default buffer are clean), and the hot standby for S119-29 (on Format 1.0 a REPEATABLE READ snapshot of a hot standby answers a GROUP BY of a sift_table
 by an index-only scan of its covering btree and by a sequential scan with a row of difference, either way, while the primary replays inserts and updates beside VACUUM
 (FREEZE) and checkpoints; the heap twin, the primary and Format 2.0 agree).
 """
@@ -346,7 +344,7 @@ STRESS = (
              intermittent=True),
     LoadCase('olap_preagg_skip_hll_churn', 'olap', olap_preagg_skip_hll_churn, Limits(ctx_kb_delta=1280, rss_mb_delta=16)),
     LoadCase('ddl_matview_bitmap_bulk_mix', 'ddl', ddl_matview_bitmap_bulk_mix, Limits()),
-    LoadCase('txn_rowlock_modes_fastpath', 'txn', txn_rowlock_modes_fastpath, Limits(coarse_escalations=0, lwlock_wait_pct=35), open='S119-28', intermittent=True),
+    LoadCase('txn_rowlock_modes_fastpath', 'txn', txn_rowlock_modes_fastpath, Limits(coarse_escalations=0, lwlock_wait_pct=35)),
     LoadCase('olap_hybrid_asof_explain_storm', 'olap', olap_hybrid_asof_explain_storm, Limits(ctx_kb_delta=1280, rss_mb_delta=16)),
 )
 REPL = (
