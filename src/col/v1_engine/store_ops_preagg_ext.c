@@ -30,14 +30,14 @@ flush(SiftV6Group *g, int agg, SiftVec *v, uint16 n)
 }
 
 void
-sift_v1_hist_merge_dist(SiftV6Group *g, int agg, const SiftSrcHist *h, bool text, void *buf)
+sift_v1_hist_merge_dist(SiftV6Group *g, int agg, const SiftSrcHist *h, bool text, void *buf, SiftV1HistKeep keep, const void *arg)
 {
 	SiftVec		v = {.data = buf,.dense = true,.all_valid = true,.type = text ? SVEC_STRVIEW : SVEC_I64};
 	uint16		n = 0;
 
 	for (uint32 r = 0; r < h->ngroups; r++)
 	{
-		if (h->count[r] == 0 || (h->has_null && r == h->ngroups - 1))
+		if (h->count[r] == 0 || (h->has_null && r == h->ngroups - 1) || (keep != NULL && !keep(arg, h, r)))
 			continue;
 		if (text)
 			((SiftStrView *) buf)[n] = sift_vstr_make(h->dict->bytes + h->dict->off[h->key[r]], h->dict->off[h->key[r] + 1] - h->dict->off[h->key[r]]);

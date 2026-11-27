@@ -80,6 +80,8 @@ typedef struct SiftV1Cube
 	bool		key_text;
 	int			dist_leaf;		/* no key: the leaf COUNT(DISTINCT) reads (its histogram gives the values), -1: none */
 	bool		dist_text;
+	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT); -1: none */
+	bool		by_group;		/* the unit's zones leave a test of hist_leaf undecided: each group of the histogram is tested */
 	CubeAgg    *agg;
 	int			npred;
 	Pred	   *pred;
@@ -304,22 +306,67 @@ pred_verdict(const Pred *p, const SiftSrcUnitAgg *z)
 	return p->kind == PK_CMP ? cmp_verdict(p, z) : any_verdict(p, z);
 }
 
-/* What the tests of the statement say of every row of the unit: V_NONE when one of them passes none */
+static bool
+group_passes(const Pred *p, const SiftSrcHist *h, uint32 r)
+{
+	if (h->has_null && r == h->ngroups - 1)
+		return p->kind == PK_NULL;
+	if (p->kind == PK_NULL || p->kind == PK_NOTNULL)
+		return p->kind == PK_NOTNULL;
+	if (p->kind == PK_ANY)
+		return in_set(p, h->key[r]);
+	switch (p->op)
+	{
+		case OP_LT:
+			return h->key[r] < p->val;
+		case OP_LE:
+			return h->key[r] <= p->val;
+		case OP_EQ:
+			return h->key[r] == p->val;
+		case OP_GE:
+			return h->key[r] >= p->val;
+		case OP_GT:
+			return h->key[r] > p->val;
+		case OP_NE:
+			return h->key[r] != p->val;
+	}
+	return false;
+}
+
+/* Whether group r passes every test of the histogram's dimension (SiftV1HistKeep) */
+static bool
+group_kept(const void *arg, const SiftSrcHist *h, uint32 r)
+{
+	const SiftV1Cube *c = arg;
+
+	for (int i = 0; i < c->npred; i++)
+		if (c->pred[i].leaf == c->hist_leaf && !group_passes(&c->pred[i], h, r))
+			return false;
+	return true;
+}
+
+/*
+ * What the tests of the statement say of every row of the unit: V_NONE when one of them passes none. A test of the histogram's dimension that the zone leaves undecided
+ * is made on each group (by_group).
+ */
 static Verdict
-unit_verdict(const SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
+unit_verdict(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 {
 	Verdict		all = V_ALL;
 
+	c->by_group = false;
 	for (int i = 0; i < c->npred; i++)
 	{
+		const bool	dim = c->pred[i].leaf == c->hist_leaf;
 		SiftSrcUnitAgg z;
 		Verdict		v;
 
 		if (!rd->unit_agg(src, unit, c->pred[i].leaf, &z) || z.nvals != unit->nrow)
-			return V_SOME;
-		if ((v = pred_verdict(&c->pred[i], &z)) == V_NONE)
+			v = V_SOME;
+		else if ((v = pred_verdict(&c->pred[i], &z)) == V_NONE)
 			return V_NONE;
-		all = Min(all, v);
+		c->by_group |= dim && v == V_SOME;
+		all = dim ? all : Min(all, v);
 	}
 	return all;
 }
@@ -398,6 +445,17 @@ merge(SiftV1Cube *c, int n)
 	sift_v6_group_merge_cells(c->group, c->kvp, c->acc, (uint16) n);
 }
 
+/* The state of aggregate g over the groups of h that pass the tests of its dimension; false for an aggregate other than count(*) and COUNT(DISTINCT) of the dimension */
+static bool
+kept_acc(const SiftV1Cube *c, const SiftSrcHist *h, const CubeAgg *g, V6Acc *out)
+{
+	*out = (V6Acc) {0};
+	if (g->a->kind == SV6_COUNT_STAR)
+		for (uint32 r = 0; r < h->ngroups; r++)
+			out->n += group_kept(c, h, r) ? h->count[r] : 0;
+	return g->a->kind == SV6_COUNT_STAR || g->a->kind == SV6_COUNT_DISTINCT;
+}
+
 static bool
 fold_global(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 {
@@ -406,12 +464,12 @@ fold_global(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUn
 	if (c->dist_leaf >= 0 && (!rd->unit_hist(src, unit, c->dist_leaf, &(SiftSrcRollupNeed) {0}, &h) || (c->dist_text && h.dict == NULL)))
 		return false;
 	for (int j = 0; j < c->spec->naggs; j++)
-		if (!global_acc(c, rd, src, unit, &c->agg[j], &c->acc[j]))
+		if (!(c->by_group ? kept_acc(c, &h, &c->agg[j], &c->acc[j]) : global_acc(c, rd, src, unit, &c->agg[j], &c->acc[j])))
 			return false;
 	merge(c, 1);
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
-			sift_v1_hist_merge_dist(c->group, j, &h, c->dist_text, c->kdata);
+			sift_v1_hist_merge_dist(c->group, j, &h, c->dist_text, c->kdata, c->by_group ? group_kept : NULL, c);
 	return true;
 }
 
@@ -519,7 +577,7 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 	batch_start(c, h.has_null);
 	for (uint32 r = 0; r < h.ngroups; r++)
 	{
-		if (h.count[r] == 0)
+		if (h.count[r] == 0 || (c->by_group && !group_kept(c, &h, r)))
 			continue;
 		put_key(c, &h, r, n);
 		group_acc(c, &h, r, &c->acc[n * c->spec->naggs]);
@@ -534,7 +592,7 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 		merge(c, n);
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
-			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text, c->kdata);
+			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text, c->kdata, c->by_group ? group_kept : NULL, c);
 	return true;
 }
 
@@ -662,5 +720,8 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	c->kdata = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	c->kvp[0] = &c->kvec;
 	c->sink = (SiftV1UnitSink) {.offer = offer,.arg = c};
-	return (c->nkeys == 0 || bind_key(c, lay)) && bind_aggs(c, lay) && bind_preds(c, a->host, lay, a->quals) ? &c->sink : NULL;
+	if ((c->nkeys > 0 && !bind_key(c, lay)) || !bind_aggs(c, lay) || !bind_preds(c, a->host, lay, a->quals))
+		return NULL;
+	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf;
+	return &c->sink;
 }

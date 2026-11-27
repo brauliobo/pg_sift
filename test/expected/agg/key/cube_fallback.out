@@ -15,15 +15,20 @@ INSERT INTO kf SELECT i, CASE WHEN i <= 15000 THEN i % 200 ELSE (i % 200) * 1000
 VACUUM (FREEZE, ANALYZE) kf;
 CREATE INDEX kf_col ON kf USING sift_col (id, k, v) WITH (preagg = 'cube(k: v)', key_columns = 'k');
 CREATE FUNCTION kf_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
-CREATE FUNCTION kf_units(q text, OUT units int, OUT pre int, OUT scanned int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION kf_units(q text, OUT pre text, OUT scanned bool) LANGUAGE plpgsql AS $$
 DECLARE l text;
+		units int;
+		n int;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
+		IF l ~ '^\s*Granules: ' THEN
+			units := (SELECT sum(m[1]::int) FROM regexp_matches(l, '(?:scanned|pruned_\w+|preagg)=(\d+)', 'g') m);
+			n := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			pre := CASE WHEN n = 0 THEN 'none' WHEN n = units THEN 'all' ELSE 'some' END;
+			scanned := substring(l from 'scanned=(\d+)')::int > 0;
+		END IF;
 	END LOOP;
 END $$;
 CREATE TABLE kf_q (n int, shape text, q text);
@@ -33,15 +38,16 @@ INSERT INTO kf_q VALUES
 	(3, 'a test on another leaf', 'SELECT count(DISTINCT k) FROM kf WHERE id <= 20000'),
 	(4, 'the key tested',         'SELECT count(DISTINCT k) FROM kf WHERE k < 150'),
 	(5, 'in the sparse units',    'SELECT count(DISTINCT k) FROM kf WHERE id > 15000');
--- the answers are the heap's; every unit is answered from the pre-aggregates (the bitmaps of the first two, the histograms of the last two), none scanned
-SELECT n, shape, kf_rows(q, true) = kf_rows(q, false) AS same, u.units, u.pre, u.scanned FROM kf_q, LATERAL kf_units(q) u ORDER BY n;
- n |         shape          | same | units | pre | scanned 
----+------------------------+------+-------+-----+---------
- 1 | distinct               | t    |     4 |   4 |       0
- 2 | with the sums of v     | t    |     4 |   4 |       0
- 3 | a test on another leaf | t    |     3 |   2 |    8448
- 4 | the key tested         | t    |     4 |   4 |       0
- 5 | in the sparse units    | t    |     3 |   2 |    8448
+-- the answers are the heap's; every granule is answered from the pre-aggregates (the bitmaps of the first two units, the histograms of the last two), none scanned,
+-- but those a test on another leaf cuts
+SELECT n, shape, kf_rows(q, true) = kf_rows(q, false) AS same, u.pre, u.scanned FROM kf_q, LATERAL kf_units(q) u ORDER BY n;
+ n |         shape          | same | pre  | scanned 
+---+------------------------+------+------+---------
+ 1 | distinct               | t    | all  | f
+ 2 | with the sums of v     | t    | all  | f
+ 3 | a test on another leaf | t    | some | t
+ 4 | the key tested         | t    | all  | f
+ 5 | in the sparse units    | t    | some | t
 (5 rows)
 
 DROP TABLE kf, kf_q;
