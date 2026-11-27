@@ -61,17 +61,24 @@ sift_v6_source_usable(const SiftV6RelSource *s)
 	return s->is_table || agg_index_complete(s->ix);
 }
 
-/* a sift_table decodes the columns of its quals, of the key and of the output over the granules the quals leave, as its aggregate scan does */
-static void
-table_scan_price(PlannerInfo *root, RelOptInfo *rel, AttrNumber key, Cost *open, Cost *total)
+/* the columns of the quals of the relation and its key */
+static Bitmapset *
+qual_cols(RelOptInfo *rel, AttrNumber key)
 {
 	Bitmapset  *cols = key > 0 ? bms_make_singleton(key - FirstLowInvalidHeapAttributeNumber) : NULL;
-	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1};
-	Cost		startup;
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 		pull_varattnos((Node *) ri->clause, rel->relid, &cols);
-	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &cols);
+	return cols;
+}
+
+/* a sift_table decodes the columns cols over the granules the quals leave, as its aggregate scan does */
+static void
+table_scan_price(PlannerInfo *root, RelOptInfo *rel, const Bitmapset *cols, Cost *open, Cost *total)
+{
+	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1};
+	Cost		startup;
+
 	in.ncols_read = bms_num_members(cols);
 	*open = SIFT_OPEN_OPS * cpu_operator_cost;
 	sift_v6_scan_cost(&in, &startup, total);
@@ -80,8 +87,20 @@ table_scan_price(PlannerInfo *root, RelOptInfo *rel, AttrNumber key, Cost *open,
 void
 sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total)
 {
+	Bitmapset  *cols = qual_cols(rel, key);
+
+	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &cols);
 	if (s->is_table)
-		table_scan_price(root, rel, key, open, total);
+		table_scan_price(root, rel, cols, open, total);
+	else
+		sift_v6_scan_price(root, rel, s->ix, key, open, total);
+}
+
+void
+sift_v6_source_filter_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total)
+{
+	if (s->is_table)
+		table_scan_price(root, rel, qual_cols(rel, key), open, total);
 	else
 		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
