@@ -15,5 +15,7 @@
 #include "nodes/pathnodes.h"
 
 extern void sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
+/* the same joins for the best k rows of the join in the order of its ORDER BY (agg/plan/topn_rows.c) */
+extern void sift_v6_join_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
 
 #endif							/* SIFT_AGG_V6_JOIN_PLAN_H */

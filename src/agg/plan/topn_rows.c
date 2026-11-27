@@ -19,6 +19,7 @@
 #include "agg/engine.h"
 #include "agg/cost/card.h"
 #include "agg/cost/cost.h"
+#include "agg/join/plan.h"
 #include "agg/plan/rewrite.h"
 #include "agg/par/pg.h"
 #include "agg/topn/rows.h"
@@ -217,6 +218,7 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 		{
 			sift_v6_stage_target(root, UPPERREL_ORDERED, output_rel);
 			sift_v6_star_rows_paths(root, input_rel, output_rel, k);
+			sift_v6_join_rows_paths(root, input_rel, output_rel, k);
 		}
 		return;
 	}
