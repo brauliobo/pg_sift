@@ -35,20 +35,21 @@ arms_select(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
 	s->bs.has_sel = false;
 }
 
-static void
+static uint64 **
 arms_fill(const V6Arms *a, V6Scan *s, const uint64 *mask, uint16 n_active)
 {
 	arms_select(a, s, mask, n_active);
-	sift_f2_v6_fill_cols(s, a->b->views, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
+	return sift_f2_v6_fill_cols(s, a->b->views, NULL, a->b->part != NULL ? a->b->part->part_gen : 0, a->off, a->n);
 }
 
-/* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows */
+/* the rows of the pass the arm takes: all of them when the arms have the keys of the leader, else those its gate allows (the casts of the arm raise only for those) */
 static uint16
 arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 {
 	V6Arms	   *a = ctx;
 	V6Scan	   *s = &a->s[arm];
 	uint64		allowed[SIFT_VEC_WORDS];
+	uint64	  **raises;
 	uint16		n = 0;
 
 	if (s->gate == NULL)
@@ -56,10 +57,12 @@ arms_mask(void *ctx, int arm, const uint64 *live, uint64 *out)
 		memcpy(out, live, SIFT_VEC_WORDS * sizeof(uint64));
 		return a->n_live;
 	}
-	arms_fill(a, s, live, a->n_live);
+	raises = arms_fill(a, s, live, a->n_live);
 	sift_clause_eval(s->gate, s->argvec + sift_v6_spec_fvec(s->spec), a->n, allowed);
 	for (int w = 0; w < SIFT_VEC_WORDS; w++)
 		n += pg_popcount64(out[w] = live[w] & allowed[w]);
+	arms_select(a, s, out, n);
+	sift_f2_v6_raise_kept(s, a->b->views, raises, a->off, a->n);
 	return n;
 }
 
@@ -70,7 +73,7 @@ arms_consume(void *ctx, int arm, const uint64 *mask, uint16 n_active)
 	V6Scan	   *s = &a->s[arm];
 
 	if (s->gate == NULL)
-		arms_fill(a, s, mask, n_active);
+		sift_f2_v6_raise_kept(s, a->b->views, arms_fill(a, s, mask, n_active), a->off, a->n);
 	else
 		arms_select(a, s, mask, n_active);
 	sift_f2_v6_refuse_nans(s);

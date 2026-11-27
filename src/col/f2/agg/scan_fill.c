@@ -237,11 +237,13 @@ quals_read(const V6Scan *s, const V6Col *c)
 }
 
 /* PostgreSQL's error for the first row whose cast raises that PostgreSQL casts: one the batch quals keep, or any row of a column they read themselves */
-static void
-raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, int off, int n)
+void
+sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, uint64 *const *raises, int off, int n)
 {
 	SiftBatchSel kept = s->bs;
 
+	if (raises == NULL)
+		return;
 	if (s->bq != NULL)
 		sift_v6_bq_filter(s->bq, &kept);
 	for (int k = 0; k < s->ncols; k++)
@@ -327,8 +329,9 @@ sift_f2_v6_fill_score(V6Col *c, const float4 *score, int off, int n)
 	v->sel = NULL;
 }
 
-/* The vectors of the columns of the n rows from off of a batch: the rows of the selection s->bs are the ones that matter */
-void
+/* The vectors of the columns of the n rows from off of a batch: the rows of the selection s->bs are the ones that matter. The rows whose cast raises, for sift_f2_v6_raise_kept once the rows
+ * that reach the cast are known (NULL: none) */
+uint64 **
 sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint64 part_gen, int off, int n)
 {
 	uint64	  **raises = NULL;
@@ -359,8 +362,7 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const float4 *score, uint6
 			raises[i] = rows;
 		}
 	}
-	if (raises != NULL)
-		raise_kept(s, views, raises, off, n);
+	return raises;
 }
 
 /* The columns that hold a NaN no aggregate folds, for the rows the selection s->bs keeps */

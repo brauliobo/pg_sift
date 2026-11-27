@@ -6,9 +6,11 @@ DISTINCT_LIB = agg/par/distinct.c agg/par/distinct_p2.c agg/par/keytab.c agg/dis
 SINK_LIB     = $(POOL_LIB) agg/par/wordsink.c $(GROUP_LIB) agg/pipe.c agg/star/exec.c agg/gather.c
 WINDOW_LIB   = agg/win/datebin.c agg/tseries_fast.c agg/win/x_var.c
 
-TESTS   += core/par/arena core/par/pool core/par/ring agg/inset agg/gather agg/par/rows agg/par/radix agg/par/distinct \
+TESTS   += core/par/arena core/par/pool core/par/ring agg/inset agg/gather agg/jsonb_order agg/par/rows agg/par/radix agg/par/distinct \
            agg/par/derive agg/par/tseries agg/par/star agg/par/unnest agg/par/win
 BENCHES += core/par/arena_bench agg/par/radix_bench
+AUTOSTUB += agg/jsonb_order
+XFLAGS_agg/jsonb_order = -Wno-unused-function
 
 LIB_core/par/arena        = core/par/arena.c col/compress.c
 LIB_core/par/arena_bench  = core/par/arena.c

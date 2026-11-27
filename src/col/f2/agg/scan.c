@@ -540,14 +540,14 @@ zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
-	sift_f2_v6_fill_cols(s, views, score, part_gen, off, n);
-	sift_f2_v6_refuse_nans(s);
+	sift_f2_v6_raise_kept(s, views, sift_f2_v6_fill_cols(s, views, score, part_gen, off, n), off, n);
 	if (s->bq != NULL)
 	{
 		sift_v6_bq_filter(s->bq, &s->bs);
 		if (s->bs.n_active == 0)
 			return;
 	}
+	sift_f2_v6_refuse_nans(s);
 	sift_f2_v6_derive_columns(s);
 	sift_f2_v6_bin_keys(s);
 	s->stats->rows += s->bs.n_active;

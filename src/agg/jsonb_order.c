@@ -13,6 +13,8 @@
 
 #include "agg/plan/int.h"
 #include "agg/expr/pg.h"
+#include "agg/ext.h"
+#include "agg/star/star.h"
 
 static bool
 raising_attno(int attno)
@@ -32,7 +34,7 @@ filter_is_presence(const SiftV6Spec *s, int fclause, const Bitmapset *own)
 {
 	const List *quals = list_nth(s->filter, fclause - 1);
 	const OpExpr *op = list_length(quals) == 1 ? linitial(quals) : NULL;
-	const Var  *v = op != NULL && IsA(op, OpExpr) ? linitial(op->args) : NULL;
+	const Var  *v = op != NULL && IsA(op, OpExpr) && list_length(op->args) == 2 ? linitial(op->args) : NULL;
 	const Const *c = v != NULL ? lsecond(op->args) : NULL;
 
 	return v != NULL && IsA(v, Var) && sift_v6_vatt_is_presence(v->varattno) && IsA(c, Const) && DatumGetBool(c->constvalue) && bms_num_members(own) == 1 &&
@@ -108,6 +110,17 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 	return leaves;
 }
 
+/* a join of dimensions that drops fact rows after the scan converted them: an inner, semi, anti or right one, or a condition of the join no key says */
+static bool
+join_drops_rows(const SiftV6Ext *x)
+{
+	bool		drops = x != NULL && x->resid != NIL;
+
+	for (int d = 0; x != NULL && d < x->ndims; d++)
+		drops |= x->dim[d].mode != SV6J_LEFT_EQUI && x->dim[d].mode != SV6J_FULL_EQUI;
+	return drops;
+}
+
 static double
 clause_cost(PlannerInfo *root, const RestrictInfo *ri)
 {
@@ -159,6 +172,8 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		cast = ri;
 		cast_leaves = leaves;
 	}
+	if ((cast != NULL || other != NULL) && join_drops_rows(p->xseed))
+		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
 	return list_length(s->vqual) == 1 && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
