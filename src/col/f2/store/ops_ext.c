@@ -88,6 +88,7 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.exact_values = true,
 	.row_quals = true,
 	.raise_after_quals = true,
+	.raise_in_groups = true,
 	.streams = true,
 	.table_heap_rows = true,
 	.unnest_run = sift_v6_unnest_run

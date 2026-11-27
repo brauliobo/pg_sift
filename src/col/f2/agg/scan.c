@@ -586,7 +586,18 @@ zone_offer(void *arg, const SiftPartDesc *d, const SiftF2PartZone *zone)
 static void
 fold_slice(V6Scan *s, const ColView *views, const float4 *score, const uint64 *tid, uint64 part_gen, int off, int n)
 {
-	sift_f2_v6_raise_kept(s, views, tid, sift_f2_v6_fill_cols(s, views, tid, score, part_gen, off, n), off, n);
+	uint64	  **raises = sift_f2_v6_fill_cols(s, views, tid, score, part_gen, off, n);
+	V6Raises	r;
+
+	if (s->pipe != NULL && s->emit == NULL)
+	{
+		sift_f2_v6_raises(s, raises, n, &r);
+		if (s->rows != NULL)
+			fill_tids(s, tid + off, n);
+		sift_f2_v6_pipe_raises(s, views, tid, &r, off, n);
+	}
+	else
+		sift_f2_v6_raise_kept(s, views, tid, raises, off, n);
 	if (s->bq != NULL)
 	{
 		sift_v6_bq_filter(s->bq, &s->bs);

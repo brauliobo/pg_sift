@@ -227,7 +227,7 @@ SELECT same(q) FROM unnest(ARRAY[
 --------------------------------------------------------------------------------------------------------------------------
  same node SELECT d1.name, sf.doc->>'t', count(*) FROM sf JOIN d1 ON sf.k = d1.k GROUP BY 1, 2
  same node SELECT d3.cat, sum((sf.doc->>'a')::float8), count(sf.doc->>'t') FROM sf LEFT JOIN d3 ON sf.g = d3.g GROUP BY 1
- same normal SELECT d2.tag, sf.doc->>'t', sum((sf.doc->>'a')::float8) FROM sf JOIN d2 ON sf.g = d2.g GROUP BY 1, 2
+ same node SELECT d2.tag, sf.doc->>'t', sum((sf.doc->>'a')::float8) FROM sf JOIN d2 ON sf.g = d2.g GROUP BY 1, 2
 (3 rows)
 
 -- Q-E01. unnest of an array column: NULL arrays, empty arrays, NULL elements, an array of several elements; CROSS and LEFT LATERAL

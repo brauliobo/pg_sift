@@ -1524,6 +1524,22 @@ SELECT same(q, w) FROM (VALUES
  same node18 error 22023 cannot cast jsonb string to type bigint SELECT count(*) FILTER (WHERE (metrics -> 'quality')::bigint > 1), count(*) FROM mo WHERE (metrics -> 'm_total')::int >= 0
 (4 rows)
 
+-- Q-14. A star join that drops fact rows: the cast of a member raises for a row that reaches the groups through the join, and not for a row the join drops
+CREATE TABLE mt (id int PRIMARY KEY, kind text);
+INSERT INTO mt SELECT i, 'k' || i % 3 FROM generate_series(1, 25) i;
+ANALYZE mt;
+SELECT same(q, w) FROM (VALUES
+	('SELECT t.kind, count(*), sum((o.metrics ->> ''m_total'')::float8) FROM mt t JOIN mo o ON o.id = t.id GROUP BY 1', 'node'),
+	('SELECT t.kind, count(*), sum((o.metrics ->> ''m_total'')::float8) FROM mt t JOIN mo o ON o.id = t.id + 100 GROUP BY 1', 'node'),
+	('SELECT t.kind, count(o.id), sum((o.metrics ->> ''m_total'')::float8) FROM mt t LEFT JOIN mo o ON o.id = t.id + 100 GROUP BY 1', 'node')
+) t(q, w);
+                                                                                          same                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ same node error 22P02 invalid input syntax for type double precision: "t" SELECT t.kind, count(*), sum((o.metrics ->> 'm_total')::float8) FROM mt t JOIN mo o ON o.id = t.id GROUP BY 1
+ same node ok SELECT t.kind, count(*), sum((o.metrics ->> 'm_total')::float8) FROM mt t JOIN mo o ON o.id = t.id + 100 GROUP BY 1
+ same node ok SELECT t.kind, count(o.id), sum((o.metrics ->> 'm_total')::float8) FROM mt t LEFT JOIN mo o ON o.id = t.id + 100 GROUP BY 1
+(3 rows)
+
 DROP FUNCTION same(text, text), answer(text), plan_of(text), reread(text);
-DROP TABLE mk, mn, md, mx, ms, mb, ml, mo;
+DROP TABLE mk, mn, md, mx, ms, mb, ml, mo, mt;
 DROP EXTENSION pg_sift;

@@ -265,21 +265,50 @@ raise_row(V6Scan *s, const V6Col *c, const ColView *views, const uint64 *tid, in
 
 /* the rows PostgreSQL casts the column of: those the batch quals keep, or of a column they read themselves those the quals it tests first keep */
 static const uint64 *
-cast_rows(const V6Scan *s, const V6Col *c, const SiftBatchSel *kept, const SiftBatchSel *uncast)
+cast_rows(const V6Scan *s, const V6Col *c, const V6Raises *r)
 {
-	return s->bq == NULL || quals_read(s, c) ? uncast->mask : kept->mask;
+	return s->bq == NULL || quals_read(s, c) ? r->uncast.mask : r->kept.mask;
 }
 
-/* PostgreSQL's first error for row i of the batch from off: the cast of the WHERE clause, which it tests first, else the first read of the row it keeps */
-static void
-raise_first(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, const SiftBatchSel *kept, const SiftBatchSel *uncast, int off, int i)
+static bool
+where_col(const V6Scan *s, const V6Col *c)
+{
+	return s->bq != NULL && quals_read(s, c);
+}
+
+void
+sift_f2_v6_raises(V6Scan *s, uint64 *const *cols, int n, V6Raises *r)
+{
+	r->cols = cols;
+	r->kept = r->uncast = s->bs;
+	memset(r->rows, 0, sizeof(r->rows));
+	memset(r->where, 0, sizeof(r->where));
+	if (cols == NULL)
+		return;
+	if (s->bq != NULL)
+		sift_v6_bq_filter(s->bq, &r->kept);
+	if (s->bq_uncast != NULL)
+		sift_v6_bq_filter(s->bq_uncast, &r->uncast);
+	for (int k = 0; k < s->ncols; k++)
+		for (int w = 0; cols[k] != NULL && w < (n + 63) / 64; w++)
+		{
+			const uint64 hit = cols[k][w] & cast_rows(s, &s->cols[k], r)[w];
+
+			r->rows[w] |= hit;
+			r->where[w] |= where_col(s, &s->cols[k]) ? hit : 0;
+		}
+}
+
+/* PostgreSQL's first error in row i: the cast of the WHERE clause, which it tests first, else the first read of the row it keeps */
+void
+sift_f2_v6_raise_at(V6Scan *s, const ColView *views, const uint64 *tid, const V6Raises *r, int off, int i)
 {
 	for (int where = 1; where >= 0; where--)
 		for (int k = 0; k < s->ncols; k++)
 		{
 			const V6Col *c = &s->cols[k];
 
-			if (raises[k] != NULL && (s->bq != NULL && quals_read(s, c)) == where && ((raises[k][i >> 6] & cast_rows(s, c, kept, uncast)[i >> 6]) >> (i & 63)) & 1)
+			if (r->cols[k] != NULL && where_col(s, c) == where && ((r->cols[k][i >> 6] & cast_rows(s, c, r)[i >> 6]) >> (i & 63)) & 1)
 				raise_row(s, c, views, tid, off + i);
 		}
 }
@@ -291,25 +320,69 @@ raise_first(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *r
 void
 sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n)
 {
-	SiftBatchSel kept = s->bs,
-				uncast = s->bs;
+	V6Raises	r;
 
-	if (raises == NULL)
-		return;
-	if (s->bq != NULL)
-		sift_v6_bq_filter(s->bq, &kept);
-	if (s->bq_uncast != NULL)
-		sift_v6_bq_filter(s->bq_uncast, &uncast);
+	sift_f2_v6_raises(s, raises, n, &r);
 	for (int w = 0; w < (n + 63) / 64; w++)
-	{
-		uint64		any = 0;
+		if (r.rows[w] != 0)
+			sift_f2_v6_raise_at(s, views, tid, &r, off, w * 64 + __builtin_ctzll(r.rows[w]));
+}
 
-		for (int k = 0; k < s->ncols; k++)
-			if (raises[k] != NULL)
-				any |= raises[k][w] & cast_rows(s, &s->cols[k], &kept, &uncast)[w];
-		if (any != 0)
-			raise_first(s, views, tid, raises, &kept, &uncast, off, w * 64 + __builtin_ctzll(any));
-	}
+typedef struct LateRow
+{
+	V6Scan	   *s;
+	const ColView *views;
+	const uint64 *tid;
+	const V6Raises *r;
+	int			off;
+	int			i;
+} LateRow;
+
+/* the row reached the groups through the join: its error is the statement's */
+static void
+reach_groups(void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec)
+{
+	const LateRow *lr = arg;
+
+	if (bs->n_active > 0)
+		sift_f2_v6_raise_at(lr->s, lr->views, lr->tid, lr->r, lr->off, lr->i);
+}
+
+/*
+ * The rows of a star join whose casts raise, in their order: the error of a batch qual's cast at once, as PostgreSQL tests the quals of the fact table before the join; a row whose error is a
+ * read of a row the quals keep goes alone through the pipe, and raises when it reaches the groups (a row the join drops raises nothing). The rows that did not raise leave the batch
+ */
+void
+sift_f2_v6_pipe_raises(V6Scan *s, const ColView *views, const uint64 *tid, const V6Raises *r, int off, int n)
+{
+	const SiftBatchSel all = s->bs;
+	LateRow		lr = {s, views, tid, r, off};
+	uint32		left = 0;
+
+	for (int w = 0; w < (n + 63) / 64; w++)
+		for (uint64 bits = r->rows[w]; bits != 0; bits &= bits - 1)
+		{
+			lr.i = w * 64 + __builtin_ctzll(bits);
+			if ((r->where[w] >> (lr.i & 63)) & 1)
+				sift_f2_v6_raise_at(s, views, tid, r, off, lr.i);
+			memset(s->bs.mask, 0, sizeof(s->bs.mask));
+			s->bs.mask[w] = UINT64CONST(1) << (lr.i & 63);
+			s->bs.n_active = 1;
+			s->bs.all_active = n == 1;
+			s->bs.has_sel = false;
+			sift_f2_v6_derive_columns(s);
+			sift_f2_v6_bin_keys(s);
+			s->pipe->sink = reach_groups;
+			s->pipe->sink_arg = &lr;
+			sift_v6_pipe_run(s->pipe, s->fact, &s->bs);
+			s->pipe->sink = NULL;
+			s->pipe->sink_arg = NULL;
+		}
+	s->bs = all;
+	for (int w = 0; w < (n + 63) / 64; w++)
+		left += (uint32) pg_popcount64(s->bs.mask[w] &= ~r->rows[w]);
+	s->bs.n_active = (uint16) left;
+	s->bs.all_active = left == (uint32) n;
 }
 
 /* the presence of the key on each row, from the tags of its leaf (SIFT_COLTAG_ROOTKEY: a document that is no object and holds the key as jsonb_exists finds it); a SQL NULL document has it not */

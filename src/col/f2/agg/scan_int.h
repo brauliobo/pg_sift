@@ -144,6 +144,16 @@ struct SiftV6Scan
 
 typedef struct SiftV6Scan V6Scan;
 
+/* the rows of a batch whose casts raise (sift_f2_v6_raise_kept): of each column the rows whose cast raises, the rows PostgreSQL casts them for, and the rows it meets an error in */
+typedef struct V6Raises
+{
+	uint64	   *const *cols;	/* NULL: no cast raises */
+	SiftBatchSel kept;			/* the rows the batch quals keep */
+	SiftBatchSel uncast;		/* the rows the quals PostgreSQL tests before a cast keep */
+	uint64		rows[SIFT_VEC_WORDS];
+	uint64		where[SIFT_VEC_WORDS];	/* of those, the rows whose first error is the cast of a batch qual */
+} V6Raises;
+
 /* f2_v6_scan.c: what the scan of a sift_table (f2_v6_scan_table.c) shares with the scan of an index */
 extern void sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, struct SiftV6StarRun *star);
 extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
@@ -170,6 +180,11 @@ extern SiftStrView sift_f2_v6_text_view(const ColView *cv, int row, bool table);
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
 extern uint64 **sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const float4 *score, uint64 part_gen, int off, int n);
 extern void sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n);
+/* The rows of the n rows of a batch PostgreSQL meets an error in, before the batch quals run; and its first error in row i of the batch from off */
+extern void sift_f2_v6_raises(V6Scan *s, uint64 *const *cols, int n, V6Raises *r);
+extern void sift_f2_v6_raise_at(V6Scan *s, const ColView *views, const uint64 *tid, const V6Raises *r, int off, int i);
+/* The rows of a star join whose casts raise, before the batch quals run: each error raised where PostgreSQL meets it, and the rows that raise nothing out of the batch */
+extern void sift_f2_v6_pipe_raises(V6Scan *s, const ColView *views, const uint64 *tid, const V6Raises *r, int off, int n);
 extern void sift_f2_v6_refuse_nans(const V6Scan *s);
 /* f2_v6_datum.c: the datums of a column of a type no native vector holds: the rows of mask (all n when it is NULL) made in cx */
 extern void sift_f2_v6_fill_datum(V6Col *c, const ColView *views, int off, int n, MemoryContext cx, const uint64 *mask);
