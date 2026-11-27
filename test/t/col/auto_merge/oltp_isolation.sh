@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # Spec 97 track 4: the auto-merge of a sift_col index, a sift_table and a sift BM25 index beside four OLTP writers and four SELECT readers. Per engine and per size (16384 and 32768 rows)
-# the p99 of the writers and of the readers with the merge on and a churn backlog is divided by their p99 with the merge off (R), and the stall of the double size (R - 1, at least 0.5, the noise
+# the p99 of the writers and of the readers with the merge on and a churn backlog is divided by their p99 with the merge off (R, the median of three windows), and the stall of the double size (R - 1, at least 0.5, the noise
 # of a p99) by the stall of the single one (the growth factor): a lock or a buffer flood that costs the work of the table (O(N)) doubles it, a bounded one does not. R of the writers stays within 2.5, R of the readers within 2.0, the
 # growth factor within 1.25. The pacer (sift_internal.maint_pacer) must throttle the worker while they run, give the full speed back when they end, nothing fails, and sift.check finds no problem.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
@@ -25,7 +25,7 @@ node_start iso || bail "start failed"
 sql iso "CREATE EXTENSION pg_sift CASCADE" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension setup failed"
 
 D=$(dir iso)
-QUIET_S=1 ACTIVE_S=1 CLIENTS=4
+QUIET_S=1 QUIET_RUNS=3 ACTIVE_S=1 CLIENTS=4
 CONN=(-h "$(node_sock iso)" -p "$(port iso)" -U postgres)
 DB=$(node_db iso)
 
@@ -55,6 +55,17 @@ pair() {
 	W_P99=$(p99_us "$D/$tag.w.log.*")
 	R_P99=$(p99_us "$D/$tag.r.log.*")
 }
+
+# quiet TAG SCRIPT_W SCRIPT_R: the p99 with the merge off, the median of QUIET_RUNS windows (one window of a second on a fresh table is as often the cold cache or a busy host as the engine)
+quiet() {
+	local i ws=() rs=() fails=0
+	for i in $(seq "$QUIET_RUNS"); do
+		pair "$1.$i" off "$2" "$3" $QUIET_S
+		ws+=("$W_P99") rs+=("$R_P99") fails=$((fails + FAILS))
+	done
+	W_P99=$(median "${ws[@]}") R_P99=$(median "${rs[@]}") FAILS=$fails
+}
+median() { printf '%s\n' "$@" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }'; }
 
 naps() { grep -c 'sift test: throttle nap' "$D/postgres.log"; }
 
@@ -146,7 +157,7 @@ run_engine() {
 		rows=$((16384 * scale))
 		tbl=${eng}_${scale}x
 		setup_$eng "$tbl" "$rows" >/dev/null || bail "$tbl setup failed"
-		pair "$tbl.quiet" off "$D/$tbl.w.sql" "$D/$tbl.r.sql" $QUIET_S
+		quiet "$tbl.quiet" "$D/$tbl.w.sql" "$D/$tbl.r.sql"
 		local qw=$W_P99 qr=$R_P99
 		fails=$((fails + FAILS))
 		churn_$eng "$tbl" "$rows" | sql iso >/dev/null || bail "$tbl churn failed"
