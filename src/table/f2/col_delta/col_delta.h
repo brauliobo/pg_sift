@@ -400,11 +400,13 @@ typedef struct SiftColDeltaPartMap
 extern SiftColDeltaPartMap *sift_col_delta_build_part_map(SiftColDeltaChain *chain, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
 extern void sift_col_delta_part_map_free(SiftColDeltaPartMap *map);
 
-/* The patches of a part's records, collected a page at a time (the records after byte from_used of the page's data, 0: all of them), and merged into the map of the records before them: the newest wins */
+/* The patches of a part's records, collected a page at a time (the records from byte from_used of the page's data, 0: the first, to byte to_used), and merged into the map of the records before them: the newest wins */
 typedef struct SiftColDeltaCollector SiftColDeltaCollector;
 extern SiftColDeltaCollector *sift_col_delta_collector_new(void);
 extern void sift_col_delta_collector_free(SiftColDeltaCollector *c);
-extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
+extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint32 to_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why);
+/* The byte of the page's data where the first record of part_gen from byte from_used on (a batch whole) starts whose writer keep refuses; the page's used bytes when keep takes them all */
+extern uint32 sift_col_delta_page_cut(const char *page, uint32 from_used, uint64 part_gen, bool (*keep) (void *ctx, TransactionId xmin), void *ctx);
 extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
 extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 
@@ -873,6 +875,8 @@ extern void sift_col_delta_watch_reset(SiftColDeltaWatch *w);
 extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, const SiftColDeltaPrune *prune, SiftColDeltaPageVisit visit, void *arg,
 									  SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);
+/* ... or cover the first npages of the chain only, the last of them (head, a copy) to byte used of its data */
+extern void sift_col_delta_watch_cover(SiftColDeltaWatch *w, const SiftColDeltaWatchRead *r, int npages, const char *head, uint32 used);
 extern void sift_col_delta_watch_release(SiftColDeltaWatchRead *r);
 
 /* The writers of the patches of the row, as ops judge them (sift_col_delta_writers_add) */

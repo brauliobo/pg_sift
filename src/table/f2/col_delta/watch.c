@@ -41,12 +41,19 @@ records_sum(const char *page, uint32 used)
 	return crc;
 }
 
+/* The page as seen to byte used of its data */
+static SiftColDeltaHeadSeen
+head_seen_to(const char *page, uint32 used)
+{
+	return (SiftColDeltaHeadSeen) {.gen = SiftPageGetOpaque((Page) page)->gen,.lsn = PageGetLSN((Page) page),.used = used,
+								   .crc = *(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF),.sum = records_sum(page, used),
+								   .chain_pages = sift_col_delta_page_hdr(page)->chain_pages,.prev_blk = sift_col_delta_page_hdr(page)->prev_blk};
+}
+
 SiftColDeltaHeadSeen
 sift_col_delta_head_seen(const char *page)
 {
-	return (SiftColDeltaHeadSeen) {.gen = SiftPageGetOpaque((Page) page)->gen,.lsn = PageGetLSN((Page) page),.used = SiftPageGetUsed(page),
-								   .crc = *(const uint32 *) (SiftPageGetData((Page) page) + SIFT_PAGE_CRC_OFF),.sum = records_sum(page, SiftPageGetUsed(page)),
-								   .chain_pages = sift_col_delta_page_hdr(page)->chain_pages,.prev_blk = sift_col_delta_page_hdr(page)->prev_blk};
+	return head_seen_to(page, SiftPageGetUsed(page));
 }
 
 /* The newest page of the watch as the chain has it now: the same page (its generation, depth and link), and its records the ones it held */
@@ -135,13 +142,19 @@ sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const S
 }
 
 void
+sift_col_delta_watch_cover(SiftColDeltaWatch *w, const SiftColDeltaWatchRead *r, int npages, const char *head, uint32 used)
+{
+	w->blks = w->blks == NULL ? MemoryContextAlloc(w->cx, sizeof(BlockNumber) * npages) : repalloc(w->blks, sizeof(BlockNumber) * npages);
+	for (int i = 0; i < npages; i++)
+		w->blks[i] = r->ent[i].blkno;
+	w->head = head_seen_to(head, used);
+	w->npages = npages;
+}
+
+void
 sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r)
 {
-	w->blks = w->blks == NULL ? MemoryContextAlloc(w->cx, sizeof(BlockNumber) * a->npages) : repalloc(w->blks, sizeof(BlockNumber) * a->npages);
-	for (int i = 0; i < a->npages; i++)
-		w->blks[i] = r->ent[i].blkno;
-	w->head = sift_col_delta_head_seen(r->last);
-	w->npages = a->npages;
+	sift_col_delta_watch_cover(w, r, a->npages, r->last, SiftPageGetUsed(r->last));
 }
 
 void

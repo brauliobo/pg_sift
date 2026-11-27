@@ -8,8 +8,9 @@
  * oldest transaction the snapshot can see (or, for a snapshot that takes any row, whose writer is not running) is committed for every later snapshot or never visible to any, so a map
  * made of such records alone is the map of the next statement too, and a statement that appended records to the chain only adds them: pages are only ever added at the newest end of a
  * chain, and the page that grows is compared by what it held. The records the map covers and the pages it was read from are what the slot remembers; a chain that was folded or rewritten is made
- * of pages of other generations, and the slot goes. A snapshot that cannot tell the writer of a new record yet (it is running, or it is newer than the snapshot) is not answered: its statement
- * builds the map of its own, as it did before the cache.
+ * of pages of other generations, and the slot goes. The slot covers the chain up to the first record whose writer the snapshot cannot settle yet (it is running, or newer than the snapshot):
+ * that record and every one after it are the tail, read again by each statement as its snapshot sees them and laid over the slot's map in a map of the statement's own. A tail that runs past
+ * the page of the cut (a long transaction, or many rows of the statement itself) is not answered while its first writer is unsettled: its statement builds the map of its own, as it did before the cache.
  *
  * check-memory: allow-allocs a slot holds the block list of one chain and its last page, and the budget of core/cachebudget.h bounds the slots and the maps they keep
  */
@@ -50,9 +51,8 @@ typedef struct MapSlot
 	uint64		skipped_bloom;	/* the attributes of the pages left out */
 	TransactionId max_xmin;		/* the newest writer of a record the map covers */
 	bool		has_xmin;
-	bool		declined;		/* the chain as it ended at declined_pages showed a writer the snapshot of declined_xmin could not settle */
-	int			declined_pages;
-	TransactionId declined_xmin;
+	bool		cut;			/* the watch ends at a record whose writer, cut_xmin, was not settled */
+	TransactionId cut_xmin;
 	uint64		tick;
 } MapSlot;
 
@@ -83,33 +83,42 @@ typedef struct Settled
 	SiftTblVis *vis;
 	TransactionId last;
 	bool		last_settled;
-	bool		unsettled;
 	TransactionId newest;
 	bool		any;
+	TransactionId refused;		/* the writer of the record at the cut */
 } Settled;
 
+/* The writer of a record before the cut: settled for the snapshot */
 static bool
-settled_visible(void *ctx, TransactionId xmin, CommandId cid)
+settled_keep(void *ctx, TransactionId xmin)
 {
 	Settled    *s = ctx;
 
 	if (!TransactionIdIsNormal(xmin))
-		return sift_tbl_f2_delta_visible(s->vis, xmin, cid);
+		return true;
 	if (xmin != s->last)
 	{
 		s->last = xmin;
 		s->last_settled = settled_xid(s->vis, xmin);
 	}
 	if (!s->last_settled)
-	{
-		s->unsettled = true;
-		return false;
-	}
+		s->refused = xmin;
+	return s->last_settled;
+}
+
+/* A record before the cut, as the snapshot sees it: the newest writer of the ones it sees is the one the slot will need a later snapshot to have settled */
+static bool
+settled_visible(void *ctx, TransactionId xmin, CommandId cid)
+{
+	Settled    *s = ctx;
+
 	if (!sift_tbl_f2_delta_visible(s->vis, xmin, cid))
 		return false;
-	if (!s->any || TransactionIdFollows(xmin, s->newest))
+	if (TransactionIdIsNormal(xmin) && (!s->any || TransactionIdFollows(xmin, s->newest)))
+	{
 		s->newest = xmin;
-	s->any = true;
+		s->any = true;
+	}
 	return true;
 }
 
@@ -229,7 +238,7 @@ slot_widen(MapSlot *s, uint64 want)
 	s->skipped_bloom = 0;
 	s->max_xmin = InvalidTransactionId;
 	s->has_xmin = false;
-	s->declined = false;
+	s->cut = false;
 }
 
 /* ---- the chain the slot covers, and what it gained ---- */
@@ -237,83 +246,113 @@ slot_widen(MapSlot *s, uint64 want)
 typedef enum Advance
 {
 	ADVANCED,
-	UNSETTLED,					/* a writer of a new record is not settled for the snapshot: the slot is as it was */
+	LONG_TAIL,					/* the slot covers the chain to its cut, and the tail runs past the page of the cut: no map for the statement */
 	STALE						/* the chain is not the slot's with pages added */
 } Advance;
 
+/* What a read of the chain gained: the settled records before the cut, which the slot takes, and the tail from the cut on, which only the statement does */
 typedef struct News
 {
+	Settled		st;
 	SiftColDeltaCollector *c;
+	SiftColDeltaCollector *tail;
 	SiftColDeltaOps ops;
+	SiftColDeltaOps tail_ops;
 	uint64		part_gen;
 	uint32		ngranules;
+	int			npages;			/* of the chain */
+	char	   *cut_page;		/* a copy of the page the cut is on; NULL: every record is settled */
+	uint32		cut_used;
 } News;
+
+static bool
+long_tail(const News *n)
+{
+	return n->cut_page != NULL && sift_col_delta_page_hdr(n->cut_page)->chain_pages < n->npages;
+}
 
 static bool
 collect_news(void *arg, const char *page, uint32 from_used)
 {
 	News	   *n = arg;
 	const char *why = NULL;
+	uint32		used = SiftPageGetUsed(page);
 
-	return sift_col_delta_collect_page(n->c, page, from_used, n->part_gen, n->ngranules, &n->ops, &why);
+	if (n->cut_page == NULL)
+	{
+		uint32		cut = sift_col_delta_page_cut(page, from_used, n->part_gen, settled_keep, &n->st);
+
+		if (!sift_col_delta_collect_page(n->c, page, from_used, cut, n->part_gen, n->ngranules, &n->ops, &why))
+			return false;
+		if (cut == used)
+			return true;
+		n->cut_page = palloc(BLCKSZ);
+		memcpy(n->cut_page, page, BLCKSZ);
+		n->cut_used = from_used = cut;
+	}
+	if (long_tail(n))
+		return true;
+	return sift_col_delta_collect_page(n->tail, page, from_used, used, n->part_gen, n->ngranules, &n->tail_ops, &why);
 }
 
 static void
-slot_cover(MapSlot *s, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r, SiftColDeltaPartMap *map, const Settled *st)
+slot_cover(MapSlot *s, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r, SiftColDeltaPartMap *map, const News *n)
 {
 	sift_col_delta_part_map_unref(s->map);
 	s->map = map;
-	sift_col_delta_watch_set(&s->watch, a, r);
+	if (n->cut_page != NULL)
+		sift_col_delta_watch_cover(&s->watch, r, sift_col_delta_page_hdr(n->cut_page)->chain_pages, n->cut_page, n->cut_used);
+	else
+		sift_col_delta_watch_set(&s->watch, a, r);
 	s->anchor = *a;
 	s->skipped_bloom |= r->skipped_bloom;
-	if (st->any && (!s->has_xmin || TransactionIdFollows(st->newest, s->max_xmin)))
-		s->max_xmin = st->newest;
-	s->has_xmin |= st->any;
-	s->declined = false;
+	if (n->st.any && (!s->has_xmin || TransactionIdFollows(n->st.newest, s->max_xmin)))
+		s->max_xmin = n->st.newest;
+	s->has_xmin |= n->st.any;
+	s->cut = n->cut_page != NULL;
+	s->cut_xmin = n->st.refused;
 }
 
-/* The map of the slot with the new records over it, in a context of its own that the cache adopts; the slot's own when there are none */
+/* The map with the collected records over it, in a context of its own that the cache adopts; the map itself when there are none */
 static SiftColDeltaPartMap *
-map_with(MapSlot *s, SiftColDeltaCollector *c, uint32 ngranules)
+map_with(SiftColDeltaPartMap *base, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
 {
 	MemoryContext map_cx;
 	MemoryContext old;
 	SiftColDeltaPartMap *map;
 
 	if (sift_col_delta_collected(c) == 0)
-		return sift_col_delta_part_map_ref(s->map);
+		return sift_col_delta_part_map_ref(base);
 	map_cx = sift_col_delta_part_map_context(CurrentMemoryContext);
 	old = MemoryContextSwitchTo(map_cx);
-	map = sift_col_delta_part_map_merge(s->map, c, s->part_gen, ngranules);
+	map = sift_col_delta_part_map_merge(base, c, part_gen, ngranules);
 	MemoryContextSwitchTo(old);
 	return sift_col_delta_part_map_share(map_cx, map);
 }
 
-/* The slot made to cover the chain of the anchor: its map the old one with the new records over it */
+/* The slot made to cover the chain of the anchor up to its cut, its map the old one with the settled records over it; *map, when ADVANCED: what the snapshot sees, the tail over the slot's */
 static Advance
-slot_advance(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, uint32 ngranules, const SiftColDeltaAnchor *a, SiftTblVis *vis)
+slot_advance(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, uint32 ngranules, const SiftColDeltaAnchor *a, SiftTblVis *vis, SiftColDeltaPartMap **map)
 {
-	Settled		st = {.vis = vis};
-	News		news = {.c = sift_col_delta_collector_new(),.part_gen = s->part_gen,.ngranules = ngranules};
+	News		n = {.st = {.vis = vis},.c = sift_col_delta_collector_new(),.tail = sift_col_delta_collector_new(),.part_gen = s->part_gen,.ngranules = ngranules,.npages = a->npages};
 	SiftColDeltaPrune prune = {.part_gen = s->part_gen,.attnum_bloom = s->built_bloom == ALL_ATTRS ? 0 : s->built_bloom | sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)};
 	SiftColDeltaWatchRead r;
 	Advance		adv = STALE;
 
-	sift_col_delta_ops_make(&news.ops, &st, settled_visible);
-	if (sift_col_delta_watch_read(rel, entry, a, &s->watch, &prune, collect_news, &news, &r))
+	sift_col_delta_ops_make(&n.ops, &n.st, settled_visible);
+	sift_col_delta_ops_init(&n.tail_ops, vis);
+	if (sift_col_delta_watch_read(rel, entry, a, &s->watch, &prune, collect_news, &n, &r))
 	{
-		adv = st.unsettled ? UNSETTLED : ADVANCED;
+		slot_cover(s, a, &r, map_with(s->map, n.c, s->part_gen, ngranules), &n);
+		adv = long_tail(&n) ? LONG_TAIL : ADVANCED;
 		if (adv == ADVANCED)
-			slot_cover(s, a, &r, map_with(s, news.c, ngranules), &st);
-		else if (vis->snap->snapshot_type == SNAPSHOT_MVCC)
-		{
-			s->declined = true;
-			s->declined_pages = a->npages;
-			s->declined_xmin = vis->snap->xmin;
-		}
+			*map = map_with(s->map, n.tail, s->part_gen, ngranules);
 		sift_col_delta_watch_release(&r);
 	}
-	sift_col_delta_collector_free(news.c);
+	if (n.cut_page != NULL)
+		pfree(n.cut_page);
+	sift_col_delta_collector_free(n.c);
+	sift_col_delta_collector_free(n.tail);
 	return adv;
 }
 
@@ -401,30 +440,30 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 			slot_drop(s);
 		return false;
 	}
-	if (s != NULL && s->declined && s->declined_pages == a.npages && vis->snap->snapshot_type == SNAPSHOT_MVCC && !TransactionIdFollows(vis->snap->xmin, s->declined_xmin))
+	if (s != NULL && s->cut && s->watch.npages < a.npages && !settled_xid(vis, s->cut_xmin))
 		return false;
 	if (s != NULL && (want & s->skipped_bloom) != 0)
 		slot_widen(s, want);
 	if (s == NULL)
 		s = slot_open(rel, entry->part_id, part_gen, want);
-	if (!chain_unchanged(rel, entry, s, &a, vis, looks))
-		r = slot_advance(rel, entry, s, ngranules, &a, vis);
+	if (chain_unchanged(rel, entry, s, &a, vis, looks))
+		*map = sift_col_delta_part_map_ref(s->map);
+	else
+		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
 	if (r == STALE && s->watch.npages > 0)
 	{
 		want = s->built_bloom;
 		slot_drop(s);
 		s = slot_open(rel, entry->part_id, part_gen, want);
-		r = slot_advance(rel, entry, s, ngranules, &a, vis);
+		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
 	}
-	if (r != ADVANCED)
+	if (r == STALE)
 	{
-		if (r == STALE || (s->watch.npages == 0 && !s->declined))
-			slot_drop(s);
+		slot_drop(s);
 		return false;
 	}
 	s->tick = sift_cache_tick();
-	*map = sift_col_delta_part_map_ref(s->map);
 	if ((s->map != NULL && MemoryContextMemAllocated(s->map->cx, true) > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())
 		slot_drop(s);
-	return true;
+	return r == ADVANCED;
 }

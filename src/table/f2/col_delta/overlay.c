@@ -166,8 +166,35 @@ collect_batch_row(SiftColDeltaCollector *c, const SiftColDeltaRecs *recs, const 
 	collect_done(c, h);
 }
 
+/* The records of the page from byte from_used of its data (0: the first) to byte to_used */
+static void
+recs_of_range(SiftColDeltaRecs *recs, const char *page, uint32 from_used, uint32 to_used)
+{
+	sift_col_delta_recs_init_hdrs(recs, from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page), (const uint8 *) SiftPageGetData(page) + to_used);
+}
+
+uint32
+sift_col_delta_page_cut(const char *page, uint32 from_used, uint64 part_gen, bool (*keep) (void *ctx, TransactionId xmin), void *ctx)
+{
+	SiftColDeltaRecs recs;
+	SiftColDeltaEntryHdr h;
+	const uint8 *rec,
+			   *start = NULL;
+
+	if ((sift_col_delta_page_hdr(page)->part_gen_bloom & sift_cd_part_bit(part_gen)) == 0)
+		return SiftPageGetUsed(page);
+	recs_of_range(&recs, page, from_used, SiftPageGetUsed(page));
+	for (const uint8 *at = recs.p; sift_col_delta_recs_next(&recs, &rec, &h); at = recs.left == 0 ? recs.p : start)
+	{
+		start = at;
+		if (h.part_gen == part_gen && !keep(ctx, h.xmin))
+			return (uint32) (start - (const uint8 *) SiftPageGetData(page));
+	}
+	return SiftPageGetUsed(page);
+}
+
 bool
-sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why)
+sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 from_used, uint32 to_used, uint64 part_gen, uint32 ngranules, const SiftColDeltaOps *ops, const char **why)
 {
 	SiftColDeltaRecs recs;
 	SiftColDeltaEntryHdr h;
@@ -175,7 +202,7 @@ sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *page, uint32 f
 
 	if ((sift_col_delta_page_hdr(page)->part_gen_bloom & sift_cd_part_bit(part_gen)) == 0)
 		return true;
-	sift_col_delta_recs_init_hdrs(&recs, from_used > 0 ? (const uint8 *) SiftPageGetData(page) + from_used : sift_col_delta_page_first(page), sift_col_delta_page_end(page));
+	recs_of_range(&recs, page, from_used, to_used);
 	while (sift_col_delta_recs_next(&recs, &rec, &h))
 	{
 		if (h.part_gen == part_gen && ops->visible(ops->ctx, h.xmin, h.cid))
@@ -342,7 +369,7 @@ sift_col_delta_build_part_map(SiftColDeltaChain *chain, uint64 part_gen, uint32 
 
 	*why = NULL;
 	for (int i = 0; i < chain->npages && ok; i++)
-		ok = sift_col_delta_collect_page(c, sift_col_delta_chain_page(chain, i), 0, part_gen, ngranules, ops, why);
+		ok = sift_col_delta_collect_page(c, sift_col_delta_chain_page(chain, i), 0, SiftPageGetUsed(sift_col_delta_chain_page(chain, i)), part_gen, ngranules, ops, why);
 	if (ok && c->n > 0)
 		m = sift_col_delta_part_map_merge(NULL, c, part_gen, ngranules);
 	sift_col_delta_chain_free(chain);
