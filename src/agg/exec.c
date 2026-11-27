@@ -673,6 +673,8 @@ v6_fold_stats(const V6State *st)
 	sift_stat_add(SIFT_STAT_WORKERS, ps.workers);
 	sift_stat_add(SIFT_STAT_UNITS, st->stats.grans + ps.grans_scanned);
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, st->stats.grans_preagg + ps.grans_preagg);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_ZONE, st->stats.grans_pruned_zone + ps.grans_pruned_zone);
+	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SET, st->stats.grans_pruned_skip + ps.grans_pruned_skip);
 	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, st->stats.heap_vet_rows + ps.heap_vet_rows);
 }
