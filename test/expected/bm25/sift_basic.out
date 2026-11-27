@@ -14,11 +14,11 @@ SELECT oprnamespace::regnamespace, oprname, oprleft::regtype, oprright::regtype
 (2 rows)
 
 SELECT opcname, opcdefault FROM pg_opclass
-  WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift');
+  WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift') ORDER BY opcname;
  opcname  | opcdefault 
 ----------+------------
- text_ops | t
  any_ops  | t
+ text_ops | t
 (2 rows)
 
 CREATE TABLE docs (id int, body text);

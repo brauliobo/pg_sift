@@ -3,7 +3,7 @@ SELECT amname, amtype FROM pg_am WHERE amname = 'sift';
 SELECT oprnamespace::regnamespace, oprname, oprleft::regtype, oprright::regtype
   FROM pg_operator WHERE oprname = '@@>';
 SELECT opcname, opcdefault FROM pg_opclass
-  WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift');
+  WHERE opcmethod = (SELECT oid FROM pg_am WHERE amname = 'sift') ORDER BY opcname;
 CREATE TABLE docs (id int, body text);
 CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (b = 2);
 CREATE INDEX docs_body_sift ON docs USING sift (body) WITH (k1 = 1.5, stemmer = 'english_stem');
