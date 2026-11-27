@@ -459,7 +459,6 @@ emit_tested(UnRun *u, const SiftF2ExtBatch *b, uint64 *fallback)
 	const uint32 words = (b->n + 63) / 64;
 	uint32		m = 0;
 
-	fill_flags(u, b->n);
 	for (uint32 w = 0; w < words; w++)
 	{
 		fallback[w] = u->bs.mask[w] & ~u->held[w];
@@ -505,9 +504,11 @@ run_batch(UnRun *u, const SiftF2ExtBatch *b)
 	MemoryContextReset(u->bcx);
 	compute_columns(u, b, bs);
 	elem_vecs(u, 0, es, ev);
+	if (u->ntests > 0)
+		fill_flags(u, b->n);
 	if (u->keyed && u->x->elem.group_leaf < 0)
 		sift_f2_unnest_run_keyed(u, b, NULL, fallback);
-	else if (u->ntests > 0)
+	else if (u->x->row_tests)
 		emit_tested(u, b, fallback);
 	else if (es->layout.n_parents < (uint32) n)
 		memcpy(fallback, bs->mask, words * sizeof(uint64));

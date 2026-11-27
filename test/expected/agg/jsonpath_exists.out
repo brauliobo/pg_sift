@@ -60,7 +60,8 @@ BEGIN
 	RETURN (CASE WHEN a = b THEN 'same' ELSE 'DIFFERENT' END) || ' ' || (CASE WHEN node THEN 'node' ELSE 'normal' END) || ' ' || q;
 END $$;
 -- jsonpath in a WHERE: != and == on a text member (a JSON null differs from a literal, a missing key from none), ! of them, a null literal, variables, strict mode without !, and
--- tests of two arrays of the row, each read as its own stream of elements, and EXISTS over jsonb_array_elements read by the members of the element
+-- tests of two arrays of the row, each read as its own stream of elements, EXISTS over jsonb_array_elements read by the members of the element, and tests beside the
+-- unnest of an array in FROM, whose pairs take the flags of their row
 SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') GROUP BY 1',
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind == "gift")'') GROUP BY 1',
@@ -85,7 +86,9 @@ SELECT same(q) FROM unnest(ARRAY[
 	'SELECT o.grp, count(*) FROM @T o WHERE jsonb_path_exists(o.items, ''$[*] ? (@.kind != "gift")'') AND jsonb_path_exists(o.doc, ''$[*] ? (@.q == 1)'') GROUP BY 1',
 	'SELECT o.grp, count(*) FILTER (WHERE o.items @> ''[{"kind": null}]''), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4)) FROM @T o GROUP BY 1',
 	'SELECT o.grp, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> ''kind'' = ''gift'')),
-		count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> ''kind'' IS NULL)) FROM @T o GROUP BY 1'
+		count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> ''kind'' IS NULL)) FROM @T o GROUP BY 1',
+	'SELECT o.grp, d.q, count(*), count(*) FILTER (WHERE o.items @> ''[{"kind": "gift"}]'') FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.doc) AS d(q int)
+		WHERE jsonb_path_exists(o.arr, ''$[*] ? (@.qty != 3)'') AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q8 bigint) WHERE i.q8 > o.r8) GROUP BY 1, 2'
 ]) q;
                                                                                                       same                                                                                                      
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -113,7 +116,9 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT o.grp, count(*) FILTER (WHERE o.items @> '[{"kind": null}]'), count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q int) WHERE i.q >= o.r4)) FROM @T o GROUP BY 1
  same node SELECT o.grp, count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> 'kind' = 'gift')),                                                                             +
                  count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements(o.arr) n WHERE n ->> 'kind' IS NULL)) FROM @T o GROUP BY 1
-(23 rows)
+ same node SELECT o.grp, d.q, count(*), count(*) FILTER (WHERE o.items @> '[{"kind": "gift"}]') FROM @T o CROSS JOIN LATERAL jsonb_to_recordset(o.doc) AS d(q int)                                             +
+                 WHERE jsonb_path_exists(o.arr, '$[*] ? (@.qty != 3)') AND NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(o.doc) AS i(q8 bigint) WHERE i.q8 > o.r8) GROUP BY 1, 2
+(24 rows)
 
 -- containment of a JSON null member and of values, and of several objects (each by some element, the same one or not)
 SELECT same(q) FROM unnest(ARRAY[

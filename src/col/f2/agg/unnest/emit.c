@@ -335,11 +335,10 @@ heap_next(UnRun *u, HeapElems *h, SiftVec *ev)
 	return n;
 }
 
-/* a row whose array the index cannot hold: the array of its heap row taken apart, a chunk at a time */
-void
-sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
+/* the pairs of the heap row the quals of the table keep: the array of the pairs taken apart, a chunk at a time */
+static void
+heap_pairs(UnRun *u, const SiftVec *fact, uint32 row)
 {
-	MemoryContext old = MemoryContextSwitchTo(u->rmt.root_cx);
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	HeapElems	h;
 	uint32		kept = 0;
@@ -347,34 +346,41 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 
 	for (int c = 0; c < u->nel; c++)
 		ev[c].type = u->st[0].etype[c];
-	if (heap_row_kept(u, tid))
+	heap_open(u, 0, &h);
+	MemoryContextSwitchTo(u->ccx);
+	while ((nel = heap_next(u, &h, ev)) > 0)
 	{
-		heap_open(u, 0, &h);
-		MemoryContextSwitchTo(u->ccx);
-		while ((nel = heap_next(u, &h, ev)) > 0)
-		{
-			uint64	   *keep = NULL;
-			ErrorData **late = NULL;
+		uint64	   *keep = NULL;
+		ErrorData **late = NULL;
 
-			if (u->eev != NULL)
-			{
-				keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-				sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
-			}
-			if (u->st[0].rec != NULL)
-			{
-				late = palloc0_array(ErrorData *, nel);
-				sift_v6_recfn_values(u->st[0].rec, keep, u->ccx, ev, nel, late);
-			}
-			kept += emit_chunk(u, fact, ev, keep, nel, row, late);
-		}
-		if (u->x->elem.left && kept == 0)
+		if (u->eev != NULL)
 		{
-			u->pidx[0] = row;
-			u->eidx[0] = SIFT_GATHER_NONE;
-			sift_f2_unnest_emit_pairs(u, fact, ev, 1);
+			keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
+			sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
 		}
+		if (u->st[0].rec != NULL)
+		{
+			late = palloc0_array(ErrorData *, nel);
+			sift_v6_recfn_values(u->st[0].rec, keep, u->ccx, ev, nel, late);
+		}
+		kept += emit_chunk(u, fact, ev, keep, nel, row, late);
 	}
+	if (u->x->elem.left && kept == 0)
+	{
+		u->pidx[0] = row;
+		u->eidx[0] = SIFT_GATHER_NONE;
+		sift_f2_unnest_emit_pairs(u, fact, ev, 1);
+	}
+}
+
+/* a row whose array the index cannot hold: the array of its heap row taken apart */
+void
+sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row)
+{
+	MemoryContext old = MemoryContextSwitchTo(u->rmt.root_cx);
+
+	if (heap_row_kept(u, tid))
+		heap_pairs(u, fact, row);
 	MemoryContextSwitchTo(old);
 	MemoryContextResetOnly(u->rmt.root_cx);
 }
@@ -458,7 +464,7 @@ need_met(const SiftV6XTest *xt, bool yes, bool known)
 	return xt->need == 0 || (xt->need == 1 ? yes : xt->nullable ? known && !yes : !yes);
 }
 
-/* a row the leaves cannot hold: its tests from the heap row, the pair it gives when the statement keeps it */
+/* a row the leaves cannot hold: its tests from the heap row, and when the statement keeps it the pair it is (row_tests) or the pairs of its elements, with its flags */
 void
 sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
 {
@@ -476,12 +482,14 @@ sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
 		u->flag_data[k][row] = yes[k];
 		u->flag_valid[k][row >> 6] |= (uint64) (!u->x->test[k].nullable || known[k]) << (row & 63);
 	}
-	if (kept)
+	if (kept && u->x->row_tests)
 	{
 		u->pidx[0] = row;
 		u->eidx[0] = SIFT_GATHER_NONE;
 		sift_f2_unnest_emit_pairs(u, u->fv, NULL, 1);
 	}
+	else if (kept)
+		heap_pairs(u, u->fv, row);
 	MemoryContextSwitchTo(old);
 	MemoryContextResetOnly(u->rmt.root_cx);
 }

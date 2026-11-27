@@ -391,25 +391,27 @@ seed_streams(V6Plan *p, const SiftV6TestStreams *st)
 	return true;
 }
 
-/* the quals of the sub-selects, which need the Ext of the plan for the columns of the elements of their stream */
+/* the quals of the sub-selects, which need the Ext of the plan for the columns of the elements of their stream; the relation of the plan's own elements is its again after */
 static bool
 build_exists_quals(V6Plan *p)
 {
+	RelOptInfo *own = p->elem_rel;
+	bool		ok = true;
+
 	foreach_ptr(TestBuilt, b, p->tests)
 	{
 		p->elem_rel = b->elem_rel;
 		p->elem_map = b->map;
 		p->elem_stream = b->test.stream;
-		if (b->cand->sp != NULL && !exists_quals(p, b))
-			return false;
+		ok = ok && (b->cand->sp == NULL || exists_quals(p, b));
 	}
-	p->elem_rel = NULL;
+	p->elem_rel = own;
 	p->elem_map = NULL;
 	p->elem_stream = 0;
-	return true;
+	return ok;
 }
 
-static void
+static bool
 store_tests(V6Plan *p)
 {
 	SiftV6Ext  *x = p->xseed;
@@ -419,6 +421,16 @@ store_tests(V6Plan *p)
 		x->test[x->ntests++] = b->test;
 		x->test_quals = lappend(x->test_quals, list_make3(b->cand->sp != NULL ? list_make1(b->quals) : b->parts, b->heap != NULL ? list_make1(b->heap) : NIL, b->ors));
 	}
+	return true;
+}
+
+bool
+sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra)
+{
+	SiftV6TestStreams st = {.n = 1,.nfixed = 1,.rte = {*own}};
+	const List *cands = collect_cands(p->root, p->rel, out, extra);
+
+	return cands == NIL || (p->ops->jsonb != NULL && p->ops->jsonb->streams && build_tests(p, cands, &st) && seed_streams(p, &st) && build_exists_quals(p) && store_tests(p));
 }
 
 Expr *
@@ -468,8 +480,8 @@ try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraDa
 	if (ok)
 	{
 		p.xseed->row_tests = true;
-		store_tests(&p);
-		ok = sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
+		ok = store_tests(&p);
+		ok = ok && sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
 	}
 	if (ok)
 		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, exists_cost(rel), rel->rows);
