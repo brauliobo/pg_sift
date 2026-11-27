@@ -320,6 +320,12 @@ add_push_path(PlannerInfo *root, const PushJoin *j, RelOptInfo *out, void *extra
 	add_path(out, &cp->path);
 }
 
+bool
+sift_v6_push_small_side(PlannerInfo *root, RelOptInfo *rel)
+{
+	return plain_table(root, rel) && rel->cheapest_total_path != NULL && rel->rows <= PUSH_ROWS_MAX;
+}
+
 /* The keys a query passes own this many times the mean rows of a key and no fewer than twice it: a statistics sample and a mild unevenness of a column are not skew */
 #define PUSH_SKEW_FLOOR	2.0
 
@@ -392,8 +398,7 @@ sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo
 	{
 		PushJoin	j = {.fact = root->simple_rel_array[swap ? b : a],.dim = root->simple_rel_array[swap ? a : b]};
 
-		if (j.fact == NULL || j.dim == NULL || !plain_table(root, j.fact) || !plain_table(root, j.dim) || j.dim->cheapest_total_path == NULL ||
-			j.dim->rows > PUSH_ROWS_MAX || !find_join(root, &j) || !(j.semi ? semi_inner(&j) : dim_unique(&j)))
+		if (j.fact == NULL || j.dim == NULL || !plain_table(root, j.fact) || !sift_v6_push_small_side(root, j.dim) || !find_join(root, &j) || !(j.semi ? semi_inner(&j) : dim_unique(&j)))
 			continue;
 		j.dim_path = sift_v6_dim_path(root, j.fact, j.dim, j.semi ? SV6J_SEMI_EQUI : SV6J_INNER_EQUI, 1, &j.fact_attno, (const Var *const *) &j.dim_var);
 		price_probes(root, &j, input_rel, out);

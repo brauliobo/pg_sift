@@ -16,6 +16,8 @@
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_push_plan_methods;
 
+/* the relation is one whose join column the push makes the key list of the scan: a table of few rows */
+extern bool sift_v6_push_small_side(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 
 

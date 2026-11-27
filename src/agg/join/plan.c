@@ -29,6 +29,7 @@
 #include "agg/ext.h"
 #include "agg/exists_plan.h"
 #include "agg/join/plan.h"
+#include "agg/join/push.h"
 #include "agg/source_rel.h"
 #include "agg/join/shape.h"
 #include "agg/lateral_plan.h"
@@ -555,12 +556,9 @@ int_key(Oid typid)
 	return cls == SV6C_I32 || cls == SV6C_I64;
 }
 
-/*
- * the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the integer keys of a semi join into the scan (v6_join_push.h) the one
- * of a table, not of a sub-select
- */
+/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys into the scan (join/push.h) a semi join of a small table */
 static bool
-needs_lookup(const SiftV6JoinShape *sh)
+needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh)
 {
 	if (sh->elem != NULL || sh->resid != NIL)
 		return true;
@@ -570,7 +568,7 @@ needs_lookup(const SiftV6JoinShape *sh)
 
 		if (d->lateral || d->nkeys == 0 || d->on != NIL)
 			return true;
-		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || d->rel->rtekind != RTE_RELATION))
+		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || !sift_v6_push_small_side(root, d->rel)))
 			return true;
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
@@ -621,7 +619,7 @@ shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	if (!make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
 		!sift_v6_exists_main_unique(root, sh))
 		return false;
-	return pairs_ok(sh) && needs_lookup(sh) && preserved_ok(sh);
+	return pairs_ok(sh) && needs_lookup(root, sh) && preserved_ok(sh);
 }
 
 static bool
