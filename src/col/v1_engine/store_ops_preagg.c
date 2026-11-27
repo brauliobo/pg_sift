@@ -670,6 +670,7 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 		return false;
 	done = v == V_NONE || (c->nkeys == 0 && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live));
 	c->stats->grans_preagg += done;
+	c->stats->grans_preagg_delta += done && live.nrow < unit->nrow;
 	return done;
 }
 

@@ -427,6 +427,7 @@ TESTING_REGRESS += col/merge/keys
 TESTING_REGRESS += col/merge/overlay_runs
 TESTING_REGRESS += col/merge/partition_setting
 TESTING_REGRESS += col/merge/settled
+TESTING_REGRESS += col/net_elements
 TESTING_REGRESS += col/option_names
 TESTING_REGRESS += col/option_names_bytes
 TESTING_REGRESS += col/order/%
