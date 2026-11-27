@@ -212,6 +212,20 @@ arm_why(const ArmPrice *a)
 	return isinf(a->scan) ? a->why : AGG_REFUSE_COST;
 }
 
+/* the plan reads the scope relation where no site of the planner sees it: that is why the statement reads no scope summary, whatever the planner named */
+static void
+why_scope_placed(const PlannedStmt *ps)
+{
+	const char *why = sift_v6_scope_placed(ps);
+	ArmPrice   *a;
+
+	if (why == NULL)
+		return;
+	a = arm_of("scope");
+	a->why = AGG_REFUSE_SCOPE;
+	a->detail = MemoryContextStrdup(why_cx, why);
+}
+
 /* the row of the scope arm when no site of the planner named why the statement reads no scope summary */
 static void
 why_scope_arm(const PlannedStmt *ps)
@@ -519,6 +533,7 @@ why_execute(const ExecuteStmt *es, const char *sql)
 			if (ps->commandType == CMD_SELECT)
 			{
 				ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+				why_scope_placed(ps);
 				if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 					why_index_arm(copyObject(psrc->raw_parse_tree), psrc->query_string, ps, psrc->param_types, psrc->num_params, params);
 				why_scope_arm(ps);
@@ -565,6 +580,7 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 				if (ps->commandType == CMD_SELECT)
 				{
 					ExecCheckPermissions(ps->rtable, ps->permInfos, true);
+					why_scope_placed(ps);
 					if (!why_arms() && tuplestore_tuple_count(why_store) == 0)
 						why_index_arm(again_raw, sql, ps, NULL, 0, NULL);
 					why_scope_arm(ps);

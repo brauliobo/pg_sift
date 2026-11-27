@@ -1,7 +1,8 @@
 /*
  * agg/scope/show.c - the EXPLAIN lines every node of the scope aggregate prints, whatever format reads it (docs/SCOPES.md): the relation and the scope it reads (Scope Index), the keys (Scope
- * Keys: their number when the statement names them by constants, else the expression the node evaluates when it starts, and in a run the number it had), whether a fact counts once or once
- * for each pair of its member (Scope Semantics), and in a run why the node ran the join instead (Scope Fallback).
+ * Keys: their number when the statement names them by constants, else the expression the node evaluates when it starts, and in a run the number it had; all: every key of the summary),
+ * whether a fact counts once or once for each pair of its member (Scope Semantics), the scope whose key the statement groups by (Scope Group Key), and in a run why the node ran the join
+ * instead (Scope Fallback).
  */
 #include "postgres.h"
 
@@ -61,8 +62,7 @@ show_keys(const ScopeShow *s, PlanState *ps, List *ancestors, ExplainState *es)
 
 	if (s->key == NULL)
 	{
-		if (s->nkeys >= 0)
-			ExplainPropertyInteger("Scope Keys", NULL, s->nkeys, es);
+		ExplainPropertyText("Scope Keys", "all", es);
 		return;
 	}
 	if (IsA(s->key, Const))
@@ -80,6 +80,8 @@ sift_v6_scope_show(const ScopeShow *s, PlanState *ps, List *ancestors, ExplainSt
 	ExplainPropertyText("Scope Index", psprintf("%s (%s)", RelationGetRelationName(s->rel), scope_name(s->rel, s->spec->ord)), es);
 	show_keys(s, ps, ancestors, es);
 	ExplainPropertyText("Scope Semantics", s->spec->once ? "once" : "per pair", es);
+	if (s->spec->by_key || s->spec->grouped_const)
+		ExplainPropertyText("Scope Group Key", scope_name(s->rel, s->spec->ord), es);
 	if (s->fallback != NULL)
 		ExplainPropertyText("Scope Fallback", s->fallback, es);
 }

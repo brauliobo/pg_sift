@@ -69,7 +69,7 @@ $$;
 SELECT 'built' AS state, v.* FROM verdict() v;
  state | reads | differ | scope_reads | delta 
 -------+-------+--------+-------------+-------
- built |    40 |      0 |          24 |     0
+ built |    40 |      0 |          26 |     0
 (1 row)
 
 -- each state: what it does first (the summary is built after it), the edit, and the reads
@@ -107,7 +107,7 @@ INSERT INTO grants VALUES (101, 3, 30, NULL, NULL)
 SELECT 1 AS n, 'a grant to a member' AS state, v.* FROM verdict() v
  n |        state        | reads | differ | scope_reads | delta 
 ---+---------------------+-------+--------+-------------+-------
- 1 | a grant to a member |    40 |      0 |          24 |     3
+ 1 | a grant to a member |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -115,7 +115,7 @@ UPDATE grants SET deleted_at = now() WHERE id = 7
 SELECT 2 AS n, 'a grant to a member soft deleted' AS state, v.* FROM verdict() v
  n |              state               | reads | differ | scope_reads | delta 
 ---+----------------------------------+-------+--------+-------------+-------
- 2 | a grant to a member soft deleted |    40 |      0 |          24 |     3
+ 2 | a grant to a member soft deleted |    40 |      0 |          26 |     4
 (1 row)
 
 UPDATE grants SET deleted_at = now() WHERE id = 9
@@ -124,7 +124,7 @@ UPDATE grants SET deleted_at = NULL WHERE id = 9
 SELECT 3 AS n, 'a grant to a member restored' AS state, v.* FROM verdict() v
  n |            state             | reads | differ | scope_reads | delta 
 ---+------------------------------+-------+--------+-------------+-------
- 3 | a grant to a member restored |    40 |      0 |          24 |     3
+ 3 | a grant to a member restored |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -132,7 +132,7 @@ DELETE FROM grants WHERE id = 8
 SELECT 4 AS n, 'a grant to a member deleted' AS state, v.* FROM verdict() v
  n |            state            | reads | differ | scope_reads | delta 
 ---+-----------------------------+-------+--------+-------------+-------
- 4 | a grant to a member deleted |    40 |      0 |          24 |     3
+ 4 | a grant to a member deleted |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -140,7 +140,7 @@ UPDATE grants SET dim_a_id = NULL, group_id = 6 WHERE id = 13
 SELECT 5 AS n, 'a grant moved from a member to a group' AS state, v.* FROM verdict() v
  n |                 state                  | reads | differ | scope_reads | delta 
 ---+----------------------------------------+-------+--------+-------------+-------
- 5 | a grant moved from a member to a group |    40 |      0 |          24 |     3
+ 5 | a grant moved from a member to a group |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -148,7 +148,7 @@ UPDATE grants SET group_id = NULL, dim_a_id = 41 WHERE id = 14
 SELECT 6 AS n, 'a grant moved from a group to a member' AS state, v.* FROM verdict() v
  n |                 state                  | reads | differ | scope_reads | delta 
 ---+----------------------------------------+-------+--------+-------------+-------
- 6 | a grant moved from a group to a member |    40 |      0 |          24 |     3
+ 6 | a grant moved from a group to a member |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -156,7 +156,7 @@ INSERT INTO grants VALUES (102, 2, NULL, 1, NULL)
 SELECT 7 AS n, 'a grant to a group' AS state, v.* FROM verdict() v
  n |       state        | reads | differ | scope_reads | delta 
 ---+--------------------+-------+--------+-------------+-------
- 7 | a grant to a group |    40 |      0 |          24 |     3
+ 7 | a grant to a group |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -164,7 +164,7 @@ UPDATE grants SET deleted_at = now() WHERE id = 5
 SELECT 8 AS n, 'a grant to a group soft deleted' AS state, v.* FROM verdict() v
  n |              state              | reads | differ | scope_reads | delta 
 ---+---------------------------------+-------+--------+-------------+-------
- 8 | a grant to a group soft deleted |    40 |      0 |          24 |     3
+ 8 | a grant to a group soft deleted |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -172,7 +172,7 @@ UPDATE grants SET deleted_at = NULL WHERE id = 10
 SELECT 9 AS n, 'a grant to a group restored' AS state, v.* FROM verdict() v
  n |            state            | reads | differ | scope_reads | delta 
 ---+-----------------------------+-------+--------+-------------+-------
- 9 | a grant to a group restored |    40 |      0 |          24 |     3
+ 9 | a grant to a group restored |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -180,7 +180,7 @@ INSERT INTO memberships (group_id, dim_a_id) VALUES (3, 59)
 SELECT 10 AS n, 'a membership' AS state, v.* FROM verdict() v
  n  |    state     | reads | differ | scope_reads | delta 
 ----+--------------+-------+--------+-------------+-------
- 10 | a membership |    40 |      0 |          24 |     3
+ 10 | a membership |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -188,7 +188,7 @@ UPDATE memberships SET deleted_at = now() WHERE group_id = 3 AND dim_a_id = 8
 SELECT 11 AS n, 'a membership soft deleted' AS state, v.* FROM verdict() v
  n  |           state           | reads | differ | scope_reads | delta 
 ----+---------------------------+-------+--------+-------------+-------
- 11 | a membership soft deleted |    40 |      0 |          24 |     3
+ 11 | a membership soft deleted |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -196,7 +196,7 @@ UPDATE memberships SET deleted_at = NULL WHERE group_id = 6 AND dim_a_id = 11
 SELECT 12 AS n, 'a membership restored' AS state, v.* FROM verdict() v
  n  |         state         | reads | differ | scope_reads | delta 
 ----+-----------------------+-------+--------+-------------+-------
- 12 | a membership restored |    40 |      0 |          24 |     6
+ 12 | a membership restored |    40 |      0 |          26 |     8
 (1 row)
 
 REINDEX INDEX facts_col
@@ -204,7 +204,7 @@ UPDATE memberships SET group_id = 5 WHERE group_id = 3 AND dim_a_id = 14
 SELECT 13 AS n, 'a member moved to another group' AS state, v.* FROM verdict() v
  n  |              state              | reads | differ | scope_reads | delta 
 ----+---------------------------------+-------+--------+-------------+-------
- 13 | a member moved to another group |    40 |      0 |          24 |     6
+ 13 | a member moved to another group |    40 |      0 |          26 |     7
 (1 row)
 
 REINDEX INDEX facts_col
@@ -212,7 +212,7 @@ UPDATE grants SET deleted_at = now() WHERE id = 1
 SELECT 14 AS n, 'a member reached by two paths loses one' AS state, v.* FROM verdict() v
  n  |                  state                  | reads | differ | scope_reads | delta 
 ----+-----------------------------------------+-------+--------+-------------+-------
- 14 | a member reached by two paths loses one |    40 |      0 |          24 |     3
+ 14 | a member reached by two paths loses one |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -220,7 +220,7 @@ UPDATE memberships SET deleted_at = now() WHERE dim_a_id = 5; UPDATE grants SET 
 SELECT 15 AS n, 'a member reached by two paths loses both' AS state, v.* FROM verdict() v
  n  |                  state                   | reads | differ | scope_reads | delta 
 ----+------------------------------------------+-------+--------+-------------+-------
- 15 | a member reached by two paths loses both |    40 |      0 |          24 |     6
+ 15 | a member reached by two paths loses both |    40 |      0 |          26 |     8
 (1 row)
 
 REINDEX INDEX facts_col
@@ -228,7 +228,7 @@ DELETE FROM grants WHERE id = 3; INSERT INTO grants VALUES (103, 1, NULL, 6, NUL
 SELECT 16 AS n, 'a grant to a group deleted and added again' AS state, v.* FROM verdict() v
  n  |                   state                    | reads | differ | scope_reads | delta 
 ----+--------------------------------------------+-------+--------+-------------+-------
- 16 | a grant to a group deleted and added again |    40 |      0 |          24 |     3
+ 16 | a grant to a group deleted and added again |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -236,7 +236,7 @@ WITH d AS (DELETE FROM memberships WHERE group_id = 2 RETURNING dim_a_id) INSERT
 SELECT 17 AS n, 'a group emptied and filled again' AS state, v.* FROM verdict() v
  n  |              state               | reads | differ | scope_reads | delta 
 ----+----------------------------------+-------+--------+-------------+-------
- 17 | a group emptied and filled again |    40 |      0 |          24 |     3
+ 17 | a group emptied and filled again |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -244,7 +244,7 @@ UPDATE grants SET note = 'n' WHERE id IN (2, 4, 6); UPDATE memberships SET note 
 SELECT 18 AS n, 'a column no btree holds (HOT)' AS state, v.* FROM verdict() v
  n  |             state             | reads | differ | scope_reads | delta 
 ----+-------------------------------+-------+--------+-------------+-------
- 18 | a column no btree holds (HOT) |    40 |      0 |          24 |     0
+ 18 | a column no btree holds (HOT) |    40 |      0 |          26 |     0
 (1 row)
 
 REINDEX INDEX facts_col
@@ -252,7 +252,7 @@ BEGIN; INSERT INTO grants VALUES (104, 5, 20, NULL, NULL); UPDATE memberships SE
 SELECT 19 AS n, 'a rolled back transaction' AS state, v.* FROM verdict() v
  n  |           state           | reads | differ | scope_reads | delta 
 ----+---------------------------+-------+--------+-------------+-------
- 19 | a rolled back transaction |    40 |      0 |          24 |     0
+ 19 | a rolled back transaction |    40 |      0 |          26 |     0
 (1 row)
 
 REINDEX INDEX facts_col
@@ -260,7 +260,7 @@ BEGIN; SAVEPOINT s; UPDATE memberships SET group_id = 6 WHERE group_id = 4 AND d
 SELECT 20 AS n, 'a rolled back savepoint' AS state, v.* FROM verdict() v
  n  |          state          | reads | differ | scope_reads | delta 
 ----+-------------------------+-------+--------+-------------+-------
- 20 | a rolled back savepoint |    40 |      0 |          24 |     0
+ 20 | a rolled back savepoint |    40 |      0 |          26 |     0
 (1 row)
 
 REINDEX INDEX facts_col
@@ -268,7 +268,7 @@ BEGIN; SAVEPOINT s; INSERT INTO grants VALUES (106, 6, NULL, 4, NULL); RELEASE s
 SELECT 21 AS n, 'a released savepoint' AS state, v.* FROM verdict() v
  n  |        state         | reads | differ | scope_reads | delta 
 ----+----------------------+-------+--------+-------------+-------
- 21 | a released savepoint |    40 |      0 |          24 |     3
+ 21 | a released savepoint |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -278,7 +278,7 @@ DETAIL:  Key (dim_a_id, tenant_id)=(31, 3) already exists.
 SELECT 22 AS n, 'a statement that fails' AS state, v.* FROM verdict() v
  n  |         state          | reads | differ | scope_reads | delta 
 ----+------------------------+-------+--------+-------------+-------
- 22 | a statement that fails |    40 |      0 |          24 |     0
+ 22 | a statement that fails |    40 |      0 |          26 |     0
 (1 row)
 
 REINDEX INDEX facts_col
@@ -286,7 +286,7 @@ INSERT INTO grants VALUES (109, 1, NULL, 1, NULL)
 SELECT 23 AS n, 'a grant to a group of dim_b that are also granted directly' AS state, v.* FROM verdict() v
  n  |                           state                            | reads | differ | scope_reads | delta 
 ----+------------------------------------------------------------+-------+--------+-------------+-------
- 23 | a grant to a group of dim_b that are also granted directly |    40 |      0 |          24 |     3
+ 23 | a grant to a group of dim_b that are also granted directly |    40 |      0 |          26 |     4
 (1 row)
 
 -- the edits of the whole run are in the pairs now: a rebuild has no change since it
@@ -294,7 +294,7 @@ REINDEX INDEX facts_col;
 SELECT 'rebuilt' AS state, v.* FROM verdict() v;
   state  | reads | differ | scope_reads | delta 
 ---------+-------+--------+-------------+-------
- rebuilt |    40 |      0 |          24 |     0
+ rebuilt |    40 |      0 |          26 |     0
 (1 row)
 
 -- the changes of this transaction are in its own reads before it commits, and gone with a rollback
@@ -304,14 +304,14 @@ INSERT INTO grants VALUES (110, 2, 33, NULL, NULL);
 SELECT 'own transaction' AS state, v.* FROM verdict() v;
       state      | reads | differ | scope_reads | delta 
 -----------------+-------+--------+-------------+-------
- own transaction |    40 |      0 |          24 |     9
+ own transaction |    40 |      0 |          26 |    11
 (1 row)
 
 ROLLBACK;
 SELECT 'after the rollback' AS state, v.* FROM verdict() v;
        state        | reads | differ | scope_reads | delta 
 --------------------+-------+--------+-------------+-------
- after the rollback |    40 |      0 |          24 |     0
+ after the rollback |    40 |      0 |          26 |     0
 (1 row)
 
 -- facts written after the build are in a write buffer, then in the parts of a promotion, then merged: with pair edits in between
@@ -320,7 +320,7 @@ UPDATE memberships SET group_id = 4 WHERE group_id = 5 AND dim_a_id = 41;
 SELECT 'facts in a write buffer' AS state, v.* FROM verdict() v;
           state          | reads | differ | scope_reads | delta 
 -------------------------+-------+--------+-------------+-------
- facts in a write buffer |    40 |      0 |          24 |    18
+ facts in a write buffer |    40 |      0 |          26 |    20
 (1 row)
 
 SELECT sift.col_promote('facts_col') >= 0 AS promoted;
@@ -332,7 +332,7 @@ SELECT sift.col_promote('facts_col') >= 0 AS promoted;
 SELECT 'promoted' AS state, v.* FROM verdict() v;
   state   | reads | differ | scope_reads | delta 
 ----------+-------+--------+-------------+-------
- promoted |    40 |      0 |          24 |     0
+ promoted |    40 |      0 |          26 |     0
 (1 row)
 
 UPDATE grants SET deleted_at = now() WHERE id = 14;
@@ -345,7 +345,7 @@ SELECT sift.col_merge('facts_col', true) >= 0 AS merged;
 SELECT 'merged' AS state, v.* FROM verdict() v;
  state  | reads | differ | scope_reads | delta 
 --------+-------+--------+-------------+-------
- merged |    40 |      0 |          24 |     0
+ merged |    40 |      0 |          26 |     0
 (1 row)
 
 SELECT sift.col_verify('facts_col', true);
@@ -373,7 +373,7 @@ INSERT INTO grants VALUES (201, 5, 33, NULL, NULL)
 SELECT 1 AS n, 'a grant to a member, workers allowed' AS state, v.* FROM verdict() v
  n |                state                 | reads | differ | scope_reads | delta 
 ---+--------------------------------------+-------+--------+-------------+-------
- 1 | a grant to a member, workers allowed |    40 |      0 |          24 |     3
+ 1 | a grant to a member, workers allowed |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -381,7 +381,7 @@ INSERT INTO grants VALUES (202, 5, NULL, 1, NULL)
 SELECT 2 AS n, 'a grant to a group, workers allowed' AS state, v.* FROM verdict() v
  n |                state                | reads | differ | scope_reads | delta 
 ---+-------------------------------------+-------+--------+-------------+-------
- 2 | a grant to a group, workers allowed |    40 |      0 |          24 |     3
+ 2 | a grant to a group, workers allowed |    40 |      0 |          26 |     5
 (1 row)
 
 REINDEX INDEX facts_col
@@ -389,7 +389,7 @@ UPDATE memberships SET deleted_at = now() WHERE group_id = 2 AND dim_a_id = 1
 SELECT 3 AS n, 'a membership soft deleted, workers allowed' AS state, v.* FROM verdict() v
  n |                   state                    | reads | differ | scope_reads | delta 
 ---+--------------------------------------------+-------+--------+-------------+-------
- 3 | a membership soft deleted, workers allowed |    40 |      0 |          24 |     3
+ 3 | a membership soft deleted, workers allowed |    40 |      0 |          26 |     4
 (1 row)
 
 REINDEX INDEX facts_col
@@ -397,7 +397,7 @@ INSERT INTO grants VALUES (203, 6, 34, NULL, NULL); INSERT INTO grants VALUES (2
 SELECT 4 AS n, 'the three at once, workers allowed' AS state, v.* FROM verdict() v
  n |               state                | reads | differ | scope_reads | delta 
 ---+------------------------------------+-------+--------+-------------+-------
- 4 | the three at once, workers allowed |    40 |      0 |          24 |     6
+ 4 | the three at once, workers allowed |    40 |      0 |          26 |     7
 (1 row)
 
 RESET max_parallel_workers_per_gather;

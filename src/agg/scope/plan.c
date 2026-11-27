@@ -317,12 +317,19 @@ order_like_target(ScopePlan *p, const PathTarget *target)
 static bool
 compile_target(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!(compile_groups(p) && sift_v6_scope_key_filter(p) && compile_fact_quals(p) && (p->spec.by_key || p->spec.key_given) && (!p->spec.grouped_const || p->spec.key_given) &&
-		  (!p->spec.key_array || p->spec.by_key || !p->spec.by_month) &&
+	if (!(compile_groups(p) && sift_v6_scope_key_filter(p) && compile_fact_quals(p) && (!p->spec.grouped_const || p->spec.key_given) &&
+		  ((p->spec.key_given && !p->spec.key_array) || p->spec.by_key || !p->spec.by_month) &&
 		  compile_exprs(p, (Node *) out->reltarget->exprs) && (extra->havingQual == NULL || compile_exprs(p, extra->havingQual))))
 		return false;
 	order_like_target(p, out->reltarget);
 	return true;
+}
+
+/* The tables a join reads, without the outer joins PostgreSQL numbers among its relids */
+static Relids
+base_relids(const PlannerInfo *root, const RelOptInfo *rel)
+{
+	return bms_intersect(rel->relids, root->all_baserels);
 }
 
 static bool
@@ -331,7 +338,7 @@ shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
 	Query	   *parse = root->parse;
 
 	return sift_enable_agg && parse->hasAggs && !parse->hasRowSecurity && root->qual_security_level == 0 && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
-		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(input_rel->relids) == 2;
+		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(base_relids(root, input_rel)) == 2;
 }
 
 static Relation
@@ -358,7 +365,7 @@ reset_spec(ScopePlan *p, int ord)
 static bool
 compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
-	if (!sift_v6_scope_key_filter(p) || !p->spec.key_given)
+	if (!sift_v6_scope_key_filter(p) || !sift_v6_scope_key_bound(p))
 		return false;
 	p->spec = (ScopeSpec) {.relid = p->spec.relid,.is_table = p->spec.is_table,.ord = p->spec.ord,.key_type = p->spec.key_type,.key_given = true,.key_array = p->spec.key_array,.scan = true,
 	.member_col = p->layout.member_col};
@@ -522,7 +529,7 @@ compile_topk(ScopePlan *p, const PathTarget *target)
 	{
 		reset_spec(p, ord);
 		p->v6_tlist = NIL;
-		ok = sift_v6_scope_matches(p, ord) && sift_v6_scope_key_filter(p) && p->spec.key_given && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
+		ok = sift_v6_scope_matches(p, ord) && sift_v6_scope_key_filter(p) && sift_v6_scope_key_bound(p) && !p->spec.key_array && compile_fact_quals(p) && !p->spec.ranged &&
 			topk_order(p, linitial_node(SortGroupClause, p->root->parse->sortClause)) &&
 			(list_length(p->root->parse->sortClause) == 1 || topk_tie(p, lsecond_node(SortGroupClause, p->root->parse->sortClause))) && topk_output(p, target) && sift_v6_scope_semi_ok(p);
 	}
@@ -711,7 +718,7 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	CustomPath *cp = makeNode(CustomPath);
 	List	   *prices = NIL;
 	const double groups = p->spec.scan ? (p->v6.nkeys == 0 ? 1.0 : clamp_row_est(Min(p->fact->rows, 1000.0))) :
-		clamp_row_est((p->spec.key_array && p->spec.by_key ? 10.0 : p->spec.key_given ? 1.0 : Min(p->pairs->tuples, 1000.0)) * (p->spec.by_month ? 24 : 1));
+		clamp_row_est((!p->spec.by_key || (p->spec.key_given && !p->spec.key_array) ? 1.0 : p->spec.key_given ? 10.0 : Min(p->pairs->tuples, 1000.0)) * (p->spec.by_month ? 24 : 1));
 
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = out;
@@ -756,6 +763,13 @@ sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *
 	return ok;
 }
 
+/* The facts of an outer or anti join, a plain table: only far enough to name the scope that refuses the join */
+static bool
+fact_outer_ok(PlannerInfo *root, RelOptInfo *rel)
+{
+	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL;
+}
+
 void
 sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
 {
@@ -765,13 +779,14 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 
 	if (!sift_agg_scope || !shape_ok(root, input_rel) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
 		return;
-	a = bms_next_member(input_rel->relids, -1);
-	b = bms_next_member(input_rel->relids, a);
+	a = bms_next_member(base_relids(root, input_rel), -1);
+	b = bms_next_member(base_relids(root, input_rel), a);
 	for (int swap = 0; swap < 2; swap++)
 	{
-		ScopePlan	p = {.scope = scope,.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b]};
+		ScopePlan	p = {.scope = scope,.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b],.outer = sift_v6_scope_outer_join(root)};
 
-		if (p.fact == NULL || p.pairs == NULL || !sift_v6_scope_plain_relation(root, p.fact) || !sift_v6_scope_pairs_ok(&p) || !sift_v6_scope_pairs_joined(&p))
+		if (p.fact == NULL || p.pairs == NULL || !(p.outer ? fact_outer_ok(root, p.fact) : sift_v6_scope_plain_relation(root, p.fact)) || !sift_v6_scope_pairs_ok(&p) ||
+			!sift_v6_scope_pairs_joined(&p))
 			continue;
 		if (table_usable(&p) && compile_on(&p, (GroupPathExtraData *) extra, out))
 		{
@@ -789,8 +804,10 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 		}
 		why = why != NULL ? why : p.why;
 	}
-	if (why != NULL)
+	if (why != NULL && sift_agg_arms_noted())
 		sift_agg_arm_refused_by("scope", AGG_REFUSE_SCOPE, why);
+	else if (why != NULL)
+		sift_agg_refuse("scope", AGG_REFUSE_SCOPE, why, 0, -1);
 }
 
 static Plan *

@@ -20,6 +20,7 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/prep.h"
 #include "parser/parsetree.h"
@@ -49,11 +50,22 @@ select_only(const Query *q)
 }
 
 static bool
-int_operand(const Node *n)
+int_type(Oid t)
+{
+	return t == INT2OID || t == INT4OID || t == INT8OID;
+}
+
+/* A key of an integer type, or an array of them, that the node evaluates once: a constant that is not NULL, or an expression that reads no column and calls no volatile function */
+static bool
+int_operand(const Node *n, bool array)
 {
 	const Oid	t = exprType((Node *) n);
 
-	return (IsA(n, Const) ? !((const Const *) n)->constisnull : IsA(n, Param)) && (t == INT2OID || t == INT4OID || t == INT8OID);
+	if (!int_type(array ? get_element_type(t) : t))
+		return false;
+	if (IsA(n, Const))
+		return !((const Const *) n)->constisnull;
+	return !contain_var_clause((Node *) n) && !contain_volatile_functions((Node *) n) && !contain_subplans((Node *) n);
 }
 
 static bool
@@ -104,15 +116,18 @@ integer_eq(const OpExpr *op)
 	return list_length(op->args) == 2 && get_op_opfamily_strategy(op->opno, INTEGER_BTREE_FAM_OID) == BTEqualStrategyNumber;
 }
 
-/* var(varno, attno) = constant or parameter of an integer type */
+/* var(varno, attno) = K or var(varno, attno) IN (K1, K2, ..) of an integer type: the keys an arm binds */
 static bool
 key_clause(const Node *c, int varno, AttrNumber attno, Expr **k)
 {
-	const OpExpr *op = IsA(c, OpExpr) ? (const OpExpr *) c : NULL;
+	const bool	array = IsA(c, ScalarArrayOpExpr) && ((const ScalarArrayOpExpr *) c)->useOr;
+	const List *args = IsA(c, OpExpr) ? ((const OpExpr *) c)->args : array ? ((const ScalarArrayOpExpr *) c)->args : NIL;
+	const Oid	opno = IsA(c, OpExpr) ? ((const OpExpr *) c)->opno : array ? ((const ScalarArrayOpExpr *) c)->opno : InvalidOid;
 
-	if (op == NULL || !integer_eq(op) || !is_var(linitial(op->args), varno, attno) || !int_operand(lsecond(op->args)))
+	if (list_length(args) != 2 || get_op_opfamily_strategy(opno, INTEGER_BTREE_FAM_OID) != BTEqualStrategyNumber || !is_var(linitial(args), varno, attno) ||
+		!int_operand(lsecond(args), array))
 		return false;
-	*k = lsecond(op->args);
+	*k = lsecond(args);
 	return true;
 }
 
@@ -484,7 +499,10 @@ pairs_subquery(PlannerInfo *root, const RelOptInfo *rel)
 	return q;
 }
 
-/* Did the statement write the pairs as the right side of IN or EXISTS: PostgreSQL makes an inner join of a semi join whose right side is unique, which counts a fact once all the same */
+/*
+ * Did the statement write the pairs as the right side of IN or EXISTS: PostgreSQL makes an inner join of a semi join whose right side is unique, which counts a fact once all the same. A sub-select
+ * it pulled up is a join with no range table entry, which the parser gives every join the statement writes
+ */
 static bool
 written_semi(Node *n, Index pairs_relid)
 {
@@ -499,25 +517,37 @@ written_semi(Node *n, Index pairs_relid)
 	}
 	if (!IsA(n, JoinExpr))
 		return false;
-	if (((JoinExpr *) n)->jointype == JOIN_SEMI && bms_is_member(pairs_relid, get_relids_in_jointree(((JoinExpr *) n)->rarg, false, false)))
+	if ((((JoinExpr *) n)->jointype == JOIN_SEMI || (((JoinExpr *) n)->jointype == JOIN_INNER && ((JoinExpr *) n)->rtindex == 0)) &&
+		bms_is_member(pairs_relid, get_relids_in_jointree(((JoinExpr *) n)->rarg, false, false)))
 		return true;
 	return written_semi(((JoinExpr *) n)->larg, pairs_relid) || written_semi(((JoinExpr *) n)->rarg, pairs_relid);
 }
 
-/* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does */
+/* The statement joins the two relations by one join, or by the semi join of IN or EXISTS: a member of the pairs of one key is there once, so a semi join keeps the rows an inner join does.
+ * An outer or anti join is noted for the scope that matches the pairs to refuse */
 bool
 sift_v6_scope_pairs_joined(ScopePlan *p)
 {
 	p->semi = p->root->join_info_list != NIL;
 	p->once = p->semi || written_semi((Node *) p->root->parse->jointree, p->pairs->relid);
-	return !p->semi || semi_joins(p->root, p->pairs->relid);
+	p->outer = sift_v6_scope_outer_join(p->root);
+	return p->outer || !p->semi || semi_joins(p->root, p->pairs->relid);
+}
+
+/* The statement joins its two relations by an outer or an anti join (LEFT JOIN, NOT EXISTS): the scope that matches the pairs refuses it, and says so */
+bool
+sift_v6_scope_outer_join(const PlannerInfo *root)
+{
+	const SpecialJoinInfo *sj = list_length(root->join_info_list) == 1 ? linitial(root->join_info_list) : NULL;
+
+	return sj != NULL && sj->jointype != JOIN_SEMI && sj->jointype != JOIN_INNER;
 }
 
 /* A semi join names no key of the pairs and counts a member once: one key, or the keys of an array that the scan of their members reads once (the cubes of the keys add up) */
 bool
-sift_v6_scope_semi_ok(const ScopePlan *p)
+sift_v6_scope_semi_ok(ScopePlan *p)
 {
-	return !p->semi || (p->spec.key_given && (!p->spec.key_array || p->spec.scan) && !p->spec.by_key);
+	return !p->semi || (sift_v6_scope_key_bound(p) && (!p->spec.key_array || p->spec.scan) && !p->spec.by_key);
 }
 
 /*
@@ -530,8 +560,7 @@ barrier_view_ok(PlannerInfo *root, const RelOptInfo *rel)
 	const RangeTblEntry *rte = planner_rt_fetch(rel->relid, root);
 	const Query *q = rte->rtekind == RTE_SUBQUERY ? rte->subquery : NULL;
 
-	if (q == NULL || !rte->security_barrier || rte->securityQuals != NIL || q->hasRowSecurity || list_length(q->rtable) != 1 || root->qual_security_level > 0 ||
-		agg_query_rte_has_rls(q, linitial(q->rtable)))
+	if (q == NULL || !rte->security_barrier || rte->securityQuals != NIL || root->qual_security_level > 0 || agg_query_reads_rls(q))
 		return false;
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 		if (ri->security_level > 0)
@@ -544,7 +573,8 @@ sift_v6_scope_pairs_ok(ScopePlan *p)
 {
 	RelOptInfo *rel = p->pairs;
 
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || rel->joininfo != NIL || !(agg_rel_security_ok(p->root, rel) || barrier_view_ok(p->root, rel)))
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || (rel->joininfo != NIL && !p->outer) ||
+		!(agg_rel_security_ok(p->root, rel) || barrier_view_ok(p->root, rel)))
 		return false;
 	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))
 		return true;
@@ -555,6 +585,39 @@ sift_v6_scope_pairs_ok(ScopePlan *p)
 		p->pairs_query = NULL;
 	}
 	return p->pairs_query != NULL || p->pairs_raw != NULL;
+}
+
+static bool
+reads_rel_walker(Node *n, Oid *rel)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, Query))
+		return query_tree_walker((Query *) n, reads_rel_walker, rel, QTW_EXAMINE_RTES_BEFORE);
+	if (IsA(n, RangeTblEntry))
+		return ((RangeTblEntry *) n)->rtekind == RTE_RELATION && ((RangeTblEntry *) n)->relid == *rel;
+	return expression_tree_walker(n, reads_rel_walker, rel);
+}
+
+/* Why the pairs side the statement names is not the pairs of a scope whose paths are legs: it reads their relation in another form */
+static void
+refuse_form(ScopePlan *p, const SiftScopeLeg *legs, int nlegs)
+{
+	Oid			rel = legs[0].rel;
+	const RangeTblEntry *only = p->pairs_raw != NULL && list_length(p->pairs_raw->rtable) == 1 ? linitial(p->pairs_raw->rtable) : NULL;
+
+	if (p->why != NULL)
+		return;
+	if (p->pairs_raw == NULL && nlegs == 2 && planner_rt_fetch(p->pairs->relid, p->root)->relid == rel)
+		p->why = "the pairs of the scope are the union of two paths: a join to one of its relations is not the pair set";
+	else if (only != NULL && only->rtekind == RTE_RELATION && only->relid == rel && ((only->inh && has_subclass(rel)) || only->tablesample != NULL))
+		p->why = "the view over the scope relation reads its child tables or a sample of it: their rows are rows of the join, not pairs";
+	else if (nlegs == 2 && p->pairs_raw != NULL && p->pairs_raw->setOperations != NULL && IsA(p->pairs_raw->setOperations, SetOperationStmt) && ((SetOperationStmt *) p->pairs_raw->setOperations)->op == SETOP_UNION &&
+			 ((SetOperationStmt *) p->pairs_raw->setOperations)->all)
+		p->why = "a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION";
+	else if (p->pairs_raw != NULL && reads_rel_walker((Node *) p->pairs_raw, &rel))
+		p->why = "a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a "
+			"scope, are read from the units";
 }
 
 static Oid
@@ -573,8 +636,20 @@ sift_v6_scope_matches(ScopePlan *p, int ord)
 
 	if (p->pairs_raw != NULL)
 		p->pairs_query = nlegs == 2 ? sift_v6_match_two_paths(p->pairs_raw, legs) : NULL;
-	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p) ||
-		sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !p->scope->layout(p->irel, ord, &p->layout))
+	/* the distinct members of two paths, without the key: a member of several keys is there once */
+	p->once |= p->pairs_query != NULL && p->pairs_raw != NULL && list_length(p->pairs_raw->targetList) == 1;
+	if (nlegs != (p->pairs_raw != NULL ? 2 : 1) || (p->pairs_raw != NULL && p->pairs_query == NULL) || legs[0].rel != pairs_table(p))
+	{
+		refuse_form(p, legs, nlegs);
+		return false;
+	}
+	if (p->outer)
+	{
+		if (p->why == NULL)
+			p->why = "the scope relation is not joined by an inner or semi join (IN, EXISTS)";
+		return false;
+	}
+	if (sift_scope_pairs_multiset(p->irel, sift_scope_specs(p->irel)->s[ord]) || !p->scope->layout(p->irel, ord, &p->layout))
 		return false;
 	p->leg = legs[0];
 	p->spec.key_type = get_atttype(p->leg.rel, p->leg.key);

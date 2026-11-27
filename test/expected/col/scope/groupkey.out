@@ -94,7 +94,7 @@ SELECT * FROM probe('facts', 'membership');
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | clean
 (9 rows)
 
 SELECT c FROM states, LATERAL unnest(ARRAY[format('SELECT apply(%s) AS state', n), 'SELECT * FROM probe(''facts'', ''membership'')']) WITH ORDINALITY u(c, o) ORDER BY n, o \gexec
@@ -115,7 +115,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | delta
 (9 rows)
 
 SELECT apply(2) AS state
@@ -135,7 +135,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | delta
 (9 rows)
 
 SELECT apply(3) AS state
@@ -155,7 +155,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | delta
 (9 rows)
 
 SELECT apply(4) AS state
@@ -175,7 +175,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | delta
 (9 rows)
 
 SELECT apply(5) AS state
@@ -195,7 +195,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | delta
 (9 rows)
 
 SELECT apply(6) AS state
@@ -215,7 +215,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none                                             | 
  7 | dim_b in three keys                      | same    | none                                             | 
  8 | dim_b in no key                          | same    | none                                             | 
- 9 | a row for each pair, no group            | same    | none                                             | 
+ 9 | a row for each pair, no group            | same    | join (the summary is not exact for the snapshot) | 
 (9 rows)
 
 SELECT apply(7) AS state
@@ -235,7 +235,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none                                             | 
  7 | dim_b in three keys                      | same    | none                                             | 
  8 | dim_b in no key                          | same    | none                                             | 
- 9 | a row for each pair, no group            | same    | none                                             | 
+ 9 | a row for each pair, no group            | same    | join (the summary is not exact for the snapshot) | 
 (9 rows)
 
 SELECT apply(8) AS state
@@ -255,7 +255,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none                                             | 
  7 | dim_b in three keys                      | same    | none                                             | 
  8 | dim_b in no key                          | same    | none                                             | 
- 9 | a row for each pair, no group            | same    | none                                             | 
+ 9 | a row for each pair, no group            | same    | join (the summary is not exact for the snapshot) | 
 (9 rows)
 
 SELECT apply(9) AS state
@@ -275,7 +275,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none                                             | 
  7 | dim_b in three keys                      | same    | none                                             | 
  8 | dim_b in no key                          | same    | none                                             | 
- 9 | a row for each pair, no group            | same    | none                                             | 
+ 9 | a row for each pair, no group            | same    | join (the summary is not exact for the snapshot) | 
 (9 rows)
 
 SELECT apply(10) AS state
@@ -295,7 +295,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none                                             | 
  7 | dim_b in three keys                      | same    | none                                             | 
  8 | dim_b in no key                          | same    | none                                             | 
- 9 | a row for each pair, no group            | same    | none                                             | 
+ 9 | a row for each pair, no group            | same    | join (the summary is not exact for the snapshot) | 
 (9 rows)
 
 SELECT apply(11) AS state
@@ -315,7 +315,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | clean
 (9 rows)
 
 SELECT apply(12) AS state
@@ -335,7 +335,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | clean
 (9 rows)
 
 SELECT apply(13) AS state
@@ -355,7 +355,7 @@ SELECT * FROM probe('facts', 'membership')
  6 | dim_b in one key                         | same    | none    | 
  7 | dim_b in three keys                      | same    | none    | 
  8 | dim_b in no key                          | same    | none    | 
- 9 | a row for each pair, no group            | same    | none    | 
+ 9 | a row for each pair, no group            | same    | summary | clean
 (9 rows)
 
 SELECT sift.col_verify('facts_col', true);
@@ -404,7 +404,7 @@ SELECT 1
 SELECT * FROM sd_probe()
  same | summary | with_delta | join_read 
 ------+---------+------------+-----------
-    9 |       2 |          0 |         0
+    9 |       3 |          0 |         0
 (1 row)
 
 SELECT 2 AS n, 'buffered inserts of dim_b with active and soft deleted pairs' AS state
@@ -417,7 +417,7 @@ INSERT INTO sd_facts SELECT 10000 + i, 1 + (i * 37) % 220, timestamptz '2026-02-
 SELECT * FROM sd_probe()
  same | summary | with_delta | join_read 
 ------+---------+------------+-----------
-    9 |       2 |          2 |         0
+    9 |       3 |          3 |         0
 (1 row)
 
 SELECT 3 AS n, 'soft delete the pairs of dim_b that have buffered rows' AS state
@@ -430,7 +430,7 @@ UPDATE sd_pairs SET deleted_at = now() WHERE dim_a_id % 6 = 1 AND deleted_at IS 
 SELECT * FROM sd_probe()
  same | summary | with_delta | join_read 
 ------+---------+------------+-----------
-    9 |       0 |          0 |         2
+    9 |       0 |          0 |         3
 (1 row)
 
 SELECT 4 AS n, 'restore some' AS state
@@ -443,7 +443,7 @@ UPDATE sd_pairs SET deleted_at = NULL WHERE dim_a_id % 12 = 1
 SELECT * FROM sd_probe()
  same | summary | with_delta | join_read 
 ------+---------+------------+-----------
-    9 |       0 |          0 |         2
+    9 |       0 |          0 |         3
 (1 row)
 
 SELECT 5 AS n, 'promoted' AS state
@@ -461,7 +461,7 @@ SELECT sift.col_promote('sd_facts_col')
 SELECT * FROM sd_probe()
  same | summary | with_delta | join_read 
 ------+---------+------------+-----------
-    9 |       2 |          0 |         0
+    9 |       3 |          0 |         0
 (1 row)
 
 DROP TABLE sd_states, sd_facts, sd_pairs;

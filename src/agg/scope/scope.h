@@ -81,6 +81,7 @@ typedef struct ScopePlan
 	List	   *v6_tlist;
 	int			cap_aggs;
 	bool		semi;			/* the pairs are the right side of a semi join: IN or EXISTS over them */
+	bool		outer;			/* the pairs are joined by an outer or an anti join */
 	const char *why;			/* why the pairs side the statement names is not the scope: the first reason a check found (sift.explain_why, arm scope) */
 	bool		once;			/* the statement wrote IN or EXISTS over the pairs (a semi join, or the inner join PostgreSQL made of it): a fact counts once */
 } ScopePlan;
@@ -89,6 +90,7 @@ typedef struct ScopePlan
 extern AttrNumber sift_v6_scope_pairs_attno(const ScopePlan *p, const Var *v);
 extern bool sift_v6_scope_key_var(const ScopePlan *p, const Node *n);
 extern bool sift_v6_scope_key_filter(ScopePlan *p);
+extern bool sift_v6_scope_key_bound(ScopePlan *p);
 extern Node *sift_v6_strip_relabel(Node *n);
 
 /* match.c: the pairs side and the scope of the relation that summarizes it */
@@ -96,7 +98,8 @@ extern bool sift_v6_plain_table(const RangeTblEntry *rte);
 extern bool sift_v6_scope_plain_relation(PlannerInfo *root, RelOptInfo *rel);
 extern bool sift_v6_scope_pairs_ok(ScopePlan *p);
 extern bool sift_v6_scope_pairs_joined(ScopePlan *p);
-extern bool sift_v6_scope_semi_ok(const ScopePlan *p);
+extern bool sift_v6_scope_outer_join(const PlannerInfo *root);
+extern bool sift_v6_scope_semi_ok(ScopePlan *p);
 extern bool sift_v6_scope_matches(ScopePlan *p, int ord);
 /* A sub-select or CTE with some form that sets the pairs of scope key K: the first path with its predicate, on its own */
 extern Query *sift_v6_match_two_paths(const Query *q, const SiftScopeLeg legs[2]);
@@ -115,6 +118,9 @@ extern void sift_v6_scope_topk_paths(const SiftScopeOps *scope, PlannerInfo *roo
 extern bool sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord,
 								  Expr **key);
 
+/* rewrite.c: the statement with ARRAY(SELECT ..) over a scope relation as IN and a table of keys as an array of them; false when it has neither (apply: make the rewrites in place) */
+extern bool sift_v6_scope_rewrite(Query *q, bool apply);
+
 /* show.c: the EXPLAIN lines of a node of the scope aggregate: its relation and spec, the expression of its keys (NULL: none named), the keys of its run (-1: not run), why it ran the join (NULL: it did not) */
 typedef struct ScopeShow
 {
@@ -130,6 +136,10 @@ extern void sift_v6_scope_show(const ScopeShow *s, PlanState *ps, List *ancestor
 
 /* unread.c: why the statement, which holds a relation of a scope of an index of a table it scans, reads no scope summary (NULL: it reads one, or holds none) */
 extern const char *sift_v6_scope_unread(const PlannedStmt *ps);
+/* unread.c: why the statement reads no scope when the plan reads its scope relation where the planner of the scope does not see it (a sub-plan, a lateral sub-select, partitions); NULL: none */
+extern const char *sift_v6_scope_placed(const PlannedStmt *ps);
+/* unread.c: does the plan read a scope summary (a node of the scope aggregate) */
+extern bool sift_v6_scope_planned(const PlannedStmt *ps);
 
 /* scan.c: the executor of the plans that scan the facts of the members of a key (ScopeSpec.scan), for every format */
 extern PGDLLIMPORT const CustomScanMethods sift_v6_scope_scan_methods;

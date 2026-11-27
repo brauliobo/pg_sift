@@ -406,7 +406,7 @@ read_key(ScopeState *st, SiftF2Scope *sc, const SiftScopeL2Root *root, int64 key
 	}
 }
 
-/* The cubes of the keys added, for a statement that names several keys and does not group by them: the aggregates of the join over all of them (a row of the facts counts once for each key its member is in) */
+/* The cubes of the keys added, for a statement that names several keys or none and does not group by them: the aggregates of the join over all of them (a row of the facts counts once for each key its member is in) */
 static bool
 read_merged(ScopeState *st, SiftF2Scope *sc, const int64 *keys, uint32 nkeys, const SiftScopeQueryNeeds *q, const MonthWindow *w)
 {
@@ -443,12 +443,25 @@ read_merged(ScopeState *st, SiftF2Scope *sc, const int64 *keys, uint32 nkeys, co
 	return !st->inexact;
 }
 
+/* The keys of the summary, for a statement that names none and does not group by the key: the join over every pair */
+static int64 *
+every_key(const SiftF2Scope *sc)
+{
+	int64	   *keys = palloc(Max(sc->meta.hdr.nkeys, 1) * sizeof(int64));
+
+	for (uint32 i = 0; i < sc->meta.hdr.nkeys; i++)
+		keys[i] = sc->meta.roots[i].scope_key;
+	return keys;
+}
+
 static bool
 read_summary(ScopeState *st, SiftF2Scope *sc, const MonthWindow *w, const int64 *keys, uint32 nkeys)
 {
 	const SiftScopeQueryNeeds q = {.minmax = needs_minmax(st->spec),.month = SIFT_SCOPE_NO_MONTH};
 	bool		ok = true;
 
+	if (!st->spec->key_given && !st->spec->by_key)
+		return read_merged(st, sc, every_key(sc), sc->meta.hdr.nkeys, &q, w);
 	if (st->spec->key_array && !st->spec->by_key)
 		return read_merged(st, sc, keys, nkeys, &q, w);
 	for (uint32 i = 0; i < (st->spec->key_given ? Max(nkeys, 1) : sc->meta.hdr.nkeys); i++)
@@ -681,7 +694,7 @@ scope_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->started && st->from_summary && !st->spec->topk)
 	{
 		ExplainPropertyText("Scope Cube", st->mode == SIFT_SERVE_DELTA_CUBE ? "delta" : "clean", es);
-		ExplainPropertyUInteger("Scope Keys Read", NULL, st->keys_read, es);
+		ExplainPropertyUInteger("Scope Cubes Read", NULL, st->keys_read, es);
 	}
 }
 

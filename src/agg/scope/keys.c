@@ -9,6 +9,7 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 #include "rewrite/rewriteManip.h"
@@ -58,7 +59,19 @@ key_equality(Oid key_type, Oid opno, Oid inputcollid)
 	return OidIsValid(opclass) && get_op_opfamily_strategy(opno, get_opclass_family(opclass)) == BTEqualStrategyNumber;
 }
 
-/* key = rhs (or rhs = key) or key = ANY(rhs) by the equality of the key, on the pairs relation (inner: in the sub-select that is the pairs), rhs a constant or a parameter whose values the summary codes */
+/*
+ * A value the node evaluates once when it starts: a constant that is not NULL, or an expression of constants, parameters and stable functions (an array of parameters, a cast of one, a setting)
+ * that reads no column and runs no sub-plan, so that every row of the join sees the same keys
+ */
+static bool
+key_operand(Node *r)
+{
+	if (IsA(r, Const))
+		return !((Const *) r)->constisnull;
+	return !contain_var_clause(r) && !contain_volatile_functions(r) && !contain_subplans(r) && !contain_agg_clause(r) && !contain_window_function(r);
+}
+
+/* key = rhs (or rhs = key) or key = ANY(rhs) by the equality of the key, on the pairs relation (inner: in the sub-select that is the pairs), rhs a value of the run whose values the summary codes */
 static bool
 key_args(const ScopePlan *p, List *args, Oid opno, Oid inputcollid, bool inner, bool array, Expr **rhs)
 {
@@ -79,7 +92,7 @@ key_args(const ScopePlan *p, List *args, Oid opno, Oid inputcollid, bool inner, 
 	}
 	if (!OidIsValid(opno) || !key_equality(p->spec.key_type, opno, inputcollid))
 		return false;
-	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : sift_v6_scope_key_var(p, l)) || !(IsA(r, Const) ? !((Const *) r)->constisnull : IsA(r, Param)) ||
+	if (!(inner ? IsA(l, Var) && ((Var *) l)->varattno == p->leg.key : sift_v6_scope_key_var(p, l)) || !key_operand(r) ||
 		!p->scope->key_codes(p->spec.key_type, array ? get_element_type(exprType(r)) : exprType(r)))
 		return false;
 	*rhs = (Expr *) r;
@@ -137,7 +150,16 @@ pairs_predicate_ok(ScopePlan *p, List *rest, bool inner)
 	return true;
 }
 
-/* The conditions on the pairs are the key = K or key IN (K1, K2, ...), from the statement or from the sub-select, and the predicate of the pairs; no key: every key (only a statement that groups by the key) */
+/* A read of the keys the statement names: a scan of their members, the ring of one key, a semi join */
+bool
+sift_v6_scope_key_bound(ScopePlan *p)
+{
+	if (!p->spec.key_given)
+		refuse(p, "the scope key is not bound by an equality or an IN list of constants or parameters");
+	return p->spec.key_given;
+}
+
+/* The conditions on the pairs are the key = K or key IN (K1, K2, ...), from the statement or from the sub-select, and the predicate of the pairs; no key: every key */
 bool
 sift_v6_scope_key_filter(ScopePlan *p)
 {
@@ -160,10 +182,7 @@ sift_v6_scope_key_filter(ScopePlan *p)
 		else
 			rest_inner = lappend(rest_inner, q);
 	if (rhs == NULL && !p->spec.by_key)
-	{
 		refuse(p, "the scope key is not bound by an equality or an IN list of constants or parameters");
-		return false;
-	}
 	if (nkeys > 1)
 	{
 		refuse(p, "the scope key is bound twice");

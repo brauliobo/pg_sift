@@ -98,6 +98,12 @@ agg_query_has_rls(PlannerInfo *root)
 	return root == NULL || root->parse == NULL || query_has_rls(root->parse);
 }
 
+bool
+agg_query_reads_rls(const Query *q)
+{
+	return query_has_rls(q);
+}
+
 static bool
 param_walker(Node *node, void *context)
 {

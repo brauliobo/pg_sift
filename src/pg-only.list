@@ -105,6 +105,7 @@ agg/scan_src.h
 agg/scope/keys.c
 agg/scope/match.c
 agg/scope/plan.c
+agg/scope/rewrite.c
 agg/scope/scan.c
 agg/scope/scope.h
 agg/scope/show.c

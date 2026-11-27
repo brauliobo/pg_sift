@@ -23,6 +23,8 @@ extern bool agg_query_rte_has_rls(const Query *q, const RangeTblEntry *rte);
 
 /* Any entry of the query, of its sub-selects, CTEs and sub-links, is one of those, or the rewriter marked the query as one that has row security; a query without a parse tree has */
 extern bool agg_query_has_rls(PlannerInfo *root);
+/* Does the query read a relation with row-level security, or a security barrier view, at any level */
+extern bool agg_query_reads_rls(const Query *q);
 
 /* A PARAM_EXTERN is in the tree: a generic plan keeps it, so no plan-time value, zone proof or constant may stand for it */
 extern bool agg_node_has_extern_param(const Node *node);

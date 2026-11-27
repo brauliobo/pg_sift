@@ -18,6 +18,7 @@
 #include "agg/plan/flat_rewrite.h"
 #include "agg/plan/lineage.h"
 #include "agg/safety.h"
+#include "agg/scope/scope.h"
 #include "agg/settings.h"
 #include "col/am.h"
 #include "core/catalog.h"
@@ -366,8 +367,9 @@ plan_query(SIFT_PLANNER_PARAMS)
 }
 
 /*
- * The statement with its unread laterals dropped planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c apply, the plan with the CTEs inline and the rewrites made if
- * that one runs the aggregate scan, and costs less unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
+ * The statement with its unread laterals dropped planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c or of agg/scope/rewrite.c apply, the plan with the CTEs inline and
+ * the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs less unless it only moved HAVING conditions to WHERE; the loser's memory
+ * goes with its context
  */
 static PlannedStmt *
 plan_statement(SIFT_PLANNER_PARAMS)
@@ -379,6 +381,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	PlannedStmt *plain,
 			   *rewritten;
 	bool		priced,
+				scoped,
 				rows;
 
 	if (!sift_enable_agg || !reads_scannable((Node *) parse, NULL))
@@ -387,6 +390,8 @@ plan_statement(SIFT_PLANNER_PARAMS)
 		sift_agg_drop_unused_laterals(parse);
 	cte_walker((Node *) parse, &w);
 	priced = w.found > 0 || sift_agg_flat_decorrelate(parse, false);
+	scoped = !priced && sift_agg_scope && sift_v6_scope_rewrite(parse, false);
+	priced |= scoped;
 	rows = sift_agg_having_to_where(parse, false);
 	if (!priced && !rows)
 		return plan_query(SIFT_PLANNER_ARGS(parse));
@@ -396,12 +401,15 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	cte_walker((Node *) alt, &w);
 	sift_agg_having_to_where(alt, true);
 	sift_agg_flat_decorrelate(alt, true);
+	if (sift_agg_scope)
+		sift_v6_scope_rewrite(alt, true);
 	plain = plan_query(SIFT_PLANNER_ARGS(parse));
 	cx = sift_mem_allocset_create(caller, "sift rewritten plan");
 	MemoryContextSwitchTo(cx);
 	rewritten = plan_query(SIFT_PLANNER_ARGS(alt));
 	MemoryContextSwitchTo(caller);
-	if (runs_agg_scan(rewritten) && (!priced || sift_agg_force || rewritten->planTree->total_cost < plain->planTree->total_cost))
+	if (runs_agg_scan(rewritten) && (!scoped || sift_v6_scope_planned(rewritten)) &&
+		(!priced || sift_agg_force || rewritten->planTree->total_cost < plain->planTree->total_cost))
 		return rewritten;
 	MemoryContextDelete(cx);
 	return plain;
