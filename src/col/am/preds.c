@@ -667,7 +667,7 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 			for (int j = 0; j < n; j++)
 				if (!nl[j])
 				{
-					key_value(elemtype, att->atttypmod, el[j], &vals[m]);
+					key_value(elemtype, sift_col_att_typmod(att), el[j], &vals[m]);
 					nan |= key_is_float(elemtype) && isnan(vals[m].v.f);
 					m++;
 				}
@@ -724,7 +724,7 @@ sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *
 				p->vals = v;
 				continue;
 			}
-			key_value(argtype, att->atttypmod, key->sk_argument, v);
+			key_value(argtype, sift_col_att_typmod(att), key->sk_argument, v);
 			if (key->sk_strategy == COL_STRAT_LIKE || key->sk_strategy == COL_STRAT_STARTS_WITH)
 			{
 				like_pred(k, p, v, key->sk_strategy == COL_STRAT_STARTS_WITH, k->infix);

@@ -135,15 +135,23 @@ numeric_form(int32 typmod, uint8 *scale)
 	return prec <= SIFT_COL_MAX_SCALE && s <= SIFT_COL_MAX_SCALE ? NUMERIC_NARROW : NUMERIC_WIDE;
 }
 
+/* The typmod of the attribute's base type: a column of a domain over char(3) or numeric(10, 2) has none of its own, the domain holds it */
+int32
+sift_col_att_typmod(Form_pg_attribute att)
+{
+	int32		typmod = att->atttypmod;
+
+	(void) getBaseTypeAndTypmod(att->atttypid, &typmod);
+	return typmod;
+}
+
 /* The scale of numeric(p, s) when it is one INT leaf of the 3.1 form (p <= 18, 0 <= s <= 18) */
 bool
 sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale)
 {
-	int32		typmod = att->atttypmod;
 	uint8		s;
 
-	(void) getBaseTypeAndTypmod(att->atttypid, &typmod);
-	if (numeric_form(typmod, &s) != NUMERIC_NARROW)
+	if (numeric_form(sift_col_att_typmod(att), &s) != NUMERIC_NARROW)
 		return false;
 	*scale = s;
 	return true;

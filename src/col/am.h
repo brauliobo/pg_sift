@@ -321,6 +321,7 @@ extern bool sift_col_returns_str(TupleDesc desc, int a, int nleaves, bool json);
 extern void sift_col_validate_compression(const char *value);
 /* The storage class of a type the table AM holds as one leaf (false: not natively); the scale of a numeric(p, s) leaf that is one INT leaf, p <= 18 and 0 <= s <= 18 (false: it is not) */
 extern bool sift_col_leaf_store(Oid typid, SiftColStore *store);
+extern int32 sift_col_att_typmod(Form_pg_attribute att);
 extern bool sift_col_numeric_scale(Form_pg_attribute att, uint8 *scale);
 /*
  * The leaves of one attribute of a sift_col index (col/types.c): defs[0 .. result) with the type, storage class, scale, lanes, lane and path set;
