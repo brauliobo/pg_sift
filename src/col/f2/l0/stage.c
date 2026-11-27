@@ -203,10 +203,14 @@ flush_stage_rows(Relation rel, SiftTxnStage *st, bool at_end)
 
 /* The rows first, then the deletes of what is staged: each delete keeps the xid of the (sub)transaction that made it, so that a rollback to its savepoint hides it by the status of that xid */
 static void
-flush_rows_and_deletes(Relation rel, SiftTxnStage *st)
+flush_rows_and_deletes(Relation rel, SiftTxnStage *st, bool at_end)
 {
-	flush_stage_rows(rel, st, false);
-	sift_stage_flush_deletes(rel, st, false);
+	int			npages;
+	BlockNumber *pages = sift_stage_del_pages(st, &npages);
+
+	flush_stage_rows(rel, st, at_end);
+	sift_stage_flush_deletes(rel, st, at_end);
+	sift_stage_conflict_in(rel, pages, npages);
 	del_htab_rebuild(st);
 }
 
@@ -215,7 +219,7 @@ flush_deletes_chunk(SiftTxnStage *st)
 {
 	Relation	rel = relation_open(st->relid, RowExclusiveLock);
 
-	flush_rows_and_deletes(rel, st);
+	flush_rows_and_deletes(rel, st, false);
 	relation_close(rel, NoLock);
 }
 
@@ -342,10 +346,7 @@ stage_xact(XactEvent event, void *arg)
 			if (rel == NULL)
 				continue;
 			if (!sift_quarantine_skips(rel, SIFT_SKIP_WRITE))
-			{
-				flush_stage_rows(rel, st, true);
-				sift_stage_flush_deletes(rel, st, true);
-			}
+				flush_rows_and_deletes(rel, st, true);
 			relation_close(rel, NoLock);
 		}
 		PopActiveSnapshot();
@@ -426,7 +427,7 @@ sift_stage_get(Relation rel, const SiftPartSpec *spec)
 		return st;
 	if (st != NULL)
 	{
-		flush_rows_and_deletes(rel, st);
+		flush_rows_and_deletes(rel, st, false);
 		drop_stage(st);
 	}
 	if (!callbacks_registered)
@@ -952,7 +953,7 @@ sift_stage_flush_with_deletes(Relation rel)
 	SiftTxnStage *st = stage_of(rel);
 
 	if (st != NULL)
-		flush_rows_and_deletes(rel, st);
+		flush_rows_and_deletes(rel, st, false);
 }
 
 void
@@ -964,7 +965,7 @@ sift_stage_flush_all(void)
 
 		if (rel == NULL)
 			continue;
-		flush_rows_and_deletes(rel, st);
+		flush_rows_and_deletes(rel, st, false);
 		relation_close(rel, NoLock);
 	}
 }

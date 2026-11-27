@@ -66,6 +66,14 @@ sift_tbl_index_fetch_end(IndexFetchTableData *data)
 	pfree(f);
 }
 
+/* A serializable reader reads the tombstones once it holds its predicate lock: a delete that looked for the lock before wrote its tombstone already (tbl_tuple_delete) */
+static void
+lock_then_sync(Relation rel, SiftTblRel *st, Snapshot snapshot)
+{
+	PredicateLockRelation(rel, snapshot);
+	sift_tomb_sync(rel, &st->tomb);
+}
+
 /*
  * Fetches tid, tests it against snapshot; the row goes into slot. *all_dead: no snapshot will ever see this TID again; sync: the tombstones may be stale.
  */
@@ -148,9 +156,11 @@ sift_tbl_index_fetch_tuple(IndexFetchTableData *scan, ItemPointer tid, Snapshot 
 	SiftErrCtx	ctx;
 	bool		found;
 
-	f->fresh = false;
 	*call_again = false;
 	sift_errctx_push(&ctx, RelationGetRelid(scan->rel));
+	if (f->fresh && IsolationIsSerializable())
+		lock_then_sync(scan->rel, f->st, snapshot);
+	f->fresh = false;
 	found = fetch_visible(scan->rel, f->st, tid, snapshot, slot, all_dead, sync, true);
 	sift_errctx_pop(&ctx);
 	return found;
@@ -349,7 +359,7 @@ sift_tbl_tuple_fetch_row_version(Relation rel, ItemPointer tid, Snapshot snapsho
 
 	sift_errctx_push(&ctx, RelationGetRelid(rel));
 	sift_tbl_refresh(rel, st);
-	sift_tomb_sync(rel, &st->tomb);
+	lock_then_sync(rel, st, snapshot);
 	found = fetch_visible(rel, st, tid, snapshot, slot, NULL, true, false);
 	sift_errctx_pop(&ctx);
 	return found;

@@ -6,6 +6,7 @@
 #include "access/relation.h"
 #include "access/xact.h"
 #include "miscadmin.h"
+#include "storage/predicate.h"
 
 #include "col/f2/compact/compact.h"
 #include "col/f2/del/delete.h"
@@ -152,6 +153,44 @@ sift_stage_flush_deletes(Relation rel, SiftTxnStage *st, bool at_end)
 	write_deletes(rel, st, at_end);
 	MemoryContextSwitchTo(caller);
 	MemoryContextDelete(scratch);
+}
+
+static int
+block_cmp(const void *a, const void *b)
+{
+	BlockNumber x = *(const BlockNumber *) a,
+				y = *(const BlockNumber *) b;
+
+	return (x > y) - (x < y);
+}
+
+/* The pages of the rows a serializable transaction staged deletes of, each once: none for another isolation level, which leaves no read/write dependency */
+BlockNumber *
+sift_stage_del_pages(const SiftTxnStage *st, int *n)
+{
+	BlockNumber *pages;
+
+	*n = 0;
+	if (st->ndels == 0 || !IsolationIsSerializable())
+		return NULL;
+	pages = palloc(st->ndels * sizeof(BlockNumber));
+	for (int i = 0; i < st->ndels; i++)
+		pages[i] = (BlockNumber) (st->dels[i].tid >> 16);
+	qsort(pages, st->ndels, sizeof(BlockNumber), block_cmp);
+	for (int i = 0; i < st->ndels; i++)
+		if (*n == 0 || pages[*n - 1] != pages[i])
+			pages[(*n)++] = pages[i];
+	return pages;
+}
+
+/* The deletes reach the readers when they are written, not when they are staged: a serializable reader that locked one of their pages since did not see them */
+void
+sift_stage_conflict_in(Relation rel, BlockNumber *pages, int n)
+{
+	for (int i = 0; i < n; i++)
+		CheckForSerializableConflictIn(rel, NULL, pages[i]);
+	if (pages != NULL)
+		pfree(pages);
 }
 
 /* Drops the deletes of the runs that were written with the rows of their partition */

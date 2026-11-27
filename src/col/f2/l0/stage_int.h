@@ -42,6 +42,8 @@ extern void sift_cdi_cache_free(SiftTxnStage *st);
 /* l0_stage_flush.c: writes the rows (at_end: the transaction is about to commit) and the deletes the stage holds */
 extern void sift_stage_flush_rows(Relation rel, SiftTxnStage *st, bool at_end);
 extern void sift_stage_flush_deletes(Relation rel, SiftTxnStage *st, bool at_end);
+extern BlockNumber *sift_stage_del_pages(const SiftTxnStage *st, int *n);
+extern void sift_stage_conflict_in(Relation rel, BlockNumber *pages, int n);
 extern void sift_stage_bulk_check(Relation rel, SiftTxnStage *st, SiftStagePart *p);
 
 #endif							/* SIFT_L0_STAGE_INT_H */

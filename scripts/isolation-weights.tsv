@@ -97,6 +97,7 @@ table/f2/pk_concurrent	0.1
 table/f2/key_share_cic	0.1
 table/f2/speculative_ssi	0.0
 table/f2/ssi_delvec	0.1
+table/f2/ssi_pk_skew	0.2
 table/f2/ssi_scan_caches	0.6	quiet
 table/fetch_past_dir	2.4
 table/maintain	2.0	quiet
@@ -104,6 +105,7 @@ table/par_scan	0.6
 table/preagg	3.3
 table/preagg_calendar	6.1
 table/scan_private	2.6
+table/ssi_pk_skew	0.2
 table/sysattr	0.0
 table/sysattr_groups	1.3	quiet
 table/tomb_follow	0.3

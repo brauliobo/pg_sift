@@ -268,11 +268,11 @@ tbl_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot
 		uint64		moved;
 		ItemPointerData mp;
 
-		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		ItemPointerSetMovedPartitions(&mp);
 		moved = sift_key_from_tid(&mp);
 		sift_tomb_append(rel, &st->tomb, key, GetCurrentTransactionId(), cid,
 							 changingPart ? SIFT_TOMB_UPDATE : SIFT_TOMB_DELETE, 0, changingPart ? moved : 0);
+		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		if (logical)
 			log_old_row(rel, st, SIFT_TBL_OP_DELETE, tid, NULL);
 		pgstat_count_heap_delete(rel);
@@ -356,7 +356,6 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 		MinimalTuple mtup = sift_tbl_detoast_slot_tuple(rel, slot, &free_mtup);
 		bool		hot = index_columns_kept(rel, st, &old, mtup);
 
-		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		sift_tbl_append(rel, st, mtup, GetCurrentTransactionId(), cid, 0, &slot->tts_tid);
 		slot->tts_tableOid = RelationGetRelid(rel);
 		if (logical)
@@ -365,6 +364,7 @@ tbl_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId
 			heap_free_minimal_tuple(mtup);
 		sift_tomb_append(rel, &st->tomb, sift_key_from_tid(&old), GetCurrentTransactionId(), cid, SIFT_TOMB_UPDATE,
 							 hot ? SIFT_TOMB_HOT : 0, sift_key_from_tid(&slot->tts_tid));
+		CheckForSerializableConflictIn(rel, NULL, InvalidBlockNumber);
 		if (hot)
 			*update_indexes = TU_None;
 		pgstat_count_heap_update(rel, hot, false);

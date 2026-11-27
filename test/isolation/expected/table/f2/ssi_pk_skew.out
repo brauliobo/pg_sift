@@ -1,0 +1,117 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1seq s2seq s1off s2off s1c s2c s3n
+step s1seq: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s2seq: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s2off: DELETE FROM p2 WHERE shift = 7 AND doc = 2 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
+
+starting permutation: s1idx s2idx s1off s2off s1c s2c s3n
+step s1idx: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s2idx: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s2off: DELETE FROM p2 WHERE shift = 7 AND doc = 2 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
+
+starting permutation: s1ios s2ios s1off s2off s1c s2c s3n
+step s1ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+step s2ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s2off: DELETE FROM p2 WHERE shift = 7 AND doc = 2 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
+
+starting permutation: s1bmp s2bmp s1off s2off s1c s2c s3n
+step s1bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off;
+step s2bmp: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexscan = off; SET LOCAL enable_indexonlyscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s2off: DELETE FROM p2 WHERE shift = 7 AND doc = 2 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2c: COMMIT;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
+
+starting permutation: s2idx s2dec s1idx s1off s1c s2rest s2del s2c s3n
+step s2idx: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s2dec: DECLARE c CURSOR FOR SELECT o.s, p.doc FROM (VALUES (-1), (7)) o(s) LEFT JOIN p2 p ON p.shift = o.s; FETCH 1 FROM c;
+ s|doc
+--+---
+-1|   
+(1 row)
+
+step s1idx: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2rest: FETCH ALL FROM c;
+s|doc
+-+---
+7|  1
+7|  2
+(2 rows)
+
+step s2del: DELETE FROM p2 WHERE shift = 7 AND doc = 2;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
+
+starting permutation: s2ios s2dec s1idx s1off s1c s2rest s2del s2c s3n
+step s2ios: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+step s2dec: DECLARE c CURSOR FOR SELECT o.s, p.doc FROM (VALUES (-1), (7)) o(s) LEFT JOIN p2 p ON p.shift = o.s; FETCH 1 FROM c;
+ s|doc
+--+---
+-1|   
+(1 row)
+
+step s1idx: BEGIN ISOLATION LEVEL SERIALIZABLE; SET LOCAL enable_seqscan = off; SET LOCAL enable_indexonlyscan = off; SET LOCAL enable_bitmapscan = off;
+step s1off: DELETE FROM p2 WHERE shift = 7 AND doc = 1 AND (SELECT count(*) FROM p2 WHERE shift = 7) >= 2;
+step s1c: COMMIT;
+step s2rest: FETCH ALL FROM c;
+s|doc
+-+---
+7|  1
+7|  2
+(2 rows)
+
+step s2del: DELETE FROM p2 WHERE shift = 7 AND doc = 2;
+ERROR:  could not serialize access due to read/write dependencies among transactions
+step s2c: COMMIT;
+step s3n: SELECT count(*) AS on_shift FROM p2 WHERE shift = 7;
+on_shift
+--------
+       1
+(1 row)
+
