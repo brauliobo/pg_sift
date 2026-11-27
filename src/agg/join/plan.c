@@ -321,7 +321,23 @@ class_keyed(PlannerInfo *root, Relids base, const SiftV6JoinShape *sh, const Equ
 	return bms_is_subset(rest, keyed);
 }
 
-/* a class of equal columns and expressions that the planner made of the inner and semi joins: the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
+/* every member of the class that is a key of a dimension has a type the hash of the probe takes */
+static bool
+class_key_types_ok(const SiftV6JoinShape *sh, const EquivalenceClass *ec, const Node *probe, int probe_role)
+{
+	foreach_node(EquivalenceMember, em, ec->ec_members)
+	{
+		const Var  *key;
+		const Node *kexpr;
+		const int	d = em->em_is_child ? ROLE_NONE : dim_key_of(sh, (Node *) em->em_expr, &key, &kexpr);
+
+		if (d >= 0 && d != probe_role && !sift_v6_key_types_agree(exprType(probe), key->vartype, ec->ec_collation))
+			return false;
+	}
+	return true;
+}
+
+/* a class of equal columns and expressions that the planner made of the inner and semi joins (a class of one member, the sort key of a side of a merge join, states no equality): the members that are dimensions are joined to the member before them, the column or expression of the fact table, of the element or of the first dimension */
 static bool
 equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
@@ -330,7 +346,8 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 		const Node *probe = NULL;
 		int			probe_role = ROLE_NONE;
 		Relids		rels = NULL;
-		int			ncolumns = 0;
+		int			ncolumns = 0,
+					nmembers = 0;
 
 		if (ec->ec_has_const || ec->ec_has_volatile || ec->ec_broken)
 			continue;
@@ -342,6 +359,7 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 
 			if (em->em_is_child)
 				continue;
+			nmembers++;
 			rels = bms_add_members(rels, vr);
 			if (role == ROLE_NONE)
 				continue;
@@ -352,10 +370,10 @@ equivalence_keys(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 				probe_role = role;
 			}
 		}
-		if (bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
+		if (nmembers < 2 || bms_membership(rels) != BMS_MULTIPLE || within_one_dim(sh, rels))
 			continue;
 		if (probe == NULL || ncolumns > 1 || (!IsA(probe, Var) && (probe_role >= 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe))) ||
-			!class_keyed(root, base, sh, ec, probe, probe_role))
+			!class_keyed(root, base, sh, ec, probe, probe_role) || !class_key_types_ok(sh, ec, probe, probe_role))
 		{
 			if (!computed_class_ok(sh, rels))
 				return false;
