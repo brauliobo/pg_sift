@@ -223,6 +223,8 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 		for (int k = 0; k < st->nsources; k++)
 			sift_v6_source_enter(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap, st->sources[k].index == NULL, estate->es_snapshot);
 	require_formats(st);
+	if (st->star != NULL && st->nsources == 1)
+		sift_v6_star_fact(st->star, st->spec, &(SiftV6FoundFact) {st->sources[0].ops, st->sources[0].heap, st->sources[0].index, estate->es_snapshot});
 	begin_arm(st, node, estate, eflags);
 	if (st->spec->par_strategy != 0)
 		begin_par(st, node, estate);
@@ -900,6 +902,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Dimension Cache", psprintf("%u hit, %u built", dim_hits, dim_built), es);
 	if (st->star_shared > 0)
 		ExplainPropertyInteger("Shared Dimensions", NULL, st->star_shared, es);
+	if (st->star != NULL)
+		sift_v6_found_explain(sift_v6_star_found_stats(st->star), es);
 	sift_v6_gpu_explain(&st->gpu, es);
 	ex.heap_vet_rows = st->stats.heap_vet_rows;
 	ex.grans_scanned = st->stats.grans;

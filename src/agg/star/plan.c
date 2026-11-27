@@ -24,6 +24,7 @@
 #include "agg/datum.h"
 #include "agg/dim_keys.h"
 #include "agg/ext.h"
+#include "agg/join/found.h"
 #include "agg/source_rel.h"
 
 typedef struct StarDim
@@ -382,10 +383,11 @@ star_add_fn(V6Plan *p, const void *arg)
 	for (int d = 0; d < s->nd; d++)
 	{
 		Path	   *child = s->dims[d].path;
+		const bool	found = sift_v6_found_planned(p->root, p->ops, p->relid, p->spec.ext, d, child);
 
 		children = lappend(children, child);
-		xs += sift_v6_dim_cost(child);
-		xt += sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0 + s->input_rows * cpu_operator_cost;
+		xs += found ? 0 : sift_v6_dim_cost(child);
+		xt += (found ? 0 : sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0) + s->input_rows * cpu_operator_cost;
 	}
 	star_add(p, s->goal, s->input_rows, children, xs, xt);
 }

@@ -27,4 +27,7 @@ extern MemoryContext sift_dimcache_read_cx(SiftDimTry *t);
 /* The table was read into sift_dimcache_read_cx(): keeps it when the table still is what the stamp says, true then (it is pinned until mcx is reset and the caller does not free it) */
 extern bool sift_dimcache_keep(SiftDimTry *t, const SiftStarDim *dim);
 
+/* The table every row of which the plan ps reads, with no filter, and the column of it that column col of its output is (*att 0: an expression); NULL for any other plan */
+extern Relation sift_dimcache_whole_table(PlanState *ps, int col, AttrNumber *att);
+
 #endif							/* SIFT_AGG_V6_DIM_CACHE_H */

@@ -32,6 +32,8 @@ typedef struct SiftV6Pipe
 	int			nslots;
 	int			ndims;
 	const SiftStarDim *dim[SIFT_STAR_MAX_DIMS];
+	const struct SiftV6Found *found[SIFT_STAR_MAX_DIMS];	/* a dimension the found flag answers (agg/join/found.h): the fact rows are kept by the flag in found_slot, no table is probed */
+	int			found_slot[SIFT_STAR_MAX_DIMS];
 	uint32		nparts[SIFT_STAR_MAX_DIMS];	/* a dimension too big for the memory of a join is read in this many parts of its keys, one after the other */
 	uint32		part[SIFT_STAR_MAX_DIMS];	/* the part of the key the current pass joins */
 	int			fslot[SIFT_STAR_MAX_DIMS][SIFT_STAR_MAX_KEYS];	/* the slots of the fact keys of each dimension */

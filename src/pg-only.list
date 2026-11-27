@@ -624,6 +624,7 @@ col/v1/conn/conn.c
 col/v1/conn/conn.h
 col/v1/conn/decl.c
 col/v1/conn/fill.c
+col/v1/conn/found.c
 col/v1/conn/keys.c
 col/v1/conn/probe.c
 col/v1/delta.c

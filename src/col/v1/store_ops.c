@@ -801,7 +801,7 @@ bind_column(SiftV1Src *s, int i)
 		bind_type(s, i);
 		return;
 	}
-	l = input_leaf(s, c->attno, vec_class[c->type]);
+	l = sift_v6_attno_found(c->attno) >= 0 ? sift_v1_found_leaf(s->rels.rel, s->lay, c->attno) : input_leaf(s, c->attno, vec_class[c->type]);
 	width = c->type == SVEC_STRVIEW ? sizeof(SiftStrView) : c->type == SVEC_I32 ? sizeof(int32) : c->type == SVEC_BOOL ? 1 : sizeof(int64);
 	SIFT_INVARIANT(c->type != SVEC_NUM64 || l->scale == c->scale, "numeric attribute %d of relation %u is stored at scale %d, not %d", c->attno, s->in.indexoid, l->scale, c->scale);
 	if (c->type == SVEC_DATUM)
@@ -983,7 +983,8 @@ static const SiftStoreOps v1_store_ops = {
 	.order = &v1_order_ops,
 	.preagg = &v1_preagg_ops,
 	.jsonb = &v1_jsonb_ops,
-	.hybrid = &v1_hybrid_ops
+	.hybrid = &v1_hybrid_ops,
+	.conn = &sift_v1_conn_ops
 };
 
 void

@@ -1,7 +1,7 @@
 /*
  * core/store/ops.h - format-agnostic storage seam for the unified SiftAgg engine (Spec 86).
  *
- * A multi-format registry with 6 mandatory core pointers and 10 independent optional capability sub-vtables (NULL = unsupported, skipped in one
+ * A multi-format registry with 6 mandatory core pointers and 11 independent optional capability sub-vtables (NULL = unsupported, skipped in one
  * branch). The engine (agg/) reaches a format only through these tables and the plain structs of core/scan_types.h: no col/f2, col/v1, table/f2 or table/v1 header is included here or in agg/.
  * Format state that crosses the seam is opaque (a struct named here and defined by the format, or a void pointer).
  */
@@ -96,7 +96,7 @@ typedef struct SiftStoreStats
 	int			(*card_leaf) (Oid relid, int col);
 } SiftStoreStats;
 
-/* ---- 10 Independent Optional Capability Sub-Vtables (NULL = unsupported) ---- */
+/* ---- 11 Independent Optional Capability Sub-Vtables (NULL = unsupported) ---- */
 
 /*
  * 1. Key order: the sort order the parts keep, and the scan that keeps the best rows of it. lead_att: the attribute of the first key column of the index or table (0: none, or not a column);
@@ -311,6 +311,18 @@ typedef struct SiftJsonbOps
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 } SiftJsonbOps;
 
+/*
+ * 11. Connections: the flag a connected index keeps of each row that the parent row of its key was found (col/am/conn_route.h). conn: the connection of the index from its attribute fk
+ * to the key column key of the parent table, with the index of the parent whose journal serves it (-1: none). proof: NULL when the flags of connection c tell every row a scan of the
+ * index reads (oldest: the oldest stamp they were filled under; clean: no row had a key the parent lacked then), else why not, a word for EXPLAIN. A scan reads the flag as the
+ * column SIFT_V6_FOUND_ATTNO(c) (agg/vclass.h): 1 where the parent row was found.
+ */
+typedef struct SiftConnOps
+{
+	int			(*conn) (Relation heap, Relation index, AttrNumber fk, Oid parent, AttrNumber key, Oid *parent_index);
+	const char *(*proof) (Relation index, int c, SiftConnStamp *oldest, bool *clean);
+} SiftConnOps;
+
 /* Unified multi-format storage ops descriptor */
 typedef struct SiftStoreOps
 {
@@ -325,7 +337,7 @@ typedef struct SiftStoreOps
 	/* SiftV6Source already carries next(), skip(), fetch(), close() */
 	bool		(*leaf_holds) (Oid relid, bool is_table, int att, int cls);
 
-	/* --- 10 independent optional capability sub-vtables (NULL = unsupported) --- */
+	/* --- 11 independent optional capability sub-vtables (NULL = unsupported) --- */
 	const SiftOrderOps *order;
 	const SiftPreaggOps *preagg;
 	const SiftProjOps *proj;
@@ -336,6 +348,7 @@ typedef struct SiftStoreOps
 	const SiftDictOps *dict;
 	const SiftStoreParOps *par;
 	const SiftJsonbOps *jsonb;
+	const SiftConnOps *conn;
 } SiftStoreOps;
 
 extern void sift_store_ops_register(const SiftStoreOps *ops);

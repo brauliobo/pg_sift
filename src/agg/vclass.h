@@ -21,6 +21,16 @@ typedef enum SiftV6Class
 /* SiftV6InCol.attno and SiftV6Col.attno of sift.score(ctid), the score of the row's hit: no column of the index; a source given a text bridge fills it as an F64 vector */
 #define SIFT_V6_SCORE_ATTNO		(-1)
 
+/* SiftV6InCol.attno of the found flag of connection c of a connected index (SiftConnOps, core/store/ops.h): 1 where the parent row of the key was found, NULL where it was not */
+#define SIFT_V6_FOUND_ATTNO(c)	(-2 - (c))
+
+/* the connection whose found flag the column of attno is, -1 for any other column */
+static inline int
+sift_v6_attno_found(int attno)
+{
+	return attno <= SIFT_V6_FOUND_ATTNO(0) ? SIFT_V6_FOUND_ATTNO(0) - attno : -1;
+}
+
 /* SiftV6InCol.attno of a column that is a leaf of the layout of the index, not an attribute: SIFT_V6_JLEAF_VATT + the leaf (a typed path of a document, `doc ->> 'k'`) */
 #define SIFT_V6_JLEAF_VATT		(1 << 14)
 

@@ -96,7 +96,7 @@ col_for(SiftSrcFold *f, SiftV6Col c, bool takes_nan)
 		c = f->a.spec->derive[c.derive - 1].src;
 	cls = sift_v6_col_class(&c);
 	attno = sift_v6_col_batch_attno(&c);
-	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
+	SIFT_INVARIANT((c.attno > 0 || c.attno == SIFT_V6_SCORE_ATTNO || sift_v6_attno_found(c.attno) >= 0) && cls != SV6C_NONE, "column %d of relation %s is not one the source fold reads", c.attno, sift_rel_label(f->a.spec->relid));
 	for (int i = 0; i < f->nfold; i++)
 		if (f->col[i].attno == attno && f->col[i].jmember == c.jmember && f->col[i].cls == cls)
 		{
@@ -138,6 +138,7 @@ setup_pipe(SiftSrcFold *f)
 	const int	nbin = f->in.ncols + f->nderived;
 	const int	nfact = nbin + f->nbins;
 	SiftVecType *type = palloc(Max(nfact, 1) * sizeof(SiftVecType));
+	SiftV6Col	flag;
 
 	for (int i = 0; i < f->in.ncols; i++)
 		type[i] = f->in.col[i].type;
@@ -155,6 +156,8 @@ setup_pipe(SiftSrcFold *f)
 
 				f->pipe->fslot[d][k] = slot_of(f, &key);
 			}
+	for (int d = 0; d < x->ndims; d++)
+		f->pipe->found_slot[d] = sift_v6_star_found_col(f->a.star, d, &flag) ? slot_of(f, &flag) : -1;
 	for (int i = 0; i < x->nrcol; i++)
 		f->pipe->rslot[i] = slot_of(f, &x->rcol[i]);
 	for (int i = 0; i < spec->nkeys; i++)
@@ -325,6 +328,7 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 	SiftSrcFold *f = sift_palloc0_aligned(SiftSrcFold, 1);
 	const SiftV6Spec *spec = a->spec;
 	const int	nvec = sift_v6_spec_nvec(spec);
+	SiftV6Col	flag;
 
 	f->a = *a;
 	f->cx = cx;
@@ -348,6 +352,9 @@ sift_srcfold_new(const SiftSrcFoldArgs *a, MemoryContext cx)
 			for (int k = 0; k < spec->ext->dim[d].nkeys; k++)
 				if (sift_v6_xdim_key_is_col(&spec->ext->dim[d], k) && spec->ext->dim[d].fsrc[k] == SV6SRC_ATTR)
 					col_for(f, sift_v6_xdim_key_col(&spec->ext->dim[d], k), false);
+		for (int d = 0; spec->ext != NULL && d < spec->ext->ndims; d++)
+			if (sift_v6_star_found_col(a->star, d, &flag))
+				col_for(f, flag, false);
 		for (int i = 0; spec->ext != NULL && i < spec->ext->nrcol; i++)
 			if (spec->ext->rcol[i].src == SV6SRC_ATTR)
 				col_for(f, spec->ext->rcol[i], false);

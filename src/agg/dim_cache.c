@@ -294,6 +294,19 @@ readable(const SiftDimTry *t, const SiftConnStamp *stamp)
 	return ok;
 }
 
+Relation
+sift_dimcache_whole_table(PlanState *ps, int col, AttrNumber *att)
+{
+	DimScan		s = {0};
+	const Node *e;
+
+	if (!plain_scan(ps, &s) || s.filters[0] != NIL || s.filters[1] != NIL)
+		return NULL;
+	e = scan_expr(ps, col);
+	*att = IsA(e, Var) && ((const Var *) e)->varlevelsup == 0 ? ((const Var *) e)->varattno : 0;
+	return s.heap;
+}
+
 SiftDimTry *
 sift_dimcache_try(PlanState *ps, const SiftV6XDim *xd, const SiftStarShape *sh, MemoryContext mcx)
 {

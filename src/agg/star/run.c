@@ -30,6 +30,9 @@ struct SiftV6StarRun
 	SiftStarDim dim[SIFT_STAR_MAX_DIMS];
 	bool		have[SIFT_STAR_MAX_DIMS];
 	bool		read[SIFT_STAR_MAX_DIMS];	/* the plan has run: it is rescanned before it runs again */
+	SiftV6FoundFact fact;		/* the fact scan whose found flags may answer a dimension (ops NULL: none) */
+	SiftV6Found *found[SIFT_STAR_MAX_DIMS];
+	SiftV6FoundStats fstats;
 	SiftDimTry *dc[SIFT_STAR_MAX_DIMS];	/* what the pass may keep of the dimension (v6_dim_cache.h) */
 	bool		kept[SIFT_STAR_MAX_DIMS];	/* the table is an entry of the cache: pinned until the tables are freed, not freed with them */
 	uint32		hits;			/* the dimensions read from the cache, and those read from the plan to be kept */
@@ -401,6 +404,14 @@ build_dim(SiftV6StarRun *r, int d, uint32 pass)
 
 	free_dim(r, d);
 	r->dc[d] = NULL;
+	if (pass == 0 && r->fact.ops != NULL)
+		r->found[d] = sift_v6_found_open(&r->fact, r->x, d, r->ps[d], r->cx, &r->fstats);
+	if (r->found[d] != NULL)
+	{
+		r->dirty[d] = false;
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	if (pass == 0 && r->nparts[d] == 1 && find_kept(r, d))
 	{
 		r->bytes = Max(r->bytes, r->dim[d].bytes);
@@ -546,6 +557,28 @@ next_pass(SiftV6StarRun *r)
 	return false;
 }
 
+void
+sift_v6_star_fact(SiftV6StarRun *r, const SiftV6Spec *spec, const SiftV6FoundFact *fact)
+{
+	if (sift_v6_found_serves(spec, fact))
+		r->fact = *fact;
+}
+
+bool
+sift_v6_star_found_col(const SiftV6StarRun *r, int d, SiftV6Col *col)
+{
+	if (r->found[d] == NULL)
+		return false;
+	*col = sift_v6_found_col(r->found[d]);
+	return true;
+}
+
+const SiftV6FoundStats *
+sift_v6_star_found_stats(const SiftV6StarRun *r)
+{
+	return &r->fstats;
+}
+
 SiftStarOpen
 sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
@@ -568,7 +601,7 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI))))
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
 }
@@ -586,6 +619,7 @@ sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p)
 	for (int d = 0; d < r->x->ndims; d++)
 	{
 		p->dim[d] = &r->dim[d];
+		p->found[d] = r->found[d];
 		p->nparts[d] = r->nparts[d];
 		p->part[d] = r->part[d];
 	}
@@ -683,7 +717,7 @@ sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int
 	for (int d = 0; d < r->x->ndims; d++)
 	{
 		const SiftV6XDim *xd = &r->x->dim[d];
-		const SiftStarPush push = sift_star_push(&r->dim[d]);
+		const SiftStarPush push = r->found[d] != NULL ? (SiftStarPush) {.kind = SSP_NONE} : sift_star_push(&r->dim[d]);
 		const AttrNumber att = (AttrNumber) xd->fatt[0];
 		const Oid	type = xd->ftype[0],
 					family = att >= 1 && att <= index->rd_index->indnatts ? index->rd_opfamily[att - 1] : InvalidOid,
@@ -709,6 +743,7 @@ sift_v6_star_close(SiftV6StarRun *r)
 	{
 		free_dim(r, d);
 		r->dc[d] = NULL;
+		r->found[d] = NULL;
 		r->cstart[d] = NULL;
 		r->nchunks[d] = 1;
 	}

@@ -13,6 +13,7 @@
 #include "agg/datum.h"
 #include "agg/gather.h"
 #include "agg/expr/pg.h"
+#include "agg/join/found.h"
 #include "agg/pipe.h"
 #include "agg/topn/rows.h"
 #include "core/popcount.h"
@@ -168,6 +169,8 @@ sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, vo
 	c->sink = sink;
 	c->sink_arg = sink_arg;
 	memcpy(c->dim, p->dim, sizeof(c->dim));
+	memcpy(c->found, p->found, sizeof(c->found));
+	memcpy(c->found_slot, p->found_slot, sizeof(c->found_slot));
 	memcpy(c->nparts, p->nparts, sizeof(c->nparts));
 	memcpy(c->part, p->part, sizeof(c->part));
 	memcpy(c->fslot, p->fslot, sizeof(c->fslot));
@@ -454,6 +457,15 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 				return;
 		}
 		update_groups(p, b);
+		return;
+	}
+	if (p->found[d] != NULL)
+	{
+		sift_v6_found_apply(p->found[d], &b->vec[p->found_slot[d]], &b->vec[p->fslot[d][0]], bs);
+		for (int c = 0; c < p->spec->ext->dim[d].npay; c++)
+			b->vec[p->pay_slot[d] + c] = b->vec[p->fslot[d][0]];
+		count_active(bs);
+		stage(p, d + 1, b);
 		return;
 	}
 	dim = p->dim[d];

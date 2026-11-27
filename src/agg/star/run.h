@@ -12,6 +12,7 @@
 #include "executor/executor.h"
 
 #include "agg/ext.h"
+#include "agg/join/found.h"
 #include "agg/pipe.h"
 
 typedef struct SiftV6StarRun SiftV6StarRun;
@@ -24,6 +25,11 @@ typedef enum SiftStarOpen
 } SiftStarOpen;
 
 extern SiftV6StarRun *sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext cx);
+/* The scan of the fact table the dimensions are joined to: the found flags of its index may answer a dimension (agg/join/found.h) from the first pass on */
+extern void sift_v6_star_fact(SiftV6StarRun *r, const SiftV6Spec *spec, const SiftV6FoundFact *fact);
+/* The column of the fact scan that holds the found flag dimension d is answered by; false when it is read from its plan */
+extern bool sift_v6_star_found_col(const SiftV6StarRun *r, int d, SiftV6Col *col);
+extern const SiftV6FoundStats *sift_v6_star_found_stats(const SiftV6StarRun *r);
 /* Reads the dimensions of the pass, which the node joins in scans fact scans (one for each partition of a partitioned fact); the first call (pass 0) chooses the classes of the ones that do not fit */
 extern SiftStarOpen sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans);
 /* A scan of the pass has read its fact rows: the last one sends the rows of the dimensions of a RIGHT or FULL join that no scan matched through the pipe of that scan */

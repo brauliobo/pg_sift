@@ -30,6 +30,10 @@ extern const SiftZoneOps sift_v1_zone_ops;
 extern const SiftDictOps sift_v1_dict_ops;
 extern const SiftStoreParOps sift_v1_par_ops;
 
+/* The found flags of a connected index (col/v1/conn/found.c), and the leaf of the flag a scan reads as the column SIFT_V6_FOUND_ATTNO(c) */
+extern const SiftConnOps sift_v1_conn_ops;
+extern const SiftSrcLeaf *sift_v1_found_leaf(Relation index, const SiftSrcLayout *lay, int attno);
+
 /* The keys of a document of the unified scan (col/v1_engine/store_ops_json.c): the JSON types the reader tests one at a time, in the order of the index a row's type is, and the value of a key from a document */
 #define SIFT_V1_NJSON_TYPES 7
 typedef struct SiftV1JsonType
