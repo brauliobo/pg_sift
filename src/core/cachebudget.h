@@ -55,4 +55,7 @@ extern void sift_cache_discard_all(void);
 
 extern Size sift_cache_total_bytes(void);
 
+/* The most a backend keeps of the state of a scan for the next statement: what a statement of the session may hold (work_mem), and never more than the caches together */
+extern Size sift_cache_scan_bytes(void);
+
 #endif

@@ -9,7 +9,8 @@
  * with its top when the statement ends (75 page faults for a lookup of 0.35 million instructions): the backend keeps the buffers of the segments it has closed, and the next
  * statement opens its segments with them. Taken by the first unit a segment reads, given back when the segment's context ends. A buffer is in the budget from its
  * allocation, so giving it back makes no room: the give-back runs inside the deletion of a context that may be the one a cache is evicting, and evicts nothing. A buffer larger
- * than sift.backend_cache_kb is not kept: as the newest entry it would outlast every other one the transaction end evicts to keep the budget.
+ * than a statement of the session may hold (sift_cache_scan_bytes: work_mem, sift.backend_cache_kb) is not kept: the records of wide values would stay in a backend that reads
+ * them under a work_mem a fraction of their size, and as the newest entry it would outlast every other one the transaction end evicts to keep the budget.
  */
 #define UNIT_KEEP		4
 
@@ -55,7 +56,7 @@ unit_give_back(SegPriv *pv)
 {
 	if (pv->unitbuf == NULL)
 		return;
-	if (nunit_spare < UNIT_KEEP && pv->unitcap <= Min(UNIT_KEEP_BYTES, (Size) sift_backend_cache_kb * 1024))
+	if (nunit_spare < UNIT_KEEP && pv->unitcap <= Min(UNIT_KEEP_BYTES, sift_cache_scan_bytes()))
 	{
 		unit_spare[nunit_spare++] = (typeof(unit_spare[0])) {pv->unitbuf, pv->unitcap};
 		unit_spare_tick = sift_cache_tick();

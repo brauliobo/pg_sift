@@ -395,6 +395,8 @@ sift_tbl_slot_is_lazy(TupleTableSlot *slot)
 
 /* Does a column group hold the row of tid (live)? On true *rv is filled, rv->tuple palloc'd. */
 extern bool sift_tbl_group_fetch(Relation rel, SiftTblRel *st, ItemPointer tid, SiftTblRowVer *rv, bool lazy);
+/* The fetch scans kept for the next transaction hold no more than sift_cache_scan_bytes(): the unit each one decoded last stays with it */
+extern void sift_tbl_fetch_trim(SiftTblRel *st);
 
 /*
  * The rows of the column groups of a directory copy, a unit at a time (the directory copy must stay protected by a snapshot of the caller).

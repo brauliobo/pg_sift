@@ -4,7 +4,6 @@
 /* check-memory: allow-allocs every array here follows the rows of one unit (at most SIFT_COL_UNIT_MAX_ROWS, 74,496) or of one chunk, not the rows of the table */
 #include "table/v1/gscan/int.h"
 #include "core/cachebudget.h"
-#include "core/memtrack.h"
 
 /* The TIDs of every unit of superblock sb (ascending, one array per unit) */
 static void
@@ -177,13 +176,6 @@ fetch_kept(Relation rel, SiftTblRel *st, struct SiftTblGroupCache *c)
 	return true;
 }
 
-/* What the fetch scans of a table hold at most: work_mem, and never more than the caches of a backend */
-static Size
-fetch_budget(void)
-{
-	return Min(sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1), (Size) sift_backend_cache_kb * 1024);
-}
-
 /* What a fetch scan holds: its context and the unit records its segments keep a buffer for */
 static Size
 fetch_bytes(SiftTblGroupScan *g)
@@ -195,9 +187,12 @@ fetch_bytes(SiftTblGroupScan *g)
 	return bytes;
 }
 
-/* The slot of a new fetch scan: an empty one, else the least recently used; the scans are dropped, oldest first, until the new one, as large as the largest, fits fetch_budget() */
+/*
+ * The fetch scans are dropped, oldest first, until what they hold fits sift_cache_scan_bytes(), with a new one as large as the largest when one is to begin: the slot it takes,
+ * an empty one, else the least recently used
+ */
 static int
-fetch_victim(struct SiftTblGroupCache *c)
+fetch_fit(struct SiftTblGroupCache *c, bool begin)
 {
 	for (;;)
 	{
@@ -220,7 +215,7 @@ fetch_victim(struct SiftTblGroupCache *c)
 			if (lru < 0 || c->fetch_used[i] < c->fetch_used[lru])
 				lru = i;
 		}
-		if (lru < 0 || bytes + largest <= fetch_budget())
+		if (lru < 0 || bytes + (begin ? largest : 0) <= sift_cache_scan_bytes())
 			return empty >= 0 ? empty : lru;
 		sift_tbl_gscan_end(c->fetch[lru]);
 		c->fetch[lru] = NULL;
@@ -251,7 +246,7 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 	{
 		MemoryContext old = MemoryContextSwitchTo(st->cxt);
 
-		pick = fetch_victim(c);
+		pick = fetch_fit(c, true);
 		if (c->fetch[pick])
 			sift_tbl_gscan_end(c->fetch[pick]);
 		c->fetch[pick] = sift_tbl_gscan_begin(rel, RelationGetDescr(rel), st, st->dir, NULL);
@@ -263,6 +258,13 @@ fetch_scan(Relation rel, SiftTblRel *st, uint32 sb)
 	}
 	c->fetch_used[pick] = ++c->fetch_clock;
 	return c->fetch[pick];
+}
+
+void
+sift_tbl_fetch_trim(SiftTblRel *st)
+{
+	if (st->gcache != NULL)
+		(void) fetch_fit(st->gcache, false);
 }
 
 /* Where tid is among the cached units of its superblock: unit k, the row index pos in its vectors */

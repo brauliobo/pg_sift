@@ -654,6 +654,12 @@ sift_cache_total_bytes(void)
 	return cache_root ? MemoryContextMemAllocated(cache_root, true) : 0;
 }
 
+Size
+sift_cache_scan_bytes(void)
+{
+	return Min(sift_mem_budget_bytes(SIFT_BUDGET_WORK_MEM, 1, 1), (Size) sift_backend_cache_kb * 1024);
+}
+
 static bool
 evict_oldest(void)
 {
