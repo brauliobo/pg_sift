@@ -1,5 +1,5 @@
 -- An IN list tested against the keys a unit keeps (set summaries: the list, the runs, the bitmap, the bloom filter) skips the units whose keys cannot meet the
--- list: lists below, above and between the keys of the units, on their edges and across them give the heap's rows, and the same units are read as before the list was
+-- list: lists below, above and between the keys of the units, on their edges and across them give the heap's rows, and the same units are read or answered from the cubes as before the list was
 -- cut to the keys of the unit's range.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
@@ -34,7 +34,9 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		n := coalesce(substring(l from 'Granules(?: Scanned: |: scanned=)(\d+)')::int, n);
+		IF l ~ '^\s*Granules: ' THEN
+			n := substring(l from 'scanned=(\d+)')::int + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
 	RETURN n;
 END $$;
