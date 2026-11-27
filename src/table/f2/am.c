@@ -306,6 +306,7 @@ write_deletes(SiftTblRewrite *r)
 		SiftPartitionEntry e;
 		bool		locked;
 
+		CHECK_FOR_INTERRUPTS();
 		while (m + 1 < mr.n && memcmp(mr.entries[m + 1].key_lo, r->dead[i].key, SIFT_BOUND_BYTES) <= 0)
 			m++;
 		for (j = i; j < r->ndead && (m + 1 >= mr.n || memcmp(r->dead[j].key, mr.entries[m + 1].key_lo, SIFT_BOUND_BYTES) < 0); j++)
@@ -319,6 +320,13 @@ write_deletes(SiftTblRewrite *r)
 	r->ndead = 0;
 	pfree(recs);
 	pfree(mr.entries);
+}
+
+/* The versions a rewrite holds before it writes their deletes: a quarter of the maintenance budget, in one allocation */
+static int
+dead_versions_max(void)
+{
+	return (int) Max(Min(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4), MaxAllocSize) / sizeof(SiftTblDeadVersion), 64);
 }
 
 /* The command of a write of this transaction, which its later snapshots tell apart; 0 for any other's */
@@ -401,6 +409,7 @@ rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
 	TransactionId xmax = TransactionIdIsValid(rs.xmax) && (TransactionIdIsCurrentTransactionId(rs.xmax) || TransactionIdDidCommit(rs.xmax)) ? rs.xmax : InvalidTransactionId;
 	SiftRowState ins;
 
+	CHECK_FOR_INTERRUPTS();
 	if (!rs.found || (TransactionIdIsValid(xmax) && seen_by_all(r, xmax)))
 	{
 		r->vacuumed++;
@@ -473,7 +482,7 @@ sift_tbl_f2_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Rela
 	TableScanDesc scan = sift_table_beginscan(OldTable, SnapshotAny, 0, NULL);
 	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
 	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,.before = table_slot_create(OldTable, NULL),.horizon = table_slot_create(OldTable, NULL),
-	.maxdead = (int) Min(Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4) / sizeof(SiftTblDeadVersion), 64), (Size) INT_MAX)};
+	.maxdead = dead_versions_max()};
 
 	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
 	sift_tbl_f2_bulk_begin(&r.bulk, NewTable);
