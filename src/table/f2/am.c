@@ -131,15 +131,17 @@ sift_tbl_f2_relation_nontransactional_truncate(Relation rel)
 	CacheInvalidateRelcache(rel);
 }
 
+/* What the transaction staged is written to the old file, each row and delete with the xid of its (sub)transaction, and the copy takes it: a rollback to a savepoint gives back the old file as the
+ * transaction left it, with the row locks that name it */
 void
 sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 {
 	SMgrRelation dstrel = smgropen(*newrlocator, rel->rd_backend);
 
-	sift_stage_flush(rel);
+	sift_stage_flush_with_deletes(rel);
+	sift_stage_discard(rel);
 	forget_caches(rel);
 	sift_fsm_cache_discard_rel(rel);
-	sift_tbl_rowlock_drop_rel(&rel->rd_locator);
 	sift_shm_manifest_invalidate(&rel->rd_locator, false);
 	RelationCreateStorage(*newrlocator, rel->rd_rel->relpersistence, true);
 	FlushRelationBuffers(rel);
@@ -154,7 +156,6 @@ sift_tbl_f2_relation_copy_data(Relation rel, const RelFileLocator *newrlocator)
 		}
 	RelationDropStorage(rel);
 	smgrclose(dstrel);
-	sift_stage_rebind(rel, newrlocator);
 }
 
 uint64

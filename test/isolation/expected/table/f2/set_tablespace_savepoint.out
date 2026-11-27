@@ -1,0 +1,37 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1lock s1move s2upd1 s1commit s2read
+step s1lock: BEGIN; SELECT id FROM iso_stsp WHERE id = 1 FOR UPDATE; DELETE FROM iso_stsp WHERE id = 2;
+id
+--
+ 1
+(1 row)
+
+step s1move: SAVEPOINT s; ALTER TABLE iso_stsp SET TABLESPACE iso_stsp_ts; ROLLBACK TO s;
+step s2upd1: UPDATE iso_stsp SET val = val + 1 WHERE id = 1; <waiting ...>
+step s1commit: COMMIT;
+step s2upd1: <... completed>
+step s2read: SELECT id, val FROM iso_stsp WHERE id <= 2 ORDER BY id;
+id|val
+--+---
+ 1|  1
+(1 row)
+
+
+starting permutation: s1lock s1move s2upd2 s1commit s2read
+step s1lock: BEGIN; SELECT id FROM iso_stsp WHERE id = 1 FOR UPDATE; DELETE FROM iso_stsp WHERE id = 2;
+id
+--
+ 1
+(1 row)
+
+step s1move: SAVEPOINT s; ALTER TABLE iso_stsp SET TABLESPACE iso_stsp_ts; ROLLBACK TO s;
+step s2upd2: UPDATE iso_stsp SET val = val + 1 WHERE id = 2; <waiting ...>
+step s1commit: COMMIT;
+step s2upd2: <... completed>
+step s2read: SELECT id, val FROM iso_stsp WHERE id <= 2 ORDER BY id;
+id|val
+--+---
+ 1|  0
+(1 row)
+

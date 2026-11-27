@@ -1,0 +1,45 @@
+-- sift_table: SET TABLESPACE keeps what the transaction staged before it, whether the move commits or is rolled back with its savepoint: a DELETE before it stays deleted, an UPDATE before
+-- it keeps the new version only (one row per key), a DELETE inside the savepoint is undone with it. Heap twins say what the rows are.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET allow_in_place_tablespaces = on;
+CREATE TABLESPACE stsp_ts LOCATION '';
+
+CREATE TABLE stsp_t (id int PRIMARY KEY, v text) USING sift_table;
+CREATE TABLE stsp_h (id int PRIMARY KEY, v text);
+INSERT INTO stsp_t SELECT g, 'p' FROM generate_series(1, 10) g;
+INSERT INTO stsp_h SELECT g, 'p' FROM generate_series(1, 10) g;
+
+BEGIN;
+DELETE FROM stsp_t WHERE id = 1;
+DELETE FROM stsp_h WHERE id = 1;
+UPDATE stsp_t SET v = 'u' WHERE id = 2;
+UPDATE stsp_h SET v = 'u' WHERE id = 2;
+SAVEPOINT s;
+DELETE FROM stsp_t WHERE id = 3;
+DELETE FROM stsp_h WHERE id = 3;
+ALTER TABLE stsp_t SET TABLESPACE stsp_ts;
+ROLLBACK TO s;
+SELECT id, v, count(*) FROM stsp_t WHERE id <= 3 GROUP BY id, v ORDER BY id, v;
+COMMIT;
+SELECT id, v, count(*) FROM stsp_t WHERE id <= 3 GROUP BY id, v ORDER BY id, v;
+SELECT (SELECT reltablespace FROM pg_class WHERE oid = 'stsp_t'::regclass) = 0 AS not_moved;
+
+BEGIN;
+DELETE FROM stsp_t WHERE id = 4;
+DELETE FROM stsp_h WHERE id = 4;
+UPDATE stsp_t SET v = 'w' WHERE id = 5;
+UPDATE stsp_h SET v = 'w' WHERE id = 5;
+SELECT id FROM stsp_t WHERE id = 6 FOR UPDATE;
+ALTER TABLE stsp_t SET TABLESPACE stsp_ts;
+UPDATE stsp_t SET v = 'x' WHERE id = 6;
+UPDATE stsp_h SET v = 'x' WHERE id = 6;
+COMMIT;
+SELECT id, v, count(*) FROM stsp_t WHERE id BETWEEN 4 AND 6 GROUP BY id, v ORDER BY id, v;
+SELECT (SELECT reltablespace FROM pg_class WHERE oid = 'stsp_t'::regclass) <> 0 AS moved;
+
+SELECT (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM stsp_t x) = (SELECT md5(string_agg(x::text, ',' ORDER BY x::text)) FROM stsp_h x) AS same_rows,
+	   (SELECT count(*) FROM stsp_t) AS rows_sift, (SELECT count(*) FROM stsp_h) AS rows_heap;
+DROP TABLE stsp_t, stsp_h;
+DROP TABLESPACE stsp_ts;
+DROP EXTENSION pg_sift;

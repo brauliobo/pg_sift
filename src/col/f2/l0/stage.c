@@ -920,19 +920,6 @@ sift_stage_peek(Relation rel)
 	return stage_of(rel);
 }
 
-void
-sift_stage_rebind(Relation rel, const RelFileLocator *locator)
-{
-	SiftTxnStage *st = stage_of(rel);
-
-	if (st == NULL)
-		return;
-	if (stage_htab != NULL)
-		hash_search(stage_htab, &st->locator, HASH_REMOVE, NULL);
-	st->locator = *locator;
-	stage_index(st);
-}
-
 uint64 *
 sift_stage_dead(Relation rel, Snapshot snap, int *n)
 {
