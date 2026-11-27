@@ -1,6 +1,6 @@
 -- A generic aggregate whose arguments read a joined table (the value and its sort key) keeps the ids of both in the one table of joined values the aggregate holds, which has one type: string_agg(dm.g::text, ',' ORDER BY dm.g)
 -- gave every row of a group the value of one row (found as the rows of a scope index on a logical subscriber, whose scope read is declined, that sift.col_scope_verify reported as differing). A call whose joined arguments
--- are of two types keeps PostgreSQL's plan; one type (the value is its own key), or a joined key of a value of the scan's own table, runs in the scan. Every answer is the normal plan's, on Format 1 and Format 2.0.
+-- are of two types, of one type (the value is its own key), or a joined key of a value of the scan's own table runs in the scan. Every answer is the normal plan's, on Format 1 and Format 2.0.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
