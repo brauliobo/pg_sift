@@ -132,7 +132,7 @@ SELECT shape, engine(q) AS engine, same(q) AS same FROM (VALUES
 -----------------+-----------------+------
  aggregate       | SiftAggV6       | t
  join and filter | SiftAggV6       | t
- top-n by group  | SiftAggV6TopN   | t
+ top-n by group  | SiftAggV6       | t
  window run      | SiftAggV6Window | t
 (4 rows)
 
