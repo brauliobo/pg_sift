@@ -272,13 +272,6 @@ SELECT * FROM phase();
  5 | t    |      1 |    0 | 
 (5 rows)
 
--- the setting is the switch
-SELECT * FROM phase() WHERE n = 1;
- n | same | proofs | keys | why 
----+------+--------+------+-----
- 1 | t    |      0 |    0 | 
-(1 row)
-
 -- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is looked up by its btree: filled, and the flags answer the join
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;

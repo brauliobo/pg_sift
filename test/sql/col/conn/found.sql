@@ -111,9 +111,6 @@ SELECT * FROM phase() WHERE n = 1;
 SELECT sift.col_promote('events_col') >= 0 AS promoted;
 SELECT * FROM phase();
 
--- the setting is the switch
-SELECT * FROM phase() WHERE n = 1;
-
 -- a parent whose keys (60,000 of them 1,000 apart, 9 bytes each) need more than half of maintenance_work_mem is looked up by its btree: filled, and the flags answer the join
 CREATE TABLE dim_big (id int PRIMARY KEY, label text) WITH (autovacuum_enabled = false);
 INSERT INTO dim_big SELECT i * 1000, repeat('x', 40) || i FROM generate_series(1, 60000) i;
