@@ -25,6 +25,7 @@
 typedef struct DimScan
 {
 	Relation	heap;
+	PlanState  *scan;
 	Oid			indexid;
 	List	   *filters[2];
 } DimScan;
@@ -185,7 +186,7 @@ ent_pin(DimEnt *e, MemoryContext mcx)
 	return p;
 }
 
-/* the table of a plain scan: no child plan, no parameter of the statement, no sub-select */
+/* the table of a plain scan, or of the scan the workers of a Gather share: no other child plan, no parameter of the statement, no sub-select */
 static bool
 plain_scan(PlanState *ps, DimScan *s)
 {
@@ -195,6 +196,8 @@ plain_scan(PlanState *ps, DimScan *s)
 		return false;
 	switch (nodeTag(p))
 	{
+		case T_Gather:
+			return p->qual == NIL && plain_scan(outerPlanState(ps), s);
 		case T_SeqScan:
 			break;
 		case T_IndexScan:
@@ -210,6 +213,7 @@ plain_scan(PlanState *ps, DimScan *s)
 	}
 	s->filters[0] = p->qual;
 	s->heap = ((ScanState *) ps)->ss_currentRelation;
+	s->scan = ps;
 	return true;
 }
 
@@ -249,19 +253,29 @@ journal_index(Relation heap)
 	return found;
 }
 
+/* the expression of column col of what the plan leaves, as the scan computes it: a Gather passes the columns of its scan on */
+static Node *
+scan_expr(const PlanState *ps, int col)
+{
+	const Expr *e = ((TargetEntry *) list_nth(ps->plan->targetlist, col - 1))->expr;
+
+	if (IsA(ps->plan, Gather) && IsA(e, Var) && ((const Var *) e)->varno == OUTER_VAR)
+		return scan_expr(outerPlanState(ps), ((const Var *) e)->varattno);
+	return (Node *) e;
+}
+
 /* the rows a table stands for: the table and the user, the plan's filters and index, and the columns it is read into (what a statement may find for it) */
 static char *
 identity(const PlanState *ps, const DimScan *s, const SiftV6XDim *xd, const SiftStarShape *sh)
 {
 	StringInfoData id;
-	const List *tlist = ps->plan->targetlist;
 
 	initStringInfo(&id);
 	appendStringInfo(&id, "%u:%u:%u:%d:%d:%d", RelationGetRelid(s->heap), GetUserId(), s->indexid, sh->mode, sh->nkeys, sh->npay);
 	for (int k = 0; k < sh->nkeys; k++)
-		appendStringInfo(&id, "|%d:%s", sh->kcls[k], nodeToString(((TargetEntry *) list_nth(tlist, xd->kcol[k] - 1))->expr));
+		appendStringInfo(&id, "|%d:%s", sh->kcls[k], nodeToString(scan_expr(ps, xd->kcol[k])));
 	for (int c = 0; c < sh->npay; c++)
-		appendStringInfo(&id, "|%d:%s", sh->pcls[c], nodeToString(((TargetEntry *) list_nth(tlist, xd->pcol[c] - 1))->expr));
+		appendStringInfo(&id, "|%d:%s", sh->pcls[c], nodeToString(scan_expr(ps, xd->pcol[c])));
 	appendStringInfo(&id, "|%s|%s", nodeToString(s->filters[0]), nodeToString(s->filters[1]));
 	return id.data;
 }
@@ -289,7 +303,7 @@ sift_dimcache_try(PlanState *ps, const SiftV6XDim *xd, const SiftStarShape *sh, 
 	Oid			ioid;
 	bool		stamped;
 
-	if (!plain_scan(ps, &s) || unstable(s.filters[0]) || unstable(s.filters[1]) || unstable(ps->plan->targetlist) ||
+	if (!plain_scan(ps, &s) || unstable(s.filters[0]) || unstable(s.filters[1]) || unstable(ps->plan->targetlist) || unstable(s.scan->plan->targetlist) ||
 		check_enable_rls(RelationGetRelid(s.heap), InvalidOid, true) != RLS_NONE)
 		return NULL;
 	if (!OidIsValid(ioid = journal_index(s.heap)))
