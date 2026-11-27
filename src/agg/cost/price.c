@@ -176,7 +176,7 @@ heap_leaf(const IndexOptInfo *ix, int attno)
 
 /*
  * The bytes of a decoded string of index column col (0-based): PostgreSQL's width of its column of the table rel (NULL: none). The statistics of the index size what a column takes as stored,
- * a dictionary code for a string, and a scan that groups or compares the strings reads their bytes.
+ * a dictionary code for a string, and a scan that groups by the strings hashes and compares their bytes.
  */
 static double
 string_width(const RelOptInfo *rel, const IndexOptInfo *ix, int col)
@@ -189,10 +189,11 @@ string_width(const RelOptInfo *rel, const IndexOptInfo *ix, int col)
 
 /*
  * the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name when index_cols, else those of the table), decoded or as stored: those of the view, or unsized
- * for a column it has no size of; decoded, a string at least its width in rel (NULL: none)
+ * for a column it has no size of; decoded, a string of wide at least its width in rel (NULL: none)
  */
 static double
-cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptInfo *ix, bool index_cols, const RelOptInfo *rel, bool stored, double unsized)
+cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptInfo *ix, bool index_cols, const RelOptInfo *rel, const Bitmapset *wide, bool stored,
+		   double unsized)
 {
 	double		bytes = 0;
 	int			a = -1;
@@ -205,7 +206,7 @@ cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptI
 		const double b = c == NULL ? 0 : stored ? c->avg_comp_bytes_row : c->avg_dec_bytes_row;
 		const int	icol = index_cols ? col - 1 : ix != NULL ? agg_index_col(ix, col) : -1;
 
-		bytes += Max(b > 0 ? b : unsized, stored ? 0 : string_width(rel, ix, icol));
+		bytes += Max(b > 0 ? b : unsized, stored || !bms_is_member(a, wide) ? 0 : string_width(rel, ix, icol));
 	}
 	return bytes;
 }
@@ -262,6 +263,18 @@ spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
 			cols = bms_add_member(cols, c.attno - FirstLowInvalidHeapAttributeNumber);
 	}
 	return cols;
+}
+
+/* the columns of the index the scan groups by: their strings are hashed and compared, at least their width a row (the arguments of the aggregates and the quals cost the decode the statistics say) */
+static Bitmapset *
+spec_keys(const SiftV6Spec *spec)
+{
+	Bitmapset  *keys = NULL;
+
+	for (int i = 0; i < spec->nkeys; i++)
+		if (spec->key[i].jleaf == 0 && spec->key[i].attno > 0)
+			keys = bms_add_member(keys, spec->key[i].attno - FirstLowInvalidHeapAttributeNumber);
+	return keys;
 }
 
 /* what a scan pays once before its rows: the open of the source and of each part it reads (agg/cost/model.h) */
@@ -377,14 +390,15 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	Bitmapset  *filter_leaves = NULL,
 			   *measure_leaves = NULL,
 			   *filter = spec_cols(spec, true, &filter_leaves),
-			   *measure = bms_difference(spec_cols(spec, false, &measure_leaves), filter);
+			   *measure = bms_difference(spec_cols(spec, false, &measure_leaves), filter),
+			   *keys = spec_keys(spec);
 
 	scan_bytes(root, rel, ix, &b);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
-	b.filter_row = cols_bytes(b.view, filter, ix, true, rel, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
-	b.measure_row = cols_bytes(b.view, measure, ix, true, rel, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, ix, true, NULL, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
-	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
+	b.filter_row = cols_bytes(b.view, filter, ix, true, rel, keys, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, ix, true, rel, keys, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
 	price.in.pg_qual = pg_qual_cost(root, ix, spec->vqual);
@@ -414,10 +428,10 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 		pull_varattnos((Node *) ri->clause, rel->relid, &filter);
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &measure);
 	scan_bytes(root, rel, ix, &b);
-	b.filter_row = cols_bytes(b.view, filter, ix, false, rel, false, SIFT_WORD_BYTES);
-	b.measure_row = cols_bytes(b.view, measure, ix, false, rel, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, ix, false, NULL, true, b.io_col_row);
-	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, true, b.io_col_row);
+	b.filter_row = cols_bytes(b.view, filter, ix, false, rel, filter, false, SIFT_WORD_BYTES);
+	b.measure_row = cols_bytes(b.view, measure, ix, false, rel, measure, false, SIFT_WORD_BYTES);
+	b.filter_io_row = cols_bytes(b.view, filter, ix, false, NULL, NULL, true, b.io_col_row);
+	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, NULL, true, b.io_col_row);
 	in = scan_inputs(&b);
 	*open = open_cost(scan_parts(&b));
 	sift_agg_choose_workers(&in, Min(b.surv / (in.g_eff * SIFT_GRANULE_ROWS), 1.0), false, false, *open, 0, &startup, total);
