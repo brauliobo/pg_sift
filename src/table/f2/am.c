@@ -44,6 +44,7 @@
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
 #include "table/f2/vm/vm.h"
+#include "table/dispatch.h"
 
 /* The rows of an index build between two reports of its progress: a report is a write to the shared counters, which a parallel build pays for every row of every worker */
 #define SIFT_TBL_PROGRESS_ROWS	4096
@@ -432,68 +433,86 @@ rewrite_row(SiftTblRewrite *r, TupleTableSlot *slot)
 	}
 }
 
+/* The versions of a Format 2 table, each row as its newest delta that committed made it, with the versions before it that a snapshot may still read */
+static void
+copy_versions(SiftTblRewrite *r)
+{
+	TableScanDesc scan = sift_table_beginscan(r->old, SnapshotAny, 0, NULL);
+	TupleTableSlot *slot = table_slot_create(r->old, NULL);
+
+	r->before = table_slot_create(r->old, NULL);
+	r->horizon = table_slot_create(r->old, NULL);
+	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
+		rewrite_row(r, slot);
+	ExecDropSingleTupleTableSlot(r->before);
+	ExecDropSingleTupleTableSlot(r->horizon);
+	ExecDropSingleTupleTableSlot(slot);
+	table_endscan(scan);
+}
+
 /*
- * sift.upgrade_table: the versions of a table of any format that a snapshot may still read (SnapshotNonVacuumable), each with the inserter and the deleter its slot reads, as the rewrite
- * of CLUSTER keeps them. The latest version a reader of this transaction sees has no deleter: the last tombstone of a row may be a lock or an aborted delete.
+ * The versions of a table of any format that a snapshot may still read (SnapshotNonVacuumable), each with the inserter and the deleter its slot reads. The latest version a reader of this
+ * transaction sees has no deleter: the last tombstone of a row may be a lock or an aborted delete.
  */
-double
-sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable, TransactionId OldestXmin)
+static void
+copy_readable(SiftTblRewrite *r)
 {
 	SnapshotData readable;
 	TableScanDesc scan;
-	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
-	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,
-	.maxdead = (int) Min(Max(sift_mem_budget_bytes(SIFT_BUDGET_MAINT_MEM, 1, 4) / sizeof(SiftTblDeadVersion), 64), (Size) INT_MAX)};
+	TupleTableSlot *slot = table_slot_create(r->old, NULL);
 	bool		isnull;
 
-	InitNonVacuumableSnapshot(readable, GlobalVisTestFor(OldTable));
-	scan = sift_table_beginscan(OldTable, &readable, 0, NULL);
-	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
-	sift_tbl_f2_bulk_begin(&r.bulk, NewTable);
+	InitNonVacuumableSnapshot(readable, GlobalVisTestFor(r->old));
+	scan = sift_table_beginscan(r->old, &readable, 0, NULL);
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		SiftRowState ins = {.xmin = DatumGetTransactionId(slot_getsysattr(slot, MinTransactionIdAttributeNumber, &isnull)),
 		.cmin = DatumGetCommandId(slot_getsysattr(slot, MinCommandIdAttributeNumber, &isnull))};
-		bool		deleted = !table_tuple_satisfies_snapshot(OldTable, slot, SnapshotSelf);
+		bool		deleted = !table_tuple_satisfies_snapshot(r->old, slot, SnapshotSelf);
 
 		CHECK_FOR_INTERRUPTS();
-		put_version(&r, slot, ins, deleted ? DatumGetTransactionId(slot_getsysattr(slot, MaxTransactionIdAttributeNumber, &isnull)) : InvalidTransactionId,
+		put_version(r, slot, ins, deleted ? DatumGetTransactionId(slot_getsysattr(slot, MaxTransactionIdAttributeNumber, &isnull)) : InvalidTransactionId,
 					deleted ? DatumGetCommandId(slot_getsysattr(slot, MaxCommandIdAttributeNumber, &isnull)) : 0);
 	}
-	if (r.ndead > 0)
-		write_deletes(&r);
-	sift_tbl_f2_bulk_end(&r.bulk);
-	if (r.dead != NULL)
-		pfree(r.dead);
 	ExecDropSingleTupleTableSlot(slot);
 	table_endscan(scan);
-	return r.live + r.recently_dead;
 }
 
-void
-sift_tbl_f2_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex pg_attribute_unused(), bool use_sort pg_attribute_unused(), TransactionId OldestXmin,
-									  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
+/* The rows of OldTable that copy reads, written to NewTable in the layout of OldTable, with the deletes of the versions that ended */
+static SiftTblRewrite
+rewrite(Relation OldTable, Relation NewTable, TransactionId OldestXmin, void (*copy) (SiftTblRewrite *r))
 {
-	TableScanDesc scan = sift_table_beginscan(OldTable, SnapshotAny, 0, NULL);
-	TupleTableSlot *slot = table_slot_create(OldTable, NULL);
-	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,.before = table_slot_create(OldTable, NULL),.horizon = table_slot_create(OldTable, NULL),
-	.maxdead = dead_versions_max()};
+	SiftTblRewrite r = {.old = OldTable,.oldest = OldestXmin,.maxdead = dead_versions_max()};
 
 	sift_tbl_f2_adopt_layout(NewTable, sift_f2_store_open(NewTable), sift_f2_store_open(OldTable));
 	sift_tbl_f2_bulk_begin(&r.bulk, NewTable);
-	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
-		rewrite_row(&r, slot);
+	copy(&r);
 	if (r.ndead > 0)
 		write_deletes(&r);
 	sift_tbl_f2_bulk_end(&r.bulk);
-	ExecDropSingleTupleTableSlot(r.before);
-	ExecDropSingleTupleTableSlot(r.horizon);
 	if (r.dead != NULL)
 		pfree(r.dead);
 	if (r.hide != NULL)
 		pfree(r.hide);
-	ExecDropSingleTupleTableSlot(slot);
-	table_endscan(scan);
+	return r;
+}
+
+/* sift.upgrade_table: the rows of a table of any format, as the rewrite of CLUSTER keeps them */
+double
+sift_tbl_f2_rewrite_rows(Relation OldTable, Relation NewTable, TransactionId OldestXmin)
+{
+	SiftTblRewrite r = rewrite(OldTable, NewTable, OldestXmin, copy_readable);
+
+	return r.live + r.recently_dead;
+}
+
+/* A Format 1 table has no column deltas to walk: its versions are the ones its slots read */
+void
+sift_tbl_f2_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex pg_attribute_unused(), bool use_sort pg_attribute_unused(), TransactionId OldestXmin,
+									  SIFT_TAM_CLUSTER_SNAPSHOT TransactionId *xid_cutoff, MultiXactId *multi_cutoff, double *num_tuples, double *tups_vacuumed, double *tups_recently_dead)
+{
+	SiftTblRewrite r = rewrite(OldTable, NewTable, OldestXmin, sift_tbl_ops(OldTable)->format_major == SIFT_FORMAT2_MAJOR ? copy_versions : copy_readable);
+
 	*xid_cutoff = OldestXmin;
 	*multi_cutoff = GetOldestMultiXactId();
 	*num_tuples = r.live + r.recently_dead;
