@@ -650,6 +650,9 @@ sift_collation_deterministic(Oid collid)
 #define SIFT_READ_STREAM_BATCHING	0
 #endif
 
+/* The executor builds the scan keys of a row comparison (a, b) > ($1, $2) for any access method that orders from 18 on; before it, for btree only ("bogus RowCompare index qualification") */
+#define SIFT_ROWCOMPARE_INDEX_QUALS	(PG_VERSION_NUM >= 180000)
+
 /* construct_array_builtin knows float8 from 18 on */
 #if PG_VERSION_NUM >= 180000
 #define sift_construct_float8_array(elems, n)	construct_array_builtin((elems), (n), FLOAT8OID)

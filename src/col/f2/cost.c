@@ -382,6 +382,8 @@ ord_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEntry *rte)
 
 	if (prev_pathlist_hook)
 		prev_pathlist_hook(root, rel, rti, rte);
+	if (!SIFT_ROWCOMPARE_INDEX_QUALS)
+		return;
 	foreach_ptr(Path, p, rel->pathlist)
 	{
 		const IndexPath *ip = (const IndexPath *) p;
