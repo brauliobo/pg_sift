@@ -35,9 +35,9 @@ SELECT sift.verify('bp_idx', true);
 SELECT answers() = a AS budgets_same FROM ref;
 DROP INDEX bp_idx;
 
--- a failure in the nth merge: nothing is left in the temporary directory or in the catalog
+-- a failure in the nth merge: nothing is left in the temporary directory or in the catalog (the local cache of a tier policy lives there until a restart, whichever session made it)
 CREATE FUNCTION leftovers() RETURNS int LANGUAGE sql AS $$
-	SELECT (SELECT count(*) FROM pg_ls_dir('base/pgsql_tmp', true, false))::int
+	SELECT (SELECT count(*) FROM pg_ls_dir('base/pgsql_tmp', true, false) f WHERE f NOT LIKE 'pgsql\_tmp\_sift\_tier.%')::int
 $$;
 SET sift.test_merge_fanin = 4;
 -- serial: a merge of the cascade, then the merge that writes the segments (256 runs fit one merge)
