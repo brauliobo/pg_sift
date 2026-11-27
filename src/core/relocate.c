@@ -617,3 +617,171 @@ sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, 
 	}
 	return shift_finish(rel, wt, entry, &hdrcopy, part, nparts, ndata, newhdr, entry_new, release, nrelease);
 }
+
+/* An immutable segment as the shrink moves it: sift_store_immutable_extents (the data runs, the header page, then the liveness run if any) */
+typedef struct ShrinkSeg
+{
+	SiftExtent *ext;
+	int			n;
+	int			ndata;
+	BlockNumber end;
+} ShrinkSeg;
+
+struct SiftShrinkLayout
+{
+	ShrinkSeg  *seg;			/* by end, highest first: the order sift_maint_shrink moves them in */
+	int			nseg;
+	const BlockNumber *chain;	/* the pages of a chained directory, which the chain step moves a block each */
+	int			nchain;
+	SiftFreeExtent *free;		/* the reusable runs of the free list (NULL: it has no record) */
+	int			nfree;
+};
+
+static int
+cmp_shrink_seg_end_desc(const void *a, const void *b)
+{
+	return pg_cmp_u32(((const ShrinkSeg *) b)->end, ((const ShrinkSeg *) a)->end);
+}
+
+SiftShrinkLayout *
+sift_store_shrink_layout(Relation rel, const SiftDirSnapshot *snap)
+{
+	SiftShrinkLayout *l = palloc0(sizeof(SiftShrinkLayout));
+	Buffer		metabuf;
+	FreeChain	free;
+
+	l->seg = palloc(Max(snap->nsegs, 1) * sizeof(ShrinkSeg));
+	for (int i = 0; i < snap->nsegs; i++)
+	{
+		ShrinkSeg  *s = &l->seg[l->nseg];
+
+		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
+			continue;
+		s->ext = sift_store_immutable_extents(rel, &snap->segs[i], &s->n);
+		s->ndata = s->n - (s->ext[s->n - 1].start == snap->segs[i].header_blk ? 1 : 2);
+		s->end = 0;
+		for (int x = 0; x < s->n; x++)
+			s->end = Max(s->end, s->ext[x].start + s->ext[x].nblocks);
+		l->nseg++;
+	}
+	qsort(l->seg, l->nseg, sizeof(ShrinkSeg), cmp_shrink_seg_end_desc);
+	l->chain = snap->chain;
+	l->nchain = snap->nchain;
+	metabuf = lock_meta(rel, BUFFER_LOCK_SHARE);
+	read_chain(rel, metabuf, &free, InvalidFullTransactionId);
+	UnlockReleaseBuffer(metabuf);
+	l->free = free.ext;
+	for (int k = 0; k < free.n; k++)
+		if (!FullTransactionIdIsValid(free.ext[k].safexid))
+			l->free[l->nfree++] = free.ext[k];
+	if (free.page)
+		pfree(free.page);
+	return l;
+}
+
+void
+sift_store_shrink_layout_free(SiftShrinkLayout *l)
+{
+	for (int i = 0; i < l->nseg; i++)
+		pfree(l->seg[i].ext);
+	pfree(l->seg);
+	if (l->free)
+		pfree(l->free);
+	pfree(l);
+}
+
+static int
+chain_above(const SiftShrinkLayout *l, BlockNumber keep)
+{
+	int			n = 0;
+
+	for (int i = 0; i < l->nchain; i++)
+		n += l->chain[i] >= keep;
+	return n;
+}
+
+int64
+sift_store_shrink_above(const SiftShrinkLayout *l, BlockNumber keep)
+{
+	int64		blocks = chain_above(l, keep);
+
+	for (int i = 0; i < l->nseg; i++)
+		for (int x = 0; x < l->seg[i].n; x++)
+			if (l->seg[i].ext[x].start + l->seg[i].ext[x].nblocks > keep)
+				blocks += l->seg[i].ext[x].start + l->seg[i].ext[x].nblocks - Max(l->seg[i].ext[x].start, keep);
+	return blocks;
+}
+
+/* The pick of alloc_blocks_below on the copy: the lowest reusable run of min blocks below keep gives up to want of them */
+static bool
+shrink_take(FreeChain *free, uint32 want, uint32 min, BlockNumber keep, uint32 *got)
+{
+	int			best = relocation_pick(free, min, keep);
+
+	if (best < 0)
+		return false;
+	*got = Min(want, Min(free->ext[best].nblocks, keep - free->ext[best].start));
+	free->ext[best].start += *got;
+	free->ext[best].nblocks -= *got;
+	return true;
+}
+
+/* sift_store_shrink of one segment on the copy, every piece in one pass: the header first, the runs above keep from the top down, the liveness run whole (a header above keep with no run above it does not move) */
+static bool
+shrink_seg_fits(FreeChain *free, const ShrinkSeg *s, BlockNumber keep)
+{
+	ShiftPiece *piece = palloc(s->n * sizeof(ShiftPiece));
+	int			npiece = 0,
+				nparts = 0,
+				ndata = 0;
+	uint32		got;
+	bool		fits;
+
+	for (int x = 0; x < s->n; x++)
+		if (x != s->ndata && s->ext[x].start + s->ext[x].nblocks > keep)
+			piece[npiece++] = (ShiftPiece) {s->ext[x], x < s->ndata ? x : -1};
+	qsort(piece, npiece, sizeof(ShiftPiece), cmp_piece_end_desc);
+	fits = npiece > 0 && shrink_take(free, 1, 1, keep, &got);
+	for (int p = 0; fits && p < npiece; p++)
+	{
+		uint32		left = piece[p].run.start + piece[p].run.nblocks - Max(piece[p].run.start, keep);
+
+		if (piece[p].ext < 0)
+		{
+			fits = left == piece[p].run.nblocks && shrink_take(free, left, left, keep, &got);
+			nparts++;
+			continue;
+		}
+		while (fits && left > 0)
+		{
+			fits = s->ndata + ndata < SIFT_MAX_EXTENTS && shrink_take(free, left, Min(left, SPACE_MIN_RUN_BLOCKS), keep, &got);
+			left -= fits ? got : 0;
+			ndata++;
+			nparts++;
+		}
+	}
+	pfree(piece);
+	return fits && relocation_leaves_spare(free, nparts + 1, 0);
+}
+
+/*
+ * Whether the shrink and the chain step move everything above keep below it: their picks played on a copy of the reusable runs, the segment that ends highest
+ * first, then a block for each page of a chained directory at or above keep and chain_spare more
+ */
+bool
+sift_store_shrink_fits(const SiftShrinkLayout *l, BlockNumber keep, uint32 chain_spare)
+{
+	FreeChain	free = {.ext = palloc(Max(l->nfree, 1) * sizeof(SiftFreeExtent)),.n = l->nfree};
+	int			chain = chain_above(l, keep);
+	uint32		got;
+	bool		fits = true;
+
+	for (int k = 0; k < l->nfree; k++)
+		free.ext[k] = l->free[k];
+	for (int i = 0; fits && i < l->nseg && l->seg[i].end > keep; i++)
+		fits = shrink_seg_fits(&free, &l->seg[i], keep);
+	for (uint32 k = 0; fits && chain > 0 && k < chain + chain_spare; k++)
+		fits = shrink_take(&free, 1, 1, keep, &got);
+	pfree(free.ext);
+	return fits;
+}

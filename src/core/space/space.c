@@ -638,67 +638,27 @@ space_shrink_step(Relation rel, SiftWriteTarget *wt, const void *arg)
 	sift_log_maint(rel, "shrunk", start, sh->entry->ndocs, fresh.bytes);
 }
 
-/* The extents of the immutable segments of the directory (header and liveness run included) */
-static SiftExtent *
-shrink_extents(Relation rel, const SiftDirSnapshot *snap, int *n)
-{
-	int			cap = snap->nchain + SIFT_MAX_EXTENTS + 2;
-	SiftExtent *all = palloc(cap * sizeof(SiftExtent));
+#define SPACE_CHAIN_SPARE	3	/* free blocks beside one for each page moved: the interior pages above a moved leaf and the root are written again too */
 
-	*n = 0;
-	for (int i = 0; i < snap->nchain; i++)
-		all[(*n)++] = (SiftExtent) {.start = snap->chain[i],.nblocks = 1};
-	for (int i = 0; i < snap->nsegs; i++)
-	{
-		int			k;
-		SiftExtent *ext;
-
-		if (snap->segs[i].kind != SIFT_SEG_IMMUTABLE)
-			continue;
-		ext = sift_store_immutable_extents(rel, &snap->segs[i], &k);
-		if (*n + k > cap)
-		{
-			cap = Max(2 * cap, *n + k);
-			all = repalloc(all, cap * sizeof(SiftExtent));
-		}
-		memcpy(all + *n, ext, k * sizeof(SiftExtent));
-		*n += k;
-		pfree(ext);
-	}
-	return all;
-}
-
-static int64
-shrink_above(const SiftExtent *ext, int n, BlockNumber from)
-{
-	int64		blocks = 0;
-
-	for (int i = 0; i < n; i++)
-		if (ext[i].start + ext[i].nblocks > from)
-			blocks += ext[i].start + ext[i].nblocks - Max(ext[i].start, from);
-	return blocks;
-}
-
-/* The lowest end of the file such that the blocks of the segments above it fit in the reusable free runs below it */
+/* The lowest end of the file such that the shrink and the chain step move every block above it into the reusable runs below it */
 static BlockNumber
-shrink_fit(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, int n)
+shrink_fit(const SiftShrinkLayout *l, const SiftDirSnapshot *snap)
 {
 	BlockNumber lo = 0;
 	BlockNumber hi = snap->meta.high_water;
-	SiftFreeProfile *fp = sift_store_free_profile(rel, SPACE_MIN_RUN);
 
-	/* the runs are filled by pieces of the segments, whose ends leave the rest of a hole too short for the next: an eighth more room than blocks to move */
-	SIFT_BISECT(BlockNumber, mid, lo, hi, sift_free_profile_below(fp, mid) < shrink_above(ext, n, mid) + shrink_above(ext, n, mid) / 8 + 4 * SPACE_MIN_RUN);
-	sift_free_profile_free(fp);
+	SIFT_BISECT(BlockNumber, mid, lo, hi, !sift_store_shrink_fits(l, mid, SPACE_CHAIN_SPARE));
 	return lo;
 }
 
 /* The end the file is moved to, or its end now when the cut that follows would not be worth the copy (the screen of the space step) */
 static BlockNumber
-shrink_keep(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, int n)
+shrink_keep(Relation rel, const SiftDirSnapshot *snap)
 {
-	BlockNumber keep = shrink_fit(rel, snap, ext, n);
+	SiftShrinkLayout *l = sift_store_shrink_layout(rel, snap);
+	BlockNumber keep = shrink_fit(l, snap);
 
+	sift_store_shrink_layout_free(l);
 	return space_worth((int64) snap->meta.high_water - keep, snap->meta.high_water) ? keep : snap->meta.high_water;
 }
 
@@ -706,16 +666,12 @@ shrink_keep(Relation rel, const SiftDirSnapshot *snap, const SiftExtent *ext, in
 BlockNumber
 sift_maint_shrink_target(Relation rel, int64 *movable)
 {
-	SiftDirSnapshot *snap;
-	int			n;
-	SiftExtent *ext;
-	BlockNumber keep;
+	SiftDirSnapshot *snap = sift_dir_read(rel);
+	SiftShrinkLayout *l = sift_store_shrink_layout(rel, snap);
+	BlockNumber keep = shrink_fit(l, snap);
 
-	snap = sift_dir_read(rel);
-	ext = shrink_extents(rel, snap, &n);
-	keep = shrink_fit(rel, snap, ext, n);
-	*movable = shrink_above(ext, n, keep);
-	pfree(ext);
+	*movable = sift_store_shrink_above(l, keep);
+	sift_store_shrink_layout_free(l);
 	pfree(snap);
 	return keep;
 }
@@ -725,17 +681,13 @@ bool
 sift_maint_buffer_above_shrink(Relation rel)
 {
 	SiftDirSnapshot *snap;
-	SiftExtent *ext;
-	int			n;
 	BlockNumber keep;
 	bool		above = false;
 
 	if (!online_cut_wanted(rel))
 		return false;
 	snap = sift_dir_read(rel);
-	ext = shrink_extents(rel, snap, &n);
-	keep = shrink_keep(rel, snap, ext, n);
-	pfree(ext);
+	keep = shrink_keep(rel, snap);
 	for (int i = 0; i < snap->nsegs && keep < snap->meta.high_water; i++)
 	{
 		int			k;
@@ -779,8 +731,6 @@ shrink_chain(Relation rel, const SiftDirSnapshot *snap, BlockNumber keep)
 	return above * BLCKSZ;
 }
 
-#define SPACE_CHAIN_SPARE	3	/* free blocks beside one for each page moved: the interior pages above a moved leaf and the root are written again too */
-
 /* The pages of a chained directory above the highest segment go to the lowest free blocks, the holes the replaced segments left (a directory update allocates at the end of the file): the bytes written */
 static uint64
 space_chain(Relation rel)
@@ -812,8 +762,6 @@ sift_maint_shrink(Relation rel, int elevel)
 	budget = Min((uint64) RelationGetNumberOfBlocks(rel) * BLCKSZ / SHRINK_SHARE, sift_vacuum_rewrite_cap());
 	while (budget > 0)
 	{
-		SiftExtent *ext;
-		int			n;
 		BlockNumber keep;
 		SpaceSeg   *seg;
 		int			nseg = 0;
@@ -822,9 +770,7 @@ sift_maint_shrink(Relation rel, int elevel)
 		snap = sift_dir_read(rel);
 		if (in_backoff(&snap->meta))
 			break;
-		ext = shrink_extents(rel, snap, &n);
-		keep = shrink_keep(rel, snap, ext, n);
-		pfree(ext);
+		keep = shrink_keep(rel, snap);
 		if (keep >= snap->meta.high_water)
 			break;
 		seg = palloc(Max(snap->nsegs, 1) * sizeof(SpaceSeg));

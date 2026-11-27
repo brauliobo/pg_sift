@@ -321,6 +321,15 @@ extern uint64 sift_store_shift(Relation rel, SiftWriteTarget *wt, const SiftSegE
 extern uint64 sift_store_shrink(Relation rel, SiftWriteTarget *wt, const SiftSegEntry *entry, BlockNumber keep, uint64 budget, SiftSegEntry *fresh,
 								SiftExtent **release, int *nrelease);
 
+/* The immutable segments of a directory, its chained pages and the reusable free runs, read once for the end the online shrink can move the file to */
+typedef struct SiftShrinkLayout SiftShrinkLayout;
+extern SiftShrinkLayout *sift_store_shrink_layout(Relation rel, const SiftDirSnapshot *snap);
+extern void sift_store_shrink_layout_free(SiftShrinkLayout *l);
+/* The blocks of the segments and of the chained directory at or above keep: what the shrink has to move */
+extern int64 sift_store_shrink_above(const SiftShrinkLayout *l, BlockNumber keep);
+/* Whether every block above keep moves below it, by the picks of sift_store_shrink and of the chain step (chain_spare more blocks when a chained page moves) */
+extern bool sift_store_shrink_fits(const SiftShrinkLayout *l, BlockNumber keep, uint32 chain_spare);
+
 /*
  * One call for every run of blocks the directory and the free list account for, in the order of the walk: what it is ("segment extent", "segment header",
  * "liveness run", "write buffer header", "write buffer page", "free extent", "free list page", "metapage and directory"), the generation of its segment (0 for none),
