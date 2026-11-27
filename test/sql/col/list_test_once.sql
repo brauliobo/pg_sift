@@ -1,6 +1,8 @@
 -- A list of numbers is one test for every segment of an index and every begin of a scan (sift_col scan prune.c, num_test): an index of several segments that overlap
 -- in the key (runs of a build, each holding rows of every key) answers a long IN list, a NOT IN list and a list with a range as the heap does.
 CREATE EXTENSION pg_sift;
+-- Format 1: the overlapping segments are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

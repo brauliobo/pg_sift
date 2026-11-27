@@ -1,6 +1,8 @@
 -- A table of 100,000 rows or more with no statistics has the columns of the index analyzed by CREATE INDEX (the choice of the global order reads them), not the other columns:
 -- they keep no statistics until the user runs ANALYZE, and a table that already has statistics is not analyzed at all.
 CREATE EXTENSION pg_sift;
+-- Format 1: the global order the build chooses from the statistics is Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 

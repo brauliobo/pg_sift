@@ -2,6 +2,8 @@
 -- a table of 250 million, a billion, four billion rows and the most a float holds must decide as it does, with no failure, no allocation by rows and no product
 -- that wraps. The estimate is set on a small table (the build writes the real one back when it ends); the sampled rows are the same at every scale.
 CREATE EXTENSION pg_sift;
+-- Format 1: the automatic build decisions are Format 1; Format 2.0 makes none of them.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

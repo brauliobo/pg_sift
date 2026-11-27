@@ -1,6 +1,8 @@
 -- sift.col_index_info.units of a key-cut index: the units of a key-cut segment are numbered from 0 in each segment, so the segments of a parallel build
 -- share those numbers and are not superblocks that one segment covers once. units is the units stored, as the units of col_segments and the pre-aggregates count them.
 CREATE EXTENSION pg_sift;
+-- Format 1: the key-cut units are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET min_parallel_table_scan_size = 0;
 SET max_parallel_maintenance_workers = 2;

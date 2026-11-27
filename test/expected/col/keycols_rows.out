@@ -2,6 +2,8 @@
 -- sift_col one left its own count on PostgreSQL 17 and nothing on 18, so the same table was one of 100,000 rows to one version and 1,000,000 to the other and the defaults
 -- differed. The rows are now those of the pages and the density of a sample of them, and both versions choose alike.
 CREATE EXTENSION pg_sift;
+-- Format 1: the automatic rollup and key options are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 -- 60,000 rows of 1,000 bytes, a b-tree built first and never analyzed: under the 100,000 rows from which the build analyzes, so no statistics and no point directory
 CREATE TABLE kw (id int, k int, v int, pad text) WITH (autovacuum_enabled = off);

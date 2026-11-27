@@ -3,6 +3,8 @@
 -- A build from the heap, which the same steps must tell from it, reads the pages.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_buffercache;
+-- Format 1: the REINDEX from the replaced index reads Format 1 segments.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.col_build_source = auto;
 SET max_parallel_workers_per_gather = 0;

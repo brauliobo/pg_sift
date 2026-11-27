@@ -2,6 +2,8 @@
 -- subtransaction; the worker's transaction is the unit), and the next successful step clears the failures in a row (the last error stays). The worker reads the setting of the database.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
+-- Format 1: the failure is injected into the pages of a Format 1 merge step.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SELECT current_database() AS db \gset
 ALTER DATABASE :"db" SET sift.test_fail_pages = 1;

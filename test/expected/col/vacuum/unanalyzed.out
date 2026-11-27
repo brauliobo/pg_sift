@@ -1,6 +1,8 @@
 -- VACUUM of a table that was never analyzed rewrites the segments of its sift_col index and chooses the order arrays again; the choice needs statistics and
 -- must not run ANALYZE inside the VACUUM (PostgreSQL refuses it): it chooses from what is known, and the statement ends
 CREATE EXTENSION pg_sift;
+-- Format 1: the segments and order arrays VACUUM rewrites are Format 1.
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 CREATE TABLE events (id int PRIMARY KEY, dim_a_id int NOT NULL, foreign_id int NOT NULL, event_date date, updated_at timestamp NOT NULL, deleted_at timestamp) WITH (autovacuum_enabled = false);
