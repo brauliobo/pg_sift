@@ -212,7 +212,7 @@ CASES = (
             maint='INSERT INTO pairs SELECT member, key + 1 FROM pairs WHERE member <= 100; UPDATE pairs SET key = key + 2 WHERE member <= 100; '
                   'DELETE FROM pairs WHERE member <= 50; UPDATE t SET v1 = v1 + 1 WHERE id <= 600; VACUUM t',
             base_setup='CREATE TABLE t2 AS SELECT * FROM t; VACUUM (FREEZE) t2', base_op=wide_index('t2_ix', 't2', SCOPE_COLS, TRACK),
-            open='W-13', limits=Ceilings(disk_bpr=13.23, vs_base_disk=1.05, maint_sift_wal_bpr=123.6)),
+            limits=Ceilings(disk_bpr=7.54, vs_base_disk=1.05, maint_sift_wal_bpr=122.22)),
     BprCase('scope_unrelated_compact', 'col', N, 't_ix', op="SELECT sift.merge('t_ix', true)", base_rel='t2_ix',
             base_op="SELECT sift.merge('t2_ix', true)",
             setup=f'{PAIRS}; CREATE TABLE t AS {SCOPE_SRC} WHERE id <= 2048; VACUUM (FREEZE) t; {wide_index(cols=SCOPE_COLS, opts=SCOPE_OPTS)}; '
