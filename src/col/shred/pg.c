@@ -97,6 +97,15 @@ walk_array(SiftShred *sh, JsonbContainer *c, SiftShredRecheck *rc)
 	}
 }
 
+/* the target is an integer leaf: `(doc ->> 'k')::int` of a number with digits after its point (3.0) raises, so the leaf cannot hold it */
+static bool
+integral_leaf(const SiftShred *sh)
+{
+	int			col;
+
+	return sift_shred_target(sh, &col) == SIFT_SHRED_T_LEAF && sh->spec->cols[col].type >= SIFT_SHRED_INT2 && sh->spec->cols[col].type <= SIFT_SHRED_INT8;
+}
+
 static void
 walk_number(SiftShred *sh, Numeric num)
 {
@@ -104,7 +113,7 @@ walk_number(SiftShred *sh, Numeric num)
 
 	if (sift_shred_wants_number_text(sh))
 		text = DatumGetCString(DirectFunctionCall1(numeric_out, NumericGetDatum(num)));
-	else if (!sift_shred_wants_number(sh))
+	else if (!sift_shred_wants_number(sh) || (integral_leaf(sh) && DatumGetInt32(DirectFunctionCall1(numeric_scale, NumericGetDatum(num))) > 0))
 	{
 		sift_shred_number(sh, NULL, 0);
 		return;

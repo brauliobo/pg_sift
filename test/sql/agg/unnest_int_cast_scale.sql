@@ -1,0 +1,28 @@
+-- A JSON number with digits after its point (3.0) is no integer to the input function of an integer type: `(e ->> 'qty')::int4` of a member, `value::int4` of jsonb_each_text and an int4
+-- column of jsonb_to_recordset raise 22P02 for it, and the integer leaves of the index do not hold it, on both formats. The cast of the jsonb (jsonb_each) rounds it, as PostgreSQL does, and
+-- a number with no digits after its point (1e2) is an integer.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+\ir test/common/sql/agg/base.sql
+
+CREATE TABLE iq (id int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO iq SELECT i, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('qty', i % 5)), 'm', jsonb_build_object('a', i % 5)) FROM generate_series(1, 3000) i;
+INSERT INTO iq VALUES (9001, '{"parts": [{"qty": 3.0}], "m": {"a": 3.0}}'), (9002, '{"parts": [{"qty": 1e2}], "m": {"a": -2.50}}');
+CREATE INDEX iq_col ON iq USING sift_col (id, doc) WITH (paths = 'doc.parts[]{qty int4}, doc.m.* int4');
+VACUUM (FREEZE, ANALYZE) iq;
+
+CREATE TABLE q (n int, sql text);
+INSERT INTO q VALUES
+	(1, $$SELECT sum((e ->> 'qty')::int4) FROM iq t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'parts') e$$),
+	(2, $$SELECT sum(r.value::int4) FROM iq t CROSS JOIN LATERAL jsonb_each_text(t.doc -> 'm') r WHERE t.id <> 9002$$),
+	(3, $$SELECT sum(o.qty) FROM iq t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'parts') o(qty int4)$$),
+	(4, $$SELECT sum(r.value::int4) FROM iq t CROSS JOIN LATERAL jsonb_each(t.doc -> 'm') r$$),
+	(5, $$SELECT sum((e ->> 'qty')::int4) FROM iq t CROSS JOIN LATERAL jsonb_array_elements(t.doc -> 'parts') e WHERE t.id <> 9001$$);
+SELECT n, left(outcome(sql, true), 60) AS scan, outcome(sql, false) = outcome(sql, true) AS same, runs_in_scan(sql) AS pushed FROM q ORDER BY n;
+
+DROP TABLE q, iq;
+DROP FUNCTION runq(text, bool), pushed(text), outcome(text, bool), runs_in_scan(text);
+DROP EXTENSION pg_sift;
