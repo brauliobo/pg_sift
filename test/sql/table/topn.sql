@@ -32,12 +32,14 @@ BEGIN
 	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' ELSE 'other' END;
 END $$;
 
--- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows. The pushed plan is forced (sift.agg_force), so that every
+-- statement the top-N serves is compared on it whatever its price; which plan the planner picks is asked by ct_plan.
 CREATE FUNCTION ct_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text; res text;
 BEGIN
 	DROP TABLE IF EXISTS ct_a, ct_b;
 	PERFORM ct_mode(true);
+	PERFORM sift_helpers.set_arm(true, true);
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q USING arg LOOP plan := plan || line || E'\n'; END LOOP;
 	EXECUTE 'CREATE TEMP TABLE ct_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x' USING arg;
 	PERFORM ct_mode(false);

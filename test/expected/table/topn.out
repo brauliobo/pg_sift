@@ -29,12 +29,14 @@ BEGIN
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP plan := plan || line || E'\n'; END LOOP;
 	RETURN CASE WHEN plan ~ 'Top-N: ' THEN 'top-n' ELSE 'other' END;
 END $$;
--- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows
+-- 'same' / 'DIFFERENT' (the rows and their order), '+topn' when the pushed plan is the top-N scan, and the rows. The pushed plan is forced (sift.agg_force), so that every
+-- statement the top-N serves is compared on it whatever its price; which plan the planner picks is asked by ct_plan.
 CREATE FUNCTION ct_check(q text, arg text DEFAULT NULL) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE n bigint; plan text := ''; line text; res text;
 BEGIN
 	DROP TABLE IF EXISTS ct_a, ct_b;
 	PERFORM ct_mode(true);
+	PERFORM sift_helpers.set_arm(true, true);
 	FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q USING arg LOOP plan := plan || line || E'\n'; END LOOP;
 	EXECUTE 'CREATE TEMP TABLE ct_a AS SELECT row_number() OVER () AS pos, row_to_json(x)::text AS r FROM (' || q || ') x' USING arg;
 	PERFORM ct_mode(false);
@@ -112,13 +114,13 @@ NOTICE:  table "ct_b" does not exist, skipping
        | newest=same+topn 10    +
        | no_filter=same+topn 10 +
        | no_search=same+topn 10 +
-       | none=same 0            +
+       | none=same+topn 0       +
        | num_asc=same+topn 20   +
        | num_desc=same+topn 20  +
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | phrase=same+topn 10    +
+       | phrase=same 10         +
        | prefix=same+topn 10    +
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
@@ -151,13 +153,13 @@ SELECT * FROM ct_stage('chunks of one superblock');
                           | newest=same+topn 10    +
                           | no_filter=same+topn 10 +
                           | no_search=same+topn 10 +
-                          | none=same 0            +
+                          | none=same+topn 0       +
                           | num_asc=same+topn 20   +
                           | num_desc=same+topn 20  +
                           | num_nan=same+topn 30   +
                           | offset=same+topn 5     +
                           | oldest=same+topn 7     +
-                          | phrase=same+topn 10    +
+                          | phrase=same 10         +
                           | prefix=same+topn 10    +
                           | seq_asc=same+topn 10   +
                           | seq_desc=same+topn 10  +
@@ -175,9 +177,9 @@ SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LI
 (1 row)
 
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> $1 ORDER BY ts DESC, id LIMIT 10') AS param_null;
- param_null 
-------------
- same 0
+ param_null  
+-------------
+ same+topn 0
 (1 row)
 
 SELECT ct_check('SELECT id, ts FROM ct WHERE memo @@> ''gift'' ORDER BY ts DESC, id LIMIT 10 OFFSET 3') AS offset_lit;
@@ -281,13 +283,13 @@ SELECT * FROM ct_stage('insert');
         | newest=same+topn 10    +
         | no_filter=same+topn 10 +
         | no_search=same+topn 10 +
-        | none=same 0            +
+        | none=same+topn 0       +
         | num_asc=same+topn 20   +
         | num_desc=same+topn 20  +
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -322,13 +324,13 @@ SELECT * FROM ct_stage('update');
         | newest=same+topn 10    +
         | no_filter=same+topn 10 +
         | no_search=same+topn 10 +
-        | none=same 0            +
+        | none=same+topn 0       +
         | num_asc=same+topn 20   +
         | num_desc=same+topn 20  +
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -361,13 +363,13 @@ SELECT * FROM ct_stage('delete');
         | newest=same+topn 10    +
         | no_filter=same+topn 10 +
         | no_search=same+topn 10 +
-        | none=same 0            +
+        | none=same+topn 0       +
         | num_asc=same+topn 20   +
         | num_desc=same+topn 20  +
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -404,13 +406,13 @@ SELECT * FROM ct_stage('own');
        | newest=same+topn 10    +
        | no_filter=same+topn 10 +
        | no_search=same+topn 10 +
-       | none=same 0            +
+       | none=same+topn 0       +
        | num_asc=same+topn 20   +
        | num_desc=same+topn 20  +
        | num_nan=same+topn 30   +
        | offset=same+topn 5     +
        | oldest=same+topn 7     +
-       | phrase=same+topn 10    +
+       | phrase=same 10         +
        | prefix=same+topn 10    +
        | seq_asc=same+topn 10   +
        | seq_desc=same+topn 10  +
@@ -443,13 +445,13 @@ SELECT * FROM ct_stage('rollback');
           | newest=same+topn 10    +
           | no_filter=same+topn 10 +
           | no_search=same+topn 10 +
-          | none=same 0            +
+          | none=same+topn 0       +
           | num_asc=same+topn 20   +
           | num_desc=same+topn 20  +
           | num_nan=same+topn 30   +
           | offset=same+topn 5     +
           | oldest=same+topn 7     +
-          | phrase=same+topn 10    +
+          | phrase=same 10         +
           | prefix=same+topn 10    +
           | seq_asc=same+topn 10   +
           | seq_desc=same+topn 10  +
@@ -483,13 +485,13 @@ SELECT * FROM ct_stage('vacuum');
         | newest=same+topn 10    +
         | no_filter=same+topn 10 +
         | no_search=same+topn 10 +
-        | none=same 0            +
+        | none=same+topn 0       +
         | num_asc=same+topn 20   +
         | num_desc=same+topn 20  +
         | num_nan=same+topn 30   +
         | offset=same+topn 5     +
         | oldest=same+topn 7     +
-        | phrase=same+topn 10    +
+        | phrase=same 10         +
         | prefix=same+topn 10    +
         | seq_asc=same+topn 10   +
         | seq_desc=same+topn 10  +
@@ -526,13 +528,13 @@ SELECT * FROM ct_stage('workers');
          | newest=same+topn 10    +
          | no_filter=same+topn 10 +
          | no_search=same+topn 10 +
-         | none=same 0            +
+         | none=same+topn 0       +
          | num_asc=same+topn 20   +
          | num_desc=same+topn 20  +
          | num_nan=same+topn 30   +
          | offset=same+topn 5     +
          | oldest=same+topn 7     +
-         | phrase=same+topn 10    +
+         | phrase=same 10         +
          | prefix=same+topn 10    +
          | seq_asc=same+topn 10   +
          | seq_desc=same+topn 10  +
@@ -583,13 +585,13 @@ SELECT * FROM ct_stage('added columns');
                | newest=same+topn 10    +
                | no_filter=same+topn 10 +
                | no_search=same+topn 10 +
-               | none=same 0            +
+               | none=same+topn 0       +
                | num_asc=same+topn 20   +
                | num_desc=same+topn 20  +
                | num_nan=same+topn 30   +
                | offset=same+topn 5     +
                | oldest=same+topn 7     +
-               | phrase=same+topn 10    +
+               | phrase=same 10         +
                | prefix=same+topn 10    +
                | seq_asc=same+topn 10   +
                | seq_desc=same+topn 10  +
@@ -626,13 +628,13 @@ SELECT * FROM ct_stage('added columns, vacuumed');
                          | newest=same+topn 10    +
                          | no_filter=same+topn 10 +
                          | no_search=same+topn 10 +
-                         | none=same 0            +
+                         | none=same+topn 0       +
                          | num_asc=same+topn 20   +
                          | num_desc=same+topn 20  +
                          | num_nan=same+topn 30   +
                          | offset=same+topn 5     +
                          | oldest=same+topn 7     +
-                         | phrase=same+topn 10    +
+                         | phrase=same 10         +
                          | prefix=same+topn 10    +
                          | seq_asc=same+topn 10   +
                          | seq_desc=same+topn 10  +
