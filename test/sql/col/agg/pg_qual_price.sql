@@ -7,7 +7,9 @@ CREATE TABLE pqp_dims (id int PRIMARY KEY, active bool NOT NULL);
 INSERT INTO pqp_dims SELECT i, i % 3 <> 0 FROM generate_series(1, 60) i;
 CREATE TABLE pqp_events (id int PRIMARY KEY, parent_id int NOT NULL, kind text NOT NULL, deleted_at timestamptz);
 INSERT INTO pqp_events SELECT i, 1 + (i::bigint * 7919) % 60, 'cat_' || chr(97 + i % 4), CASE WHEN i % 37 = 0 THEN now() END FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX pqp_events_col ON pqp_events USING sift_col (id, parent_id, kind, deleted_at);
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) pqp_dims, pqp_events;
 
 -- the cost of the aggregate scan, the other plans of the table off

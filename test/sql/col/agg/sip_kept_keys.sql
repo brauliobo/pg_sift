@@ -5,7 +5,9 @@ SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE skk_facts (id int PRIMARY KEY, parent_id int NOT NULL, amount float8 NOT NULL);
 INSERT INTO skk_facts SELECT i, 1 + i % 2000, i % 97 FROM generate_series(1, 30000) i;
+SET client_min_messages = warning;
 CREATE INDEX skk_facts_col ON skk_facts USING sift_col (id, parent_id, amount);
+RESET client_min_messages;
 CREATE INDEX skk_facts_parent ON skk_facts (parent_id);
 CREATE TABLE skk_links (id int PRIMARY KEY, parent_id int NOT NULL, status int NOT NULL, label text NOT NULL);
 INSERT INTO skk_links SELECT i, 1 + i % 2000, (i / 2000) % 5, 'label_' || i % 6 FROM generate_series(0, 23999) i;
