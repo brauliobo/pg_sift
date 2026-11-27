@@ -429,17 +429,27 @@ proj_stream_next(void *arg, Datum *values, bool *isnull)
 	return st->proj_ops->next(&st->proj, values, isnull);
 }
 
+/* one scan of the rows of a source, with the hits of the text query of the plan */
+static void
+scan_rows_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV6StarRun *star)
+{
+	SiftV6Text *text = text_begin(st);
+
+	src->ops->order->scan_rows(st->spec, st->rows, st->group, star, src->heap, src->index, src->keys, src->nkeys, src->quals, snap, &st->stats,
+							   text ? sift_v6_text_chunk : NULL, text);
+	text_end(text);
+}
+
 /* the rows of one source: once for each pass of the dimensions of a join (one when they all fit work_mem) */
 static void
-v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, SiftV6Text *text, Snapshot snap)
+v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
 	SiftStarOpen open;
 	uint32		pass = 0;
 
 	if (st->star == NULL)
 	{
-		src->ops->order->scan_rows(st->spec, st->rows, st->group, NULL, src->heap, src->index, src->keys, src->nkeys, src->quals, snap, &st->stats,
-								   text ? sift_v6_text_chunk : NULL, text);
+		scan_rows_with_text(st, src, snap, NULL);
 		return;
 	}
 	while ((open = sift_v6_star_open(st->star, pass++, 1)) != SSO_DONE)
@@ -448,7 +458,7 @@ v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, SiftV6Text *text, Snapshot s
 		MemoryContext old = MemoryContextSwitchTo(pass_cx);
 
 		if (open == SSO_SCAN)
-			src->ops->order->scan_rows(st->spec, st->rows, st->group, st->star, src->heap, src->index, src->keys, src->nkeys, src->quals, snap, &st->stats, NULL, NULL);
+			scan_rows_with_text(st, src, snap, st->star);
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
@@ -472,8 +482,6 @@ v6_totals(V6State *st)
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
-	SiftV6Text *text = text_begin(st);
-
 	st->rows = sift_v6_rows_new(st->gcx, st->spec);
 	if (st->spec->naggs > 0)
 		st->group = sift_v6_rows_totals_new(st->gcx, st->spec);
@@ -482,11 +490,10 @@ v6_run_rows(V6State *st, EState *estate)
 		SiftV6ScanSrc   *src = &st->sources[k];
 
 		sift_v6_rows_source(st->rows, k);
-		v6_scan_rows(st, src, text, estate->es_snapshot);
+		v6_scan_rows(st, src, estate->es_snapshot);
 		src->fetch = sift_table_index_fetch_begin(src->heap);
 		src->fetch_slot = table_slot_create(src->heap, NULL);
 	}
-	text_end(text);
 	sift_v6_rows_finish(st->rows);
 	if (st->group != NULL)
 		v6_totals(st);
