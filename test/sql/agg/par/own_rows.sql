@@ -35,6 +35,7 @@ ROLLBACK;
 SELECT count(*), sum(v) FROM own;
 
 -- the plan of a child that a worker starts per combination reads an index of its own table, and the rows the transaction holds back for it are not in a page either
+-- (ORDER BY: the row LIMIT 1 keeps of a key is the statement's, not the one the plan of the sub-select meets first)
 CREATE TABLE zones (id int, name text) WITH (autovacuum_enabled = false);
 INSERT INTO zones SELECT i, 'z' || i % 7 FROM generate_series(0, 59) i;
 CREATE INDEX zones_c ON zones USING sift_col (id, name);
@@ -43,16 +44,16 @@ INSERT INTO zev SELECT i, i % 65 FROM generate_series(1, 12000) i;
 CREATE INDEX zev_c ON zev USING sift_col (id, zone_id);
 VACUUM (FREEZE, ANALYZE) zones, zev;
 SET enable_seqscan = off;
-EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1;
+EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id ORDER BY name LIMIT 1) s ON true GROUP BY 1;
 BEGIN;
 INSERT INTO zones VALUES (60, 'new');
 INSERT INTO zones SELECT i, 'new' FROM generate_series(61, 64) i;
-SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
+SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id ORDER BY name LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
 ROLLBACK;
 BEGIN;
 INSERT INTO zones VALUES (60, 'new');
 INSERT INTO zones SELECT i, 'new' FROM generate_series(61, 64) i;
-SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
+SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id ORDER BY name LIMIT 1) s ON true GROUP BY 1 ORDER BY 1;
 ROLLBACK;
 DROP TABLE zones, zev;
 
