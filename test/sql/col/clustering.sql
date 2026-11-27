@@ -1,6 +1,7 @@
 -- sift.col_clustering reports, per integer leaf, how many units an equality or a range touches on the zone maps of the index, and so whether sorting
 -- the table by the leaf would let the scans skip more. Its figures are those of Custom Scan (SiftAgg): the units read of a statement are checked against them.
 CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
 -- Format 1: sift.col_clustering reads the units of a Format 1 index.
 SET sift.test_create_format1 = on;
 SET max_parallel_workers_per_gather = 0;
@@ -39,15 +40,8 @@ DROP TABLE evd;
 SELECT path, round((range_units / units)::numeric, 2) AS share FROM sift.col_clustering('ev_col', 10) WHERE path IN ('id', 'blk') ORDER BY leaf;
 SELECT path, range_units > units / 2 AS most_units FROM sift.col_clustering('ev_col', 100) WHERE path = 'id';
 
--- the units a statement reads: the average over values of the data is what point_units says (a quarter of the units of tolerance)
-CREATE FUNCTION units_read(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l ~ '^\s*Units: ' THEN n := substring(l from 'Units: (\d+)')::int; END IF;
-	END LOOP;
-	RETURN n;
-END $$;
+-- the units a statement reads (its granules scanned or answered from the pre-aggregates): the average over values of the data is what point_units says (a quarter of the units of tolerance)
+CREATE FUNCTION units_read(q text) RETURNS int LANGUAGE sql AS $$ SELECT sift_helpers.plan_granules_read(sift_helpers.plan_text(q, true)) $$;
 
 CREATE FUNCTION predicted(col text, vals int[]) RETURNS TABLE (path text, matches bool) LANGUAGE plpgsql AS $$
 DECLARE v int; total numeric := 0; avg_read numeric; pt float8; n int;
@@ -122,4 +116,5 @@ SELECT count(*) AS rows FROM sift.cluster_advice('ev_bm25');
 
 DROP TABLE ev, empty_t, evs, evo, evv;
 DROP FUNCTION units_read(text), predicted(text, int[]);
+DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
