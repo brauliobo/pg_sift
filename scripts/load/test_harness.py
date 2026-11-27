@@ -1,7 +1,10 @@
 """The harness of the load gate without a server (scripts/load/run.py --selftest runs it): fakes of the control, sampler and worker sessions, and the shell
-library of the TAP scripts with stubs of the node functions. One test a finding of Spec 116, 117 and 118 (S116-L1..L7, S117-L1..L5, S118-L1..L6)."""
+library of the TAP scripts with stubs of the node functions. One test a finding of Spec 116 to 119 (S116-L1..L7, S117-L1..L5, S118-L1..L6, S119-L1..L4)."""
 from __future__ import annotations
 
+import ast
+import inspect
+import io
 import math
 import os
 import re
@@ -10,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import tokenize
 import types
 import unittest
 
@@ -63,13 +67,39 @@ def worker(seed: int = 1, kill=None) -> types.SimpleNamespace:
     return types.SimpleNamespace(seed=seed, lat=[], ok=0, expected=0, bad=[], conn={}, p=types.SimpleNamespace(kill=kill), close=lambda: None)
 
 
-def sources() -> str:
+def files() -> list:
     names = [os.path.join(HERE, f) for f in os.listdir(HERE)] + [os.path.join(HERE, 'suites', f) for f in os.listdir(os.path.join(HERE, 'suites'))]
+    return sorted(n for n in names if n.endswith('.py'))
+
+
+def sources() -> str:
     out = ''
-    for n in sorted(names):
-        if n.endswith('.py') and not n.endswith('test_harness.py'):
+    for n in files():
+        if not n.endswith('test_harness.py'):
             with open(n) as f:
                 out += f.read()
+    return out
+
+
+def quote(lit: str) -> str:
+    body = lit.lstrip('rRfFbBuUtT')
+    return body[:3] if body[:3] in ('"""', "'''") else body[:1]
+
+
+def newer_fstrings(text: str) -> list:
+    """what of TEXT Python 3.11 cannot read: a syntax error with feature_version 3.11, and the strings in the replacement fields of an f-string with its quote or a
+    backslash (PEP 701: feature_version does not see them; a parser of 3.12 or newer tokenizes them)"""
+    try:
+        ast.parse(text, feature_version=(3, 11))
+    except SyntaxError as e:
+        return [f'line {e.lineno}: {e.msg}']
+    out, outer = [], []
+    for t in tokenize.generate_tokens(io.StringIO(text).readline):
+        name = tokenize.tok_name[t.type]
+        inner = name in ('STRING', 'FSTRING_START') and outer and (quote(t.string) == outer[-1] or '\\' in t.string)
+        out += [f'line {t.start[0]}: {t.string[:40]}'] if inner else []
+        outer += [quote(t.string)] if name == 'FSTRING_START' else []
+        outer = outer[:-1] if name == 'FSTRING_END' else outer
     return out
 
 
@@ -341,6 +371,37 @@ class Harness(unittest.TestCase):
 
     def test_s118_l6_counts_after_the_sessions_end(self):
         self.assertEqual(re.findall(r"m\['tmp_files_left'\] =|hygiene\(ctx\.db\)\.items\(\)", sources()), [])
+
+    def test_s119_l1_a_crash_resets_the_deadlocks_the_case_counts_from(self):
+        class Db(FakeDb):
+            seen = iter(['5', '2'])
+
+            def val(self, sql):
+                return next(self.seen) if sql == run.DEADLOCKS else super().val(sql)
+
+        ctx = ctx_of(Db())
+        ctx.hook = lambda var: None
+        m, _ = run.measure(ctx, LoadCase('fault_x', 'fault', lambda c: (c.restart('LOAD_CRASH', 'LOAD_RESTART'), {})[1], Ceilings()), collect.LogScan([]))
+        self.assertEqual((m['deadlocks'], ctx.restarted), (2, True))
+
+    def test_s119_l2_the_wave_three_checks_see_nan_quantiles_a_crashed_column_index_and_share_one_cap(self):
+        from suites import workloads_prod3 as w3
+        for out, bad in ((['1|{1,2,3,4}|2'], 0), (['NaN|{1,2,3,4}|2'], 1), (['1|{-1,2,3,4}|2'], 1), (['1|{1,2,3,NaN}|2'], 1), (['1|{1,2,3,1000}|2'], 1)):
+            self.assertEqual(w3.kll_wrong(out), bad, out)
+        crash = inspect.getsource(w3.fault_unlogged_kill9_reset)
+        self.assertIn("AGG.format(t='e_col')", crash)
+        self.assertIn('not_restarted=', crash)
+        self.assertNotIn('end + CAP', inspect.getsource(w3.repl_logical_rif_pk_ddl))
+
+    def test_s119_l3_materialized_views_are_checked(self):
+        self.assertIn("c.relkind IN ('r', 'i', 'm')", collect.SIFT_RELS)
+
+    def test_s119_l4_every_file_reads_on_python_3_11(self):
+        self.assertTrue(newer_fstrings("x = f'{d['k']}'") and newer_fstrings("x = f'{chr(10) + \"\\\\n\"}'") and newer_fstrings('def f[T](x): pass'))
+        self.assertEqual(newer_fstrings("x = f'{d[\"k\"]}' + f\"{d['k']}\" + f\"\"\"{d['k']}\"\"\""), [])
+        for n in files():
+            with open(n) as f:
+                self.assertEqual(newer_fstrings(f.read()), [], n)
 
 
 REAL = (run.reconnect, run.Psql)

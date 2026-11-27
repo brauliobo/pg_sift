@@ -3,8 +3,7 @@ pg_subtrans) beside row-lock upgrades from FOR KEY SHARE to UPDATE, a partitione
 attached and detached concurrently, a scope index under live facts and pairs beside sift.col_scope_verify and an unprivileged role, 48 pooled sessions of the three engines
 beside sessions that connect, build, drop and disconnect while the ledger of the shared memory is watched, prepared transactions of the three engines through a kill -9, and
 rewrites (VACUUM FULL, CLUSTER, REINDEX CONCURRENTLY) streamed to the readers of a hot standby (scripts/load/suites: WORKLOADS on test/t/core/load_workloads.sh, REPL on
-test/t/core/load_repl.sh). One case waits for a finding, intermittent (met on Format 2.0 only): the prepared transactions for S116-31 (a Format 2.0 prepare holds
-every partition it wrote).
+test/t/core/load_repl.sh).
 """
 from __future__ import annotations
 
@@ -332,8 +331,7 @@ def fault_2pc_crash_recovery(ctx):
     of the three engines and 1 session locks the prepared rows and rows of no prepared transaction NOWAIT until the server is killed with -9 and started again; then every
     prepared transaction is there, its rows still refused NOWAIT (55P03, lock_unenforced) and no other row refused (prepared_overlock: the lock of a prepared transaction is
     its rows, and every prepare is let in), half of them committed and half rolled back leave exactly their rows in every engine and its index path, every acknowledged
-    row kept. Waits for S116-31: a prepare turns the row locks of a sift_table into a lock of each partition it wrote, so one prepared row stops UPDATE and FOR UPDATE of
-    every other row of the partition until COMMIT PREPARED (Format 2.0; the case is intermittent, Format 1.0 locks the rows)"""
+    row kept"""
     db = ctx.db
     engines(db)
     refused = sum(db.q(tpc_prepare(j))[1] is not None for j in range(TPC))
@@ -413,7 +411,7 @@ WORKLOADS = (
     LoadCase('ddl_sift_part_move_detach', 'ddl', ddl_sift_part_move_detach, Wave4()),
     LoadCase('feat_scope_live_churn_acl', 'feat', feat_scope_live_churn_acl, Wave4()),
     LoadCase('pool_conn_churn_shm_ledger', 'pool', pool_conn_churn_shm_ledger, Wave4(ctx_kb_delta=1280, rss_mb_delta=16, shm_used_after=0)),
-    LoadCase('fault_2pc_crash_recovery', 'fault', fault_2pc_crash_recovery, Wave4(), last=True, open='S116-31', intermittent=True),
+    LoadCase('fault_2pc_crash_recovery', 'fault', fault_2pc_crash_recovery, Wave4(), last=True),
 )
 REPL = (
     LoadCase('repl_rewrite_cluster_standby', 'repl', repl_rewrite_cluster_standby, Wave4()),

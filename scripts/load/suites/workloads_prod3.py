@@ -18,7 +18,7 @@ from dataclasses import dataclass
 sys.dont_write_bytecode = True
 
 from cases import LoadCase  # noqa: E402
-from collect import AGG, BM, N, add, base, checks, ctx_kb, engines, halves_differ, kept, ledger_writes, mem_delta, multi_kept, nxt, oracles, snap  # noqa: E402
+from collect import AGG, BM, N, add, base, checks, ctx_kb, engines, halves_differ, kept, ledger_writes, mem_delta, multi_kept, nxt, oracle, oracles, snap  # noqa: E402
 from suites.common import Limits, twin_do  # noqa: E402
 from suites.repl import CAP, conninfo  # noqa: E402
 from suites.workloads_prod2 import DUTY, copy_in, snap_oracle, snap_pair  # noqa: E402
@@ -214,12 +214,12 @@ K_TEMP = ('CREATE TEMP TABLE kt (id int8 PRIMARY KEY, v int8) USING sift_table; 
 
 
 def kll_wrong(out: list | None) -> int:
-    """1 when an answer of KLL is out of the committed values (0..K_TOP: a rolled-back outlier seen) or its quantiles are not in order"""
+    """1 when an answer of KLL is out of the committed values (0..K_TOP: a rolled-back outlier seen, a negative or NaN one) or its quantiles are not in order"""
     if out is None:
         return 0
     p1, qs, half = out[0].split('|')
     q = [float(x) for x in qs.strip('{}').split(',')]
-    return int(len(q) != 4 or q != sorted(q) or max(q + [float(p1), float(half)]) > K_TOP)
+    return int(len(q) != 4 or q != sorted(q) or not all(0 <= x <= K_TOP for x in q + [float(p1), float(half)]))
 
 
 def feat_kll_obs_poll_ddl_storm(ctx):
@@ -273,6 +273,7 @@ def fault_unlogged_kill9_reset(ctx):
     db = ctx.db
     engines(db, kinds=('tbl', 'col'))
     db.run(f"{U_SETUP}; {'; '.join(f'INSERT INTO u_{e} SELECT * FROM load_base_fact' for e in U_KINDS)}; ANALYZE u_col, u_bm")
+    up = db.val('SELECT pg_postmaster_start_time()')
     ws = ctx.sessions(7, 'SET sift.async_maintenance = on')
     for w in ws[:6]:
         w.allow = ('08006', '57P01')
@@ -292,8 +293,9 @@ def fault_unlogged_kill9_reset(ctx):
     left = sum(int(db.val(f'SELECT count(*) FROM u_{e}')) for e in U_KINDS)
     db.run('; '.join(f'INSERT INTO u_{e} SELECT * FROM load_base_fact WHERE id <= {U_REFILL}' for e in U_KINDS))
     refill = sum(abs(int(db.val(f'SELECT count(*) FROM u_{e}')) - U_REFILL) for e in U_KINDS)
-    return base(ctx, busy, 'w', **add(kept(db, 'e_col', have, 10 ** 6), {'lost_rows': len(acked - have) + refill}), unlogged_left=left, oracle_mismatch=oracles(db, 'u'),
-                acked=len(acked), unlogged_ops=busy['u'].ops)
+    return base(ctx, busy, 'w', **add(kept(db, 'e_col', have, 10 ** 6), {'lost_rows': len(acked - have) + refill}), unlogged_left=left,
+                oracle_mismatch=oracles(db, 'u') + oracle(db, AGG.format(t='e_col'), 'sift.enable_agg'), acked=len(acked), unlogged_ops=busy['u'].ops,
+                not_restarted=int(db.val('SELECT pg_postmaster_start_time()') == up))
 
 
 R_PAD = "(SELECT string_agg(md5(({k} * 128 + j)::text), '') FROM generate_series(1, 128) j)"
@@ -369,7 +371,7 @@ def repl_logical_rif_pk_ddl(ctx):
 
         busy = ctx.phase({'w': (ws[:1], full), 'k': (ws[1:2], keyed), 'd': (ws[2:], ddl)}, 2.5)
         both = f"{R_FULL.format(t='r_full')}; {R_FULL.format(t='r_pk')}"
-        lag = ws[2].ledger or synced or settled(end + CAP, lambda: db.run(both) == sub.run(both))
+        lag = ws[2].ledger or synced or settled(end, lambda: db.run(both) == sub.run(both))
         differ = int(db.run(both) != sub.run(both))
         n = int(db.val('SELECT count(*) FROM r_full')) + int(db.val('SELECT count(*) FROM r_pk'))
         return base(ctx, busy, 'w', oracle_mismatch=differ, standby_mismatch=lag, dup_rows=dups(db, 'r_pk'), rows=n, ddl=busy['d'].ops, **checks(sub))

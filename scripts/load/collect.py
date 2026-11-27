@@ -31,7 +31,7 @@ PACER = "SELECT workers_active, pacer_mode, pacer_delay_ms FROM sift.activity() 
 CTX_KB = "SELECT coalesce(sum(total_bytes), 0) / 1024 FROM pg_backend_memory_contexts WHERE name LIKE 'sift%'"
 IN_CASE = "IN (SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname LIKE 'load_case%')"
 SIFT_RELS = f"""SELECT c.oid FROM pg_class c JOIN pg_am a ON a.oid = c.relam WHERE a.amname IN ('sift', 'sift_col', 'sift_table')
-  AND c.relkind IN ('r', 'i') AND c.oid {IN_CASE} ORDER BY 1"""
+  AND c.relkind IN ('r', 'i', 'm') AND c.oid {IN_CASE} ORDER BY 1"""
 LEAKCHECK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'leakcheck.sh')
 
 

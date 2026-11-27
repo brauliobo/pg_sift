@@ -181,7 +181,7 @@ class Ctx:
     """what a case body uses: the control session (db), worker sessions (every one the case opened in workers), phases under the sampler and the facts of the cluster"""
 
     def __init__(self, a, db: Psql):
-        self.a, self.db, self.open_sessions, self.workers, self.wedged, self.dirs, self.obs = a, db, [], [], 0, [], None
+        self.a, self.db, self.open_sessions, self.workers, self.wedged, self.dirs, self.obs, self.restarted = a, db, [], [], 0, [], None, False
         self.obs_db = Psql(app='load_obs')
         self.testing = db.val("SELECT count(*) FROM pg_settings WHERE name = 'sift.test_create_format1'") == '1'
         self.fmt = 1 if self.testing and db.val('SHOW sift.test_create_format1') == 'on' else 2
@@ -289,9 +289,11 @@ class Ctx:
         subprocess.run(['bash', '-c', cmd], check=True, stdout=subprocess.DEVNULL)
 
     def restart(self, *hooks: str):
-        """runs the shell HOOKS (LOAD_CRASH, LOAD_RESTART) and opens the control and sampler sessions again on the server they leave"""
+        """runs the shell HOOKS (LOAD_CRASH, LOAD_RESTART) and opens the control and sampler sessions again on the server they leave, whose counters of the cumulative
+        statistics a crash reset (restarted)"""
         for h in hooks:
             self.hook(h)
+        self.restarted = True
         for db in (self.db, self.obs_db):
             db.close()
             db.dead = True
@@ -333,7 +335,7 @@ def measure(ctx: Ctx, case: LoadCase, log: collect.LogScan):
     skip = runs_on(case, ctx)
     if skip:
         return None, [skip]
-    db, ctx.workers, ctx.wedged, ctx.dirs = ctx.db, [], 0, []
+    db, ctx.workers, ctx.wedged, ctx.dirs, ctx.restarted = ctx.db, [], 0, [], False
     log.mark()
     try:
         db.run('DROP SCHEMA IF EXISTS load_case CASCADE; CREATE SCHEMA load_case; SET search_path = load_case, public')
@@ -343,7 +345,7 @@ def measure(ctx: Ctx, case: LoadCase, log: collect.LogScan):
         m = case.body(ctx)
         ctx.close_sessions()
         db.run('SELECT pg_stat_force_next_flush()')
-        m['deadlocks'] = int(db.val(DEADLOCKS)) - dl0 - m.pop('deadlocks_meant', 0)
+        m['deadlocks'] = int(db.val(DEADLOCKS)) - (0 if ctx.restarted else dl0) - m.pop('deadlocks_meant', 0)
         m = collect.add(m, collect.hygiene(db, m.pop('damaged', ())), worker_errors(ctx))
         found = log.findings()
         m['traps_and_leaks'] = len(found)
