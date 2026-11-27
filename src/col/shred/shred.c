@@ -427,9 +427,10 @@ peek_target(const SiftShred *sh)
 }
 
 static void
-list_set(SiftShred *sh, NodeP n, SiftShredState st)
+list_set(SiftShred *sh, NodeP n, SiftShredState st, uint8 tag)
 {
 	sh->doc.grp[n->group].lstate[sh->doc.grp[n->pgroup].n - 1] = st;
+	sh->doc.grp[n->group].ltag[sh->doc.grp[n->pgroup].n - 1] = tag;
 }
 
 /* Room for need items of width bytes in an array of payloads that doubles up to MaxAllocSize; a document whose payloads need more raises */
@@ -645,7 +646,7 @@ sift_shred_enter(SiftShred *sh, bool is_array)
 		return false;
 	}
 	if (t->kind != N_OBJ)
-		list_set(sh, t, SIFT_SHRED_VALUE);
+		list_set(sh, t, SIFT_SHRED_VALUE, SIFT_COLTAG_UNKNOWN);
 	SIFT_INVARIANT(sh->nframes != sh->maxframes, "sift shred: nesting deeper than the spec allows");
 	f = &sh->frames[sh->nframes++];
 	f->node = t;
@@ -790,7 +791,7 @@ sift_shred_poison(SiftShred *sh)
 
 		if (n->kind == N_OBJ)
 			continue;
-		list_set(sh, n, SIFT_SHRED_OVERFLOW);
+		list_set(sh, n, SIFT_SHRED_OVERFLOW, SIFT_COLTAG_UNKNOWN);
 		flag_leaves(sh, n->elem, SIFT_SHRED_OVF_SHAPE);
 		return;
 	}
@@ -819,7 +820,7 @@ sift_shred_null(SiftShred *sh)
 	else if (t->kind == N_LEAF)
 		leaf_set(sh, t, SIFT_SHRED_NULL, 0, SIFT_COLTAG_JNULL);
 	else
-		list_set(sh, t, SIFT_SHRED_NULL);
+		list_set(sh, t, SIFT_SHRED_NULL, SIFT_COLTAG_JNULL);
 }
 
 static void leaf_text(SiftShred *sh, NodeP t, const char *s, int len);

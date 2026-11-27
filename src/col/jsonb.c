@@ -450,11 +450,9 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 	{
 		gv->isnull = true;
 		gv->overflow = grp->lstate[0] == SIFT_SHRED_OVERFLOW;
+		gv->tag = grp->ltag[0];
 		if (gv->overflow)
-		{
-			gv->tag = grp->ltag[0];
 			keep_payload(gv, &shred_of(a)->doc, -(1 + gleaf->group), 0);
-		}
 		return;
 	}
 	gv->v.i = n;

@@ -132,7 +132,7 @@ typedef struct SiftShredGroup
 	uint32		pn;				/* elements of the parent group: the length of end and lstate */
 	uint32	   *end;			/* [pn] exclusive end of the elements of each parent element */
 	uint8	   *lstate;			/* [pn] SiftShredState of the list under each parent element */
-	uint8	   *ltag;			/* [pn] SIFT_COLTAG_* of the value of an OVERFLOW list (SIFT_COLTAG_NONE: its path leads to no value; 0: not known) */
+	uint8	   *ltag;			/* [pn] SIFT_COLTAG_* of the value of an OVERFLOW list (SIFT_COLTAG_NONE: its path leads to no value; 0: not known), SIFT_COLTAG_JNULL of a NULL one that is a JSON null */
 	uint32	   *keyid;			/* [n] maps: dictionary id of the member name, or SIFT_SHRED_NO_KEY */
 	uint32		cap;			/* slots allocated for n (columns, keyid) */
 	uint32		pcap;			/* slots allocated for pn (end, lstate, ltag) */
