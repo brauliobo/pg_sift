@@ -41,7 +41,18 @@ SELECT q, same(q) FROM unnest(ARRAY[
 	'SELECT status, count(*) FROM fact f WHERE NOT EXISTS (SELECT 1 FROM dim d WHERE d.id = f.tenant_id AND d.country = f.country) GROUP BY status'
 ]) q;
 
-DROP TABLE fact, dim;
+-- a fact so small that the normal plan is the cheaper one: sift.agg_force prices the pushed semi join as it does every scan of the aggregate
+CREATE TABLE small_fact (id int PRIMARY KEY, tenant_id int NOT NULL, status text NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO small_fact SELECT i, i % 50, (ARRAY['open', 'paid', 'void'])[1 + i % 3] FROM generate_series(1, 500) i;
+CREATE INDEX small_fact_col ON small_fact USING sift_col (id, tenant_id, status);
+VACUUM (FREEZE, ANALYZE) small_fact;
+\set small_q 'SELECT status, count(*) FROM small_fact f WHERE f.tenant_id IN (SELECT d.id FROM dim d WHERE d.kind = 2) GROUP BY status'
+SELECT same(:'small_q') AS normal_costs;
+SET sift.agg_force = on;
+SELECT same(:'small_q') AS forced;
+RESET sift.agg_force;
+
+DROP TABLE fact, dim, small_fact;
 DROP FUNCTION same(text);
 DROP FUNCTION answer(text);
 DROP EXTENSION pg_sift;
