@@ -442,10 +442,13 @@ gj_scan_free(GjScan *sc)
 	*sc = (GjScan) {NULL, 0};
 }
 
+/* What the table of a build file takes once loaded (gj_load): a row for each record, a power of two of buckets, and its arena, which the file's bytes (headers too) bound */
 static uint64
 gj_est_bytes(const SiftSpillSet *s, uint32 part)
 {
-	return sift_spill_part_bytes(s, part) + sift_spill_part_records(s, part) * 2 * (sizeof(GjRow) + sizeof(uint32));
+	const uint64 n = sift_spill_part_records(s, part);
+
+	return sift_spill_part_bytes(s, part) + n * sizeof(GjRow) + pg_nextpower2_64(Max(n, 64)) * sizeof(uint32);
 }
 
 static GjFrame *
@@ -533,11 +536,15 @@ gj_resplit(SiftGraceJoin *j, GjFrame *f)
 static void
 gj_load(SiftGraceJoin *j, GjFrame *f)
 {
+	const uint32 n = (uint32) sift_spill_part_records(f->bset, f->part);
 	uint64		hash;
 	const uint8 *key, *payload;
 	GjRecHdr	h;
 
 	gj_tab_init(&f->t, j->budget);
+	f->t.rows = MemoryContextAlloc(j->cx, sizeof(GjRow) * n);
+	f->t.rcap = n;
+	gj_tab_rehash(&f->t, j->cx, (uint32) pg_nextpower2_64(Max(n, 64)));
 	sift_spill_rewind(f->bset, f->part);
 	while (gj_next(f->bset, f->part, &f->bsc, &hash, &key, &h, &payload))
 		gj_tab_insert(&f->t, j->cx, hash, key, h.klen, payload, h.plen);
