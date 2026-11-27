@@ -135,7 +135,6 @@ qual_compare(V6Plan *p, OpExpr *op)
 		q->opno = get_commutator(q->opno);
 		if (!OidIsValid(q->opno))
 			return NULL;
-		q->opfuncid = get_opcode(q->opno);
 		l = r;
 		r = t;
 		q->args = list_make2(l, r);
@@ -143,6 +142,7 @@ qual_compare(V6Plan *p, OpExpr *op)
 	if (!sift_v6_plan_column(p, (Expr *) l, true, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
 		return NULL;
 	linitial(q->args) = index_var((Var *) l, col.attno - 1);
+	q->opfuncid = get_opcode(q->opno);
 	return (Expr *) q;
 }
 
