@@ -916,6 +916,8 @@ core/store/int.h
 core/store/ops.c
 core/store/ops.h
 core/store/ops_test.c
+core/store/table_qual.c
+core/store/table_qual.h
 core/store/test.c
 core/store/test_am.c
 core/store/test_int.h

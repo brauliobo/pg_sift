@@ -35,6 +35,7 @@
 #include "core/maint/pacer.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/gcache.h"
+#include "table/f2/scan_prune.h"
 #include "table/f2/slot.h"
 #include "table/f2/tbl.h"
 #include "core/memtrack.h"
@@ -263,6 +264,7 @@ typedef struct SiftTblF2Scan
 	bool		has_range;
 	uint64		mintid;
 	uint64		maxtid;
+	const SiftTblF2Prune *prune;	/* the predicates whose zones leave a granule out, NULL: every granule is read */
 
 	SiftTblF2Page *page;
 	BlockNumber sample_blk;
@@ -394,6 +396,12 @@ sift_tbl_f2_scan_set_snapshot(TableScanDesc scan, Snapshot snapshot)
 	sift_tbl_f2_predicate_scan(s->base.rs_rd, snapshot);
 }
 
+void
+sift_tbl_f2_scan_set_prune(TableScanDesc scan, const SiftTblF2Prune *prune)
+{
+	((SiftTblF2Scan *) scan)->prune = prune;
+}
+
 static void
 drop_pin(SiftTblF2Scan *s)
 {
@@ -519,6 +527,8 @@ load_granule(SiftTblF2Scan *s, int64 G)
 	s->hidden = 0;
 	pin = part_pin(s, u);
 	if (s->has_range && (pin->tidx[g].tid_max < s->mintid || pin->tidx[g].tid_min > s->maxtid))
+		return false;
+	if (s->prune != NULL && sift_tbl_f2_prune_granule(s->prune, s->base.rs_rd, s->store, pin, g, sift_col_delta_scan_granule(s->delta, &u->entry, pin, g)))
 		return false;
 	s->gb = sift_f2_gbuf_hold(sift_f2_gbuf_load(s->base.rs_rd, s->store, pin, g));
 	sift_col_delta_scan_attach(s->delta, &u->entry, s->gb);

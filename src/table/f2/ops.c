@@ -9,6 +9,7 @@
 #include "col/f2/f2.h"
 #include "table/dispatch.h"
 #include "table/f2/blob.h"
+#include "table/f2/scan_prune.h"
 #include "table/f2/col_delta/col_delta.h"
 #include "table/f2/cost_hook.h"
 #include "table/f2/tbl.h"
@@ -112,4 +113,5 @@ sift_tbl_v2_init(void)
 	sift_tbl_f2_locks_init();
 	sift_col_delta_fold_install();
 	sift_tbl_f2_cost_hook_init();
+	sift_tbl_f2_prune_init();
 }

@@ -45,6 +45,7 @@
 #include "agg/join/join.h"
 #include "core/catalog.h"
 #include "core/store/ops.h"
+#include "core/store/table_qual.h"
 #include "table/dispatch.h"
 #include "core/sift.h"
 
@@ -83,41 +84,6 @@ typedef struct HybridPlan
 	Expr	   *keyset;			/* the hint of hybrid_semi_plan.c, (col = ANY (set)) IS NOT UNKNOWN */
 } HybridPlan;
 
-/* The types of a constant a sift_table's store compares an integer-like column with, whatever the width of the column (the other types are compared with a column of their own type) */
-static bool
-table_const_type(Oid typid)
-{
-	switch (typid)
-	{
-		case BOOLOID:
-		case INT2OID:
-		case INT4OID:
-		case INT8OID:
-		case DATEOID:
-		case TIMESTAMPOID:
-		case TIMESTAMPTZOID:
-			return true;
-		default:
-			return false;
-	}
-}
-
-static int store_attr(const SiftHybridStoreRef *store, AttrNumber attno);
-
-/* A column of a sift_table the store judges a comparison of: a number or a time held as it is (not LOSSY, not wide, not a string, whose order a collation may decide) */
-static bool
-table_col_exact(const SiftHybridStoreRef *store, AttrNumber attno)
-{
-	int			col = store_attr(store, attno);
-	const SiftColDef *d;
-
-	if (col < 0)
-		return false;
-	d = &store->tsch.leaves->cols[store->tsch.att_first[attno]];
-	return !(d->flags & SIFT_COLD_LOSSY) && !sift_col_def_is_wide(d) && d->store != SIFT_COLS_STR && d->type != SIFT_COLT_VARLENA &&
-		d->type != SIFT_COLT_TIMETZ;
-}
-
 /* The column of the store (0-based) a heap attribute is: the column of the index, or the attribute of the table; -1: the store does not hold it */
 static int
 store_attr(const SiftHybridStoreRef *store, AttrNumber attno)
@@ -128,95 +94,6 @@ store_attr(const SiftHybridStoreRef *store, AttrNumber attno)
 		if (store->index->indexkeys[i] == attno)
 			return i;
 	return -1;
-}
-
-static Node *
-strip_relabel(Node *e)
-{
-	while (e && IsA(e, RelabelType))
-		e = (Node *) ((RelabelType *) e)->arg;
-	return e;
-}
-
-static int
-table_column(const SiftHybridStoreRef *store, Node *e)
-{
-	e = strip_relabel(e);
-	if (e == NULL || !IsA(e, Var) || ((Var *) e)->varlevelsup != 0)
-		return -1;
-	return store_attr(store, ((Var *) e)->varattno);
-}
-
-static Expr *
-table_compare(const SiftHybridStoreRef *store, OpExpr *op)
-{
-	OpExpr	   *q = copyObject(op);
-	Node	   *l = linitial(q->args),
-			   *r = lsecond(q->args);
-	int			col,
-				strat;
-
-	if (list_length(q->args) != 2)
-		return NULL;
-	if (IsA(r, Var) && IsA(l, Const))
-	{
-		q->opno = get_commutator(q->opno);
-		if (!OidIsValid(q->opno))
-			return NULL;
-		q->opfuncid = get_opcode(q->opno);
-		q->args = list_make2(r, l);
-		l = r;
-		r = lsecond(q->args);
-	}
-	col = table_column(store, l);
-	if (col < 0 || !IsA(r, Const) || ((Const *) r)->constisnull || !table_col_exact(store, col + 1) || !(((Const *) r)->consttype == exprType(l) || (table_const_type(((Const *) r)->consttype) && table_const_type(exprType(l)))))
-		return NULL;
-	strat = get_op_opfamily_strategy(q->opno, store->tsch.att_opfamily[col + 1]);
-	if (strat < BTLessStrategyNumber || strat > BTGreaterStrategyNumber)
-		return NULL;
-	linitial(q->args) = strip_relabel(l);
-	return (Expr *) q;
-}
-
-/* An IN list of constants on a column of a sift_table: the store takes it as one array key of equalities */
-static Expr *
-table_in_list(const SiftHybridStoreRef *store, ScalarArrayOpExpr *sa)
-{
-	Node	   *l = linitial(sa->args),
-			   *r = lsecond(sa->args);
-	int			col = table_column(store, l);
-
-	if (!sa->useOr || col < 0 || !table_col_exact(store, col + 1) || !IsA(r, Const) || ((Const *) r)->constisnull ||
-		get_element_type(((Const *) r)->consttype) != exprType(l) ||
-		get_op_opfamily_strategy(sa->opno, store->tsch.att_opfamily[col + 1]) != BTEqualStrategyNumber)
-		return NULL;
-	sa = copyObject(sa);
-	linitial(sa->args) = strip_relabel(l);
-	return (Expr *) sa;
-}
-
-/* The qual as the store of a sift_table decides it (a comparison with a constant, an IN list, a NULL test, the column on the left), NULL when it does not */
-static Expr *
-table_qual(const SiftHybridStoreRef *store, Expr *clause)
-{
-	NullTest   *nt;
-
-	switch (nodeTag(clause))
-	{
-		case T_OpExpr:
-			return table_compare(store, (OpExpr *) clause);
-		case T_ScalarArrayOpExpr:
-			return table_in_list(store, (ScalarArrayOpExpr *) clause);
-		case T_NullTest:
-			nt = (NullTest *) clause;
-			if (nt->argisrow || table_column(store, (Node *) nt->arg) < 0 || !table_col_exact(store, ((Var *) strip_relabel((Node *) nt->arg))->varattno))
-				return NULL;
-			nt = copyObject(nt);
-			nt->arg = (Expr *) strip_relabel((Node *) nt->arg);
-			return (Expr *) nt;
-		default:
-			return NULL;
-	}
 }
 
 static bool
@@ -342,7 +219,7 @@ classify_table_quals(HybridPlan *h)
 
 		if (ri == h->match)
 			continue;
-		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri->clause) || (q = table_qual(&h->store, ri->clause)) == NULL)
+		if (ri->pseudoconstant || contain_volatile_functions((Node *) ri->clause) || !no_score(h, ri->clause) || (q = sift_store_table_qual(&h->store.tsch, ri->clause)) == NULL)
 			return false;
 		h->quals = lappend(h->quals, q);
 		h->qinfo = lappend_int(lappend_int(lappend_int(h->qinfo, SHQ_STD), 0), 0);
@@ -404,7 +281,7 @@ or_branch(HybridPlan *h, Expr *branch, List **quals, List **qinfo)
 		if (contain_mutable_functions((Node *) c) || !no_score(h, c))
 			return false;
 		if (h->store.is_table)
-			norm = table_qual(&h->store, c);
+			norm = sift_store_table_qual(&h->store.tsch, c);
 		else if (!sift_hybrid_qual_pushable(h->store.index, h->colrel, c, &q, &norm))
 			norm = NULL;
 		if (norm == NULL)
@@ -456,7 +333,7 @@ store_holds(HybridPlan *h, Var *v)
 	if (store_attr(&h->store, v->varattno) < 0)
 		return false;
 	if (h->store.is_table)
-		return table_col_exact(&h->store, v->varattno);
+		return sift_store_table_col_exact(&h->store.tsch, v->varattno);
 	for (int i = 0; i < h->store.index->ncolumns; i++)
 		if (h->store.index->indexkeys[i] == v->varattno)
 		{
