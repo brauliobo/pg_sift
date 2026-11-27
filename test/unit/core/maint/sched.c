@@ -3,7 +3,7 @@
  * coalesces into a stranded one (no worker is there for it) still starts one, a request put back for a busy lock keeps the worker of its database, and the queue holds a request for every
  * partition of a large server. A worker that starts after its lease lapsed runs for its database on a slot no one took again, and never takes or gives back the slot reserved for another,
  * nor does a kick or a reservation over the shared limit whose slot was reaped meanwhile. A worker that starts on the pid of one that died while the reaper asked is never reaped. A lookup
- * without the lock never reads the queue at a key removed while it probes.
+ * without the lock never reads the queue at a key removed while it probes. A request of a relation a worker steps waits for that step instead of coming back busy.
  */
 #define SIFT_SHM_STANDALONE 1
 
@@ -188,6 +188,24 @@ test_busy_keeps_worker(void)
 	SIFT_CHECK(sift_maint_claim(m, &host, 5, true, &c));
 	SIFT_CHECK(sift_maint_complete(m, &host, &c, SIFT_MSTEP_FAILED));
 	SIFT_CHECKF(!sift_maint_due_soon(m, &host, 5), "a request backed off for its failures keeps no worker");
+}
+
+/* A request of a relation a worker steps waits for that claim to end: another worker would find the lock of its table taken and put it back for SIFT_MAINT_BUSY_US */
+static void
+test_stepping_rel_waits(void)
+{
+	SiftMaintClaim a, b;
+
+	fresh(4);
+	(void) enq(5, 1, SIFT_MK_SLAB_FLUSH);
+	(void) enq(5, 1, SIFT_MK_COMPACT_PART);
+	SIFT_CHECK(sift_maint_claim(m, &host, 5, true, &a));
+	SIFT_CHECKF(!sift_maint_claim(m, &host, 5, true, &b), "the other request of the relation a worker steps is not claimed");
+	SIFT_CHECKF(sift_maint_kick(m, &host) != SIFT_KICK_SPAWNED, "and starts no worker of its own");
+	(void) enq(5, 2, SIFT_MK_COMPACT_PART);
+	SIFT_CHECKF(sift_maint_claim(m, &host, 5, true, &b) && b.rel == 2, "a request of another relation is claimed");
+	SIFT_CHECK(sift_maint_complete(m, &host, &a, SIFT_MSTEP_DONE));
+	SIFT_CHECKF(sift_maint_claim(m, &host, 5, true, &a) && a.rel == 1, "the waiting request is claimed once the step of its relation ends");
 }
 
 /* A queued tail shrink (P3) asked for again at P0 is an upgrade the launcher is woken for */
@@ -383,6 +401,7 @@ main(void)
 	test_hold_count();
 	test_coalesced_kick();
 	test_busy_keeps_worker();
+	test_stepping_rel_waits();
 	test_upgrade();
 	test_capacity_and_drop();
 	test_late_worker_keeps_db();

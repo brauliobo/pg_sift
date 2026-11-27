@@ -380,12 +380,35 @@ held(const SiftMaintShmem *m, uint64 mask, Oid db, TimestampTz now)
 	return (mask & (UINT64CONST(1) << (db % 64))) != 0 && sift_maint_db_held(m, db, now);
 }
 
+/* The relations a worker steps now (one claim a worker): a step of another request of one of them takes no lock of its table and comes back busy, so it waits for the claim to end */
+static int
+stepping(const SiftMaintShmem *m, const SiftMaintSlot *out[SIFT_MAINT_MAX_WORKERS])
+{
+	int			n = 0;
+
+	for (int i = 0; i < SIFT_MAINT_SLOTS && n < (int) Min(m->nclaimed, SIFT_MAINT_MAX_WORKERS); i++)
+		if (m->khash[i] != 0 && m->slot[i].state == SIFT_SLOT_CLAIMED)
+			out[n++] = &m->slot[i];
+	return n;
+}
+
+static bool
+stepped(const SiftMaintSlot *const *claims, int nclaims, const SiftMaintSlot *s)
+{
+	for (int k = 0; k < nclaims; k++)
+		if (claims[k]->db == s->db && claims[k]->rel == s->rel)
+			return true;
+	return false;
+}
+
 static int
 pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode mode)
 {
 	int			best = -1;
 	uint32		best_score = 0;
 	Oid			dbs[SIFT_MAINT_MAX_WORKERS];
+	const SiftMaintSlot *claims[SIFT_MAINT_MAX_WORKERS];
+	int			nclaims = stepping(m, claims);
 	bool		spawn = mode == PICK_UNSERVED || mode == PICK_STARVED;
 	int			ndbs = spawn ? active_dbs(m, dbs) : 0;
 	uint64		hmask = spawn ? held_mask(m, now) : 0;
@@ -395,7 +418,7 @@ pick(const SiftMaintShmem *m, Oid db, bool allow_cold, TimestampTz now, PickMode
 		const SiftMaintSlot *s = &m->slot[i];
 		uint32		score;
 
-		if (m->khash[i] == 0 || !runnable(s, mode == PICK_STARVED ? InvalidOid : db, allow_cold, now))
+		if (m->khash[i] == 0 || !runnable(s, mode == PICK_STARVED ? InvalidOid : db, allow_cold, now) || stepped(claims, nclaims, s))
 			continue;
 		if (spawn && (served(dbs, ndbs, s->db) || held(m, hmask, s->db, now) || (mode == PICK_STARVED && s->db == db)))
 			continue;
