@@ -2,6 +2,8 @@
 -- (sift.suggest_paths), written to the option as 'auto: spec' so that a rebuild keeps them, and said in a NOTICE. The answers are the plain plan's, and an index with paths written by hand is untouched.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the paths a Format 1 index needs for a jsonb column are what this test decides.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;

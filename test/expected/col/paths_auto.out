@@ -3,6 +3,8 @@
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: the paths a Format 1 index needs for a jsonb column are what this test decides.
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -44,7 +46,7 @@ SELECT n, pa_rows(q, true) = pa_rows(q, false) AS same, pa_pushed(q) AS pushed F
  1 | t    | t
  2 | t    | t
  3 | t    | f
- 4 | t    | f
+ 4 | t    | t
 (4 rows)
 
 -- a rebuild keeps the paths, whatever the table holds now
