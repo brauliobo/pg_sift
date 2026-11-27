@@ -83,7 +83,14 @@ doc_holds(const SiftSrcLayout *lay, int att)
 	return att >= 1 && att <= lay->natts && sift_v1_att_typid(lay, att) == JSONBOID && sift_v1_att_heap_column(lay, att) != 0;
 }
 
-/* the head of the leaves that keep attribute att whole: a scalar of the attribute itself, which for an array is the image its lengths come after */
+/* the list of the elements of an array column (`paths = '+tags[] text'`): the leaf of its lengths, which has no path, and the leaves of the elements below it */
+static bool
+elem_list(const SiftSrcLeaf *l)
+{
+	return l->parent >= 0 || (l->kind == SCL_ARRAY && l->path == NIL);
+}
+
+/* the head of the leaves that keep attribute att whole: a scalar of the attribute itself, which for an array is the image its lengths and the list of its elements come after */
 static const SiftSrcLeaf *
 datum_head(const SiftSrcLayout *lay, int att)
 {
@@ -93,9 +100,9 @@ datum_head(const SiftSrcLayout *lay, int att)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
 
-		if (l->attno != att || l->typid == InvalidOid || l->arrlen != 0)
+		if (l->attno != att || l->typid == InvalidOid || l->arrlen != 0 || elem_list(l))
 			continue;
-		if (found != NULL || l->parent >= 0 || l->kind != SCL_SCALAR || l->path != NIL || l->noimage || l->lossy || l->astext)
+		if (found != NULL || l->kind != SCL_SCALAR || l->path != NIL || l->noimage || l->lossy || l->astext)
 			return NULL;
 		found = l;
 	}
@@ -127,8 +134,8 @@ datum_by_value(const SiftSrcLeaf *l, Oid typid)
 static bool
 leaf_serves(const SiftSrcLeaf *l, Oid typid, SiftV6Class cls)
 {
-	if (l->wide)
-		return cls == SV6C_DATUM;
+	if (l->wide || l->arrhead)
+		return cls == SV6C_DATUM && !l->noimage && l->vtype == SCV_CODE;
 	switch (cls)
 	{
 		case SV6C_I32:
@@ -442,7 +449,7 @@ datum_of(SiftV1Src *s, int i, const SiftSrcVec *v, uint32 r)
 	const Oid	typid = s->in.col[i].typid;
 
 	if (l->vtype == SCV_CODE)
-		return code_datum(s, typid, v, r, l->wide);
+		return code_datum(s, typid, v, r, l->wide || l->arrhead);
 	if (typid == NUMERICOID)
 		return numeric_datum(l, v, r);
 	switch (typid)
