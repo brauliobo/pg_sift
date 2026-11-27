@@ -66,7 +66,8 @@ BEGIN
 					(SELECT array_agg(a.attname ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = $2 AND a.attnum > 0 AND NOT a.attisdropped));
 END $$;
 
--- The statement trigger of a followed table fires for every role that writes the table: it reads sift.scope_follows and refreshes the pairs with the rights of their owner
+-- The statement trigger of a followed table fires for every role that writes the table: it reads sift.scope_follows and refreshes the pairs with the rights of their owner.
+-- new_rows and old_rows name its transition tables only when the trigger declares them; otherwise they would name a relation of pg_temp, which the writer defines.
 CREATE OR REPLACE FUNCTION sift.scope_follow_trg() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 DECLARE
 	f    sift.scope_follows;
@@ -74,6 +75,12 @@ DECLARE
 	keys bigint[];
 BEGIN
 	SELECT * INTO STRICT f FROM sift.scope_follows s WHERE s.source::oid = TG_RELID AND s.trigger_base = regexp_replace(TG_NAME, '_s(ins|upd|del|t)$', '');
+	IF TG_OP <> 'TRUNCATE' AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = TG_RELID AND t.tgname = TG_NAME
+										   AND t.tgoldtable IS NOT DISTINCT FROM CASE WHEN TG_OP <> 'INSERT' THEN 'old_rows' END
+										   AND t.tgnewtable IS NOT DISTINCT FROM CASE WHEN TG_OP <> 'DELETE' THEN 'new_rows' END) THEN
+		RAISE EXCEPTION 'scope_follow_trg: trigger "%" of "%" does not declare the transition tables of a scope follow', TG_NAME, f.source::text
+			USING HINT = 'Follow the table again with sift.scope_follow_pairs.', ERRCODE = 'object_not_in_prerequisite_state';
+	END IF;
 	IF TG_OP <> 'TRUNCATE' THEN
 		IF (SELECT count(*) FROM pg_attribute a WHERE a.attrelid = f.source AND a.attname IN (f.source_column, f.source_member) AND NOT a.attisdropped
 			AND a.atttypid NOT IN ('int2'::regtype, 'int4'::regtype, 'int8'::regtype)) > 0 THEN
