@@ -43,7 +43,6 @@ CREATE TABLE zev (id int PRIMARY KEY, zone_id int) WITH (autovacuum_enabled = fa
 INSERT INTO zev SELECT i, i % 65 FROM generate_series(1, 12000) i;
 CREATE INDEX zev_c ON zev USING sift_col (id, zone_id);
 VACUUM (FREEZE, ANALYZE) zones, zev;
-SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT s.name, count(*) FROM zev e JOIN LATERAL (SELECT name FROM zones z WHERE z.id = e.zone_id ORDER BY name LIMIT 1) s ON true GROUP BY 1;
 BEGIN;
 INSERT INTO zones VALUES (60, 'new');
@@ -58,6 +57,7 @@ ROLLBACK;
 DROP TABLE zones, zev;
 
 -- the rows held back for the index of a partition
+SET enable_seqscan = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 CREATE TABLE pt (id int, g int NOT NULL, v int NOT NULL) PARTITION BY RANGE (id);
