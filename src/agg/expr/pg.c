@@ -20,6 +20,7 @@ typedef struct PlanOkCtx
 {
 	PlannerInfo *root;
 	List	   *subparams;		/* the parameters the sub-plans met so far set for their own test */
+	bool		bound;			/* $n is a constant the node binds before it opens the expression (sift_v6_bind_params) */
 	bool		ok;
 } PlanOkCtx;
 
@@ -47,6 +48,8 @@ plan_ok_walker(Node *n, PlanOkCtx *c)
 	switch (nodeTag(n))
 	{
 		case T_Param:
+			if (c->bound && ((const Param *) n)->paramkind == PARAM_EXTERN)
+				return false;
 			if (((const Param *) n)->paramkind != PARAM_EXEC ||
 				(!list_member_int(c->subparams, ((const Param *) n)->paramid) && (c->root == NULL || !initplan_ok(c->root, (Param *) n))))
 			{
@@ -84,15 +87,27 @@ plan_ok_walker(Node *n, PlanOkCtx *c)
 	}
 }
 
-bool
-sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e)
+static bool
+plan_ok(PlannerInfo *root, const Expr *e, bool bound)
 {
-	PlanOkCtx	c = {.root = root,.ok = true};
+	PlanOkCtx	c = {.root = root,.bound = bound,.ok = true};
 
 	if (contain_volatile_functions((Node *) e) || expression_returns_set((Node *) e))
 		return false;
 	plan_ok_walker((Node *) e, &c);
 	return c.ok;
+}
+
+bool
+sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e)
+{
+	return plan_ok(root, e, false);
+}
+
+bool
+sift_v6_pgexpr_plan_ok_bound(PlannerInfo *root, const Expr *e)
+{
+	return plan_ok(root, e, true);
 }
 
 typedef struct VarsCtx

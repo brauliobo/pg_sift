@@ -13,6 +13,7 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 
+#include "agg/ext.h"
 #include "agg/vexpr.h"
 
 typedef struct BoundCtx
@@ -59,10 +60,14 @@ bind_param(Node *n, void *context)
 	return (Node *) makeConst(p->paramtype, p->paramtypmod, p->paramcollid, typlen, isnull ? (Datum) 0 : datumCopy(value, byval, typlen), isnull, byval);
 }
 
-List *
-sift_v6_bind_params(List *clauses, ParamListInfo params)
+void
+sift_v6_bind_params(SiftV6Spec *spec, ParamListInfo params)
 {
-	return (List *) bind_param((Node *) clauses, params);
+	spec->vqual = (List *) bind_param((Node *) spec->vqual, params);
+	if (spec->ext == NULL)
+		return;
+	spec->ext->where = (List *) bind_param((Node *) spec->ext->where, params);
+	spec->ext->heap_where = (List *) bind_param((Node *) spec->ext->heap_where, params);
 }
 
 /* ---- the bounds the conjuncts put on the columns, for the source to leave granules unread ---- */

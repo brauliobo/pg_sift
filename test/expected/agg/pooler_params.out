@@ -63,11 +63,11 @@ FROM (VALUES ('win_lt', '3'), ('win_lt', '1'), ('win_lt', 'NULL'), ('win_le', '3
 ORDER BY stmt, args;
   stmt  |         args         |     engine      | same 
 --------+----------------------+-----------------+------
- num    | '-Infinity'          | normal          | t
- num    | 'Infinity'           | normal          | t
- num    | 'NaN'                | normal          | t
- num    | 50                   | normal          | t
- num    | 99999999999999999999 | normal          | t
+ num    | '-Infinity'          | SiftAggV6       | t
+ num    | 'Infinity'           | SiftAggV6       | t
+ num    | 'NaN'                | SiftAggV6       | t
+ num    | 50                   | SiftAggV6       | t
+ num    | 99999999999999999999 | SiftAggV6       | t
  push   | 0                    | SiftAggV6Push   | t
  push   | 3                    | SiftAggV6Push   | t
  push   | 5                    | SiftAggV6Push   | t

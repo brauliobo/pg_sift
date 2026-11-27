@@ -160,7 +160,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 	V6State    *st = (V6State *) node;
 
 	st->spec = sift_v6_spec_unpack(((CustomScan *) node->ss.ps.plan)->custom_private);
-	st->spec->vqual = sift_v6_bind_params(st->spec->vqual, estate->es_param_list_info);
+	sift_v6_bind_params(st->spec, estate->es_param_list_info);
 	sift_v6_exec_begin(st->spec, &node->ss.ps);
 	st->nsources = Max(st->spec->nparts, 1);
 	st->sources = palloc0(sizeof(SiftV6ScanSrc) * st->nsources);

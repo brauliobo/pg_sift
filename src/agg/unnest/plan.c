@@ -22,6 +22,7 @@
 #include "agg/expr/pg.h"
 #include "agg/ext.h"
 #include "agg/pipe.h"
+#include "agg/safety.h"
 #include "agg/source_rel.h"
 #include "agg/unnest/jsonb.h"
 
@@ -162,17 +163,14 @@ store_reads_cols(const V6Plan *p)
 bool
 sift_v6_unnest_where(V6Plan *p)
 {
-	SiftClause *clause;
-	SiftBytes	canon;
+	SiftClause	clause;
 
 	foreach_node(RestrictInfo, ri, cheapest_first(p->root, p->rel->baserestrictinfo))
 		if (!sift_v6_unnest_test_ri(p, ri))
 			p->spec.ext->heap_where = lappend(p->spec.ext->heap_where, copyObject(ri->clause));
 	if (p->spec.indexqual == NIL)
 		return true;
-	clause = palloc(sizeof(SiftClause));
-	sift_bytes_init(&canon, CurrentMemoryContext);
-	if (!sift_v6_clause_make(CurrentMemoryContext, p->spec.indexqual, &p->spec, clause, &canon))
+	if (!sift_v6_clause_make_params(CurrentMemoryContext, p->spec.indexqual, &p->spec, &clause))
 		return false;
 	p->spec.ext->where = p->spec.indexqual;
 	p->spec.indexqual = NIL;
@@ -224,11 +222,23 @@ sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
 #define HEAVY_AGG_PAIR_FACTOR	6
 
+/* the quals of the table whose values the plan knows: the selectivity of a qual of $n is the guess of a generic plan, which the normal plan is priced with too */
+static List *
+known_quals(const RelOptInfo *rel)
+{
+	List	   *known = NIL;
+
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		if (!agg_node_has_extern_param((Node *) ri->clause))
+			known = lappend(known, ri);
+	return known;
+}
+
 /* the pairs of the whole table: the scan skips only the granules the zones of the quals of the table rule out, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {
-	const double sel = Max(clauselist_selectivity(p->root, p->rel->baserestrictinfo, 0, JOIN_INNER, NULL), 1.0e-6);
+	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel), 0, JOIN_INNER, NULL), 1.0e-6);
 	int			heavy = 0;
 
 	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)

@@ -24,6 +24,7 @@ typedef struct Build
 	int		   *nfcols;
 	bool		add;
 	bool		or_ok;			/* an OR of preds is a conjunct (the clause of the elements of an unnest: its evaluation is sift_clause_eval alone) */
+	bool		params;			/* $n stands for a constant of its type (param_operand) */
 	int			ngroups;
 	SiftBytes  *canon;
 } Build;
@@ -51,37 +52,6 @@ static bool
 is_int_type(Oid t)
 {
 	return t == INT2OID || t == INT4OID || t == INT8OID;
-}
-
-/* the constant as the integer of a column of the type, for the types the comparison of which is the integer's */
-static bool
-int_of(Oid coltype, const Const *c, int64 *out)
-{
-	if (c->constisnull)
-		return false;
-	if (is_int_type(coltype) && is_int_type(c->consttype))
-		*out = c->consttype == INT2OID ? DatumGetInt16(c->constvalue) : c->consttype == INT4OID ? DatumGetInt32(c->constvalue) : DatumGetInt64(c->constvalue);
-	else if (coltype == c->consttype && coltype == DATEOID)
-		*out = DatumGetDateADT(c->constvalue);
-	else if (coltype == c->consttype && (coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID))
-		*out = DatumGetInt64(c->constvalue);
-	else if (coltype == c->consttype && coltype == BOOLOID)
-		*out = DatumGetBool(c->constvalue);
-	else
-		return false;
-	return true;
-}
-
-static bool
-f64_of(Datum d, Oid consttype, double *out)
-{
-	if (consttype == FLOAT4OID)
-		*out = DatumGetFloat4(d);
-	else if (consttype == FLOAT8OID)
-		*out = DatumGetFloat8(d);
-	else
-		return false;
-	return true;
 }
 
 static SiftPredStr
@@ -153,28 +123,75 @@ filter_op(Oid opno, SiftPredOp *op)
 	return true;
 }
 
+/* the kind of pred a column of coltype compared by op with a value of valtype is; false when the scan does not compare them */
 static bool
-set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
+pred_kind(Oid coltype, Oid valtype, SiftPredOp op, SiftPredKind *kind)
 {
 	switch (sift_v6_class(coltype))
 	{
 		case SV6C_I32:
 		case SV6C_I64:
 		case SV6C_BOOL:
-			p->kind = SPK_INT;
-			return int_of(coltype, c, &p->i);
+			*kind = SPK_INT;
+			return (is_int_type(coltype) && is_int_type(valtype)) ||
+				(coltype == valtype && (coltype == DATEOID || coltype == TIMESTAMPOID || coltype == TIMESTAMPTZOID || coltype == BOOLOID));
 		case SV6C_F64:
-			p->kind = SPK_F64;
-			return !c->constisnull && f64_of(c->constvalue, c->consttype, &p->f);
+			*kind = SPK_F64;
+			return valtype == FLOAT4OID || valtype == FLOAT8OID;
 		case SV6C_TEXT:
-			p->kind = SPK_STR;
-			if (c->constisnull || !is_text_type(c->consttype) || (p->op != SPO_EQ && p->op != SPO_NE && p->op != SPO_IN))
-				return false;
-			p->s = str_of(b, c->constvalue);
-			return true;
+			*kind = SPK_STR;
+			return is_text_type(valtype) && (op == SPO_EQ || op == SPO_NE || op == SPO_IN);
 		default:
 			return false;
 	}
+}
+
+static int64
+int_of(const Const *c)
+{
+	switch (c->consttype)
+	{
+		case INT2OID:
+			return DatumGetInt16(c->constvalue);
+		case INT4OID:
+			return DatumGetInt32(c->constvalue);
+		case DATEOID:
+			return DatumGetDateADT(c->constvalue);
+		case BOOLOID:
+			return DatumGetBool(c->constvalue);
+		default:
+			return DatumGetInt64(c->constvalue);
+	}
+}
+
+/* a non-NULL constant of a type pred_kind takes as the value of p */
+static bool
+set_const(Build *b, SiftPred *p, Oid coltype, const Const *c)
+{
+	if (c->constisnull || !pred_kind(coltype, c->consttype, p->op, &p->kind))
+		return false;
+	if (p->kind == SPK_INT)
+		p->i = int_of(c);
+	else if (p->kind == SPK_F64)
+		p->f = c->consttype == FLOAT4OID ? DatumGetFloat4(c->constvalue) : DatumGetFloat8(c->constvalue);
+	else
+		p->s = str_of(b, c->constvalue);
+	return true;
+}
+
+/* $n of a statement whose node binds its values as constants before it binds the clause (sift_v6_clause_make_params): only its type is known when the plan is made */
+static bool
+param_operand(const Build *b, const Node *n)
+{
+	return b->params && IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXTERN;
+}
+
+/* the comparison of a column with NULL, which holds for no row: the empty IN list */
+static void
+set_no_row(SiftPred *p)
+{
+	p->op = SPO_IN;
+	p->nin = 0;
 }
 
 /* text LIKE 'abc%': the pattern is literal bytes and one % at its end, which no collation or escape can read another way */
@@ -205,13 +222,24 @@ static bool
 pred_compare(Build *b, const OpExpr *op, SiftPred *p)
 {
 	const Var  *v;
-	const Const *c;
+	const Node *c;
 
-	if (list_length(op->args) != 2 || !IsA(linitial(op->args), Var) || !IsA(lsecond(op->args), Const))
+	if (list_length(op->args) != 2 || !IsA(linitial(op->args), Var))
 		return false;
 	v = linitial(op->args);
 	c = lsecond(op->args);
-	return (p->vec = fcol_index(b, v)) >= 0 && filter_op(op->opno, &p->op) && set_const(b, p, v->vartype, c);
+	if ((p->vec = fcol_index(b, v)) < 0 || !filter_op(op->opno, &p->op))
+		return false;
+	if (param_operand(b, c))
+		return pred_kind(v->vartype, exprType(c), p->op, &p->kind);
+	if (!IsA(c, Const))
+		return false;
+	if (((const Const *) c)->constisnull && pred_kind(v->vartype, exprType(c), p->op, &p->kind))
+	{
+		set_no_row(p);
+		return true;
+	}
+	return set_const(b, p, v->vartype, (const Const *) c);
 }
 
 static bool
@@ -229,16 +257,25 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 	SiftPredOp	op;
 	uint32		k = 0;
 
-	if (list_length(sa->args) != 2 || !IsA(linitial(sa->args), Var) || !IsA(lsecond(sa->args), Const))
+	if (list_length(sa->args) != 2 || !IsA(linitial(sa->args), Var))
 		return false;
 	v = linitial(sa->args);
-	c = lsecond(sa->args);
-	if (c->constisnull || (p->vec = fcol_index(b, v)) < 0 || !filter_op(sa->opno, &op) || op != (sa->useOr ? SPO_EQ : SPO_NE))
+	if ((p->vec = fcol_index(b, v)) < 0 || !filter_op(sa->opno, &op) || op != (sa->useOr ? SPO_EQ : SPO_NE))
 		return false;
+	p->op = sa->useOr ? SPO_IN : SPO_NOT_IN;
+	if (param_operand(b, lsecond(sa->args)))
+		return pred_kind(v->vartype, get_element_type(exprType(lsecond(sa->args))), SPO_EQ, &p->kind);
+	if (!IsA(lsecond(sa->args), Const))
+		return false;
+	c = lsecond(sa->args);
+	if (c->constisnull)
+	{
+		set_no_row(p);
+		return pred_kind(v->vartype, get_element_type(c->consttype), SPO_EQ, &p->kind);
+	}
 	arr = DatumGetArrayTypeP(c->constvalue);
 	get_typlenbyvalalign(ARR_ELEMTYPE(arr), &typlen, &typbyval, &typalign);
 	deconstruct_array(arr, ARR_ELEMTYPE(arr), typlen, typbyval, typalign, &elems, &nulls, &n);
-	p->op = sa->useOr ? SPO_IN : SPO_NOT_IN;
 	p->in_i = MemoryContextAllocZero(b->cx, sizeof(int64) * Max(n, 1));
 	p->in_f = MemoryContextAllocZero(b->cx, sizeof(double) * Max(n, 1));
 	p->in_s = MemoryContextAllocZero(b->cx, sizeof(SiftPredStr) * Max(n, 1));
@@ -248,7 +285,10 @@ pred_in(Build *b, const ScalarArrayOpExpr *sa, SiftPred *p)
 		SiftPred	one = {.op = SPO_EQ};
 
 		if (nulls[i] && !sa->useOr)
-			return false;
+		{
+			set_no_row(p);
+			return pred_kind(v->vartype, ARR_ELEMTYPE(arr), SPO_EQ, &p->kind);
+		}
 		if (nulls[i])
 			continue;
 		if (!set_const(b, &one, v->vartype, &e))
@@ -383,6 +423,14 @@ bool
 sift_v6_clause_make(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out, SiftBytes *canon)
 {
 	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.canon = canon};
+
+	return build(&b, quals, out);
+}
+
+bool
+sift_v6_clause_make_params(MemoryContext cx, const List *quals, SiftV6Spec *spec, SiftClause *out)
+{
+	Build		b = {.cx = cx,.fcol = spec->fcol,.nfcols = &spec->nfcols,.add = true,.params = true};
 
 	return build(&b, quals, out);
 }

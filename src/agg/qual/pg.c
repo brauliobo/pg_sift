@@ -81,7 +81,7 @@ sift_v6_pgqual_plan_ok(PlannerInfo *root, const SiftV6Input *in, const Expr *cla
 	SiftV6Input scratch = *in;
 	List	   *vars;
 
-	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok(root, clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, 0, &vars) && columns_ok(&scratch, vars);
+	return exprType((const Node *) clause) == BOOLOID && sift_v6_pgexpr_plan_ok_bound(root, clause) && sift_v6_pgexpr_vars(clause, SIFT_V6_BQ_RELID, 0, &vars) && columns_ok(&scratch, vars);
 }
 
 /* the type of the column the executor gets of Var v: what add_column makes of it */

@@ -146,14 +146,23 @@ qual_compare(V6Plan *p, OpExpr *op)
 	return (Expr *) q;
 }
 
+/* the array of an IN list: a constant, or $n of the WHERE of an unnest, which the node binds to the value of its execution before it reads (sift_v6_bind_params) */
+static bool
+in_array_usable(const V6Plan *p, const Node *arr)
+{
+	if (IsA(arr, Param))
+		return ((const Param *) arr)->paramkind == PARAM_EXTERN && !p->in_filter && p->xseed != NULL && p->xseed->unnest && !p->is_table;
+	return IsA(arr, Const) && !((const Const *) arr)->constisnull;
+}
+
 static Expr *
 qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 {
 	ScalarArrayOpExpr *q = copyObject(sa);
 	SiftV6Col	col;
 
-	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !IsA(lsecond(sa->args), Const) ||
-		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), false, &col) || ((Const *) lsecond(sa->args))->constisnull || sift_v6_class(col.typid) == SV6C_F64 ||
+	if ((!sa->useOr && !p->in_filter) || (p->index != NULL && !p->index->amsearcharray) || list_length(sa->args) != 2 || !in_array_usable(p, lsecond(sa->args)) ||
+		!sift_v6_plan_column(p, (Expr *) domain_column(linitial(sa->args)), false, &col) || sift_v6_class(col.typid) == SV6C_F64 ||
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;

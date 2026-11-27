@@ -9,7 +9,9 @@ INSERT INTO g_t
 SELECT i, 1 + i % 200, date '2024-01-01' + (i % 900), (ARRAY['A', 'b', 'C'])[1 + i % 3],
        jsonb_build_object('lines', (SELECT jsonb_agg(jsonb_build_object('k', (ARRAY['a', 'b', 'c'])[1 + (i + j) % 3], 'n', (i + j) % 10)) FROM generate_series(1, 1 + i % 4) j))
 FROM generate_series(1, 60000) i;
-CREATE INDEX g_t_col ON g_t USING sift_col (id, grp, created, kind, doc) WITH (key_cut = 'off', paths = 'doc.lines[]{k text, n float8}');
+SET client_min_messages = warning;
+CREATE INDEX g_t_col ON g_t USING sift_col (id, grp, created, kind, doc) WITH (paths = 'doc.lines[]{k text, n float8}');
+RESET client_min_messages;
 VACUUM (FREEZE, ANALYZE) g_t;
 
 CREATE FUNCTION plan_uses_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
@@ -43,6 +45,10 @@ RESET sift.enable_agg;
 SELECT count(*) AS arr_diff FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
 SELECT count(*) AS dates_diff FROM ((TABLE r_dates EXCEPT TABLE r_dates_off) UNION ALL (TABLE r_dates_off EXCEPT TABLE r_dates)) d;
 SELECT count(*) > 0 AS has_rows FROM r_on;
+-- a NULL parameter keeps no row, in the WHERE and as the list of an IN
+CREATE TEMP TABLE r_null AS EXECUTE arr(NULL, NULL, '2026-06-30');
+CREATE TEMP TABLE r_null_dates AS EXECUTE dates(NULL, '2025-09-30');
+SELECT (SELECT count(*) FROM r_null) AS arr_null_rows, (SELECT count(*) FROM r_null_dates) AS dates_null_rows;
 
 -- a lookup by the primary key keeps the index scan: the bound parameter is as selective as the estimate says
 SELECT plan_uses_scan($$EXECUTE one(1234)$$) AS one_scan;
