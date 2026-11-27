@@ -4,7 +4,7 @@
  * The records that matter to a modify are the ones whose writer is not past every snapshot of the backend (TransactionXmin): another transaction's say that the row changed under it, and
  * the transaction's own that a later command of it meets the row it changed (TM_SelfModified, its xmin and cmin). A writer older than the oldest transaction a snapshot of the backend can
  * see is committed for all of them or never visible, and a modify finds the same without its record. The log keeps what a modify reads of the headers of those records, a run of them
- * for the records a writer wrote for rows that follow one another (a statement that patches a million rows writes a few runs a page, not a million records), and follows the chain
+ * for the records a writer wrote for rows a step apart (a statement that patches a million rows, or every fourth one, writes a few runs a page, not a million records), and follows the chain
  * from one statement to the next the way the watch of a chain does (f2_col_delta.h): it reads the pages the chain gained, not the chain, and merges their records into the ones it has. A backend keeps the logs of the FOREIGN_LOGS partitions it modified last, so that a statement that goes from one
  * partition to another reads neither chain again.
  *
@@ -31,7 +31,7 @@
 
 #define FOREIGN_LOGS	8
 
-/* Records a writer wrote one after the other for the rows that follow one another in a granule and in the addresses: record k of the run is the one of row ordinal + k at tid + k, its seq is seq + k */
+/* Records a writer wrote one after the other for rows a step apart in a granule and in the addresses: record k of the run is the one of row ordinal + k * step at tid + k * step, its seq is seq + k */
 typedef struct ForeignRun
 {
 	uint64		tid;
@@ -42,6 +42,7 @@ typedef struct ForeignRun
 	CommandId	cid;
 	uint16		row_ordinal;
 	uint16		len;
+	uint16		step;			/* 0 while the run has one record */
 } ForeignRun;
 
 typedef struct HeadStamp
@@ -67,7 +68,7 @@ typedef struct ForeignLog
 	int			n;
 	int			cap;
 	ForeignRun *runs;			/* ascending by (tid, seq) of their first record */
-	uint16		maxlen;			/* no run is longer */
+	uint32		maxspan;		/* no run covers more addresses */
 	uint64		tick;
 } ForeignLog;
 
@@ -195,7 +196,7 @@ log_reset(void)
 {
 	flog->n = 0;
 	flog->seq = 0;
-	flog->maxlen = 0;
+	flog->maxspan = 0;
 	sift_col_delta_watch_reset(&flog->watch);
 }
 
@@ -223,12 +224,23 @@ runs_push(const ForeignRun *r)
 	flog->runs[flog->n++] = *r;
 }
 
+/* The step of record h after the first of run r: the run's, or the distance of the two when the run has one record (0 when h is not after it) */
+static uint64
+run_step_to(const ForeignRun *r, const SiftColDeltaEntryHdr *h)
+{
+	uint64		tid = sift_col_delta_hdr_tid(h);
+
+	return r->step > 0 ? r->step : tid > r->tid ? tid - r->tid : 0;
+}
+
 /* Whether record h, number seq of the chain, is the next one of run r: its start key stays, so the order of the runs holds */
 static bool
 run_continues(const ForeignRun *r, const SiftColDeltaEntryHdr *h, uint64 seq)
 {
-	return r->len < PG_UINT16_MAX && r->seq + r->len == seq && r->tid + r->len == sift_col_delta_hdr_tid(h) && r->row_ordinal + r->len == h->row_ordinal &&
-		r->part_gen == h->part_gen && r->granule_id == h->granule_id && r->xmin == h->xmin && r->cid == h->cid;
+	uint64		step = run_step_to(r, h);
+
+	return r->len < PG_UINT16_MAX && step > 0 && step <= PG_UINT16_MAX && r->seq + r->len == seq && r->tid + r->len * step == sift_col_delta_hdr_tid(h) &&
+		r->row_ordinal + r->len * step == h->row_ordinal && r->part_gen == h->part_gen && r->granule_id == h->granule_id && r->xmin == h->xmin && r->cid == h->cid;
 }
 
 static void
@@ -237,21 +249,35 @@ log_keep(const SiftColDeltaEntryHdr *h, uint64 seq)
 	ForeignRun *last = flog->n > 0 ? &flog->runs[flog->n - 1] : NULL;
 
 	if (last != NULL && run_continues(last, h, seq))
+	{
+		last->step = (uint16) run_step_to(last, h);
 		last->len++;
+	}
 	else
 		runs_push(&(ForeignRun) {.tid = sift_col_delta_hdr_tid(h),.seq = seq,.part_gen = h->part_gen,.granule_id = h->granule_id,.xmin = h->xmin,.cid = h->cid,
 								.row_ordinal = h->row_ordinal,.len = 1});
-	flog->maxlen = Max(flog->maxlen, flog->runs[flog->n - 1].len);
+	last = &flog->runs[flog->n - 1];
+	flog->maxspan = Max(flog->maxspan, (uint32) (last->len - 1) * last->step + 1);
+}
+
+/* The record of run r at tid: its place in the run, or -1 when the run has none there */
+static int
+run_rec_at(const ForeignRun *r, uint64 tid)
+{
+	uint64		d = tid - r->tid,
+				step = Max(r->step, 1);
+
+	return tid >= r->tid && d % step == 0 && d / step < r->len ? (int) (d / step) : -1;
 }
 
 /* The header of record k of run r, as much of it as a modify asks (sift_col_delta_rec_is_of_row, sift_col_delta_writers_add) */
 static SiftColDeltaEntryHdr
-run_hdr(const ForeignRun *r, uint64 k)
+run_hdr(const ForeignRun *r, int k)
 {
-	uint64		tid = r->tid + k;
+	uint64		tid = r->tid + (uint64) k * r->step;
 
 	return (SiftColDeltaEntryHdr) {.part_gen = r->part_gen,.granule_id = r->granule_id,.tid_blk = (BlockNumber) (tid >> 16),.tid_off = (OffsetNumber) (tid & 0xFFFF),
-		.row_ordinal = (uint16) (r->row_ordinal + k),.xmin = r->xmin,.cid = r->cid};
+		.row_ordinal = (uint16) (r->row_ordinal + k * r->step),.xmin = r->xmin,.cid = r->cid};
 }
 
 static bool
@@ -389,6 +415,7 @@ typedef struct RunRec
 {
 	uint64		seq;
 	int			run;
+	int			k;
 } RunRec;
 
 static int
@@ -401,8 +428,8 @@ seq_desc(const void *a, const void *b)
 }
 
 /*
- * The records of tid, newest first: the runs that begin at it come in the order of their records, and the longer runs that began before it and reach it (at most maxlen - 1 addresses
- * before) are merged into them by the seq of their record of tid.
+ * The records of tid, newest first: the runs that begin at it come in the order of their records, and the runs that began before it and have a record at it (at most maxspan - 1
+ * addresses before) are merged into them by the seq of their record of tid.
  */
 SiftColDeltaWriters
 sift_col_delta_foreign_writers(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *anchor, const SiftColDeltaTarget *t, const SiftColDeltaOps *ops)
@@ -411,20 +438,25 @@ sift_col_delta_foreign_writers(Relation rel, const SiftPartitionEntry *entry, co
 	SiftColDeltaWriters w = {0};
 	int			at = runs_from(l, t->tid),
 				end = runs_from(l, t->tid + 1),
-				from = runs_from(l, t->tid - Min(t->tid, (uint64) Max(l->maxlen, 1) - 1)),
+				from = runs_from(l, t->tid - Min(t->tid, (uint64) Max(l->maxspan, 1) - 1)),
 				nb = 0;
 	RunRec	   *before = at > from ? palloc(sizeof(RunRec) * (at - from)) : NULL;
 
 	for (int i = from; i < at; i++)
-		if (t->tid - l->runs[i].tid < l->runs[i].len)
-			before[nb++] = (RunRec) {l->runs[i].seq + (t->tid - l->runs[i].tid), i};
+	{
+		int			k = run_rec_at(&l->runs[i], t->tid);
+
+		if (k >= 0)
+			before[nb++] = (RunRec) {l->runs[i].seq + k, i, k};
+	}
 	if (nb > 1)
 		qsort(before, nb, sizeof(RunRec), seq_desc);
 	for (int i = end - 1, j = 0; i >= at || j < nb;)
 	{
 		bool		run_at = i >= at && (j == nb || l->runs[i].seq > before[j].seq);
+		int			k = run_at ? 0 : before[j].k;
 		const ForeignRun *r = run_at ? &l->runs[i--] : &l->runs[before[j++].run];
-		SiftColDeltaEntryHdr h = run_hdr(r, t->tid - r->tid);
+		SiftColDeltaEntryHdr h = run_hdr(r, k);
 
 		if (sift_col_delta_rec_is_of_row(&h, t) && sift_col_delta_writers_add(&w, &h, ops))
 			break;
