@@ -45,8 +45,8 @@ typedef struct StarDim
 const Var *
 sift_v6_plain_var(const Node *n)
 {
-	while (n != NULL && IsA(n, RelabelType))
-		n = (const Node *) ((const RelabelType *) n)->arg;
+	while (n != NULL && (IsA(n, RelabelType) || (IsA(n, PlaceHolderVar) && bms_is_empty(((const PlaceHolderVar *) n)->phnullingrels))))
+		n = IsA(n, RelabelType) ? (const Node *) ((const RelabelType *) n)->arg : (const Node *) ((const PlaceHolderVar *) n)->phexpr;
 	return n != NULL && IsA(n, Var) && ((const Var *) n)->varlevelsup == 0 ? (const Var *) n : NULL;
 }
 
@@ -375,8 +375,12 @@ bool
 sift_v6_in_target(const RelOptInfo *rel, const Var *v)
 {
 	foreach_ptr(Node, n, rel->reltarget->exprs)
-		if (IsA(n, Var) && ((Var *) n)->varattno == v->varattno && ((Var *) n)->varno == v->varno)
+	{
+		const Var  *t = sift_v6_plain_var(n);
+
+		if (t != NULL && t->varattno == v->varattno && t->varno == v->varno)
 			return true;
+	}
 	return false;
 }
 
@@ -528,6 +532,17 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	sift_v6_fact_paths(root, fact, output_rel, star_compile_fn, star_add_fn, &stmt);
 }
 
+/* a placeholder the join can null, or of an expression, is evaluated where the star does not read it; one of a bare column no join nulls (an output of a sub-select pulled up under grouping sets)
+ * is that column */
+static bool
+placeholders_ok(const PlannerInfo *root)
+{
+	foreach_node(PlaceHolderInfo, phi, root->placeholder_list)
+		if (sift_v6_plain_var((const Node *) phi->ph_var) == NULL)
+			return false;
+	return true;
+}
+
 static void
 try_facts(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, const StarGoal *goal)
 {
@@ -535,7 +550,7 @@ try_facts(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, cons
 	const int	nrels = bms_num_members(base);
 	int			r = -1;
 
-	if (nrels < 2 || nrels > 1 + SIFT_STAR_MAX_DIMS || root->hasLateralRTEs || root->placeholder_list != NIL)
+	if (nrels < 2 || nrels > 1 + SIFT_STAR_MAX_DIMS || root->hasLateralRTEs || !placeholders_ok(root))
 		return;
 	while ((r = bms_next_member(base, r)) >= 0)
 		try_fact(root, input_rel, base, output_rel, root->simple_rel_array[r], goal);

@@ -11,6 +11,7 @@
 
 #include "agg/engine.h"
 #include "agg/ext.h"
+#include "agg/plan/int.h"
 #include "agg/plan/rewrite.h"
 #include "core/errctx.h"
 
@@ -346,8 +347,12 @@ static AttrNumber
 column_position(const Plan *plan, Index varno, AttrNumber attno)
 {
 	foreach_node(TargetEntry, te, plan->targetlist)
-		if (IsA(te->expr, Var) && ((Var *) te->expr)->varattno == attno && (varno == 0 || ((Var *) te->expr)->varno == varno))
+	{
+		const Var  *v = sift_v6_plain_var((const Node *) te->expr);
+
+		if (v != NULL && v->varattno == attno && (varno == 0 || v->varno == varno))
 			return te->resno;
+	}
 	SIFT_INVARIANT(false, "a column of a dimension of the star join is in the output of its plan");
 	return 0;
 }
