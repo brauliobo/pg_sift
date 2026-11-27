@@ -206,6 +206,7 @@ extern const char *sift_preagg_decl_parse(const char *opt, const struct SiftColS
 typedef struct SiftPreaggPlan
 {
 	int			ncubes;
+	bool		declared;		/* the cubes of the rows are those of the option preagg: exactly these, with no byte budget */
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
 } SiftPreaggPlan;
 
@@ -214,7 +215,7 @@ extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *
 
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
-/* The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own */
+/* The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none */
 #define SIFT_PAG_BUDGET_PERCENT	4
 #define SIFT_PAG_BUDGET_SLACK	65536
 

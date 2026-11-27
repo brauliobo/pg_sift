@@ -275,6 +275,7 @@ plan_declared(const SiftRows *rows, const SiftDictEnc *const *dicts, ColInfo *ci
 	for (int c = 0; c < nc && dc->nmeas > 0; c++)
 		ci[c].numeric &= listed(dc->meas, dc->nmeas, c);
 	nd = declared_dims(dc, ci, nc, dims);
+	plan->declared = true;
 	add_cube(plan, ci, nc, dims, 0, NULL, 0, PAG_EXPLICIT_GROUPS);
 	for (int i = 0; i < nd; i++)
 		add_cube(plan, ci, nc, &dims[i], 1, NULL, 0, PAG_EXPLICIT_GROUPS);
@@ -793,12 +794,13 @@ sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, 
 					dist;
 		uint32		ncells = 0;
 		uint8		cflags = 0;
-		uint64	   *used = &b->used[(b->plan.cube[k].flags & SIFT_PCUBE_ELEMENTS) != 0];
+		const bool	elements = (b->plan.cube[k].flags & SIFT_PCUBE_ELEMENTS) != 0;
+		uint64	   *used = &b->used[elements];
 		bool		ok;
 
 		initStringInfo(&cells);
 		initStringInfo(&dist);
-		ok = cube_granule(&b->plan.cube[k], cols, nrows, dicts, &cells, &dist, &ncells, &cflags) && *used + cells.len + dist.len <= budget;
+		ok = cube_granule(&b->plan.cube[k], cols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || *used + cells.len + dist.len <= budget);
 		b->first[k][g] = b->ncells[k];
 		if (ok)
 		{
