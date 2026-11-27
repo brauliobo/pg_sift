@@ -7,6 +7,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/restrictinfo.h"
 #include "parser/parsetree.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
@@ -304,6 +305,38 @@ sift_v6_card_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, c
 	sift_card_estimate(view, &cq.q, &est);
 	*rest = cq.rest;
 	return est.g_total > 0 ? est.g_eff / est.g_total : -1;
+}
+
+double *
+sift_v6_card_undecided(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view)
+{
+	SiftV6CardQuery cq;
+	SiftCardEst est;
+	double	   *keep;
+	uint32		n;
+
+	if (view == NULL || view->n_sample == 0 || may_leak(root, rel))
+		return NULL;
+	sift_v6_card_query(rel->baserestrictinfo, rel->relid, ix, &cq);
+	sift_card_estimate(view, &cq.q, &est);
+	n = Min(cq.q.npreds, SIFT_CARD_MAX_PREDS);
+	keep = palloc(view->ncols * sizeof(double));
+	for (uint32 l = 0; l < view->ncols; l++)
+		keep[l] = 1.0;
+	for (uint32 i = 0; i < n; i++)
+		if (cq.q.preds[i].col < view->ncols)
+			keep[cq.q.preds[i].col] = 0;
+	for (uint32 i = 0; i < n; i++)
+		if (cq.q.preds[i].col < view->ncols)
+			keep[cq.q.preds[i].col] = Max(keep[cq.q.preds[i].col], 1.0 - est.decided[i]);
+	foreach_node(Var, v, pull_var_clause((Node *) extract_actual_clauses(cq.rest, false), 0))
+	{
+		const int	leaf = leaf_of(ix, rel->relid, (Node *) v);
+
+		if (leaf >= 0 && (uint32) leaf < view->ncols)
+			keep[leaf] = 1.0;
+	}
+	return keep;
 }
 
 double

@@ -40,6 +40,11 @@ extern int sift_v6_card_leaf(const IndexOptInfo *ix, int col);
 extern double sift_v6_card_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, List **rest);
 
 /* The groups of the keys (Vars of the index) over rows rows; -1 when a key has no distinct count or the relation is under row security */
+/*
+ * Of each leaf of the index, the share of the rows of the granules the quals keep whose column the scan still decodes to test them: a granule whose zone decides every
+ * predicate on the leaf is tested without it (sampled granules; a leaf a clause the statistics cannot describe reads keeps 1). NULL without statistics: every row.
+ */
+extern double *sift_v6_card_undecided(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view);
 extern double sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const List *group_exprs, double rows);
 
 /* v6_cost.c: the rows of a relation from the statistics of its index (when trusted), the groups of its keys, and the cost of the aggregate scan */

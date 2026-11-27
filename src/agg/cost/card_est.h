@@ -179,6 +179,7 @@ typedef struct SiftCardEst
 	double		confidence;
 	bool		exact_zero;
 	bool		used_scope_l2;
+	double		decided[SIFT_CARD_MAX_PREDS];	/* of each predicate, the share of the rows of the granules kept whose zone decides it for every row (sampled granules; 0 without a sample) */
 	bool		has_uncovered_quals;
 } SiftCardEst;
 

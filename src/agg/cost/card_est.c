@@ -382,6 +382,46 @@ outside(const SiftCardZone *z, int64 lo, int64 hi)
 	return hi < z->min || lo > z->max;
 }
 
+/*
+ * key = ANY ($1): the chance that the granule holds one of the values of a list the planner does not know, taken as single_in's count of distinct values of the leaf drawn at
+ * random: a zone that spans d of them holds one with 1 - (1 - d / ndv)^k
+ */
+static double
+param_list_hit(const SiftColCardStats *cs, const SiftCardZone *z, uint32 nrows)
+{
+	const double ndv = (cs->flags & SIFT_CSTAT_HAS_NDV) ? Max(cs->ndv_est, 1.0) : 0;
+	double		d;
+
+	if (z->nnull >= nrows)
+		return 0;
+	if (ndv == 0 || !(cs->flags & SIFT_CSTAT_HAS_RANGE))
+		return 1;
+	d = ((double) z->max - (double) z->min + 1.0) * ndv / Max((double) cs->max_i64 - (double) cs->min_i64 + 1.0, 1.0);
+	d = Min(Max(d, 1.0), Min(ndv, (double) nrows));
+	return 1.0 - pow(1.0 - d / ndv, Min(PARAM_IN_MAX, ndv * PARAM_IN_FRACTION));
+}
+
+/* the zone tells the predicate of every row of the granule: one value and no NULL for a comparison, every document or none for a key test */
+static bool
+zone_decides(const SiftCardPred *p, const SiftCardZone *z, uint32 nrows)
+{
+	switch (p->kind)
+	{
+		case SCP_EQ:
+		case SCP_IN:
+		case SCP_RANGE:
+			return z->nnull == 0 && z->min == z->max;
+		case SCP_IS_NULL:
+		case SCP_IS_NOT_NULL:
+			return z->nnull == 0 || z->nnull == nrows;
+		case SCP_KEY_EXISTS:
+		case SCP_KEY_ABSENT:
+			return (z->flags & (SIFT_CZONE_KEY_ALL | SIFT_CZONE_KEY_NONE)) != 0;
+		default:
+			return false;
+	}
+}
+
 static double
 zone_sel(const SiftCardPred *p, const PredVals *pv, const SiftCardZone *z, uint32 nrows, double single)
 {
@@ -572,7 +612,9 @@ estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, V
 		double		num = 0,
 					den = 0,
 					wsurv = 0,
-					wall = 0;
+					wall = 0,
+					kept = 0,
+					dec[SIFT_CARD_MAX_PREDS] = {0};
 
 		for (uint32 g = 0; g < s->n_sample; g++)
 		{
@@ -581,6 +623,7 @@ estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, V
 						rows = (double) sgr->nrows * w;
 			double		pj[SIFT_CARD_MAX_PREDS];
 			double		pg = sgr->part_idx < s->nparts ? part_fraction(q, &s->parts[sgr->part_idx]) : 1.0;
+			double		hit = 1.0;
 
 			for (uint32 i = 0; i < np && pg > 0; i++)
 			{
@@ -593,13 +636,22 @@ estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, V
 			}
 			if (pg > 0)
 				pg *= backoff(pj, (int) np);
+			for (uint32 i = 0; i < np && pg > 0; i++)
+				if (q->preds[i].kind == SCP_IN && q->preds[i].unknown_len && q->preds[i].col < s->ncols)
+					hit *= param_list_hit(&s->cols[q->preds[i].col], &s->sample_zones[(size_t) q->preds[i].col * s->n_sample + g], sgr->nrows);
+			for (uint32 i = 0; i < np && pg > 0; i++)
+				if (q->preds[i].col < s->ncols && zone_decides(&q->preds[i], &s->sample_zones[(size_t) q->preds[i].col * s->n_sample + g], sgr->nrows))
+					dec[i] += rows * hit;
+			kept += pg > 0 ? rows * hit : 0;
 			num += rows * pg;
 			den += rows;
-			wsurv += pg > 0 ? w : 0;
+			wsurv += pg > 0 ? w * hit : 0;
 			wall += w;
 		}
 		s_joint = den > 0 ? num / den : 1.0;
 		frac_gran = wall > 0 ? wsurv / wall : 1.0;
+		for (uint32 i = 0; i < np; i++)
+			out->decided[i] = kept > 0 ? dec[i] / kept : 0;
 		if (s_joint == 0 && sample_full)
 		{
 			out->exact_zero = true;

@@ -213,6 +213,28 @@ cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptI
 	return bytes;
 }
 
+/*
+ * the bytes of a row of the columns of the quals: a column the statement reads for nothing else (read) is decoded only for the share keep of the rows whose granule its zone
+ * does not decide (sift_v6_card_undecided; NULL: every row)
+ */
+static double
+filter_bytes(const SiftCardStatsView *view, const Bitmapset *filter, const Bitmapset *read, const IndexOptInfo *ix, bool index_cols, const RelOptInfo *rel, const Bitmapset *wide,
+			 bool stored, double unsized, const double *keep)
+{
+	double		bytes = 0;
+	int			a = -1;
+
+	while ((a = bms_next_member(filter, a)) >= 0)
+	{
+		const int	col = a + FirstLowInvalidHeapAttributeNumber;
+		const int	leaf = index_cols ? index_leaf(ix, col) : heap_leaf(ix, col);
+		const double b = cols_bytes(view, bms_make_singleton(a), ix, index_cols, rel, wide, stored, unsized);
+
+		bytes += keep != NULL && leaf >= 0 && (uint32) leaf < view->ncols && !bms_is_member(a, read) ? b * keep[leaf] : b;
+	}
+	return bytes;
+}
+
 /* the bytes of a row of the leaves: as cols_bytes, for the columns the statistics hold by leaf */
 static double
 leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored, double unsized)
@@ -436,14 +458,17 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	Bitmapset  *filter_leaves = NULL,
 			   *measure_leaves = NULL,
 			   *filter = spec_cols(spec, true, &filter_leaves),
-			   *measure = bms_difference(spec_cols(spec, false, &measure_leaves), filter),
+			   *read = spec_cols(spec, false, &measure_leaves),
+			   *measure = bms_difference(read, filter),
 			   *keys = spec_keys(spec);
+	const double *keep;
 
 	scan_bytes(root, rel, ix, &b);
+	keep = sift_v6_card_undecided(root, rel, ix, b.view);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
-	b.filter_row = cols_bytes(b.view, filter, ix, true, rel, keys, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
+	b.filter_row = filter_bytes(b.view, filter, read, ix, true, rel, keys, false, SIFT_WORD_BYTES, keep) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
 	b.measure_row = cols_bytes(b.view, measure, ix, true, rel, keys, false, SIFT_WORD_BYTES) + leaves_bytes(b.view, measure_leaves, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
+	b.filter_io_row = filter_bytes(b.view, filter, read, ix, true, NULL, NULL, true, b.io_col_row, keep) + leaves_bytes(b.view, filter_leaves, true, b.io_col_row);
 	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
@@ -468,15 +493,19 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 	SiftCostInputs in;
 	Cost		startup;
 	Bitmapset  *filter = key > 0 ? bms_make_singleton(key - FirstLowInvalidHeapAttributeNumber) : NULL,
-			   *measure = NULL;
+			   *measure = NULL,
+			   *read;
+	const double *keep;
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 		pull_varattnos((Node *) ri->clause, rel->relid, &filter);
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &measure);
+	read = key > 0 ? bms_add_member(bms_copy(measure), key - FirstLowInvalidHeapAttributeNumber) : measure;
 	scan_bytes(root, rel, ix, &b);
-	b.filter_row = cols_bytes(b.view, filter, ix, false, rel, filter, false, SIFT_WORD_BYTES);
+	keep = sift_v6_card_undecided(root, rel, ix, b.view);
+	b.filter_row = filter_bytes(b.view, filter, read, ix, false, rel, filter, false, SIFT_WORD_BYTES, keep);
 	b.measure_row = cols_bytes(b.view, measure, ix, false, rel, measure, false, SIFT_WORD_BYTES);
-	b.filter_io_row = cols_bytes(b.view, filter, ix, false, NULL, NULL, true, b.io_col_row);
+	b.filter_io_row = filter_bytes(b.view, filter, read, ix, false, NULL, NULL, true, b.io_col_row, keep);
 	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, NULL, true, b.io_col_row);
 	in = scan_inputs(&b);
 	in.qual_row = in_lists_cost(b.view, ix, false, rel->baserestrictinfo);
