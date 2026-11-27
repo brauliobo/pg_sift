@@ -773,7 +773,7 @@ stream_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	StreamState *st = (StreamState *) node;
 
 	sift_v6_explain_index(es, (Oid) linitial_int(linitial(st->priv)), list_nth_int(linitial(st->priv), 2));
-	sift_v6_explain_stream_keys(node, ancestors, list_nth(st->priv, PRIV_KEYS), es);
+	sift_v6_explain_stream_keys(linitial(st->priv), list_nth(st->priv, PRIV_KEYS), es);
 	if (st->started)
 		sift_v6_explain_count(es, "Groups", (int64) st->groups);
 }

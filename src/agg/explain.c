@@ -4,11 +4,13 @@
  */
 #include "postgres.h"
 
+#include "catalog/index.h"
 #include "commands/explain.h"
 #include "executor/instrument.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -270,14 +272,19 @@ sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, const SiftV6Sp
 }
 
 void
-sift_v6_explain_stream_keys(CustomScanState *css, List *ancestors, const List *keys, ExplainState *es)
+sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es)
 {
-	List	   *dpcontext = set_deparse_context_plan(es->deparse_cxt, css->ss.ps.plan, ancestors);
+	const Oid	relid = (Oid) linitial_int(ints);
+	const Oid	heapoid = list_nth_int(ints, 2) ? relid : IndexGetRelation(relid, false);
+	List	   *dpcontext = deparse_context_for(get_rel_name(heapoid), heapoid);
 	StringInfoData buf;
 
 	initStringInfo(&buf);
-	foreach_ptr(Expr, e, keys)
+	foreach_ptr(Expr, key, keys)
 	{
+		Expr	   *e = copyObject(key);
+
+		ChangeVarNodes((Node *) e, list_nth_int(ints, 1), 1, 0);
 		appendStringInfoString(&buf, buf.len ? ", " : "");
 		if (IsA(e, Var))
 			appendStringInfoString(&buf, deparse_expression((Node *) e, dpcontext, false, false));
