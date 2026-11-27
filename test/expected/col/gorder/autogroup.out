@@ -51,24 +51,28 @@ SELECT w, result, count(*) FROM (
 					  'ts BETWEEN timestamp ''2024-03-01'' AND timestamp ''2024-03-02''']) w,
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
-                              w                               | result | count 
---------------------------------------------------------------+--------+-------
- ent_id = 0 AND ts < timestamp '2024-03-01'                   | units  |    12
- ent_id = 100000                                              | units  |    12
- ent_id = 100001                                              | units  |    12
- ent_id = 399                                                 | units  |    12
- ent_id = 7                                                   | units  |    12
- ent_id = 7 AND ts >= timestamp '2024-06-01'                  | units  |    12
- true                                                         | units  |    12
- ts >= timestamp '2024-09-01'                                 | units  |    12
- ts BETWEEN timestamp '2024-03-01' AND timestamp '2024-03-02' | units  |    12
-(9 rows)
+                              w                               |    result    | count 
+--------------------------------------------------------------+--------------+-------
+ ent_id = 0 AND ts < timestamp '2024-03-01'                   | global order |     2
+ ent_id = 0 AND ts < timestamp '2024-03-01'                   | units        |    10
+ ent_id = 100000                                              | units        |    12
+ ent_id = 100001                                              | units        |    12
+ ent_id = 399                                                 | global order |     5
+ ent_id = 399                                                 | units        |     7
+ ent_id = 7                                                   | global order |     5
+ ent_id = 7                                                   | units        |     7
+ ent_id = 7 AND ts >= timestamp '2024-06-01'                  | global order |     2
+ ent_id = 7 AND ts >= timestamp '2024-06-01'                  | units        |    10
+ true                                                         | global order |    12
+ ts >= timestamp '2024-09-01'                                 | units        |    12
+ ts BETWEEN timestamp '2024-03-01' AND timestamp '2024-03-02' | units        |    12
+(13 rows)
 
 -- a group range cannot read the array of a group (the plain order has no bound on the key for it); two groups, OR or IN, are read one after the other
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id > 390 ORDER BY ts, id LIMIT 10') AS group_range, ag_chk('SELECT id, ts FROM ag WHERE ent_id = 3 OR ent_id = 4 ORDER BY ts, id LIMIT 10') AS two_groups;
- group_range | two_groups 
--------------+------------
- units       | units
+ group_range  |  two_groups  
+--------------+--------------
+ global order | global order
 (1 row)
 
 -- the plain order still answers a range of the key from the addresses, with no unit read
@@ -87,7 +91,7 @@ DELETE FROM ag WHERE id % 211 = 0;
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS buffers_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS buffers_plain;
  buffers_pinned | buffers_plain 
 ----------------+---------------
- units          | units
+ units          | global order
 (1 row)
 
 SELECT sift.col_promote('ag_i'::regclass) >= 0 AS promoted;
@@ -105,7 +109,7 @@ SELECT sift.col_merge('ag_i'::regclass, true) >= 0 AS merged;
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS promoted_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS promoted_plain;
  promoted_pinned | promoted_plain 
 -----------------+----------------
- units           | units
+ units           | global order
 (1 row)
 
 SELECT sift.col_verify('ag_i');
@@ -126,7 +130,7 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS reindexed_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS reindexed_plain;
  reindexed_pinned | reindexed_plain 
 ------------------+-----------------
- units            | units
+ units            | global order
 (1 row)
 
 -- the user's: off keeps the plain order only; a column named groups every array and keeps no plain order (a scan that does not pin it reads the units)
@@ -141,9 +145,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ag_i';
 (1 row)
 
 SELECT ag_chk('SELECT id, ts FROM ag WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS off_pinned, ag_chk('SELECT id, ts FROM ag ORDER BY ts DESC, id LIMIT 20') AS off_plain;
- off_pinned | off_plain 
-------------+-----------
- units      | units
+ off_pinned |  off_plain   
+------------+--------------
+ units      | global order
 (1 row)
 
 ALTER INDEX ag_i SET (order_array_group = 'v', order_array_columns = 'ts');

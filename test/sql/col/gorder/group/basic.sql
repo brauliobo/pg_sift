@@ -114,7 +114,7 @@ BEGIN
 	RAISE NOTICE 'cursor: % %', CASE WHEN fwd = want THEN 'forward is the heap''s' ELSE 'DIFFERS forward' END, CASE WHEN bwd = want THEN 'backward is the same' ELSE 'DIFFERS backward' END;
 END $$;
 
--- segments written without the group: a plain array answers with the condition tested on the heap row (the pin does not narrow it: the units)
+-- segments written without the group: the plain array answers, with the pin on the group tested on the heap row of each entry
 DROP INDEX gg_i;
 CREATE INDEX gg_p ON gg USING sift_col (id sift.col_int4_ops, g sift.col_int4_ops, k sift.col_int4_ops) WITH (order_array_columns = 'k');
 SELECT gg_chk('SELECT id, k FROM gg WHERE g = 3 ORDER BY k, id LIMIT 10') AS plain_array;

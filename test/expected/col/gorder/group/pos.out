@@ -92,26 +92,31 @@ SELECT w, result, count(*) FROM (
 					  'ent_id = 7 AND ts BETWEEN timestamp ''2024-02-01'' AND timestamp ''2024-02-03''', 'ent_id IN (3, 5)', 'true']) w,
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
-                                      w                                      | result | count 
------------------------------------------------------------------------------+--------+-------
- ent_id = 0 AND ts < timestamp '2024-03-01'                                  | units  |    12
- ent_id = 100000                                                             | units  |    12
- ent_id = 100001                                                             | units  |    12
- ent_id = 399                                                                | units  |    12
- ent_id = 7                                                                  | units  |    12
- ent_id = 7 AND ts >= timestamp '2024-06-01'                                 | units  |    12
- ent_id = 7 AND ts BETWEEN timestamp '2024-02-01' AND timestamp '2024-02-03' | units  |    12
- ent_id IN (3, 5)                                                            | units  |    12
- true                                                                        | units  |    12
-(9 rows)
+                                      w                                      |    result    | count 
+-----------------------------------------------------------------------------+--------------+-------
+ ent_id = 0 AND ts < timestamp '2024-03-01'                                  | global order |     3
+ ent_id = 0 AND ts < timestamp '2024-03-01'                                  | units        |     9
+ ent_id = 100000                                                             | units        |    12
+ ent_id = 100001                                                             | units        |    12
+ ent_id = 399                                                                | global order |     7
+ ent_id = 399                                                                | units        |     5
+ ent_id = 7                                                                  | global order |     7
+ ent_id = 7                                                                  | units        |     5
+ ent_id = 7 AND ts >= timestamp '2024-06-01'                                 | units        |    12
+ ent_id = 7 AND ts BETWEEN timestamp '2024-02-01' AND timestamp '2024-02-03' | units        |    12
+ ent_id IN (3, 5)                                                            | global order |     8
+ ent_id IN (3, 5)                                                            | units        |     4
+ true                                                                        | global order |    12
+(13 rows)
 
 -- the pages after a key, through every group
 SELECT gq_chk(format('SELECT id, ts FROM @ WHERE ent_id = %s ORDER BY ts, id LIMIT 5 OFFSET %s', g, o)) AS result, count(*)
 FROM generate_series(0, 399, 13) g, unnest(ARRAY[0, 37, 250, 299]) o GROUP BY 1;
- result | count 
---------+-------
- units  |   124
-(1 row)
+    result    | count 
+--------------+-------
+ global order |    31
+ units        |    93
+(2 rows)
 
 -- the counts, ranges and extremes of a group read its entries whole (the table without an index is the oracle)
 CREATE TABLE gz (LIKE gp);
@@ -155,7 +160,7 @@ SELECT result, count(*) FROM gz_all() GROUP BY 1 ORDER BY 1;
 SELECT gq_chk('SELECT id, ts FROM @ WHERE ent_id = 7 ORDER BY ts, id LIMIT 20') AS buffers_pinned, gq_chk('SELECT id, ts FROM @ ORDER BY ts DESC, id LIMIT 20') AS buffers_plain;
  buffers_pinned | buffers_plain 
 ----------------+---------------
- units          | units
+ units          | global order
 (1 row)
 
 SELECT sift.col_promote('gq_on'::regclass) >= 0 AS promoted;

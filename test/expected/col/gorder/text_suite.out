@@ -323,12 +323,12 @@ SELECT col, d, result, count(*) FROM (
 	SELECT col, d, eo_chk(format('SELECT id, %s FROM eo ORDER BY %s %s, id LIMIT %s OFFSET %s', col, col, d, l, o)) AS result
 	FROM unnest(ARRAY['created', 'updated']) col, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20, 500]) l, unnest(ARRAY[0, 30, 3000]) o) r
 GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
-   col   |  d   | result | count 
----------+------+--------+-------
- created | ASC  | units  |     9
- created | DESC | units  |     9
- updated | ASC  | units  |     9
- updated | DESC | units  |     9
+   col   |  d   |    result    | count 
+---------+------+--------------+-------
+ created | ASC  | global order |     9
+ created | DESC | global order |     9
+ updated | ASC  | global order |     9
+ updated | DESC | global order |     9
 (4 rows)
 
 -- what the ends do not hold stays with the units: an offset past them, and a range in the middle of the column
@@ -341,9 +341,9 @@ SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20 OFF
 
 SELECT eo_chk('SELECT id, created FROM eo WHERE tenant_id = 7 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
 	   eo_chk('SELECT id, created FROM eo WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
- tenant_page | entity_page 
--------------+-------------
- units       | units
+ tenant_page  | entity_page 
+--------------+-------------
+ global order | units
 (1 row)
 
 -- rows written after the build, a promotion and a merge keep the answers
@@ -351,9 +351,9 @@ INSERT INTO eo SELECT 200000 + i, i % 40, i % 3000, timestamp '2024-06-01' + i *
 UPDATE eo SET created = timestamp '2023-12-31' WHERE id IN (5, 6, 7);
 DELETE FROM eo WHERE id % 211 = 0;
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS buffers_desc, eo_chk('SELECT id, created FROM eo ORDER BY created, id LIMIT 20') AS buffers_asc;
- buffers_desc | buffers_asc 
---------------+-------------
- units        | units
+ buffers_desc | buffers_asc  
+--------------+--------------
+ global order | global order
 (1 row)
 
 SELECT sift.col_promote('eo_i'::regclass) >= 0 AS promoted;
@@ -365,7 +365,7 @@ SELECT sift.col_promote('eo_i'::regclass) >= 0 AS promoted;
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS promoted_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS promoted_asc;
  promoted_desc | promoted_asc 
 ---------------+--------------
- units         | units
+ global order  | global order
 (1 row)
 
 SELECT sift.col_merge('eo_i'::regclass, true) >= 0 AS merged;
@@ -375,9 +375,9 @@ SELECT sift.col_merge('eo_i'::regclass, true) >= 0 AS merged;
 (1 row)
 
 SELECT eo_chk('SELECT id, created FROM eo ORDER BY created DESC, id LIMIT 20') AS merged_desc, eo_chk('SELECT id, updated FROM eo ORDER BY updated, id LIMIT 20') AS merged_asc;
- merged_desc | merged_asc 
--------------+------------
- units       | units
+ merged_desc  |  merged_asc  
+--------------+--------------
+ global order | global order
 (1 row)
 
 SELECT sift.col_verify('eo_i');

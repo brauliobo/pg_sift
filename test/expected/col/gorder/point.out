@@ -78,9 +78,9 @@ FROM unnest(ARRAY['SELECT id, k FROM @ WHERE k = 123457', 'SELECT id, k FROM @ W
 -- an IN list is a seek for each key, the rows of the keys together in the order of the heap: the blocks are few, as many keys as the order hands over (512), more are read from the units
 CREATE FUNCTION keys(n int, step int) RETURNS text LANGUAGE sql AS $$ SELECT string_agg((1 + (i * step) % 200000)::text, ', ') FROM generate_series(1, n) i $$;
 SELECT plan_of('SELECT id, k FROM t WHERE k IN (' || keys(4, 7919) || ')') AS in4_plan;
-  in4_plan  
-------------
- Index Scan
+       in4_plan        
+-----------------------
+ Bitmap Heap Scan on t
 (1 row)
 
 SELECT blocks_of('SELECT id, k FROM t WHERE k IN (' || keys(4, 7919) || ')') < pg_relation_size('t_ix') / 8192 / 8 AS in4_reads_few_blocks;

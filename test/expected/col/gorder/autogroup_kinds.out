@@ -37,18 +37,21 @@ SELECT col, result, count(*) FROM (
 	SELECT col, ak_chk(format('SELECT id, %s FROM ak WHERE ent_id = %s ORDER BY %s %s, id LIMIT %s', col, e, col, d, l)) AS result
 	FROM unnest(ARRAY['d', 'created', 'score']) col, unnest(ARRAY[7, 399, 1000]) e, unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY[1, 20]) l) r
 GROUP BY 1, 2 ORDER BY 1, 2;
-   col   | result | count 
----------+--------+-------
- created | units  |    12
- d       | units  |    12
- score   | units  |    12
-(3 rows)
+   col   |    result    | count 
+---------+--------------+-------
+ created | global order |     4
+ created | units        |     8
+ d       | global order |     4
+ d       | units        |     8
+ score   | global order |     4
+ score   | units        |     8
+(6 rows)
 
 -- a timestamp in heap order has the second order and, beside it, the ends of its plain order: the page of the whole table reads the ends
 SELECT ak_chk('SELECT id, created FROM ak ORDER BY created DESC, id LIMIT 20') AS whole_table_desc, ak_chk('SELECT id, created FROM ak ORDER BY created, id LIMIT 20 OFFSET 30') AS whole_table_asc;
  whole_table_desc | whole_table_asc 
 ------------------+-----------------
- units            | units
+ global order     | global order
 (1 row)
 
 -- rows written after the build, a promotion and a merge keep the answers
@@ -125,9 +128,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak3_i';
 (1 row)
 
 SELECT ak_chk('SELECT id, created FROM ak3 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 1') AS few_rows;
- few_rows 
-----------
- units
+   few_rows   
+--------------
+ global order
 (1 row)
 
 CREATE TABLE ak4 (id int, ent_id int, created timestamp, score int, pad text);
@@ -177,9 +180,9 @@ SELECT reloptions FROM pg_class WHERE relname = 'ak6_i';
 
 SELECT ak_chk('SELECT id, created FROM ak6 WHERE tenant_id = 5 ORDER BY created DESC, id LIMIT 20') AS tenant_page,
 	   ak_chk('SELECT id, created FROM ak6 WHERE ent_id = 7 ORDER BY created DESC, id LIMIT 20') AS entity_page;
- tenant_page | entity_page 
--------------+-------------
- units       | units
+ tenant_page  | entity_page 
+--------------+-------------
+ global order | units
 (1 row)
 
 DROP TABLE ak, ak1, ak2, ak3, ak4, ak5, ak6;
