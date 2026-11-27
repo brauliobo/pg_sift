@@ -83,8 +83,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 -- the new address of a row: the B-tree index on other changes, no column of the sift_col index does
@@ -112,8 +112,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 -- a scalar of the index changes: a value past the stored zones, and a NULL
@@ -151,8 +151,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 -- a string of the index changes
@@ -174,8 +174,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 -- the transaction that wrote the records sees them, and a rolled back one leaves nothing
@@ -198,8 +198,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 SELECT h.a = w.n AND h.b = w.s AS pulled_own FROM pull('rows', true, ARRAY['2:ge:5000']) h, (SELECT count(*) n, sum(v) s FROM uh WHERE v >= 5000) w;
@@ -221,8 +221,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 -- the pull on its own: the values it reads, and the granules the zones of a leaf leave for a predicate on a leaf that was patched
@@ -259,8 +259,8 @@ SELECT same(q) FROM queries;
  same node SELECT i.kind, count(*), sum(v) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) GROUP BY 1
  same node SELECT i.qty, tag, count(*) FROM u, jsonb_to_recordset(items) AS i(kind text, qty int) WHERE v < 20 GROUP BY 1, 2
  same node SELECT e->>'kind', count(*), sum(v) FROM u, jsonb_array_elements(items) e GROUP BY 1
- same normal SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
- same normal SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
+ same node SELECT e, count(*), sum(v) FROM s, unnest(arr) e GROUP BY e
+ same node SELECT e, tag, count(*) FROM s, unnest(arr) e WHERE v IS NOT NULL GROUP BY e, tag
 (11 rows)
 
 SELECT h.a = w.n AND h.b = w.s AS pulled_after_vacuum FROM pull('rows', true, ARRAY['2:ge:1000']) h, (SELECT count(*) n, sum(v) s FROM uh WHERE v >= 1000) w;
