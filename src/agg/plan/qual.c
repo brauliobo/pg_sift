@@ -12,6 +12,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/prep.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
@@ -65,10 +66,14 @@ domain_column(Node *n)
 	return IsA(n, RelabelType) && IsA(r->arg, Var) && getBaseType(exprType((Node *) r->arg)) == r->resulttype ? (Node *) r->arg : n;
 }
 
+/* the column col of the index that e (a column of the relation or an expression the index stores) is read from */
 static Expr *
-index_var(const Var *v, int col)
+index_var(const Expr *e, int col)
 {
-	return (Expr *) makeVar(INDEX_VAR, sift_v6_vatt_is_json(v->varattno) ? v->varattno : col + 1, getBaseType(v->vartype), v->vartypmod, v->varcollid, 0);
+	const bool	json = IsA(e, Var) && sift_v6_vatt_is_json(((const Var *) e)->varattno);
+
+	return (Expr *) makeVar(INDEX_VAR, json ? ((const Var *) e)->varattno : col + 1, getBaseType(exprType((const Node *) e)), exprTypmod((const Node *) e),
+							exprCollation((const Node *) e), 0);
 }
 
 /* the operator family the comparisons of the column are of: what a key of a document reads as is a text or a float8 */
@@ -127,11 +132,12 @@ compare_strategy(const V6Plan *p, const OpExpr *q, const SiftV6Col *col, const N
 	}
 }
 
-/* a column the scan keys test on the stored rows: not a member of a map, which the scan finds in each row it reads */
+/* a column the scan keys test on the stored rows, or in a FILTER a boolean expression the host stores: not a member of a map, which the scan finds in each row it reads */
 static bool
 key_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *col)
 {
-	return sift_v6_plan_column(p, e, numeric_ok, col) && col->jmember == 0;
+	return (sift_v6_plan_column(p, e, numeric_ok, col) && col->jmember == 0) ||
+		(p->in_filter && exprType((const Node *) e) == BOOLOID && sift_v6_plan_expr_column(p, e, col));
 }
 
 static Expr *
@@ -159,7 +165,7 @@ qual_compare(V6Plan *p, OpExpr *op)
 	}
 	if (!key_column(p, (Expr *) l, true, &col) || !operand_usable(p, r) || compare_strategy(p, q, &col, r) == 0)
 		return NULL;
-	linitial(q->args) = index_var((Var *) l, col.attno - 1);
+	linitial(q->args) = index_var((Expr *) l, col.attno - 1);
 	q->opfuncid = get_opcode(q->opno);
 	return (Expr *) q;
 }
@@ -192,7 +198,7 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 		get_op_opfamily_strategy(sa->useOr ? sa->opno : get_negator(sa->opno), col_opfamily(p, &col)) != BTEqualStrategyNumber ||
 		(sift_v6_class(col.typid) == SV6C_TEXT && (p->is_table || !sift_text_bytes_equal(sa->inputcollid))))
 		return NULL;
-	linitial(q->args) = index_var((Var *) domain_column(linitial(sa->args)), col.attno - 1);
+	linitial(q->args) = index_var((Expr *) domain_column(linitial(sa->args)), col.attno - 1);
 	return (Expr *) q;
 }
 
@@ -234,7 +240,7 @@ qual_null_test(V6Plan *p, NullTest *nt)
 		att = key_column(p, nt->arg, true, &col) ? col.attno : 0;
 	if (att == 0)
 		return NULL;
-	q->arg = index_var((Var *) nt->arg, att - 1);
+	q->arg = index_var(nt->arg, att - 1);
 	return (Expr *) q;
 }
 
@@ -253,16 +259,28 @@ has_numeric_var(Node *n, void *context)
 	return n != NULL && ((IsA(n, Var) && ((Var *) n)->vartype == NUMERICOID) || expression_tree_walker(n, has_numeric_var, context));
 }
 
-/* a boolean column, or NOT of it, is the comparison of the column with true (false): NULL keeps no row in either */
+static Expr *
+bool_equals(V6Plan *p, Expr *e, bool value)
+{
+	return qual_compare(p, (OpExpr *) make_opclause(BooleanEqualOperator, BOOLOID, false, e, (Expr *) makeBoolConst(value, false), InvalidOid, InvalidOid));
+}
+
+/*
+ * a boolean column or stored expression is its comparison with true; its negation (NOT, or what negate_clause makes of an expression: IS NULL of an IS NOT NULL, the
+ * AND of an OR) the comparison with false: NULL keeps no row in either
+ */
 static Expr *
 qual_bool_column(V6Plan *p, Expr *clause)
 {
-	const bool	negated = is_notclause(clause);
-	Expr	   *v = negated ? get_notclausearg(clause) : clause;
+	Expr	   *q;
 
-	if (!IsA(v, Var) || exprType((Node *) v) != BOOLOID)
+	if (exprType((Node *) clause) != BOOLOID)
 		return NULL;
-	return qual_compare(p, (OpExpr *) make_opclause(BooleanEqualOperator, BOOLOID, false, v, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid));
+	if (is_notclause(clause))
+		return bool_equals(p, get_notclausearg(clause), false);
+	if ((q = bool_equals(p, clause, true)) != NULL || IsA(clause, Var))
+		return q;
+	return bool_equals(p, (Expr *) negate_clause((Node *) copyObject(clause)), false);
 }
 
 Expr *
@@ -277,16 +295,15 @@ sift_v6_index_qual(V6Plan *p, Expr *clause)
 	switch (nodeTag(clause))
 	{
 		case T_OpExpr:
-			return (q = qual_compare(p, (OpExpr *) clause)) != NULL ? q : qual_json_text(p, (OpExpr *) clause);
+			if ((q = qual_compare(p, (OpExpr *) clause)) != NULL || (q = qual_json_text(p, (OpExpr *) clause)) != NULL)
+				return q;
+			return qual_bool_column(p, clause);
 		case T_ScalarArrayOpExpr:
 			return qual_in_list(p, (ScalarArrayOpExpr *) clause);
 		case T_NullTest:
-			return qual_null_test(p, (NullTest *) clause);
-		case T_Var:
-		case T_BoolExpr:
-			return qual_bool_column(p, clause);
+			return (q = qual_null_test(p, (NullTest *) clause)) != NULL ? q : qual_bool_column(p, clause);
 		default:
-			return NULL;
+			return qual_bool_column(p, clause);
 	}
 }
 

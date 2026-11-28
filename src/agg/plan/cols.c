@@ -298,6 +298,13 @@ generated_expr_of(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return found;
 }
 
+/* An expression of the query that is a column of the host: an index expression or a stored generated column */
+bool
+sift_v6_plan_expr_column(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	return index_expr_of(p, e, out) || generated_expr_of(p, e, out);
+}
+
 /* a member of a document read as a number by a path: the column, the member in the spec (sift_v6_member_col); the text of a path the index declares is its leaf alone */
 static bool
 member_of(V6Plan *p, const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
@@ -346,7 +353,7 @@ sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return column_of(p, e, numeric_ok, out) || index_expr_of(p, e, out) || generated_expr_of(p, e, out) ||
+	return column_of(p, e, numeric_ok, out) || sift_v6_plan_expr_column(p, e, out) ||
 		sift_v6_json_read(&rel, e, out) || member_of(p, &rel, e, out) || sift_v6_plan_read_column(p, e, numeric_ok, out);
 }
 

@@ -108,13 +108,20 @@ sift_v6_tests_or_qual(V6Plan *p, Expr *clause)
 	return q;
 }
 
-/* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those) */
+/* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those); an AND or OR the index stores, or its negation, is one */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)
 {
 	List	   *quals = NIL;
+	Expr	   *whole;
 
 	p->in_filter = true;
+	whole = is_andclause(filter) || is_orclause(filter) ? sift_v6_index_qual(p, filter) : NULL;
+	if (whole != NULL)
+	{
+		p->in_filter = false;
+		return list_make1(whole);
+	}
 	foreach_ptr(Expr, conjunct, sift_v6_conjuncts(filter))
 	{
 		Expr	   *q = conjunct_qual(p, conjunct);
