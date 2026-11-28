@@ -68,7 +68,8 @@ lookup_keys(SiftV6ParNode *pn)
 
 	for (int k = 0; k < pn->nsources; k++)
 		if (pn->base[k].index != NULL)
-			pn->sources[k].keys = sift_v6_star_scan_keys(pn->star, pn->base[k].index, pn->base[k].keys, pn->base[k].nkeys, &pn->sources[k].nkeys);
+			pn->sources[k].keys = sift_v6_star_scan_keys(pn->star, pn->base[k].index, pn->base[k].keys, pn->base[k].nkeys, pn->base[k].ops->zone->in_keys_max,
+															&pn->sources[k].nkeys);
 	MemoryContextSwitchTo(old);
 }
 
@@ -102,7 +103,8 @@ sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out)
 	*out = (SiftV6ParSummary) {.strategy = sift_v6_par_strategy_name(pn->spec->par_strategy),.ran = pn->have_total,.escalated = pn->escalated,
 		.morsels_stolen = pn->total.morsels_stolen,.radix_parts = pn->radix_parts,.partial_recs = pn->ring_recs,.partial_bytes = pn->ring_bytes,
 		.rows_scanned = pn->total.rows_scanned,.grans_scanned = pn->total.grans_scanned,.grans_pruned_zone = pn->total.grans_pruned_zone,.grans_pruned_skip = pn->total.grans_pruned_skip,.grans_preagg = pn->total.grans_preagg,.grans_preagg_delta = pn->total.grans_preagg_delta,
-		.grans_preagg_super = pn->total.grans_preagg_super,.grans_preagg_net = pn->total.grans_preagg_net,.grans_except_read = pn->total.grans_except_read,.heap_vet_rows = pn->total.heap_vet_rows,
+		.grans_preagg_super = pn->total.grans_preagg_super,.grans_preagg_net = pn->total.grans_preagg_net,.grans_except_read = pn->total.grans_except_read,
+		.point_rows = pn->total.point_rows,.heap_vet_rows = pn->total.heap_vet_rows,
 		.topk_dropped = pn->total.topk_dropped,.workers = pn->total.workers};
 }
 
@@ -358,6 +360,7 @@ sift_v6_par_node_explain(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
 	ex->grans_preagg_super += ps.grans_preagg_super;
 	ex->grans_preagg_net += ps.grans_preagg_net;
 	ex->grans_except_read += ps.grans_except_read;
+	ex->point_rows += ps.point_rows;
 	ex->heap_vet_rows += ps.heap_vet_rows;
 	ex->par_morsels_stolen = ps.morsels_stolen;
 	ex->par_radix_parts = ps.radix_parts;

@@ -289,7 +289,7 @@ v6_scan_source(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 	SiftV6ScanSrc pass = *src;
 
 	if (st->star != NULL && src->index != NULL)
-		pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, unnest ? 0 : src->nkeys, &pass.nkeys);
+		pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, unnest ? 0 : src->nkeys, src->ops->zone->in_keys_max, &pass.nkeys);
 	else if (unnest)
 		pass.nkeys = 0;
 	if (unnest)
@@ -914,17 +914,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->star != NULL)
 		sift_v6_found_explain(sift_v6_star_found_stats(st->star), es);
 	sift_v6_gpu_explain(&st->gpu, es);
-	ex.heap_vet_rows = st->stats.heap_vet_rows;
-	ex.grans_scanned = st->stats.grans;
-	ex.grans_pruned_zone = st->stats.grans_pruned_zone;
-	ex.src_filters = st->stats.src_filters;
-	ex.point_rows = st->stats.point_rows;
-	ex.grans_pruned_skip = st->stats.grans_pruned_skip;
-	ex.grans_preagg = st->stats.grans_preagg;
-	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
-	ex.grans_preagg_super = st->stats.grans_preagg_super;
-	ex.grans_preagg_net = st->stats.grans_preagg_net;
-	ex.grans_except_read = st->stats.grans_except_read;
+	sift_v6_explain_scan_stats(&st->stats, &ex);
 	ex.dict_shared_hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - st->dict_shared0[0];
 	ex.dict_shared_misses = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES] - st->dict_shared0[1];
 	if (st->par != NULL)

@@ -6,13 +6,19 @@
  */
 #include "postgres.h"
 
+#include "access/stratnum.h"
+#include "catalog/pg_type_d.h"
 #include "executor/executor.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
 #include "agg/engine.h"
 #include "agg/ext.h"
 #include "col/am.h"
 #include "col/source_fold.h"
+#include "col/v1/point.h"
 #include "col/v1/store_ops.h"
 #include "core/memtrack.h"
 #include "core/store/ops.h"
@@ -106,11 +112,44 @@ zone_scan_table(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation r
 	fold_run(&(SiftSrcFoldArgs) {.spec = spec,.group = g,.stats = stats,.star = star,.host = rel,.is_table = true,.quals = quals->clauses,.estate = quals->estate}, snap, NULL, NULL, NULL);
 }
 
-/* the JSON type tests of an index scan: jsonb_typeof(doc -> 'k') in the tag set of the key, and `doc ? 'k'` as every type but a missing path */
+/* `column = 'text'` or `column = ANY ('{..}'::text[])` of a top-level text leaf, under a collation that compares bytes: its strings, as the dictionaries of a segment hold them */
+static bool
+str_key(Relation index, const SiftSrcLayout *lay, const ScanKeyData *k, SiftSrcPrune *out)
+{
+	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, k->sk_attno);
+	Datum		one = k->sk_argument;
+	Datum	   *vals = &one;
+	bool	   *nulls;
+	int			n;
+
+	if (l == NULL || l->vtype != SCV_CODE || l->wide || l->lossy || l->astext || l->parent >= 0 || l->path != NIL || k->sk_strategy != BTEqualStrategyNumber ||
+		k->sk_subtype != TEXTOID || (k->sk_flags & SK_ISNULL) || !OidIsValid(k->sk_collation) || !get_collation_isdeterministic(k->sk_collation))
+		return false;
+	if (k->sk_flags & SK_SEARCHARRAY)
+		deconstruct_array_builtin(DatumGetArrayTypeP(k->sk_argument), TEXTOID, &vals, &nulls, &n);
+	else
+	{
+		nulls = NULL;
+		n = 1;
+	}
+	*out = (SiftSrcPrune) {.leaf = l->id,.strs = palloc(Max(n, 1) * sizeof(SiftColValue))};
+	for (int i = 0; i < n; i++)
+		if (nulls == NULL || !nulls[i])
+		{
+			const text *t = DatumGetTextPP(vals[i]);
+
+			out->strs[out->nvals++] = (SiftColValue) {.v.s = VARDATA_ANY(t),.len = VARSIZE_ANY_EXHDR(t)};
+		}
+	return out->nvals > 0;
+}
+
+/* the JSON type tests of an index scan (jsonb_typeof(doc -> 'k') in the tag set of the key, and `doc ? 'k'` as every type but a missing path), and its text equalities */
 SiftV1Scan
 sift_v1_key_scan(Relation index, ScanKey keys, int nkeys)
 {
-	SiftV1Scan	scan = {0};
+	/* check-memory: allow the scan keys of one statement */
+	SiftV1Scan	scan = {.strs = palloc(Max(nkeys, 1) * sizeof(SiftSrcPrune))};
+	const SiftSrcLayout *lay = sift_v1_reader_of(false)->layout(index);
 
 	for (int i = 0; i < nkeys; i++)
 	{
@@ -119,7 +158,10 @@ sift_v1_key_scan(Relation index, ScanKey keys, int nkeys)
 		char	   *name;
 
 		if (k->sk_strategy != COL_STRAT_JSONB_TYPE && k->sk_strategy != COL_STRAT_JSONB_EXISTS)
+		{
+			scan.nstrs += str_key(index, lay, k, &scan.strs[scan.nstrs]);
 			continue;
+		}
 		SIFT_INVARIANT(scan.ntypes < SIFT_V1_MAX_TYPE_TESTS, "an aggregate scan of index %u tests the JSON types of more than %d keys", RelationGetRelid(index), SIFT_V1_MAX_TYPE_TESTS);
 		if (k->sk_strategy == COL_STRAT_JSONB_TYPE)
 			scan.types[scan.ntypes++] = (SiftV1TypeTest) {.leaf = (int) (arg >> 16),.types = (uint32) (arg & 0xFFFF) >> 1};
@@ -164,6 +206,7 @@ dict_has_dict32(Oid relid, bool is_table, int att)
 
 const SiftZoneOps sift_v1_zone_ops = {
 	.batch_cols = SIFT_V6_MAX_COLS,
+	.in_keys_max = SIFT_CPOINT_MAX_KEYS,
 	.table_star = true,
 	.compile_quals = zone_compile_quals,
 	.bind_quals = zone_bind_quals,

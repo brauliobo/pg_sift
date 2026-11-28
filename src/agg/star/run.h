@@ -38,10 +38,10 @@ extern SiftStarOpen sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scan
 extern void sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p);
 /*
  * The keys of a scan of the pass of the fact index: keys and, for each inner or semi dimension keyed by a column of the index, the range of the keys of the pass on it and, when the pass holds
- * at most SIFT_STAR_IN_MAX of them, the keys themselves as an IN list (no fact row outside them finds a match), which the zones, the marks and the point directory of the parts prune by.
- * None when a join keeps the fact rows that match nothing (left, full). Palloc'd; *n of them.
+ * at most in_max of them (SiftZoneOps.in_keys_max), the keys themselves as an IN list (no fact row outside them finds a match), which the zones, the marks and the point directory of the parts
+ * prune by. None when a join keeps the fact rows that match nothing (left, full). Palloc'd; *n of them.
  */
-extern ScanKey sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n);
+extern ScanKey sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, uint32 in_max, int *n);
 /* The dimensions of the pass for a pipe */
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
 /* After pass 0: every dimension fits in one pass (no class of keys or chunk is left for another) */

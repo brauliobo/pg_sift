@@ -150,6 +150,8 @@ typedef struct SiftV1Scan
 	const struct SiftTidBridge *bridge;
 	int			ntypes;
 	SiftV1TypeTest types[SIFT_V1_MAX_TYPE_TESTS];
+	int			nstrs;
+	SiftSrcPrune *strs;			/* the equalities and IN lists of text keys of the scan, as prune entries (SiftSrcPrune.strs) */
 	const SiftV1UnitSink *cube;	/* answers the units whose pre-aggregates stand for their rows (NULL: every unit is read) */
 	const struct SiftV6Bq *texts;	/* the batch quals of the fold: a unit no string of whose dictionary passes one of their text quals is not read (NULL: none) */
 	bool		tid_range;
@@ -185,7 +187,7 @@ extern bool sift_v1_count_only(const struct SiftSrcFoldArgs *a, const SiftV1Scan
 /* The leaf of the index attribute over heap column att; NULL when the index has none or several leaves hold it */
 extern const SiftSrcLeaf *sift_v1_heap_att_leaf(Relation index, const SiftSrcLayout *lay, int att);
 
-/* The JSON type tests of the scan keys of an index scan (the other keys are the quals sift_srcfold_scankey_quals gives) */
+/* The JSON type tests and the text equalities of the scan keys of an index scan (the keys but the JSON tests are also the quals sift_srcfold_scankey_quals gives) */
 extern SiftV1Scan sift_v1_key_scan(Relation index, ScanKey keys, int nkeys);
 
 /* The batches of the columns of in over the snapshot, only the rows that pass quals (NULL: all) and scan (NULL: no more); the source and what it holds open live in parent */

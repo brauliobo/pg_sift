@@ -22,7 +22,6 @@
 #define SIFT_STAR_MAX_PAY		16
 #define SIFT_STAR_RANGE_MAX		256
 #define SIFT_STAR_EXACT_MAX		1024	/* the keys a dimension tells the scan as a list; above it only the range of them and a filter do */
-#define SIFT_STAR_IN_MAX		64		/* ... and as the values of an IN, the ranges the marks of a part can be asked */
 
 typedef enum SiftV6JoinMode
 {
@@ -231,7 +230,7 @@ extern bool sift_star_cursor_done(const SiftStarCursor *cur, uint16 n);
 typedef enum SiftStarPushKind
 {
 	SSP_NONE,					/* nothing (an anti join, a left join, a first key that is not an integer) */
-	SSP_EXACT,					/* the first key is one of keys[0 .. nkeys - 1] (sorted, at most SIFT_STAR_IN_MAX): an IN list the marks of a part answer exactly */
+	SSP_EXACT,					/* the first key is one of keys[0 .. nkeys - 1] (sorted, at most SIFT_STAR_EXACT_MAX): an IN list the marks of a part answer exactly */
 	SSP_RANGE					/* the first key is in [lo, hi]: the zones and marks of the parts and granules; a filter on the keys (agg/sip_scan.h) on top when there are many */
 } SiftStarPushKind;
 

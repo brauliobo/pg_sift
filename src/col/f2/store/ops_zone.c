@@ -8,6 +8,7 @@
 #include "col/f2/store/ops_int.h"
 #include "col/f2/store/scan.h"
 #include "col/f2/agg/scan.h"
+#include "col/f2/point_dir.h"
 
 static struct SiftStoreQuals *
 zone_compile_quals(Relation heap, List *indexqual, List *jsonqual, MemoryContext cx)
@@ -38,6 +39,7 @@ const SiftZoneOps sift_f2_zone_ops = {
 	.table_text = true,
 	.table_star = true,
 	.table_json = true,
+	.in_keys_max = SIFT_POINT_MAX_VALUES,
 	.compile_quals = zone_compile_quals,
 	.bind_quals = zone_bind_quals,
 	.quals_keys = zone_quals_keys,

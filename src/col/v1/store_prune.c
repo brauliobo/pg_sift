@@ -86,7 +86,7 @@ sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Scan *scan)
 	const SiftV1Range *range = scan->range;
 	const uint32 nsb = s->rd->nsb(s->src);
 	SiftSrcBound bound[SIFT_SRC_MAX_BOUNDS];
-	SiftSrcPrune *prune = palloc0((SIFT_SRC_MAX_BOUNDS + SIFT_SRC_MAX_SETS) * sizeof(SiftSrcPrune));
+	SiftSrcPrune *prune = palloc0((SIFT_SRC_MAX_BOUNDS + SIFT_SRC_MAX_SETS + scan->nstrs) * sizeof(SiftSrcPrune));
 	const int	nb = s->quals != NULL ? sift_srcfold_bounds(s->quals, bound) : 0;
 	int			np = 0;
 
@@ -99,6 +99,8 @@ sift_v1_src_prune_begin(SiftV1Src *s, const SiftV1Scan *scan)
 	}
 	for (int i = 0; s->quals != NULL && i < sift_srcfold_nsets(s->quals); i++)
 		np += set_entry(s, i, &prune[np]);
+	for (int i = 0; !s->in.is_table && i < scan->nstrs; i++)
+		prune[np++] = scan->strs[i];
 	if (scan->bound != NULL && !s->in.is_table)
 		bind_bound(s, scan);
 	s->rd->begin(s->src, range ? range->sb_lo : 0, range ? Min(range->sb_hi, nsb) : nsb, prune, np);

@@ -12,10 +12,21 @@ leaf_of(const int *col, int leaf)
 	return col ? col[leaf] : leaf;
 }
 
-/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none; a NULL test is one predicate */
+static int
+zone_npreds(const SiftSrcPrune *z)
+{
+	return z->nulltest || z->strs != NULL ? 1 : 2;
+}
+
+/* a zone [lo, hi] is two comparisons: the unit is skipped when its min/max exclude either; a set of values is one IN, which skips a unit whose zone holds none; a NULL test and a set of strings are one predicate */
 static int
 zone_preds(MemoryContext cxt, const SiftSrcPrune *z, int leaf, SiftColValue *vals, SiftColPred *out)
 {
+	if (z->strs != NULL)
+	{
+		out[0] = (SiftColPred) {leaf, SIFT_COLOP_IN, z->nvals, z->strs};
+		return 1;
+	}
 	if (z->nulltest)
 	{
 		out[0] = (SiftColPred) {leaf, z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL, 0, NULL};
@@ -40,6 +51,8 @@ zone_preds(MemoryContext cxt, const SiftSrcPrune *z, int leaf, SiftColValue *val
 static bool
 zone_preds_same(const SiftColPred *p, const SiftSrcPrune *z, int leaf, const int64 *known)
 {
+	if (z->strs != NULL)
+		return p[0].col == leaf && p[0].op == SIFT_COLOP_IN && p[0].vals == z->strs;
 	if (z->nulltest)
 		return p[0].col == leaf && p[0].op == (z->nulltest == SSN_ISNULL ? SIFT_COLOP_ISNULL : SIFT_COLOP_NOTNULL);
 	if (p[0].col != leaf || p[0].op != SIFT_COLOP_GE || p[0].vals[0].v.i != z->lo)
@@ -71,24 +84,26 @@ zone_tests(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrc
 		if (prune[k].nkids == 0)
 		{
 			int			leaf = leaf_of(col, prune[k].leaf);
-			int			len = prune[k].nulltest ? 1 : 2;
+			int			len = zone_npreds(&prune[k]);
 
 			if (leaf < 0)
 				continue;
 			if (n + len > z->nzpred || !zone_preds_same(&z->zpred[n], &prune[k], leaf, z->zvals[n]))
 			{
 				zone_preds(cxt, &prune[k], leaf, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), &z->zpred[n]);
-				z->zvals[n] = prune[k].nvals > 0 ? prune[k].vals : NULL;
+				z->zvals[n] = prune[k].strs == NULL && prune[k].nvals > 0 ? prune[k].vals : NULL;
 			}
 			n += len;
 		}
 	z->nzpred = n;
 }
 
-/* does the value every row of the source holds on a leaf it lacks pass the entry z (no junction)? */
+/* does the value every row of the source holds on a leaf it lacks pass the entry z (no junction)? a set of strings is no test of the constant: the rows are read */
 static bool
 const_passes(const SiftSrcPrune *z, const SiftSrcConst *c)
 {
+	if (z->strs != NULL)
+		return true;
 	if (z->nulltest)
 		return c[z->leaf].isnull == (z->nulltest == SSN_ISNULL);
 	if (c[z->leaf].isnull || c[z->leaf].v < z->lo || c[z->leaf].v > z->hi)

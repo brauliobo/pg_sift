@@ -35,6 +35,7 @@ typedef struct SiftV6ParSummary
 	uint64		grans_preagg_super;
 	uint64		grans_preagg_net;
 	uint64		grans_except_read;
+	uint64		point_rows;
 	uint64		heap_vet_rows;
 	uint64		topk_dropped;
 	uint64		workers;

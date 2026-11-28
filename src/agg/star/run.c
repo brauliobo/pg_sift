@@ -921,7 +921,7 @@ in_key(Relation index, AttrNumber att, Oid typid, Oid opno, const SiftStarPush *
 }
 
 ScanKey
-sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n)
+sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, uint32 in_max, int *n)
 {
 	ScanKey		out = palloc(((Size) nkeys + 3 * r->x->ndims) * sizeof(ScanKeyData));
 	Bitmapset  *filtered = NULL;
@@ -947,7 +947,7 @@ sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys
 		bound_key(index, att, type, BTGreaterEqualStrategyNumber, ge, push.lo, &out[(*n)++]);
 		bound_key(index, att, type, BTLessEqualStrategyNumber, le, push.hi, &out[(*n)++]);
 		filtered = bms_add_member(filtered, att);
-		if (push.kind == SSP_EXACT && OidIsValid(eq))
+		if (push.kind == SSP_EXACT && push.nkeys <= in_max && OidIsValid(eq))
 			in_key(index, att, type, eq, &push, &out[(*n)++]);
 	}
 	r->key_filters = (uint32) bms_num_members(filtered);

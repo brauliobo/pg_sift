@@ -142,6 +142,7 @@ typedef struct SiftV6ParWorkerStats
 	uint64		grans_preagg_super;
 	uint64		grans_preagg_net;
 	uint64		grans_except_read;
+	uint64		point_rows;
 	uint64		grans_pruned_dict;
 	uint64		cfilt_grans_total;
 	uint64		cfilt_grans_hit;
@@ -155,7 +156,7 @@ typedef struct SiftV6ParWorkerStats
 	uint64		peak_mem_bytes;
 	uint64		topk_dropped;	/* the groups the heap of an ORDER BY .. LIMIT of the participant left out */
 	uint64		workers;		/* 1 for a parallel worker, 0 for the leader: summed, the workers that ran */
-	uint64		pad[PG_CACHE_LINE_SIZE / sizeof(uint64) - 7];
+	uint64		pad[PG_CACHE_LINE_SIZE / sizeof(uint64) - 8];
 } SiftV6ParWorkerStats;
 
 /* the counters of the participants are an array in the shared block, each a whole number of cache lines; a run is palloc'd, so the type has no alignment of its own */

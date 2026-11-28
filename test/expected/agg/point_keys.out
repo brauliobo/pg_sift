@@ -3,6 +3,8 @@
 -- ("Units From Point Directory" of EXPLAIN ANALYZE). The directory lists the rows whose fingerprint matches, so every conjunct still runs on them: the rows are
 -- those of the normal plan over NULLs, duplicates, text, DML in and out of the transaction, VACUUM, the write buffer, a merge and parallel workers.
 CREATE EXTENSION pg_sift;
+-- Format 1: point_tid_columns is an option of a Format 1 index (Format 2 keeps a directory of the keys of a part whose values are nearly all distinct: agg/point_keys_f2)
+SET sift.test_create_format1 = on;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

@@ -276,6 +276,7 @@ typedef struct SiftZoneOps
 	bool		table_star;		/* scan_table reads the rows beside the dimensions of a star join (star) */
 	bool		table_json;		/* compile_quals of a table takes the JSON type and key tests of its documents (jsonqual) */
 	int			batch_cols;		/* the most columns a batch of the scan holds: a statement that reads more is not planned (0: no limit) */
+	uint32		in_keys_max;	/* the most keys of a dimension of a star join scan_run takes as an IN key, which its point directories answer (more: their range only) */
 	struct SiftStoreQuals *(*compile_quals) (Relation heap, List *indexqual, List *jsonqual, MemoryContext cx);
 	void		(*bind_quals) (Relation heap, struct SiftStoreQuals *q, ExprContext *econtext);
 	bool		(*quals_keys) (const struct SiftStoreQuals *q, ScanKey *keys, int *nkeys);

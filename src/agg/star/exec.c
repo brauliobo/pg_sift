@@ -924,7 +924,7 @@ sift_star_push(const SiftStarDim *d)
 	push.empty = d->ndistinct == 0;
 	if (sh->kcls[0] != SSC_INT || !any)
 		return push;
-	if (d->exact != NULL && d->nexact <= SIFT_STAR_IN_MAX)
+	if (d->exact != NULL)
 	{
 		push.kind = SSP_EXACT;
 		push.keys = d->exact;

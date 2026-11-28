@@ -715,3 +715,19 @@ sift_v6_explain_doc_reads(const SiftV6Spec *spec, TupleDesc desc, ExplainState *
 	if (ext != NULL && ext->unnest && ext->elem.vread != SV6V_NONE)
 		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(desc, ext->elem.attno - 1)->attname)), es);
 }
+
+void
+sift_v6_explain_scan_stats(const SiftV6ScanStats *s, SiftExplainStatsV6 *ex)
+{
+	ex->heap_vet_rows = s->heap_vet_rows;
+	ex->grans_scanned = s->grans;
+	ex->grans_pruned_zone = s->grans_pruned_zone;
+	ex->src_filters = s->src_filters;
+	ex->point_rows = s->point_rows;
+	ex->grans_pruned_skip = s->grans_pruned_skip;
+	ex->grans_preagg = s->grans_preagg;
+	ex->grans_preagg_delta = s->grans_preagg_delta;
+	ex->grans_preagg_super = s->grans_preagg_super;
+	ex->grans_preagg_net = s->grans_preagg_net;
+	ex->grans_except_read = s->grans_except_read;
+}

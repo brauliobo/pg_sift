@@ -62,5 +62,7 @@ typedef struct SiftExplainStatsV6
 } SiftExplainStatsV6;
 
 extern void sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *simd, int workers_launched, int workers_planned);
+/* the counters of a scan (the granules it read, pruned and answered, the rows a point directory named and those it vetted with the heap) as EXPLAIN (ANALYZE) prints them */
+extern void sift_v6_explain_scan_stats(const SiftV6ScanStats *s, SiftExplainStatsV6 *ex);
 
 #endif							/* SIFT_AGG_V6_EXPLAIN_H */

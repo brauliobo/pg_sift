@@ -112,6 +112,7 @@ typedef struct SiftSrcPrune
 	int			nkids;
 	const struct SiftSrcPrune *kids;
 	int			nulltest;		/* SSN_ISNULL / SSN_NOTNULL: the entry tests the NULLs of the unit's zone (a unit with none, or with only NULLs, is skipped); lo and hi are unused */
+	SiftColValue *strs;			/* the nvals strings of an IN of a text leaf (vals, lo and hi unused): the dictionaries and the point directory of a segment answer it */
 } SiftSrcPrune;
 #define SSN_ISNULL		1
 #define SSN_NOTNULL		2

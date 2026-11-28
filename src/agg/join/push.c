@@ -29,6 +29,7 @@
 #include "agg/agg.h"
 #include "agg/plan/int.h"
 #include "agg/engine.h"
+#include "agg/explain.h"
 #include "agg/cost/card.h"
 #include "agg/dim_keys.h"
 #include "agg/join/join.h"
@@ -42,6 +43,7 @@
 #include "col/col.h"
 #include "core/store/ops.h"
 #include "core/compat.h"
+#include "core/cpu.h"
 #include "core/memtrack.h"
 #include "table/dispatch.h"
 #include "core/cmp.h"
@@ -728,6 +730,13 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		st->ops->scope->router_counts(st->router, &kept, &total);
 		ExplainPropertyInteger("Scope Granules Kept", NULL, kept, es);
 		ExplainPropertyInteger("Scope Granules Total", NULL, total, es);
+	}
+	if (es->analyze && st->ran)
+	{
+		SiftExplainStatsV6 ex = {0};
+
+		sift_v6_explain_scan_stats(&st->stats, &ex);
+		sift_agg_explain_v6(es, &ex, sift_simd_level_name(sift_cpu.active), 0, 0);
 	}
 }
 
