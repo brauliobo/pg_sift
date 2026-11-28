@@ -19,6 +19,8 @@ test/expected/agg/explain_sift_1.out	9bf5416498207efe633c39b9c1b3379025ac99d3	17
 test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
 test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
+test/expected/agg/jsonb/cast_order_1.out	20357c606bbb91d84b854fb5bb55515443b39a6d	17	n |                           outcome
+test/expected/agg/jsonb/cast_order_1.out	435e8b17885a467f6b57b01eede229213261d6c1	17	5 | error: cannot cast jsonb string to type double precision why
 test/expected/agg/jsonb_each_key_map_1.out	001be1fb5cfa2a44600fc4dfd9fc3a141466d133	17	5 | same | t    | t
 test/expected/agg/jsonb_each_key_map_1.out	24e5adfa6de17b3d77b06f72ae735c45c5ab8543	17	10 | same | t    | t
 test/expected/agg/jsonb_each_key_map_1.out	65e68a0f361373a54beec446c5a2677eba2b0379	17	1 | same | t    | t
@@ -57,14 +59,18 @@ test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	j
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
 test/expected/agg/plan/tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	e27dc9de096ede2f9088587ed6eb69289afab2e5	19	plan                  | result_rows | vs_normal_plan
-test/expected/agg/scalar/dirty_1.out	04e2177fc4449c6ac87a22414d15172196161626	17	cast float8     | t      |     60 | same rows
 test/expected/agg/scalar/dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg/scalar/dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome
 test/expected/agg/scalar/dirty_1.out	50f22d4942a479a5e9b35321b1895226c916b208	17	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
-test/expected/agg/scalar/dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	17	key float8      | t      |     60 | same rows
+test/expected/agg/scalar/dirty_1.out	5f63fb62821d4d7643ac3c2fd3d3fe483e6e61ee	17	two kinds         | t      | same ERR 22023 cannot cast jsonb string to type do
 test/expected/agg/scalar/dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
+test/expected/agg/scalar/dirty_1.out	8ac8841da9959da1e17022752d566d67ade4d005	17	cast float8     | t      |      0 | same rows
+test/expected/agg/scalar/dirty_1.out	c5ac5a346f99dd3d30fad715630994cea277e0cf	17	key float8      | t      |      0 | same rows
 test/expected/agg/scalar/dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
-test/expected/agg/scalar/dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	17	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
+test/expected/agg/scalar/dirty_filter_1.out	1651bbabdf541b136d28470a470932de1a0b951e	17	n       | plan | reread |                             outcome
+test/expected/agg/scalar/dirty_filter_1.out	2618838ec7352c4df64ac8ce259d1969be67b1fd	17	n         | plan |                               outcome
+test/expected/agg/scalar/dirty_where_1.out	55799f1301da33e2973172ca1f0e29506a245754	17	cast of jsonb  | scan   |     -1 | same ERR 22023 cannot cast jsonb string to t
+test/expected/agg/scalar/dirty_where_1.out	b34490ba08c469aa2fe1b15963eeff10beadc364	17	cast of jsonb raises | scan   | same ERR 22023 cannot cast jsonb string to type
 test/expected/agg/scope/param_keys_1.out	5dcebe8252f920f53940cb977671cc38de1841f4	19	join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope
 test/expected/agg/scope/param_keys_1.out	769769bb287bc21f532300fce7765e2a1d84c3da	19	CTE, $1                                           | force_custom_plan  | scope
 test/expected/agg/scope/param_keys_1.out	824c74dbafc3a34ec89f7cc517a1c3892ad23f4b	19	latest 5, $1                                      | force_custom_plan  | scope
