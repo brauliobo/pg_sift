@@ -29,6 +29,13 @@
 /* the arrays of a document that grew past this many elements are released by the next sift_shred_begin */
 #define SIFT_SHRED_RETAIN			(64 * 1024)
 
+/* a byte a key of a path holds without double quotes (a byte of a UTF-8 character is one) */
+static inline bool
+sift_shred_bare_char(unsigned char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$' || c >= 0x80;
+}
+
 typedef enum SiftShredType
 {
 	SIFT_SHRED_BOOL,

@@ -270,7 +270,7 @@ bare_key(const char *k)
 	if (*k == '\0')
 		return false;
 	for (; *k; k++)
-		if (!((*k >= 'a' && *k <= 'z') || (*k >= 'A' && *k <= 'Z') || (*k >= '0' && *k <= '9') || *k == '_' || *k == '$' || (unsigned char) *k >= 0x80))
+		if (!sift_shred_bare_char((unsigned char) *k))
 			return false;
 	return true;
 }

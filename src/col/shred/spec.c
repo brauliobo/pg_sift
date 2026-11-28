@@ -61,12 +61,6 @@ typedef struct Parser
 	StringInfoData canonical;
 } Parser;
 
-static bool
-bare_char(unsigned char c)
-{
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '$' || c >= 0x80;
-}
-
 static void
 lex(Parser *P)
 {
@@ -141,12 +135,12 @@ lex(Parser *P)
 				break;
 			}
 		default:
-			if (!bare_char((unsigned char) s[p]))
+			if (!sift_shred_bare_char((unsigned char) s[p]))
 				SPEC_SYNTAX(p + 1, "unexpected character \"%c\"", s[p]);
 			{
 				int			b = p;
 
-				while (bare_char((unsigned char) s[p]))
+				while (sift_shred_bare_char((unsigned char) s[p]))
 					p++;
 				P->tok = T_WORD;
 				P->word = pnstrdup(s + b, p - b);
@@ -195,7 +189,7 @@ flat_key(StringInfo flat, const char *key, int len)
 	bool		bare = len > 0;
 
 	for (int i = 0; i < len; i++)
-		bare &= bare_char((unsigned char) key[i]);
+		bare &= sift_shred_bare_char((unsigned char) key[i]);
 	if (flat->len > 0)
 		appendStringInfoChar(flat, '.');
 	if (bare)

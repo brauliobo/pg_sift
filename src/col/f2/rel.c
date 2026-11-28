@@ -12,6 +12,7 @@
 #include "col/f2/preagg/v2.h"
 #include "col/pg.h"
 #include "col/scope/scope.h"
+#include "col/shred/shred.h"
 
 SiftCellKind
 sift_f2_def_kind(const SiftColDef *d)
@@ -81,7 +82,7 @@ sift_f2_def_top_key(const SiftColDef *d, const char **key, int *len)
 	if (strncmp(d->path, d->name, nl) != 0 || d->path[nl] != '.')
 		return false;
 	*key = d->path + nl + 1;
-	for (k = 0; ((*key)[k] >= 'a' && (*key)[k] <= 'z') || ((*key)[k] >= 'A' && (*key)[k] <= 'Z') || ((*key)[k] >= '0' && (*key)[k] <= '9') || (*key)[k] == '_'; k++)
+	for (k = 0; sift_shred_bare_char((unsigned char) (*key)[k]); k++)
 		;
 	*len = k;
 	return k > 0 && ((*key)[k] == '\0' || strcmp(*key + k, "[]") == 0);
