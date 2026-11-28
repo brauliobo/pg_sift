@@ -54,10 +54,11 @@ SELECT result, count(*) FROM (
 	FROM unnest(ARRAY['true', 'ts >= timestamp ''2021-03-01''', 'ts < timestamp ''2020-02-01''', 'ts BETWEEN timestamp ''2020-06-01'' AND timestamp ''2020-06-03''', 'ts IS NOT NULL']) w,
 		 unnest(ARRAY['ASC', 'DESC']) d, unnest(ARRAY['NULLS FIRST', 'NULLS LAST']) nl, unnest(ARRAY[1, 10, 300]) l, unnest(ARRAY[0, 1000]) o) r
 GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |   120
-(1 row)
+    result    | count 
+--------------+-------
+ global order |    78
+ units        |    42
+(2 rows)
 
 -- the minimum and maximum of a bound read the array
 SELECT nd_chk('SELECT max(ts) FROM nd WHERE ts < timestamp ''2021-06-01''') AS upper,
@@ -71,9 +72,9 @@ SELECT nd_chk('SELECT max(ts) FROM nd WHERE ts < timestamp ''2021-06-01''') AS u
 INSERT INTO nd SELECT 200000 + i, timestamp '2020-01-01' + (i * 7919 % 100000000) * interval '1 second', 'w' FROM generate_series(1, 3000) i;
 DELETE FROM nd WHERE id % 211 = 0;
 SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS buffers, nd_chk('SELECT id, ts FROM nd WHERE ts >= timestamp ''2021-03-01'' ORDER BY ts, id LIMIT 20') AS buffers_range;
- buffers | buffers_range 
----------+---------------
- units   | units
+   buffers    | buffers_range 
+--------------+---------------
+ global order | units
 (1 row)
 
 SELECT sift.col_merge('nd_i'::regclass, true) >= 0 AS merged;
@@ -83,9 +84,9 @@ SELECT sift.col_merge('nd_i'::regclass, true) >= 0 AS merged;
 (1 row)
 
 SELECT nd_chk('SELECT id, ts FROM nd ORDER BY ts DESC, id LIMIT 20') AS merged_desc, nd_chk('SELECT max(ts) FROM nd WHERE ts < timestamp ''2021-06-01''') AS merged_max;
- merged_desc | merged_max 
--------------+------------
- units       | units
+ merged_desc  | merged_max 
+--------------+------------
+ global order | units
 (1 row)
 
 SELECT sift.col_verify('nd_i');

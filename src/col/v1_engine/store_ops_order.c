@@ -151,6 +151,7 @@ typedef struct GOrdShape
 	const SiftV6Col *key;
 	bool		desc;
 	bool		nulls_first;
+	bool		ties;			/* more sort columns than the first: the rows that tie on it are all read */
 	uint32		rows;
 	uint64		skip;			/* the first rows of the order the Top-N passes over (its OFFSET): read unordered where the walk can */
 } GOrdShape;
@@ -236,7 +237,7 @@ gorder_plan(const GOrdShape *sh, Relation heap, Relation index, Snapshot snap, G
 	const SiftSrcLayout *lay = sift_v1_reader_of(false)->layout(index);
 	const SiftSrcLeaf *leaf;
 
-	*p = (GOrdPlan) {.nkeys = sh->nkeys,.ties = sh->nkeys > 1,.skip = sh->skip};
+	*p = (GOrdPlan) {.nkeys = sh->nkeys,.ties = sh->ties,.skip = sh->skip};
 	if (sh->rows == 0 || sh->rows > SIFT_CORDER_MAX_ROWS)
 		return false;
 	for (int i = 0; i < sh->nkeys; i++)
@@ -368,7 +369,7 @@ gorder_rows(const SiftV6Spec *spec, SiftV6Rows *rows, Relation heap, Relation in
 	Oid			opfamily,
 				opcintype;
 	SiftCmpStrategy cmptype;
-	GOrdShape	sh = {.nkeys = spec->nkeys,.key = spec->key,.nulls_first = item->nulls_first,.rows = spec->topk};
+	GOrdShape	sh = {.nkeys = spec->nkeys,.key = spec->key,.nulls_first = item->nulls_first,.ties = spec->nkeys > 1 || spec->topk_ties,.rows = spec->topk};
 	GOrdPlan	p;
 	GOrdWinners w = {0};
 	uint64		examined = 0;
@@ -466,8 +467,8 @@ topn_close(void *src)
 static bool
 order_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst)
 {
-	const GOrdShape sh = {.nkeys = spec->nkeys,.key = spec->key,.desc = spec->order[0].desc,.nulls_first = spec->order[0].nulls_first,.rows = (uint32) Min(spec->rows, SIFT_CORDER_MAX_ROWS + 1),
-		.skip = spec->skip};
+	const GOrdShape sh = {.nkeys = spec->nkeys,.key = spec->key,.desc = spec->order[0].desc,.nulls_first = spec->order[0].nulls_first,.ties = spec->nkeys > 1,
+		.rows = (uint32) Min(spec->rows, SIFT_CORDER_MAX_ROWS + 1),.skip = spec->skip};
 	MemoryContext cx = sift_mem_allocset_create(estate->es_query_cxt, "sift v1 topn");
 	Relation	index = index_open(spec->indexoid, AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
