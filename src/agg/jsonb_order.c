@@ -98,6 +98,15 @@ note_var(Reads *r, const Var *v)
 		note_col(r->s, &r->leaves, &(SiftV6Col) {.typid = v->vartype,.src = SV6SRC_ELEM,.slot = v->varattno - SIFT_V6_ELEM_VATT});
 }
 
+/* the Vars of an expression whose conversion can raise: a key of a document as a type, a member of a map */
+static bool
+raising_vars(Node *n, List **vars)
+{
+	if (n != NULL && IsA(n, Var) && (raising_attno(((const Var *) n)->varattno) || sift_v6_vatt_is_member(((const Var *) n)->varattno)))
+		*vars = list_append_unique(*vars, n);
+	return n != NULL && !IsA(n, Var) && expression_tree_walker(n, raising_vars, vars);
+}
+
 /* the reads that raise of an expression */
 static bool
 reads_raising_var(Node *n, Reads *r)
@@ -294,9 +303,9 @@ clause_cost(PlannerInfo *root, const RestrictInfo *ri)
 	return cost.startup + cost.per_tuple;
 }
 
-/* PostgreSQL's own plan of the statement tests every other condition of the WHERE before the clause that casts: it costs less, or as much and is written first */
+/* PostgreSQL's own plan of the statement tests every condition of the WHERE that casts nothing before the clause that casts: it costs less, or as much and is written first */
 static bool
-tested_before(PlannerInfo *root, const List *clauses, const RestrictInfo *cast)
+tested_before(PlannerInfo *root, const List *clauses, const List *casts, const RestrictInfo *cast)
 {
 	const double limit = clause_cost(root, cast);
 	bool		before = true,
@@ -304,15 +313,48 @@ tested_before(PlannerInfo *root, const List *clauses, const RestrictInfo *cast)
 
 	foreach_node(RestrictInfo, ri, clauses)
 	{
-		if (ri == cast)
-		{
-			written = true;
-			continue;
-		}
-		if (!ri->pseudoconstant)
+		written |= ri == cast;
+		if (!ri->pseudoconstant && !list_member_ptr(casts, ri))
 			before &= clause_cost(root, ri) < limit || (clause_cost(root, ri) == limit && !written);
 	}
 	return before;
+}
+
+/* the column reads a leaf of leaves as another type than type */
+static bool
+reads_else(const SiftV6Col *c, const Bitmapset *leaves, Oid type)
+{
+	return raising_read(c) >= 0 && bms_is_member(raising_read(c), leaves) && c->typid != type;
+}
+
+/* every read of the leaves outside the WHERE converts as the clauses that cast them do (to type): a row raises the one error, whichever read PostgreSQL meets first */
+static bool
+reads_as(const SiftV6Spec *s, const Bitmapset *leaves, Oid type)
+{
+	bool		filtered = false;
+	bool		same = !bms_overlap(filter_leaves(s, &filtered), leaves);
+
+	for (int i = 0; i < s->nkeys; i++)
+		same &= !reads_else(&s->key[i], leaves, type);
+	for (int a = 0; a < s->naggs; a++)
+	{
+		same &= !reads_else(&s->agg[a].arg, leaves, type) && !reads_else(&s->agg[a].arg2, leaves, type);
+		for (int c = 0; c < s->agg[a].nxcols; c++)
+			same &= !reads_else(&s->agg[a].xcol[c], leaves, type);
+	}
+	for (int d = 0; d < s->nderive; d++)
+		same &= !reads_else(&s->derive[d].src, leaves, InvalidOid);
+	return same;
+}
+
+/* the clauses that cast come after the others, and none of them may skip its cast */
+static bool
+casts_last(PlannerInfo *root, const List *clauses, const List *casts)
+{
+	foreach_node(RestrictInfo, cast, casts)
+		if (short_circuits((Node *) cast->clause, NULL) || !tested_before(root, clauses, casts, cast))
+			return false;
+	return true;
 }
 
 /*
@@ -355,24 +397,30 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 	bool		filtered = false,
 				computed = false;
 	Bitmapset  *other = read_leaves(p, &filtered, &computed);
-	const RestrictInfo *cast = NULL;
+	List	   *casts = NIL,
+			   *cast_vars = NIL;
 	Bitmapset  *cast_leaves = NULL;
 
+	/* clauses that cast the same values to the same type (a range of a key) raise the same error, whichever of them PostgreSQL tests first */
 	foreach_node(RestrictInfo, ri, p->rel->baserestrictinfo)
 	{
-		Bitmapset  *leaves = ri->pseudoconstant ? NULL : expr_leaves(s, sift_v6_plan_json_vars(p, ri->clause, true));
+		Expr	   *e = ri->pseudoconstant ? NULL : sift_v6_plan_json_vars(p, ri->clause, true);
+		Bitmapset  *leaves = e != NULL ? expr_leaves(s, e) : NULL;
+		List	   *vars = NIL;
 
 		if (leaves == NULL)
 			continue;
-		if (cast != NULL)
+		(void) raising_vars((Node *) e, &vars);
+		if (casts != NIL && !(list_difference(vars, cast_vars) == NIL && list_difference(cast_vars, vars) == NIL))
 			return false;
-		cast = ri;
-		cast_leaves = leaves;
+		casts = lappend(casts, ri);
+		cast_vars = vars;
+		cast_leaves = bms_union(cast_leaves, leaves);
 	}
-	if (join_drops_rows(p->xseed) && (cast != NULL || other != NULL) && (p->xseed->unnest || !p->ops->jsonb->raise_in_groups))
+	if (join_drops_rows(p->xseed) && (casts != NIL || other != NULL) && (p->xseed->unnest || !p->ops->jsonb->raise_in_groups))
 		return false;
-	if (cast == NULL)
+	if (casts == NIL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));
-	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s))) && !short_circuits((Node *) cast->clause, NULL) && !filtered && !computed && p->text == NULL &&
-		one_error(p, other, cast_leaves) && tested_before(p->root, p->rel->baserestrictinfo, cast);
+	return (list_length(s->vqual) == 1 || (p->ops->jsonb->raise_after_quals && others_quiet(s))) && !filtered && !computed && p->text == NULL && one_error(p, other, cast_leaves) &&
+		(list_length(casts) == 1 || reads_as(s, cast_leaves, ((const Var *) linitial(cast_vars))->vartype)) && casts_last(p->root, p->rel->baserestrictinfo, casts);
 }
