@@ -142,6 +142,102 @@ sift_v6_key_skew(PlannerInfo *root, RelOptInfo *rel, AttrNumber att)
 	return Max(nd * sq, 1.0);
 }
 
+/* Does PostgreSQL know the values a filter compares (statistics of the column or of an expression index, a unique column)? Its count of the rows the filter keeps is a default guess otherwise */
+static bool
+filter_counted(PlannerInfo *root, const RestrictInfo *ri)
+{
+	List	   *args = IsA(ri->clause, OpExpr) ? ((OpExpr *) ri->clause)->args :
+		IsA(ri->clause, ScalarArrayOpExpr) ? ((ScalarArrayOpExpr *) ri->clause)->args : NIL;
+	VariableStatData vd;
+	Node	   *other;
+	bool		varonleft,
+				known;
+
+	if (list_length(args) != 2 || !get_restriction_variable(root, args, 0, &vd, &other, &varonleft))
+		return true;
+	known = HeapTupleIsValid(vd.statsTuple) || vd.isunique;
+	ReleaseVariableStats(vd);
+	return known;
+}
+
+/* Are the arguments of a function all constants? */
+static bool
+consts_only(const List *args)
+{
+	bool		all = true;
+
+	foreach_ptr(Node, a, (List *) args)
+		all &= IsA(a, Const);
+	return all;
+}
+
+/* Does PostgreSQL know the values every filter of a relation compares? */
+static bool
+filters_counted(PlannerInfo *root, const RelOptInfo *rel)
+{
+	bool		all = true;
+
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+		all &= filter_counted(root, ri);
+	return all;
+}
+
+/* Is the count of a lookup PostgreSQL's own: a VALUES list, a function of constants (unnest of a list), a table whose filters all have statistics; a sub-select is counted through its defaults */
+static bool
+lookup_counted(PlannerInfo *root, const RelOptInfo *lookup)
+{
+	const RangeTblEntry *rte = planner_rt_fetch(lookup->relid, root);
+	const RangeTblFunction *rtf = rte->rtekind == RTE_FUNCTION && list_length(rte->functions) == 1 ? linitial_node(RangeTblFunction, rte->functions) : NULL;
+
+	if (rte->rtekind == RTE_VALUES)
+		return true;
+	if (rtf != NULL && IsA(rtf->funcexpr, FuncExpr))
+		return consts_only(((FuncExpr *) rtf->funcexpr)->args);
+	return rte->rtekind == RTE_RELATION && filters_counted(root, lookup);
+}
+
+double
+sift_v6_lookup_keys_guess(PlannerInfo *root, RelOptInfo *rel, AttrNumber att, const RelOptInfo *lookup)
+{
+	Var		   *var;
+	VariableStatData vd;
+	bool		isdefault;
+	double		nd;
+
+	if (lookup_counted(root, lookup))
+		return 1.0;
+	var = makeVar(rel->relid, att, get_atttype(planner_rt_fetch(rel->relid, root)->relid, att), -1, InvalidOid, 0);
+	examine_variable(root, (Node *) var, 0, &vd);
+	nd = get_variable_numdistinct(&vd, &isdefault);
+	ReleaseVariableStats(vd);
+	return isdefault ? 1.0 : sqrt(Max(nd / Max(lookup->rows, 1.0), 1.0));
+}
+
+double
+sift_v6_lookups_guess(PlannerInfo *root, RelOptInfo *rel, const AttrNumber *atts, RelOptInfo *const *lookups, int n, double input_rows)
+{
+	double		g[SIFT_STAR_MAX_DIMS],
+				f = 1.0;
+
+	Assert(n <= SIFT_STAR_MAX_DIMS);
+	for (int d = 0; d < n; d++)
+		g[d] = atts[d] > 0 ? sift_v6_lookup_keys_guess(root, rel, atts[d], lookups[d]) : 1.0;
+	for (int d = 0; d < n; d++)
+	{
+		double		most = g[d];
+		bool		first = true;
+
+		for (int e = 0; e < n; e++)
+			if (e != d && atts[e] == atts[d])
+			{
+				first &= e > d;
+				most = Max(most, g[e]);
+			}
+		f *= first ? most : 1.0;
+	}
+	return Min(f, Max(rel->rows / Max(input_rows, 1.0), 1.0));
+}
+
 double
 sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att)
 {

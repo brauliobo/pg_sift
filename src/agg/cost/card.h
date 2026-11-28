@@ -91,6 +91,19 @@ extern Cost sift_v6_dim_cost(const Path *child);
  */
 extern double sift_v6_key_skew(PlannerInfo *root, RelOptInfo *rel, AttrNumber att);
 
+/*
+ * How many times more keys of column att of rel a lookup passes than PostgreSQL counts: 1 when it counts the lookup from statistics; when a filter of the lookup has none (a jsonb path,
+ * an expression) or the lookup is the output of a plan, its count is a default guess of a row or two, and the keys are taken at the geometric mean of the guess and the distinct values
+ * of the column.
+ */
+extern double sift_v6_lookup_keys_guess(PlannerInfo *root, RelOptInfo *rel, AttrNumber att, const RelOptInfo *lookup);
+
+/*
+ * The same of the lookups of a join, lookups[i] on column atts[i] of rel (0: an outer join, a join of relations, a key of several columns or of an expression, which is not counted): the most of the lookups
+ * on one column, which restrict the same keys, times those of the other columns, up to the rows of rel
+ */
+extern double sift_v6_lookups_guess(PlannerInfo *root, RelOptInfo *rel, const AttrNumber *atts, RelOptInfo *const *lookups, int n, double input_rows);
+
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
 extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att);
 

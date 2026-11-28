@@ -827,6 +827,24 @@ plan_dims(PlannerInfo *root, SiftV6JoinShape *sh)
 	}
 }
 
+/* How many times more keys than PostgreSQL counts the inner and semi dimensions of one relation on one column of the fact pass to it (sift_v6_lookups_guess) */
+static double
+guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double input_rows)
+{
+	AttrNumber	atts[SIFT_STAR_MAX_DIMS];
+	RelOptInfo *rels[SIFT_STAR_MAX_DIMS];
+
+	for (int d = 0; d < sh->nd; d++)
+	{
+		const SiftV6JoinDim *jd = &sh->dim[d];
+		const Var  *v = jd->nkeys == 1 && jd->kexpr[0] == NULL ? sift_v6_plain_var(jd->probe[0]) : NULL;
+
+		atts[d] = (jd->mode == SV6J_INNER_EQUI || jd->mode == SV6J_SEMI_EQUI) && bms_membership(jd->rels) == BMS_SINGLETON && v != NULL && v->varno == sh->fact->relid ? v->varattno : 0;
+		rels[d] = jd->rel;
+	}
+	return sift_v6_lookups_guess(root, sh->fact, atts, rels, sh->nd, input_rows);
+}
+
 /* the statement, the shape of its join and what the planner of the node needs to make a path of a plan that compiled: the groups of an aggregate, or the best topk rows of the join */
 typedef struct JoinStmt
 {
@@ -835,6 +853,8 @@ typedef struct JoinStmt
 	List	   *group_exprs;
 	const SiftV6JoinShape *sh;
 	uint32		topk;
+	double	   *charge;			/* what each fact relation's probes are charged for the lookups PostgreSQL guesses (sift_v6_lookup_paths), by relid; NULL: nothing */
+	double		lift_rows;		/* V6Plan.lift_rows */
 } JoinStmt;
 
 static bool
@@ -871,6 +891,7 @@ join_add(V6Plan *p, const void *arg)
 		sift_v6_rows_add(p, js->topk, scan, children, xs, xt);
 		return;
 	}
+	p->lift_rows = js->lift_rows;
 	sift_v6_add_join_path(p, js->group_exprs, sift_v6_having(js->extra), children, xs, xt, js->input_rel->rows);
 }
 
@@ -880,12 +901,17 @@ try_fact(PlannerInfo *root, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo
 	SiftV6JoinShape sh = {.fact = fact,.elem = elem};
 	JoinStmt	js = *stmt;
 	const Relids base = sift_v6_plan_base_relids(root, js.input_rel);
+	double		guess;
 
 	js.sh = &sh;
 	if (!(elem != NULL ? sift_v6_plan_fact_ok(root, fact) && sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte) : sift_v6_join_fact_ok(root, fact)) || !shape_of(root, base, &sh, js.topk > 0) ||
 		(js.topk > 0 && !rows_shape_ok(root, &sh)))
 		return;
 	plan_dims(root, &sh);
+	guess = guessed_keys(root, &sh, js.input_rel->rows);
+	if (js.charge != NULL)
+		sift_v6_charge_probes(fact, guess, &js.charge[fact->relid], output_rel);
+	js.lift_rows = guess > 1.0 ? js.input_rel->rows * guess : 0;
 	sift_v6_fact_paths(root, fact, output_rel, join_compile, join_add, &js);
 }
 
@@ -913,9 +939,9 @@ try_facts(PlannerInfo *root, RelOptInfo *output_rel, const JoinStmt *js)
 }
 
 void
-sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
+sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, double *charge)
 {
-	const JoinStmt js = {.input_rel = input_rel,.extra = extra,.group_exprs = group_exprs};
+	const JoinStmt js = {.input_rel = input_rel,.extra = extra,.group_exprs = group_exprs,.charge = charge};
 
 	if (sift_v6_plan_query_ok(root, output_rel))
 		try_facts(root, output_rel, &js);
@@ -927,4 +953,16 @@ sift_v6_join_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *ou
 	const JoinStmt js = {.input_rel = input_rel,.topk = k};
 
 	try_facts(root, output_rel, &js);
+}
+
+void
+sift_v6_lookup_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
+{
+	double	   *charge = palloc(root->simple_rel_array_size * sizeof(double));
+
+	for (int r = 0; r < root->simple_rel_array_size; r++)
+		charge[r] = 1.0;
+	sift_v6_star_upper_paths(root, input_rel, output_rel, extra, group_exprs, charge);
+	sift_v6_join_upper_paths(root, input_rel, output_rel, extra, group_exprs, charge);
+	pfree(charge);
 }

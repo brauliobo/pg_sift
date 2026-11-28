@@ -766,6 +766,22 @@ passes_cost(const V6Plan *p, List *child_paths, Cost scan, double *passes)
 	return cost + (*passes - 1) * scan;
 }
 
+/* The most groups a lifted count adds to the plan's own (reported_groups) */
+#define SIFT_V6_LIFT_GROUPS	1000
+
+/*
+ * The groups the path reports to the plan above. Where PostgreSQL's count of a lookup is a default guess (lift_rows), a plan above that takes one group for one nests loops on a
+ * null-safe key and runs the aggregate under it again for each row: the groups are those of the lifted rows, up to the plan's own and a thousand, where more only multiplies in the join
+ * above. The price keeps the plan's own count: the choice of the scan does not move.
+ */
+static double
+reported_groups(const V6Plan *p, List *group_exprs, double groups)
+{
+	if (p->lift_rows <= 0 || p->spec.nkeys == 0)
+		return groups;
+	return Min(sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, p->lift_rows) * Max(p->spec.nsets, 1), groups + SIFT_V6_LIFT_GROUPS);
+}
+
 void
 sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows)
 {
@@ -794,7 +810,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->path.pathtype = T_CustomScan;
 	cp->path.parent = p->out;
 	cp->path.pathtarget = p->out->reltarget;
-	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * sift_v6_quals_sel(p->root, having, 0));
+	cp->path.rows = clamp_row_est(reported_groups(p, group_exprs, groups) * (having == NIL ? 1.0 : sift_v6_quals_sel(p->root, having, 0)));
 	scan_cost(p, groups, &cp->path.startup_cost, &cp->path.total_cost);
 	passes_extra = child_paths == NIL ? 0 : passes_cost(p, child_paths, cp->path.total_cost, &passes);
 	cp->path.startup_cost += extra_startup + passes_extra;
@@ -878,9 +894,8 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	if (input_rel->reloptkind == RELOPT_JOINREL)
 	{
 		group_exprs = sift_v6_group_exprs_of(root);
-		sift_v6_star_upper_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
+		sift_v6_lookup_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 		sift_v6_unnest_upper_paths(root, input_rel, output_rel, extra);
-		sift_v6_join_upper_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 		for (int i = 0; i < sift_store_ops_count(); i++)
 			if (sift_store_ops_at(i)->scope != NULL)
 				sift_store_ops_at(i)->scope->upper_paths(root, input_rel, output_rel, extra);

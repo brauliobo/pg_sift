@@ -32,6 +32,7 @@
 #include "agg/ht/generic.h"
 #include "agg/join/found.h"
 #include "agg/join/pairs.h"
+#include "agg/join/push.h"
 #include "agg/source_rel.h"
 #include "agg/star/run.h"
 
@@ -439,6 +440,7 @@ typedef struct StarGoal
 	GroupPathExtraData *extra;
 	List	   *group_exprs;
 	uint32		topk;
+	double	   *charge;			/* what each fact relation's probes are charged for the lookups PostgreSQL guesses (sift_v6_lookup_paths), by relid; NULL: nothing */
 } StarGoal;
 
 /* the statement compiled against the fact index and the dimensions seeded in it */
@@ -475,6 +477,7 @@ typedef struct StarStmt
 	int			nd;
 	const StarGoal *goal;
 	double		input_rows;
+	double		lift_rows;		/* V6Plan.lift_rows */
 } StarStmt;
 
 /* the tests of the elements of the fact's arrays among its quals and FILTERs make each row of it one pair of the scan of an unnest, which probes the dimensions (not a sift_table's pipe of rows) */
@@ -504,6 +507,7 @@ star_add_fn(V6Plan *p, const void *arg)
 		xs += found ? 0 : sift_v6_dim_cost(child);
 		xt += (found ? 0 : sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0) + s->input_rows * cpu_operator_cost;
 	}
+	p->lift_rows = s->lift_rows;
 	star_add(p, s->goal, s->input_rows, children, xs, xt + (p->xseed->row_tests ? sift_v6_unnest_exists_cost(p->rel) : 0));
 }
 
@@ -521,13 +525,29 @@ plan_dims(PlannerInfo *root, const RelOptInfo *fact, StarDim *dims, int nd)
 	}
 }
 
+/* How many times more keys than PostgreSQL counts the inner dimensions pass to the fact (sift_v6_lookups_guess) */
+static double
+guessed_keys(PlannerInfo *root, RelOptInfo *fact, const StarDim *dims, int nd, double input_rows)
+{
+	AttrNumber	atts[SIFT_STAR_MAX_DIMS];
+	RelOptInfo *rels[SIFT_STAR_MAX_DIMS];
+
+	for (int d = 0; d < nd; d++)
+	{
+		atts[d] = dims[d].left || dims[d].nkeys != 1 ? 0 : dims[d].fvar[0]->varattno;
+		rels[d] = dims[d].rel;
+	}
+	return sift_v6_lookups_guess(root, fact, atts, rels, nd, input_rows);
+}
+
 static void
 try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *output_rel, RelOptInfo *fact, const StarGoal *goal)
 {
 	StarDim		dims[SIFT_STAR_MAX_DIMS] = {0};
 	const int	nd = bms_num_members(base) - 1;
 	const uint64 budget = sift_v6_star_budget(nd);
-	const StarStmt stmt = {dims, nd, goal, input_rel->rows};
+	StarStmt	stmt = {dims, nd, goal, input_rel->rows};
+	double		guess;
 	int			n = 0,
 				r = -1;
 
@@ -549,6 +569,10 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 		if (dims[d].nkeys == 0 || !dim_fits(root, &dims[d], budget))
 			return;
 	plan_dims(root, fact, dims, nd);
+	guess = guessed_keys(root, fact, dims, nd, input_rel->rows);
+	if (goal->charge != NULL)
+		sift_v6_charge_probes(fact, guess, &goal->charge[fact->relid], output_rel);
+	stmt.lift_rows = guess > 1.0 ? input_rel->rows * guess : 0;
 	sift_v6_fact_paths(root, fact, output_rel, star_compile_fn, star_add_fn, &stmt);
 }
 
@@ -577,9 +601,9 @@ try_facts(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, cons
 }
 
 void
-sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs)
+sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, double *charge)
 {
-	const StarGoal goal = {.extra = extra,.group_exprs = group_exprs};
+	const StarGoal goal = {.extra = extra,.group_exprs = group_exprs,.charge = charge};
 	const int	nrels = bms_num_members(sift_v6_plan_base_relids(root, input_rel));
 
 	if (!sift_v6_plan_query_ok(root, output_rel))

@@ -14,8 +14,15 @@
 
 #include "nodes/pathnodes.h"
 
-extern void sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
+/* charge: what each fact relation's probes are charged for the lookups PostgreSQL guesses (sift_v6_lookup_paths, sift_v6_charge_probes), by relid */
+extern void sift_v6_join_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, double *charge);
 /* the same joins for the best k rows of the join in the order of its ORDER BY (agg/plan/topn_rows.c) */
 extern void sift_v6_join_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
+
+/*
+ * The paths of the star and of the lookup joins (below) of an aggregate or a DISTINCT over a join; the plans of PostgreSQL that probe a fact relation once a key of a lookup it
+ * only guesses are charged for the keys it passes, once whichever planner found the lookup (sift_v6_lookups_guess)
+ */
+extern void sift_v6_lookup_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
 
 #endif							/* SIFT_AGG_V6_JOIN_PLAN_H */

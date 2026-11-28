@@ -330,7 +330,7 @@ sift_v6_push_small_side(PlannerInfo *root, RelOptInfo *rel)
 /* The keys a query passes own this many times the mean rows of a key and no fewer than twice it: a statistics sample and a mild unevenness of a column are not skew */
 #define PUSH_SKEW_FLOOR	2.0
 
-/* The scan of the fact table a path probes once for each key of the join (a nested loop, under aggregation, sorts and gathers): NULL for any other */
+/* The scan of the fact a path probes once for each key of a join (a nested loop, under aggregation, sorts and projections): NULL for any other */
 static const Path *
 fact_probe(const Path *p, const RelOptInfo *fact)
 {
@@ -365,23 +365,34 @@ fact_probe(const Path *p, const RelOptInfo *fact)
 		}
 }
 
+void
+sift_v6_charge_probes(const RelOptInfo *fact, double g, double *charged, RelOptInfo *out)
+{
+	const double step = g / *charged;
+
+	if (step <= 1.0)
+		return;
+	*charged = g;
+	foreach_ptr(Path, p, out->pathlist)
+		if (fact_probe(p, fact) != NULL)
+		{
+			p->startup_cost *= step;
+			p->total_cost *= step;
+		}
+}
+
 /*
  * The plans that probe the fact once for each key of the small side are priced by PostgreSQL for the mean rows of a key; a small side it has statistics of passes the keys its rows hold,
- * which own the skew of the column, so those plans cost that many times more, up to the rows the fact's own filters keep.
+ * which own the skew of the column, so those plans cost that many times more, up to the rows the fact's own filters keep. One it guesses is charged by the star (sift_v6_lookup_keys_guess).
  */
 static void
 price_probes(PlannerInfo *root, const PushJoin *j, RelOptInfo *input_rel, RelOptInfo *out)
 {
-	const double g = Min(Max(sift_v6_key_skew(root, j->fact, j->fact_attno) / PUSH_SKEW_FLOOR, 1.0), Max(j->fact->rows / Max(input_rel->rows, 1.0), 1.0));
+	double		charged = 1.0;
 
-	if (g <= 1.0)
+	if (sift_v6_lookup_keys_guess(root, j->fact, j->fact_attno, j->dim) > 1.0)
 		return;
-	foreach_ptr(Path, p, out->pathlist)
-		if (fact_probe(p, j->fact) != NULL)
-		{
-			p->startup_cost *= g;
-			p->total_cost *= g;
-		}
+	sift_v6_charge_probes(j->fact, Min(Max(sift_v6_key_skew(root, j->fact, j->fact_attno) / PUSH_SKEW_FLOOR, 1.0), Max(j->fact->rows / Max(input_rel->rows, 1.0), 1.0)), &charged, out);
 }
 
 void

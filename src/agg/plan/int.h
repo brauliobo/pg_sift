@@ -66,6 +66,7 @@ typedef struct V6Plan
 	int			elem_stream;	/* the stream of the Ext (sift_v6_ext_stream) whose elements are the columns of elem_rel */
 	bool		heap_rows;		/* the unnest of a sift_table reads every row again by its address: a qual or a test of the statement only the row itself decides (sift_v6_unnest_ready) */
 	bool		rows_from_store;	/* the columns a row Top-N gives are those its scan decodes, which it carries beside the sort columns: no heap row is fetched (sift_v6_rows_store_path) */
+	double		lift_rows;		/* the rows a join of lookups PostgreSQL only guesses passes (sift_v6_lookup_keys_guess), whose groups the path reports to the plan above; 0: its own count */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */
@@ -196,7 +197,7 @@ extern bool sift_v6_key_types_agree(Oid ftype, Oid dtype, Oid inputcollid);
 extern bool sift_v6_key_type_ok(Oid typid);
 extern bool sift_v6_in_target(const RelOptInfo *rel, const Var *v);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, int ndims);
-extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs);
+extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, double *charge);
 extern void sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);
 extern bool sift_v6_unnest_ready(V6Plan *p);
 extern Aggref *sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a);

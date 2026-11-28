@@ -8,8 +8,8 @@
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
 
-#include "agg/plan/int.h"
 #include "agg/join/plan.h"
+#include "agg/plan/int.h"
 #include "agg/vexpr.h"
 
 /* a DISTINCT over a grouped, windowed or aggregated query is above that stage's own paths: not the scan's */
@@ -32,8 +32,7 @@ sift_v6_distinct_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 		keys = lappend(keys, get_sortgroupclause_expr(sgc, q->targetList));
 	if (input_rel->reloptkind == RELOPT_JOINREL)
 	{
-		sift_v6_star_upper_paths(root, input_rel, output_rel, NULL, keys);
-		sift_v6_join_upper_paths(root, input_rel, output_rel, NULL, keys);
+		sift_v6_lookup_paths(root, input_rel, output_rel, NULL, keys);
 	}
 	else if (!sift_v6_plan_shape(root, input_rel, output_rel))
 		return;

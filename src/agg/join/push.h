@@ -20,5 +20,11 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_push_plan_methods;
 extern bool sift_v6_push_small_side(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_agg_v6_join_push_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 
+/*
+ * The plans of out that probe fact once for each key of a join, which PostgreSQL prices for fewer keys or rows than they read, cost g times more. charged: what they pay already (1: nothing),
+ * so that two planners that find the same lookup charge it once, before either adds its paths
+ */
+extern void sift_v6_charge_probes(const RelOptInfo *fact, double g, double *charged, RelOptInfo *out);
+
 
 #endif							/* SIFT_AGG_V6_JOIN_PUSH_H */

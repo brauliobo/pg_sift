@@ -27,7 +27,7 @@ DECLARE
 	n jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")');
+	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" starts with "SiftAgg")');
 	scan := CASE WHEN n IS NULL THEN 'normal' ELSE 'SiftAgg' END;
 	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN (n ->> 'Plan Rows')::numeric / 64 AND 64 * (n ->> 'Plan Rows')::numeric;
 	aggregate_runs := (SELECT max((x ->> 'Actual Loops')::numeric) FROM jsonb_path_query(j, '$.** ? (@."Node Type" == "Aggregate")') x);
@@ -60,7 +60,7 @@ DECLARE
 	n jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (ANALYZE, COSTS ON, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")');
+	n := jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" starts with "SiftAgg")');
 	scan := CASE WHEN n IS NULL THEN 'normal' ELSE 'SiftAgg' END;
 	groups_within_factor := (n ->> 'Actual Rows')::numeric BETWEEN (n ->> 'Plan Rows')::numeric / 64 AND 64 * (n ->> 'Plan Rows')::numeric;
 	join_above := jsonb_path_query_first(j, '$.** ? (@."Node Type" like_regex "Join")."Node Type"') #>> '{}';
@@ -80,7 +80,7 @@ DECLARE
 	j jsonb;
 BEGIN
 	EXECUTE 'EXPLAIN (COSTS ON, FORMAT JSON) ' || q INTO j;
-	scan_rows_within_bound := (SELECT bool_and((x ->> 'Plan Rows')::numeric <= 2048) FROM jsonb_path_query(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")') x);
+	scan_rows_within_bound := (SELECT bool_and((x ->> 'Plan Rows')::numeric <= 2048) FROM jsonb_path_query(j, '$.** ? (@."Custom Plan Provider" starts with "SiftAgg")') x);
 	join_rows_within_bound := (SELECT bool_and((x ->> 'Plan Rows')::numeric <= 20000) FROM jsonb_path_query(j, '$.** ? (@."Node Type" like_regex "Join")') x);
 	RETURN NEXT;
 END $$;
