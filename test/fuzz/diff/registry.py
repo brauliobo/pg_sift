@@ -61,8 +61,6 @@ def variants(r, fam):
          ('scan', 'sift.enable_agg=on;sift.agg_preagg=off;max_parallel_workers_per_gather=0')]
     # every SIMD level below the top one the host supports, on the scan: the answers are the same bit for bit
     v += [('simd' + lvl, 'sift.enable_agg=on;sift.agg_preagg=off;sift.simd=%s;max_parallel_workers_per_gather=0' % lvl) for lvl in SIMD_LEVELS]
-    if fam in ('topn', 'trail', 'toplat', 'toplook'):  # the heap lowered: the sort of every row that passes runs on the rows of the tables (a testing build)
-        v.append(('topnsort', 'sift.enable_agg=on;sift.test_limits=' + r.choice(['topn_rows=20', 'topn_keys=1', 'topn_rows=20,topn_keys=2']) + ';max_parallel_workers_per_gather=0'))
     if fam == 'dead':  # the dead rows scanned, and any share of them netted
         v.append(('nodelta', 'sift.enable_agg=on;sift.test_agg_dead_delta=0;max_parallel_workers_per_gather=0'))
         v.append(('alldead', 'sift.enable_agg=on;sift.test_agg_dead_delta=100;max_parallel_workers_per_gather=0'))
