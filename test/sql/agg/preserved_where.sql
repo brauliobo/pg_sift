@@ -1,6 +1,6 @@
 -- A WHERE over the columns of the nullable side of a preserved join (a calendar LEFT JOIN rows): PostgreSQL moves it there from the output of a
 -- grouped sub-select. The calendar days nothing matched have NULL columns and must pass it, and a day whose matches it drops is no row (not
--- a day of NULL columns), so the scan tests it on the matched tuples. A condition the NULL row fails keeps the normal plan.
+-- a day of NULL columns), so the scan tests it on the matched tuples and on the NULL row of a day nothing matched.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -59,7 +59,7 @@ SELECT * FROM check_query($q$
    GROUP BY GROUPING SETS ((p.cat, d.day), (p.cat))
  ) g WHERE category = 'mhead' ORDER BY 1, 2
 $q$);
--- a condition the NULL row fails keeps the normal plan: the empty days would be dropped by PostgreSQL and kept by the scan
+-- a condition the NULL row fails: the empty days are dropped, as PostgreSQL drops them
 SELECT * FROM check_query($q$
  SELECT * FROM (
    SELECT coalesce(p.cat, 'mhead') AS category, d.day, count(*) AS cells, count(DISTINCT p.id) AS n

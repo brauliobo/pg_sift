@@ -524,13 +524,13 @@ last_preserved(const SiftV6JoinShape *sh, int i)
 	return i == sh->nd - 1;
 }
 
-/* a RIGHT or FULL join keeps the rows of its dimension that no row matched, and nothing else of the statement may change what matches */
+/* a RIGHT or FULL join keeps the rows of its dimension that no pair matched (a row, or a row and an element of its unnest), and nothing else of the statement may change what matches */
 static bool
 preserved_ok(const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (sift_star_preserves_dim(sh->dim[i].mode))
-			return sh->elem == NULL && (sh->nd == 1 || (sh->dim[i].closing && last_preserved(sh, i)));
+			return sh->nd == 1 || (sh->dim[i].closing && last_preserved(sh, i));
 	return true;
 }
 
