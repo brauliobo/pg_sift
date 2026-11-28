@@ -695,6 +695,13 @@ rel_outputs(const RelOptInfo *rel, const Var *v)
 	return false;
 }
 
+/* Are the pairs of dimension d, an earlier inner, left or range join, joined with their payload before dimension dim probes */
+static bool
+payload_before(const SiftV6JoinShape *sh, int d, int dim)
+{
+	return d < dim && (sh->dim[d].mode == SV6J_INNER_EQUI || sh->dim[d].mode == SV6J_LEFT_EQUI || sh->dim[d].mode == SV6J_RANGE_SMALL);
+}
+
 /* the column of the probing side a key is: of the index, of the unnest's element, or a payload column of an earlier dimension */
 static bool
 probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col *out)
@@ -706,7 +713,7 @@ probe_col(V6Plan *p, const SiftV6JoinShape *sh, const Var *v, int dim, SiftV6Col
 	else if (p->elem_rel != NULL && v->varno == p->elem_rel->relid)
 		ok = sift_v6_unnest_column(p, (const Expr *) v, out);
 	else
-		ok = sift_v6_star_column(p, (const Expr *) v, out) && out->dim < dim && (sh->dim[out->dim].mode == SV6J_INNER_EQUI || sh->dim[out->dim].mode == SV6J_LEFT_EQUI);
+		ok = sift_v6_star_column(p, (const Expr *) v, out) && payload_before(sh, out->dim, dim);
 	return ok && sift_v6_key_type_ok(out->typid);
 }
 
@@ -722,7 +729,7 @@ seed_key_expr(V6Plan *p, const SiftV6JoinShape *sh, int dim, const Node *probe, 
 	{
 		const SiftV6Col *col = &p->xseed->rcol[v->varattno - 1];
 
-		if (sift_v6_class(col->typid) == SV6C_NONE || (col->src == SV6SRC_DIM && !(col->dim < dim && (sh->dim[col->dim].mode == SV6J_INNER_EQUI || sh->dim[col->dim].mode == SV6J_LEFT_EQUI))))
+		if (col->src == SV6SRC_DIM ? !payload_before(sh, col->dim, dim) : sift_v6_class(col->typid) == SV6C_NONE)
 			return false;
 	}
 	p->xseed->kexpr = lappend(p->xseed->kexpr, e);
