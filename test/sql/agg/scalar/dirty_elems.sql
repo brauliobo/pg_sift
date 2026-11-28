@@ -5,11 +5,21 @@
 -- Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/scalar/dirty_elems_f1 runs the same statements on Format 1, whose rows and errors are the same and whose
+-- pushdown and reads differ.
+\if :{?f1}
+SET sift.test_create_format1 = on;
+\else
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/common/sql/agg/base.sql
+\i test/common/sql/agg/base.sql
 
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);

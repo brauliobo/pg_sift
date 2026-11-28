@@ -5,11 +5,21 @@
 -- Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/scalar/dirty_filter_f1 runs the same statements on Format 1, whose rows and errors are the same and whose
+-- pushdown and reads differ.
+\if :{?f1}
+SET sift.test_create_format1 = on;
+\else
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/common/sql/agg/base.sql
+\i test/common/sql/agg/base.sql
 
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);
@@ -85,7 +95,7 @@ INSERT INTO f_q VALUES
 	-- another aggregate or a FILTER casts it for every row
 	('and an unfiltered',   'SELECT grp, sum((doc ->> ''v'')::float8) FILTER (WHERE grp = 1) AS a, max((doc ->> ''v'')::float8) AS b FROM f_t GROUP BY grp'),
 	('argument and filter', 'SELECT grp, sum((doc ->> ''v'')::float8) FILTER (WHERE (doc ->> ''v'')::float8 > 3) AS s FROM f_t GROUP BY grp'),
-	-- the FILTER is no plain test of the cast, or may raise: the normal plan
+	-- the FILTER tests the cast after another condition or before it, may raise, or reads a bad leaf; a CASE in the argument
 	('and in the filter',  'SELECT grp, count(*) FILTER (WHERE grp > 1 AND (doc ->> ''v'')::float8 > 3) AS c FROM f_t GROUP BY grp'),
 	('or in the filter',   'SELECT grp, count(*) FILTER (WHERE (doc ->> ''v'')::float8 > 3 OR grp = 1) AS c FROM f_t GROUP BY grp'),
 	('filter may raise',   'SELECT grp, sum((doc ->> ''v'')::float8) FILTER (WHERE 100 / (grp + 1) > 3) AS s FROM f_t GROUP BY grp'),

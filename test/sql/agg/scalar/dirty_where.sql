@@ -2,15 +2,25 @@
 -- leaf cannot store again from the heap; one passes the condition, goes on to the other conditions and raises the error of the cast only if they
 -- keep it. PostgreSQL tests the conditions of a scan by cost, the written order among equals, so that is its answer exactly when the others come
 -- first: then a row they drop never raises. Where the cast could run first (a costlier condition, one that raises too) the query keeps the normal
--- plan, and sift.explain_refusals names dirty_order.
+-- plan.
 -- Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/scalar/dirty_where_f1 runs the same statements on Format 1, whose rows and errors are the same and whose
+-- pushdown and reads differ.
+\if :{?f1}
+SET sift.test_create_format1 = on;
+\else
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/common/sql/agg/base.sql
+\i test/common/sql/agg/base.sql
 
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text := runq(q, false); b text := runq(q, true);
@@ -97,7 +107,7 @@ INSERT INTO w_q VALUES
 	('a clean leaf',         'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''c'')::int4 = 1 GROUP BY grp');
 SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
 
--- the cast could run before a condition that drops the row, or a condition raises too: the normal plan, rows or error as the heap
+-- the cast could run before a condition that drops the row, or a condition raises too: rows or error as the heap
 TRUNCATE w_q;
 INSERT INTO w_q VALUES
 	-- a costlier condition on the same row (a list of 8 strings: from 9 PostgreSQL hashes the list, which costs less) is tested after the cast
@@ -105,7 +115,7 @@ INSERT INTO w_q VALUES
 	('may raise too',      'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND 100 / (grp + 1) > 3 GROUP BY grp'),
 	-- two leaves with bad values: each is tested before the other, whichever comes first
 	('two casts',          'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND (doc ->> ''n'')::int4 > 1 GROUP BY grp'),
-	-- a condition of another shape than a comparison, an IN list of integers or a NULL test: not read again yet
+	-- a condition of another shape than a comparison, an IN list of integers or a NULL test
 	('expression',         'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''n'')::int4 % 2 = 1 GROUP BY grp'),
 	('bool',               'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''ok'')::bool GROUP BY grp'),
 	('in list of floats',  'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 IN (1.5, 2.5) GROUP BY grp'),
@@ -116,7 +126,7 @@ INSERT INTO w_q VALUES
 	('two kinds',          'SELECT grp, count(*) FROM w_t WHERE (doc ->> ''v'')::float8 > 3 AND (doc -> ''v'')::float8 > 3 GROUP BY grp');
 SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
 
--- the refusals are named
+-- the plans of the shapes the scan refuses, and of a boolean cast it takes
 SET sift.enable_agg = on;
 SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 AND 100 / (grp + 1) > 3 GROUP BY grp;

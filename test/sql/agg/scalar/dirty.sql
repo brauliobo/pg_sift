@@ -6,11 +6,21 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/scalar/dirty_f1 runs the same statements on Format 1, whose rows and errors are the same and whose
+-- pushdown and reads differ.
+\if :{?f1}
+SET sift.test_create_format1 = on;
+\else
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
 
-\ir test/common/sql/agg/base.sql
+\i test/common/sql/agg/base.sql
 
 -- what the scan does, and whether the normal plan does the same
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -89,7 +99,7 @@ INSERT INTO s_q VALUES
 	('clean leaf',         'SELECT grp, count(*) FILTER (WHERE doc ->> ''t'' = ''k1'') FROM s_t GROUP BY grp');
 SELECT n, pushed(q) AS pushed, outcome(q) FROM s_q ORDER BY n;
 
--- the cast runs for some rows only, or the leaf is read otherwise: the normal plan, rows or error as the heap (a condition or a FILTER on the cast: agg_scalar_dirty_where, agg_scalar_dirty_filter)
+-- the cast runs for some rows only (a CASE branch, which the scan takes as a FILTER: agg_scalar_dirty_filter), or the leaf is read otherwise: rows or error as the heap (agg_scalar_dirty_where)
 TRUNCATE s_q;
 INSERT INTO s_q VALUES
 	('case branch',        'SELECT grp, sum(CASE WHEN grp = 1 THEN (doc ->> ''v'')::float8 END) FROM s_t GROUP BY grp'),

@@ -6,10 +6,20 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/scalar/dirty_f1 runs the same statements on Format 1, whose rows and errors are the same and whose
+-- pushdown and reads differ.
+\if :{?f1}
+SET sift.test_create_format1 = on;
+\else
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
-\ir test/common/sql/agg/base.sql
+\i test/common/sql/agg/base.sql
 \set ECHO none
 -- what the scan does, and whether the normal plan does the same
 CREATE FUNCTION outcome(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -54,18 +64,18 @@ INSERT INTO s_q VALUES
 SELECT n, pushed(q) AS pushed, reread(q) AS reread, outcome(q) FROM s_q ORDER BY n;
         n        | pushed | reread |  outcome  
 -----------------+--------+--------+-----------
- another column  | t      |     60 | same rows
- cast float8     | t      |     60 | same rows
- expression      | t      |     60 | same rows
- having          | t      |     60 | same rows
- io bool         | t      |     60 | same rows
- io float8       | t      |     60 | same rows
- io int4         | t      |     60 | same rows
- io int8         | t      |     60 | same rows
- key float8      | t      |     60 | same rows
- key io          | t      |     60 | same rows
- no groups       | t      |     60 | same rows
- text key beside | t      |     60 | same rows
+ another column  | t      |      0 | same rows
+ cast float8     | t      |      0 | same rows
+ expression      | t      |      0 | same rows
+ having          | t      |      0 | same rows
+ io bool         | t      |      0 | same rows
+ io float8       | t      |      0 | same rows
+ io int4         | t      |      0 | same rows
+ io int8         | t      |      0 | same rows
+ key float8      | t      |      0 | same rows
+ key io          | t      |      0 | same rows
+ no groups       | t      |      0 | same rows
+ text key beside | t      |      0 | same rows
 (12 rows)
 
 -- numeric strings, which `->>` and a cast of the text convert (the cast of the jsonb value raises for them, below)
@@ -76,16 +86,16 @@ VACUUM ANALYZE s_t;
 SELECT n, pushed(q) AS pushed, reread(q) AS reread, outcome(q) FROM s_q WHERE n NOT IN ('cast float8', 'key float8') ORDER BY n;
         n        | pushed | reread |  outcome  
 -----------------+--------+--------+-----------
- another column  | t      |    129 | same rows
- expression      | t      |    148 | same rows
- having          | t      |    148 | same rows
- io bool         | t      |    161 | same rows
- io float8       | t      |    148 | same rows
- io int4         | t      |    148 | same rows
- io int8         | t      |    154 | same rows
- key io          | t      |    148 | same rows
- no groups       | t      |    148 | same rows
- text key beside | t      |    148 | same rows
+ another column  | t      |     69 | same rows
+ expression      | t      |     88 | same rows
+ having          | t      |     88 | same rows
+ io bool         | t      |    101 | same rows
+ io float8       | t      |     88 | same rows
+ io int4         | t      |     88 | same rows
+ io int8         | t      |     94 | same rows
+ key io          | t      |     88 | same rows
+ no groups       | t      |     88 | same rows
+ text key beside | t      |     88 | same rows
 (10 rows)
 
 -- a value SQL cannot convert: the scan raises the error of the cast for the row it reaches, as the normal plan does
@@ -127,7 +137,7 @@ SELECT n, pushed(q) AS pushed, outcome(q) FROM s_q ORDER BY n;
  other leaf            | t      | same rows
 (12 rows)
 
--- the cast runs for some rows only, or the leaf is read otherwise: the normal plan, rows or error as the heap (a condition or a FILTER on the cast: agg_scalar_dirty_where, agg_scalar_dirty_filter)
+-- the cast runs for some rows only (a CASE branch, which the scan takes as a FILTER: agg_scalar_dirty_filter), or the leaf is read otherwise: rows or error as the heap (agg_scalar_dirty_where)
 TRUNCATE s_q;
 INSERT INTO s_q VALUES
 	('case branch',        'SELECT grp, sum(CASE WHEN grp = 1 THEN (doc ->> ''v'')::float8 END) FROM s_t GROUP BY grp'),
@@ -140,8 +150,8 @@ SELECT n, pushed(q) AS pushed, outcome(q) FROM s_q ORDER BY n;
 -------------------+--------+----------------------------------------------------------------------
  case branch       | t      | same rows
  case branch drops | t      | same rows
- sub-select        | f      | same ERR 22P02 invalid input syntax for type double precision: "abc"
- two kinds         | f      | same ERR 22023 cannot cast jsonb string to type double precision
+ sub-select        | t      | same ERR 22P02 invalid input syntax for type double precision: "abc"
+ two kinds         | t      | same ERR 22023 cannot cast jsonb string to type double precision
  typeof            | f      | same rows
 (5 rows)
 
