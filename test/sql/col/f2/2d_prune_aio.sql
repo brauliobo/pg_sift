@@ -64,16 +64,18 @@ FROM generate_series(1, 2000) i;
 SELECT count(*) AS parts FROM sift._test_f2_parts('ev_idx', 1, NULL);
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
 
--- The compaction splits the hot rows from the cold ones: two parts, the hot one holds the hot batch and the hot half of the late rows
+-- The compaction splits the hot rows from the cold ones: two parts, the hot one holds the hot batch and the hot half of the late rows (with the memory to hold
+-- every row, so that the only cut is the one of the time)
 DO $$ DECLARE grp text;
 BEGIN
+	SET LOCAL maintenance_work_mem = '256MB';
 	FOREACH grp IN ARRAY string_to_array(sift._test_f2_plan('ev_idx', 1, NULL), ' / ') LOOP
 		CONTINUE WHEN grp = '';
 		PERFORM sift._test_f2_compact('ev_idx', 1, NULL, string_to_array(grp, ',')::int8[]);
 	END LOOP;
 END $$;
 SELECT level, flags & 32 <> 0 AS hot, flags & 64 <> 0 AS cold, nrows FROM sift._test_f2_parts('ev_idx', 1, NULL) ORDER BY hot DESC;
-SELECT sift._test_f2_check('ev_idx') ~ '^parts=3 ' AS consistent;
+SELECT sift._test_f2_check('ev_idx') ~ '^parts=2 ' AS consistent;
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE updated_at < ' || quote_literal(:'cold_hi'));
 SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
@@ -83,6 +85,7 @@ SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at <
 INSERT INTO ev SELECT 300000 + i, i % 40, now() - interval '120 days' + i * interval '1 second', now(), i FROM generate_series(1, 20000) i;
 DO $$ DECLARE grp text;
 BEGIN
+	SET LOCAL maintenance_work_mem = '256MB';
 	FOREACH grp IN ARRAY string_to_array(sift._test_f2_plan('ev_idx', 1, NULL), ' / ') LOOP
 		CONTINUE WHEN grp = '';
 		PERFORM sift._test_f2_compact('ev_idx', 1, NULL, string_to_array(grp, ',')::int8[]);

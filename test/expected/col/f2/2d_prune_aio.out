@@ -132,9 +132,11 @@ SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev
   17000 |          1 |             9
 (1 row)
 
--- The compaction splits the hot rows from the cold ones: two parts, the hot one holds the hot batch and the hot half of the late rows
+-- The compaction splits the hot rows from the cold ones: two parts, the hot one holds the hot batch and the hot half of the late rows (with the memory to hold
+-- every row, so that the only cut is the one of the time)
 DO $$ DECLARE grp text;
 BEGIN
+	SET LOCAL maintenance_work_mem = '256MB';
 	FOREACH grp IN ARRAY string_to_array(sift._test_f2_plan('ev_idx', 1, NULL), ' / ') LOOP
 		CONTINUE WHEN grp = '';
 		PERFORM sift._test_f2_compact('ev_idx', 1, NULL, string_to_array(grp, ',')::int8[]);
@@ -144,11 +146,10 @@ SELECT level, flags & 32 <> 0 AS hot, flags & 64 <> 0 AS cold, nrows FROM sift._
  level | hot | cold | nrows  
 -------+-----+------+--------
      2 | t   | f    |  16000
-     2 | f   | t    | 128000
-     2 | f   | t    |  16000
-(3 rows)
+     2 | f   | t    | 144000
+(2 rows)
 
-SELECT sift._test_f2_check('ev_idx') ~ '^parts=3 ' AS consistent;
+SELECT sift._test_f2_check('ev_idx') ~ '^parts=2 ' AS consistent;
  consistent 
 ------------
  t
@@ -157,13 +158,13 @@ SELECT sift._test_f2_check('ev_idx') ~ '^parts=3 ' AS consistent;
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
  result | parts_read | parts_skipped 
 --------+------------+---------------
-  17000 |          1 |             2
+  17000 |          1 |             1
 (1 row)
 
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE updated_at < ' || quote_literal(:'cold_hi'));
  result | parts_read | parts_skipped 
 --------+------------+---------------
- 112000 |          1 |             2
+ 112000 |          1 |             1
 (1 row)
 
 SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
@@ -182,6 +183,7 @@ SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at <
 INSERT INTO ev SELECT 300000 + i, i % 40, now() - interval '120 days' + i * interval '1 second', now(), i FROM generate_series(1, 20000) i;
 DO $$ DECLARE grp text;
 BEGIN
+	SET LOCAL maintenance_work_mem = '256MB';
 	FOREACH grp IN ARRAY string_to_array(sift._test_f2_plan('ev_idx', 1, NULL), ' / ') LOOP
 		CONTINUE WHEN grp = '';
 		PERFORM sift._test_f2_compact('ev_idx', 1, NULL, string_to_array(grp, ',')::int8[]);
@@ -192,14 +194,13 @@ SELECT level, flags & 32 <> 0 AS hot, flags & 64 <> 0 AS cold FROM sift._test_f2
 -------+-----+------
      2 | t   | f
      2 | f   | t
-     2 | f   | t
      1 | f   | f
-(4 rows)
+(3 rows)
 
 SELECT result, parts_read, parts_skipped FROM f2_window('SELECT count(*) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
  result | parts_read | parts_skipped 
 --------+------------+---------------
-  17000 |          1 |             3
+  17000 |          1 |             2
 (1 row)
 
 SELECT sift_helpers.f2_same('SELECT count(*), sum(id) FROM ev WHERE created_at >= ' || quote_literal(:'hot_cut'));
