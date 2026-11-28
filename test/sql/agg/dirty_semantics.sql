@@ -170,7 +170,7 @@ SELECT same(kq('t.id BETWEEN 990 AND 1010 AND t.kind = $$cat_b$$', 'sum(CAST(r.v
 SELECT same('SELECT t.kind, e.key, sum(CAST(e.value AS float8)) FROM events t JOIN LATERAL jsonb_each(t.doc) e ON true WHERE t.id BETWEEN 99 AND 100 GROUP BY 1, 2') AS every_member;
 SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (WHERE t.id > 100)'), false) AS filtered_member;
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CASE WHEN t.id < 1000 THEN CAST(r.value AS float8) END)'), false) AS conditional_member;
-SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) > 2', 'count(*)'), false) AS filtered_on_member;
+SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) > 2', 'count(*)')) AS filtered_on_member;
 SELECT same(kq('t.id BETWEEN 90 AND 110 AND CAST(r.value AS float8) > 2', 'count(*)'), false) AS filtered_on_clean_member;
 SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) + 1 > 3', 'count(*)'), false) AS filtered_on_expression;
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CAST(r.value AS float8)), sum(CAST(r.value AS integer))'), false) AS two_casts;

@@ -313,19 +313,9 @@ heap_pairs(UnRun *u, const SiftVec *fact, uint32 row)
 	MemoryContextSwitchTo(u->ccx);
 	while ((nel = heap_next(u, &h, ev)) > 0)
 	{
-		uint64	   *keep = NULL;
-		ErrorData **late = NULL;
+		ErrorData **late;
+		const uint64 *keep = sift_v6_late_keep(u->probe, u->eev, u->st[0].rec, u->econtext, u->ccx, ev, nel, &late);
 
-		if (u->eev != NULL)
-		{
-			keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-			sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
-		}
-		if (u->st[0].rec != NULL)
-		{
-			late = palloc0_array(ErrorData *, nel);
-			sift_v6_recfn_values(u->st[0].rec, keep, u->ccx, ev, nel, late);
-		}
 		kept += emit_chunk(u, fact, ev, keep, nel, row, late);
 	}
 	if (u->x->elem.left && kept == 0)

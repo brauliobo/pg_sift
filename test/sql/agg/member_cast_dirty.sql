@@ -89,7 +89,7 @@ SELECT same(mq('e.key, sum(CAST(e.value AS integer)), avg(CAST(e.value AS float8
 SELECT same(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'id = 100')) AS two_types_float_first;
 SELECT same(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'day < 500')) AS two_types_clean;
 SELECT pushed(mq('e.key, avg(CAST(e.value AS float8)), sum(CAST(e.value AS integer))', 'day < 500')) AS two_types_pushed;
--- a conjunct that reads the leaf evaluates the cast before the aggregates: the plan stays
+-- a conjunct that reads the leaf evaluates the cast before the aggregates, in the scan as in the plan
 SELECT same(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct;
 SELECT pushed(mq('e.key, count(*)', 'CAST(e.value AS float8) > 3 AND id = 5990')) AS conjunct_pushed;
 -- a conjunct that tests the member alone casts every member of a row that reaches it: the row raises before the test, whatever the test says
@@ -103,7 +103,7 @@ SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 5970 AND CAST(e.valu
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id <> 100 AND id < 5900 AND CAST(e.value AS float8) > 3')) AS tested_row_filtered;
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id IN (100, 6000) AND CAST(e.value AS float8) > 1 AND CAST(e.value AS float8) < 10')) AS tested_twice;
 SELECT same(mq('t.src, e.key, sum(CAST(e.value AS float8)), count(*) FILTER (WHERE CAST(e.value AS float8) > 2)', 'day BETWEEN 20 AND 400 AND CAST(e.value AS float8) > 3', 't.src, e.key')) AS tested_filter;
--- another test of the members may drop the dirty one before the cast, a join or a conjunct that may raise runs where the planner puts it: the plan stays
+-- another test of the members may drop the dirty one before the cast: the scan runs the quals of the member in the order of the plan
 SELECT same(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$catg_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first;
 SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND e.key <> $$catg_i$$ AND CAST(e.value AS float8) > 3')) AS tested_key_first_pushed;
 SELECT pushed(mq('e.key, avg(CAST(e.value AS float8))', 'id = 100 AND (CAST(e.value AS float8) > 3 OR e.key = $$m_total$$)')) AS tested_or_pushed;

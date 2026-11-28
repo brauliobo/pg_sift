@@ -339,8 +339,8 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 {
 	MemoryContext old = MemoryContextSwitchTo(u->bcx);
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
-	uint64	   *keep = NULL;
-	ErrorData **late = NULL;
+	const uint64 *keep;
+	ErrorData **late;
 	ErrorData  *err = NULL;
 	uint32		nel;
 
@@ -359,16 +359,7 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 		MemoryContextSwitchTo(old);
 		return;
 	}
-	if (u->eev != NULL && nel > 0)
-	{
-		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
-		sift_v6_elem_eval(u->eev, ev, 0, nel, NULL, keep);
-	}
-	if (u->rec != NULL)
-	{
-		late = palloc0_array(ErrorData *, nel);
-		sift_v6_recfn_values(u->rec, keep, u->bcx, ev, nel, late);
-	}
+	keep = sift_v6_late_keep(u->probe, u->eev, u->rec, u->econtext, u->bcx, ev, nel, &late);
 	sift_v1_unnest_emit_row(u, u->fv, ev, keep, nel, row, late);
 	MemoryContextSwitchTo(old);
 }

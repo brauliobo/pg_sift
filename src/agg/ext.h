@@ -158,6 +158,7 @@ typedef struct SiftV6Ext
 	List	   *stream_arrays;	/* of each stream after the first: its array as an expression of the table's columns, which the rows read from the heap evaluate */
 	List	   *heap_where;		/* unnest: the quals of the fact table as the statement has them, which a row read from the heap is tested with (the batches of the index decide the others) */
 	List	   *late_probe;		/* unnest: the keys and aggregates that read a column of the element computed late, for a member whose cast raised (agg/unnest/late.h) */
+	List	   *late_where;		/* unnest: the quals of the element as the statement has them, over the member, when elem_where reads a late column (agg/unnest/late.h); NIL otherwise */
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);

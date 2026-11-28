@@ -812,7 +812,7 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, SiftV6ScanStats *stats)
 		u->hqual = spec->exec->heap_qual;
 		for (int s = 0; s < u->nst; s++)
 			u->st[s].arr = sift_v6_ext_stream_array(u->x, s) != NULL ? ExecPrepareExpr(unconstify(Expr *, sift_v6_ext_stream_array(u->x, s)), u->estate) : NULL;
-		u->probe = u->st[0].rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->st[0].rec) : NULL;
+		u->probe = u->st[0].rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->x->late_where, u->estate, u->st[0].rec) : NULL;
 		u->econtext = sift_v6_exec_context(spec);
 		MemoryContextSwitchTo(old);
 	}

@@ -129,6 +129,25 @@ SELECT * FROM check_query('dirty, count', $q$ SELECT count(p ->> 'score') FROM e
  dirty, count | t       | t    | [{"count": 408}]
 (1 row)
 
+-- a cast member in WHERE: the member that cannot be cast raises when the quals reach its cast, and is kept when an arm before it passes
+SELECT * FROM check_query('dirty, comparison', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE (p ->> 'score')::float8 > 5 $q$);
+       what        | in_scan | same |                           answer                            
+-------------------+---------+------+-------------------------------------------------------------
+ dirty, comparison | t       | t    | 22P02 invalid input syntax for type double precision: "n/a"
+(1 row)
+
+SELECT * FROM check_query('dirty, or', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NULL OR (p ->> 'score')::float8 > 5 $q$);
+   what    | in_scan | same |                           answer                            
+-----------+---------+------+-------------------------------------------------------------
+ dirty, or | t       | t    | 22P02 invalid input syntax for type double precision: "n/a"
+(1 row)
+
+SELECT * FROM check_query('dirty, arm before', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NOT NULL OR (p ->> 'score')::float8 > 5 $q$);
+       what        | in_scan | same |      answer      
+-------------------+---------+------+------------------
+ dirty, arm before | t       | t    | [{"count": 408}]
+(1 row)
+
 DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool), pushed, runq;
 DROP TABLE ed, ed2;
 DROP EXTENSION pg_sift;

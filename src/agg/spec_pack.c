@@ -289,7 +289,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	for (int d = 0; d < x->ndims; d++)
 		on = lappend(on, x->on[d]);
 	return list_concat(lappend(lappend(lappend(list_make5(ints, x->where, x->elem_where, x->elem_names, x->heap_where), x->resid), x->elem_array), x->kexpr),
-					   lappend(list_make5(x->test_quals, on, x->late_probe, x->stream_names, x->stream_arrays), x->jexpr));
+					   lappend(lappend(list_make5(x->test_quals, on, x->late_probe, x->stream_names, x->stream_arrays), x->jexpr), x->late_where));
 }
 
 typedef struct SourceVars
@@ -399,6 +399,7 @@ sift_v6_ext_unpack(const List *l)
 	for (int d = 0; d < x->ndims; d++)
 		x->on[d] = list_nth(list_nth(l, 9), d);
 	x->late_probe = list_nth(l, 10);
+	x->late_where = list_nth(l, 14);
 	x->stream_names = list_nth(l, 11);
 	x->stream_arrays = list_nth(l, 12);
 	return x;

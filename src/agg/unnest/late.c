@@ -100,6 +100,18 @@ sift_v6_late_probe_plan(const V6Plan *p)
 	return items;
 }
 
+List *
+sift_v6_late_where_plan(const V6Plan *p)
+{
+	ToExec		t = {.fact = p->rel->relid,.elem = p->elem_rel->relid};
+	List	   *where = NIL;
+
+	foreach_node(RestrictInfo, ri, sift_v6_quals_in_order(p->root, p->elem_rel->baserestrictinfo))
+		where = lappend(where, to_exec((Node *) ri->clause, &t));
+	SIFT_INVARIANT(!t.foreign, "the quals of the element the scan decides read the element alone");
+	return where;
+}
+
 typedef struct LateItem
 {
 	ExprState  *filter;
@@ -113,10 +125,11 @@ struct SiftV6LateProbe
 	LateItem   *item;
 	const SiftV6RecFn *rec;
 	TupleTableSlot *member;		/* the member of the pair as the function gives it: its key and value of jsonb_each, the element of jsonb_array_elements */
+	ExprState  *where;			/* SiftV6Ext.late_where; NULL: none */
 };
 
 SiftV6LateProbe *
-sift_v6_late_probe_open(const List *items, EState *estate, const SiftV6RecFn *rec)
+sift_v6_late_probe_open(const List *items, const List *where, EState *estate, const SiftV6RecFn *rec)
 {
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	SiftV6LateProbe *lp = palloc0(sizeof(SiftV6LateProbe));
@@ -124,6 +137,7 @@ sift_v6_late_probe_open(const List *items, EState *estate, const SiftV6RecFn *re
 
 	lp->rec = rec;
 	lp->member = ExecInitExtraTupleSlot(estate, rec->desc, &TTSOpsVirtual);
+	lp->where = where != NIL ? ExecPrepareQual(unconstify(List *, where), estate) : NULL;
 	lp->nitems = list_length(items);
 	lp->item = palloc0(Max(lp->nitems, 1) * sizeof(LateItem));
 	foreach_node(List, it, items)
@@ -174,4 +188,39 @@ sift_v6_late_probe_check(SiftV6LateProbe *lp, ExprContext *econtext, uint32 k, E
 		for (int a = 0; a < li->nargs; a++)
 			(void) ExecEvalExprSwitchContext(li->args[a], econtext, &isnull);
 	}
+}
+
+uint64 *
+sift_v6_late_keep(SiftV6LateProbe *lp, SiftV6ElemEval *ee, SiftV6RecFn *rec, ExprContext *econtext, MemoryContext cx, SiftVec *ev, uint32 nel, ErrorData ***late)
+{
+	const bool	where = lp != NULL && lp->where != NULL;
+	uint64	   *keep = NULL;
+
+	*late = rec != NULL ? palloc0_array(ErrorData *, Max(nel, 1)) : NULL;
+	if (where)
+		sift_v6_recfn_values(rec, NULL, cx, ev, nel, *late);
+	if (ee != NULL && nel > 0)
+	{
+		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));
+		sift_v6_elem_eval(ee, ev, 0, nel, NULL, keep);
+	}
+	if (!where)
+	{
+		if (rec != NULL)
+			sift_v6_recfn_values(rec, keep, cx, ev, nel, *late);
+		return keep;
+	}
+	for (uint32 k = 0; k < nel; k++)
+		if ((*late)[k] != NULL)
+		{
+			econtext->ecxt_innertuple = member_slot(lp, k);
+			if (ExecQual(lp->where, econtext))
+				keep[k >> 6] |= UINT64CONST(1) << (k & 63);
+			else
+			{
+				keep[k >> 6] &= ~(UINT64CONST(1) << (k & 63));
+				(*late)[k] = NULL;
+			}
+		}
+	return keep;
 }

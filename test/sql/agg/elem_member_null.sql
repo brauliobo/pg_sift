@@ -51,6 +51,10 @@ CREATE INDEX ed2_col ON ed2 USING sift_col (id, doc) WITH (paths = 'doc.items[]{
 VACUUM (FREEZE, ANALYZE) ed2;
 SELECT * FROM check_query('dirty, not null', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NOT NULL $q$);
 SELECT * FROM check_query('dirty, count', $q$ SELECT count(p ->> 'score') FROM ed2, jsonb_array_elements(doc -> 'items') p $q$);
+-- a cast member in WHERE: the member that cannot be cast raises when the quals reach its cast, and is kept when an arm before it passes
+SELECT * FROM check_query('dirty, comparison', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE (p ->> 'score')::float8 > 5 $q$);
+SELECT * FROM check_query('dirty, or', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NULL OR (p ->> 'score')::float8 > 5 $q$);
+SELECT * FROM check_query('dirty, arm before', $q$ SELECT count(*) FROM ed2, jsonb_array_elements(doc -> 'items') p WHERE p ->> 'score' IS NOT NULL OR (p ->> 'score')::float8 > 5 $q$);
 
 DROP FUNCTION check_query(text, text), runs_in_scan(text), outcome(text, bool), pushed, runq;
 DROP TABLE ed, ed2;
