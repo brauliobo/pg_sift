@@ -28,6 +28,7 @@
 #include "agg/sip_scan.h"
 #include "agg/unnest/jsonb.h"
 #include "agg/vexpr.h"
+#include "core/store/ops.h"
 
 static const SiftCardStatsView *
 index_view(const IndexOptInfo *ix)
@@ -151,13 +152,24 @@ sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att
 	return share;
 }
 
-/* the share of the granules of the index the quals leave: what the zones of its sampled granules say of the quals the estimator describes, Yao's for the others */
+/* the attribute of the table the parts of the index are sorted by first (0: none) */
+static AttrNumber
+lead_heap_att(const IndexOptInfo *ix)
+{
+	const SiftStoreOps *ops = ix != NULL ? sift_store_ops_for_oid(ix->indexoid, false) : NULL;
+	const int	lead = ops != NULL && ops->order != NULL ? ops->order->lead_att(ix->indexoid, false) : 0;
+
+	return lead > 0 && lead <= ix->ncolumns ? ix->indexkeys[lead - 1] : 0;
+}
+
+/* the share of the granules of the index the quals leave: what the zones of its sampled granules say of the quals the estimator describes, the share of the rows for the others on the
+ * sorted lead key lead (a parameter of a generic plan; 0: none), Yao's for the rest */
 static double
-f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, double granules)
+f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, double granules, AttrNumber lead)
 {
 	List	   *rest;
 	const double zones = sift_v6_card_prune(root, rel, ix, view, &rest);
-	const double share = (zones < 0 ? 1.0 : zones) * sift_v6_clause_prune(root, rest, 0);
+	const double share = (zones < 0 ? 1.0 : zones) * sift_v6_clause_prune(root, rest, lead);
 
 	return Min(Max(share, 1.0 / granules), 1.0);
 }
@@ -331,7 +343,7 @@ typedef struct ScanBytes
 } ScanBytes;
 
 static void
-scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes *b)
+scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, AttrNumber lead, ScanBytes *b)
 {
 	b->view = index_view(ix);
 	b->table_rows = b->view != NULL ? (double) Max(b->view->total_live_rows, 1) : Max(rel->tuples, 1.0);
@@ -339,7 +351,7 @@ scan_bytes(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, ScanBytes
 	b->io_col_row = b->view != NULL ? Min((double) b->view->total_bytes / (Max(ix->ncolumns, 1) * b->table_rows), SIFT_WORD_BYTES) : SIFT_WORD_BYTES;
 	b->pages = Max((double) (ix != NULL ? ix->pages : rel->pages), 1.0);
 	b->surv = Min(Max(rel->rows, 1.0), b->table_rows);
-	b->f_prune = f_prune(root, rel, ix, b->view, b->granules);
+	b->f_prune = f_prune(root, rel, ix, b->view, b->granules, lead);
 }
 
 static SiftCostInputs
@@ -469,7 +481,7 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 			   *keys = spec_keys(spec);
 	const double *keep;
 
-	scan_bytes(root, rel, ix, &b);
+	scan_bytes(root, rel, ix, lead_heap_att(ix), &b);
 	keep = sift_v6_card_undecided(root, rel, ix, b.view);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
 	b.filter_row = filter_bytes(b.view, filter, read, ix, true, rel, keys, false, SIFT_WORD_BYTES, keep) + leaves_bytes(b.view, filter_leaves, false, SIFT_WORD_BYTES);
@@ -507,7 +519,7 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 		pull_varattnos((Node *) ri->clause, rel->relid, &filter);
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &measure);
 	read = key > 0 ? bms_add_member(bms_copy(measure), key - FirstLowInvalidHeapAttributeNumber) : measure;
-	scan_bytes(root, rel, ix, &b);
+	scan_bytes(root, rel, ix, 0, &b);
 	keep = sift_v6_card_undecided(root, rel, ix, b.view);
 	b.filter_row = filter_bytes(b.view, filter, read, ix, false, rel, filter, false, SIFT_WORD_BYTES, keep);
 	b.measure_row = cols_bytes(b.view, measure, ix, false, rel, measure, false, SIFT_WORD_BYTES);
