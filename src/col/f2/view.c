@@ -13,6 +13,7 @@ sift_f2_decode_payloads(const SiftGranuleView *v, int c, ColView *cv)
 	const int	n = sift_granule_chunk_len(v, c);
 	const char **xp = NULL;
 	uint32	   *xl = NULL;
+	SiftExcReader er = {0};
 
 	for (int r = 0; r < n; r++)
 		if (cv->isnull[r] && cv->tag[r] >= SIFT_COLTAG_STRING && cv->tag[r] <= SIFT_COLTAG_ARRAY)
@@ -22,8 +23,9 @@ sift_f2_decode_payloads(const SiftGranuleView *v, int c, ColView *cv)
 				xp = palloc0(n * sizeof(char *));
 				xl = palloc0(n * sizeof(uint32));
 			}
-			xp[r] = sift_granule_exc_payload(v, c, r, &xl[r]);
+			xp[r] = sift_granule_exc_payload_in(v, c, r, &er, &xl[r]);
 		}
+	sift_exc_reader_close(&er);
 	cv->xpay = xp;
 	cv->xplen = xl;
 }

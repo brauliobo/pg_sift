@@ -342,10 +342,9 @@ exc_payload_stored(const SiftGranuleView *v, const SiftChunkRef *ref, int row, u
 }
 
 const char *
-sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len)
+sift_granule_exc_payload_in(const SiftGranuleView *v, int col, int i, SiftExcReader *er, uint32 *len)
 {
 	const SiftChunkRef *ref;
-	SiftExcReader er;
 	const char *p;
 
 	*len = 0;
@@ -355,15 +354,25 @@ sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len)
 		return NULL;
 	if (!(ref->flags & (SIFT_CHUNK_COMPRESSED | SIFT_CHUNK_ELEMS)))
 		return exc_payload_stored(v, ref, i, len);
-	sift_exc_reader_open(v, col, &er);
-	p = sift_exc_reader_at(&er, i, len);
-	if (p != NULL && (er.chunk.owned & SIFT_CHUNK_OWN_RAW))
+	if (!er->open)
+		sift_exc_reader_open(v, col, er);
+	p = sift_exc_reader_at(er, i, len);
+	if (p != NULL && (er->chunk.owned & SIFT_CHUNK_OWN_RAW))
 	{
 		char	   *copy = sift_alloc(*len);
 
 		memcpy(copy, p, *len);
 		p = copy;
 	}
+	return p;
+}
+
+const char *
+sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len)
+{
+	SiftExcReader er = {0};
+	const char *p = sift_granule_exc_payload_in(v, col, i, &er, len);
+
 	sift_exc_reader_close(&er);
 	return p;
 }

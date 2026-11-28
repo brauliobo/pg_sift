@@ -366,8 +366,6 @@ extern uint16 sift_part_read_nonnull_rows(Relation rel, const SiftPart *part, co
 /* The values a chunk holds: the rows of the granule, or the elements of its arrays for the column of an element */
 extern int	sift_granule_chunk_len(const SiftGranuleView *v, int col);
 
-/* The payload of the exception of value i of a column (a pointer into the record, *len bytes); NULL when the value is no exception or kept none */
-extern const char *sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len);
 
 /*
  * Rows [row_off, row_off + nrows) (nrows <= SIFT_VEC_LEN) of a column decoded straight into dst->data (SIFT_VEC_ALIGN aligned, SIFT_VEC_PAD bytes past the last element, room for the type
@@ -448,6 +446,11 @@ extern const char *sift_exc_reader_at(SiftExcReader *er, uint32 row, uint32 *len
 /* The SIFT_COLTAG_* of the row: 0 for a row that is no exception */
 extern uint8 sift_exc_reader_tag(SiftExcReader *er, uint32 row);
 extern void sift_exc_reader_close(SiftExcReader *er);
+
+/* The payload of the exception of value i of a column (*len bytes, valid as long as the view); NULL when the value is no exception or kept none */
+extern const char *sift_granule_exc_payload(const SiftGranuleView *v, int col, int i, uint32 *len);
+/* The same for values of the column in ascending order: the chunk is decompressed once, into er (zeroed before the first value, closed with sift_exc_reader_close after the last) */
+extern const char *sift_granule_exc_payload_in(const SiftGranuleView *v, int col, int i, SiftExcReader *er, uint32 *len);
 
 /* What the strings of a chunk were decoded into, to free with the cursor that holds them */
 typedef struct SiftStrOwn
