@@ -284,7 +284,7 @@ ak6_sum_gid_f64_fast_avx512(double *acc, const uint32 *gid, const double *v, con
 			 ({
 				 const __m512d s = _mm512_add_pd(_mm512_i32gather_pd(g, acc, 8), _mm512_castsi512_pd(ld64x8((const int64 *) v, sel, i)));
 
-				 _mm512_i32scatter_pd(acc, g, _mm512_mask_mov_pd(s, _mm512_cmp_pd_mask(s, s, _CMP_UNORD_Q), _mm512_castsi512_pd(SET64(AK6_F8_NAN_BITS))), 8);
+				 _mm512_i32scatter_pd(acc, g, f8norm8(s), 8);
 			 }),
 			 acc[gid[r]] = ak6_add_f64(acc[gid[r]], v[r]));
 }
@@ -302,15 +302,21 @@ ak6_minmax_gid_i64_avx512(int64 *mn, int64 *mx, const uint32 *gid, const int64 *
 			 ak6_upd_minmax_i64(mn, mx, gid[r], v[r]));
 }
 
+/* ak6_upd_minmax_f64 on eight rows of distinct groups: by compares, so that a zero extreme keeps the sign of the first zero of its group */
 X5 void
 ak6_minmax_gid_f64_avx512(double *mn, double *mx, const uint32 *gid, const double *v, const uint16 *sel, uint16 n)
 {
 	GID_ROWS(gid, sel, n,
 			 ({
-				 const __m512i x = f8key8(_mm512_castsi512_pd(ld64x8((const int64 *) v, sel, i)));
+				 const __m512d x = f8norm8(_mm512_castsi512_pd(ld64x8((const int64 *) v, sel, i))),
+							 a = _mm512_i32gather_pd(g, mn, 8),
+							 b = _mm512_i32gather_pd(g, mx, 8);
+				 const __mmask8 xnan = _mm512_cmp_pd_mask(x, x, _CMP_UNORD_Q),
+							 lt = _mm512_cmp_pd_mask(x, a, _CMP_LT_OQ) | (_mm512_cmp_pd_mask(a, a, _CMP_UNORD_Q) & (__mmask8) ~xnan),
+							 gt = _mm512_cmp_pd_mask(x, b, _CMP_GT_OQ) | (xnan & _mm512_cmp_pd_mask(b, b, _CMP_ORD_Q));
 
-				 _mm512_i32scatter_pd(mn, g, f8unkey8(_mm512_min_epi64(f8key8(_mm512_i32gather_pd(g, mn, 8)), x)), 8);
-				 _mm512_i32scatter_pd(mx, g, f8unkey8(_mm512_max_epi64(f8key8(_mm512_i32gather_pd(g, mx, 8)), x)), 8);
+				 _mm512_i32scatter_pd(mn, g, f8norm8(_mm512_mask_mov_pd(a, lt, x)), 8);
+				 _mm512_i32scatter_pd(mx, g, f8norm8(_mm512_mask_mov_pd(b, gt, x)), 8);
 			 }),
 			 ak6_upd_minmax_f64(mn, mx, gid[r], v[r]));
 }

@@ -108,10 +108,11 @@ f8key8(__m512d x)
 	return _mm512_xor_si512(b, _mm512_and_si512(_mm512_srai_epi64(b, 63), SET64(AK6_F8_FLIP)));
 }
 
+/* Eight doubles with every NaN the quiet NaN (ak6_f8_norm) */
 K5 __m512d
-f8unkey8(__m512i k)
+f8norm8(__m512d x)
 {
-	return _mm512_castsi512_pd(_mm512_xor_si512(k, _mm512_and_si512(_mm512_srai_epi64(k, 63), SET64(AK6_F8_FLIP))));
+	return _mm512_mask_mov_pd(x, _mm512_cmp_pd_mask(x, x, _CMP_UNORD_Q), _mm512_castsi512_pd(SET64(AK6_F8_NAN_BITS)));
 }
 
 /* The pairs (low, high) of 128-bit values of a and b: the lanes of both halves of a pair where a < b (high signed, then low unsigned) */
