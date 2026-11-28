@@ -684,7 +684,7 @@ table	bench_list_elements	scan	0.12	0.49
 table	bench_member_jsonb_group	gap:S113-08	-	-
 table	bench_null_count_zone	scan	0.25	1.0
 table	bench_partitioned_range_agg	scan	0.26	1.0
-table	bench_period_unnest	scan	0.093	0.37
+table	bench_period_unnest	scan	4.3	17
 table	bench_presence_not_null	gap:S113-10	-	-
 table	bench_star_snowflake_join	scan	0.24	0.94
 table	bench_subscript_group	gap:S113-08	-	-
@@ -1019,7 +1019,7 @@ tabletuned	bench_list_elements	scan	0.070	0.28
 tabletuned	bench_member_jsonb_group	gap:S113-08	-	-
 tabletuned	bench_null_count_zone	scan	0.091	0.36
 tabletuned	bench_partitioned_range_agg	scan	0.019	0.076
-tabletuned	bench_period_unnest	gap:S113-05	-	-
+tabletuned	bench_period_unnest	scan	0.84	3.3
 tabletuned	bench_presence_not_null	gap:S113-10	-	-
 tabletuned	bench_star_snowflake_join	scan	0.012	0.048
 tabletuned	bench_subscript_group	gap:S113-08	-	-
@@ -1091,7 +1091,7 @@ tabletuned	lag_of_months	scan	0.022	0.087
 tabletuned	lateral_dim_limit_one	scan	0.13	0.52
 tabletuned	lateral_first_fact_per_parent	scan	0.25	0.99
 tabletuned	lateral_latest_fact	either	5.7	23
-tabletuned	lateral_recordset	gap:S113-12	-	-
+tabletuned	lateral_recordset	scan	0.13	0.51
 tabletuned	lateral_series	gap:S113-16	-	-
 tabletuned	left_cross_dims	scan	0.27	1.1
 tabletuned	left_join_active	scan	0.026	0.10
@@ -1338,7 +1338,7 @@ tabletuned@250000	two_distincts	either	-	-
 tabletuned@250000	two_keys_month	either	-	-
 tabletuned@250000	two_keys_parent_kind	either	-	-
 tabletuned@250000	two_level_join_outer	either	2.8	11
-tuned	any_array_subselect	scan	0.065	0.26
+tuned	any_array_subselect	scan	0.013	0.052
 tuned	arms_filter	scan	0.048	0.19
 tuned	arms_per_parent_metrics	gap:S113-15	-	-
 tuned	arms_scalar_subselects	scan	0.043	0.17
