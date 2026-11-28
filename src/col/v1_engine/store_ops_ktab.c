@@ -1,5 +1,5 @@
 /*
- * col/v1_engine/store_ops_ktab.c - SiftAggV6 answering whole segments of a Format 1 index from their key tables (col/v1/ktab.h, option key_table).
+ * col/v1_engine/store_ops_ktab.c - SiftAggV6 answering whole segments of a Format 1 index or sift_table from their key tables (col/v1/ktab.h, option key_table).
  *
  * The key table of a leaf is its histogram over every row of the segment. A statement the cube folds from the groups of that leaf (the key, the tests and the FILTERs all of it) takes the
  * table of a segment every unit of which is exact, once, at the first unit of it the source offers; its other units add nothing. The units of the other segments go to the cube.

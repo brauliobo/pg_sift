@@ -101,7 +101,8 @@ extern bool sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef
 /* The rollup of the rows of a stored unit, the leaves of need translated as for sift_v1_unit_hist; rdict holds the dictionaries of its string dims */
 extern bool sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict,
 								SiftSrcRollup *r);
-extern bool sift_v1_seg_hist(const SiftColUnit *unit, int col, SiftSrcHist *h);
+extern bool sift_v1_seg_hist(const SiftColUnit *unit, int col, const int *leaf_of_col, SiftSrcHist *h);
+/* The histogram of col over every row of the stored segment of the unit, from its key table, the measures translated by leaf_of_col (NULL: the same); false: none, or a unit of it is not exact */
 extern bool sift_v1_unit_presence(const SiftColUnit *unit, int col, MemoryContext mcxt, SiftSrcPresence *p);
 
 /* The histograms a spec writes, as the planner sees them */

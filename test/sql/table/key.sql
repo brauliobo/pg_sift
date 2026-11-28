@@ -142,7 +142,7 @@ UPDATE tk_b SET grp_id = 20 + id % 3, amt = 1 WHERE id % 1000 = 5;
 DELETE FROM tk WHERE id % 7 = 3;
 DELETE FROM tk_b WHERE id % 7 = 3;
 SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
-SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) > 1000 AS dirty_segments_scan;
+SELECT (SELECT scanned = units FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) AS dirty_segments_scan;
 -- the deletes and the updates of the open transaction, then rolled back
 BEGIN;
 DELETE FROM tk WHERE id % 5 = 1;

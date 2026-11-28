@@ -168,9 +168,9 @@ sift_v1_unit_presence(const SiftColUnit *unit, int col, MemoryContext mcxt, Sift
 }
 
 bool
-sift_v1_seg_hist(const SiftColUnit *unit, int col, SiftSrcHist *h)
+sift_v1_seg_hist(const SiftColUnit *unit, int col, const int *leaf_of_col, SiftSrcHist *h)
 {
 	const SiftCHistDim *d = sift_col_unit_seg_ktab(unit, col);
 
-	return d != NULL && hist_of(d, NULL, h);
+	return d != NULL && hist_of(d, leaf_of_col, h);
 }

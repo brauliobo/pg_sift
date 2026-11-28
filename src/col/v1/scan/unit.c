@@ -548,13 +548,31 @@ sift_col_unit_exact(const SiftColUnit *unit)
  * segment exact (every page all-visible by the page masks of its summary, then the directory current, then no dead row or exception), as the pre-aggregates of a unit want. false: the
  * segment is read.
  */
+/* Every superblock of a sift_table segment is all-visible: a table's segment has no summary of page masks to test */
+static bool
+table_allvisible(SiftColSource *src, SiftColSegment *seg)
+{
+	uint64		av[SIFT_PAGEMASK_WORDS];
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		src->visibility.sb_mask(src->visibility.arg, sift_cseg_unit_sb(seg, u), av);
+		for (int w = 0; w < SIFT_PAGEMASK_WORDS; w++)
+			if (av[w] != ~UINT64CONST(0))
+				return false;
+	}
+	return true;
+}
+
 static bool
 seg_exact(SiftColSource *src, SiftColSegment *seg)
 {
 	uint64		pm[SIFT_PAGEMASK_WORDS];
 
-	if (src->sx_on || (src->flags & COLO_TABLE))
+	if (src->sx_on)
 		return false;
+	if (src->flags & COLO_TABLE)
+		return table_allvisible(src, seg) && !sift_cseg_dirty_any(seg, 0, seg->nsb);
 	for (uint32 u = 0; u < seg->nsb; u++)
 		if (!sift_cseg_unit_pagemask(seg, u, pm) || (sift_cseg_keyed(&seg->entry) ? !col_range_allvisible(src, seg, (uint32) pm[0], (uint32) (pm[0] >> 32)) :
 													  !col_sb_covers(src, seg, sift_cseg_unit_sb(seg, u), NULL, pm)))
@@ -567,7 +585,7 @@ sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const Si
 {
 	ColUnit    *cu = unit->priv;
 
-	return cu->seg != NULL && sift_cseg_dict_counted(cu->seg, col) && seg_exact(cu->src, cu->seg) && sift_cseg_dict_count(cu->seg, col, op, c, rows);
+	return cu->seg != NULL && !(cu->src->flags & COLO_TABLE) && sift_cseg_dict_counted(cu->seg, col) && seg_exact(cu->src, cu->seg) && sift_cseg_dict_count(cu->seg, col, op, c, rows);
 }
 
 /* The key table of leaf col of the stored segment of the unit (col/v1/ktab.h) when every unit of the segment is exact, as for sift_col_unit_seg_count; NULL: the segment is read */

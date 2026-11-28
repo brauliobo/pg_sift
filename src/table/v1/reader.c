@@ -12,6 +12,7 @@
 
 #include "col/am.h"
 #include "col/col.h"
+#include "col/v1/pagg.h"
 #include "col/v1/seg/seg.h"
 #include "col/v1/reader.h"
 #include "core/memtrack.h"
@@ -499,6 +500,24 @@ tbl_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence
 	return part->col[leaf] >= 0 && sift_v1_unit_presence(&part->unit, part->col[leaf], unit_cx(impl), p);
 }
 
+static const void *
+tbl_unit_seg(void *impl, const SiftSrcUnit *unit)
+{
+	const TblPart *p = unit->priv;
+	SiftColSegment *seg;
+	uint32		u;
+
+	return sift_col_unit_stored(&p->unit, &seg, &u) ? seg : NULL;
+}
+
+static bool
+tbl_seg_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	const TblPart *p = unit->priv;
+
+	return p->col[dim] >= 0 && sift_v1_seg_hist(&p->unit, p->col[dim], p->leaf_of_col, h);
+}
+
 const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
@@ -524,5 +543,7 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
 	.unit_rollup = tbl_unit_rollup,
-	.unit_presence = tbl_unit_presence
+	.unit_presence = tbl_unit_presence,
+	.unit_seg = tbl_unit_seg,
+	.seg_hist = tbl_seg_hist
 };

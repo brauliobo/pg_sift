@@ -229,7 +229,7 @@ SELECT n, shape, same FROM tk_check('tk', 'tk_b') WHERE NOT same;
 ---+-------+------
 (0 rows)
 
-SELECT (SELECT scanned FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) > 1000 AS dirty_segments_scan;
+SELECT (SELECT scanned = units FROM tk_units('SELECT count(*), sum(amt) FROM tk WHERE grp_id = 17')) AS dirty_segments_scan;
  dirty_segments_scan 
 ---------------------
  t

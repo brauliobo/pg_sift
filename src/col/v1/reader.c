@@ -400,7 +400,7 @@ idx_seg_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
 {
 	SiftV1Idx  *r = impl;
 
-	return !r->sel.compact && sift_v1_seg_hist(&r->unit, dim, h);
+	return !r->sel.compact && sift_v1_seg_hist(&r->unit, dim, NULL, h);
 }
 
 const SiftV1ReaderOps sift_v1_idx_reader = {
