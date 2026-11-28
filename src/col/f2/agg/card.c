@@ -31,6 +31,7 @@ typedef struct CardPart
 	SiftGranuleDesc *dir;
 	SiftColStats cs;
 	bool		has_cs;
+	const int16 *phys;			/* the column of the part that holds each leaf (sift_f2_store_part_phys), NULL: the part's columns are the leaves */
 	uint32		ng;
 	int			seq;			/* the place of the part in the manifest */
 } CardPart;
@@ -84,7 +85,7 @@ heap_down(CardPart *out, int n, int i)
 }
 
 static int
-choose_parts(Relation index, const SiftPlanSnapshot *plan, CardPart *out, bool *all, uint64 *read_rows)
+choose_parts(Relation index, const SiftF2Store *store, const SiftPlanSnapshot *plan, CardPart *out, bool *all, uint64 *read_rows)
 {
 	int			n = 0,
 				total = 0;
@@ -117,6 +118,7 @@ choose_parts(Relation index, const SiftPlanSnapshot *plan, CardPart *out, bool *
 		p->part = sift_part_open_desc(index, p->d, (uint32) p->part_id);
 		p->ng = p->part->hdr.ngranules;
 		p->dir = sift_part_granule_dir(index, p->part);
+		p->phys = store != NULL ? sift_f2_store_part_phys(store, store->host->build_col_map(store, index, p->part, CurrentMemoryContext), CurrentMemoryContext) : NULL;
 		*read_rows += p->d->nrows;
 	}
 	for (int k = 0; k < n; k++)
@@ -129,16 +131,24 @@ choose_parts(Relation index, const SiftPlanSnapshot *plan, CardPart *out, bool *
 	return n;
 }
 
+/* The column of the part that holds the leaf, -1 when the part was written before the leaf was added */
+static int
+part_col(const CardPart *p, int leaf)
+{
+	return p->phys != NULL ? p->phys[leaf] : leaf;
+}
+
 static SiftZone *
 part_zones(Relation index, const CardPart *p, int leaf)
 {
 	const SiftSecDirEntry *zs = sift_part_section(p->part, SEC_ZONES);
+	const int	col = part_col(p, leaf);
 	SiftZone   *z;
 
-	if (zs == NULL || zs->len != (uint64) p->part->hdr.ncols * p->ng * sizeof(SiftZone))
+	if (col < 0 || zs == NULL || zs->len != (uint64) p->part->hdr.ncols * p->ng * sizeof(SiftZone))
 		return NULL;
 	z = palloc(p->ng * sizeof(SiftZone));
-	sift_part_read_section_bytes(index, p->part, zs, (uint64) leaf * p->ng * sizeof(SiftZone), (uint64) p->ng * sizeof(SiftZone), z);
+	sift_part_read_section_bytes(index, p->part, zs, (uint64) col * p->ng * sizeof(SiftZone), (uint64) p->ng * sizeof(SiftZone), z);
 	return z;
 }
 
@@ -207,15 +217,16 @@ fill_ndv(SiftColCardStats *cs, const CardPart *parts, int nparts, int leaf, uint
 
 	for (int k = 0; k < nparts; k++)
 	{
+		const int	col = part_col(&parts[k], leaf);
 		SiftPartColStat st;
 
-		if (!parts[k].has_cs)
+		if (!parts[k].has_cs || col < 0)
 			return;
-		st = sift_col_stats_get(&parts[k].cs, leaf);
+		st = sift_col_stats_get(&parts[k].cs, col);
 		max_ndv = Max(max_ndv, st.est_ndv);
 		sum_ndv += st.est_ndv;
 		bytes += st.total_bytes;
-		nulls += sift_col_stats_nulls(&parts[k].cs, leaf);
+		nulls += sift_col_stats_nulls(&parts[k].cs, col);
 	}
 	cs->flags |= SIFT_CSTAT_HAS_NDV;
 	cs->ndv_est = sift_f2_ndv_union(max_ndv, sum_ndv, (double) read_rows, (double) total_rows);
@@ -304,6 +315,7 @@ typedef struct CardRel
 	int			ncols;
 	bool		timed;
 	bool		scoped;
+	const SiftF2Store *store;	/* of a sift_table, whose parts may hold fewer or other columns than its leaves; NULL for an index */
 } CardRel;
 
 static SiftCardStatsView *
@@ -316,7 +328,7 @@ build_view(Relation index, const CardRel *f, const SiftPlanSnapshot *plan)
 	CardPart	chosen[SIFT_V6_CARD_PARTS];
 	bool		all_parts;
 	uint64		read_rows;
-	const int	nchosen = choose_parts(index, plan, chosen, &all_parts, &read_rows);
+	const int	nchosen = choose_parts(index, f->store, plan, chosen, &all_parts, &read_rows);
 	uint64		granules = 0;
 	uint32		stride,
 				nsample = 0;
@@ -402,7 +414,7 @@ card_rel(Relation rel, bool is_table)
 	const SiftF2Rel *f = is_table ? NULL : sift_f2_rel(rel);
 
 	if (is_table)
-		return (CardRel) {.ncols = s->ncols,.timed = s->spec.time_cols[0] > 0};
+		return (CardRel) {.ncols = s->ncols,.timed = s->spec.time_cols[0] > 0,.store = s};
 	return (CardRel) {.ncols = f->ncols,.timed = f->spec.time_cols[0] > 0,.scoped = sift_f2_scoped(rel)};
 }
 

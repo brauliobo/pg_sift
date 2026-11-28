@@ -185,17 +185,15 @@ part_wanted(const SiftStoreScan *s, const SiftPartDesc *d, const bool dirty[SIFT
 	return true;
 }
 
-/* The column of the part that holds each leaf of the store as it is; NULL when the part has the columns of the store */
-static const int16 *
-part_phys(const SiftStorePart *p, const SiftF2ColMap *map)
+const int16 *
+sift_f2_store_part_phys(const SiftF2Store *store, const SiftF2ColMap *map, MemoryContext cx)
 {
-	const SiftStoreScan *s = p->s;
 	int16	   *phys;
 
 	if (map == NULL)
 		return NULL;
-	phys = MemoryContextAlloc(p->cx, sizeof(int16) * s->store->ncols);
-	for (int leaf = 0; leaf < s->store->ncols; leaf++)
+	phys = MemoryContextAlloc(cx, sizeof(int16) * store->ncols);
+	for (int leaf = 0; leaf < store->ncols; leaf++)
 		phys[leaf] = map->mode[leaf] == SIFT_CMAP_DIRECT ? map->phys_col[leaf] : -1;
 	return phys;
 }
@@ -221,7 +219,7 @@ part_open_pin(SiftStorePart *p)
 	p->pin = sift_f2_pin_open(s->o->rel, s->store, p->d, (uint32) p->e->part_id);
 	p->r->nspans = sift_f2_granule_spans(s->o->rel, p->pin->part, &s->f, &s->ks, &s->plan, p->r->spans);
 	p->r->g = p->r->nspans > 0 ? p->r->spans[0][0] : 0;
-	p->r->phys = s->o->gran_sink != NULL && s->vis == &table_vis ? part_phys(p, p->pin->col_map) : NULL;
+	p->r->phys = s->o->gran_sink != NULL && s->vis == &table_vis ? sift_f2_store_part_phys(s->store, p->pin->col_map, p->cx) : NULL;
 	p->started = true;
 }
 

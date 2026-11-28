@@ -220,6 +220,9 @@ extern uint32 sift_f2_rel_hash(Relation rel);
 extern void sift_f2_invalidate_now(Relation rel);
 extern bool sift_f2_inval_hits(uint32 relhash, uint32 hashvalue);
 
+/* The column of a part that holds each leaf of the store as it is (-1: the part has none), from the map of the part (host->build_col_map); NULL when the part has the columns of the store */
+extern const int16 *sift_f2_store_part_phys(const SiftF2Store *store, const struct SiftF2ColMap *map, MemoryContext cx);
+
 extern PGDLLIMPORT const SiftF2HostOps sift_col_host_ops;
 extern PGDLLIMPORT const SiftF2HostOps sift_tbl_host_ops;
 
