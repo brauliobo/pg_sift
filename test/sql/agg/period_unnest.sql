@@ -36,7 +36,7 @@ INSERT INTO q VALUES
 	(6, $$SELECT p.period, o.kind, count(*) FROM events e JOIN (VALUES ('cur', daterange(DATE '2025-06-01', DATE '2025-12-31', '[]')), ('prev', daterange(DATE '2024-06-01', DATE '2024-12-31', '[]'))) p(period, range)
 	      ON e.ts <@ p.range CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(kind text, score float8) GROUP BY 1, 2$$),
 	(7, $$SELECT p.period, count(o.kind), count(*) FROM events e JOIN periods p ON e.ts <@ p.range LEFT JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(kind text, score float8) ON true GROUP BY 1$$),
-	-- a LEFT join of the periods keeps the rows of no period: the normal plan's
+	-- a LEFT join of the periods keeps the rows of no period
 	(8, $$SELECT p.period, o.kind, count(*) FROM events e LEFT JOIN periods p ON e.ts <@ p.range CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(kind text, score float8) GROUP BY 1, 2$$);
 SELECT n, same(sql), pushed(sql) AS scan, used(sql) FROM q ORDER BY n;
 

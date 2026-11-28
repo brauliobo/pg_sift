@@ -16,6 +16,7 @@
 #include "agg/agg.h"
 #include "agg/plan/cte_read.h"
 #include "agg/plan/flat_rewrite.h"
+#include "agg/plan/lateral_union.h"
 #include "agg/plan/lineage.h"
 #include "agg/refuse.h"
 #include "agg/safety.h"
@@ -301,7 +302,7 @@ plan_query(SIFT_PLANNER_PARAMS)
 }
 
 /*
- * The statement with its unread laterals dropped and its json_build_object calls on sift.json_build_object planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c or
+ * The statement with its unread laterals dropped and its json_build_object calls on sift.json_build_object planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c, lateral_union.c or
  * of agg/scope/rewrite.c apply, the plan with the CTEs inline and the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs less
  * unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
  */
@@ -325,7 +326,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	if (parse->commandType == CMD_SELECT && sift_json_build_object_calls(parse))
 		sift_json_build_object_swap(parse);
 	cte_walker((Node *) parse, &w);
-	priced = w.found > 0 || sift_agg_flat_decorrelate(parse, false);
+	priced = w.found > 0 || sift_agg_flat_decorrelate(parse, false) || sift_agg_lateral_union(parse, false);
 	scoped = !priced && sift_agg_scope && sift_v6_scope_rewrite(parse, false);
 	priced |= scoped;
 	rows = sift_agg_having_to_where(parse, false) | sift_agg_inline_laterals(parse, false);
@@ -338,6 +339,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	sift_agg_having_to_where(alt, true);
 	sift_agg_inline_laterals(alt, true);
 	sift_agg_flat_decorrelate(alt, true);
+	sift_agg_lateral_union(alt, true);
 	if (sift_agg_scope)
 		sift_v6_scope_rewrite(alt, true);
 	plain = plan_query(SIFT_PLANNER_ARGS(parse));

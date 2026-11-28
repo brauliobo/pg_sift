@@ -1,5 +1,5 @@
--- A correlated child reads a column of another joined table that has several rows for each scanned row, or the scanned table's own column:
--- SiftAggV6 keeps the normal plan for both (explain_why: where).
+-- A correlated child reads a column of another joined table that has several rows for each scanned row, or the scanned table's own column: the fan-out of
+-- the first keeps the normal plan (explain_why: where), the one of the second is the join of its arms' numbers, which SiftAggV6 runs.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;

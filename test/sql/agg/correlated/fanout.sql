@@ -1,4 +1,4 @@
--- A function or UNION that reads a joined row fans it out: the rows are those of the normal plan, which SiftAggV6 keeps for a correlated child (explain_why: where).
+-- A function or UNION that reads a joined row fans it out: the rows are those of the normal plan. A UNION [ALL] of arms without FROM is a join of the arms' numbers, which SiftAggV6 runs.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET default_statistics_target = 10000;
@@ -43,8 +43,8 @@ SELECT * FROM check_query($q$
  SELECT e.region, label, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  CROSS JOIN LATERAL unnest(e.labels) label GROUP BY e.region, label
 $q$);
--- Stays native: the fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out), so it
--- is not computed for the rows that PostgreSQL's plan has not joined yet.
+-- The fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out): the scan computes it
+-- on the pairs every join kept, so not for the rows that PostgreSQL's plan has not joined either.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
