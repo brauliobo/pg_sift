@@ -143,7 +143,7 @@ SELECT * FROM pa_check('tp');
   3 | key text         | some | t
   4 | key date         | some | t
   5 | whole table      | some | t
-  6 | test of dim      | some | t
+  6 | test of dim      | all  | t
   7 | null group       | some | t
   8 | key in list      | some | t
   9 | zone covers some | some | t

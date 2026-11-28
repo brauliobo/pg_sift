@@ -105,15 +105,15 @@ DECLARE l text; g text := 'no agg'; v text := '0'; BEGIN
 	RETURN g || ' heap_vet=' || v;
 END $$;
 SELECT nvetted('SELECT q, count(*), sum(amt) FROM nk GROUP BY 1') AS dirty_vetted;
-                             dirty_vetted                             
-----------------------------------------------------------------------
- Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=13 heap_vet=0
+                                     dirty_vetted                                     
+--------------------------------------------------------------------------------------
+ Granules: scanned=0 pruned_zone=0 pruned_skip=0 preagg=13 preagg_delta=13 heap_vet=0
 (1 row)
 
 SELECT nvetted('SELECT sum(amt) FROM nk WHERE amt > 0') AS dirty_filter_vetted;
-                         dirty_filter_vetted                          
-----------------------------------------------------------------------
- Granules: scanned=12 pruned_zone=0 pruned_skip=0 preagg=1 heap_vet=0
+                                 dirty_filter_vetted                                 
+-------------------------------------------------------------------------------------
+ Granules: scanned=12 pruned_zone=0 pruned_skip=0 preagg=1 preagg_delta=1 heap_vet=0
 (1 row)
 
 DROP FUNCTION nvetted(text);
