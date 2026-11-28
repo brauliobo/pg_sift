@@ -46,7 +46,7 @@ SET sift.agg_force = on;
 SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1') AS forced_keeps_path;
 RESET sift.agg_force;
 
--- the key's index plans disabled: no plan to prefer
+-- the key's index plans disabled: the hybrid scan still reads the key's rows through the text index, in half the time of the scan
 SET enable_indexscan = off;
 SET enable_bitmapscan = off;
 SELECT * FROM why('SELECT kind, count(*) AS n FROM ev WHERE memo @@> ''switch'' AND parent_id = 7 AND deleted_at IS NULL GROUP BY 1 ORDER BY 1') AS key_plans_disabled;
