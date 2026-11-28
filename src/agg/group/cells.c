@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "agg/group/int.h"
+#include "agg/datum.h"
 #include "agg/group/compact.h"
 
 static uint16
@@ -14,6 +15,19 @@ identity_sel(SiftV6Group *g, uint16 n)
 	for (uint16 c = 0; c < n; c++)
 		g->sel[c] = c;
 	return n;
+}
+
+/* The keys of n cells as the table groups them: a generic key as the codes of its interner (agg/datum.h), as the keys of the rows of a batch are */
+static SiftVec *const *
+cell_keys(SiftV6Group *g, SiftVec *const *keyvec, uint16 n)
+{
+	SiftBatchSel bs = {.n_raw = n,.n_active = n,.all_active = true};
+
+	if (g->gkeys == NULL)
+		return keyvec;
+	for (uint16 r = 0; r < n; r++)
+		bs.mask[r >> 6] |= UINT64CONST(1) << (r & 63);
+	return sift_v6_genkeys_apply(g->gkeys, &bs, keyvec);
 }
 
 /* From here the groups of the set are in its group table alone: what the compact table holds moves there, and neither it nor the lock of the first groups is used again */
@@ -44,7 +58,7 @@ sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *a
 	if (set->nk > 0)
 	{
 		v6g_table_only(g, set);
-		v6g_grouped_slots(g, set, identity_sel(g, n), keyvec);
+		v6g_grouped_slots(g, set, identity_sel(g, n), cell_keys(g, keyvec, n));
 	}
 	for (uint16 c = 0; c < n; c++)
 		for (int j = 0; j < naggs; j++)
@@ -66,7 +80,7 @@ sift_v6_group_merge_dist(SiftV6Group *g, int agg, SiftVec *const *keyvec, SiftVe
 	if (set->nk > 0)
 	{
 		v6g_table_only(g, set);
-		v6g_grouped_slots(g, set, identity_sel(g, n), keyvec);
+		v6g_grouped_slots(g, set, identity_sel(g, n), cell_keys(g, keyvec, n));
 	}
 	for (uint16 r = 0; r < n; r++)
 		all[r >> 6] |= UINT64CONST(1) << (r & 63);
