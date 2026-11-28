@@ -324,10 +324,10 @@ append_in_place(SiftColDeltaDiskChain *d, BlockNumber head, BlockNumber dir_head
 	if (dir_head != InvalidBlockNumber)
 		dbuf = sift_blk_read(rel, dir_head, BUFFER_LOCK_EXCLUSIVE);
 	sift_col_delta_xlog_append(rel, buf, dbuf, &part);
+	sift_part_appended(&rel->rd_locator, part_id);
 	if (dbuf != InvalidBuffer)
 		UnlockReleaseBuffer(dbuf);
 	UnlockReleaseBuffer(buf);
-	sift_part_appended(&rel->rd_locator, part_id);
 	sift_col_delta_batch_free(&part);
 	return true;
 }
