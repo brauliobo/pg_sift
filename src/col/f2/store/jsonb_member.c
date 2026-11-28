@@ -53,6 +53,13 @@ float8_leaf(const SiftColDef *d)
 	return d->store == SIFT_COLS_F8 && d->type == SIFT_COLT_FLOAT8;
 }
 
+/* a leaf of the numbers of a path: float8, or integers */
+static bool
+number_leaf(const SiftColDef *d)
+{
+	return float8_leaf(d) || (d->store == SIFT_COLS_INT && d->type >= SIFT_COLT_INT2 && d->type <= SIFT_COLT_INT8);
+}
+
 /* the leaf of the values of the map whose member the path names (`doc.a.*` for doc -> 'a' -> 'k'), when they are float8 and the keys are text; -1: none */
 static int
 map_value_leaf(const SiftF2Store *st, int att, const List *path)
@@ -76,7 +83,7 @@ sift_f2_jsonb_member_leaf(Oid relid, int att, const List *path)
 	const int	leaf = leaf_at(st, att, path, "", true);
 
 	if (leaf >= 0)
-		return float8_leaf(&st->schema->cols[leaf]) ? leaf : -1;
+		return number_leaf(&st->schema->cols[leaf]) ? leaf : -1;
 	return map_value_leaf(st, att, path);
 }
 

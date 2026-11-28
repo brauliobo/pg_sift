@@ -557,6 +557,15 @@ member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
 	return sift_v6_doc_chain(((const CoerceViaIO *) x)->arg, path);
 }
 
+/* the leaf of a member holds what the read converts: any of its numbers from float8, integers to an integer type at least as wide */
+static bool
+member_leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
+{
+	const SiftColDef *d = &sift_v6_rel_leaves(rel)->cols[leaf];
+
+	return d->store == SIFT_COLS_F8 || (is_int_type(typid) && int_leaf_fits(d, typid));
+}
+
 bool
 sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path)
 {
@@ -568,7 +577,7 @@ sift_v6_json_map_member(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, Lis
 				leaf;
 
 	if (jsonb == NULL || jsonb->member_leaf == NULL || (doc = member_read(e, path, &typid, &jsonb_cast)) == NULL || *path == NIL || !doc_of(rel, (const Expr *) doc, &att) ||
-		(jsonb_cast && !jsonb->exact_values) || (leaf = jsonb->member_leaf(rel->reloid, att, *path)) < 0)
+		(jsonb_cast && !jsonb->exact_values) || (leaf = jsonb->member_leaf(rel->reloid, att, *path)) < 0 || !member_leaf_reads(rel, leaf, typid))
 		return false;
 	if (sift_v6_rel_leaves(rel)->cols[leaf].parent < 0 && !jsonb_cast)
 		*path = NIL;

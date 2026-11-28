@@ -71,6 +71,18 @@ FROM (VALUES ($q$SELECT id % 3 AS g, sum((doc -> 'k')::float8) AS total FROM tdo
 VACUUM tdocs;
 SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
 FROM (VALUES ($q$SELECT sum((doc -> 'k')::float8) AS total FROM tdocs$q$)) v(q);
+-- an integer path: its leaf holds the integers, the cast converts the values it keeps aside (2.5 rounds, a JSON null) as PostgreSQL's does, and raises for a string
+CREATE TABLE idocs (id int, doc jsonb);
+INSERT INTO idocs SELECT id, doc FROM docs;
+INSERT INTO idocs VALUES (-1, '{"k": 3.0}'), (-2, '{"k": 99999999999}');
+CREATE INDEX idocs_col ON idocs USING sift_col (id, doc) WITH (paths = 'doc.k int4');
+VACUUM (FREEZE, ANALYZE) idocs;
+SELECT * FROM check_query('integer path', $q$SELECT (doc -> 'k')::int AS k, count(*) AS n FROM idocs WHERE id <> -2 GROUP BY 1$q$, true);
+SELECT * FROM check_query('integer path, wider cast', $q$SELECT (doc -> 'k')::int8 AS k, count(*) AS n FROM idocs GROUP BY 1$q$, true);
+SELECT * FROM check_query('integer path, out of range', $q$SELECT (doc -> 'k')::int AS k, count(*) AS n FROM idocs GROUP BY 1$q$, true);
+INSERT INTO idocs VALUES (-3, '{"k": "7"}');
+SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
+FROM (VALUES ($q$SELECT (doc -> 'k')::int8 AS k, count(*) AS n FROM idocs WHERE id <> -2 GROUP BY 1$q$)) v(q);
 DROP FUNCTION check_query(text, text, bool, bool), outcome(text, bool), runs_in_scan(text);
-DROP TABLE docs, dim_b, late, tdocs;
+DROP TABLE docs, dim_b, late, tdocs, idocs;
 DROP EXTENSION pg_sift;

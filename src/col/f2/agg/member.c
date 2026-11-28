@@ -18,7 +18,8 @@
 typedef enum CellKind
 {
 	MC_NULL,
-	MC_FLOAT,					/* f: the number the leaf holds */
+	MC_FLOAT,					/* f: the number a float8 leaf holds */
+	MC_INT,						/* i: the integer an integer leaf holds */
 	MC_JSONB					/* pay: the jsonb of the member */
 } CellKind;
 
@@ -26,6 +27,7 @@ typedef struct Cell
 {
 	CellKind	kind;
 	double		f;
+	int64		i;
 	const char *pay;
 	uint32		plen;
 } Cell;
@@ -109,7 +111,7 @@ static Cell
 leaf_cell(const ColView *v, uint32 i)
 {
 	if (!v->isnull[i])
-		return (Cell) {.kind = MC_FLOAT,.f = v->f[i]};
+		return v->kind == SIFT_CELL_F8 ? (Cell) {.kind = MC_FLOAT,.f = v->f[i]} : (Cell) {.kind = MC_INT,.i = v->i[i]};
 	return v->xpay != NULL && v->xpay[i] != NULL ? (Cell) {.kind = MC_JSONB,.pay = v->xpay[i],.plen = v->xplen[i]} : (Cell) {.kind = MC_NULL};
 }
 
@@ -155,6 +157,12 @@ put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
 		res = sift_v6_json_float_int(c->typid, m->f, &val.value) ? SV6JX_VALUE : SV6JX_RAISES;
 	else if (m->kind == MC_JSONB)
 		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, m->pay, m->plen, s->batch_cx, &val);
+	if (m->kind == MC_INT)
+	{
+		((int64 *) c->vec.data)[i] = m->i;
+		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
+		return true;
+	}
 	if (res != SV6JX_VALUE)
 		return res != SV6JX_RAISES;
 	if (c->typid == FLOAT8OID)
