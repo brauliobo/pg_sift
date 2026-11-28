@@ -1,7 +1,10 @@
 /*
- * col/v1_engine/store_ops_preagg_ext.c - the sum of a line of a measure and the distinct values of a histogram dimension of a Format 1 unit (col/v1_engine/store_ops_preagg_ext.h).
+ * col/v1_engine/store_ops_preagg_ext.c - the sum of a line of a measure and the distinct values of a histogram dimension or of a key presence of a Format 1 unit
+ * (col/v1_engine/store_ops_preagg_ext.h).
  */
 #include "postgres.h"
+
+#include "port/pg_bitutils.h"
 
 #include "agg/vexpr/str.h"
 #include "col/v1_engine/store_ops_preagg_ext.h"
@@ -48,6 +51,36 @@ sift_v1_hist_merge_dist(SiftV6Group *g, int agg, const SiftSrcHist *h, bool text
 			flush(g, agg, &v, n);
 			n = 0;
 		}
+	}
+	if (n > 0)
+		flush(g, agg, &v, n);
+}
+
+static uint16
+put_key(SiftV6Group *g, int agg, SiftVec *v, uint16 n, int64 key)
+{
+	((int64 *) v->data)[n++] = key;
+	if (n < SIFT_VEC_LEN)
+		return n;
+	flush(g, agg, v, n);
+	return 0;
+}
+
+void
+sift_v1_presence_merge_dist(SiftV6Group *g, int agg, const SiftSrcPresence *p, int64 *buf)
+{
+	SiftVec		v = {.data = buf,.dense = true,.all_valid = true,.type = SVEC_I64};
+	uint16		n = 0;
+
+	for (uint32 i = 0; i < p->nkeys; i++)
+		n = put_key(g, agg, &v, n, p->keys[i]);
+	for (uint64 w = 0; p->nkeys == 0 && w < p->nwords; w++)
+	{
+		uint64		bits;
+
+		memcpy(&bits, p->words + w * sizeof(uint64), sizeof(bits));
+		for (; bits != 0; bits &= bits - 1)
+			n = put_key(g, agg, &v, n, (p->wbase + (int64) w) * 64 + pg_rightmost_one_pos64(bits));
 	}
 	if (n > 0)
 		flush(g, agg, &v, n);

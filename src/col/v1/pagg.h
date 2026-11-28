@@ -68,6 +68,9 @@ extern bool sift_col_unit_seg_range(const SiftColUnit *unit, int col, const Sift
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
 
+/* The key presence of leaf col (col/v1/setsum.h: a list or a bitmap of its keys) of a unit that is exact, not net of dead rows, not a group of units nor answering for its exceptions, and has no overflow value of the leaf; false when it has none */
+extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p);
+
 /*
  * The histogram of dim in the unit: GROUP BY dim -> count and, for the measures the unit stored (SiftCHistDim.meas), (non-NULL count, sum).
  * Arrays palloc'd in mcxt. A STR dim's keys are codes of dict (set; NULL for the other dims), the segment's dictionary, valid for the life of the

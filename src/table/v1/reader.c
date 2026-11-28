@@ -461,6 +461,16 @@ tbl_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 	return p->col[leaf] >= 0 && sift_v1_unit_agg(&p->unit, p->col[leaf], &p->schema->cols[p->col[leaf]], agg);
 }
 
+/* the memory of the last histogram or key presence of a unit, emptied for the next */
+static MemoryContext
+unit_cx(SiftV1Tbl *t)
+{
+	if (t->hcx == NULL)
+		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
+	MemoryContextReset(t->hcx);
+	return t->hcx;
+}
+
 static bool
 tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
@@ -469,12 +479,7 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 	const int	leaf = dim % SIFT_SRC_CAL,
 				col = p->col[leaf];
 
-	if (col < 0)
-		return false;
-	if (t->hcx == NULL)
-		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
-	MemoryContextReset(t->hcx);
-	return sift_v1_unit_hist(&p->unit, dim - leaf + col, &p->schema->cols[col], t->hcx, p->col, p->leaf_of_col, need, &t->hdict, h);
+	return col >= 0 && sift_v1_unit_hist(&p->unit, dim - leaf + col, &p->schema->cols[col], unit_cx(t), p->col, p->leaf_of_col, need, &t->hdict, h);
 }
 
 static bool
@@ -483,10 +488,15 @@ tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *ne
 	SiftV1Tbl  *t = impl;
 	const TblPart *p = unit->priv;
 
-	if (t->hcx == NULL)
-		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
-	MemoryContextReset(t->hcx);
-	return sift_v1_unit_rollup(&p->unit, t->hcx, p->col, p->leaf_of_col, need, t->rdict, r);
+	return sift_v1_unit_rollup(&p->unit, unit_cx(t), p->col, p->leaf_of_col, need, t->rdict, r);
+}
+
+static bool
+tbl_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	const TblPart *part = unit->priv;
+
+	return part->col[leaf] >= 0 && sift_v1_unit_presence(&part->unit, part->col[leaf], unit_cx(impl), p);
 }
 
 const SiftV1ReaderOps sift_v1_tbl_reader = {
@@ -513,5 +523,6 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.unit_rows = tbl_unit_rows,
 	.unit_agg = tbl_unit_agg,
 	.unit_hist = tbl_unit_hist,
-	.unit_rollup = tbl_unit_rollup
+	.unit_rollup = tbl_unit_rollup,
+	.unit_presence = tbl_unit_presence
 };

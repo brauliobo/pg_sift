@@ -316,15 +316,22 @@ idx_unit_agg(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg)
 	return sift_v1_unit_agg(&r->unit, leaf, sift_col_def(r->cs, leaf), agg);
 }
 
+/* the memory of the last histogram or key presence of a unit, emptied for the next */
+static MemoryContext
+unit_cx(SiftV1Idx *r)
+{
+	if (r->hcx == NULL)
+		r->hcx = sift_mem_allocset_create(r->cxt, "sift v1 histogram");
+	MemoryContextReset(r->hcx);
+	return r->hcx;
+}
+
 static bool
 idx_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h)
 {
 	SiftV1Idx  *r = impl;
 
-	if (r->hcx == NULL)
-		r->hcx = sift_mem_allocset_create(r->cxt, "sift v1 histogram");
-	MemoryContextReset(r->hcx);
-	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim % SIFT_SRC_CAL), r->hcx, NULL, NULL, need, &r->hdict, h);
+	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim % SIFT_SRC_CAL), unit_cx(r), NULL, NULL, need, &r->hdict, h);
 }
 
 static bool
@@ -332,10 +339,7 @@ idx_unit_rollup(void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *ne
 {
 	SiftV1Idx  *r = impl;
 
-	if (r->hcx == NULL)
-		r->hcx = sift_mem_allocset_create(r->cxt, "sift v1 histogram");
-	MemoryContextReset(r->hcx);
-	return sift_v1_unit_rollup(&r->unit, r->hcx, NULL, NULL, need, r->rdict, out);
+	return sift_v1_unit_rollup(&r->unit, unit_cx(r), NULL, NULL, need, r->rdict, out);
 }
 
 static void
@@ -356,6 +360,14 @@ static bool
 idx_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
 {
 	return sift_col_unit_except(&((SiftV1Idx *) impl)->unit, leaf);
+}
+
+static bool
+idx_unit_presence(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcPresence *p)
+{
+	SiftV1Idx  *r = impl;
+
+	return sift_v1_unit_presence(&r->unit, leaf, unit_cx(r), p);
 }
 
 static const void *
@@ -409,6 +421,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.unit_agg = idx_unit_agg,
 	.unit_hist = idx_unit_hist,
 	.unit_rollup = idx_unit_rollup,
+	.unit_presence = idx_unit_presence,
 	.unit_seg = idx_unit_seg,
 	.seg_count = idx_seg_count,
 	.seg_range_count = idx_seg_range_count,

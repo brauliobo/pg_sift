@@ -93,10 +93,12 @@ BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		scanned := coalesce(substring(l from 'Rows: (\d+) scanned')::int, scanned);
+		IF l ~ '^\s*Granules: ' THEN
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := substring(l from 'scanned=(\d+)')::int + pre;
+		END IF;
 	END LOOP;
+	scanned := sift_helpers.rows_decoded(q);
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; scanned := NULL;
 END $$;
@@ -141,7 +143,7 @@ BEGIN
 END $$;
 DROP INDEX kp_off;
 CREATE INDEX kp_b_off ON kp_b USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_columns = 'off', write_buffer_limit = 4096);
--- from_pre: the scan read fewer rows than the twin's, because units came from their bitmaps
+-- from_pre: the scan read fewer rows than the twin's, because units came from their bitmaps; a leaf of the cube (g, sp2) the twin answers from its histograms too
 SELECT n, shape, same, from_pre, twin_scans FROM kp_check('kp', 'kp_b');
  n  |           shape           | same | from_pre | twin_scans 
 ----+---------------------------+------+----------+------------
@@ -164,9 +166,9 @@ SELECT n, shape, same, from_pre, twin_scans FROM kp_check('kp', 'kp_b');
  17 | sparse values (no bitmap) | t    | f        | t
  18 | also the plain sums       | t    | t        | t
  19 | distinct of the id        | t    | f        | t
- 20 | two keys                  | t    | f        | t
+ 20 | two keys                  | t    | t        | t
  21 | sparse few values (list)  | t    | t        | t
- 22 | negative base (list)      | t    | t        | t
+ 22 | negative base (list)      | t    | f        | t
  23 | list and bitmap, window   | t    | t        | t
 (23 rows)
 

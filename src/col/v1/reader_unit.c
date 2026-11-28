@@ -146,3 +146,16 @@ sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_
 	}
 	return true;
 }
+
+bool
+sift_v1_unit_presence(const SiftColUnit *unit, int col, MemoryContext mcxt, SiftSrcPresence *p)
+{
+	MemoryContext old = MemoryContextSwitchTo(mcxt);
+	SiftCPresence c;
+	const bool	has = sift_col_unit_presence(unit, col, &c);
+
+	MemoryContextSwitchTo(old);
+	if (has)
+		*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
+	return has;
+}

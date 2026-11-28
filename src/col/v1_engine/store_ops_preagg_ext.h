@@ -21,4 +21,7 @@ typedef bool (*SiftV1HistKeep) (const void *arg, const SiftSrcHist *h, uint32 r)
  */
 extern void sift_v1_hist_merge_dist(SiftV6Group *g, int agg, const SiftSrcHist *h, bool text, void *buf, SiftV1HistKeep keep, const void *arg);
 
+/* The keys of the key presence p of a unit folded into COUNT(DISTINCT) aggregate agg under no key; buf holds SIFT_VEC_LEN int64 */
+extern void sift_v1_presence_merge_dist(SiftV6Group *g, int agg, const SiftSrcPresence *p, int64 *buf);
+
 #endif							/* SIFT_V1_STORE_OPS_PREAGG_EXT_H */

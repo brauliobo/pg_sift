@@ -36,6 +36,7 @@ typedef struct CubeAgg
 	const SiftV6Agg *a;
 	int			leaf;			/* -1: count(*) */
 	bool		is_float;
+	bool		text;			/* COUNT(DISTINCT) of a string leaf: its values are the codes of the dictionary of a histogram */
 	int			slot;			/* the measure of the histogram that holds the leaf */
 	bool		linear;			/* the sum or average of a line of the leaf */
 	SiftV6Linear lin;
@@ -54,8 +55,9 @@ typedef struct SiftV1Cube
 	bool		key_text[CUBE_KEYS];
 	SiftV1CalKey *cal_key;		/* the one key is an expression of its leaf the calendar cells give (col/v1_engine/store_ops_cal.h); NULL: it is the leaf */
 	SiftV1Rollup *rollup;		/* the rollup of the rows a unit is folded from when no histogram of one leaf holds the statement (col/v1_engine/store_ops_rollup.h); NULL: none */
-	int			dist_leaf;		/* no key: the leaf COUNT(DISTINCT) reads (its histogram gives the values), -1: none */
-	bool		dist_text;
+	int			dist_leaf;		/* no key: the leaf of the first COUNT(DISTINCT) (its histogram gives the values), -1: none */
+	int			dist_agg;		/* ... that aggregate */
+	bool		one_dist;		/* ... and every COUNT(DISTINCT) reads it */
 	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test; -1: none */
 	bool		hist_text;		/* hist_leaf is a string leaf: its groups are codes of the dictionary of the histogram */
 	bool		by_group;		/* the unit's zones leave a test of hist_leaf undecided: each group of the histogram is tested */
@@ -221,21 +223,62 @@ kept_acc(const SiftV1Cube *c, const SiftSrcHist *h, const CubeAgg *g, V6Acc *out
 	return g->a->kind == SV6_COUNT_STAR || g->a->kind == SV6_COUNT_DISTINCT;
 }
 
+/*
+ * The distinct values of the leaf of COUNT(DISTINCT) g in the unit: the groups of its histogram (*h), else, for an integer leaf, its key presence (*p, h->ngroups 0). Valid until the
+ * next call. false: the unit keeps neither
+ */
+static bool
+dist_values(const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit, const CubeAgg *g, SiftSrcHist *h, SiftSrcPresence *p)
+{
+	if (rd->unit_hist(src, unit, g->leaf, &(SiftSrcRollupNeed) {0}, h))
+		return !g->text || h->dict != NULL;
+	h->ngroups = 0;
+	return !g->text && rd->unit_presence != NULL && rd->unit_presence(src, unit, g->leaf, p);
+}
+
+/* The values of every COUNT(DISTINCT) of the unit folded into their states (merge: false, only whether the unit keeps them all) */
+static bool
+fold_dists(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit, bool merge)
+{
+	for (int j = 0; j < c->spec->naggs; j++)
+	{
+		const CubeAgg *g = &c->agg[j];
+		SiftSrcHist h = {0};
+		SiftSrcPresence p = {0};
+
+		if (g->a->kind != SV6_COUNT_DISTINCT)
+			continue;
+		if (!dist_values(rd, src, unit, g, &h, &p))
+			return false;
+		if (merge && h.ngroups > 0)
+			sift_v1_hist_merge_dist(c->group, j, &h, g->text, c->kdata, NULL, NULL);
+		else if (merge)
+			sift_v1_presence_merge_dist(c->group, j, &p, c->kdata);
+	}
+	return true;
+}
+
+/*
+ * The unit as one group. A test of the leaf of the COUNT(DISTINCT) that the zone leaves undecided (by_group) is made on the groups of its histogram, which must give the values of every
+ * COUNT(DISTINCT); else each takes its values from its leaf's histogram or key presence
+ */
 static bool
 fold_global(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 {
-	SiftSrcHist h;
+	SiftSrcHist h = {0};
 
-	if (c->dist_leaf >= 0 && (!rd->unit_hist(src, unit, c->dist_leaf, &(SiftSrcRollupNeed) {0}, &h) || (c->dist_text && h.dict == NULL)))
+	if (c->by_group && (!c->one_dist || !dist_values(rd, src, unit, &c->agg[c->dist_agg], &h, &(SiftSrcPresence) {0}) || h.ngroups == 0))
 		return false;
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (!(c->by_group ? kept_acc(c, &h, &c->agg[j], &c->acc[j]) : global_acc(c, rd, src, unit, &c->agg[j], &c->acc[j])))
 			return false;
+	if (!c->by_group && !fold_dists(c, rd, src, unit, false))
+		return false;
 	merge(c, NULL, 1);
-	for (int j = 0; j < c->spec->naggs; j++)
+	for (int j = 0; c->by_group && j < c->spec->naggs; j++)
 		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
-			sift_v1_hist_merge_dist(c->group, j, &h, c->dist_text, c->kdata, c->by_group ? group_kept : NULL, c);
-	return true;
+			sift_v1_hist_merge_dist(c->group, j, &h, c->agg[j].text, c->kdata, group_kept, c);
+	return c->by_group || fold_dists(c, rd, src, unit, true);
 }
 
 /* ---- the groups of a histogram ---- */
@@ -494,18 +537,21 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 
 /* ---- the statement ---- */
 
-/* COUNT(DISTINCT leaf) is the dimension of a histogram: of the key, or of one leaf under no key */
+/* COUNT(DISTINCT leaf) g is of the key, or under no key of a leaf whose histogram or key presence gives its values */
 static bool
-bind_dist(SiftV1Cube *c, const SiftSrcLeaf *l)
+bind_dist(SiftV1Cube *c, CubeAgg *g, const SiftSrcLeaf *l)
 {
 	if (l->vtype != SCV_CODE && l->vtype != SCV_I32 && l->vtype != SCV_I64)
 		return false;
+	g->text = l->vtype == SCV_CODE;
 	if (c->nkeys > 0)
 		return l->id == c->key_leaf[0] && c->cal_key == NULL;
-	if (c->dist_leaf >= 0 && c->dist_leaf != l->id)
-		return false;
-	c->dist_leaf = l->id;
-	c->dist_text = l->vtype == SCV_CODE;
+	c->one_dist = c->dist_leaf < 0 || (c->one_dist && c->dist_leaf == l->id);
+	if (c->dist_leaf < 0)
+	{
+		c->dist_leaf = l->id;
+		c->dist_agg = g - c->agg;
+	}
 	return true;
 }
 
@@ -558,7 +604,7 @@ bind_aggs(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay)
 			return false;
 		if (a->kind == SV6_COUNT_DISTINCT)
 		{
-			if (!bind_dist(c, l))
+			if (!bind_dist(c, g, l))
 				return false;
 			continue;
 		}

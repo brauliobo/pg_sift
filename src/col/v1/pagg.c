@@ -75,6 +75,18 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	return !sift_col_unit_dead_on(unit) || agg_dead(unit, col, a);
 }
 
+bool
+sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresence *p)
+{
+	SiftColSegment *seg;
+	uint32		u;
+	SiftCAgg	a;
+
+	if (sift_col_unit_super(unit, &seg, &u) || unit->except >= 0 || sift_col_unit_dead_on(unit) || !sift_col_unit_agg(unit, col, &a) || !sift_col_unit_stored(unit, &seg, &u))
+		return false;
+	return sift_cseg_presence(seg, col, u, p);
+}
+
 static void
 corrupt_cube(SiftColSegment *seg, uint32 u)
 {

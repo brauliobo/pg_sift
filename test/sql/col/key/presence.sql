@@ -116,7 +116,7 @@ BEGIN
 END $$;
 DROP INDEX kp_off;
 CREATE INDEX kp_b_off ON kp_b USING sift_col (id, k, kn, s, d, ts, g, big, val, sp, sp2) WITH (rollup_columns = 'off', write_buffer_limit = 4096);
--- from_pre: the scan read fewer rows than the twin's, because units came from their bitmaps
+-- from_pre: the scan read fewer rows than the twin's, because units came from their bitmaps; a leaf of the cube (g, sp2) the twin answers from its histograms too
 SELECT n, shape, same, from_pre, twin_scans FROM kp_check('kp', 'kp_b');
 
 -- the same query on the units: all of them, the ones a window covers, none for a filter of another column or a key the plan cannot answer
