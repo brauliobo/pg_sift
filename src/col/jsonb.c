@@ -387,7 +387,7 @@ keep_payload(SiftColValue *v, const SiftShredDoc *doc, int32 key, uint32 slot)
 }
 
 static void
-set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, SiftShredType type, uint32 i)
+set_value(SiftColValue *v, const SiftShredDoc *doc, const char *text, const SiftShredCol *col, SiftShredType type, uint32 i)
 {
 	memset(v, 0, sizeof(*v));
 	v->tag = col->tag[i];
@@ -412,7 +412,7 @@ set_value(SiftColValue *v, const SiftShredDoc *doc, const SiftShredCol *col, Sif
 			break;
 		case SIFT_SHRED_TEXT:
 		case SIFT_SHRED_ASTEXT:
-			v->v.s = doc->text + col->val[i].s.off;
+			v->v.s = text + col->val[i].s.off;
 			v->len = col->val[i].s.len;
 			break;
 		default:
@@ -438,7 +438,7 @@ set_key(SiftColValue *v, const SiftShred *sh, uint32 id)
 
 /* The group's own value in the row (its element count) and the children's elements */
 static void
-fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row, int first, MemoryContext mcxt)
+fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row, int first, const char *text, MemoryContext mcxt)
 {
 	const ShredLeaf *gleaf = &at->leaf[gl];
 	const SiftShredGroup *grp = &shred_of(a)->doc.grp[gleaf->group];
@@ -466,7 +466,7 @@ fill_group(SiftColShredAdapter *a, const ShredAttr *at, int gl, SiftColRow *row,
 			if (l->kind == LEAF_MAP_KEY)
 				set_key(&e[k], shred_of(a), grp->keyid[k]);
 			else
-				set_value(&e[k], &shred_of(a)->doc, &shred_of(a)->doc.col[l->col], a->spec->cols[l->col].type, k);
+				set_value(&e[k], &shred_of(a)->doc, text, &shred_of(a)->doc.col[l->col], a->spec->cols[l->col].type, k);
 		}
 		row->elem[first + i] = e;
 	}
@@ -510,6 +510,7 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 	SiftShred  *sh = shred_of(a);
 	MemoryContext old = MemoryContextSwitchTo(mcxt);
 	SiftShredLimits limits = sh->limits;
+	const char *text;
 
 	/* a row read again is the one SQL reads whole: the limits that keep a write from growing a unit without bound are wider */
 	if (rc)
@@ -526,6 +527,7 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 		sh->limits = limits;
 	}
 	PG_END_TRY();
+	text = sh->doc.ntext > 0 ? memcpy(palloc(sh->doc.ntext), sh->doc.text, sh->doc.ntext) : NULL;
 	for (int i = 1; i <= a->natts; i++)
 	{
 		const ShredAttr *at = &a->attr[i];
@@ -535,9 +537,9 @@ sift_col_shred_row_rc(SiftColShredAdapter *a, const Datum *values, const bool *i
 			const ShredLeaf *lf = &at->leaf[l];
 
 			if (lf->kind == LEAF_ROOT_COL)
-				set_value(&row->val[first[i] + at->base + l], &sh->doc, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
+				set_value(&row->val[first[i] + at->base + l], &sh->doc, text, &sh->doc.col[lf->col], a->spec->cols[lf->col].type, 0);
 			else if (lf->kind == LEAF_GROUP)
-				fill_group(a, at, l, row, first[i] + at->base, mcxt);
+				fill_group(a, at, l, row, first[i] + at->base, text, mcxt);
 			else if (lf->kind == LEAF_PRESENT)
 			{
 				SiftColValue *v = &row->val[first[i] + at->base + l];

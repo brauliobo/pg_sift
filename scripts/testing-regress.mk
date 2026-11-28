@@ -706,6 +706,7 @@ TESTING_REGRESS += table/bigtx
 TESTING_REGRESS += table/bitmap_lazy
 TESTING_REGRESS += table/bitmap_recheck
 TESTING_REGRESS += table/bulk/eligible
+TESTING_REGRESS += table/bulk/paths_copy
 TESTING_REGRESS += table/bulk/runs
 TESTING_REGRESS += table/dead
 TESTING_REGRESS += table/defrag_order

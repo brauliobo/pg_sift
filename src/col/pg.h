@@ -134,7 +134,7 @@ extern void sift_col_shred_leaf(const SiftColShredAdapter *a, int attno, int i, 
 extern void sift_col_shred_set_base(SiftColShredAdapter *a, int attno, int base);
 extern bool sift_col_shred_keeps_image(const SiftColShredAdapter *a, int attno);
 extern void sift_col_shred_keep_payloads(SiftColShredAdapter *a);
-/* All the shredded attributes of one tuple (values/isnull as the index build gives them, indexed by attribute) into row->val / row->elem, whose leaf ids start at first[attno] */
+/* All the shredded attributes of one tuple (values/isnull as the index build gives them, indexed by attribute) into row->val / row->elem, whose leaf ids start at first[attno]; the values own their bytes in mcxt, past the next row */
 extern void sift_col_shred_row(SiftColShredAdapter *a, const Datum *values, const bool *isnull, SiftColRow *row, const int *first, MemoryContext mcxt);
 /* The same read as the SQL of a query reads the values; rc is made by sift_col_shred_recheck_create and told how the query reads each leaf by _set (mode: SiftRecheckCol for a column, SiftRecheckGroup for a list) */
 struct SiftShredRecheck;
