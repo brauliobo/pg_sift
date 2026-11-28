@@ -3,6 +3,8 @@
 -- recorded as 'auto: a, b' (a REINDEX keeps it, ALTER INDEX SET (rollup_columns = 'auto') decides again). Not a default. The answers are the plain plan's.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 1: rollup_columns and the cubes of the units are Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = notice;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
