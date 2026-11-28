@@ -22,12 +22,12 @@ END $$;
 SELECT * FROM lookup_peak($q$SELECT f.status, count(*) AS n FROM facts f WHERE EXISTS (SELECT 1 FROM links l WHERE l.parent_id = f.parent_id AND l.status = 0 AND l.weight = 1) GROUP BY 1$q$);
 SELECT * FROM lookup_peak($q$SELECT f.status, count(*) AS n FROM facts f WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.parent_id = f.parent_id AND l.status = 0 AND l.weight = 1) GROUP BY 1$q$);
 
--- A preserved dimension (RIGHT, FULL join) over work_mem whose rows have NULL keys: more parts never split them (every NULL key is in part 0), so the dimension is read
--- whole once its part stops splitting, in a few passes over the facts, not in 65536 (the planner is told the function returns 10 rows).
+-- A preserved dimension (RIGHT, FULL join) over work_mem whose rows have NULL keys: they match nothing, so they are not held in its table but sent to the output at the end of
+-- the pass, and the rows of its keys take a few passes over the facts, not 65536 (the planner is told the function returns 10 rows). EXPLAIN names the passes past the first.
 CREATE FUNCTION null_dims() RETURNS TABLE (k int, w int) ROWS 10 STABLE LANGUAGE plpgsql AS $$
 BEGIN RETURN QUERY SELECT CASE WHEN i % 100 = 0 THEN i % 4 END, i % 7 FROM generate_series(1, 6000) i; END $$;
 CREATE FUNCTION star_passes(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; passes int := 0;
+DECLARE l text; passes int := 1;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP

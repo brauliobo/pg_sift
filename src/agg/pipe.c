@@ -294,12 +294,10 @@ semi_once(SiftV6Pipe *p, SiftV6PipeBatch *b)
 	count_active(bs);
 }
 
-/* the payload columns of dimension d for the rows b holds, from the rows of the dimension dim_row names (0: none, a NULL) */
+/* the payload columns of dimension d for the rows b holds, from the rows of its table dim that dim_row names (0: none, a NULL) */
 static void
-gather_payload(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const uint32 *dim_row, uint32 n)
+gather_payload(SiftV6Pipe *p, int d, const SiftStarDim *dim, SiftV6PipeBatch *b, const uint32 *dim_row, uint32 n)
 {
-	const SiftStarDim *dim = p->dim[d];
-
 	for (int c = 0; c < p->spec->ext->dim[d].npay; c++)
 	{
 		const int	s = p->pay_slot[d] + c;
@@ -361,7 +359,7 @@ pairs_batch(SiftV6Pipe *p, int d, const SiftV6PipeBatch *b, const uint32 *idx, c
 			sift_vec_gather(&nb->vec[s], nb->valid + (size_t) s * SIFT_VEC_WORDS, nb->data[s], &b->vec[s], idx, m);
 			sift_vec_gather_nan(&nb->vec[s], nb->nan + (size_t) s * SIFT_VEC_WORDS, &b->vec[s], idx, m);
 		}
-	gather_payload(p, d, nb, dim_row, m);
+	gather_payload(p, d, p->dim[d], nb, dim_row, m);
 	memset(nb->own.mask, 0, sizeof(nb->own.mask));
 	for (uint32 i = 0; i < m; i++)
 		nb->own.mask[i >> 6] |= UINT64CONST(1) << (i & 63);
@@ -530,7 +528,7 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 	count_active(bs);
 	if (bs->n_active == 0)
 		return;
-	gather_payload(p, d, b, p->match, bs->n_raw);
+	gather_payload(p, d, p->dim[d], b, p->match, bs->n_raw);
 	stage(p, d + 1, b);
 }
 
@@ -546,38 +544,40 @@ sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs)
 }
 
 void
+sift_v6_pipe_unmatched(SiftV6Pipe *p, int d, const SiftStarDim *dim)
+{
+	uint32		next = 0,
+				m;
+
+	while ((m = sift_v6_lookup_unmatched(dim, &next, p->dim_row, SIFT_VEC_LEN)) > 0)
+	{
+		SiftV6PipeBatch *nb = level_of(p, d + 1);
+
+		for (int s = 0; s < p->pay_slot[d]; s++)
+		{
+			uint64	   *valid = nb->valid + (size_t) s * SIFT_VEC_WORDS;
+
+			memset(valid, 0, SIFT_VEC_WORDS * sizeof(uint64));
+			memset(nb->data[s], 0, SIFT_VEC_LEN * sift_gather_width(p->type[s]));
+			nb->vec[s] = (SiftVec) {.data = nb->data[s],.valid = valid,.len = (uint16) m,.all_valid = false,.dense = true,.type = p->type[s]};
+		}
+		gather_payload(p, d, dim, nb, p->dim_row, m);
+		memset(nb->own.mask, 0, sizeof(nb->own.mask));
+		for (uint32 i = 0; i < m; i++)
+			nb->own.mask[i >> 6] |= UINT64CONST(1) << (i & 63);
+		nb->own.n_raw = nb->own.n_active = (uint16) m;
+		nb->own.all_active = true;
+		nb->own.has_sel = false;
+		stage(p, d + 1, nb);
+	}
+}
+
+void
 sift_v6_pipe_finish(SiftV6Pipe *p)
 {
 	for (int d = 0; d < p->ndims; d++)
-	{
-		const SiftStarDim *dim = p->dim[d];
-		uint32		next = 0,
-					m;
-
-		if (dim->matched == NULL)
-			continue;
-		while ((m = sift_v6_lookup_unmatched(dim, &next, p->dim_row, SIFT_VEC_LEN)) > 0)
-		{
-			SiftV6PipeBatch *nb = level_of(p, d + 1);
-
-			for (int s = 0; s < p->pay_slot[d]; s++)
-			{
-				uint64	   *valid = nb->valid + (size_t) s * SIFT_VEC_WORDS;
-
-				memset(valid, 0, SIFT_VEC_WORDS * sizeof(uint64));
-				memset(nb->data[s], 0, SIFT_VEC_LEN * sift_gather_width(p->type[s]));
-				nb->vec[s] = (SiftVec) {.data = nb->data[s],.valid = valid,.len = (uint16) m,.all_valid = false,.dense = true,.type = p->type[s]};
-			}
-			gather_payload(p, d, nb, p->dim_row, m);
-			memset(nb->own.mask, 0, sizeof(nb->own.mask));
-			for (uint32 i = 0; i < m; i++)
-				nb->own.mask[i >> 6] |= UINT64CONST(1) << (i & 63);
-			nb->own.n_raw = nb->own.n_active = (uint16) m;
-			nb->own.all_active = true;
-			nb->own.has_sel = false;
-			stage(p, d + 1, nb);
-		}
-	}
+		if (p->dim[d]->matched != NULL)
+			sift_v6_pipe_unmatched(p, d, p->dim[d]);
 	sift_v6_resid_free(p->resid);
 	p->resid = NULL;
 }

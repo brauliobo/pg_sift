@@ -88,5 +88,7 @@ extern void sift_v6_pipe_semi_reset(SiftV6Pipe *p);
 extern void sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs);
 /* The fact side has ended: the rows of the dimensions of a RIGHT or FULL join that no row matched go through the dimensions after them, with a NULL fact side */
 extern void sift_v6_pipe_finish(SiftV6Pipe *p);
+/* The rows of dim, a table of dimension d of a RIGHT or FULL join, that no row matched go through the dimensions after d, with a NULL fact side */
+extern void sift_v6_pipe_unmatched(SiftV6Pipe *p, int d, const SiftStarDim *dim);
 
 #endif							/* SIFT_AGG_V6_PIPE_H */

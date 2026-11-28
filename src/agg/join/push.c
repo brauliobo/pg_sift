@@ -511,13 +511,13 @@ datum_of(Oid typid, int64 v)
 	return typid == INT2OID ? Int16GetDatum((int16) v) : typid == INT4OID ? Int32GetDatum((int32) v) : Int64GetDatum(v);
 }
 
-/* The sorted distinct values of the join column of the small side (n of them) whatever the plan estimated: the values held are bounded by work_mem */
+/* The sorted distinct values of the join column of the small side (n of them, in cx) whatever the plan estimated: the values held are bounded by work_mem */
 static int64 *
-small_side(PushState *st, int *n)
+small_side(PushState *st, MemoryContext cx, int *n)
 {
 	PlanState  *child = linitial(st->css.custom_ps);
 	Size		cap = 256 * sizeof(int64);
-	int64	   *v = palloc(cap);
+	int64	   *v = MemoryContextAlloc(cx, cap);
 	int			u = 0;
 
 	*n = 0;
@@ -615,13 +615,16 @@ push_run(PushState *st, EState *estate)
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	TupleDesc	desc = st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	MemoryContext chunk_cx;
+	SiftMemTracker mt;
 	int64	   *v;
 	int			n;
 
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 push groups");
 	st->ran = true;
 	st->router = scope_router(st, estate);
-	v = small_side(st, &n);
+	sift_mem_init(&mt, "agg_lookup", estate->es_query_cxt, true, SIFT_BUDGET_HASH_MEM, 1, 2);
+	v = small_side(st, mt.root_cx, &n);
+	sift_mem_assert_within(&mt);
 	st->nvalues = n;
 	st->group = sift_v6_group_new(st->spec, st->gcx, desc);
 	chunk_cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 push chunk");
@@ -633,6 +636,7 @@ push_run(PushState *st, EState *estate)
 	}
 	MemoryContextSwitchTo(estate->es_query_cxt);
 	MemoryContextDelete(chunk_cx);
+	sift_mem_end(&mt);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }

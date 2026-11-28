@@ -141,6 +141,7 @@ typedef struct SiftStarDim
 	uint32	   *tail;
 	uint32	   *next;			/* the next row of the same key, 0 at the last */
 	uint32		ndistinct;
+	uint32		nnull;			/* a dimension of a RIGHT or FULL join: the rows of a NULL key its read passed over, which match nothing and are not held (agg/star/run.h) */
 	uint64	   *matched;		/* a dimension of RIGHT or FULL join (sift_star_preserves_dim): bit i = row i (0-based) was matched by a fact row; allocated by sift_star_dim_finish */
 	int64	   *exact;			/* the distinct values of the first key, sorted: while nrows <= SIFT_STAR_EXACT_MAX and it is an integer */
 	uint32		nexact;

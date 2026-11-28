@@ -48,6 +48,7 @@ struct SiftV6StarRun
 	bool		keyed[SIFT_STAR_MAX_DIMS];	/* the last chunk is the distinct keys of the part: a dimension of an outer, semi or anti join read in chunks */
 	bool		dirty[SIFT_STAR_MAX_DIMS];	/* the part or chunk of the pass is not the one the table holds */
 	uint32		passes;
+	uint32		nulls;			/* the rows of a NULL key the read of a dimension in hand passed over (take_row) */
 	uint32		key_filters;	/* the columns of the fact table the keys of a dimension filtered in its last scan (sift_v6_star_scan_keys) */
 	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
 	uint64		budget;
@@ -55,6 +56,7 @@ struct SiftV6StarRun
 	MemoryContext qcx;			/* the query: the plans of the dimensions allocate their scans in it */
 	MemoryContext cx;			/* the tables */
 	MemoryContext rowcx;		/* one row of a plan */
+	SiftMemTracker mt;			/* agg_lookup: the tables of the pass, held to half of hash_mem */
 };
 
 uint64
@@ -78,6 +80,7 @@ sift_v6_star_begin(const SiftV6Ext *x, PlanState *const *children, MemoryContext
 	r->qcx = cx;
 	r->cx = sift_mem_allocset_create(cx, "sift agg v6 star dimensions");
 	r->rowcx = sift_mem_allocset_create(cx, "sift agg v6 star row");
+	sift_mem_init(&r->mt, "agg_lookup", r->cx, false, SIFT_BUDGET_HASH_MEM, 1, 2);
 	r->budget = star_budget(x);
 	r->passes = 1;
 	for (int d = 0; d < x->ndims; d++)
@@ -254,9 +257,12 @@ take_period(const SiftV6XDim *xd, TypeCacheEntry *tc, Datum v, bool isnull, Sift
 	row->key_i[0] = row->lo;
 }
 
-/* The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part, or has a NULL key (joined to nothing; a dimension a RIGHT or FULL join keeps takes it, in part 0) */
+/*
+ * The cells of the row of the plan the keys and payload columns are, in the memory of the row; false when the row is not of the part. A row of a NULL key joins nothing: it is taken only when
+ * nulls asks for those rows of a dimension a RIGHT or FULL join keeps (counted in r->nulls when passed over), which the end of a pass sends to the output without holding them in its table.
+ */
 static bool
-take_row(SiftV6StarRun *r, int d, const StarRead *rd, TupleTableSlot *slot, uint32 nparts, uint32 part, SiftStarRow *row)
+take_row(SiftV6StarRun *r, int d, const StarRead *rd, TupleTableSlot *slot, uint32 nparts, uint32 part, bool nulls, SiftStarRow *row)
 {
 	const SiftV6XDim *xd = &r->x->dim[d];
 	bool		anynull = false;
@@ -272,9 +278,10 @@ take_row(SiftV6StarRun *r, int d, const StarRead *rd, TupleTableSlot *slot, uint
 			put_cell(&rd->key[k], v, isnull, &row->key_i[k], &row->key_p[k], &row->key_len[k], &row->key_null[k]);
 		anynull |= isnull;
 	}
-	if (anynull && !sift_star_preserves_dim(rd->shape.mode))
+	r->nulls += anynull && !nulls && sift_star_preserves_dim(rd->shape.mode);
+	if (anynull != nulls)
 		return false;
-	if (nparts > 1 && sift_star_row_part(&rd->shape, row, nparts) != part)
+	if (!nulls && nparts > 1 && sift_star_row_part(&rd->shape, row, nparts) != part)
 		return false;
 	for (int c = 0; c < xd->npay; c++)
 	{
@@ -307,11 +314,12 @@ rewind_dim(SiftV6StarRun *r, int d)
 		MemoryContextSwitchTo(old);
 	}
 	r->read[d] = true;
+	r->nulls = 0;
 }
 
-/* The next row of the plan of dimension d that is of the part (its cells in the memory of the row, until the next call): false at the end */
+/* The next row of the plan of dimension d that is of the part, or with nulls of a NULL key (its cells in the memory of the row, until the next call): false at the end */
 static bool
-part_row(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part, SiftStarRow *row)
+next_taken(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part, bool nulls, SiftStarRow *row)
 {
 	TupleTableSlot *slot;
 
@@ -324,12 +332,18 @@ part_row(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part
 		MemoryContextReset(r->rowcx);
 		old = MemoryContextSwitchTo(r->rowcx);
 		*row = (SiftStarRow) {0};
-		keep = take_row(r, d, rd, slot, nparts, part, row);
+		keep = take_row(r, d, rd, slot, nparts, part, nulls, row);
 		MemoryContextSwitchTo(old);
 		if (keep)
 			return true;
 	}
 	return false;
+}
+
+static bool
+part_row(SiftV6StarRun *r, int d, const StarRead *rd, uint32 nparts, uint32 part, SiftStarRow *row)
+{
+	return next_taken(r, d, rd, nparts, part, false, row);
 }
 
 /* The pass of the distinct keys of the part: the last chunk of a keyed dimension */
@@ -375,6 +389,7 @@ read_dim(SiftV6StarRun *r, int d, uint32 nparts, uint32 part, uint32 from, uint3
 			fits = keys ? sift_star_dim_add_key(dim, &row) : sift_star_dim_add(dim, &row);
 	if (fits)
 		sift_star_dim_finish(dim);
+	dim->nnull = r->nulls;
 	return fits;
 }
 
@@ -630,6 +645,13 @@ sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double 
 	return log2(parts) + parts;
 }
 
+/* The pass sends the rows of a NULL key of preserved dimension d: the one of its first chunk of part 0, when its read passed over such rows or stopped short of the end of its plan (a chunk) */
+static bool
+streams_nulls(const SiftV6StarRun *r, int d)
+{
+	return sift_star_preserves_dim(r->x->dim[d].mode) && r->found[d] == NULL && r->part[d] == 0 && r->chunk[d] == 0 && (r->dim[d].nnull > 0 || r->nchunks[d] > 1);
+}
+
 /* The odometer of the passes: the chunks of the part of a dimension, then its parts, then the next dimension's. The chunks of a part are known when it is read */
 static bool
 next_pass(SiftV6StarRun *r)
@@ -702,19 +724,57 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	for (int d = 0; d < r->x->ndims; d++)
 		if (r->dirty[d])
 			build_dim(r, d, pass);
+	sift_mem_used(&r->mt);
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->found[d] == NULL && r->dim[d].nrows == 0 && (r->x->dim[d].mode == SV6J_RIGHT_EQUI || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 && ((r->x->dim[d].mode == SV6J_RIGHT_EQUI && !streams_nulls(r, d)) || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
+}
+
+/* The rows of a NULL key of preserved dimension d, read from its plan in tables of a budget each, come out as rows no fact row matched */
+static void
+stream_nulls(SiftV6StarRun *r, int d, SiftV6Pipe *p)
+{
+	MemoryContext cx = sift_mem_allocset_create(r->cx, "sift agg v6 star NULL keys");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	StarRead	rd;
+	SiftStarDim batch;
+	SiftStarRow row;
+	bool		more;
+
+	read_of(r->x, d, r->budget, &rd);
+	rewind_dim(r, d);
+	sift_star_dim_init(&batch, &rd.shape);
+	do
+	{
+		more = next_taken(r, d, &rd, 1, 0, true, &row);
+		if (more && sift_star_dim_add(&batch, &row))
+			continue;
+		sift_star_dim_finish(&batch);
+		MemoryContextSwitchTo(old);
+		sift_v6_pipe_unmatched(p, d, &batch);
+		MemoryContextSwitchTo(cx);
+		MemoryContextReset(cx);
+		sift_star_dim_init(&batch, &rd.shape);
+		if (more && !sift_star_dim_add(&batch, &row))
+			ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a row of a dimension of the star join does not fit one allocation"),
+							errhint("Run the statement with sift.enable_agg = off.")));
+	} while (more);
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 }
 
 void
 sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p)
 {
-	if (--r->scans_left == 0)
-		sift_v6_pipe_finish(p);
+	if (--r->scans_left > 0)
+		return;
+	for (int d = 0; d < r->x->ndims; d++)
+		if (streams_nulls(r, d))
+			stream_nulls(r, d, p);
+	sift_v6_pipe_finish(p);
 }
 
 void
