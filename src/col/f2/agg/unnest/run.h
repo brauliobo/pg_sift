@@ -11,6 +11,7 @@
 #include "postgres.h"
 
 #include "agg/engine.h"
+#include "core/store/ops.h"
 
 struct SiftV6StarRun;
 
@@ -20,5 +21,7 @@ extern void sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation 
 /* The arms of a cohort over one pull of the index (arms.c); alone[i]: the leaves of arm i did not fit the shared pull and it read its own after it */
 struct SiftV6FuseCohort;
 extern void sift_v6_unnest_run_arms(struct SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone);
+/* The same in the participants of a parallel run, by the units each claims (col/f2/agg/unnest/morsel.c) */
+extern const SiftStoreParOps sift_f2_unnest_par_ops;
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_RUN_H */

@@ -521,6 +521,19 @@ sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 }
 
 void
+sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, Snapshot snap, const SiftV1Range *range)
+{
+	SiftV6Batch b;
+	SiftV1Scan	scan = {.range = range,.elem = u->has_elems ? &u->espec : NULL};
+
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, &u->in), &scan);
+	while (u->src->next(u->src, &b))
+		sift_v1_unnest_batch(u, &b, u->has_elems ? sift_v1_source_elems(u->src) : NULL);
+	u->src->close(u->src);
+	u->src = NULL;
+}
+
+void
 sift_v1_unnest_close(UnRun *u)
 {
 	sift_v6_pipe_finish(u->pipe);
@@ -532,15 +545,8 @@ void
 sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
 	UnRun		run;
-	UnRun	   *u = &run;
-	SiftV6Batch b;
-	SiftV1Scan	scan = {0};
 
-	sift_v1_unnest_open(u, spec, g, heap, index, stats, star);
-	scan.elem = u->has_elems ? &u->espec : NULL;
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, spec->is_table ? heap : index, &u->in), &scan);
-	while (u->src->next(u->src, &b))
-		sift_v1_unnest_batch(u, &b, u->has_elems ? sift_v1_source_elems(u->src) : NULL);
-	u->src->close(u->src);
-	sift_v1_unnest_close(u);
+	sift_v1_unnest_open(&run, spec, g, heap, index, stats, star);
+	sift_v1_unnest_read(&run, heap, index, snap, NULL);
+	sift_v1_unnest_close(&run);
 }

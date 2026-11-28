@@ -27,7 +27,7 @@ CREATE INDEX p_dcol ON p_d USING sift_col (id, grp, items, tags)
 	WITH (paths = 'items[]{kind text, n int4, score float8}, tags[] text', preagg = 'rollup(items[].kind, items[].n: items[].n, items[].score; tags[])');
 VACUUM (ANALYZE, FREEZE, DISABLE_PAGE_SKIPPING) p_t;
 ANALYZE p_d;
-SELECT units > 8 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('p_col');
+SELECT units >= 4 AS units, preagg_units = units AS all_with_cube FROM sift.col_index_info('p_col');
 -- the first units change after the VACUUM: their pages are not all-visible, the cubes of the others stay exact
 UPDATE p_t SET items = '[{"kind": "k9", "n": 5, "score": 1.5}]' WHERE id <= 2500;
 

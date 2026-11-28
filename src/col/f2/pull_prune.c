@@ -130,6 +130,22 @@ sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *par
 	for (int i = 0; i < pr->nspans; i++)
 		kept += pr->spans[i][1] - pr->spans[i][0];
 	st->granules_key_skipped += ng - kept;
+	pr->nfull = pr->nspans;
+	memcpy(pr->full, pr->spans, sizeof(pr->spans));
+}
+
+void
+sift_f2_pull_prune_range(SiftF2PullPrune *pr, uint32 lo, uint32 hi)
+{
+	pr->nspans = 0;
+	for (int i = 0; i < pr->nfull; i++)
+		if (Max(pr->full[i][0], lo) < Min(pr->full[i][1], hi))
+		{
+			pr->spans[pr->nspans][0] = Max(pr->full[i][0], lo);
+			pr->spans[pr->nspans++][1] = Min(pr->full[i][1], hi);
+		}
+	pr->span = 0;
+	pr->next = 0;
 }
 
 static bool

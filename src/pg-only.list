@@ -417,6 +417,7 @@ col/f2/agg/topn.c
 col/f2/agg/zones.c
 col/f2/agg/unnest/emit.c
 col/f2/agg/unnest/member.c
+col/f2/agg/unnest/morsel.c
 col/f2/agg/unnest/int.h
 col/f2/agg/unnest/par.c
 col/f2/agg/unnest/par.h
@@ -725,6 +726,7 @@ col/v1_engine/store_ops_unnest.c
 col/v1_engine/store_ops_unnest_arms.c
 col/v1_engine/store_ops_unnest.h
 col/v1_engine/store_ops_unnest_emit.c
+col/v1_engine/store_ops_unnest_par.c
 col/v1/verify.c
 col/v1/wbuf.h
 col/v1/wbuf/

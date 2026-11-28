@@ -174,5 +174,6 @@ const SiftJsonbOps v1_jsonb_ops = {
 	.row_quals = true,
 	.table_elems = true,
 	.unnest_run = sift_v1_unnest_run,
-	.unnest_arms = sift_v1_unnest_run_arms
+	.unnest_arms = sift_v1_unnest_run_arms,
+	.unnest_par = &sift_v1_unnest_par_ops
 };

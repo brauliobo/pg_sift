@@ -49,12 +49,11 @@ par_begin(const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey 
 	return (struct SiftV6Scan *) s;
 }
 
-static void
-par_plan(struct SiftV6Scan *scan, SiftF2ParPlan *out)
+void
+sift_v1_par_plan(Relation heap, Relation index, Snapshot snap, MemoryContext cx, SiftF2ParPlan *out)
 {
-	V1ParScan  *s = (V1ParScan *) scan;
-	const SiftV1ReaderOps *rd = sift_v1_reader_of(s->index == NULL);
-	void	   *src = rd->open(s->heap, s->index, s->snap, s->cx, NULL);
+	const SiftV1ReaderOps *rd = sift_v1_reader_of(index == NULL);
+	void	   *src = rd->open(heap, index, snap, cx, NULL);
 	const uint32 nsb = rd->nsb(src);
 	const Size	bytes = rd->view_size(src);
 
@@ -72,6 +71,14 @@ par_plan(struct SiftV6Scan *scan, SiftF2ParPlan *out)
 	if (bytes > 0)
 		rd->view_export(src, out->staged_dead);
 	rd->close(src);
+}
+
+static void
+par_plan(struct SiftV6Scan *scan, SiftF2ParPlan *out)
+{
+	V1ParScan  *s = (V1ParScan *) scan;
+
+	sift_v1_par_plan(s->heap, s->index, s->snap, s->cx, out);
 }
 
 static void

@@ -18,6 +18,8 @@ typedef struct SiftV6MapPreagg SiftV6MapPreagg;
 
 /* The state for one scan of the elements of the statement into g; NULL when the statement is not one the cubes of the elements can answer */
 extern SiftV6MapPreagg *sift_v6_map_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6Vet *vet, SiftV6ScanStats *stats);
+/* The groups the granules answered from here on fold into: those of the participant of a parallel run that reads them */
+extern void sift_v6_map_preagg_set_group(SiftV6MapPreagg *m, SiftV6Group *g);
 /* A SiftF2GranSink: true when the granule was answered and is not to be read */
 extern bool sift_v6_map_preagg_try_granule(void *arg, const SiftF2GranOffer *offer);
 extern void sift_v6_map_preagg_end(SiftV6MapPreagg *m);

@@ -46,6 +46,9 @@ struct SiftV6ParNode
 	bool		have_total;
 };
 
+/* The parallel scan of a source: the unnest of the statement over its index, or its aggregate scan */
+extern const SiftStoreParOps *sift_v6_src_par(const SiftV6ScanSrc *src);
+
 extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources,
 									struct SiftV6StarRun *star, Snapshot snap);
 extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);

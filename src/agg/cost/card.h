@@ -60,6 +60,7 @@ typedef struct SiftV6AggPrice
 	SiftCostInputs in;
 	double		selectivity;
 	Cost		open;
+	double		granule_rows;	/* the rows of a granule of the index: what a participant of a parallel scan claims at a time */
 } SiftV6AggPrice;
 
 extern SiftV6AggPrice sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups);

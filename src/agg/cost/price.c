@@ -600,6 +600,7 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	price.in.qual_row = pg_qual_cost(root, ix, spec->vqual) + in_lists_cost(b.view, ix, true, spec->indexqual);
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
 	price.open = open_cost(scan_parts(&b));
+	price.granule_rows = b.table_rows / b.granules;
 	return price;
 }
 

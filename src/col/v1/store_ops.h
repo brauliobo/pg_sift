@@ -49,6 +49,8 @@ extern Jsonb *sift_v1_json_member(Datum doc, const char *key);
 extern const SiftOrderOps v1_order_ops;
 extern const SiftPreaggOps v1_preagg_ops;
 extern const SiftJsonbOps v1_jsonb_ops;
+/* the same in the participants of a parallel run, by the superblocks each claims (col/v1_engine/store_ops_unnest_par.c) */
+extern const SiftStoreParOps sift_v1_unnest_par_ops;
 extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 /* SiftJsonbOps.unnest_arms over Format 1 (col/v1_engine/store_ops_unnest_arms.c) */
 struct SiftV6FuseCohort;
@@ -82,6 +84,9 @@ typedef struct SiftV1Range
 	uint32		sb_lo;
 	uint32		sb_hi;
 } SiftV1Range;
+
+/* The units of a parallel scan of the index or the sift_table: one run of its superblocks, and the directory view the participants read them by, as the staged words of the plan */
+extern void sift_v1_par_plan(Relation heap, Relation index, Snapshot snap, MemoryContext cx, SiftF2ParPlan *out);
 
 /*
  * Rows of the leaf of the document path that have none of these JSON types (SIFT_SRC_JT_*) are not given. key: the test is doc ? 'k' of the key of the leaf, which a document that is no object

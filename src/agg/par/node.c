@@ -15,6 +15,7 @@
 
 #include "agg/cost/model.h"
 #include "agg/explain.h"
+#include "agg/ext.h"
 #include "agg/group/int.h"
 #include "agg/par/dist.h"
 #include "agg/par/pg.h"
@@ -110,6 +111,12 @@ sift_v6_par_node_lookup_rows(const SiftV6ParNode *pn)
 	return pn->alone ? 0 : pn->lookup_rows;
 }
 
+const SiftStoreParOps *
+sift_v6_src_par(const SiftV6ScanSrc *src)
+{
+	return src->spec->ext != NULL && src->spec->ext->unnest ? src->ops->jsonb->unnest_par : src->ops->par;
+}
+
 static uint32
 count_distinct(const SiftV6Spec *spec)
 {
@@ -164,8 +171,8 @@ list_units(SiftV6ParNode *pn)
 	{
 		const SiftV6ScanSrc *src = &pn->sources[k];
 
-		scan[k] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, pn->star, NULL, NULL);
-		src->ops->par->plan(scan[k], &each[k]);
+		scan[k] = sift_v6_src_par(src)->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, pn->star, NULL, NULL);
+		sift_v6_src_par(src)->plan(scan[k], &each[k]);
 		nrefs += each[k].nrefs;
 		nstaged += each[k].nstaged;
 	}
@@ -183,7 +190,7 @@ list_units(SiftV6ParNode *pn)
 			memcpy(pn->plan.staged_dead + pn->plan.nstaged, each[k].staged_dead, each[k].nstaged * sizeof(uint64));
 		pn->plan.nstaged += each[k].nstaged;
 		pfree(each[k].refs);
-		pn->sources[k].ops->par->end(scan[k]);
+		sift_v6_src_par(&pn->sources[k])->end(scan[k]);
 	}
 	pn->staged_start[pn->nsources] = pn->plan.nstaged;
 	pfree(scan);

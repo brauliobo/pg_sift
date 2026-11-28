@@ -73,6 +73,10 @@ struct SiftF2Pull
 	const SiftColDeltaGranMap *gm;	/* of the granule being read: NULL when the snapshot sees no patch of it, and for a slab */
 	uint32		g;				/* the granule being read */
 	SiftF2PullPrune prune;
+	SiftPartitionEntry unit_e;	/* a pull of units: the partition and the part of the unit being read, the part kept open for the next unit of it */
+	SiftPlanPartList unit_list;
+	SiftPartDesc unit_pd;
+	SiftPart   *unit_part;
 	SiftF2PullStats stats;
 
 	uint32		n;				/* the rows of the granule or slab being sliced, and the next slice's first */

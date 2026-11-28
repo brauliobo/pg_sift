@@ -45,31 +45,37 @@ esize(SiftVecType t)
 }
 
 static const SiftF2PullHost index_host;
+static const SiftPlanSnapshot no_partitions;
 
-/* an index: its leaves, the transaction's staged rows flushed and its own deletes taken from the snapshot, and the manifest it is read by */
 static void
-index_begin(SiftF2Pull *p)
+index_leaves(SiftF2Pull *p)
 {
 	const SiftF2Rel *f = sift_f2_rel(p->index);
-	int			nstaged;
-	uint64	   *staged;
 
 	p->host = &index_host;
 	p->kinds = f->kinds;
 	p->key_leaf = f->key_leaf;
 	sift_f2_pull_prune_begin(&p->prune, p->index, &p->spec);
+}
+
+static void
+index_begin(SiftF2Pull *p)
+{
+	int			nstaged;
+	uint64	   *staged;
+
+	index_leaves(p);
 	sift_stage_flush(p->index);
 	staged = sift_stage_dead(p->index, p->snap, &nstaged);
 	p->staged_px = sift_f2_staged_index(staged, nstaged);
 	p->plan = sift_plan_cache_get(p->index, p->cx);
 }
 
-SiftF2Pull *
-sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec)
+static SiftF2Pull *
+pull_new(Relation rel, Snapshot snap, const SiftF2PullSpec *spec)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift f2 pull");
 	SiftF2Pull *p = MemoryContextAllocZero(cx, sizeof(SiftF2Pull));
-	MemoryContext old = MemoryContextSwitchTo(cx);
 
 	p->index = rel;
 	p->snap = snap;
@@ -79,23 +85,53 @@ sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec)
 	p->ecx = sift_mem_allocset_create(cx, "sift f2 pull partition");
 	p->pcx = sift_mem_allocset_create(cx, "sift f2 pull part");
 	p->gcx = sift_mem_allocset_create(cx, "sift f2 pull granule");
+	return p;
+}
+
+static SiftF2Pull *
+pull_vectors(SiftF2Pull *p)
+{
+	const SiftF2PullSpec *spec = &p->spec;
+
+	for (int i = 0; i < spec->ncols; i++)
+	{
+		p->vec[i] = (SiftVec) {.type = spec->col[i].type,.scale = spec->col[i].scale};
+		p->vec[i].data = MemoryContextAllocAligned(p->cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+		p->valid[i] = MemoryContextAllocZero(p->cx, SIFT_VEC_WORDS * sizeof(uint64));
+		p->vec[i].valid = p->valid[i];
+		if (spec->col[i].type == SVEC_STRVIEW && p->kinds[spec->col[i].leaf] == SIFT_CELL_INT)
+			p->bools[i] = MemoryContextAllocAligned(p->cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
+	}
+	for (int m = 0; m < spec->nmasks; m++)
+		p->mbits[m] = MemoryContextAllocZero(p->cx, SIFT_VEC_WORDS * sizeof(uint64));
+	return p;
+}
+
+SiftF2Pull *
+sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec)
+{
+	SiftF2Pull *p = pull_new(rel, snap, spec);
+	MemoryContext old = MemoryContextSwitchTo(p->cx);
+
 	if (rel->rd_rel->relkind == RELKIND_INDEX)
 		index_begin(p);
 	else
 		sift_f2_pull_table_begin(p);
 	MemoryContextSwitchTo(old);
-	for (int i = 0; i < spec->ncols; i++)
-	{
-		p->vec[i] = (SiftVec) {.type = spec->col[i].type,.scale = spec->col[i].scale};
-		p->vec[i].data = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-		p->valid[i] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
-		p->vec[i].valid = p->valid[i];
-		if (spec->col[i].type == SVEC_STRVIEW && p->kinds[spec->col[i].leaf] == SIFT_CELL_INT)
-			p->bools[i] = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
-	}
-	for (int m = 0; m < spec->nmasks; m++)
-		p->mbits[m] = MemoryContextAllocZero(cx, SIFT_VEC_WORDS * sizeof(uint64));
-	return p;
+	return pull_vectors(p);
+}
+
+SiftF2Pull *
+sift_f2_pull_begin_units(Relation index, Snapshot snap, const SiftF2PullSpec *spec, const uint64 *staged_dead, uint32 nstaged)
+{
+	SiftF2Pull *p = pull_new(index, snap, spec);
+	MemoryContext old = MemoryContextSwitchTo(p->cx);
+
+	index_leaves(p);
+	p->staged_px = sift_f2_staged_index(staged_dead, (int) nstaged);
+	p->plan = &no_partitions;
+	MemoryContextSwitchTo(old);
+	return pull_vectors(p);
 }
 
 const SiftF2PullStats *
@@ -174,6 +210,41 @@ begin_part(SiftF2Pull *p)
 	}
 	sift_f2_pull_prune_open(&p->prune, p->index, p->part, p->dir, p->cd, &p->stats);
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_f2_pull_unit(SiftF2Pull *p, const SiftParPartRef *ref, uint32 first, uint32 n)
+{
+	const bool	same_entry = p->e != NULL && p->unit_e.part_id == ref->part_id;
+	MemoryContext old;
+
+	p->unit_e = (SiftPartitionEntry) {.part_id = ref->part_id,.l0_slab_blk = ref->l0_slab_blk,.pend_del_blk = ref->pend_del_blk,.flags = ref->entry_flags,.manifest_gen = ref->manifest_gen,
+	.manifest_blk = ref->manifest_blk};
+	p->e = &p->unit_e;
+	if (!same_entry)
+	{
+		MemoryContextReset(p->ecx);
+		old = MemoryContextSwitchTo(p->ecx);
+		p->px = sift_f2_pending_index(p->index, p->e, p->snap, p->staged_px);
+		MemoryContextSwitchTo(old);
+		p->unit_part = NULL;
+	}
+	p->part = NULL;
+	p->slab_pending = (ref->flags & SIFT_PAR_PART_L0_SLAB) != 0;
+	p->unit_list = (SiftPlanPartList) {.part_id = ref->part_id,.manifest_gen = ref->manifest_gen,.nparts = 1,.parts = &p->unit_pd};
+	p->list = &p->unit_list;
+	p->pi = 1;
+	if (p->slab_pending)
+		return;
+	if (p->unit_part == NULL || p->unit_pd.part_gen != ref->desc.part_gen)
+	{
+		p->unit_pd = ref->desc;
+		p->pi = 0;
+		begin_part(p);
+		p->unit_part = p->part;
+	}
+	p->part = p->unit_part;
+	sift_f2_pull_prune_range(&p->prune, ref->g_base + first, ref->g_base + first + n);
 }
 
 /* the leaves a granule is first read for: the _tid and the lengths of the arrays, which say which rows are live and where the elements are before any column is read */

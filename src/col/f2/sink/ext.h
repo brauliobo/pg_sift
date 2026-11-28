@@ -25,6 +25,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/sink/sink.h"
 #include "col/granule/granule.h"
+#include "core/scan_types.h"
 
 #define SIFT_F2_PULL_MAX_COLS	SIFT_VEXPR_MAX_REGS
 #define SIFT_F2_PULL_MAX_MASKS	SIFT_VEXPR_MAX_MASKS
@@ -129,6 +130,13 @@ typedef struct SiftF2Pull SiftF2Pull;
 extern SiftF2Pull *sift_f2_pull_begin(Relation rel, Snapshot snap, const SiftF2PullSpec *spec);
 /* The next slice, valid until the next call; NULL after the last */
 extern const SiftF2ExtBatch *sift_f2_pull_next(SiftF2Pull *p);
+/*
+ * A pull of an index by the units of a parallel plan (col/f2/par.c), for a participant of the run: the deletes of the leader's transaction are the list of the plan (the stage is not flushed, a
+ * worker writes nothing), and nothing is read until sift_f2_pull_unit names a unit. Then sift_f2_pull_next gives the granules [first, first + n) of the unit (or its slab) that the predicates leave,
+ * and NULL after them.
+ */
+extern SiftF2Pull *sift_f2_pull_begin_units(Relation index, Snapshot snap, const SiftF2PullSpec *spec, const uint64 *staged_dead, uint32 nstaged);
+extern void sift_f2_pull_unit(SiftF2Pull *p, const SiftParPartRef *ref, uint32 first, uint32 n);
 /* The payload (a jsonb datum, len bytes) of row `row` of the slice just given, of column i of the spec when it is a leaf of a key of a document and the row holds a value of a JSON type the leaf cannot store (it is NULL in the column); NULL for any other row. Valid until the next slice */
 extern const char *sift_f2_pull_payload(SiftF2Pull *p, int i, uint16 row, uint32 *len);
 extern const SiftF2PullStats *sift_f2_pull_stats(const SiftF2Pull *p);

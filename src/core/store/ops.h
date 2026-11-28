@@ -321,6 +321,7 @@ typedef struct SiftJsonbOps
 	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 	/* the unnests of the arms of a cohort of the index over one pass (agg/fuse/fuse.h); alone[i]: arm i read the index on its own after the pass. NULL: each arm scans alone */
 	void		(*unnest_arms) (struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone);
+	const SiftStoreParOps *unnest_par;	/* the unnest of an index in the participants of a parallel run, NULL: it runs in one process */
 } SiftJsonbOps;
 
 /*

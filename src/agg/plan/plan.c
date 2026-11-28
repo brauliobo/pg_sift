@@ -718,7 +718,7 @@ format_lacks(const V6Plan *p)
 		return "the rows of an ORDER BY .. LIMIT";
 	if (s->ext != NULL && s->ext->unnest && ops->jsonb == NULL)
 		return "an unnest of a jsonb array";
-	if (s->par_strategy != 0 && ops->par == NULL)
+	if (s->par_strategy != 0 && (s->ext != NULL && s->ext->unnest ? ops->jsonb->unnest_par : ops->par) == NULL)
 		return "a parallel scan";
 	return NULL;
 }

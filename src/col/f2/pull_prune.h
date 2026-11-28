@@ -32,6 +32,8 @@ typedef struct SiftF2PullPrune
 	int			span;
 	uint32		next;			/* the next granule to look at, inside spans[span] */
 	uint32		spans[SIFT_F2_MAX_RANGES][2];
+	int			nfull;			/* the spans the key marks leave of the whole part: spans is their share of a range of it */
+	uint32		full[SIFT_F2_MAX_RANGES][2];
 	SiftZone  **zones;			/* of pred and then elem: the zones of the granules of the leaf, NULL: the part keeps none */
 	const SiftVariantExcSummary *exc;
 	int			nexc;
@@ -53,6 +55,8 @@ extern bool sift_f2_pull_prune_part(const SiftF2PullPrune *pr, const SiftPartiti
 extern void sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const SiftPart *part, const SiftGranuleDesc *dir, const SiftColDeltaPartMap *cd, SiftF2PullStats *st);
 /* The next granule of the open part that the key marks and the zones of the rows leave; false after the last. Counts the ones the zones ruled out in st */
 extern bool sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullStats *st);
+/* The granules of the open part to read from here on are those of the key marks inside [lo, hi) */
+extern void sift_f2_pull_prune_range(SiftF2PullPrune *pr, uint32 lo, uint32 hi);
 /* Whether the zones of the element leaves say that no element of granule g, which has n_elems of them, passes the predicates of the elements */
 extern bool sift_f2_pull_prune_elems(const SiftF2PullPrune *pr, uint32 g, uint32 n_elems);
 

@@ -239,6 +239,18 @@ f2_shrink_history(FunctionCallInfo fcinfo)
 	return sift_result_row(fcinfo, v, nulls);
 }
 
+/* The bytes of the cubes of a part (SEC_PREAGG) and its granules that have cells in them */
+static void
+preagg_cubes(Relation index, const SiftPart *part, int64 *bytes, int64 *units)
+{
+	const SiftSecDirEntry *sec = sift_part_section(part, SEC_PREAGG);
+	const SiftGranuleDesc *dir = sift_part_granule_dir(index, part);
+
+	*bytes += sec != NULL ? (int64) sec->len : 0;
+	for (uint32 g = 0; g < part->hdr.ngranules; g++)
+		*units += (dir[g].flags & SIFT_GDESC_HAS_PREAGG) != 0;
+}
+
 static Datum
 f2_index_info(FunctionCallInfo fcinfo)
 {
@@ -250,7 +262,9 @@ f2_index_info(FunctionCallInfo fcinfo)
 	bool		nulls[16] = {false};
 	int64		parts = 0,
 				granules = 0,
-				slabs = 0;
+				slabs = 0,
+				preagg_bytes = 0,
+				preagg_units = 0;
 
 	for (int i = 0; i < mr.n; i++)
 	{
@@ -260,7 +274,13 @@ f2_index_info(FunctionCallInfo fcinfo)
 		parts += np;
 		slabs += mr.entries[i].l0_slab_blk != InvalidBlockNumber;
 		for (int p = 0; p < np; p++)
-			granules += sift_part_open_desc(index, &pd[p], (uint32) mr.entries[i].part_id)->hdr.ngranules;
+		{
+			SiftPart   *part = sift_part_open_desc(index, &pd[p], (uint32) mr.entries[i].part_id);
+
+			granules += part->hdr.ngranules;
+			if (pd[p].ext_flags & SIFT_PART_EXT_PREAGG)
+				preagg_cubes(index, part, &preagg_bytes, &preagg_units);
+		}
 	}
 	v[0] = Int64GetDatum(RelationGetNumberOfBlocks(index));
 	v[1] = Int64GetDatum(meta.high_water);
@@ -276,7 +296,8 @@ f2_index_info(FunctionCallInfo fcinfo)
 	v[11] = Int32GetDatum(sift_col_rel(index)->schema->ncols);
 	nulls[12] = true;
 	v[13] = CStringGetTextDatum(sift_simd_level_name(sift_cpu.active));
-	nulls[14] = nulls[15] = true;
+	v[14] = Int64GetDatum(preagg_bytes);
+	v[15] = Int64GetDatum(preagg_units);
 	index_close(index, AccessShareLock);
 	return sift_result_row(fcinfo, v, nulls);
 }

@@ -144,6 +144,12 @@ sift_v6_map_preagg_begin(const SiftV6Spec *spec, SiftV6Group *g, SiftV6Vet *vet,
 }
 
 void
+sift_v6_map_preagg_set_group(SiftV6MapPreagg *m, SiftV6Group *g)
+{
+	m->group = g;
+}
+
+void
 sift_v6_map_preagg_end(SiftV6MapPreagg *m)
 {
 	MemoryContextDelete(m->pcx);

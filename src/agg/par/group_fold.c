@@ -222,8 +222,8 @@ open_scan(ParEnv *e, uint32 child)
 	const uint64 *staged = sift_v6_par_staged_dead(e->hdr, child, &nstaged);
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->scan[child] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, e->star, batch_to_local, e);
-	src->ops->par->morsel_begin(e->scan[child], staged, nstaged);
+	e->scan[child] = sift_v6_src_par(src)->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, e->star, batch_to_local, e);
+	sift_v6_src_par(src)->morsel_begin(e->scan[child], staged, nstaged);
 	MemoryContextSwitchTo(old);
 	return e->scan[child];
 }
@@ -306,7 +306,7 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 		MemoryContextSwitchTo(old);
 	}
 	e->cur = l;
-	e->sources[ref->child_idx].ops->par->morsel(scan, l->g, ref, m->first, m->n);
+	sift_v6_src_par(&e->sources[ref->child_idx])->morsel(scan, l->g, ref, m->first, m->n);
 	st->rows_scanned += e->stats.rows - e->seen.rows;
 	st->grans_scanned += e->stats.grans - e->seen.grans;
 	st->grans_pruned_zone += e->stats.grans_pruned_zone - e->seen.grans_pruned_zone;
@@ -713,7 +713,7 @@ sift_v6_par_engine_end(SiftV6ParEngine *eng)
 	for (uint32 k = 0; k < e->nsources; k++)
 	{
 		if (e->scan[k] != NULL)
-			e->sources[k].ops->par->end(e->scan[k]);
+			sift_v6_src_par(&e->sources[k])->end(e->scan[k]);
 		e->scan[k] = NULL;
 	}
 }
