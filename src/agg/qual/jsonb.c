@@ -298,11 +298,17 @@ type_bit(const char *name)
 	return 0;
 }
 
-/* jsonb_typeof(..) = 'type' or = ANY (ARRAY['type', ..]): the call and the set of types */
+/* jsonb_typeof(..) = 'type' or = ANY (ARRAY['type', ..]), or IS NOT NULL of it (any type: the key is there): the call and the set of types */
 static bool
 typeof_test(const Expr *clause, const Expr **call, uint32 *mask)
 {
 	*mask = 0;
+	if (IsA(clause, NullTest) && ((const NullTest *) clause)->nulltesttype == IS_NOT_NULL && !((const NullTest *) clause)->argisrow)
+	{
+		*call = strip(((const NullTest *) clause)->arg);
+		*mask = type_bit("string") | type_bit("number") | type_bit("boolean") | type_bit("object") | type_bit("array") | type_bit("null");
+		return true;
+	}
 	if (IsA(clause, OpExpr) && get_opcode(((const OpExpr *) clause)->opno) == F_TEXTEQ && list_length(((const OpExpr *) clause)->args) == 2)
 	{
 		const OpExpr *op = (const OpExpr *) clause;
