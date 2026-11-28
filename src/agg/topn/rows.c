@@ -235,7 +235,8 @@ rows_sort_begin(SiftV6Rows *r, TupleDesc desc)
 		colls[i] = spec->topk_item[i].collid;
 		nulls_first[i] = spec->topk_item[i].nulls_first;
 	}
-	r->sort = tuplesort_begin_heap(desc, spec->ntopk, cols, ops, colls, nulls_first, work_mem, NULL, TUPLESORT_NONE);
+	r->sort = tuplesort_begin_heap(desc, spec->ntopk, cols, ops, colls, nulls_first, work_mem, NULL,
+								   spec->topk != SIFT_V6_ROWS_ALL ? TUPLESORT_ALLOWBOUNDED : TUPLESORT_NONE);
 	if (spec->topk != SIFT_V6_ROWS_ALL)
 		tuplesort_set_bound(r->sort, spec->topk);
 	r->in = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
