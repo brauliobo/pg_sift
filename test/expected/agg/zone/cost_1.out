@@ -67,7 +67,7 @@ SELECT * FROM same(query_of('r.parent_id = 7 AND r.id < 1800'));
  normal |           3 |              0
 (1 row)
 
--- a short list of parents: the btree plan reads their 750 rows as fast as the scan reads the units whose zone holds one of them (2.1 ms each)
+-- a short list of parents: the scan decodes only the elements of their 750 rows in the units whose zone holds one of them (1.8 ms, the btree plan 3.3 ms)
 SELECT * FROM same(query_of('r.parent_id IN (3, 200, 470)'));
   plan  | result_rows | vs_normal_plan 
 --------+-------------+----------------

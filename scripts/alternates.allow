@@ -4,6 +4,7 @@ removed	test/expected/agg_group_order_1.out	17 18 18-arm64 19
 removed	test/expected/agg/scope/recognition_1.out	17 18 18-arm64 19	
 removed	test/expected/agg_semi_lut_1.out	17 18 18-arm64 19	
 removed	test/expected/col_gorder_group_range_1.out	17 18 18-arm64 19	
+removed	test/expected/col/scope/stamp_1.out	17 18 18-arm64 19	
 removed	test/expected/col/scope/text/key_1.out	17 18 18-arm64 19	
 removed	test/expected/col/scope/text/member_1.out	17 18 18-arm64 19	
 removed	test/expected/col/scope/text/member_collide_1.out	17 18 18-arm64 19	
@@ -231,8 +232,6 @@ test/expected/col/scope/dedupe_1.out	d9891fd5a822d01769c7614b9cd6bd494ea485cc	17
 test/expected/col/scope/hot_chain_1.out	9dc90d1a3b5280912d00be3de0cd619e4094aca7	17	n | same |                   route
 test/expected/col/scope/hot_chain_1.out	f6687a7681a077d6a06956e18d0a3469befbb7eb	17	5 | t    | scan of the facts (the members of the key)
 test/expected/col/scope/manymany_1.out	3c4d9706f59c7eeb26267649acf7081abd9363c1	17	n | same |                   route
-test/expected/col/scope/stamp_1.out	6dc03f671ab2297eee293fed1a5b550cd0be854c	17	2 | t    | scan of the facts (the members of the key)
-test/expected/col/scope/stamp_1.out	9dc90d1a3b5280912d00be3de0cd619e4094aca7	17	n | same |                   route
 test/expected/col/skip_map_1.out	200271921995c65698d6521f4cb726bcc492fec3	18	sm_o | avg(f)  | 6 | k < 0                 | normal                    |
 test/expected/col/skip_map_1.out	42c9691c59600b08f1427499788fe9278580ae86	18	sm_o | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	5a8f08ada73519eef481c9df90c4f91e234796f7	18	sm   | sum(id) | 3 | k = 500               | normal                    |
