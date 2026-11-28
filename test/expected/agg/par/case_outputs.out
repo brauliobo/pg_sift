@@ -1,6 +1,6 @@
 -- An output the scan computes in another form than the statement writes it (sum(CASE WHEN c THEN x ELSE 0 END) as a FILTER) keeps the node serial: a Gather above it finds
 -- each of its outputs by equal(), and a parallel plan of it was an error. A sorted output stays as written and the outputs as written still plan workers. Every statement
--- gives the rows of the normal plan.
+-- gives the rows of the normal plan. The scan is forced: with workers free to start (parallel_setup_cost = 0) PostgreSQL prices its parallel plan below the serial scan the rewritten outputs keep
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
@@ -13,6 +13,7 @@ SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
+SET sift.agg_force = on;
 CREATE FUNCTION co_rows(q text, push bool) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE r jsonb;
 BEGIN
