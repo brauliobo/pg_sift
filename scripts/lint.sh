@@ -41,7 +41,7 @@ CHECKS+=(
 	'update-drops	scripts/sql-parts.sh build && m=$(sed -n "s/^default_version *= *.\([0-9]*[.][0-9]*\).*/\1/p" pg_sift.control) && ! grep -nE "^(DROP|ALTER [A-Z ]* (DROP|RENAME))" sql/pg_sift--[0-9.]*--$m.sql'
 	'changelog-summary	[ "$(sed -n "/^## Unreleased/,/^## [^U]/p" CHANGELOG.md | grep -c "things worth reading")" -le 1 ] || { echo "CHANGELOG.md: Unreleased has two summary entries (\"things worth reading\"); a merge left the old wording beside the new one"; exit 1; }'
 	'neon-includes	for f in $(grep -l SIFT_HAVE_NEON $(git ls-files "src/*/neon.c" "src/*_neon.c") src/core/visibility/popcnt.c); do grep -q -E "^#include \"core/(cpu|neon|simd_isa)[.]h\"" $f || { echo "$f: SIFT_HAVE_NEON is defined by core/cpu.h; without it the object is empty on AArch64 and the library does not link there"; exit 1; }; done'
-	'testing-regress	scripts/lint-cache.sh testing-regress Makefile test/sql scripts/check-testing-regress.sh -- scripts/check-testing-regress.sh'
+	'testing-regress	scripts/lint-cache.sh testing-regress Makefile test/sql src scripts/testing-regress.mk scripts/check-test-settings.sh scripts/check-testing-regress.sh -- scripts/check-testing-regress.sh'
 	'worker-tests	scripts/lint-cache.sh worker-tests test/sql scripts/check-worker-tests.sh scripts/worker-tests.allow -- scripts/check-worker-tests.sh --selftest && scripts/check-worker-tests.sh'
 	'host-stubs	a=$(mktemp -d) b=$(mktemp -d) && trap "rm -rf $a $b" EXIT && make -s -C sqlite B=$a $a/host/stubs.o && make -s -C mariadb OUT=$b $b/sqhost/stubs.o && echo "host/stubs.c compiles for the SQLite and MariaDB hosts"'
 	'neutral	scripts/check-neutral.sh'
