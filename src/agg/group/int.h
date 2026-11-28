@@ -197,7 +197,7 @@ v6g_is_text_mm(const SiftV6Agg *a)
 static inline bool
 v6g_is_ext(const SiftV6Agg *a)
 {
-	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || v6g_is_text_mm(a);
+	return (a->kind >= SV6_STDDEV_POP && a->kind <= SV6_PCT_CONT) || a->kind == SV6_COUNT_ROWS || v6g_is_text_mm(a);
 }
 
 extern PGDLLIMPORT bool sift_agg_exact_float;
@@ -273,6 +273,7 @@ v6g_acc_op(const SiftV6Agg *a)
 		case SV6_PCT_CONT:
 		case SV6_GEN_PG:
 		case SV6_OSA:
+		case SV6_COUNT_ROWS:
 			break;
 	}
 	return V6A_NONE;

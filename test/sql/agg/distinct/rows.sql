@@ -1,9 +1,9 @@
 -- count(DISTINCT x) over the elements of a list, where x is the primary key of the scanned table (a NOT NULL column under a unique single-column
--- index), counts the rows of each group that have an element in it with a marker per group (agg/update.c, upd_count_rows): the elements of a row are
--- contiguous and the rows of a unit are its own, so no set of values is kept and the counts add up across units, workers and spilled tables. A grouping
--- set over a preserved join hands the column as a placeholder (NULL where the join nulls it, which DISTINCT does not count): the same path. A column
--- that is not proven unique (a duplicated column, a nullable unique column, a column of a two-column unique index) keeps the set, and
--- sift.explain_why says so (distinct_set).
+-- index), counts the rows of each group that have an element in it with a marker per group (agg/group/ext.c, SV6_COUNT_ROWS): the elements of a row are
+-- contiguous and x names one row, so no set of values is kept and the counts add up across spilled tables and workers. A grouping set over a preserved
+-- join hands the column as a placeholder (NULL where the join nulls it, which DISTINCT does not count): the same path. A column that is not proven
+-- unique (a duplicated column, a nullable unique column, a column of a two-column unique index) keeps the set; EXPLAIN VERBOSE names the columns
+-- counted as rows (Distinct Rows Counted).
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
@@ -24,23 +24,24 @@ CREATE INDEX facts_col ON facts USING sift_col (id, dim_a_id, alt_id, day, metri
 VACUUM (FREEZE, ANALYZE) facts;
 \ir test/common/sql/agg/check_query.sql
 
--- the aggregates the scan computes (a rows count shows as `count`, a set as `count(DISTINCT col)`), and the counters of what the group table did
--- (PostgreSQL 17 qualifies the column of a grouping set's distinct count with its table, 18 does not: the qualifier is dropped)
+-- the aggregates the scan computes, and the columns whose distinct count it counts as rows (PostgreSQL 17 qualifies the column of a grouping set's
+-- distinct count with its table, 18 does not: the qualifier is dropped); and what the group table did
 CREATE FUNCTION pushed(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE l text; aggs text; rows_ text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (VERBOSE, COSTS OFF) ' || q LOOP
-    IF l LIKE '%Pushed Aggregates:%' THEN RETURN regexp_replace(btrim(l), 'DISTINCT \w+\.', 'DISTINCT ', 'g'); END IF;
+    IF l LIKE '%Pushed Aggregates:%' THEN aggs := regexp_replace(btrim(l), 'DISTINCT \w+\.', 'DISTINCT ', 'g'); END IF;
+    IF l LIKE '%Distinct Rows Counted:%' THEN rows_ := substring(l FROM 'Distinct Rows Counted: (.*)$'); END IF;
   END LOOP;
-  RETURN 'no SiftAgg';
+  RETURN coalesce(aggs || coalesce(' / rows: ' || rows_, ''), 'no SiftAgg');
 END $$;
-CREATE FUNCTION counters(q text) RETURNS TABLE (spills int, sets_spilled int, workers int) LANGUAGE plpgsql AS $$
+CREATE FUNCTION counters(q text) RETURNS TABLE (spilled boolean, rows_counted text, workers int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
-  spills := 0; sets_spilled := 0; workers := 0;
-  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l ~ '(\d+) group table spills' THEN spills := spills + substring(l FROM '(\d+) group table spills')::int; END IF;
-    IF l ~ '(\d+) distinct sets spilled' THEN sets_spilled := sets_spilled + substring(l FROM '(\d+) distinct sets spilled')::int; END IF;
+  spilled := false; workers := 0;
+  FOR l IN EXECUTE 'EXPLAIN (ANALYZE, VERBOSE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF l ~ 'spills=[1-9]' THEN spilled := true; END IF;
+    IF l LIKE '%Distinct Rows Counted:%' THEN rows_counted := substring(l FROM 'Distinct Rows Counted: (.*)$'); END IF;
     IF l LIKE '%Workers Launched:%' THEN workers := workers + substring(l FROM 'Launched: (\d+)')::int; END IF;
   END LOOP;
   RETURN NEXT;
@@ -90,14 +91,13 @@ SELECT p.period, category, sub, count(DISTINCT id) AS n, count(DISTINCT id) FILT
 FROM periods p LEFT JOIN parsed x ON x.day <@ p.range
 GROUP BY GROUPING SETS ((p.period, category, sub), (p.period, category), (p.period)) ORDER BY 1, 2, 3;
 
--- not proven unique per row: a duplicated column, a nullable unique column, a column of a two-column unique index keep the set, and say why
+-- not proven unique per row: a duplicated column, a nullable unique column, a column of a two-column unique index keep the set
 SELECT pushed($q$ SELECT r.key, count(DISTINCT f.dim_a_id) AS d FROM facts f, jsonb_each(f.metrics_a) r GROUP BY 1 $q$);
 SELECT pushed($q$ SELECT r.key, count(DISTINCT f.alt_id) AS d FROM facts f, jsonb_each(f.metrics_a) r GROUP BY 1 $q$);
-SELECT DISTINCT slug, reason FROM sift.explain_why($q$ SELECT r.key, count(DISTINCT f.dim_a_id) AS d FROM facts f, jsonb_each(f.metrics_a) r GROUP BY 1 $q$) WHERE slug = 'distinct_set';
 SELECT * FROM check_query($q$ SELECT r.key, count(DISTINCT f.dim_a_id) AS d, count(DISTINCT f.alt_id) AS a FROM facts f, jsonb_each(f.metrics_a) r GROUP BY 1 ORDER BY 1 $q$);
 SELECT r.key, count(DISTINCT f.dim_a_id) AS d, count(DISTINCT f.alt_id) AS a FROM facts f, jsonb_each(f.metrics_a) r GROUP BY 1 ORDER BY 1;
 
--- the group table spills (hash memory at its smallest): the counts of the spilled tables add up, and no set of values is written
+-- the group table spills (hash memory at its smallest): the counts of the spilled tables add up, and no set of values is kept
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SELECT * FROM counters($q$ SELECT f.id % 5000 AS g, p.cat, count(DISTINCT f.id) AS rows_, count(*) AS elements FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY 1, 2 $q$);
@@ -111,7 +111,7 @@ SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
-SELECT spills, sets_spilled, workers > 0 AS parallel FROM counters($q$ SELECT p.cat, count(DISTINCT f.id) AS rows_, count(DISTINCT f.id) FILTER (WHERE p.score >= 8) AS high, count(*) AS elements
+SELECT spilled, rows_counted, workers > 0 AS parallel FROM counters($q$ SELECT p.cat, count(DISTINCT f.id) AS rows_, count(DISTINCT f.id) FILTER (WHERE p.score >= 8) AS high, count(*) AS elements
                                                               FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY 1 $q$);
 SELECT * FROM check_query($q$ SELECT p.cat, count(DISTINCT f.id) AS rows_, count(DISTINCT f.id) FILTER (WHERE p.score >= 8) AS high, count(*) AS elements
                               FROM facts f, jsonb_to_recordset(f.parts) p(cat text, score float8) GROUP BY 1 ORDER BY 1 $q$);

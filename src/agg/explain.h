@@ -18,6 +18,8 @@ extern void sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relatio
 extern void sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, const SiftV6Spec *spec, ExplainState *es);
 /* EXPLAIN ANALYZE: the grouping sets summed from the one the scan updates (agg/group/sets.c) */
 extern void sift_v6_explain_sets(const SiftV6Spec *spec, ExplainState *es);
+/* VERBOSE: the columns whose COUNT(DISTINCT) the scan counts as the rows they name (SV6_COUNT_ROWS), with no set of values */
+extern void sift_v6_explain_rows_counted(const SiftV6Spec *spec, ExplainState *es);
 /* the same for the keys of the stream aggregate (ints: the oid of its source, the range table index of the relation and whether the source is a sift_table): columns, and the bins it computes */
 extern void sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es);
 /* Pushed Aggregates: the aggregates the scan runs (a CASE of an aggregate as its FILTER), as the statement names their columns */

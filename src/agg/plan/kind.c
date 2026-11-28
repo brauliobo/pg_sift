@@ -78,6 +78,7 @@ sift_v6_kind_takes(SiftV6Kind kind, Oid typid)
 			return typid == FLOAT8OID;
 		case SV6_ARG_MAX:
 		case SV6_ARG_MIN:
+		case SV6_COUNT_ROWS:
 			return cls == SV6C_I32 || cls == SV6C_I64;
 		default:
 			return true;

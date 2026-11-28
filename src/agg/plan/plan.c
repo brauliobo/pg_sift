@@ -179,6 +179,8 @@ agg_kind_of(const V6Plan *p, const Aggref *unfiltered, SiftV6Agg *g)
 		return false;
 	if ((g->kind == SV6_COUNT || g->kind == SV6_COUNT_DISTINCT) && sift_v6_count_counts_rows(p->root, unfiltered))
 		g->kind = SV6_COUNT_STAR;
+	else if (g->kind == SV6_COUNT_DISTINCT && p->elem_rel != NULL && sift_v6_distinct_key_of_row(unfiltered, p->rel))
+		g->kind = SV6_COUNT_ROWS;
 	return true;
 }
 

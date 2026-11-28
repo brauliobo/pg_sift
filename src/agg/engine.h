@@ -45,7 +45,8 @@ typedef enum SiftV6Kind
 	SV6_GEN_PG,					/* generic PostgreSQL aggregate (aggtransfn/aggcombinefn/aggfinalfn + optional DISTINCT/ORDER BY tuplesort) */
 	SV6_OSA,					/* ordered-set / hypothetical-set aggregate (WITHIN GROUP: mode, percentile_disc/cont, rank/dense_rank/...) */
 	SV6_SUM_DISTINCT,			/* sum(DISTINCT x) of an integer, numeric or float column: each distinct value of a group joins the sum of SV6_SUM once (group_dist.c) */
-	SV6_AVG_DISTINCT
+	SV6_AVG_DISTINCT,
+	SV6_COUNT_ROWS				/* COUNT(DISTINCT x) of pairs of an unnest, x the key of a row of the scanned table: the rows of a group, each counted at its first pair (group/ext.c) */
 } SiftV6Kind;
 
 /* the aggregates whose values go through the exact set of v6_distinct.h */

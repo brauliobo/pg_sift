@@ -31,6 +31,7 @@
 #define SIFT_CSTAT_HAS_KEY_PRESENT	(UINT16_C(1) << 2)
 #define SIFT_CSTAT_HAS_HIST			(UINT16_C(1) << 3)
 #define SIFT_CSTAT_HAS_MCV			(UINT16_C(1) << 4)
+#define SIFT_CSTAT_HAS_MEAN			(UINT16_C(1) << 5)
 #define SIFT_CSTAT_HAS_SKIP			(UINT16_C(1) << 7)
 
 #define SIFT_MCV_IS_HASH			1
@@ -62,6 +63,7 @@ typedef struct SiftColCardStats
 	double		zone_monotonicity;	/* -1 .. 1: the order of the zones along the parts */
 	int64		min_i64;
 	int64		max_i64;
+	double		mean;			/* HAS_MEAN: the mean of the values that are not NULL, of a leaf whose range is not kept (the elements of a row of a lengths leaf) */
 	int64		hist_bounds[SIFT_CARD_HIST_BUCKETS + 1];
 	SiftCardMcv mcvs[SIFT_CARD_MCV_MAX];
 } SiftColCardStats;
@@ -187,7 +189,7 @@ typedef struct SiftCardEst
 
 extern void sift_card_estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out);
 
-/* The mean of the values of an integer leaf that are not NULL: of the midpoints of its equal-depth buckets, or of its range when it has none; -1 without a range */
+/* The mean of the values of an integer leaf that are not NULL: the one its format keeps, of the midpoints of its equal-depth buckets, or of its range when it has none; -1 without a range */
 extern double sift_card_mean(const SiftColCardStats *cs);
 /* The distinct values of a leaf of d (of n rows) that r_out rows keep */
 extern double sift_card_ndv(double d, double n, double r_out);

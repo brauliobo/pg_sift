@@ -1,6 +1,9 @@
 /*
  * agg/group/ext.c - the aggregates of agg/group/ext.h in the groups of SiftAggV6: the rows folded into a V6Acc, the states merged when a group is resolved from a spill or a worker, and the
  * Datums they leave as. group.c calls these for the kinds v6g_is_ext names.
+ *
+ * SV6_COUNT_ROWS counts the rows of a group by the key of the row (unique in the table), each at its first pair: the pairs of a row come one after another, so n is the rows, v0 the key of the
+ * first and v1 of the last. A row whose pairs straddle the spill of its group, or a merge of two states, counts once: the later state starts with the row the earlier one ended with.
  */
 #include "postgres.h"
 
@@ -65,6 +68,38 @@ moment_final(SiftV6Kind kind)
 	return SMF_VAR_POP;
 }
 
+static void
+count_row(V6Acc *acc, int64 key)
+{
+	if (acc->n > 0 && (int64) acc->v1 == key)
+		return;
+	if (acc->n++ == 0)
+		acc->v0 = (uint64) key;
+	acc->v1 = (uint64) key;
+}
+
+static void
+merge_rows(V6Acc *d, const V6Acc *s)
+{
+	bool		after,
+				before;
+
+	if (s->n == 0)
+		return;
+	if (d->n == 0)
+	{
+		*d = *s;
+		return;
+	}
+	after = d->v1 == s->v0;
+	before = !after && s->v1 == d->v0;
+	d->n += s->n - (after || before);
+	if (before)
+		d->v0 = s->v0;
+	else
+		d->v1 = s->v1;
+}
+
 void
 v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *v, uint16 r)
 {
@@ -82,6 +117,9 @@ v6g_ext_fold_row(SiftV6Group *g, const SiftV6Agg *a, V6Acc *acc, const SiftVec *
 			break;
 		case SV6_PCT_CONT:
 			sift_v6_pct_add(&g->tx, acc, ((const double *) v->data)[r]);
+			break;
+		case SV6_COUNT_ROWS:
+			count_row(acc, int_at(v, r));
 			break;
 		default:
 			{
@@ -125,6 +163,9 @@ v6g_ext_merge(SiftV6Group *g, const SiftV6Agg *a, V6Acc *d, const V6Acc *s)
 		case SV6_PCT_CONT:
 			sift_v6_pct_merge(&g->tx, d, s);
 			break;
+		case SV6_COUNT_ROWS:
+			merge_rows(d, s);
+			break;
 		default:
 			sift_tslot_merge(&g->tx, (SiftTextSlot *) d, (const SiftTextSlot *) s, a->kind == SV6_MIN, NULL, NULL);
 	}
@@ -135,6 +176,11 @@ v6g_ext_datum(const SiftV6Group *g, const SiftV6Agg *a, const V6Acc *acc, bool *
 {
 	double		x = 0.0;
 
+	if (a->kind == SV6_COUNT_ROWS)
+	{
+		*isnull = false;
+		return Int64GetDatum(acc->n);
+	}
 	*isnull = acc->n == 0;
 	if (*isnull)
 		return (Datum) 0;

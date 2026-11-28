@@ -87,6 +87,11 @@ leaf_stats(const SiftSrcLeaf *l, const SiftSrcStats *st, double rows, double byt
 		cs.flags |= SIFT_CSTAT_HAS_NDV;
 		cs.ndv_est = st->ndistinct[i];
 	}
+	if (l->kind != SCL_SCALAR && st->null_frac[i] < 1)
+	{
+		cs.flags |= SIFT_CSTAT_HAS_MEAN;
+		cs.mean = st->elems_per_row[i] / (1 - st->null_frac[i]);
+	}
 	if (has_range(l, st))
 	{
 		cs.flags |= SIFT_CSTAT_HAS_RANGE;

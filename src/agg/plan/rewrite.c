@@ -142,11 +142,11 @@ sift_v6_collapse_offset_sums(Node *expr)
 
 /* ---- count(x) of every row ---- */
 
-/* the column of x is a key of a unique index of rel, the one table of the statement (so no join repeats a row) */
+/* the column of x is a NOT NULL key of a unique index of rel: no two rows have its value */
 static bool
-unique_key(const PlannerInfo *root, const RelOptInfo *rel, const Var *x)
+unique_key(const RelOptInfo *rel, const Var *x)
 {
-	if (bms_membership(root->all_baserels) != BMS_SINGLETON)
+	if (!bms_is_member(x->varattno, rel->notnullattnums))
 		return false;
 	foreach_node(IndexOptInfo, ix, rel->indexlist)
 		if (ix->unique && ix->immediate && ix->indpred == NIL && ix->nkeycolumns == 1 && ix->indexkeys[0] == x->varattno)
@@ -169,8 +169,16 @@ sift_v6_count_counts_rows(PlannerInfo *root, const Aggref *a)
 	if (rel == NULL || rel->rtekind != RTE_RELATION || x->varattno < 0)
 		return false;
 	if (a->aggdistinct != NIL)
-		return bms_is_member(x->varattno, rel->notnullattnums) && unique_key(root, rel, x);
+		return bms_membership(root->all_baserels) == BMS_SINGLETON && unique_key(rel, x);
 	return x->varattno == 0 || bms_is_member(x->varattno, rel->notnullattnums);
+}
+
+bool
+sift_v6_distinct_key_of_row(const Aggref *a, const RelOptInfo *rel)
+{
+	const Var  *x = list_length(a->args) == 1 ? (const Var *) ((const TargetEntry *) linitial(a->args))->expr : NULL;
+
+	return a->aggdistinct != NIL && a->aggorder == NIL && x != NULL && IsA(x, Var) && x->varlevelsup == 0 && x->varno == rel->relid && x->varattno > 0 && unique_key(rel, x);
 }
 
 List *

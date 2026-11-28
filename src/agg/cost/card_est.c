@@ -713,6 +713,8 @@ sift_card_mean(const SiftColCardStats *cs)
 {
 	double		sum = 0;
 
+	if (cs->flags & SIFT_CSTAT_HAS_MEAN)
+		return cs->mean;
 	if (!(cs->flags & SIFT_CSTAT_HAS_RANGE))
 		return -1;
 	if (!(cs->flags & SIFT_CSTAT_HAS_HIST) || cs->n_hist == 0)

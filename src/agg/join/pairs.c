@@ -137,14 +137,23 @@ pair_var(Node *n, PairCtx *c)
 	return n;
 }
 
+/* the expression is NULL when its columns are: strict all through, or NULLIF of such an expression (NULLIF(NULL, b) is NULL whatever b is) */
+static bool
+null_on_null(Node *e)
+{
+	if (IsA(e, NullIfExpr))
+		return null_on_null(linitial(((NullIfExpr *) e)->args));
+	return contain_var_clause(e) && !contain_nonstrict_functions(e);
+}
+
 bool
 sift_v6_placeholder_is_expr(PlannerInfo *root, PlaceHolderVar *phv)
 {
-	const Node *e = (const Node *) phv->phexpr;
-	const Relids vars = pull_varnos(root, (Node *) e);
+	Node	   *e = (Node *) phv->phexpr;
+	const Relids vars = pull_varnos(root, e);
 
-	return phv->phlevelsup == 0 && !bms_is_empty(vars) && bms_is_subset(vars, find_placeholder_info(root, phv)->ph_eval_at) && !contain_nonstrict_functions((Node *) e) &&
-		!contain_volatile_functions((Node *) e) && !contain_subplans((Node *) e);
+	return phv->phlevelsup == 0 && !bms_is_empty(vars) && bms_is_subset(vars, find_placeholder_info(root, phv)->ph_eval_at) && null_on_null(e) &&
+		!contain_volatile_functions(e) && !contain_subplans(e);
 }
 
 Node *

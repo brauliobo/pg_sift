@@ -864,6 +864,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		if (st->spec->topk > 0)
 			sift_v6_explain_topn_groups(st->spec, es);
 		sift_v6_explain_pushed_aggs(node, ancestors, es);
+		if (es->verbose)
+			sift_v6_explain_rows_counted(st->spec, es);
 		if (es->analyze && (st->topk != NULL || (st->par != NULL && st->spec->topk > 0)))
 			ExplainPropertyUInteger("Groups Dropped By Top-N", NULL, topk_dropped(st), es);
 	}

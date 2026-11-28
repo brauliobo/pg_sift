@@ -306,6 +306,20 @@ sift_v6_explain_sets(const SiftV6Spec *spec, ExplainState *es)
 }
 
 void
+sift_v6_explain_rows_counted(const SiftV6Spec *spec, ExplainState *es)
+{
+	StringInfoData buf;
+
+	initStringInfo(&buf);
+	for (int j = 0; j < spec->naggs; j++)
+		if (spec->agg[j].kind == SV6_COUNT_ROWS)
+			appendStringInfo(&buf, "%s%s", buf.len ? ", " : "", col_name(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), &spec->agg[j].arg));
+	if (buf.len)
+		ExplainPropertyText("Distinct Rows Counted", buf.data, es);
+	pfree(buf.data);
+}
+
+void
 sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es)
 {
 	const Oid	relid = (Oid) linitial_int(ints);
