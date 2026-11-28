@@ -6,7 +6,9 @@
 #include "catalog/pg_type_d.h"
 #include "datatype/timestamp.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/scansup.h"
 #include "utils/builtins.h"
+#include "utils/datetime.h"
 #include "utils/fmgroids.h"
 #include "utils/timestamp.h"
 
@@ -87,17 +89,25 @@ bin_step(const FuncExpr *f)
 	return us;
 }
 
-/* a constant full name of a zone (an area and a city: no abbreviation of the session can be named so) whose offset is 0 at every instant */
+/* a constant zone name that PostgreSQL reads now as a zone of offset 0 at every instant: an abbreviation (from PostgreSQL 18 the session zone's first) of offset 0, else a zone of UTC */
 static bool
 utc_zone(const Node *e)
 {
 	const Const *k = (const Const *) e;
 	char	   *name;
+	int			type,
+				offset;
+	pg_tz	   *tz;
+	DateTimeErrorExtra extra;
 
 	if (!IsA(e, Const) || k->constisnull || k->consttype != TEXTOID)
 		return false;
 	name = TextDatumGetCString(k->constvalue);
-	return strchr(name, '/') != NULL && pg_tzset(name) != NULL && zone_is_utc(pg_tzset(name));
+	if (DecodeTimezoneAbbrev(0, downcase_truncate_identifier(name, strlen(name), false), &type, &offset, &tz, &extra) != 0)
+		return false;
+	if (type == TZ || type == DTZ)
+		return offset == 0;
+	return type != DYNTZ && (tz = pg_tzset(name)) != NULL && zone_is_utc(tz);
 }
 
 /* the step of a calendar call, the argument it reads in *arg, whether it is a date_bin and whether it cuts a timestamptz on its instants (a date_bin, a date_trunc in a zone of UTC); 0 for any other node */
