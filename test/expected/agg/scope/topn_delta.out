@@ -238,7 +238,7 @@ SELECT 8 AS n, 'merged' AS state
 SELECT sift.col_merge('events_col', true)
  col_merge 
 -----------
-         1
+         0
 (1 row)
 
 SELECT * FROM probe()
