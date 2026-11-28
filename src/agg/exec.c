@@ -594,6 +594,7 @@ v6_run_scan(V6State *st, EState *estate)
 			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, st->css.ss.ps.ps_ExprContext);
 	}
 	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
+	MemoryContextSwitchTo(st->gcx);
 	st->ran = true;
 	if (st->spec->rows)
 	{

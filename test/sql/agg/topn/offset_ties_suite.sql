@@ -183,26 +183,25 @@ SELECT result, count(*) FROM rs_all() GROUP BY 1 ORDER BY 1;
 SELECT sift.col_promote('gg_i'::regclass) >= 0 AS promoted;
 SELECT result, count(*) FROM rs_all() GROUP BY 1 ORDER BY 1;
 
--- the memory of the source does not grow with the probes: 20,000 probes over ten groups, with a write buffer, the context is the size of one
+-- the memory of the query does not grow with the probes: 20,000 probes over ten groups, with a write buffer, the executor state each run of the scan hangs its context from is the size of one
 INSERT INTO gg (id, g, k, t, s) SELECT 60000 + i, i % 10, i % 700, NULL, 's' || lpad((i % 3000)::text, 4, '0') FROM generate_series(1, 1500) i;
--- the context and its descendants: by path where the view has it (PostgreSQL 18), else by parent name and level
+-- the executor state that is the parent of the scan's context, without its children: by path where the view has it (PostgreSQL 18), else by name and level
 CREATE FUNCTION rs_mem() RETURNS bigint LANGUAGE plpgsql AS
 $$ DECLARE n bigint;
 BEGIN
 	IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'pg_backend_memory_contexts'::regclass AND attname = 'path') THEN
-		EXECUTE $q$ SELECT coalesce(sum(c.total_bytes), 0)::bigint FROM pg_backend_memory_contexts c, pg_backend_memory_contexts r
-			WHERE r.name = 'sift agg source' AND c.path @> ARRAY[r.path[cardinality(r.path)]] $q$ INTO n;
+		EXECUTE $q$ SELECT c.total_bytes FROM pg_backend_memory_contexts c, pg_backend_memory_contexts r
+			WHERE r.name = 'sift agg v6 groups' AND c.path = r.path[1:cardinality(r.path) - 1] $q$ INTO n;
 	ELSE
-		EXECUTE $q$ WITH RECURSIVE t(name, level, total_bytes) AS (
-			SELECT name, level, total_bytes FROM pg_backend_memory_contexts WHERE name = 'sift agg source'
-			UNION ALL
-			SELECT c.name, c.level, c.total_bytes FROM pg_backend_memory_contexts c JOIN t ON c.parent = t.name AND c.level = t.level + 1)
-			SELECT coalesce(sum(total_bytes), 0)::bigint FROM t $q$ INTO n;
+		EXECUTE $q$ SELECT max(total_bytes) FROM pg_backend_memory_contexts
+			WHERE name = 'ExecutorState' AND level = (SELECT min(level) - 1 FROM pg_backend_memory_contexts WHERE name = 'sift agg v6 groups') $q$ INTO n;
 	END IF;
 	RETURN n;
 END $$;
-SELECT max(CASE WHEN v.g = 20000 THEN rs_mem() END) BETWEEN 1 AND 1000000 AS source_memory_is_bounded
+SET sift.agg_force = on;
+SELECT max(CASE WHEN v.g = 20000 THEN rs_mem() END) BETWEEN 1 AND 1000000 AS query_memory_is_bounded
 FROM generate_series(1, 20000) v(g), LATERAL (SELECT id FROM gg WHERE g = v.g % 10 ORDER BY k DESC, id LIMIT 1) x;
+RESET sift.agg_force;
 DROP FUNCTION rs_mem();
 
 -- a cursor read forward and back starts the probes over; a prepared statement with a generic plan, the parameter changing between executions
