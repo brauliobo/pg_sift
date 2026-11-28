@@ -36,8 +36,8 @@ setup
 	DECLARE l text; r text := 'heap';
 	BEGIN
 		FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-			IF l ~ 'Custom Scan \(Sift' THEN r := substring(l from 'Custom Scan \((Sift[A-Za-z0-9]+)\)'); END IF;
-			IF l ~ 'Index Only Scan using ' THEN r := substring(l from '(Index Only Scan using [a-z_]+)'); END IF;
+			IF r = 'heap' AND l ~ 'Custom Scan \(Sift' THEN r := substring(l from 'Custom Scan \((Sift[A-Za-z0-9]+)\)'); END IF;
+			IF r = 'heap' AND l ~ 'Index Only Scan using ' THEN r := substring(l from '(Index Only Scan using [a-z_]+)'); END IF;
 			IF l ~ 'Scope Read: ' THEN r := r || ', ' || split_part(trim(substr(l, position('Scope Read: ' in l) + 12)), ' (', 1); END IF;
 		END LOOP;
 		RETURN r;

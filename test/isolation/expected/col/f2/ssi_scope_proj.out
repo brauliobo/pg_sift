@@ -41,15 +41,15 @@ SiftAggV6Scope, summary
 step s1b: BEGIN ISOLATION LEVEL SERIALIZABLE;
 step s2b: BEGIN ISOLATION LEVEL SERIALIZABLE;
 step s1sum: SELECT iso_node($$SELECT sum(e.amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3$$) AS node;
-node        
-------------
-SiftAggV6Sip
+node                
+--------------------
+SiftAggV6Scope, join
 (1 row)
 
 step s2sum: SELECT iso_node($$SELECT sum(e.amount) FROM iso_sf e JOIN iso_sp s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 4$$) AS node;
-node        
-------------
-SiftAggV6Sip
+node                
+--------------------
+SiftAggV6Scope, join
 (1 row)
 
 step s1df: DELETE FROM iso_sf WHERE id = 90002;
