@@ -500,7 +500,8 @@ typedef enum SiftV6JsonExc
 {
 	SV6JX_NULL,					/* a JSON null, or a value whose cast is NULL */
 	SV6JX_VALUE,
-	SV6JX_RAISES				/* PostgreSQL's cast of the value raises: sift_v6_json_exception_raise raises its error */
+	SV6JX_RAISES,				/* PostgreSQL's cast of the value raises: sift_v6_json_exception_raise raises its error */
+	SV6JX_INEXACT				/* the integer cast of a number a float8 leaf holds rounded (a tie, x.5, or an integer past 2^52): the decimal of the document decides it */
 } SiftV6JsonExc;
 
 typedef struct SiftV6JsonValue
@@ -530,8 +531,11 @@ sift_v6_json_int(Oid typid, Datum value)
 /* The value of an exception as a column of class cls reads it (the `->>` text, its float8 or bool cast, or the cast of the jsonb to float8 or an integer), without raising: the scan raises only for the rows it keeps */
 extern SiftV6JsonExc sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx, SiftV6JsonValue *out);
 extern void sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, uint32 len, MemoryContext cx);
-/* The integer cast of the jsonb of a number a float8 leaf holds, as numeric rounds it; false when the type cannot hold it, where sift_v6_json_float_int_raise raises PostgreSQL's error */
-extern bool sift_v6_json_float_int(Oid typid, double f, Datum *out);
+/*
+ * The integer cast of the jsonb of a number a float8 leaf holds, as numeric rounds it: SV6JX_RAISES when the type cannot hold it (sift_v6_json_float_int_raise raises PostgreSQL's error), SV6JX_INEXACT
+ * when the decimals the leaf rounds to f do not all cast to one integer, which only the document of the row tells
+ */
+extern SiftV6JsonExc sift_v6_json_float_int(Oid typid, double f, Datum *out);
 extern void sift_v6_json_float_int_raise(Oid typid, double f);
 /* The member the keys lead to from the jsonb of the payload (a jsonb datum of len bytes), as the payload of one, made in cx; false: none (a key is missing, or a value on the way is no object) */
 extern bool sift_v6_json_payload_member(const char *payload, uint32 len, const List *keys, MemoryContext cx, const char **out, uint32 *outlen);

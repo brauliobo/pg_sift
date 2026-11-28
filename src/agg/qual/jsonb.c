@@ -979,22 +979,22 @@ sift_v6_json_exception_raise(Oid typid, bool jsonb_cast, const char *payload, ui
 	SIFT_INVARIANT(false, "the conversion of a value of a key that does not convert raises");
 }
 
-bool
+SiftV6JsonExc
 sift_v6_json_float_int(Oid typid, double f, Datum *out)
 {
 	const double r = round(f);
 
+	if (fabs(f) < 4503599627370496.0 ? fabs(f - r) == 0.5 : typid == INT8OID && fabs(f) <= 9223372036854775808.0)
+		return SV6JX_INEXACT;
 	if (typid == INT2OID ? !(r >= PG_INT16_MIN && r <= PG_INT16_MAX) : typid == INT4OID ? !(r >= PG_INT32_MIN && r <= PG_INT32_MAX) : !(r >= -9223372036854775808.0 && r < 9223372036854775808.0))
-		return false;
+		return SV6JX_RAISES;
 	*out = typid == INT8OID ? Int64GetDatum((int64) r) : typid == INT4OID ? Int32GetDatum((int32) r) : Int16GetDatum((int16) r);
-	return true;
+	return SV6JX_VALUE;
 }
 
 void
 sift_v6_json_float_int_raise(Oid typid, double f)
 {
-	const Datum num = DirectFunctionCall1(float8_numeric, Float8GetDatum(f));
-
-	(void) DirectFunctionCall1(typid == INT2OID ? numeric_int2 : typid == INT4OID ? numeric_int4 : numeric_int8, num);
+	(void) DirectFunctionCall1(typid == INT2OID ? numeric_int2 : typid == INT4OID ? numeric_int4 : numeric_int8, DirectFunctionCall1(float8_numeric, Float8GetDatum(f)));
 	SIFT_INVARIANT(false, "the integer cast of a number out of the range of its type raises");
 }

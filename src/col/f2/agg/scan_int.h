@@ -22,7 +22,7 @@
 #include "col/f2/scope/route.h"
 #include "col/f2/store/scan.h"
 
-/* the member of a map a column reads (SiftV6Col.jmember): the group leaf of the map and the leaf of its keys (the column's own leaf holds the values), and the member's key */
+/* the member a column reads by a path (SiftV6Col.jmember): of a map, its group leaf and the leaf of its keys (the column's own leaf holds the values), and the member's key; of a path the index declares, group -1 */
 typedef struct V6Member
 {
 	int			group;
@@ -61,7 +61,7 @@ typedef struct V6Col
 	bool		is_table;		/* the leaf is a cell of a sift_table: the datum of the attribute, not the bytes a sift_col index or the path of a document holds */
 	bool		lane;			/* a leaf the datum of the column before it is made of: it is decoded with that one, and has no vector of its own */
 	int			jmember;		/* SiftV6Col.jmember: the column reads a member of a document by a path (f2_v6_member.c) */
-	const V6Member *member;		/* jmember: the member of a map; NULL for a path the index declares, whose leaf is the column's */
+	const V6Member *member;		/* jmember: the member it reads (of a path the index declares, the column's own leaf holds it) */
 	uint64		gates;			/* bit f - 1: an aggregate with FILTER clause f takes the column (SiftV6Agg.fclause) */
 	bool		ungated;		/* something else reads the column on every row the batch quals keep: a key, an aggregate with no FILTER, a clause, a derivation */
 } V6Col;
@@ -109,7 +109,7 @@ struct SiftV6Scan
 	Relation	rows_rel;		/* where a row whose member the leaves cannot answer is read again by its address: the heap of an index, or the sift_table */
 	Snapshot	rows_snap;
 	SiftV6Vet	reread;			/* the fetch of those rows, begun at the first (sift_f2_v6_member_end ends it) */
-	bool		members;		/* a column reads a member of a map: the batches keep the addresses of their rows */
+	bool		members;		/* a column reads a member its leaves may not answer (of a map, or the integer cast of a float8 leaf): the batches keep the addresses of their rows */
 	SiftV6Preagg *preagg;		/* the cubes of the granules a part keeps (v6_preagg.h) */
 	int			ncols;
 	V6Col	   *cols;

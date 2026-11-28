@@ -82,15 +82,15 @@ lane_cols(V6Scan *s, int head)
 	}
 }
 
-/* the member of a map the column reads: the group leaf and the leaf of the keys of the map are decoded with it, as lanes of no vector of their own */
+/* the member the column reads: of a map, the group leaf and the leaf of the keys of the map are decoded with it, as lanes of no vector of their own */
 static void
 member_cols(V6Scan *s, V6Col *n, const SiftV6Col *c)
 {
 	V6Member   *m = sift_f2_v6_member_new(s, c);
 
 	n->member = m;
-	s->members = true;
-	if (m->length)
+	s->members |= m->group >= 0 || (c->typid != FLOAT8OID && s->defs[c->jleaf - 1].store == SIFT_COLS_F8);
+	if (m->group < 0 || m->length)
 		return;
 	col_init(s, m->group, &(SiftV6Col) {.attno = c->attno,.typid = INT8OID}, false, false);
 	s->cols[s->ncols - 1].lane = true;
@@ -128,7 +128,7 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan, int 
 	col_init(s, leaf, &c, key, takes_nan);
 	n = col_gate(&s->cols[s->ncols - 1], gate);
 	n->jmember = c.jmember;
-	if (c.jmember > 0 && (s->defs[leaf].parent >= 0 || s->defs[leaf].kind == SIFT_COLK_GROUP))
+	if (c.jmember > 0)
 		member_cols(s, n, &c);
 	else if (n->cls == SV6C_DATUM)
 	{

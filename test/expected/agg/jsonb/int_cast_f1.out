@@ -127,6 +127,31 @@ $q$, false);
  string member, join | f    | t    | 22023 cannot cast jsonb string to type integer
 (1 row)
 
+-- a float8 leaf holds a decimal rounded: the integer cast of a member whose leaf does not tell it (a tie that a longer decimal stands for, an integer past 2^52) is the document's
+CREATE TABLE ties (id int, metrics jsonb);
+INSERT INTO ties SELECT i, jsonb_build_object('m_total', i % 10) FROM generate_series(1, 3000) i;
+INSERT INTO ties VALUES (3001, '{"m_total": 2.4999999999999999}'), (3002, '{"m_total": 2.5}'), (3003, '{"m_total": -2.5000000000000001}'), (3004, '{"m_total": 9007199254740993}'),
+	(3005, '{"m_total": -9223372036854775808}');
+CREATE INDEX ties_col ON ties USING sift_col (id, metrics) WITH (paths = 'metrics.* float8');
+VACUUM (FREEZE, ANALYZE) ties;
+SELECT * FROM check_query('tie of a longer decimal', 'SELECT count(*), sum(id) FROM ties WHERE id < 3004 AND (metrics -> ''m_total'')::int = 2');
+          label          | scan | same |             outcome             
+-------------------------+------+------+---------------------------------
+ tie of a longer decimal | f    | t    | [{"sum": 452101, "count": 301}]
+(1 row)
+
+SELECT * FROM check_query('tie, group key', 'SELECT (metrics -> ''m_total'')::int AS score, count(*) AS n, sum(id) AS ids FROM ties WHERE id < 3004 GROUP BY 1');
+     label      | scan | same |                                               outcome                                                
+----------------+------+------+------------------------------------------------------------------------------------------------------
+ tie, group key | t    | t    | [{"n": 1, "ids": 3003, "score": -3}, {"n": 300, "ids": 448800, "score": 1}, {"n": 300, "ids": 449700
+(1 row)
+
+SELECT * FROM check_query('bigint past 2^52', 'SELECT sum((metrics -> ''m_total'')::bigint) AS total, min((metrics -> ''m_total'')::bigint) AS low FROM ties');
+      label       | scan | same |                            outcome                             
+------------------+------+------+----------------------------------------------------------------
+ bigint past 2^52 | t    | t    | [{"low": -9223372036854775808, "total": -9214364837600021313}]
+(1 row)
+
 DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
-DROP TABLE facts, dim_a;
+DROP TABLE facts, dim_a, ties;
 DROP EXTENSION pg_sift;

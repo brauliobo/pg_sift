@@ -61,7 +61,7 @@ put(UnRun *u, int i, uint32 r, bool number, double f, const char *pay, uint32 le
 	SiftV6JsonValue val = {.value = Float8GetDatum(f)};
 	SiftV6JsonExc res = SV6JX_VALUE;
 
-	if (number && c->typid != FLOAT8OID && !sift_v6_json_float_int(c->typid, f, &val.value))
+	if (number && c->typid != FLOAT8OID && sift_v6_json_float_int(c->typid, f, &val.value) != SV6JX_VALUE)
 		sift_v6_json_float_int_raise(c->typid, f);
 	if (!number)
 		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, pay, len, u->bcx, &val);
@@ -114,6 +114,18 @@ heap_member(UnRun *u, int i, uint64 tid, uint32 r)
 	slot_member(u, i, r);
 }
 
+/* the number a leaf holds of the member at row r: the document's when the integer of its cast is not known from the leaf */
+static void
+number_member(UnRun *u, int i, uint64 tid, uint32 r, double f)
+{
+	Datum		ignored;
+
+	if (u->cols[i].typid != FLOAT8OID && sift_v6_json_float_int(u->cols[i].typid, f, &ignored) == SV6JX_INEXACT)
+		heap_member(u, i, tid, r);
+	else
+		put(u, i, r, true, f, NULL, 0);
+}
+
 /* the element of the member in the elements [lo, hi) of a row, SIFT_GATHER_NONE for none; false when a key is one the index could not keep */
 static bool
 find(const UnCol *c, const SiftF2ElemStream *es, uint32 lo, uint32 hi, uint32 *at)
@@ -141,7 +153,7 @@ map_member(UnRun *u, int i, const SiftF2ExtBatch *b, uint32 r)
 	if (es->layout.n_parents < (uint32) b->n || ((es->poison[r >> 6] >> (r & 63)) & 1) || !find(&u->cols[i], es, es->layout.offsets[r], es->layout.offsets[r + 1], &at))
 		heap_member(u, i, b->tid[r], r);
 	else if (at != SIFT_GATHER_NONE && ((es->child_valid[1][at >> 6] >> (at & 63)) & 1))
-		put(u, i, r, true, ((const double *) es->child_data[1])[at], NULL, 0);
+		number_member(u, i, b->tid[r], r, ((const double *) es->child_data[1])[at]);
 }
 
 void
@@ -163,7 +175,7 @@ sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const Sif
 				u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
 			}
 			else if (leaf->all_valid || ((leaf->valid[r >> 6] >> (r & 63)) & 1))
-				put(u, i, r, true, ((const double *) leaf->data)[r], NULL, 0);
+				number_member(u, i, b->tid[r], r, ((const double *) leaf->data)[r]);
 			else
 				heap_member(u, i, b->tid[r], r);
 		}

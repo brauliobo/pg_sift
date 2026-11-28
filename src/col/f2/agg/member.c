@@ -50,10 +50,10 @@ sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c)
 	}
 	name = strVal(llast(path));
 	*m = (V6Member) {.group = sch->cols[c->jleaf - 1].parent,.key = -1,.name = name,.len = strlen(name),.path = path,.doc_att = doc_att};
-	for (int l = 0; l < sch->ncols; l++)
+	for (int l = 0; m->group >= 0 && l < sch->ncols; l++)
 		if (sch->cols[l].parent == m->group && strstr(sch->cols[l].path, "#key") != NULL)
 			m->key = l;
-	SIFT_INVARIANT(m->key >= 0, "the map of a member the scan reads has a leaf of its keys");
+	SIFT_INVARIANT(m->group < 0 || m->key >= 0, "the map of a member the scan reads has a leaf of its keys");
 	return m;
 }
 
@@ -67,7 +67,7 @@ sift_f2_v6_member_end(V6Scan *s)
 static uint32
 row_members(const V6Col *c, const ColView *views, int r)
 {
-	return c->member == NULL || views[c->member->group].isnull[r] ? 0 : (uint32) views[c->member->group].i[r];
+	return c->member->group < 0 || views[c->member->group].isnull[r] ? 0 : (uint32) views[c->member->group].i[r];
 }
 
 static Cell
@@ -151,17 +151,17 @@ length_cell(V6Scan *s, const V6Col *c, const ColView *g, int r, uint64 tid)
 
 /* the member of row r, whose elements are [first, first + n) of the leaves of the keys and the values of its map; of a path the index declares, its leaf */
 static Cell
-member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n, uint64 tid)
+leaves_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n, uint64 tid)
 {
 	const ColView *g,
 			   *k,
 			   *v = &views[c->leaf];
 	bool		lost = false;
 
-	if (c->member == NULL)
-		return leaf_cell(s, v, (uint32) r);
 	if (c->member->length)
 		return length_cell(s, c, v, r, tid);
+	if (c->member->group < 0)
+		return leaf_cell(s, v, (uint32) r);
 	g = &views[c->member->group];
 	k = &views[c->member->key];
 	if (g->isnull[r])
@@ -177,6 +177,16 @@ member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first
 	return lost ? row_cell(s, c, tid) : (Cell) {.kind = MC_NULL};
 }
 
+/* the member of row r: the one of its document when the integer the cast gives of the number its leaf holds is not known from the leaf */
+static Cell
+member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n, uint64 tid)
+{
+	const Cell	m = leaves_cell(s, c, views, r, first, n, tid);
+	Datum		ignored;
+
+	return m.kind == MC_FLOAT && c->typid != FLOAT8OID && sift_v6_json_float_int(c->typid, m.f, &ignored) == SV6JX_INEXACT ? row_cell(s, c, tid) : m;
+}
+
 /* the cell as the value of the column at i: false when its cast raises, or the list is no array */
 static bool
 put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
@@ -185,7 +195,7 @@ put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
 	SiftV6JsonExc res = SV6JX_NULL;
 	int64		n = m->i;
 
-	if (c->member != NULL && c->member->length && m->kind != MC_NULL)
+	if (c->member->length && m->kind != MC_NULL)
 	{
 		if (m->kind == MC_JSONB && !sift_v6_json_array_length(m->pay, m->plen, s->batch_cx, &n))
 			return false;
@@ -200,7 +210,7 @@ put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
 		res = SV6JX_VALUE;
 	}
 	else if (m->kind == MC_FLOAT)
-		res = sift_v6_json_float_int(c->typid, m->f, &val.value) ? SV6JX_VALUE : SV6JX_RAISES;
+		res = sift_v6_json_float_int(c->typid, m->f, &val.value);
 	else if (m->kind == MC_JSONB)
 		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, m->pay, m->plen, s->batch_cx, &val);
 	if (m->kind == MC_TEXT)
@@ -263,7 +273,7 @@ sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, const u
 {
 	const Cell	m = member_cell(s, c, views, r, members_before(c, views, r), row_members(c, views, r), tid != NULL ? tid[r] : 0);
 
-	if (c->member != NULL && c->member->length)
+	if (c->member->length)
 		sift_v6_json_array_length_raise(m.pay, m.plen, s->batch_cx);
 	if (m.kind == MC_FLOAT)
 		sift_v6_json_float_int_raise(c->typid, m.f);
