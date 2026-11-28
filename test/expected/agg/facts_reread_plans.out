@@ -25,7 +25,7 @@ END $$;
 CREATE FUNCTION window_q(lo int, hi int) RETURNS text LANGUAGE sql AS
 $$ SELECT format('SELECT grp, count(*), sum(v) FROM zr WHERE id BETWEEN %s AND %s GROUP BY grp', lo, hi) $$;
 CREATE FUNCTION scope_q(k int) RETURNS text LANGUAGE sql AS
-$$ SELECT format('SELECT count(*), sum(v), min(id) FROM zr e WHERE sift.in_scope(''zr_col''::regclass, ''tenant_id'', e.dim_a_id, %s)', k) $$;
+$$ SELECT format('SELECT count(*), sum(v), min(id) FROM zr e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s)', k) $$;
 SET plan_cache_mode = force_generic_plan;
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -33,8 +33,8 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET seq_page_cost = 10000;
 SET max_parallel_workers_per_gather = 2;
-PREPARE by_window (int, int) AS SELECT grp, count(*), sum(v) FROM zr WHERE id BETWEEN $1 AND $2 GROUP BY grp;
-PREPARE by_scope AS SELECT count(*), sum(v), min(id) FROM zr e WHERE sift.in_scope('zr_col'::regclass, 'tenant_id', e.dim_a_id, 5);
+PREPARE by_window AS SELECT grp, count(*), sum(v) FROM zr WHERE id BETWEEN 1000 AND 30000 GROUP BY grp;
+PREPARE by_scope AS SELECT count(*), sum(v), min(id) FROM zr e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5);
 CREATE FUNCTION kept_window(lo int, hi int) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
@@ -44,7 +44,7 @@ END $$;
 CREATE FUNCTION kept_scope() RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
-	SELECT string_agg(t::text, ',' ORDER BY t::text) INTO r FROM (SELECT count(*), sum(v), min(id) FROM zr e WHERE sift.in_scope('zr_col'::regclass, 'tenant_id', e.dim_a_id, 5)) t;
+	SELECT string_agg(t::text, ',' ORDER BY t::text) INTO r FROM (SELECT count(*), sum(v), min(id) FROM zr e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5)) t;
 	RETURN r;
 END $$;
 CREATE FUNCTION prepared_rows(call text) RETURNS text LANGUAGE plpgsql AS $$
@@ -55,25 +55,23 @@ BEGIN
 	DROP TABLE pr;
 	RETURN r;
 END $$;
-CREATE FUNCTION scope_ref(k int) RETURNS text LANGUAGE sql AS
-$$ SELECT format('SELECT count(*), sum(v), min(id) FROM zr e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = %s)', k) $$;
 -- the statements kept by the session (the generic plans, the plan of plpgsql) against the normal plan, on the table as it is now
 CREATE FUNCTION kept_plans_same() RETURNS boolean LANGUAGE plpgsql AS $$
 BEGIN
-	RETURN prepared_rows('by_window(1000, 30000)') = normal_rows(window_q(1000, 30000))
-		AND prepared_rows('by_scope') = normal_rows(scope_ref(5))
+	RETURN prepared_rows('by_window') = normal_rows(window_q(1000, 30000))
+		AND prepared_rows('by_scope') = normal_rows(scope_q(5))
 		AND kept_window(1000, 30000) = normal_rows(window_q(1000, 30000))
-		AND kept_scope() = normal_rows(scope_ref(5));
+		AND kept_scope() = normal_rows(scope_q(5));
 END $$;
 -- the cursor is open while change runs and the next plannings read the facts again; its rows are those of the normal plan at its open
 CREATE FUNCTION cursor_across(change text) RETURNS boolean LANGUAGE plpgsql AS $$
 DECLARE
 	c CURSOR FOR SELECT grp, count(*), sum(v) FROM zr WHERE id BETWEEN 2000 AND 38000 GROUP BY grp ORDER BY grp;
-	s CURSOR FOR SELECT count(*), sum(v), min(id) FROM zr e WHERE sift.in_scope('zr_col'::regclass, 'tenant_id', e.dim_a_id, 5);
+	s CURSOR FOR SELECT count(*), sum(v), min(id) FROM zr e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 5);
 	rec record;
 	got text[] := '{}';
 	want text := normal_rows(window_q(2000, 38000));
-	want_scope text := normal_rows(scope_ref(5));
+	want_scope text := normal_rows(scope_q(5));
 BEGIN
 	OPEN c;
 	OPEN s;
@@ -109,15 +107,15 @@ BEGIN
 	RETURN false;
 END $$;
 -- the plans the session keeps: a window of the zones with workers, and over the scope units
-SELECT prepared_rows('by_window(1000, 30000)') = normal_rows(window_q(1000, 30000)) AS window_run,
-       prepared_rows('by_scope') = normal_rows(scope_ref(5)) AS scope_run;
+SELECT prepared_rows('by_window') = normal_rows(window_q(1000, 30000)) AS window_run,
+       prepared_rows('by_scope') = normal_rows(scope_q(5)) AS scope_run;
  window_run | scope_run 
 ------------+-----------
  t          | t
 (1 row)
 
-SELECT plan_has('EXPLAIN (COSTS OFF) EXECUTE by_window(1000, 30000)', 'SiftAgg') AS window_scan,
-       plan_has('EXPLAIN (COSTS OFF) EXECUTE by_window(1000, 30000)', 'Workers Planned') AS with_workers,
+SELECT plan_has('EXPLAIN (COSTS OFF) EXECUTE by_window', 'SiftAgg') AS window_scan,
+       plan_has('EXPLAIN (COSTS OFF) EXECUTE by_window', 'Workers Planned') AS with_workers,
        plan_has('EXPLAIN (COSTS OFF) EXECUTE by_scope', 'Scope Index') AS over_scope;
  window_scan | with_workers | over_scope 
 -------------+--------------+------------
@@ -197,6 +195,6 @@ SELECT after_change($$REINDEX INDEX zr_col$$) AS reindexed;
 (1 row)
 
 DROP TABLE zr, tenant_scope;
-DROP FUNCTION normal_rows, window_q, scope_q, scope_ref, kept_window, kept_scope, prepared_rows, plan_has, kept_plans_same, cursor_across, after_change;
+DROP FUNCTION normal_rows, window_q, scope_q, kept_window, kept_scope, prepared_rows, plan_has, kept_plans_same, cursor_across, after_change;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
