@@ -53,6 +53,7 @@ sift_agg_v6_rel_paths(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 	if (rte->inh)
 		return;
 	sift_v6_card_apply_rel(root, rel);
+	sift_v6_range_join_rows(root, rel);
 	sift_agg_v6_sip_rel_paths(root, rel, rti, rte);
 }
 

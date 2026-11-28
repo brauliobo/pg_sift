@@ -44,6 +44,8 @@ extern double sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const Inde
 
 /* v6_cost.c: the rows of a relation from the statistics of its index (when trusted), the groups of its keys, and the cost of the aggregate scan */
 extern void sift_v6_card_apply_rel(PlannerInfo *root, RelOptInfo *rel);
+/* range_join.c: the selectivity of each join clause `col <@ range` of rel against a list of constant ranges, from the statistics of the column */
+extern void sift_v6_range_join_rows(PlannerInfo *root, RelOptInfo *rel);
 extern double sift_v6_card_group_estimate(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, List *group_exprs, double rows);
 extern void sift_v6_agg_cost(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total);
 
