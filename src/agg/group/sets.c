@@ -54,15 +54,23 @@ sift_v6_spec_fold_set(const SiftV6Spec *spec)
 	return -1;
 }
 
-/* The set with the fewest groups among those summed already that holds every key of set t */
+/* The groups of a set: one for the set of no keys, whose table is never made */
+static uint32
+set_groups(const V6Set *set)
+{
+	return set->nk == 0 ? 1 : set->ht.count;
+}
+
+/* The set with the fewest groups among those summed already that holds every key of set t (a set written twice holds the other) */
 static int
 parent_of(const SiftV6Group *g, int t, const bool *done)
 {
 	int			best = -1;
 
 	for (int p = 0; p < g->nsets; p++)
-		if (done[p] && g->set[p].nk > 0 && (g->set[t].mask & ~g->set[p].mask) == 0 && (best < 0 || g->set[p].ht.count < g->set[best].ht.count))
+		if (done[p] && (g->set[t].mask & ~g->set[p].mask) == 0 && (best < 0 || set_groups(&g->set[p]) < set_groups(&g->set[best])))
 			best = p;
+	SIFT_INVARIANT(best >= 0, "grouping set %d has no set summed already that holds its keys", t);
 	return best;
 }
 
@@ -72,6 +80,12 @@ fold_into(SiftV6Group *g, const V6Set *from, V6Set *to)
 	const SiftSaltedHT *ht = &from->ht;
 	int			pos[SIFT_V6_MAX_KEYS];
 
+	if (from->nk == 0)
+	{
+		for (int j = 0; j < g->spec->naggs; j++)
+			v6g_merge_acc(g, &g->spec->agg[j], &to->plain[j], &from->plain[j]);
+		return;
+	}
 	for (int i = 0; i < to->nk; i++)
 		for (int p = 0; p < from->nk; p++)
 			if (from->kidx[p] == to->kidx[i])

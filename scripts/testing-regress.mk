@@ -162,6 +162,7 @@ TESTING_REGRESS += agg/security_barrier_rls
 TESTING_REGRESS += agg/serial_because
 TESTING_REGRESS += agg/serializable_locks
 TESTING_REGRESS += agg/set_array_f1
+TESTING_REGRESS += agg/sets_fold_duplicate_f1
 TESTING_REGRESS += agg/sets_unnest_distinct
 TESTING_REGRESS += agg/sets_unnest_distinct_f1
 TESTING_REGRESS += agg/shape_widths_f1

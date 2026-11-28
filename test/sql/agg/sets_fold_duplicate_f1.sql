@@ -1,0 +1,64 @@
+-- A grouping set written twice is summed from its twin: ((), ()) has no set of keys to sum from, its second total is the first one's. The rows equal those of the
+-- normal plan on a sift_col index (whose pre-aggregates answer the sets of country) and a sift_table, with a lookup joined (LEFT and inner), HAVING, an empty input
+-- and workers.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+-- Format 1: the statements of agg/sets_fold_duplicate on a Format 1 index and table, whose answers are the same.
+SET sift.test_create_format1 = on;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE sd_dims (k int PRIMARY KEY, tag text) WITH (autovacuum_enabled = off);
+INSERT INTO sd_dims SELECT g, 't' || g % 5 FROM generate_series(0, 150, 3) g;
+CREATE TABLE sd_col (id int PRIMARY KEY, dim int, country text, qty int, amount numeric(10,2)) WITH (autovacuum_enabled = off);
+INSERT INTO sd_col SELECT g, g % 211, CASE WHEN g % 17 = 0 THEN NULL ELSE 'c' || g % 6 END, CASE WHEN g % 23 = 0 THEN NULL ELSE g % 31 END, (g % 997) / 7.0
+FROM generate_series(1, 30000) g;
+CREATE INDEX sd_col_idx ON sd_col USING sift_col (id, dim, country, qty, amount) WITH (rollup_columns = 'country, dim');
+CREATE TABLE sd_tbl (id int, dim int, country text, qty int, amount numeric(10,2)) USING sift_table WITH (autovacuum_enabled = off);
+INSERT INTO sd_tbl SELECT * FROM sd_col;
+VACUUM (FREEZE, ANALYZE) sd_dims, sd_col, sd_tbl;
+SET sift.agg_force = on;
+
+CREATE FUNCTION sd_rows(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN scan THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT string_agg(t::text, E''\n'' ORDER BY t::text) FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION sd_plan(q text, label text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE l text; n int := 0;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		n := coalesce(substring(l from label || ': (\d+)')::int, n);
+	END LOOP;
+	RETURN n;
+END $$;
+
+CREATE TABLE sd_queries (n int, q text);
+INSERT INTO sd_queries VALUES
+ (1, 'SELECT count(*), sum(e.amount), min(e.qty), max(d.tag) FROM @t e LEFT JOIN sd_dims d ON d.k = e.dim GROUP BY GROUPING SETS ((), ())'),
+ (2, 'SELECT count(*), count(d.tag), avg(e.qty) FROM @t e LEFT JOIN sd_dims d ON d.k = e.dim GROUP BY GROUPING SETS ((), (), ()) HAVING count(*) > 1'),
+ (3, 'SELECT e.country, grouping(e.country), count(*), sum(e.qty) FROM @t e LEFT JOIN sd_dims d ON d.k = e.dim GROUP BY GROUPING SETS ((e.country), (e.country))'),
+ (4, 'SELECT e.country, count(*), max(e.amount) FROM @t e JOIN sd_dims d ON d.k = e.dim GROUP BY GROUPING SETS ((e.country), (e.country), (), ())'),
+ (5, 'SELECT e.country, d.tag, count(*), min(e.qty) FROM @t e LEFT JOIN sd_dims d ON d.k = e.dim GROUP BY GROUPING SETS ((e.country, d.tag), (e.country), (), ()) HAVING count(*) > 40'),
+ (6, 'SELECT count(*), sum(e.qty) FROM @t e LEFT JOIN sd_dims d ON d.k = e.dim WHERE e.id < 0 GROUP BY GROUPING SETS ((), ())'),
+ (7, 'SELECT count(*), sum(e.qty) FROM @t e GROUP BY GROUPING SETS ((), ())'),
+ (8, 'SELECT e.country, count(*), sum(e.qty), max(e.amount) FROM @t e GROUP BY GROUPING SETS ((e.country), (e.country), (), ())');
+
+CREATE VIEW sd_cases AS SELECT n, t, replace(q, '@t', t) AS q FROM sd_queries, (VALUES ('sd_col'), ('sd_tbl')) v(t);
+SELECT n, t, sd_rows(q, true) = sd_rows(q, false) AS same_rows, sd_rows(q, false) IS NOT NULL AS has_rows, sd_plan(q, 'Sets Summed From One') AS summed
+FROM sd_cases ORDER BY t, n;
+
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET max_parallel_workers_per_gather = 3;
+SELECT n, t, sd_rows(q, true) = sd_rows(q, false) AS same_rows FROM sd_cases ORDER BY t, n;
+SELECT t, sd_plan(q, 'Workers Launched') > 0 AS workers FROM sd_cases WHERE n = 1 ORDER BY t;
+
+DROP VIEW sd_cases;
+DROP FUNCTION sd_plan, sd_rows;
+DROP TABLE sd_queries, sd_col, sd_tbl, sd_dims;
+DROP EXTENSION pg_sift;
