@@ -48,6 +48,7 @@ typedef struct V6State
 	int			nsources;
 	SiftV6ScanSrc *sources;		/* the index of the plan, or the index of each live partition of a partitioned table */
 	MemoryContext gcx;
+	MemoryContext rcx;
 	SiftV6Group *group;
 	SiftV6ScanStats stats;
 	SiftProjResult proj;
@@ -621,8 +622,9 @@ v6_run_scan(V6State *st, EState *estate)
 		if (st->sources[k].index == NULL && st->sources[k].ops->zone != NULL)
 			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, st->css.ss.ps.ps_ExprContext);
 	}
-	st->gcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 groups");
-	MemoryContextSwitchTo(st->gcx);
+	st->rcx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 run");
+	st->gcx = sift_mem_allocset_create(st->rcx, "sift agg v6 groups");
+	MemoryContextSwitchTo(st->rcx);
 	st->ran = true;
 	if (st->spec->rows)
 	{
@@ -768,12 +770,12 @@ v6_heaps_end(const V6State *st)
 		sift_v6_rows_end(st->rows);
 }
 
-static void
-v6_end(CustomScanState *node)
+/* the end of a run: its parallel node, its sorts, fetches and GPU, its groups and the contexts of the run; the bytes the groups' context held */
+static Size
+v6_run_end(V6State *st)
 {
-	V6State    *st = (V6State *) node;
+	Size		peak;
 
-	v6_fold_stats(st);
 	if (st->par != NULL)
 		sift_v6_par_node_end(st->par);
 	v6_heaps_end(st);
@@ -781,14 +783,24 @@ v6_end(CustomScanState *node)
 	sift_v6_gpu_end(&st->gpu);
 	if (st->group != NULL)
 		sift_v6_group_free(st->group);
+	peak = st->gcx != NULL ? MemoryContextMemAllocated(st->gcx, true) : 0;
 	if (st->gcx != NULL)
-	{
-		/* MEM[MEM-AGG-06]: v6_end teardown (the heap the groups of the query peaked at goes back to the system: sift_mem_release_os with the bytes of the groups context; was never trimmed) */
-		const Size	peak = MemoryContextMemAllocated(st->gcx, true);
-
 		MemoryContextDelete(st->gcx);
-		sift_mem_release_os(peak);
-	}
+	if (st->rcx != NULL)
+		MemoryContextDelete(st->rcx);
+	st->gcx = st->rcx = NULL;
+	st->group = NULL;
+	return peak;
+}
+
+static void
+v6_end(CustomScanState *node)
+{
+	V6State    *st = (V6State *) node;
+
+	v6_fold_stats(st);
+	/* MEM[MEM-AGG-06]: v6_end teardown (the heap the groups of the query peaked at goes back to the system: sift_mem_release_os with the bytes of the groups context; was never trimmed) */
+	sift_mem_release_os(v6_run_end(st));
 	sift_v6_fuse_detach(&st->arm);
 	foreach_ptr(PlanState, child, node->custom_ps)
 		ExecEndNode(child);
@@ -805,19 +817,9 @@ v6_rescan(CustomScanState *node)
 {
 	V6State    *st = (V6State *) node;
 
-	if (st->par != NULL)
-		sift_v6_par_node_end(st->par);
-	v6_heaps_end(st);
-	v6_fetch_end(st);
-	sift_v6_gpu_end(&st->gpu);
-	if (st->group != NULL)
-		sift_v6_group_free(st->group);
-	if (st->gcx != NULL)
-		MemoryContextDelete(st->gcx);
-	st->gcx = NULL;
+	(void) v6_run_end(st);
 	st->rows = NULL;
 	st->gpu = (SiftV6Gpu) {0};
-	st->group = NULL;
 	st->ran = false;
 	st->star_passes = 0;
 	st->star_shared = 0;
