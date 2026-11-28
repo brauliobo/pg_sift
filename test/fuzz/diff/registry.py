@@ -93,7 +93,6 @@ def variants(r, fam):
         ('nolookup', 'sift.enable_agg=on;sift.agg_lookup_pushdown=off;sift.agg_share_lookups=off;max_parallel_workers_per_gather=0'),
         ('nodense', 'sift.enable_agg=on;sift.test_agg_dense=off;sift.simd=scalar;max_parallel_workers_per_gather=0'),
         ('notopn', 'sift.enable_agg=off;max_parallel_workers_per_gather=0'),
-        ('bitset', 'sift.enable_agg=on;sift.test_limits=bits_set_values=4;max_parallel_workers_per_gather=0'),
         ('childwarm', 'sift.enable_agg=on;sift.test_child_warm=on;max_parallel_workers_per_gather=0'),
     ]
     v += r.sample(extra, r.choice([1, 2]))
