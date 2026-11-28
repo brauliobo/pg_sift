@@ -524,6 +524,7 @@ par_local_merge(void *local, const uint8 *rec)
 	ParLocal   *l = local;
 	MemoryContext old = MemoryContextSwitchTo(l->g->cx);
 
+	v6g_sets_unfold(l->g);
 	if (merge_record(l, rec))
 		v6g_spill_if_over(l->g);
 	MemoryContextSwitchTo(old);
@@ -570,6 +571,7 @@ par_local_merge_block(void *local, const uint8 *block, uint32 len)
 	MergeBatch	b = {0};
 	bool		groups = false;
 
+	v6g_sets_unfold(l->g);
 	for (uint32 off = 0; off < len;)
 	{
 		const SiftV6RecHdr *h = (const SiftV6RecHdr *) (block + off);

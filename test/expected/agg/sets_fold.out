@@ -91,6 +91,15 @@ SELECT n, sf_rows(q, true) = sf_rows(q, false) AS same_rows FROM sf_queries WHER
  7 | t
 (4 rows)
 
+-- the worker that keeps its table sums its own sets before it merges the groups of the others, whose sets are summed already
+SET parallel_leader_participation = off;
+SELECT bool_and(sf_rows(q, true) = sf_rows(q, false)) AS same_rows_every_time FROM sf_queries, generate_series(1, 2) WHERE n IN (1, 2, 3, 7);
+ same_rows_every_time 
+----------------------
+ t
+(1 row)
+
+RESET parallel_leader_participation;
 -- the workers took part
 CREATE FUNCTION sf_workers(q text) RETURNS int LANGUAGE plpgsql AS $$
 DECLARE l text; n int := 0;

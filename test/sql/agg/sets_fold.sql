@@ -62,6 +62,10 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 3;
 SELECT n, sf_rows(q, true) = sf_rows(q, false) AS same_rows FROM sf_queries WHERE n IN (1, 2, 3, 7) ORDER BY n;
+-- the worker that keeps its table sums its own sets before it merges the groups of the others, whose sets are summed already
+SET parallel_leader_participation = off;
+SELECT bool_and(sf_rows(q, true) = sf_rows(q, false)) AS same_rows_every_time FROM sf_queries, generate_series(1, 2) WHERE n IN (1, 2, 3, 7);
+RESET parallel_leader_participation;
 
 -- the workers took part
 CREATE FUNCTION sf_workers(q text) RETURNS int LANGUAGE plpgsql AS $$

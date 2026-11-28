@@ -104,7 +104,7 @@ struct SiftV6Group
 	int			nsets;
 	V6Set	   *set;
 	int			fold;			/* the set the others are summed from (sift_v6_spec_fold_set), -1 for none: the rows of a batch go to it alone */
-	bool		fold_off;		/* a frozen state updates every set until it is recycled */
+	bool		fold_off;		/* a frozen state, or one that merged the records of other participants, updates every set until it is recycled (v6g_sets_unfold) */
 	bool		fold_owed;		/* rows went to the set fold alone since the others were last summed from it (v6g_sets_settle) */
 	int			cur;
 	uint32		stride;
@@ -309,6 +309,8 @@ struct SiftV6StrIn;
 extern void v6g_slot_keys(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, int64 *key, struct SiftV6StrIn *str, uint64 *nulls);
 /* sets.c: the groups of the other sets summed from the rows the set g->fold took alone since the last time */
 extern void v6g_sets_settle(SiftV6Group *g);
+/* sets.c: the state takes the groups of every set from elsewhere: its owed sums are made, and its rows update every set until it is recycled */
+extern void v6g_sets_unfold(SiftV6Group *g);
 /* The slot in ht of the group of these keys (the integer or code of each, the strings of the text ones, bit i of nulls the i-th key of the set): what sift_v6_group_fold_rec folds a record into */
 extern SiftAggSlot64 *v6g_slot_of(SiftV6Group *g, V6Set *set, SiftSaltedHT *ht, const int64 *key, const struct SiftV6StrIn *str, uint64 nulls);
 

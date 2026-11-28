@@ -1,8 +1,9 @@
 /*
  * agg/group/sets.c - grouping sets summed from one of them. When every set lies inside one (ROLLUP, CUBE, the sets of a report: (a, b), (a), (b), ()) and the states of every
  * aggregate add exactly, the rows of a batch go to that set alone and the groups of the others are the sums of its groups, so that a row is hashed and its aggregates updated
- * once instead of once per set. The sums are made before the groups of that set leave its table (the end of the scan, a spill, the export of a participant of a parallel run)
- * and before a full table starts sending the rows of its other groups away (a frozen state updates every set from then on).
+ * once instead of once per set. The sums are made before the groups of that set leave its table (the end of the scan, a spill, the export of a participant of a parallel run),
+ * and before the state takes groups of every set from elsewhere: a full table that starts sending the rows of its other groups away, or the records of the other participants of a
+ * parallel run, whose sets are summed already. Such a state updates every set from then on (v6g_sets_unfold).
  */
 #include "postgres.h"
 
@@ -132,4 +133,11 @@ v6g_sets_settle(SiftV6Group *g)
 			}
 	pfree(done);
 	MemoryContextSwitchTo(old);
+}
+
+void
+v6g_sets_unfold(SiftV6Group *g)
+{
+	v6g_sets_settle(g);
+	g->fold_off = true;
 }
