@@ -66,7 +66,7 @@ sift_test_f2_alloc_below(PG_FUNCTION_ARGS)
 	Relation	rel = f2t_open_index(fcinfo, RowExclusiveLock);
 	ReturnSetInfo *rsi = f2t_srf_begin(fcinfo);
 	SiftExtent	ext[SIFT_FSM_NCLASSES + 1];
-	int			n = sift_fsm_alloc_below(rel, PG_GETARG_INT64(1), PG_GETARG_INT64(2), ext, SIFT_FSM_NCLASSES + 1);
+	int			n = sift_fsm_alloc_below(rel, PG_GETARG_INT64(1), PG_GETARG_INT64(2), false, ext, SIFT_FSM_NCLASSES + 1);
 
 	for (int i = 0; i < n; i++)
 	{

@@ -233,10 +233,10 @@ move_below(Relation rel, const SiftF2Store *store, const SiftTailSpan *span, con
 {
 	int			max = (int) (span->blocks / SIFT_FSM_MAX_EXTENT + SIFT_FSM_NCLASSES + 1);
 	SiftExtent *ext = palloc(max * sizeof(SiftExtent));
-	int			n = sift_fsm_alloc_below(rel, span->blocks, pick->below_part, ext, max);
+	int			n = sift_fsm_alloc_below(rel, span->blocks, pick->below_part, false, ext, max);
 
 	if (n == 0)
-		n = sift_fsm_alloc_below(rel, span->blocks, pick->below_cut, ext, max);
+		n = sift_fsm_alloc_below(rel, span->blocks, pick->below_cut, false, ext, max);
 	if (n == 0)
 		return false;
 	sift_part_prefer_extents(rel, ext, n);
@@ -330,7 +330,7 @@ move_pieces_locked(Relation rel, const TailItem *it, BlockNumber cut)
 	if (want > 0)
 	{
 		to = palloc(Min(want, (uint64) SIFT_TAIL_MAX_PIECES) * sizeof(SiftExtent));
-		nto = sift_fsm_alloc_below(rel, want, cut, to, (int) Min(want, (uint64) SIFT_TAIL_MAX_PIECES));
+		nto = sift_fsm_alloc_below(rel, want, cut, true, to, (int) Min(want, (uint64) SIFT_TAIL_MAX_PIECES));
 		if (nto == 0)
 			return PIECES_NO_ROOM;
 	}

@@ -385,27 +385,30 @@ find_class(FsmCtx *c, int cls)
 	}
 }
 
+/* The free blocks [at, at + n) back on the lists, cut into the largest classes that fit */
+static void
+push_free_run(FsmCtx *c, uint64 at, uint64 n)
+{
+	while (n > 0)
+	{
+		int			j = sift_fsm_class_floor(n);
+		SiftFsmExtent piece = {.start = (BlockNumber) at,.nblocks = SIFT_FSM_CLASS_BLOCKS(j),.safexid = InvalidFullTransactionId};
+
+		sift_fsm_push_class(c, j, &piece, 1);
+		at += piece.nblocks;
+		n -= piece.nblocks;
+	}
+}
+
 /* The first n blocks of a free extent of class k; the rest of it goes back to the lists, cut into the largest classes that fit. InvalidBlockNumber when the class has none left */
 static BlockNumber
 carve_free(FsmCtx *c, int k, uint32 n)
 {
 	SiftFsmExtent e;
-	uint64		at,
-				left = SIFT_FSM_CLASS_BLOCKS(k) - n;
 
 	if (!sift_fsm_pop_class(c, k, &e))
 		return InvalidBlockNumber;
-	at = (uint64) e.start + n;
-
-	while (left > 0)
-	{
-		int			j = sift_fsm_class_floor(left);
-		SiftFsmExtent piece = {.start = (BlockNumber) at,.nblocks = SIFT_FSM_CLASS_BLOCKS(j),.safexid = InvalidFullTransactionId};
-
-		sift_fsm_push_class(c, j, &piece, 1);
-		at += piece.nblocks;
-		left -= piece.nblocks;
-	}
+	push_free_run(c, (uint64) e.start + n, SIFT_FSM_CLASS_BLOCKS(k) - n);
 	return e.start;
 }
 
@@ -476,32 +479,42 @@ sift_fsm_alloc(Relation rel, uint32 nblocks)
 	return e;
 }
 
-/* The lowest class of at most the n blocks still wanted whose free extent starts (with that many blocks) below max_blk: the class to carve and the class whose list it comes from, false when none does */
+/*
+ * The piece of the n blocks still wanted that a free extent starting below max_blk takes: the largest power of two of them that the lowest-class extent holding it gives, or with one_run all
+ * of them (up to the largest class) from the lowest extent of the class they round up to when it lies no higher than that piece; its blocks and the class whose list it comes from, false when
+ * none does
+ */
 static bool
-find_below(FsmCtx *c, uint64 npages, BlockNumber max_blk, int *cls, int *from)
+find_below(FsmCtx *c, uint64 npages, BlockNumber max_blk, bool one_run, uint32 *take, int *from)
 {
 	Buffer		rootbuf = sift_fsm_lock_root(c->rel);
 	const SiftFsmMetaPageData *m = FSMM(BufferGetPage(rootbuf));
+	const uint32 want = (uint32) Min(npages, SIFT_FSM_MAX_EXTENT);
+	const int	whole = class_ceil(want);
+	BlockNumber start = InvalidBlockNumber,
+				run;
 	bool		found = false;
 
-	for (int j = sift_fsm_class_floor((uint32) Min(npages, SIFT_FSM_MAX_EXTENT)); j >= 0 && !found; j--)
+	for (int j = sift_fsm_class_floor(want); j >= 0 && !found; j--)
 		for (int k = j; k < SIFT_FSM_NCLASSES && !found; k++)
-		{
-			BlockNumber start;
-
 			if (peek_lowest(c, m, k, &start) && (uint64) start + SIFT_FSM_CLASS_BLOCKS(j) <= max_blk)
 			{
-				*cls = j;
+				*take = SIFT_FSM_CLASS_BLOCKS(j);
 				*from = k;
 				found = true;
 			}
-		}
+	if (one_run && want < SIFT_FSM_CLASS_BLOCKS(whole) && peek_lowest(c, m, whole, &run) && (uint64) run + want <= max_blk && (!found || run <= start))
+	{
+		*take = want;
+		*from = whole;
+		found = true;
+	}
 	UnlockReleaseBuffer(rootbuf);
 	return found;
 }
 
 int
-sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExtent *out, int max)
+sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, bool one_run, SiftExtent *out, int max)
 {
 	FsmCtx		c = sift_fsm_ctx_open(rel);
 	int			n = 0;
@@ -509,22 +522,18 @@ sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExten
 	sift_fsm_reclaim_locked(&c, NULL);
 	while (npages > 0)
 	{
-		int			cls,
-					from;
+		uint32		take = 0;
+		int			from = 0;
 
-		if (n == max || !find_below(&c, npages, max_blk, &cls, &from))
+		if (n == max || !find_below(&c, npages, max_blk, one_run, &take, &from))
 		{
 			for (int i = 0; i < n; i++)
-			{
-				SiftFsmExtent back = {.start = out[i].start,.nblocks = out[i].nblocks,.safexid = InvalidFullTransactionId};
-
-				sift_fsm_push_class(&c, sift_fsm_class_floor(out[i].nblocks), &back, 1);
-			}
+				push_free_run(&c, out[i].start, out[i].nblocks);
 			n = 0;
 			break;
 		}
-		out[n] = (SiftExtent) {.start = carve_free(&c, from, SIFT_FSM_CLASS_BLOCKS(cls)),.nblocks = SIFT_FSM_CLASS_BLOCKS(cls)};
-		npages -= out[n].nblocks;
+		out[n] = (SiftExtent) {.start = carve_free(&c, from, take),.nblocks = take};
+		npages -= take;
 		n++;
 	}
 	sift_fsm_ctx_close(&c);

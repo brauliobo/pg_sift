@@ -153,8 +153,8 @@ extern void sift_fsm_build_root(Page page, BlockNumber slab_start);
  */
 extern SiftExtent sift_fsm_alloc(Relation rel, uint32 nblocks);
 
-/* npages as power-of-two extents that all lie below block max_blk, lowest first (what a part moved down needs); the number of extents, or 0 when the free space below max_blk does not hold them (the file never grows for it) */
-extern int	sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, SiftExtent *out, int max);
+/* npages in extents that all lie below block max_blk, lowest first: power-of-two pieces, or with one_run one extent of all of them when one lies no higher than the first piece (what a part moved down needs); the number of extents, or 0 when the free space below max_blk does not hold them (the file never grows for it) */
+extern int	sift_fsm_alloc_below(Relation rel, uint64 npages, BlockNumber max_blk, bool one_run, SiftExtent *out, int max);
 
 /*
  * The extents of a stream of exactly nblocks blocks: while a free extent holds the largest power of two that is left they are those powers of two (at most popcount of them below

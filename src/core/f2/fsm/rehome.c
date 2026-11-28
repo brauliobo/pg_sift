@@ -17,7 +17,7 @@ sift_fsm_slab_room_below(Relation rel, BlockNumber from)
 	int			n = 0;
 
 	for (uint32 want = lack > 0 ? Min(pg_nextpower2_32(lack), SIFT_FSM_META_SLAB) : 0; want > 0 && n == 0; want /= 2)
-		n = sift_fsm_alloc_below(rel, want, from, ext, lengthof(ext));
+		n = sift_fsm_alloc_below(rel, want, from, false, ext, lengthof(ext));
 	if (n > 0)
 	{
 		FsmCtx		c = sift_fsm_ctx_open(rel);
