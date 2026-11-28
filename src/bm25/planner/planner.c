@@ -560,6 +560,7 @@ sift_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_r
 	}
 	else if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_BASEREL && planner_rt_fetch(input_rel->relid, root)->rtekind == RTE_RELATION)
 		sift_agg_refuse("single", AGG_REFUSE_NO_SOURCE, NULL, 0, -1);
+	sift_agg_v6_live_outer_paths(root, stage, input_rel, output_rel, extra);
 	/* the aggregates read the scores out of the scan/join target, which holds only the Vars they use */
 	if (stage == UPPERREL_GROUP_AGG && input_rel->reloptkind == RELOPT_JOINREL)
 		carry_join_scores(root, input_rel);

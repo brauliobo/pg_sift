@@ -44,3 +44,6 @@ src/col/f2/agg/scope/run.c	scope_begin	list-first	custom_private and custom_expr
 src/agg/scope/scan.c	scan_begin	list-first	custom_private and custom_exprs are the lists of the scope plan function for a scan of the facts of the members of a key: the spec and the scan spec are always there, and the key is the first of custom_exprs
 src/agg/scope/match.c	pairs_table	list-first	a pairs_query is kept only when single_table_query held, or is the query of sift_v6_match_two_paths, whose rtable is the list_make1 of the pairs table
 src/agg/topn/topn.c	offset_spec	list-first	cp is a CustomPath of topn_path_methods or sift_v6_group_path_methods (topn_under), whose custom_private is the list_make3 of the spec, the scan tlist and the quals or HAVING
+src/agg/two/exec.c	two_begin	list-first	custom_private of the plan is list_make5(spec, inputs, labels, sort, spine), built by two_plan_path (agg/two/plan.c)
+src/agg/two/plan.c	two_plan_path	list-first	custom_private of the path is list_make5(spec, scan tlist, having, inputs, list_make3(labels, sort, spine)), built by add_two_path of this file
+src/agg/two/label.c	elem_label	list-first	the column a Var of a function RTE names (varattno > 0) has its name in eref->colnames, which the parser fills for every column

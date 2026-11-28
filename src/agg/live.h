@@ -13,6 +13,9 @@
 /* create_upper_paths_hook: Top-N (UPPERREL_ORDERED), windows (UPPERREL_WINDOW, UPPERREL_DISTINCT) and streams of groups (UPPERREL_GROUP_AGG) */
 extern void sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 
+/* create_upper_paths_hook of an outer statement over sub-selects, which reads no sift relation itself: the two-level aggregate (agg/two/two.h) */
+extern void sift_agg_v6_live_outer_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
+
 /* The names of the nodes, for a plan that a parallel worker reads */
 extern void sift_agg_v6_live_register(void);
 

@@ -30,6 +30,7 @@
 	X(TOPN_SHAPE, "topn_shape", "the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests", 0, 0, "ORDER BY columns of the scanned table with a WHERE filter the scan tests, followed by LIMIT; compute DISTINCT, set operations and windows that are not aggregates over the whole set in an outer query.") \
 	X(COST, "cost", "the normal plan is estimated cheaper than the scan", 0, 1, "None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale.") \
 	X(JOIN, "join", "the statement joins more tables than the scan looks up, or joins them in a way it does not", 0, 0, "Join the fact table to at most 16 small tables, each on equalities of its keys, or aggregate the rest of the join in an outer query.") \
+	X(TWO_ARMS, "two_arms", "the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id", 0, 0, "Write the arms as UNION ALL branches of aggregates over one scan, each grouped by a unique row id.") \
 	X(WINDOW_FIRST, "window_first", "the first rows of each group, asked with a window function (rn = 1, rn <= N), are not the one window of a sub-select the scan computes", 0, 0, "Ask the first rows of each group with one window (row_number(), rank() or dense_rank() OVER (PARTITION BY .. ORDER BY ..)) in the sub-select, and compute the others in an outer query.")
 
 typedef enum AggRefusal

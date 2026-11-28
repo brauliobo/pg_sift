@@ -14,7 +14,9 @@
 #include "agg/sip_scan.h"
 #include "agg/stream.h"
 #include "agg/topn/topn.h"
+#include "agg/two/two.h"
 #include "agg/win/window.h"
+#include "core/catalog.h"
 
 void
 sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
@@ -28,8 +30,16 @@ sift_agg_v6_live_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 }
 
 void
+sift_agg_v6_live_outer_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
+{
+	if (sift_store_ops_any() && sift_db_has_extension())
+		sift_agg_v6_two_upper_paths(root, stage, input_rel, output_rel, extra);
+}
+
+void
 sift_agg_v6_live_register(void)
 {
+	RegisterCustomScanMethods(&sift_agg_v6_two_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_topn_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_window_plan_methods);
 	RegisterCustomScanMethods(&sift_agg_v6_first_plan_methods);

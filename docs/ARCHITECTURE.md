@@ -80,6 +80,7 @@ Inspect refusals with `SET sift.explain_refusals = on`, `EXPLAIN (SIFT)` (PG 18+
 | `topn_shape` | semantic | the ORDER BY with LIMIT is not over the scanned table's columns with a condition the scan tests | ORDER BY columns of the scanned table with a WHERE filter the scan tests, followed by LIMIT; compute DISTINCT, set operations and windows that are not aggregates over the whole set in an outer query. |
 | `cost` | semantic (by design) | the normal plan is estimated cheaper than the scan | None needed, the normal plan is estimated cheaper (compare scan_cost vs normal_cost); run ANALYZE <table> if row estimates are stale. |
 | `join` | semantic | the statement joins more tables than the scan looks up, or joins them in a way it does not | Join the fact table to at most 16 small tables, each on equalities of its keys, or aggregate the rest of the join in an outer query. |
+| `two_arms` | semantic | the arms of the two level aggregate are not UNION ALL branches of aggregates over one scan, each grouped by a unique row id | Write the arms as UNION ALL branches of aggregates over one scan, each grouped by a unique row id. |
 | `window_first` | semantic | the first rows of each group, asked with a window function (rn = 1, rn <= N), are not the one window of a sub-select the scan computes | Ask the first rows of each group with one window (row_number(), rank() or dense_rank() OVER (PARTITION BY .. ORDER BY ..)) in the sub-select, and compute the others in an outer query. |
 <!-- refusals:end -->
 
