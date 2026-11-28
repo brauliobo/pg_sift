@@ -534,7 +534,7 @@ extern int	sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause);
 
 extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_plan_methods;
 
-/* Prepares the expressions of spec that need the executor (v6_pg_exec.h) under the node ps, which begins; spec.exec stays NULL when there are none */
+/* Prepares the expressions of spec that need the executor (agg/pg_exec.h) under the node ps, which begins: spec.exec */
 extern void sift_v6_exec_begin(SiftV6Spec *spec, struct PlanState *ps);
 
 extern void sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);

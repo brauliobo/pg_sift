@@ -227,6 +227,7 @@ sift_test_v1_unnest(PG_FUNCTION_ARGS)
 	const Oid	gtype = group_att > 0 ? TupleDescAttr(RelationGetDescr(heap), (is_table ? group_att : rel->rd_index->indkey.values[group_att - 1]) - 1)->atttypid : InvalidOid;
 	SiftV6Spec *spec = palloc0(sizeof(SiftV6Spec));
 	SiftV6Ext  *x = palloc0(sizeof(SiftV6Ext));
+	PlanState  *node = (PlanState *) makeNode(CustomScanState);
 	SiftV6ScanStats stats = {0};
 	const int	nelem = recordset ? 2 : 1;
 	const int	nkeys = nelem + (group_att > 0 ? 1 : 0);
@@ -255,7 +256,10 @@ sift_test_v1_unnest(PG_FUNCTION_ARGS)
 	sift_tupdesc_finalize(desc);
 	BlessTupleDesc(desc);
 	g = sift_v6_group_new(spec, CurrentMemoryContext, desc);
+	node->state = CreateExecutorState();
+	sift_v6_exec_begin(spec, node);
 	ops->jsonb->unnest_run(spec, g, heap, is_table ? NULL : rel, GetActiveSnapshot(), &stats, NULL);
+	FreeExecutorState(node->state);
 	sift_v6_group_finish(g);
 	while (sift_v6_group_next(g, values, nulls))
 	{

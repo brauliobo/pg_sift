@@ -5,6 +5,7 @@
 /* check-memory: allow-allocs every array here follows the columns of one statement, not the rows of the table */
 #include "postgres.h"
 
+#include "agg/pg_exec.h"
 #include "col/v1_engine/store_ops_unnest.h"
 
 /* the cell of a column of the pairs as a float8: a float8 column, or an integer PostgreSQL casts to float8 */
@@ -231,7 +232,7 @@ sift_v1_unnest_heap_open(UnRun *u, Relation heap)
 
 	u->estate = CreateExecutorState();
 	old = MemoryContextSwitchTo(u->estate->es_query_cxt);
-	u->econtext = CreateExprContext(u->estate);
+	u->econtext = sift_v6_exec_context(u->spec);
 	MemoryContextSwitchTo(old);
 	u->heap_slot = MakeSingleTupleTableSlot(RelationGetDescr(heap), &TTSOpsVirtual);
 	u->heap_slot->tts_tableOid = RelationGetRelid(heap);
@@ -241,6 +242,7 @@ void
 sift_v1_unnest_heap_close(UnRun *u)
 {
 	ExecDropSingleTupleTableSlot(u->heap_slot);
+	FreeExprContext(u->econtext, true);
 	FreeExecutorState(u->estate);
 }
 
@@ -265,17 +267,13 @@ sift_v1_unnest_heap_expr(UnRun *u, Expr *e)
 	return state;
 }
 
-/* the clauses over the columns of the heap row, prepared as a qual of the virtual row sift_v1_unnest_heap_load makes */
+/* the clauses of the WHERE the node prepared (SiftV6Exec.heap_qual), a qual of the virtual row sift_v1_unnest_heap_load makes of the columns they read */
 ExprState *
-sift_v1_unnest_heap_qual(UnRun *u, List *quals)
+sift_v1_unnest_heap_qual(UnRun *u)
 {
-	MemoryContext old = MemoryContextSwitchTo(u->estate->es_query_cxt);
-	ExprState  *state = ExecPrepareQual(quals, u->estate);
-
-	MemoryContextSwitchTo(old);
-	foreach_ptr(Var, v, pull_var_clause((Node *) quals, 0))
+	foreach_ptr(Var, v, pull_var_clause((Node *) u->x->heap_where, 0))
 		sift_v1_unnest_heap_att(u, v->varattno);
-	return state;
+	return u->spec->exec->heap_qual;
 }
 
 bool

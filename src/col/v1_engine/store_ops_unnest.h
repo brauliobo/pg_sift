@@ -165,7 +165,7 @@ extern uint32 sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev);
  * and sift_v1_unnest_heap_att); false when the clauses only the heap row decides rule it out */
 extern bool sift_v1_unnest_heap_load(UnRun *u, uint64 tag);
 extern ExprState *sift_v1_unnest_heap_expr(UnRun *u, Expr *e);
-extern ExprState *sift_v1_unnest_heap_qual(UnRun *u, List *quals);
+extern ExprState *sift_v1_unnest_heap_qual(UnRun *u);
 extern void sift_v1_unnest_heap_att(UnRun *u, AttrNumber att);
 /* a row the leaves cannot hold: the array of its heap row taken apart and its pairs */
 extern void sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row);

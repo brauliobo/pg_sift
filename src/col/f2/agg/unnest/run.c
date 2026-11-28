@@ -7,6 +7,7 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/nodeFuncs.h"
 
+#include "agg/pg_exec.h"
 #include "agg/qual/qual.h"
 #include "col/shred/pg.h"
 #include "col/am/preds.h"
@@ -805,11 +806,11 @@ unrun_init(UnRun *u, const SiftV6Spec *spec, SiftV6ScanStats *stats)
 
 		u->estate = CreateExecutorState();
 		MemoryContextSwitchTo(u->estate->es_query_cxt);
-		u->hqual = u->x->heap_where != NIL ? ExecPrepareQual(u->x->heap_where, u->estate) : NULL;
+		u->hqual = spec->exec->heap_qual;
 		for (int s = 0; s < u->nst; s++)
 			u->st[s].arr = sift_v6_ext_stream_array(u->x, s) != NULL ? ExecPrepareExpr(unconstify(Expr *, sift_v6_ext_stream_array(u->x, s)), u->estate) : NULL;
 		u->probe = u->st[0].rec != NULL ? sift_v6_late_probe_open(u->x->late_probe, u->estate, u->st[0].rec) : NULL;
-		u->econtext = CreateExprContext(u->estate);
+		u->econtext = sift_v6_exec_context(spec);
 		MemoryContextSwitchTo(old);
 	}
 	u->pidx = palloc(SIFT_VEC_LEN * sizeof(uint32));
@@ -843,7 +844,10 @@ unrun_end(UnRun *u)
 	sift_v6_pipe_finish(u->pipe);
 	sift_v6_vet_end(&u->vet);
 	if (u->estate != NULL)
+	{
+		FreeExprContext(u->econtext, true);
 		FreeExecutorState(u->estate);
+	}
 	for (int s = 0; s < u->nst; s++)
 		if (u->st[s].rec != NULL)
 			sift_v6_recfn_free(u->st[s].rec);

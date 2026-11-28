@@ -216,7 +216,7 @@ emit_chunk(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep,
 	return sift_unnest_count_bits(keep, 0, nel);
 }
 
-/* the row of the heap at tid is read, and the quals of the table as the statement has them hold of it */
+/* the row of the heap at tid is read, and the quals of the table as the statement has them hold of it: the node prepared them for its virtual scan slot, so they read the row deformed */
 static bool
 heap_row_kept(UnRun *u, uint64 tid)
 {
@@ -226,6 +226,7 @@ heap_row_kept(UnRun *u, uint64 tid)
 	u->stats->heap_reread_rows++;
 	if (u->econtext != NULL)
 	{
+		slot_getallattrs(u->vet.slot);
 		u->econtext->ecxt_scantuple = u->vet.slot;
 		ResetExprContext(u->econtext);
 	}

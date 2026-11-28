@@ -889,3 +889,4 @@ TESTING_REGRESS += compat/v1/unified_topn_rows
 TESTING_REGRESS += table/lists_runs
 TESTING_REGRESS += table/preagg/minmax
 TESTING_REGRESS += table/topn
+TESTING_REGRESS += table/unnest_subplan
