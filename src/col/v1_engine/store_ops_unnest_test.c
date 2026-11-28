@@ -34,7 +34,7 @@ static void
 elem_vecs(const UnRun *u, const SiftV1ElemBatch *eb, SiftVec *ev)
 {
 	for (int c = 0; c < u->nel; c++)
-		ev[c] = (SiftVec) {.type = u->etype[c],.data = (void *) eb->child_data[c],.valid = (uint64 *) eb->child_valid[c],.all_valid = false};
+		ev[c] = sift_v6_elem_col_vec(&u->x->elem, c, u->etype[c], eb->child_data[c], eb->child_valid[c], eb->layout.n_elems, u->bcx);
 }
 
 /* the tests of the rows of the batch the layout holds, and the rows of those that fail one the statement keeps its rows by leave the batch; the others are the heap's */

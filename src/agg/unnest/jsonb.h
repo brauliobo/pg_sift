@@ -80,7 +80,13 @@ extern Oid	sift_v6_elem_fn_oid(SiftV6ElemFn fn);
 extern bool sift_v6_members_rte(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
 extern bool sift_v6_members_seed(const SiftV6Leaves *r, SiftV6XElem *e, const char *key, int att);
 extern bool sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out);
+/* The type of the values a leaf holds, among those an element column has (InvalidOid: none) */
+extern Oid	sift_v6_leaf_oid(const SiftColDef *d);
 extern bool sift_v6_elem_late(const SiftV6XElem *e, int slot);
+/* The type the scan reads element column c of e as from its leaf: its own, or the type of the leaf of a column read for its NULLs only (SiftV6XElem.col_valid_type) */
+extern Oid	sift_v6_elem_read_type(const SiftV6XElem *e, int c);
+/* Element column c of n elements as the statement reads it (type): the values decoded, or, for a column read for its NULLs only, empty texts (in cx) with the validity of its leaf */
+extern SiftVec sift_v6_elem_col_vec(const SiftV6XElem *e, int c, SiftVecType type, const void *data, const uint64 *valid, uint32 n, MemoryContext cx);
 extern Datum sift_v6_member_text(Datum elem, text *name, bool *isnull);
 /* agg/unnest/table_elems.c: the elements of rte over a column of the sift_table of p that no declared leaves hold, which the scan takes apart from each row; elem_type: a column of them may have the type t */
 extern bool sift_v6_table_elems_seed(const V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, List **names);

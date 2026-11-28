@@ -294,9 +294,8 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 	return true;
 }
 
-/* the type of the values a leaf holds, among those an element column has */
-static Oid
-leaf_oid(const SiftColDef *d)
+Oid
+sift_v6_leaf_oid(const SiftColDef *d)
 {
 	static const Oid held[] = {TEXTOID, INT2OID, INT4OID, INT8OID, FLOAT8OID};
 
@@ -343,7 +342,7 @@ map_leaves_of(const SiftV6Leaves *r, int att, const char *mkey, int *group, int 
 		else
 			return false;
 	}
-	return *key >= 0 && *value >= 0 && sift_v6_leaf_holds(TEXTOID, -1, &r->schema->cols[*key]) && leaf_oid(&r->schema->cols[*value]) != InvalidOid;
+	return *key >= 0 && *value >= 0 && sift_v6_leaf_holds(TEXTOID, -1, &r->schema->cols[*key]) && sift_v6_leaf_oid(&r->schema->cols[*value]) != InvalidOid;
 }
 
 /* the map `col.* type` or `col.mkey.* type` of attribute att: the leaf of its keys and the one of its values, which are the columns of jsonb_each and jsonb_each_text */
@@ -358,7 +357,7 @@ seed_each(V6Plan *p, SiftV6XElem *e, const char *mkey, int att)
 	e->col_leaf[0] = key;
 	e->col_type[0] = TEXTOID;
 	e->col_leaf[1] = value;
-	e->col_type[1] = leaf_oid(&p->leaves.schema->cols[value]);
+	e->col_type[1] = sift_v6_leaf_oid(&p->leaves.schema->cols[value]);
 	e->ncols = 2;
 	return true;
 }

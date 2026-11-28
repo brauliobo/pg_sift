@@ -412,7 +412,7 @@ static void
 elem_vecs(const UnRun *u, int s, const SiftF2ElemStream *es, SiftVec *ev)
 {
 	for (int c = 0; c < u->st[s].nchild; c++)
-		ev[c] = (SiftVec) {.type = u->st[s].ctype[c],.data = (void *) es->child_data[c],.valid = (uint64 *) es->child_valid[c],.all_valid = false};
+		ev[c] = sift_v6_elem_col_vec(u->st[s].el, c, u->st[s].etype[c], es->child_data[c], es->child_valid[c], es->n_elems, u->bcx);
 }
 
 /* the tests of the rows of the batch the layouts hold, and the rows of those that fail one the statement keeps its rows by leave the batch; the others are the heap's */
@@ -777,7 +777,10 @@ stream_init(UnRun *u, int s, AttrNumber heap_att)
 	st->el = el;
 	st->nchild = el->ncols;
 	for (int c = 0; c < el->ncols; c++)
-		st->ctype[c] = st->etype[c] = vec_type(sift_v6_class(el->col_type[c]));
+	{
+		st->ctype[c] = vec_type(sift_v6_class(sift_v6_elem_read_type(el, c)));
+		st->etype[c] = vec_type(sift_v6_class(el->col_type[c]));
+	}
 	st->heap_att = heap_att;
 	if (el->fn == SV6E_UNNEST)
 		get_typlenbyvalalign(el->type, &st->typlen, &st->typbyval, &st->typalign);

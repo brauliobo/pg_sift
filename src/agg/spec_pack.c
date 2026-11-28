@@ -228,7 +228,7 @@ pack_elem(List *ints, const SiftV6XElem *e)
 	ints = list_concat(ints, list_make4_int((int) e->fn, e->attno, (int) e->type, e->group_leaf));
 	ints = list_concat(ints, list_make4_int(e->left, e->semi, (int) e->vread, e->ncols));
 	for (int c = 0; c < e->ncols; c++)
-		ints = list_concat(ints, list_make3_int(e->col_leaf[c], (int) e->col_type[c], e->col_kind[c]));
+		ints = list_concat(ints, list_make4_int(e->col_leaf[c], (int) e->col_type[c], e->col_kind[c], (int) e->col_valid_type[c]));
 	return ints;
 }
 
@@ -240,11 +240,12 @@ unpack_elem(const List *ints, int *at, SiftV6XElem *e)
 	*e = (SiftV6XElem) {.fn = (SiftV6ElemFn) list_nth_int(ints, a),.attno = list_nth_int(ints, a + 1),.type = (Oid) list_nth_int(ints, a + 2),.group_leaf = list_nth_int(ints, a + 3),
 	.left = list_nth_int(ints, a + 4),.semi = list_nth_int(ints, a + 5),.vread = (SiftV6ValueRead) list_nth_int(ints, a + 6),.ncols = list_nth_int(ints, a + 7)};
 	*at = a + 8;
-	for (int c = 0; c < e->ncols; c++, *at += 3)
+	for (int c = 0; c < e->ncols; c++, *at += 4)
 	{
 		e->col_leaf[c] = list_nth_int(ints, *at);
 		e->col_type[c] = (Oid) list_nth_int(ints, *at + 1);
 		e->col_kind[c] = list_nth_int(ints, *at + 2) != 0;
+		e->col_valid_type[c] = (Oid) list_nth_int(ints, *at + 3);
 	}
 }
 

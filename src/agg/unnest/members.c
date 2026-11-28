@@ -13,6 +13,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 
 #include "agg/unnest/jsonb.h"
 #include "col/am.h"
@@ -57,6 +58,56 @@ cast_type(Oid t)
 	return t == INT2OID || t == INT4OID || t == INT8OID || t == FLOAT8OID;
 }
 
+typedef struct NullReads
+{
+	const Node *e;
+	int			nulls;
+	int			values;
+} NullReads;
+
+/* count(e), not DISTINCT: the count of the rows where e is not NULL */
+static bool
+counts_nulls(const Node *n, const Node *e)
+{
+	const Aggref *a = (const Aggref *) n;
+
+	return IsA(n, Aggref) && a->aggfnoid == F_COUNT_ANY && a->aggdistinct == NIL && list_length(a->args) == 1 && equal(((const TargetEntry *) linitial(a->args))->expr, e);
+}
+
+static bool
+null_reads_walker(Node *n, NullReads *r)
+{
+	if (n == NULL)
+		return false;
+	if ((IsA(n, NullTest) && equal(((NullTest *) n)->arg, r->e)) || counts_nulls(n, r->e))
+	{
+		r->nulls++;
+		return IsA(n, Aggref) && (expression_tree_walker((Node *) ((Aggref *) n)->aggfilter, null_reads_walker, r) ||
+								  expression_tree_walker((Node *) ((Aggref *) n)->aggorder, null_reads_walker, r));
+	}
+	if (equal(n, r->e))
+	{
+		r->values++;
+		return false;
+	}
+	if (IsA(n, CoerceViaIO) && cast_type(((CoerceViaIO *) n)->resulttype) && equal(((CoerceViaIO *) n)->arg, r->e))
+		return false;
+	return expression_tree_walker(n, null_reads_walker, r);
+}
+
+/* the statement reads only whether e is NULL: in null tests and counts, nowhere as a value (its cast to a number is a column of its own) */
+static bool
+reads_nulls_only(PlannerInfo *root, const Node *e)
+{
+	NullReads	r = {.e = e};
+	const Query *q = root->parse;
+
+	null_reads_walker((Node *) q->targetList, &r);
+	null_reads_walker(q->havingQual, &r);
+	null_reads_walker((Node *) q->jointree, &r);
+	return r.nulls > 0 && r.values == 0;
+}
+
 /* the member e reads and the type it has: the text of e ->> 'k', or its cast to an integer or float8 */
 static const char *
 member_read(const V6Plan *p, const Expr *e, Oid *type)
@@ -92,19 +143,35 @@ sift_v6_members_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	{
 		int			leaf = el->group_leaf >= 0 ? sift_v6_unnest_member_leaf(&p->leaves, el->attno, el->group_leaf, name) : -1;
 		const bool	held = leaf >= 0 && sift_v6_leaf_holds(type, -1, &p->leaves.schema->cols[leaf]);
+		const Oid	valid_type = !held && leaf >= 0 && !p->is_table && type == TEXTOID && reads_nulls_only(p->root, (const Node *) e) ? sift_v6_leaf_oid(&p->leaves.schema->cols[leaf]) : InvalidOid;
 
 		if (p->is_table && !held)
 			el->group_leaf = leaf = -1;
-		if (el->ncols == SIFT_V6_XELEM_COLS || (el->group_leaf < 0 ? !sift_v6_table_elem_type(type) : !held))
+		if (el->ncols == SIFT_V6_XELEM_COLS || (el->group_leaf < 0 ? !sift_v6_table_elem_type(type) : !held && !OidIsValid(valid_type)))
 			return false;
 		el->col_leaf[at] = leaf;
 		el->col_type[at] = type;
 		el->col_kind[at] = false;
+		el->col_valid_type[at] = valid_type;
 		el->ncols++;
 		*names = lappend(*names, makeString(pstrdup(name)));
 	}
 	*out = (SiftV6Col) {.attno = el->attno,.typid = type,.src = SV6SRC_ELEM,.slot = at};
 	return true;
+}
+
+Oid
+sift_v6_elem_read_type(const SiftV6XElem *e, int c)
+{
+	return OidIsValid(e->col_valid_type[c]) ? e->col_valid_type[c] : e->col_type[c];
+}
+
+SiftVec
+sift_v6_elem_col_vec(const SiftV6XElem *e, int c, SiftVecType type, const void *data, const uint64 *valid, uint32 n, MemoryContext cx)
+{
+	if (OidIsValid(e->col_valid_type[c]))
+		data = MemoryContextAllocAligned(cx, (Size) Max(n, 1) * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, MCXT_ALLOC_ZERO);
+	return (SiftVec) {.type = type,.data = unconstify(void *, data),.valid = unconstify(uint64 *, valid),.all_valid = false};
 }
 
 bool

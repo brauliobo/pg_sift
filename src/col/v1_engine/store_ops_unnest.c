@@ -302,7 +302,7 @@ emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 
 	MemoryContextReset(u->bcx);
 	for (int c = 0; c < u->nel; c++)
-		ev[c] = (SiftVec) {.type = u->etype[c],.data = (void *) eb->child_data[c],.valid = (uint64 *) eb->child_valid[c],.all_valid = false};
+		ev[c] = sift_v6_elem_col_vec(&u->x->elem, c, u->etype[c], eb->child_data[c], eb->child_valid[c], eb->layout.n_elems, u->bcx);
 	if (u->eev != NULL)
 	{
 		uint64	   *keep = MemoryContextAllocZero(u->bcx, ((eb->layout.n_elems + 63) / 64 + 1) * sizeof(uint64));
@@ -415,7 +415,8 @@ source_input(UnRun *u, Relation heap, Relation index)
 	for (int i = 0; i < u->ncols; i++)
 		u->in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.scale = u->cols[i].scale,.type = col_vec_type(&u->cols[i])};
 	u->in.ncols = u->ncols;
-	memcpy(type, u->etype, sizeof(type));
+	for (int c = 0; c < u->nel; c++)
+		type[c] = un_vec_type(sift_v6_class(sift_v6_elem_read_type(&u->x->elem, c)));
 	memcpy(leaf, u->x->elem.col_leaf, sizeof(leaf));
 	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->nel, leaf, type, u->x->elem.col_kind, &u->espec);
 	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET || u->x->elem.fn == SV6E_PATH;

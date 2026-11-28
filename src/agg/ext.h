@@ -93,6 +93,8 @@ typedef struct SiftV6XElem
 	int			col_leaf[SIFT_V6_XELEM_COLS];
 	Oid			col_type[SIFT_V6_XELEM_COLS];
 	bool		col_kind[SIFT_V6_XELEM_COLS];	/* the column is the kind of the value the leaf has in the element (SIFT_ELEM_KIND_*, agg/vec.h), not the value */
+	Oid			col_valid_type[SIFT_V6_XELEM_COLS];	/* the text of a member the statement reads the NULLs of only (`e ->> 'k' IS NULL`, count): the type its typed leaf is read as, whose
+													 * validity the column has with no text (a row read from the heap has the text); InvalidOid: a column of values */
 } SiftV6XElem;
 
 /*
