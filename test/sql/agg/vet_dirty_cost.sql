@@ -1,7 +1,6 @@
--- The rows on heap pages that are not all-visible are checked in the heap, and the units a declared key cuts (the index cuts by a column of few values by
--- itself) each span the whole heap, so a set of rows reaches the dirty pages of the whole table, not of its zone. The check ran 4 to 16 times longer than its
--- price when 80% of the pages or more were dirty: the cost of the scan must grow with the dirty pages as the time does (a month of a set: 7 times from
--- clean to all dirty). Below, the cost of the scan with every page dirty is 3 to 15 times that of the clean table, and it grows with the dirt.
+-- The scan takes the visibility of its rows from the index, not from the heap: a heap page that is not all-visible costs it nothing, and the rows an update
+-- rewrote are read from the index as the others are (a month of all: 5.1 ms clean, 5.8 ms with every page dirty on Format 2.0, 9.7 and 13.3 ms on Format 1).
+-- Below, the cost of the scan with every page dirty is never less than that of the clean table, nor more than twice it, so it keeps the scan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
@@ -24,7 +23,7 @@ CREATE TABLE half AS SELECT name, scan_cost(q) AS cost FROM shapes;
 UPDATE events SET metric_a = metric_a WHERE (ctid::text::point)[0]::int % 100 >= 50 AND (ctid::text::point)[1]::int = 1;
 CREATE TABLE dirty AS SELECT name, scan_cost(q) AS cost FROM shapes;
 
-SELECT name, h.cost > c.cost AND d.cost > h.cost AS grows, d.cost / c.cost BETWEEN 3 AND 15 AS dirty_in_range
+SELECT name, h.cost >= c.cost AND d.cost >= h.cost AS grows, d.cost / c.cost BETWEEN 1 AND 2 AS dirty_in_range
 FROM clean c JOIN half h USING (name) JOIN dirty d USING (name) ORDER BY name;
 
 DROP TABLE clean, half, dirty, shapes;
