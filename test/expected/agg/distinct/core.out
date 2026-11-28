@@ -233,7 +233,7 @@ END $$;
 SELECT * FROM fuzz_ties(120);
  statements | in_scan | pairs_differ | rows_not_in_table 
 ------------+---------+--------------+-------------------
-        120 |     105 |            0 |                 0
+        120 |     120 |            0 |                 0
 (1 row)
 
 DROP FUNCTION fuzz_ties(int);
