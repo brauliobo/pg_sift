@@ -165,8 +165,8 @@ qual_compare(V6Plan *p, OpExpr *op)
 }
 
 /*
- * the array of an IN list: a constant; $n of the WHERE of an unnest, which the node binds to the value of its execution before it reads (sift_v6_bind_params); or on an index any other
- * parameter or stable expression, which the scan binds when it starts, as a runtime array key of an index scan
+ * the array of an IN list: a constant; $n of the WHERE of an unnest, which the node binds to the value of its execution before it reads (sift_v6_bind_params); or, on an index,
+ * any other parameter, stable expression or list of the values of the outer row of a LATERAL probe, a runtime key the scan evaluates when it starts (and again when it is rescanned)
  */
 static bool
 in_array_usable(const V6Plan *p, const Node *arr)
