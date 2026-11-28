@@ -67,8 +67,18 @@ test/expected/agg/scalar/dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17
 test/expected/agg/scalar/dirty_1.out	8ac8841da9959da1e17022752d566d67ade4d005	17	cast float8     | t      |      0 | same rows
 test/expected/agg/scalar/dirty_1.out	c5ac5a346f99dd3d30fad715630994cea277e0cf	17	key float8      | t      |      0 | same rows
 test/expected/agg/scalar/dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg/scalar/dirty_f1_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
+test/expected/agg/scalar/dirty_f1_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome
+test/expected/agg/scalar/dirty_f1_1.out	50f22d4942a479a5e9b35321b1895226c916b208	17	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
+test/expected/agg/scalar/dirty_f1_1.out	5f63fb62821d4d7643ac3c2fd3d3fe483e6e61ee	17	two kinds         | t      | same ERR 22023 cannot cast jsonb string to type do
+test/expected/agg/scalar/dirty_f1_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
+test/expected/agg/scalar/dirty_f1_1.out	8ac8841da9959da1e17022752d566d67ade4d005	17	cast float8     | t      |      0 | same rows
+test/expected/agg/scalar/dirty_f1_1.out	c5ac5a346f99dd3d30fad715630994cea277e0cf	17	key float8      | t      |      0 | same rows
+test/expected/agg/scalar/dirty_f1_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg/scalar/dirty_filter_1.out	1651bbabdf541b136d28470a470932de1a0b951e	17	n       | plan | reread |                             outcome
 test/expected/agg/scalar/dirty_filter_1.out	2618838ec7352c4df64ac8ce259d1969be67b1fd	17	n         | plan |                               outcome
+test/expected/agg/scalar/dirty_filter_f1_1.out	2618838ec7352c4df64ac8ce259d1969be67b1fd	17	n         | plan |                               outcome
+test/expected/agg/scalar/dirty_filter_f1_1.out	568d4f5e01f1ba7b90d4471ecd37b64103f5459c	17	cast of jsonb | scan   |     -1 | same ERR 22023 cannot cast jsonb string to ty
 test/expected/agg/scalar/dirty_where_1.out	55799f1301da33e2973172ca1f0e29506a245754	17	cast of jsonb  | scan   |     -1 | same ERR 22023 cannot cast jsonb string to t
 test/expected/agg/scalar/dirty_where_1.out	b34490ba08c469aa2fe1b15963eeff10beadc364	17	cast of jsonb raises | scan   | same ERR 22023 cannot cast jsonb string to type
 test/expected/agg/scope/param_keys_1.out	5dcebe8252f920f53940cb977671cc38de1841f4	19	join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope

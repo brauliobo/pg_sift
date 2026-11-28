@@ -10,6 +10,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/safety.h"
@@ -39,6 +40,12 @@ bool
 sift_v6_pgexpr_exec(const Node *e)
 {
 	return exec_walker((Node *) e, NULL);
+}
+
+bool
+sift_v6_jsonb_number_cast(Oid funcid)
+{
+	return funcid == F_INT2_JSONB || funcid == F_INT4_JSONB || funcid == F_INT8_JSONB || funcid == F_FLOAT8_JSONB;
 }
 
 static bool

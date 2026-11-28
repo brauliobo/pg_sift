@@ -462,6 +462,23 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
 }
 
+/*
+ * a cast of the jsonb of a key of a document to a number in e where a JSON null raises (before PostgreSQL 18): the member read of the key takes no such cast, and PostgreSQL's evaluator would raise
+ * the error of the first row of the batches, which are not in the order of the heap
+ */
+static bool
+casts_key_jsonb(Node *n, void *context)
+{
+	List	   *path;
+
+	if (n == NULL)
+		return false;
+	if (IsA(n, FuncExpr) && list_length(((FuncExpr *) n)->args) == 1 && sift_v6_jsonb_number_cast(((FuncExpr *) n)->funcid) &&
+		sift_v6_doc_chain(linitial(((FuncExpr *) n)->args), &path) != NULL)
+		return true;
+	return expression_tree_walker(n, casts_key_jsonb, context);
+}
+
 /* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector or holds datums an exact distinct
  * set takes (sift_dkey_datum_type), a key may be of any type that can be grouped */
 bool
@@ -475,7 +492,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	int			at;
 
 	e = index_exprs_as_columns(p, e);
-	if (undeclared_doc_walker((Node *) e, p))
+	if (undeclared_doc_walker((Node *) e, p) || (SIFT_JSON_NULL_CAST_RAISES && casts_key_jsonb((Node *) e, NULL)))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);
 	if (!join_derive_ok(p, e))

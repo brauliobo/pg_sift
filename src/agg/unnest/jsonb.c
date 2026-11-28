@@ -531,12 +531,6 @@ is_value_text(const V6Plan *p, const Node *n)
 	return !path->constisnull && ARR_NDIM(DatumGetArrayTypeP(path->constvalue)) == 0;
 }
 
-static bool
-is_jsonb_number_cast(Oid funcid)
-{
-	return funcid == F_INT2_JSONB || funcid == F_INT4_JSONB || funcid == F_INT8_JSONB || funcid == F_FLOAT8_JSONB;
-}
-
 /*
  * how e reads the value of the member: the cast of its text to the type of the leaf, or of jsonb_each's jsonb as it is (not before 18, where the cast of a JSON null raises and the leaf
  * reads it as NULL); SV6V_NONE for anything else
@@ -546,7 +540,7 @@ value_read(const V6Plan *p, const Expr *e)
 {
 	const SiftV6XElem *el = &p->xseed->elem;
 
-	if (!SIFT_JSON_NULL_CAST_RAISES && el->fn == SV6E_EACH && IsA(e, FuncExpr) && is_jsonb_number_cast(((const FuncExpr *) e)->funcid) &&
+	if (!SIFT_JSON_NULL_CAST_RAISES && el->fn == SV6E_EACH && IsA(e, FuncExpr) && sift_v6_jsonb_number_cast(((const FuncExpr *) e)->funcid) &&
 		is_value_var(p, linitial(((const FuncExpr *) e)->args), JSONBOID))
 		return SV6V_CAST;
 	if (IsA(e, CoerceViaIO) && (el->fn == SV6E_EACH ? is_value_text(p, (const Node *) ((const CoerceViaIO *) e)->arg) :

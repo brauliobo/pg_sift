@@ -56,6 +56,9 @@ extern bool sift_v6_pgexpr_plan_ok(PlannerInfo *root, const Expr *e);
 /* the same for a batch qual, whose $n the node binds as constants before it opens it (sift_v6_bind_params) */
 extern bool sift_v6_pgexpr_plan_ok_bound(PlannerInfo *root, const Expr *e);
 
+/* The function is the cast of a jsonb to a number (int2, int4, int8, float8), which raises for a JSON null before PostgreSQL 18 */
+extern bool sift_v6_jsonb_number_cast(Oid funcid);
+
 /* The expression starts a sub-plan or reads an executor parameter: only the node that runs the scan can evaluate it */
 extern bool sift_v6_pgexpr_exec(const Node *e);
 
