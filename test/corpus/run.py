@@ -7,7 +7,7 @@ backend of the "on" run the plan is then explained: the Custom Scan (Sift...) no
 is the plan slug of the statement; test/corpus/plans.tsv pins it, so a statement that stops being engaged (or starts) fails until the file is updated in the same change
 (--update rewrites it: read the diff). Libpq environment as for psql (PGHOST, PGPORT, PGUSER, PGDATABASE). Exit 1 on a difference, an error or a plan that is not the pinned one.
 """
-import fnmatch, glob, hashlib, os, re, subprocess, sys, tempfile, threading
+import fnmatch, glob, hashlib, os, re, shutil, subprocess, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BASE = "set statement_timeout='90s'; set extra_float_digits=-5; set max_parallel_workers_per_gather=0; set jit=off; set work_mem='256MB';"
@@ -97,11 +97,23 @@ def plan_of(path):
 
 
 def main(a):
+    """a run without --out works in a fresh corpus.* directory: removed when the corpus passes, kept (and named) when it fails"""
+    if "--out" in a:
+        return check(a, a[a.index("--out") + 1])
+    out = tempfile.mkdtemp(prefix="corpus.", dir=os.environ.get("TMPDIR", "/tmp"))
+    rc = check(a, out)
+    if rc:
+        print("corpus: the output is kept in " + out)
+    else:
+        shutil.rmtree(out)
+    return rc
+
+
+def check(a, out):
     only = a[a.index("--only") + 1] if "--only" in a else "*"
     update, noplans = "--update" in a, "--no-plans" in a
     globs = re.split(r"[|,]", only)
     cases = [c for c in parse() if any(fnmatch.fnmatch(c["slug"], g) for g in globs)]
-    out = a[a.index("--out") + 1] if "--out" in a else tempfile.mkdtemp(prefix="corpus.", dir=os.environ.get("TMPDIR", "/tmp"))
     os.makedirs(out, exist_ok=True)
     jobs = int(a[a.index("--jobs") + 1]) if "--jobs" in a else 4
     errs, bad = {}, []
