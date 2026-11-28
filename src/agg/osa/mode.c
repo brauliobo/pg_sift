@@ -214,6 +214,13 @@ v6_mode_take(V6GenAgg *ga, uint32 sid, Datum value)
 }
 
 void
+v6_mode_each(const V6Mode *m, V6PairFn fn, void *arg)
+{
+	for (uint32 e = 0; e < m->nentry; e++)
+		fn(arg, m->entry[e].sid, m->entry[e].value, m->entry[e].count);
+}
+
+void
 v6_mode_finish(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid)
 {
 	V6Mode	   *m = ga->mode;

@@ -460,6 +460,8 @@ par_local_export(void *local, const SiftV6RecSink *sink)
 		sift_distinct_foreach_hashed(l->seen, export_seen, &x);
 		sift_distinct_reset(l->seen);
 	}
+	if (l->g->gen != NULL)
+		v6_gen_hold(l->g->gen);
 	for (int s = 0; s < l->g->nsets; s++)
 		if (l->g->set[s].nk == 0)
 			export_plain(l, s, sink->put, sink->arg);
@@ -660,6 +662,8 @@ par_local_reset(void *local)
 	if (l->dist != NULL)
 		sift_v6_par_dist_reset(l->dist);
 	sift_v6_group_recycle(l->g);
+	if (l->g->gen != NULL)
+		v6_gen_restart(l->g->gen);
 	l->g->tx.used = 0;
 	return true;
 }

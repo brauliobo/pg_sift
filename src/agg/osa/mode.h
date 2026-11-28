@@ -18,5 +18,7 @@ extern bool v6_mode_take(V6GenAgg *ga, uint32 sid, Datum value);
 /* the scan has ended: each group of the count has its answer in the results' memory; accs[sid] is the state of group sid */
 extern void v6_mode_finish(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid);
 extern void v6_mode_free(V6Mode *m);
+/* every (group, value) pair counted, with its count */
+extern void v6_mode_each(const V6Mode *m, V6PairFn fn, void *arg);
 
 #endif							/* SIFT_AGG_V6_OSA_MODE_H */

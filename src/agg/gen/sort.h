@@ -16,6 +16,8 @@ extern V6GenSort *v6_gen_sort_begin(V6GenAgg *ga, MemoryContext cx, int mem_kb);
 extern void v6_gen_sort_put(V6GenSort *s, uint32 sid, const Datum *args, const bool *nulls);
 /* every group of the sort in turn goes through the transition function, then the final function; accs[sid] is the state of group sid */
 extern void v6_gen_sort_drain(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid);
+/* WITHIN GROUP of one argument: every input of the sort, in the order of the groups, as a pair of count 1 */
+extern void v6_gen_sort_each(V6GenSort *s, V6PairFn fn, void *arg);
 extern void v6_gen_sort_end(V6GenSort *s);
 
 #endif							/* SIFT_AGG_V6_GEN_SORT_H */

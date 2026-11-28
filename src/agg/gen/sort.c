@@ -210,6 +210,24 @@ v6_gen_sort_drain(V6Gen *gen, V6GenAgg *ga, V6Acc **accs, uint32 nsid)
 }
 
 void
+v6_gen_sort_each(V6GenSort *s, V6PairFn fn, void *arg)
+{
+	bool		isnull;
+
+	Assert(s->ga->nargs == 1 && s->vcol[0] == 0);
+	tuplesort_performsort(s->ts);
+	while (tuplesort_gettupleslot(s->ts, true, false, s->get, NULL))
+	{
+		const uint32 sid = (uint32) DatumGetInt32(slot_getattr(s->get, 1, &isnull));
+		const Datum value = slot_getattr(s->get, 2, &isnull);
+
+		CHECK_FOR_INTERRUPTS();
+		Assert(!isnull);
+		fn(arg, sid, value, 1);
+	}
+}
+
+void
 v6_gen_sort_end(V6GenSort *s)
 {
 	tuplesort_end(s->ts);

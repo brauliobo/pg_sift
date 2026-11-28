@@ -33,6 +33,7 @@
 #include "agg/plan/int.h"
 #include "agg/gen/gen.h"
 #include "agg/gen/sort.h"
+#include "agg/osa/ship.h"
 #include "agg/osa/mode.h"
 #include "agg/osa/osa.h"
 
@@ -777,6 +778,22 @@ v6_gen_free(V6Gen *gen)
 	FreeExprContext(gen->tmp, true);
 	MemoryContextDelete(gen->res);
 	results_close(gen);
+}
+
+void
+v6_gen_hold(V6Gen *gen)
+{
+	for (int j = 0; j < gen->spec->naggs; j++)
+	{
+		V6GenAgg   *ga = gen->agg[j];
+
+		if (ga == NULL || !ga->sorted)
+			continue;
+		v6_osa_hold(gen, ga);
+		end_inputs(ga);
+		ga->nsid = 0;
+		begin_inputs(ga, gen->cx, sort_share_kb(gen->spec));
+	}
 }
 
 void

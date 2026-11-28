@@ -19,6 +19,7 @@
 #include "core/catname.h"
 #include "core/compat.h"
 #include "agg/gen/gen.h"
+#include "agg/osa/ship.h"
 
 /* ---- the partial states of a parallel run ---- */
 
@@ -35,6 +36,12 @@ v6_gen_state_put(V6Gen *gen, int j, const V6Acc *acc, StringInfo buf)
 	MemoryContext old;
 	uint32		len;
 
+	if (ga->sorted)
+	{
+		if (acc->v1 != 0)
+			v6_osa_put(ga, (uint32) acc->v1 - 1, buf);
+		return;
+	}
 	if (!carries_value(acc))
 		return;
 	old = MemoryContextSwitchTo(gen->tmp->ecxt_per_tuple_memory);
@@ -75,6 +82,8 @@ v6_gen_state_take(V6Gen *gen, int j, V6Acc *dst, const V6Acc *src, const char *t
 	uint32		len;
 	MemoryContext old;
 
+	if (ga->sorted)
+		return src->v1 != 0 ? v6_osa_take(gen, ga, dst, tail) : tail;
 	if (carries_value(src))
 	{
 		memcpy(&len, tail, sizeof(len));
@@ -113,7 +122,10 @@ v6_gen_release(V6Gen *gen)
 {
 	for (int j = 0; j < gen->spec->naggs; j++)
 		if (gen->agg[j] != NULL)
+		{
+			v6_osa_release(gen->agg[j]);
 			ReScanExprContext(gen->agg[j]->cx);
+		}
 }
 
 void
@@ -145,7 +157,21 @@ unbounded_state(const Aggref *a, Oid transtype)
 	return !byval && len <= 0;
 }
 
-/* why the aggregate cannot run in workers (NULL: a partial state of it can be made, carried and combined, as PostgreSQL's own parallel aggregate does) */
+/* why the partial state of the aggregate cannot be made, carried and combined, as PostgreSQL's own parallel aggregate does (NULL: it can) */
+static const char *
+state_serial_why(const Aggref *a, const Form_pg_aggregate ag)
+{
+	if (a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL)
+		return "the ORDER BY of its inputs keeps the values of a group in one sort";
+	if (unbounded_state(a, ag->aggtranstype))
+		return "its state grows with the rows of a group, and a record of the workers carries one state";
+	if (!OidIsValid(ag->aggcombinefn) || IsPolymorphicType(ag->aggtranstype) || func_volatile(ag->aggcombinefn) == PROVOLATILE_VOLATILE ||
+		(ag->aggtranstype == INTERNALOID && (!OidIsValid(ag->aggserialfn) || !OidIsValid(ag->aggdeserialfn))))
+		return "its partial states cannot be carried and combined";
+	return NULL;
+}
+
+/* why the aggregate cannot run in workers (NULL: a partial state of it can be carried and combined, or it is a WITHIN GROUP aggregate whose inputs the records carry, and its functions are parallel safe) */
 static const char *
 serial_aggregate(const Aggref *a)
 {
@@ -157,13 +183,8 @@ serial_aggregate(const Aggref *a)
 	ag = (Form_pg_aggregate) GETSTRUCT(tup);
 	if (a->aggdistinct != NIL)
 		why = "DISTINCT keeps the values of a group in one sort or set";
-	else if (a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL)
-		why = "the ORDER BY of its inputs keeps the values of a group in one sort";
-	else if (unbounded_state(a, ag->aggtranstype))
-		why = "its state grows with the rows of a group, and a record of the workers carries one state";
-	else if (!OidIsValid(ag->aggcombinefn) || IsPolymorphicType(ag->aggtranstype) || func_volatile(ag->aggcombinefn) == PROVOLATILE_VOLATILE ||
-			 (ag->aggtranstype == INTERNALOID && (!OidIsValid(ag->aggserialfn) || !OidIsValid(ag->aggdeserialfn))))
-		why = "its partial states cannot be carried and combined";
+	else if (!sift_v6_osa_shippable(a))
+		why = state_serial_why(a, ag);
 	foreach_oid(fn, list_make5_oid(a->aggfnoid, ag->aggtransfn, ag->aggcombinefn, ag->aggserialfn, ag->aggdeserialfn))
 		if (why == NULL && OidIsValid(fn) && func_parallel(fn) != PROPARALLEL_SAFE)
 			why = "a function of it is not parallel safe";

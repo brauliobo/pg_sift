@@ -15,6 +15,7 @@
 #include "optimizer/pathnode.h"
 #include "executor/executor.h"
 #include "access/parallel.h"
+#include "catalog/pg_index.h"
 #include "catalog/pg_statistic.h"
 #include "utils/syscache.h"
 
@@ -65,6 +66,7 @@ extern PGDLLIMPORT bool sift_agg_exact_float;
 #define PAR_RECORD_NS		250.0	/* a record: made, routed, merged */
 #define PAR_COLD_RECORD_NS	400.0	/* ... of a run of PAR_COLD_GROUPS groups or more, whose records wait for memory (Q18 and Q33 spend 400 to 450 ns on each, with no temporary file) */
 #define PAR_VALUE_NS		60.0	/* a distinct value: its record routed and added to the set of its group at the owner */
+#define PAR_PAIR_NS			40.0	/* a (group, value) pair of a WITHIN GROUP aggregate: added to the count or the sort of its group at the owner (perf: 41 ns) */
 #define PAR_LAUNCH_MS		17.0	/* the workers join 5 to 6 ms after the leader starts, and the Gather waits for them to leave: measured on the 1M-row table */
 #define PAR_PER_WORKER_MS	1.0
 #define PAR_MIN_GAIN		0.78	/* a parallel plan is added when it takes at most this share of the serial time: the model is not finer than that */
@@ -78,6 +80,7 @@ typedef struct CostPick
 	double		groups;
 	uint32		topk;
 	bool		values;			/* a count(DISTINCT): every row sends its value */
+	double		pairs;			/* the (group, value) pairs of the WITHIN GROUP aggregates, which their owners take in one by one */
 	int			nkeys;
 } CostPick;
 
@@ -168,17 +171,29 @@ granules_read(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double
 	return ceil(rows / Max(per_granule, 1.0));
 }
 
-/* The distinct values of a key column in the statistics of the table: 0 when it has none (the attribute of an index is the one its key names) */
+/* The attribute of the table that attribute attno of the index is: 0 for an expression, or a virtual attribute of the scan (a leaf of a document) */
+static AttrNumber
+index_heap_attno(Oid indexoid, int attno)
+{
+	HeapTuple	tup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexoid));
+	Form_pg_index ix;
+	AttrNumber	att;
+
+	SIFT_INVARIANT(HeapTupleIsValid(tup), "cache lookup failed for index %u", indexoid);
+	ix = (Form_pg_index) GETSTRUCT(tup);
+	att = attno <= ix->indnatts ? ix->indkey.values[attno - 1] : 0;
+	ReleaseSysCache(tup);
+	return att;
+}
+
+/* The distinct values of a key column in the statistics of the table: 0 when it has none */
 static double
 key_distinct(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, const SiftV6Col *c)
 {
-	const IndexOptInfo *ix = spec_index(rel, spec);
-	AttrNumber	attno = spec->is_table ? c->attno : 0;
+	const AttrNumber attno = c->attno <= 0 ? 0 : spec->is_table ? c->attno : index_heap_attno(spec->relid, c->attno);
 	HeapTuple	tup;
 	double		nd;
 
-	if (ix != NULL && c->attno <= ix->ncolumns)
-		attno = ix->indexkeys[c->attno - 1];
 	if (attno <= 0)
 		return 0.0;
 	tup = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(root->simple_rte_array[rel->relid]->relid), Int16GetDatum(attno), BoolGetDatum(false));
@@ -187,6 +202,22 @@ key_distinct(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *s
 	nd = ((Form_pg_statistic) GETSTRUCT(tup))->stadistinct;
 	ReleaseSysCache(tup);
 	return nd > 0 ? nd : -nd * rel->tuples;
+}
+
+/* the (group, value) pairs the WITHIN GROUP aggregates hand over: at most a pair a row, at most the distinct values of the argument in each group */
+static double
+osa_pairs(const PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, double rows, double groups)
+{
+	double		pairs = 0.0;
+
+	for (int j = 0; j < spec->naggs; j++)
+		if (spec->agg[j].kind == SV6_OSA)
+		{
+			const double nd = key_distinct(root, rel, spec, &spec->agg[j].arg);
+
+			pairs += Min(rows, groups * (nd > 0.0 ? nd : rows));
+		}
+	return pairs;
 }
 
 /* a text key of more values than a dictionary holds is compared as a string in the table; one of fewer is a code */
@@ -239,7 +270,7 @@ parallel_ms(const CostPick *c, int nworkers)
 	const double record_ns = c->values ? PAR_VALUE_NS : (c->groups >= PAR_COLD_GROUPS ? PAR_COLD_RECORD_NS : PAR_RECORD_NS);
 	const double hand_over = records * record_ns / 1e6 / p * parallel_tuple_cost / DEFAULT_PARALLEL_TUPLE_COST;
 
-	return launch + c->scan_ms / (1.0 + SIFT_PAR_EFFICIENCY * nworkers) + hand_over;
+	return launch + c->scan_ms / (1.0 + SIFT_PAR_EFFICIENCY * nworkers) + hand_over + c->pairs * PAR_PAIR_NS / 1e6;
 }
 
 static int
@@ -488,6 +519,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	pick.nkeys = spec.nkeys;
 	for (int j = 0; j < spec.naggs; j++)
 		pick.values |= sift_v6_kind_distinct(spec.agg[j].kind);
+	pick.pairs = osa_pairs(root, rel, &spec, pick.rows, pick.groups);
 	in = par_input(root, rel, output_rel, &spec, having, groups, &pick);
 	strategy = sift_v6_par_choose_strategy(&in, &nworkers, &why);
 	if (strategy == SV6P_SERIAL)

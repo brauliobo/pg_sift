@@ -57,6 +57,10 @@ typedef struct V6GenArg
 
 struct V6GenSort;
 struct V6Mode;
+struct V6OsaHeld;
+
+/* a (group, value) pair of the inputs of a WITHIN GROUP aggregate, with the inputs it stands for */
+typedef void (*V6PairFn) (void *arg, uint32 sid, Datum value, int64 count);
 
 typedef struct V6GenAgg
 {
@@ -102,6 +106,7 @@ typedef struct V6GenAgg
 	struct V6GenSort *sort;
 	struct V6Mode *mode;		/* mode() that counts its values instead of sorting them (agg/osa/mode.h); NULL once they went to the sort */
 	uint32		nsid;			/* the groups numbered in the sort, as their first input arrives */
+	struct V6OsaHeld *held;		/* a participant of a parallel run: the inputs of its groups, between their hold and their records (agg/osa/ship.h) */
 } V6GenAgg;
 
 typedef struct V6Gen
@@ -142,6 +147,8 @@ extern void v6_gen_no_spill(const V6Gen *gen);
 /* the partial state of group j as the bytes that follow the accumulators of its record in a parallel run (none when it has no value), and a state that came that way joining dst */
 extern void v6_gen_state_put(V6Gen *gen, int j, const V6Acc *acc, StringInfo buf);
 extern const char *v6_gen_state_take(V6Gen *gen, int j, V6Acc *dst, const V6Acc *src, const char *tail);
+/* the inputs of the sorted aggregates of a participant leave with the records of its groups: held as their pairs, the inputs start over */
+extern void v6_gen_hold(V6Gen *gen);
 /* every state of every group is dropped: the groups went elsewhere */
 extern void v6_gen_release(V6Gen *gen);
 /* the same after the scan has ended: the sorts of the sorted aggregates begin again, for the groups of the rows of another table */
