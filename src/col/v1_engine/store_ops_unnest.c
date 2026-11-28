@@ -436,9 +436,12 @@ reads_virtual(Node *node, void *host)
 	return expression_tree_walker(node, reads_virtual, host);
 }
 
-/* the quals of the table over its stored columns as the source decides them, so that it reads no unit their bounds leave out (the batches are filtered by all the quals again) */
+/*
+ * the quals of the table over its stored columns, and the keys of the dimensions of a star join on columns of the index (keys), as the source decides them, so that it reads no unit their bounds
+ * leave out (the batches are filtered by all the quals, and the pairs by the join, again)
+ */
 static SiftV6Vexpr *
-source_quals(const UnRun *u, Relation host, SiftV6Input *in)
+source_quals(const UnRun *u, Relation host, ScanKey keys, int nkeys, SiftV6Input *in)
 {
 	SiftV6Input probe = *in;
 	SiftV6Vexpr *vx = palloc0(sizeof(SiftV6Vexpr));
@@ -447,7 +450,8 @@ source_quals(const UnRun *u, Relation host, SiftV6Input *in)
 	foreach_ptr(Node, q, u->x->where)
 		if (!reads_virtual(q, host))
 			stored = lappend(stored, q);
-	if (stored == NIL || !sift_v6_vexpr_quals(CurrentMemoryContext, sift_srcfold_heap_quals(host, stored), 1, NULL, &probe, vx))
+	stored = list_concat(sift_srcfold_heap_quals(host, stored), sift_srcfold_scankey_quals(host, keys, nkeys));
+	if (stored == NIL || !sift_v6_vexpr_quals(CurrentMemoryContext, stored, 1, NULL, &probe, vx))
 		return NULL;
 	*in = probe;
 	return vx;
@@ -521,12 +525,12 @@ sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 }
 
 void
-sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, Snapshot snap, const SiftV1Range *range)
+sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range)
 {
 	SiftV6Batch b;
 	SiftV1Scan	scan = {.range = range,.elem = u->has_elems ? &u->espec : NULL};
 
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, &u->in), &scan);
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, keys, nkeys, &u->in), &scan);
 	while (u->src->next(u->src, &b))
 		sift_v1_unnest_batch(u, &b, u->has_elems ? sift_v1_source_elems(u->src) : NULL);
 	u->src->close(u->src);
@@ -542,11 +546,11 @@ sift_v1_unnest_close(UnRun *u)
 }
 
 void
-sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
 	UnRun		run;
 
 	sift_v1_unnest_open(&run, spec, g, heap, index, stats, star);
-	sift_v1_unnest_read(&run, heap, index, snap, NULL);
+	sift_v1_unnest_read(&run, heap, index, keys, nkeys, snap, NULL);
 	sift_v1_unnest_close(&run);
 }

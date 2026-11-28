@@ -194,7 +194,8 @@ flag_slot(const UnRun *u, int k)
 }
 
 /* run.c: the run of spec over its own pull (ps the leaves it reads, pull not begun), one batch of the pull, its end */
-extern void sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star);
+extern void sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
+								const SiftV6StarRun *star);
 extern void sift_f2_unnest_batch(UnRun *u, const SiftF2ExtBatch *b);
 extern void sift_f2_unnest_close(UnRun *u);
 extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
@@ -214,6 +215,6 @@ extern void sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *
 extern void sift_f2_unnest_member_heap_row(UnRun *u, uint32 r);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
 /* the quals of the table on columns of an index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
-extern void sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, SiftF2PullSpec *ps);
+extern void sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, ScanKey star, int nstar, SiftF2PullSpec *ps);
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_INT_H */

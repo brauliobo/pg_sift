@@ -258,7 +258,7 @@ sift_test_v1_unnest(PG_FUNCTION_ARGS)
 	g = sift_v6_group_new(spec, CurrentMemoryContext, desc);
 	node->state = CreateExecutorState();
 	sift_v6_exec_begin(spec, node);
-	ops->jsonb->unnest_run(spec, g, heap, is_table ? NULL : rel, GetActiveSnapshot(), &stats, NULL);
+	ops->jsonb->unnest_run(spec, g, heap, is_table ? NULL : rel, NULL, 0, GetActiveSnapshot(), &stats, NULL);
 	FreeExecutorState(node->state);
 	sift_v6_group_finish(g);
 	while (sift_v6_group_next(g, values, nulls))

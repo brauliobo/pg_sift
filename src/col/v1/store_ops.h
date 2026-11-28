@@ -51,7 +51,8 @@ extern const SiftPreaggOps v1_preagg_ops;
 extern const SiftJsonbOps v1_jsonb_ops;
 /* the same in the participants of a parallel run, by the superblocks each claims (col/v1_engine/store_ops_unnest_par.c) */
 extern const SiftStoreParOps sift_v1_unnest_par_ops;
-extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
+extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, struct SiftV6ScanStats *stats,
+							   const struct SiftV6StarRun *star);
 /* SiftJsonbOps.unnest_arms over Format 1 (col/v1_engine/store_ops_unnest_arms.c) */
 struct SiftV6FuseCohort;
 struct SiftV6ScanArm;

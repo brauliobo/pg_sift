@@ -327,7 +327,9 @@ typedef struct SiftJsonbOps
 	bool		streams;		/* its unnest reads the elements of several arrays of a row (SiftV6Ext.nstreams), and the clauses of the table read the flags of the tests */
 	bool		table_elems;	/* its unnest of a sift_table reads the elements of the declared paths of its store; a row they cannot hold, and every row of a statement a qual of which only the row decides, is read again by its address */
 	bool		(*path_declared) (Oid relid, bool is_table, int att, const List *path);	/* the paths option of the index declares the path (a list of String keys) of the document attribute att */
-	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
+	/* keys: those of the dimensions of a star join (sift_v6_star_scan_keys) on columns of index, which the scan reads no granule outside of */
+	void		(*unnest_run) (const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, struct SiftV6ScanStats *stats,
+							   const struct SiftV6StarRun *star);
 	/* the unnests of the arms of a cohort of the index over one pass (agg/fuse/fuse.h); alone[i]: arm i read the index on its own after the pass. NULL: each arm scans alone */
 	void		(*unnest_arms) (struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone);
 	const SiftStoreParOps *unnest_par;	/* the unnest of an index in the participants of a parallel run, NULL: it runs in one process */

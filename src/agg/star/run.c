@@ -926,7 +926,8 @@ sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys
 	ScanKey		out = palloc(((Size) nkeys + 3 * r->x->ndims) * sizeof(ScanKeyData));
 	Bitmapset  *filtered = NULL;
 
-	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
+	if (nkeys > 0)
+		memcpy(out, keys, nkeys * sizeof(ScanKeyData));
 	*n = nkeys;
 	r->key_filters = 0;
 	for (int d = 0; d < r->x->ndims && !sift_star_preserves_dim(r->x->dim[d].mode); d++)

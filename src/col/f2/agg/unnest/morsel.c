@@ -30,7 +30,7 @@ par_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, i
 	p->cx = cx;
 	p->heap = heap;
 	p->index = index;
-	sift_f2_unnest_open(&p->u, spec, NULL, heap, index, snap, stats, star);
+	sift_f2_unnest_open(&p->u, spec, NULL, heap, index, NULL, 0, snap, stats, star);
 	p->map = sift_v6_map_preagg_begin(spec, NULL, &p->u.vet, stats);
 	p->u.ps.gran_sink = p->map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	p->u.ps.gran_arg = p->map;

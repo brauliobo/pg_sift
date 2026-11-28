@@ -264,9 +264,9 @@ scan_table_with_text(V6State *st, const SiftV6ScanSrc *src, Snapshot snap, SiftV
 
 /* The unnest of an array column: the elements the index or the table keeps */
 static void
-v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
+v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, ScanKey keys, int nkeys, Snapshot snap)
 {
-	src->ops->jsonb->unnest_run(src->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
+	src->ops->jsonb->unnest_run(src->spec, st->group, src->heap, src->index, keys, nkeys, snap, &st->stats, st->star);
 }
 
 /* The counts of the dimensions EXPLAIN shows, kept before their tables are freed */
@@ -285,20 +285,21 @@ v6_scan_source(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 source");
 	MemoryContext old = MemoryContextSwitchTo(cx);
+	const bool	unnest = st->spec->ext != NULL && st->spec->ext->unnest;
 	SiftV6ScanSrc pass = *src;
 
-	if (st->spec->ext != NULL && st->spec->ext->unnest)
-		v6_scan_unnest(st, src, snap);
+	if (st->star != NULL && src->index != NULL)
+		pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, unnest ? 0 : src->nkeys, &pass.nkeys);
+	else if (unnest)
+		pass.nkeys = 0;
+	if (unnest)
+		v6_scan_unnest(st, src, pass.keys, pass.nkeys, snap);
 	else if (src->ops->zone == NULL)
 		sift_v6_open_scan_run(src->spec, st->group, src->ops, st->css.ss.ps.state, src->heap, src->index, &st->stats);
 	else if (src->index == NULL)
 		scan_table_with_text(st, src, snap, st->star);
 	else
-	{
-		if (st->star != NULL)
-			pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, src->nkeys, &pass.nkeys);
 		scan_with_text(st, &pass, snap, st->star);
-	}
 	MemoryContextSwitchTo(old);
 	MemoryContextDelete(cx);
 }
@@ -312,7 +313,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 
 	if (st->spec->ext->unnest && st->star == NULL)
 	{
-		v6_scan_unnest(st, &st->sources[0], snap);
+		v6_scan_unnest(st, &st->sources[0], NULL, 0, snap);
 		return;
 	}
 	while ((open = sift_v6_star_open(st->star, pass++, st->nsources)) != SSO_DONE)

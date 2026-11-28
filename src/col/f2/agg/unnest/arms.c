@@ -130,7 +130,7 @@ sift_v6_unnest_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Rel
 
 	for (int i = 0; i < n; i++)
 	{
-		sift_f2_unnest_open(&u[i], arms[i].spec, arms[i].group, heap, index, snap, arms[i].stats, arms[i].star);
+		sift_f2_unnest_open(&u[i], arms[i].spec, arms[i].group, heap, index, NULL, 0, snap, arms[i].stats, arms[i].star);
 		if (i == 0)
 		{
 			ps.npred = u[0].ps.npred;

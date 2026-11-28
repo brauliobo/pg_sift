@@ -871,7 +871,8 @@ host_leaves(Relation host, bool table)
 }
 
 void
-sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats,
+					const SiftV6StarRun *star)
 {
 	UnLeaves	r;
 
@@ -888,18 +889,18 @@ sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 	for (int i = 0; i < u->ncols; i++)
 		u->pcol[i] = i;
 	if (!u->table)
-		sift_f2_unnest_where_preds(u, &r, &u->ps);
+		sift_f2_unnest_where_preds(u, &r, keys, nkeys, &u->ps);
 }
 
 void
-sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
 	UnRun		run;
 	UnRun	   *u = &run;
 	SiftV6MapPreagg *map;
 	const SiftF2ExtBatch *b;
 
-	sift_f2_unnest_open(u, spec, g, heap, index, snap, stats, star);
+	sift_f2_unnest_open(u, spec, g, heap, index, keys, nkeys, snap, stats, star);
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
 	u->ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	u->ps.gran_arg = map;

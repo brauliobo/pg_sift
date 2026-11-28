@@ -182,8 +182,8 @@ extern void sift_v1_unnest_setup_tests(UnRun *u);
 /* the run of spec (its source not opened: u->in its columns, u->espec its elements when u->has_elems), one batch of a source with the elements of its rows, its end */
 extern void sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, SiftV6ScanStats *stats, const SiftV6StarRun *star);
 extern void sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb);
-/* the rows of the superblocks of range (NULL: every row) into the groups of the open run */
-extern void sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, Snapshot snap, const SiftV1Range *range);
+/* the rows of the superblocks of range (NULL: every row) into the groups of the open run; keys: those of the dimensions of a star join, which prune the units it reads */
+extern void sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range);
 extern void sift_v1_unnest_close(UnRun *u);
 
 #endif							/* SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H */

@@ -47,6 +47,16 @@ GROUP BY d.period, d.bucket ORDER BY 1, 2$f$, scope) $$;
 SELECT * FROM same(spine('<= 300'));
 -- a few entities: the scan still wins (0.6 ms against 1.8 ms for the btree plan, 200,000 rows) now that the elements of the spine's jsonb array are hash keys of its lookup
 SELECT * FROM same(spine('= 7'));
+-- the key of the entity leaves the granules of the others out of the scan, though the rows are unnested and the spine is the preserved side of its join
+CREATE FUNCTION key_filters(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'Join Key Filters' THEN RETURN trim(l); END IF;
+	END LOOP;
+	RETURN 'none';
+END $$;
+SELECT key_filters(spine('= 7'));
 
 CREATE FUNCTION grouped(scope text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
 SELECT e.key, count(DISTINCT r.id) AS ids, round(avg(e.value::float8)::numeric, 6) AS score FROM nc_rows r JOIN LATERAL jsonb_each(r.metrics_a) e ON true
@@ -56,7 +66,7 @@ $f$, scope) $$;
 -- the same without the spine; a month of one entity is a few rows for the btree plan
 SELECT * FROM same(grouped('<= 300'));
 SELECT * FROM same(grouped('= 7 AND r.day BETWEEN date ''2025-03-01'' AND date ''2025-03-31'''));
-DROP FUNCTION grouped(text), spine(text), same(text), plan_of(text);
+DROP FUNCTION grouped(text), spine(text), same(text), plan_of(text), key_filters(text);
 DROP TABLE nc_rows, nc_entities;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;
