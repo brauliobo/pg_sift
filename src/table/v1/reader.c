@@ -477,6 +477,18 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 	return sift_v1_unit_hist(&p->unit, dim - leaf + col, &p->schema->cols[col], t->hcx, p->col, p->leaf_of_col, need, &t->hdict, h);
 }
 
+static bool
+tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
+{
+	SiftV1Tbl  *t = impl;
+	const TblPart *p = unit->priv;
+
+	if (t->hcx == NULL)
+		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
+	MemoryContextReset(t->hcx);
+	return sift_v1_unit_rollup(&p->unit, t->hcx, p->col, p->leaf_of_col, need, t->rdict, r);
+}
+
 const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.layout = sift_v1_tbl_layout,
 	.stats = sift_v1_tbl_stats,
@@ -500,5 +512,6 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.tids = sift_v1_tbl_tids,
 	.unit_rows = tbl_unit_rows,
 	.unit_agg = tbl_unit_agg,
-	.unit_hist = tbl_unit_hist
+	.unit_hist = tbl_unit_hist,
+	.unit_rollup = tbl_unit_rollup
 };

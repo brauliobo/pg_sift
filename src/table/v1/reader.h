@@ -53,8 +53,9 @@ typedef struct SiftV1Tbl
 	int			nparts;
 	int			last;			/* the part of the unit returned last, -1 at the start */
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
-	MemoryContext hcx;			/* the arrays of the last histogram, and its dictionary */
+	MemoryContext hcx;			/* the arrays of the last histogram or rollup, and their dictionaries */
 	SiftSrcDict hdict;
+	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
 	SiftSrcConst *absent;		/* per leaf: its value in the segments that lack the column (sift_v1_tbl_absent) */
 	SiftSrcLeafBuf *buf;		/* per leaf */

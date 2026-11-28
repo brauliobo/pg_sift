@@ -61,6 +61,8 @@ typedef struct SiftV1ReaderOps
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	/* GROUP BY dim over a unit unit_rows answers for, with the measures need names; the arrays live until the next call; false when the unit holds no histogram of dim or lacks a measure */
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
+	/* the rollup of the rows of a unit unit_rows answers for, with the dims and measures need names; the arrays live until the next call of this or unit_hist; false when it holds none */
+	bool		(*unit_rollup) (void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *need, SiftSrcRollup *r);
 	/* the stored segment the unit is of (NULL: a unit of memory, or a reader with no segments), and count(*) of the rows of that segment whose string of leaf passes op against c,
 	 * from the row counts of its dictionary, when every unit of it is exact; false: the segment is read */
 	const void *(*unit_seg) (void *impl, const SiftSrcUnit *unit);
@@ -92,6 +94,9 @@ extern int	sift_v1_unit_rows(SiftColUnit *unit);
 extern bool sift_v1_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, SiftSrcUnitAgg *agg);
 extern bool sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need,
 							  SiftSrcDict *hdict, SiftSrcHist *h);
+/* The rollup of the rows of a stored unit, the leaves of need translated as for sift_v1_unit_hist; rdict holds the dictionaries of its string dims */
+extern bool sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict,
+								SiftSrcRollup *r);
 
 /* The histograms a spec writes, as the planner sees them */
 extern void sift_src_preagg_spec(const SiftCPaggSpec *spec, SiftSrcPreagg *pa);

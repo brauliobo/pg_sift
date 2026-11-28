@@ -26,7 +26,10 @@
 #include "col/v1_engine/store_ops_cal.h"
 #include "col/v1_engine/store_ops_preagg_ext.h"
 #include "col/v1_engine/store_ops_preagg_pred.h"
+#include "col/v1_engine/store_ops_rollup.h"
 #include "core/memtrack.h"
+
+#define CUBE_KEYS	2
 
 typedef struct CubeAgg
 {
@@ -47,9 +50,10 @@ typedef struct SiftV1Cube
 	SiftV6Group *group;
 	SiftV6ScanStats *stats;
 	int			nkeys;
-	int			key_leaf;		/* -1: no key */
-	bool		key_text;
-	SiftV1CalKey *cal_key;		/* the key is an expression of key_leaf the calendar cells give (col/v1_engine/store_ops_cal.h); NULL: it is the leaf */
+	int			key_leaf[CUBE_KEYS];	/* the leaves of the keys */
+	bool		key_text[CUBE_KEYS];
+	SiftV1CalKey *cal_key;		/* the one key is an expression of its leaf the calendar cells give (col/v1_engine/store_ops_cal.h); NULL: it is the leaf */
+	SiftV1Rollup *rollup;		/* the rollup of the rows a unit is folded from when no histogram of one leaf holds the statement (col/v1_engine/store_ops_rollup.h); NULL: none */
 	int			dist_leaf;		/* no key: the leaf COUNT(DISTINCT) reads (its histogram gives the values), -1: none */
 	bool		dist_text;
 	int			hist_leaf;		/* the dimension of the histogram a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else the leaf of the first test; -1: none */
@@ -246,7 +250,7 @@ bind_hist(SiftV1Cube *c, const SiftSrcHist *h)
 		int			m = 0;
 
 		g->slot = -1;
-		if (g->leaf < 0 || g->leaf == c->key_leaf)
+		if (g->leaf < 0 || g->leaf == c->key_leaf[0])
 			continue;
 		while (m < h->nmeas && h->meas[m] != g->leaf)
 			m++;
@@ -312,7 +316,7 @@ put_key(SiftV1Cube *c, const SiftSrcHist *h, uint32 r, int row)
 	}
 	if (!null)
 		c->kvalid[row >> 6] |= UINT64CONST(1) << (row & 63);
-	if (c->key_text)
+	if (c->key_text[0])
 	{
 		const SiftSrcDict *d = h->dict;
 
@@ -326,7 +330,7 @@ static void
 batch_start(SiftV1Cube *c, bool any_null)
 {
 	memset(c->kvalid, 0, sizeof(c->kvalid));
-	c->kvec = (SiftVec) {.data = c->kdata,.dense = true,.type = c->key_text ? SVEC_STRVIEW : SVEC_I64,.all_valid = !any_null,.valid = any_null ? c->kvalid : NULL};
+	c->kvec = (SiftVec) {.data = c->kdata,.dense = true,.type = c->key_text[0] ? SVEC_STRVIEW : SVEC_I64,.all_valid = !any_null,.valid = any_null ? c->kvalid : NULL};
 }
 
 /* The key vectors of the n groups of a histogram put since the last merge */
@@ -408,7 +412,36 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 		merge(c, hist_keys(c, n), n);
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
-			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text, c->kdata, c->by_group ? group_kept : NULL, c);
+			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text[0], c->kdata, c->by_group ? group_kept : NULL, c);
+	return true;
+}
+
+/* A unit from the rollup of its rows: the tuples the tests keep fold into the groups of their keys */
+static bool
+fold_rollup(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
+{
+	SiftSrcHist h;
+	int			n = 0;
+
+	if (c->rollup == NULL || !sift_v1_rollup_read(c->rollup, rd, src, unit, &h) || !bind_hist(c, &h))
+		return false;
+	for (uint32 t = 0; t < h.ngroups; t++)
+		if (h.count[t] > 0 && !group_acc(c, &h, t, c->acc))
+			return false;
+	for (uint32 t = 0; t < h.ngroups; t++)
+	{
+		if (h.count[t] == 0 || !sift_v1_rollup_kept(c->rollup, t))
+			continue;
+		sift_v1_rollup_put(c->rollup, t, n);
+		group_acc(c, &h, t, &c->acc[n * c->spec->naggs]);
+		if (++n == SIFT_VEC_LEN)
+		{
+			merge(c, c->nkeys > 0 ? sift_v1_rollup_keys(c->rollup, n) : NULL, n);
+			n = 0;
+		}
+	}
+	if (n > 0)
+		merge(c, c->nkeys > 0 ? sift_v1_rollup_keys(c->rollup, n) : NULL, n);
 	return true;
 }
 
@@ -444,10 +477,15 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 
 	if (!sift_v6_group_takes_cells(c->group) || (live.nrow = rd->unit_rows(src, unit)) < 0)
 		return false;
-	if ((v = unit_verdict(c, rd, src, &live, &except, &alone)) == SV1V_SOME)
-		done = fold_except(c, rd, src, &live, except, alone);
+	if ((v = unit_verdict(c, rd, src, &live, &except, &alone)) == SV1V_NONE)
+		done = true;
+	else if (c->nkeys > 1)
+		done = fold_rollup(c, rd, src, &live);
+	else if (v == SV1V_SOME)
+		done = fold_rollup(c, rd, src, &live) || fold_except(c, rd, src, &live, except, alone);
 	else
-		done = v == SV1V_NONE || (c->nkeys == 0 && !c->filtered && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live));
+		done = (c->nkeys == 0 && !c->filtered && (c->dist_leaf >= 0 || !c->by_group) ? fold_global(c, rd, src, &live) : fold_hist(c, rd, src, &live)) ||
+			fold_rollup(c, rd, src, &live);
 	c->stats->grans_preagg += done ? Max(unit->nsu, 1) : 0;
 	c->stats->grans_preagg_super += done && unit->nsu > 0;
 	c->stats->grans_preagg_delta += done && live.nrow < unit->nrow;
@@ -463,7 +501,7 @@ bind_dist(SiftV1Cube *c, const SiftSrcLeaf *l)
 	if (l->vtype != SCV_CODE && l->vtype != SCV_I32 && l->vtype != SCV_I64)
 		return false;
 	if (c->nkeys > 0)
-		return l->id == c->key_leaf && c->cal_key == NULL;
+		return l->id == c->key_leaf[0] && c->cal_key == NULL;
 	if (c->dist_leaf >= 0 && c->dist_leaf != l->id)
 		return false;
 	c->dist_leaf = l->id;
@@ -526,11 +564,11 @@ bind_aggs(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay)
 		}
 		if ((g->linear && !sift_v1_leaf_int(l)) || ((a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_F64))
 			return false;
-		if (c->nkeys > 0 && l != NULL && l->id == c->key_leaf && a->kind != SV6_COUNT)
+		if (c->nkeys > 0 && l != NULL && l->id == c->key_leaf[0] && a->kind != SV6_COUNT)
 			return false;
 		if ((a->kind == SV6_MIN || a->kind == SV6_MAX || a->kind == SV6_SUM || a->kind == SV6_AVG) && cls == SV6C_TEXT)
 			return false;
-		if (l != NULL && l->id != c->key_leaf)
+		if (l != NULL && l->id != c->key_leaf[0])
 		{
 			int			m = 0;
 
@@ -547,18 +585,23 @@ bind_aggs(SiftV1Cube *c, Relation host, const SiftSrcLayout *lay)
 	return true;
 }
 
+/* The keys as leaves the cubes hold, or the one key as a calendar key */
 static bool
-bind_key(SiftV1Cube *c, const SiftSrcLayout *lay, MemoryContext cx)
+bind_keys(SiftV1Cube *c, const SiftSrcLayout *lay, MemoryContext cx)
 {
-	const SiftV6Col *k = &c->spec->key[0];
-	const SiftSrcLeaf *l = sift_v1_att_leaf(lay, k->attno);
+	if (c->nkeys == 1 && !sift_v6_key_cubeable(c->spec, 0))
+		return (c->cal_key = sift_v1_cal_key_open(cx, c->spec, lay, &c->key_leaf[0])) != NULL;
+	for (int i = 0; i < c->nkeys; i++)
+	{
+		const SiftV6Col *k = &c->spec->key[i];
+		const SiftSrcLeaf *l = sift_v1_att_leaf(lay, k->attno);
 
-	if (!sift_v6_key_cubeable(c->spec, 0))
-		return (c->cal_key = sift_v1_cal_key_open(cx, c->spec, lay, &c->key_leaf)) != NULL;
-	c->key_text = sift_v6_class(k->typid) == SV6C_TEXT;
-	if (!sift_v1_leaf_plain(l) || sift_v6_class(k->typid) == SV6C_BOOL || (c->key_text ? l->vtype != SCV_CODE : (l->vtype != SCV_I32 && l->vtype != SCV_I64)))
-		return false;
-	c->key_leaf = l->id;
+		c->key_text[i] = sift_v6_class(k->typid) == SV6C_TEXT;
+		if (!sift_v6_key_cubeable(c->spec, i) || !sift_v1_leaf_plain(l) || sift_v6_class(k->typid) == SV6C_BOOL ||
+			(c->key_text[i] ? l->vtype != SCV_CODE : (l->vtype != SCV_I32 && l->vtype != SCV_I64)))
+			return false;
+		c->key_leaf[i] = l->id;
+	}
 	return true;
 }
 
@@ -604,13 +647,29 @@ hist_of(SiftV1Cube *c, const SiftSrcLayout *lay, MemoryContext cx)
 {
 	Oid			t;
 
-	c->hist_leaf = c->nkeys > 0 ? c->key_leaf : c->dist_leaf >= 0 ? c->dist_leaf : c->filtered ? first_filter_leaf(c) : c->npred > 0 ? c->pred[0].leaf : -1;
+	c->hist_leaf = c->nkeys > 0 ? c->key_leaf[0] : c->dist_leaf >= 0 ? c->dist_leaf : c->filtered ? first_filter_leaf(c) : c->npred > 0 ? c->pred[0].leaf : -1;
 	c->hist_text = c->hist_leaf >= 0 && lay->leaf[c->hist_leaf].vtype == SCV_CODE;
 	t = c->hist_leaf >= 0 && c->hist_leaf < SIFT_SRC_CAL ? lay->leaf[c->hist_leaf].typid : InvalidOid;
 	if (c->dist_leaf >= 0 || c->filtered || (c->cal_key == NULL && (c->nkeys > 0 ? t != DATEOID : c->npred == 0 || (t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID))))
 		return;
 	c->cal_type = t;
 	c->cell_keep = MemoryContextAlloc(cx, (SIFT_PAGG_CAL_GROUPS + 1) * sizeof(bool));
+}
+
+/*
+ * The rollup of the rows a unit is folded from when no histogram of one leaf holds the statement (two keys, tests of other leaves), under no FILTER, COUNT(DISTINCT), calendar key or
+ * aggregate of a key (whose NULL rows the tuples of other dims do not tell apart)
+ */
+static void
+rollup_of(SiftV1Cube *c, MemoryContext cx)
+{
+	if (c->filtered || c->dist_leaf >= 0 || c->cal_key != NULL)
+		return;
+	for (int j = 0; j < c->spec->naggs; j++)
+		for (int k = 0; k < c->nkeys; k++)
+			if (c->agg[j].leaf == c->key_leaf[k])
+				return;
+	c->rollup = sift_v1_rollup_open(cx, c->key_leaf, c->key_text, c->nkeys, c->pred, c->npred, &c->need);
 }
 
 SiftV1UnitSink *
@@ -620,7 +679,7 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	const SiftSrcLayout *lay;
 	SiftV1Cube *c;
 
-	if (a->emit != NULL || a->star != NULL || a->gate != NULL || a->stats == NULL || a->spec->nkeys > 1 || !sift_v6_spec_cube_aggs(a->spec) ||
+	if (a->emit != NULL || a->star != NULL || a->gate != NULL || a->stats == NULL || a->spec->nkeys > CUBE_KEYS || !sift_v6_spec_cube_aggs(a->spec) ||
 		(scan != NULL && (scan->keep != NULL || scan->bridge != NULL || scan->ntypes > 0 || scan->tid_range)))
 		return NULL;
 	rd = sift_v1_reader_of(a->host->rd_index == NULL);
@@ -630,16 +689,17 @@ sift_v1_cube_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryConte
 	c->group = a->group;
 	c->stats = a->stats;
 	c->nkeys = a->spec->nkeys;
-	c->key_leaf = -1;
+	c->key_leaf[0] = -1;
 	c->agg = MemoryContextAlloc(cx, a->spec->naggs * sizeof(CubeAgg));
 	c->acc = MemoryContextAlloc(cx, (Size) Max(SIFT_VEC_LEN, 1) * a->spec->naggs * sizeof(V6Acc));
 	c->kdata = MemoryContextAllocAligned(cx, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	c->kvp[0] = &c->kvec;
 	c->sink = (SiftV1UnitSink) {.offer = offer,.arg = c};
-	if ((c->nkeys > 0 && !bind_key(c, lay, cx)) || !bind_aggs(c, a->host, lay) || !bind_preds(c, a->host, lay, a->quals))
+	if (!bind_keys(c, lay, cx) || !bind_aggs(c, a->host, lay) || !bind_preds(c, a->host, lay, a->quals))
 		return NULL;
 	hist_of(c, lay, cx);
-	return filters_on_hist(c) ? &c->sink : NULL;
+	rollup_of(c, cx);
+	return filters_on_hist(c) && (c->nkeys < 2 || c->rollup != NULL) ? &c->sink : NULL;
 }
 
 void

@@ -349,6 +349,36 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const S
 	return true;
 }
 
+bool
+sift_col_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+	const uint8 *blob;
+	uint64		rows = 0;
+
+	if (sift_col_unit_super(unit, &seg, &u) || unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, &seg, &u);
+	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, -1, &len) : sift_cseg_rollup(seg, u, -1, &len)) == NULL)
+		return false;
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != -1)
+		corrupt_cube(seg, u);
+	for (uint32 t = 0; t < r->ntuples; t++)
+		rows += r->count[t];
+	if (rows != unit->nrows - sift_col_unit_net_dead(unit))
+		corrupt_cube(seg, u);
+	if (sift_col_unit_dead_on(unit) && !sift_col_unit_dead_rollup(unit, r))
+		return false;
+	for (int j = 0; j < r->ndims; j++)
+		if (seg->schema->cols[r->dim[j]].store == SIFT_COLS_STR)
+			sift_cdict_view(sift_cseg_dict(seg, r->dim[j]), seg->entry.gen << 8 | r->dim[j], &dict[j]);
+		else
+			dict[j] = (SiftColDict) {0};
+	return true;
+}
+
 void
 sift_col_pagg_spec(Relation index, SiftCPaggSpec *spec)
 {

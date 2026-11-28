@@ -17,8 +17,9 @@ typedef struct SiftV1Idx
 	SiftSrcLayout *lay;
 	MemoryContext cxt;
 	SiftSrcDict *dict;			/* per leaf: the dictionary of the last read */
-	MemoryContext hcx;			/* the arrays of the last histogram, and its dictionary */
+	MemoryContext hcx;			/* the arrays of the last histogram or rollup, and their dictionaries */
 	SiftSrcDict hdict;
+	SiftSrcDict rdict[SIFT_SRC_MAX_RDIMS];
 	SiftSrcLeafBuf *buf;		/* per leaf */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary */
 	Relation	heap;

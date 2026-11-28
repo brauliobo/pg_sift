@@ -56,10 +56,13 @@ sift_v1_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, SiftSr
 	return true;
 }
 
+/* The columns of need: the measures, and the dims of a rollup (with_dims; a histogram has its one) */
 static void
-cube_need(const SiftSrcRollupNeed *need, const int *col_of_leaf, SiftCRollupNeed *cn)
+cube_need(const SiftSrcRollupNeed *need, const int *col_of_leaf, bool with_dims, SiftCRollupNeed *cn)
 {
-	cn->ndims = 0;
+	cn->ndims = with_dims ? need->ndims : 0;
+	for (int j = 0; j < cn->ndims; j++)
+		cn->dim[j] = col_of_leaf ? col_of_leaf[need->dim[j]] : need->dim[j];
 	cn->nmeas = need->nmeas;
 	for (int m = 0; m < need->nmeas; m++)
 	{
@@ -67,6 +70,12 @@ cube_need(const SiftSrcRollupNeed *need, const int *col_of_leaf, SiftCRollupNeed
 		cn->meas[m].sums = need->meas[m].sums;
 		cn->meas[m].minmax = need->meas[m].minmax;
 	}
+}
+
+static void
+src_dict(const SiftColDict *d, SiftSrcDict *out)
+{
+	*out = (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes};
 }
 
 bool
@@ -77,7 +86,7 @@ sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, Memor
 	SiftColDict dict;
 	SiftCRollupNeed cn;
 
-	cube_need(need, col_of_leaf, &cn);
+	cube_need(need, col_of_leaf, false, &cn);
 	if (!sift_col_unit_hist(unit, col, mcxt, &cn, &d, &dict))
 		return false;
 	*h = (SiftSrcHist) {.ngroups = d.ngroups,.has_null = d.has_null,.key = d.key,.count = d.count,.nmeas = d.nmeas,.grain = d.leaf / SIFT_PAGG_CAL};
@@ -94,8 +103,46 @@ sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, Memor
 	}
 	if (def->store == SIFT_COLS_STR)
 	{
-		*hdict = (SiftSrcDict) {(const void *) (uintptr_t) dict.id, dict.n, dict.off, dict.bytes};
+		src_dict(&dict, hdict);
 		h->dict = hdict;
+	}
+	return true;
+}
+
+bool
+sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict, SiftSrcRollup *r)
+{
+	SiftCRollup c;
+	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
+	SiftCRollupNeed cn;
+
+	cube_need(need, col_of_leaf, true, &cn);
+	if (!sift_col_unit_rollup(unit, mcxt, &cn, &c, dict))
+		return false;
+	*r = (SiftSrcRollup) {.ntuples = c.ntuples,.ndims = c.ndims,.count = c.count,.nmeas = c.nmeas};
+	for (int j = 0; j < c.ndims; j++)
+	{
+		if ((r->dim[j] = leaf_of_col ? leaf_of_col[c.dim[j]] : c.dim[j]) < 0)
+			return false;
+		r->key[j] = c.key[j];
+		r->isnull[j] = c.isnull[j];
+		if (dict[j].off != NULL)
+		{
+			src_dict(&dict[j], &rdict[j]);
+			r->dict[j] = &rdict[j];
+		}
+	}
+	for (int m = 0; m < c.nmeas; m++)
+	{
+		if ((r->meas[m] = leaf_of_col ? leaf_of_col[c.meas[m]] : c.meas[m]) < 0)
+			return false;
+		r->nn[m] = c.nn[m];
+		r->sum[m] = c.sum[m];
+		r->sumf[m] = c.sumf[m];
+		r->min[m] = c.min[m];
+		r->max[m] = c.max[m];
+		r->minf[m] = c.minf[m];
+		r->maxf[m] = c.maxf[m];
 	}
 	return true;
 }
