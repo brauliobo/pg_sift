@@ -39,6 +39,12 @@ SELECT * FROM check_query($q$
    ORDER BY label DESC LIMIT 2 OFFSET 1) m ON true
  GROUP BY m.label
 $q$);
+-- a sub-select tied to the outer row by a condition of the outer row alone: its one key is a constant, the rows of its ranks those of every row that passes
+SELECT * FROM check_query($q$
+ SELECT m.label, count(*) AS n, sum(f.id) AS ids
+ FROM events f JOIN LATERAL (SELECT label FROM lookup_values m WHERE f.kind = 'a' AND m.bucket = 'x' ORDER BY label DESC LIMIT 2 OFFSET 1) m ON true
+ GROUP BY m.label
+$q$);
 SELECT * FROM check_query($q$
  SELECT coalesce(m.label, o.bucket) AS bucket, count(*) AS n, avg(o.value) AS value
  FROM events f CROSS JOIN LATERAL jsonb_to_recordset(f.document->'entries') o(bucket text, value float8)

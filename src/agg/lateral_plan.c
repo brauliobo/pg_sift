@@ -344,11 +344,17 @@ static bool
 total_order(const RangeTblEntry *rte, const Query *q, const Ties *t)
 {
 	int			atts[INDEX_MAX_KEYS];
-	const int	nkeys = list_length(t->keys);
+	int			nkeys = 0;
 	int			nord = 0;
 
-	for (int k = 0; k < nkeys; k++)
-		atts[k] = ((const Var *) list_nth(t->keys, k))->varattno;
+	foreach_ptr(Node, key, t->keys)
+	{
+		if (!IsA(key, Var))
+			continue;
+		if (nkeys == INDEX_MAX_KEYS)
+			return false;
+		atts[nkeys++] = ((const Var *) key)->varattno;
+	}
 	foreach_node(SortGroupClause, sgc, q->sortClause)
 	{
 		const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, q->targetList);
@@ -497,9 +503,9 @@ ranked_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, int64 f
 	in->targetList = visible_outputs(lateral, in, &junk);
 	in->jointree->quals = t->rest == NIL ? NULL : (Node *) make_ands_explicit(copyObject(t->rest));
 	in->limitCount = in->limitOffset = NULL;
-	foreach_node(Var, key, t->keys)
+	foreach_ptr(Expr, key, t->keys)
 	{
-		TargetEntry *te = makeTargetEntry((Expr *) copyObject((Node *) key), 0, psprintf("sift_key%d", ++k), false);
+		TargetEntry *te = makeTargetEntry((Expr *) copyObject(key), 0, psprintf("sift_key%d", ++k), false);
 
 		in->targetList = lappend(in->targetList, te);
 		wc->partitionClause = lappend(wc->partitionClause, sort_clause(in, te));
