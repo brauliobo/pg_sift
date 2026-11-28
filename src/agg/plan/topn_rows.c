@@ -13,6 +13,7 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/tlist.h"
+#include "utils/selfuncs.h"
 #include "parser/parsetree.h"
 
 #include "agg/plan/int.h"
@@ -130,12 +131,25 @@ rows_sorted(PlannerInfo *root, RelOptInfo *out, Path *path)
 	return (Path *) create_incremental_sort_path(root, out, path, root->sort_pathkeys, presorted, root->limit_tuples);
 }
 
+/* the rows the node keeps: the best K, and with ties every row of the group of the keys it reads that holds the K-th */
+static double
+rows_kept(const V6Plan *p, uint32 k)
+{
+	List	   *exprs = NIL;
+
+	if (!p->spec.topk_ties)
+		return Min((double) k, p->rel->rows);
+	foreach_node(SortGroupClause, sgc, list_copy_head(p->root->parse->sortClause, p->spec.ntopk))
+		exprs = lappend(exprs, get_sortgroupclause_expr(sgc, p->root->parse->targetList));
+	return Min(p->rel->rows, k + p->rel->rows / estimate_num_groups(p->root, exprs, p->rel->rows, NULL, NULL));
+}
+
 /* the path of the best K rows the scan of cost scan keeps, the heap of the winners priced at the rows it holds */
 static Path *
 rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
 	PlannerInfo *root = p->root;
-	const double kept = Min((double) k, p->rel->rows);
+	const double kept = rows_kept(p, k);
 	List	   *order = p->spec.topk_ties ? make_pathkeys_for_sortclauses(root, list_copy_head(root->parse->sortClause, p->spec.ntopk), root->parse->targetList) : root->sort_pathkeys;
 	Path		price;
 

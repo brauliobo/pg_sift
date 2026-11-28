@@ -280,14 +280,16 @@ SELECT * FROM tt_all();
 SET sift.enable_agg = on;
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id, k, w FROM tt ORDER BY k, w, id LIMIT 10;
-          QUERY PLAN          
-------------------------------
+                 QUERY PLAN                  
+---------------------------------------------
  Limit
-   ->  Sort
+   ->  Incremental Sort
          Sort Key: k, w, id
-         ->  Seq Scan on tt
-               Disabled: true
-(5 rows)
+         Presorted Key: k
+         ->  Custom Scan (SiftAggV6)
+               Index: tt_col
+               Top-N: k (limit 10 with ties)
+(7 rows)
 
 RESET enable_seqscan;
 SET sift.enable_agg = off;

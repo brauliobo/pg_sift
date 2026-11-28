@@ -173,8 +173,6 @@ test/expected/col/skip_map_1.out	bfde826c67f6f744a27ca4d008cd34e0ccf69546	18	sm 
 test/expected/col/skip_map_1.out	d90b0b4dfa757a4884a224c2f7433556ab57ef1b	18	sm   | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	f8f4825b56bd92ba01a2773d6c6cb884eb7b03df	18	sm_z | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	fcfb8eb492b07fe4cc2646c01efefe1e869aae9d	18	sm   | sum(id) | 6 | k < 0                 | normal                    |
-test/expected/col/topn/trail_1.out	89f5c013da11312cc80fee817f277de046c48037	17	QUERY PLAN
-test/expected/col/topn/trail_1.out	c5d9a500028752371c59fb7b97e541ce0544b55b	17	Disabled: true
 test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
 test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index
