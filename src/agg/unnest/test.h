@@ -48,7 +48,10 @@ typedef struct SiftV6StreamIn
  */
 extern void sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftV6StreamIn *in, const SiftVec *col, const int *outer, const uint64 *rows, uint64 yes[][SIFT_VEC_WORDS],
 								   uint64 known[][SIFT_VEC_WORDS]);
-/* Test k of one row whose nel elements are ev, with the one value outer[c] each comparison c is with */
-extern bool sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer);
+/*
+ * Test k of one row whose nel elements are ev, with the one value outer[c] each comparison c is with. late[e] (late NULL: none) is the error the members of element e raised
+ * (sift_v6_recfn_values): as PostgreSQL's EXISTS, which stops at the first element that passes, it is the statement's when no element before it passes
+ */
+extern bool sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer, ErrorData *const *late);
 
 #endif							/* SIFT_AGG_V6_UNNEST_TEST_H */

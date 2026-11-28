@@ -369,7 +369,7 @@ sift_v6_row_tests_eval(SiftV6RowTests *t, const SiftV6StreamIn *in, const SiftVe
 }
 
 bool
-sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer)
+sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, const SiftVec *outer, ErrorData *const *late)
 {
 	const SiftV6XTest *xt = &t->x->test[k];
 
@@ -385,7 +385,11 @@ sift_v6_row_test_one(SiftV6RowTests *t, int k, const SiftVec *ev, uint32 nel, co
 		keep_quals(t, k, i, ev, 0, nel);
 		keep_cmps(t, k, ev, cols, NULL, 0, nel);
 		for (uint32 e = 0; !found && e < nel; e++)
+		{
 			found = (t->keep[e / 64] >> (e % 64)) & 1;
+			if (!found && late != NULL && late[e] != NULL)
+				ReThrowError(late[e]);
+		}
 		if (!found)
 			return false;
 	}

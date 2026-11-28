@@ -129,6 +129,11 @@ SELECT same(tq('f.id = 4004')) AS buffer_score_text;
 SELECT same(tq('f.id IN (4001, 4002, 4003)')) AS buffer_raising_row_among_others;
 SELECT same(tq('f.id IN (4001, 4003, 4004)')) AS buffer_other_raising_row;
 SELECT same(tq('f.id IN (4001, 4003)')) AS buffer_without_the_raising_rows;
+-- an EXISTS whose condition casts a member of the elements: the buffer's rows are read from the heap, the cast of an element raises unless one before it passes
+SELECT same('SELECT count(*), sum(f.id) FROM facts f WHERE f.id IN (10, 11, 4001, 4003) AND EXISTS (SELECT 1 FROM jsonb_array_elements(f.doc -> $$parts$$) p ' ||
+	'WHERE (p ->> $$score$$)::float8 >= 1)') AS buffer_member_cast;
+SELECT same('SELECT count(*) FROM facts f WHERE f.id IN (10, 4004) AND EXISTS (SELECT 1 FROM jsonb_array_elements(f.doc -> $$parts$$) p ' ||
+	'WHERE (p ->> $$score$$)::float8 >= 1)') AS buffer_member_cast_raises;
 SELECT same(cq('f.id = 4002')) AS cast_buffer_kept;
 SELECT same(cq('f.id = 4005')) AS cast_buffer_dropped;
 SELECT same(cq('f.id = 4004')) AS cast_buffer_dropped_score_text;

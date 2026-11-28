@@ -135,6 +135,7 @@ static void
 heap_flags(UnRun *u, bool *yes, bool *known, ErrorData **err)
 {
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
+	ErrorData **late = NULL;
 	uint32		nel = 0;
 	bool		have = false;
 
@@ -155,14 +156,17 @@ heap_flags(UnRun *u, bool *yes, bool *known, ErrorData **err)
 			yes[k] = !isnull && DatumGetBool(d);
 			continue;
 		}
-		if (!have)
-			nel = sift_v1_unnest_heap_elems(u, ev, sift_v6_stream_joined(u->x, 0) ? err : NULL);
+		if (!have && (nel = sift_v1_unnest_heap_elems(u, ev, sift_v6_stream_joined(u->x, 0) ? err : NULL)) > 0 && u->rec != NULL)
+		{
+			late = MemoryContextAllocZero(u->bcx, nel * sizeof(ErrorData *));
+			sift_v6_recfn_values(u->rec, NULL, u->bcx, ev, nel, late);
+		}
 		have = true;
 		if (*err != NULL)
 			return;
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[c] = heap_outer(u, k, c, &cell[c], &valid[c]);
-		yes[k] = nel > 0 && sift_v6_row_test_one(u->tests, k, ev, nel, outer);
+		yes[k] = nel > 0 && sift_v6_row_test_one(u->tests, k, ev, nel, outer, late);
 	}
 }
 

@@ -287,6 +287,21 @@ SELECT same(tq('f.id IN (4001, 4003)')) AS buffer_without_the_raising_rows;
  same
 (1 row)
 
+-- an EXISTS whose condition casts a member of the elements: the buffer's rows are read from the heap, the cast of an element raises unless one before it passes
+SELECT same('SELECT count(*), sum(f.id) FROM facts f WHERE f.id IN (10, 11, 4001, 4003) AND EXISTS (SELECT 1 FROM jsonb_array_elements(f.doc -> $$parts$$) p ' ||
+	'WHERE (p ->> $$score$$)::float8 >= 1)') AS buffer_member_cast;
+ buffer_member_cast 
+--------------------
+ same
+(1 row)
+
+SELECT same('SELECT count(*) FROM facts f WHERE f.id IN (10, 4004) AND EXISTS (SELECT 1 FROM jsonb_array_elements(f.doc -> $$parts$$) p ' ||
+	'WHERE (p ->> $$score$$)::float8 >= 1)') AS buffer_member_cast_raises;
+                      buffer_member_cast_raises                       
+----------------------------------------------------------------------
+ same ERR 22P02 invalid input syntax for type double precision: "n/a"
+(1 row)
+
 SELECT same(cq('f.id = 4002')) AS cast_buffer_kept;
                        cast_buffer_kept                       
 --------------------------------------------------------------

@@ -373,9 +373,15 @@ heap_stream_flags(UnRun *u, int s, const bool *elems, SiftVec (*outer)[SIFT_V6_X
 
 	heap_open(u, s, &h, sift_v6_stream_joined(u->x, s) ? err : NULL);
 	while (*err == NULL && (nel = heap_next(u, &h, ev)) > 0)
+	{
+		ErrorData **late = h.st->rec != NULL ? MemoryContextAllocZero(u->ccx, nel * sizeof(ErrorData *)) : NULL;
+
+		if (late != NULL)
+			sift_v6_recfn_values(h.st->rec, NULL, u->ccx, ev, nel, late);
 		for (int k = 0; k < u->ntests; k++)
 			if (elems[k] && u->x->test[k].stream == s && !yes[k])
-				yes[k] = sift_v6_row_test_one(u->tests, k, ev, nel, outer[k]);
+				yes[k] = sift_v6_row_test_one(u->tests, k, ev, nel, outer[k], late);
+	}
 }
 
 /* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements of its stream; *err as heap_stream_flags gives it */
