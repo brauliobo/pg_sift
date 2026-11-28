@@ -99,7 +99,7 @@ sift_v6_par_radix_next(SiftV6ParRun *r, Datum *values, bool *isnull)
 	return r->stage == SV6S_PARTS && sift_v6_par_emit_parts(r, values, isnull);
 }
 
-/* Every partition's distinct values of each aggregate, counted and added to the shared words */
+/* Every partition's distinct values of each aggregate, counted and added to the shared words; the sums of a sum or avg of DISTINCT values join the participant's state */
 static void
 count_parts(SiftV6ParRun *r)
 {
@@ -111,6 +111,7 @@ count_parts(SiftV6ParRun *r)
 		sift_v6_par_merge_part(r, l, part);
 		for (uint32 s = 0; s < r->hdr->n_dist; s++)
 			pg_atomic_fetch_add_u64(&r->hdr->dist_total[s], (int64) r->eng->local_dist_count(l, s));
+		r->eng->local_take_sums(r->plocal, l);
 		l = recycled(r, l);
 	}
 	r->eng->local_free(l);
@@ -141,13 +142,14 @@ dist_body(SiftV6ParRun *r)
 	r->rl = sift_radix_local_new_raw(r->coord);
 	sift_v6_par_scan(r, relief);
 	sift_v6_par_export(r);
-	sift_v6_par_export_plain(r);
 	sift_v6_par_finish_stages(r);
 	r->eng->local_free(r->local);
-	r->eng->local_free(r->plocal);
-	r->local = r->plocal = NULL;
+	r->local = NULL;
 	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
 	count_parts(r);
+	sift_v6_par_export_plain(r);
+	r->eng->local_free(r->plocal);
+	r->plocal = NULL;
 	BarrierArriveAndWait(&r->hdr->phase_barrier, sift_v6_par_barrier_event());
 }
 

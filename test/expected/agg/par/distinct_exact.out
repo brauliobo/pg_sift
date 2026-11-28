@@ -108,11 +108,11 @@ SELECT g, sum(DISTINCT a), avg(DISTINCT n), sum(DISTINCT f) FROM pe WHERE g >= 9
  99 |      |                     |          
 (2 rows)
 
--- a query of no keys, grouping sets: the same answers (these run in the leader)
+-- a query of no keys runs in the workers (each partition adds the sums of its values); grouping sets run in the leader: the same answers
 SELECT * FROM held('SELECT sum(DISTINCT a), avg(DISTINCT b), sum(DISTINCT n), avg(DISTINCT f) FROM pe');
  v6 | parallel | same 
 ----+----------+------
- t  | f        | t
+ t  | t        | t
 (1 row)
 
 SELECT * FROM held('SELECT g % 3 AS k, sum(DISTINCT b), avg(DISTINCT n) FROM pe GROUP BY ROLLUP (g % 3) ORDER BY k NULLS LAST');

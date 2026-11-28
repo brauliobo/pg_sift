@@ -73,7 +73,7 @@ SELECT * FROM held('SELECT g, sum(DISTINCT f), avg(DISTINCT f) FROM pe GROUP BY 
 SELECT * FROM held('SELECT g % 7 AS k, sum(DISTINCT a) FILTER (WHERE b > 0), avg(DISTINCT n) FILTER (WHERE a < 0), sum(DISTINCT b) FROM pe GROUP BY g % 7 ORDER BY k');
 SELECT * FROM held('SELECT g, sum(DISTINCT n), count(*) FROM pe GROUP BY g HAVING avg(DISTINCT n) > 10 ORDER BY g');
 SELECT g, sum(DISTINCT a), avg(DISTINCT n), sum(DISTINCT f) FROM pe WHERE g >= 98 GROUP BY g ORDER BY g;
--- a query of no keys, grouping sets: the same answers (these run in the leader)
+-- a query of no keys runs in the workers (each partition adds the sums of its values); grouping sets run in the leader: the same answers
 SELECT * FROM held('SELECT sum(DISTINCT a), avg(DISTINCT b), sum(DISTINCT n), avg(DISTINCT f) FROM pe');
 SELECT * FROM held('SELECT g % 3 AS k, sum(DISTINCT b), avg(DISTINCT n) FROM pe GROUP BY ROLLUP (g % 3) ORDER BY k NULLS LAST');
 -- more distinct values than a work_mem of 64kB holds: the exact set spills and the sums are the heap's

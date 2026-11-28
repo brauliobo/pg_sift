@@ -36,6 +36,7 @@ INSERT INTO shapes (name, q) VALUES
 	('sum amount',        'SELECT grp, sum(DISTINCT amount) FROM facts GROUP BY grp'),
 	('avg amount',        'SELECT kind, avg(DISTINCT amount), avg(DISTINCT price) FROM facts GROUP BY kind'),
 	('sum global',        'SELECT sum(DISTINCT amount), avg(DISTINCT amount), count(DISTINCT amount) FROM facts'),
+	('sum global, no NaN', 'SELECT sum(DISTINCT amount), avg(DISTINCT amount), sum(DISTINCT qty), avg(DISTINCT big) FROM facts WHERE amount <> ''NaN'''),
 	('sum expression',    'SELECT grp, sum(DISTINCT amount + price) FROM facts GROUP BY grp'),
 	('filter',            'SELECT grp, count(DISTINCT amount) FILTER (WHERE qty > 100), sum(DISTINCT amount) FILTER (WHERE kind = ''cat_a'') FROM facts GROUP BY grp'),
 	('where',             'SELECT grp, count(DISTINCT amount), sum(DISTINCT price) FROM facts WHERE qty < 200 AND kind <> ''cat_b'' GROUP BY grp'),
@@ -60,44 +61,46 @@ SELECT s.name, mode_of(s.q, 4) AS mode,
        rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS scan_w4,
        rows_of(s.q, true, 3, false) = rows_of(s.q, false, 0) AS scan_w3_no_leader
 FROM shapes s ORDER BY s.n;
-       name        |   mode   | scan_w0 | scan_w2 | scan_w4 | scan_w3_no_leader 
--------------------+----------+---------+---------+---------+-------------------
- count amount      | parallel | t       | t       | t       | t
- count global      | parallel | t       | t       | t       | t
- count expression  | parallel | t       | t       | t       | t
- count with int    | parallel | t       | t       | t       | t
- sum amount        | parallel | t       | t       | t       | t
- avg amount        | serial   | t       | t       | t       | t
- sum global        | parallel | t       | t       | t       | t
- sum expression    | serial   | t       | t       | t       | t
- filter            | parallel | t       | t       | t       | t
- where             | serial   | t       | t       | t       | t
- nothing           | none     |         |         |         | 
- all null group    | parallel | t       | t       | t       | t
- count bigint      | parallel | t       | t       | t       | t
- bigint global     | parallel | t       | t       | t       | t
- bigint extremes   | parallel | t       | t       | t       | t
- bigint filter     | parallel | t       | t       | t       | t
- bigint expression | parallel | t       | t       | t       | t
- count float       | parallel | t       | t       | t       | t
- count timestamptz | parallel | t       | t       | t       | t
- leaf global       | parallel | t       | t       | t       | t
- leaf filter       | parallel | t       | t       | t       | t
- leaf mixed        | parallel | t       | t       | t       | t
-(22 rows)
+        name        |   mode   | scan_w0 | scan_w2 | scan_w4 | scan_w3_no_leader 
+--------------------+----------+---------+---------+---------+-------------------
+ count amount       | parallel | t       | t       | t       | t
+ count global       | parallel | t       | t       | t       | t
+ count expression   | parallel | t       | t       | t       | t
+ count with int     | parallel | t       | t       | t       | t
+ sum amount         | parallel | t       | t       | t       | t
+ avg amount         | serial   | t       | t       | t       | t
+ sum global         | parallel | t       | t       | t       | t
+ sum global, no NaN | parallel | t       | t       | t       | t
+ sum expression     | serial   | t       | t       | t       | t
+ filter             | parallel | t       | t       | t       | t
+ where              | serial   | t       | t       | t       | t
+ nothing            | none     |         |         |         | 
+ all null group     | parallel | t       | t       | t       | t
+ count bigint       | parallel | t       | t       | t       | t
+ bigint global      | parallel | t       | t       | t       | t
+ bigint extremes    | parallel | t       | t       | t       | t
+ bigint filter      | parallel | t       | t       | t       | t
+ bigint expression  | parallel | t       | t       | t       | t
+ count float        | parallel | t       | t       | t       | t
+ count timestamptz  | parallel | t       | t       | t       | t
+ leaf global        | parallel | t       | t       | t       | t
+ leaf filter        | parallel | t       | t       | t       | t
+ leaf mixed         | parallel | t       | t       | t       | t
+(23 rows)
 
 -- the sets of a worker go through a sort when work_mem is small: the same rows
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SELECT s.name, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS small_work_mem_w2, rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS small_work_mem_w4
-FROM shapes s WHERE s.name IN ('count amount', 'count global', 'sum amount', 'sum expression') ORDER BY s.n;
-      name      | small_work_mem_w2 | small_work_mem_w4 
-----------------+-------------------+-------------------
- count amount   | t                 | t
- count global   | t                 | t
- sum amount     | t                 | t
- sum expression | t                 | t
-(4 rows)
+FROM shapes s WHERE s.name IN ('count amount', 'count global', 'sum amount', 'sum global, no NaN', 'sum expression') ORDER BY s.n;
+        name        | small_work_mem_w2 | small_work_mem_w4 
+--------------------+-------------------+-------------------
+ count amount       | t                 | t
+ count global       | t                 | t
+ sum amount         | t                 | t
+ sum global, no NaN | t                 | t
+ sum expression     | t                 | t
+(5 rows)
 
 RESET work_mem;
 RESET hash_mem_multiplier;
@@ -108,31 +111,32 @@ DELETE FROM facts WHERE id % 61 = 0;
 SELECT s.name, rows_of(s.q, true, 0) = rows_of(s.q, false, 0) AS dirty_w0, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS dirty_w2,
        rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS dirty_w4
 FROM shapes s ORDER BY s.n;
-       name        | dirty_w0 | dirty_w2 | dirty_w4 
--------------------+----------+----------+----------
- count amount      | t        | t        | t
- count global      | t        | t        | t
- count expression  | t        | t        | t
- count with int    | t        | t        | t
- sum amount        | t        | t        | t
- avg amount        | t        | t        | t
- sum global        | t        | t        | t
- sum expression    | t        | t        | t
- filter            | t        | t        | t
- where             | t        | t        | t
- nothing           |          |          | 
- all null group    | t        | t        | t
- count bigint      | t        | t        | t
- bigint global     | t        | t        | t
- bigint extremes   | t        | t        | t
- bigint filter     | t        | t        | t
- bigint expression | t        | t        | t
- count float       | t        | t        | t
- count timestamptz | t        | t        | t
- leaf global       | t        | t        | t
- leaf filter       | t        | t        | t
- leaf mixed        | t        | t        | t
-(22 rows)
+        name        | dirty_w0 | dirty_w2 | dirty_w4 
+--------------------+----------+----------+----------
+ count amount       | t        | t        | t
+ count global       | t        | t        | t
+ count expression   | t        | t        | t
+ count with int     | t        | t        | t
+ sum amount         | t        | t        | t
+ avg amount         | t        | t        | t
+ sum global         | t        | t        | t
+ sum global, no NaN | t        | t        | t
+ sum expression     | t        | t        | t
+ filter             | t        | t        | t
+ where              | t        | t        | t
+ nothing            |          |          | 
+ all null group     | t        | t        | t
+ count bigint       | t        | t        | t
+ bigint global      | t        | t        | t
+ bigint extremes    | t        | t        | t
+ bigint filter      | t        | t        | t
+ bigint expression  | t        | t        | t
+ count float        | t        | t        | t
+ count timestamptz  | t        | t        | t
+ leaf global        | t        | t        | t
+ leaf filter        | t        | t        | t
+ leaf mixed         | t        | t        | t
+(23 rows)
 
 -- what stays on the leader says why in EXPLAIN VERBOSE: the aggregate whose partial state the leader cannot merge
 CREATE FUNCTION serial_because(q text) RETURNS text LANGUAGE plpgsql AS $$

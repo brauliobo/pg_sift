@@ -672,12 +672,25 @@ par_local_reset(void *local)
 	return true;
 }
 
+/* a sum or avg of DISTINCT values has the sums of the partitions instead (par_local_take_sums) */
 static void
 par_local_set_dist(void *local, uint32 slot, uint64 total)
 {
 	SiftV6Group *g = ((ParLocal *) local)->g;
 
-	g->set[0].plain[g->dagg[slot]].v0 = total;
+	if (!((g->dvalued >> slot) & 1))
+		g->set[0].plain[g->dagg[slot]].v0 = total;
+}
+
+static void
+par_local_take_sums(void *into, const void *from)
+{
+	const ParLocal *f = from;
+	SiftV6Group *t = ((ParLocal *) into)->g;
+
+	for (int k = 0; k < f->g->ndist; k++)
+		if ((f->g->dvalued >> k) & 1)
+			sift_v6_acc_combine(f->env->op[f->g->dagg[k]], &t->set[0].plain[f->g->dagg[k]], &f->g->set[0].plain[f->g->dagg[k]]);
 }
 
 void
@@ -710,7 +723,7 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	*eng = (SiftV6ParEngine) {.env = e,.local_new = par_local_new,.scan_new = par_scan_new,.local_free = par_local_free,.scan_hook = par_scan_hook,.scan_morsel = par_scan_morsel,
 		.local_load = par_local_load,.local_export = par_local_export,.local_merge = par_local_merge,.local_merge_block = par_local_merge_block,.local_presize = par_local_presize,
 		.local_finish = par_local_finish,.local_next = par_local_next,.local_offer = par_local_offer,.local_dist_count = par_local_dist_count,.local_set_dist = par_local_set_dist,
-		.local_reset = par_local_reset};
+		.local_take_sums = par_local_take_sums,.local_reset = par_local_reset};
 }
 
 void

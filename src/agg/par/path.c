@@ -341,14 +341,12 @@ par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const Sift
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;
-	bool		valued = false;
 
 	for (int j = 0; j < spec->naggs; j++)
 	{
 		const SiftV6Agg *a = &spec->agg[j];
 
 		ndist += sift_v6_kind_distinct(a->kind);
-		valued |= sift_v6_kind_valued(a->kind);
 		slot_text |= v6g_is_ext(a) && sift_v6_class(a->arg.typid) == SV6C_TEXT;
 		in.float_sum_avg |= (a->kind == SV6_SUM || a->kind == SV6_AVG) && sift_v6_class(a->arg.typid) == SV6C_F64;
 	}
@@ -356,8 +354,6 @@ par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const Sift
 	in.has_rls = agg_query_has_rls(root);
 	if (slot_text && ndist > 0 && spec->nkeys == 0)
 		in.hazard = "a text aggregate beside a count(DISTINCT) of no keys keeps its values in one process";
-	else if (valued && spec->nkeys == 0)
-		in.hazard = "a sum or avg of DISTINCT values of no keys keeps its set in one process";
 	else if (OidIsValid(spec->text_indexoid))
 		in.hazard = "the text search of its index runs in one process";
 	else if (unsafe_for_workers(root, spec, output_rel, having))

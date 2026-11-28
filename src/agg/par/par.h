@@ -7,7 +7,7 @@
  *   SV6P_RADIX_GROUPED        many groups: a participant aggregates into a small table (SIFT_PAR_LOCAL_BYTES) that stays in its cache and, when it is full, scatters the groups as records into
  *                             SIFT_PAR_RADIX_PARTS partitions by the hash of the key; after one barrier every participant claims whole partitions, merges and finishes them, and emits their groups itself, through
  *                             the Gather above it: no group is merged by one process alone, none is emitted twice.
- *   SV6P_RADIX_UNGROUPED_DIST count(DISTINCT) of no keys: the distinct values are scattered by the hash of the value, each partition counts its values exactly and adds the count to a shared word; one
+ *   SV6P_RADIX_UNGROUPED_DIST count, sum or avg of DISTINCT values of no keys: the distinct values are scattered by the hash of the value, each partition counts its values exactly and adds the count to a shared word (and its sums to the state of its participant); one
  *                             participant emits the row.
  *
  * Both strategies carry the groups as the records of the engine (a header of SiftV6RecHdr and a payload the engine of the node reads: group.c for the node, a table of the test for the tests) through
@@ -196,6 +196,8 @@ typedef struct SiftV6ParEngine
 	/* The distinct strategy: the number of distinct values of aggregate slot the partitions merged into local, and the total that the final state is given */
 	uint64		(*local_dist_count) (const void *local, uint32 slot);
 	void		(*local_set_dist) (void *local, uint32 slot, uint64 total);
+	/* The sums of the DISTINCT values a partition merged into from (counted by local_dist_count first), added to the state of the aggregates of into */
+	void		(*local_take_sums) (void *into, const void *from);
 	/* The state of a partition emptied for the records of the next one (its tables and buffers are kept): a participant counts one partition after another in one state. False when the state
 	 * spilled: its tables and files are gone, and the caller makes another */
 	bool		(*local_reset) (void *local);

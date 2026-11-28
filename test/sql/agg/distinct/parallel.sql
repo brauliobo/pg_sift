@@ -39,6 +39,7 @@ INSERT INTO shapes (name, q) VALUES
 	('sum amount',        'SELECT grp, sum(DISTINCT amount) FROM facts GROUP BY grp'),
 	('avg amount',        'SELECT kind, avg(DISTINCT amount), avg(DISTINCT price) FROM facts GROUP BY kind'),
 	('sum global',        'SELECT sum(DISTINCT amount), avg(DISTINCT amount), count(DISTINCT amount) FROM facts'),
+	('sum global, no NaN', 'SELECT sum(DISTINCT amount), avg(DISTINCT amount), sum(DISTINCT qty), avg(DISTINCT big) FROM facts WHERE amount <> ''NaN'''),
 	('sum expression',    'SELECT grp, sum(DISTINCT amount + price) FROM facts GROUP BY grp'),
 	('filter',            'SELECT grp, count(DISTINCT amount) FILTER (WHERE qty > 100), sum(DISTINCT amount) FILTER (WHERE kind = ''cat_a'') FROM facts GROUP BY grp'),
 	('where',             'SELECT grp, count(DISTINCT amount), sum(DISTINCT price) FROM facts WHERE qty < 200 AND kind <> ''cat_b'' GROUP BY grp'),
@@ -71,7 +72,7 @@ FROM shapes s ORDER BY s.n;
 SET work_mem = '64kB';
 SET hash_mem_multiplier = 1;
 SELECT s.name, rows_of(s.q, true, 2) = rows_of(s.q, false, 0) AS small_work_mem_w2, rows_of(s.q, true, 4) = rows_of(s.q, false, 0) AS small_work_mem_w4
-FROM shapes s WHERE s.name IN ('count amount', 'count global', 'sum amount', 'sum expression') ORDER BY s.n;
+FROM shapes s WHERE s.name IN ('count amount', 'count global', 'sum amount', 'sum global, no NaN', 'sum expression') ORDER BY s.n;
 RESET work_mem;
 RESET hash_mem_multiplier;
 
