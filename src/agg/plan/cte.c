@@ -137,14 +137,17 @@ outer_ref_walker(Node *n, int *depth)
 	return r;
 }
 
-/* an IN sub-select worth computing once: it aggregates, and reads nothing of the body it is in (CTEs of the WITH around the body are read where they are) */
+/*
+ * an IN sub-select worth computing once: it aggregates, or reads a CTE alone once the scope it restated is dropped (a key list each copy would plan again), and reads nothing of
+ * the body it is in (CTEs of the WITH around the body are read where they are)
+ */
 static bool
-hoistable(const SubLink *sl)
+hoistable(const SubLink *sl, bool restated)
 {
 	Query	   *sub = castNode(Query, sl->subselect);
 	int			depth = -1;
 
-	return sl->subLinkType == ANY_SUBLINK && (sub->hasAggs || sub->groupClause != NIL) && sub->cteList == NIL && !outer_ref_walker((Node *) sub, &depth);
+	return sl->subLinkType == ANY_SUBLINK && (restated || sub->hasAggs || sub->groupClause != NIL) && sub->cteList == NIL && !outer_ref_walker((Node *) sub, &depth);
 }
 
 /* the CTE of the WITH that computes the sub-select, and the sub-select that reads it in its place (the body the sub-link is in is one level below the WITH) */
@@ -224,10 +227,8 @@ mark_ctes(Query *q, CteWalk *w)
 		if (shared && w->mark)
 		{
 			cte->ctematerialized = CTEMaterializeNever;
-			if (body->cteList == NIL)
-				sift_agg_cte_drop_restated(body->jointree->quals, ctes);
 			foreach_ptr(Node, qual, make_ands_implicit((Expr *) body->jointree->quals))
-				if (IsA(qual, SubLink) && hoistable((SubLink *) qual))
+				if (IsA(qual, SubLink) && hoistable((SubLink *) qual, body->cteList == NIL && sift_agg_cte_drop_restated((SubLink *) qual, ctes)))
 					ctes = lappend(ctes, hoist((SubLink *) qual, ++w->hoisted));
 		}
 		ctes = lappend(ctes, cte);

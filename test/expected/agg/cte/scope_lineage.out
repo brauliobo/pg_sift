@@ -102,7 +102,7 @@ SELECT name, (plan_scans(q)).agg_nodes, (plan_scans(q)).scope_scans, rows_equal(
  scope reads a CTE named as the table   |         3 |           8 | t
  stable function                        |         3 |           1 | t
  table read twice                       |         3 |           1 | t
- volatile function                      |         0 |           2 | t
+ volatile function                      |         3 |           1 | t
  volatile function in the scope         |         0 |           2 | t
  where join                             |         3 |           1 | t
 (17 rows)

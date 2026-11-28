@@ -231,28 +231,20 @@ key_filtered(List *ctes, Query *q, int level, AttrNumber col, Node *want, int de
 	return false;
 }
 
-void
-sift_agg_cte_drop_restated(Node *quals, List *ctes)
+bool
+sift_agg_cte_drop_restated(SubLink *sl, List *ctes)
 {
-	SubLink    *sl;
 	Query	   *sub;
 	RangeTblRef *ref;
 	RangeTblEntry *rte;
 	List	   *keep = NIL;
 	bool		dropped = false;
 
-	if (quals != NULL && IsA(quals, BoolExpr) && ((BoolExpr *) quals)->boolop == AND_EXPR)
-	{
-		foreach_ptr(Node, arg, ((BoolExpr *) quals)->args)
-			sift_agg_cte_drop_restated(arg, ctes);
-		return;
-	}
-	if (quals == NULL || !IsA(quals, SubLink) || ((SubLink *) quals)->subLinkType != ANY_SUBLINK || !IsA(((SubLink *) quals)->subselect, Query))
-		return;
-	sl = (SubLink *) quals;
+	if (sl->subLinkType != ANY_SUBLINK || !IsA(sl->subselect, Query))
+		return false;
 	sub = castNode(Query, sl->subselect);
 	if (!plain_filter(sub) || list_length(sub->jointree->fromlist) != 1 || !IsA(linitial(sub->jointree->fromlist), RangeTblRef))
-		return;
+		return false;
 	ref = linitial_node(RangeTblRef, sub->jointree->fromlist);
 	rte = rt_fetch(ref->rtindex, sub->rtable);
 	foreach_ptr(Node, cond, make_ands_implicit((Expr *) sub->jointree->quals))
@@ -267,4 +259,5 @@ sift_agg_cte_drop_restated(Node *quals, List *ctes)
 	}
 	if (dropped)
 		sub->jointree->quals = keep == NIL ? NULL : (Node *) make_ands_explicit(keep);
+	return dropped;
 }

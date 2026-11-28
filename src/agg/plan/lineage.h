@@ -6,12 +6,12 @@
 
 #include "postgres.h"
 
-#include "nodes/pg_list.h"
+#include "nodes/primnodes.h"
 
 /*
- * A shared CTE written inline may restate, in an IN sub-select over a CTE, the condition that CTE already keeps its rows by. Each conjunct of quals (the WHERE of the body) that
- * the rows of that CTE satisfy by their lineage is dropped from the sub-select, which then reads the CTE alone. ctes: the CTEs of the WITH before the body.
+ * A shared CTE written inline may restate, in an IN sub-select over a CTE, the condition that CTE already keeps its rows by. Each conjunct of the sub-select that the
+ * rows of that CTE satisfy by their lineage is dropped, and the sub-select then reads the CTE alone; true when one was. ctes: the CTEs of the WITH before the body.
  */
-extern void sift_agg_cte_drop_restated(Node *quals, List *ctes);
+extern bool sift_agg_cte_drop_restated(SubLink *sl, List *ctes);
 
 #endif							/* SIFT_AGG_PLAN_LINEAGE_H */
