@@ -6,7 +6,7 @@
  * them makes the slot over, for the attributes of both; every other ask, whatever its attributes, is answered by the slot with one look at the newest page of the chain.
  *
  * A map is what a snapshot sees of the records of one part: it depends on the snapshot only through the writers whose fate the snapshot decides. A record whose writer finished before the
- * oldest transaction the snapshot can see (or, for a snapshot that takes any row, whose writer is not running) is committed for every later snapshot or never visible to any, so a map
+ * oldest transaction the snapshot can see (or, for a snapshot that takes any row, whose writer is not running or is the backend's own transaction, until that ends) is committed for every later snapshot or never visible to any, so a map
  * made of such records alone is the map of the next statement too, and a statement that appended records to the chain only adds them: pages are only ever added at the newest end of a
  * chain, and the page that grows is compared by what it held. The records the map covers and the pages it was read from are what the slot remembers; a chain that was folded or rewritten is made
  * of pages of other generations, and the slot goes. The slot covers the chain up to the first record whose writer the snapshot cannot settle yet (it is running, or newer than the snapshot):
@@ -26,6 +26,7 @@
 #include "utils/rel.h"
 
 #include "core/cachebudget.h"
+#include "core/dispatch.h"
 #include "core/f2/col_delta_anchor.h"
 #include "core/f2/meta.h"
 #include "core/memtrack.h"
@@ -47,6 +48,7 @@ typedef struct MapSlot
 	uint64		part_id;
 	uint64		part_gen;
 	bool		mvcc;			/* the slot of the MVCC snapshots, or of those that take any row: each settles its writers by its own rule */
+	bool		own;			/* the map holds records of the backend's transaction, which its abort (or a subtransaction's, or a PREPARE) takes back */
 	SiftColDeltaPartMap *map;	/* the slot's reference; NULL: the part has no patch the records show */
 	SiftColDeltaWatch watch;	/* the pages of the chain the map covers, the newest as far as its copy says */
 	SiftColDeltaAnchor anchor;	/* the chain the watch covers as the manifest named it */
@@ -74,13 +76,16 @@ snapshot_supported(const SiftTblVis *vis)
 	return t == SNAPSHOT_MVCC || t == SNAPSHOT_ANY || t == SNAPSHOT_DIRTY;
 }
 
-/* Whether the fate of the writer is settled for the snapshot and every later one: committed, or never visible */
+/*
+ * Whether the fate of the writer is settled for the snapshot and every later one: committed, or never visible. A snapshot that takes any row sees every record of the backend's own
+ * transaction, and so does every later one of the backend until that transaction or one of its subtransactions ends without a commit, when the slots that took them go
+ */
 static bool
 settled_xid(const SiftTblVis *vis, TransactionId xmin)
 {
 	if (vis->snap->snapshot_type == SNAPSHOT_MVCC)
 		return TransactionIdPrecedes(xmin, vis->snap->xmin);
-	return !TransactionIdIsCurrentTransactionId(xmin) && !TransactionIdIsInProgress(xmin);
+	return TransactionIdIsCurrentTransactionId(xmin) || !TransactionIdIsInProgress(xmin);
 }
 
 typedef struct Settled
@@ -91,6 +96,7 @@ typedef struct Settled
 	TransactionId newest;
 	bool		any;
 	TransactionId refused;		/* the writer of the record at the cut */
+	bool		own;			/* a record of the backend's transaction is before the cut */
 } Settled;
 
 /* The writer of a record before the cut: settled for the snapshot */
@@ -108,6 +114,8 @@ settled_keep(void *ctx, TransactionId xmin)
 	}
 	if (!s->last_settled)
 		s->refused = xmin;
+	else if (!s->own && s->vis->snap->snapshot_type != SNAPSHOT_MVCC && TransactionIdIsCurrentTransactionId(xmin))
+		s->own = true;
 	return s->last_settled;
 }
 
@@ -180,6 +188,31 @@ mapcache_evict_all(void)
 
 static const SiftCacheKind mapcache_kind = {"table_f2_col_delta_map_cache", mapcache_oldest, mapcache_evict_one, mapcache_evict_all};
 
+/* The slots that took records of the backend's transaction: kept when it commits, dropped when it (or a subtransaction) aborts or is prepared, as their writers turn invisible */
+static void
+own_end(bool commit)
+{
+	for (int i = 0; i < MAP_SLOTS; i++)
+		if (slots[i].own && !commit)
+			slot_drop(&slots[i]);
+		else
+			slots[i].own = false;
+}
+
+static void
+mapcache_xact_end(XactEvent event, void *arg pg_attribute_unused())
+{
+	if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_COMMIT || event == XACT_EVENT_PARALLEL_ABORT || event == XACT_EVENT_PREPARE)
+		own_end(event == XACT_EVENT_COMMIT);
+}
+
+static void
+mapcache_subxact_end(SubXactEvent event, SubTransactionId mySubid pg_attribute_unused(), SubTransactionId parentSubid pg_attribute_unused(), void *arg pg_attribute_unused())
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		own_end(false);
+}
+
 static void
 mapcache_invalidate(uint32 hashvalue)
 {
@@ -194,6 +227,8 @@ mapcache_init(void)
 	mapcache_cx = sift_cache_create_context("sift cache f2 column delta map slots");
 	sift_cache_register(&mapcache_kind);
 	sift_f2_invalidator_register(mapcache_invalidate);
+	sift_xact_callback(mapcache_xact_end, NULL);
+	sift_subxact_callback(mapcache_subxact_end, NULL);
 }
 
 static MapSlot *
@@ -242,6 +277,7 @@ slot_widen(MapSlot *s, uint64 want)
 	sift_col_delta_watch_reset(&s->watch);
 	s->built_bloom |= want;
 	s->skipped_bloom = 0;
+	s->own = false;
 	s->max_xmin = InvalidTransactionId;
 	s->has_xmin = false;
 	s->cut = false;
@@ -316,6 +352,7 @@ slot_cover(MapSlot *s, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead 
 	if (n->st.any && (!s->has_xmin || TransactionIdFollows(n->st.newest, s->max_xmin)))
 		s->max_xmin = n->st.newest;
 	s->has_xmin |= n->st.any;
+	s->own |= n->st.own;
 	s->cut = n->cut_page != NULL;
 	s->cut_xmin = n->st.refused;
 }
