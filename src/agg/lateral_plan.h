@@ -7,7 +7,8 @@
  * relations before it alone (a gate) gives the row that fails it no row of dim: its probe is then NULL, which matches none. A sub-select that only its gates tie to the outer rows has the
  * one key 1: every row that passes them finds the first row of dim. PostgreSQL has no plan of the sub-select that
  * takes no parameter, so the dimension is planned here as a query of its own: its keys are the columns the equalities name, the rows of a key that dim repeats are cut to the first one (DISTINCT ON,
- * in the order of the sub-select, then of the table), and the plan stands for the relation of the sub-select in the plan of the node.
+ * in the order of the sub-select, then of the table), and the plan stands for the relation of the sub-select in the plan of the node. ORDER BY .. LIMIT n OFFSET m gives the rows of ranks
+ * (m, m + n] of each key in that order instead (row_number() over the key), several rows of a key the node joins each.
  *
  * The sub-select may sit in the query the node plans, or in the sub-select of an EXISTS over the elements of an array (agg/exists_plan.h): its equalities then name the columns of the
  * element (one query level up) and of the relations of the statement (two up).

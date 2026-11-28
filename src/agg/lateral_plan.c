@@ -6,6 +6,8 @@
 #include "access/sysattr.h"
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_inherits.h"
+#include "access/stratnum.h"
+#include "catalog/pg_opfamily_d.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -18,6 +20,7 @@
 #include "parser/parse_clause.h"
 #include "parser/parse_oper.h"
 #include "parser/parsetree.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/safety.h"
@@ -166,15 +169,40 @@ limit_is_one(Node *limit)
 	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == INT8OID && DatumGetInt64(c->constvalue) == 1;
 }
 
-/* the table of a sub-select that is one table, read through its plain relation, cut to its first row by LIMIT 1, whose quals tie it to the outer query by equalities; NULL for any other */
+/* a constant count of the LIMIT or OFFSET of a sub-select, -1 for any other */
+static int64
+count_of(Node *n)
+{
+	const Const *c = (const Const *) (n == NULL ? NULL : eval_const_expressions(NULL, n));
+
+	return c != NULL && IsA(c, Const) && !c->constisnull && c->consttype == INT8OID ? DatumGetInt64(c->constvalue) : -1;
+}
+
+/* the sub-select gives the rows of ranks (*from, *to] of a key in its order: ORDER BY .. LIMIT n [OFFSET m] that is not the first row alone */
+static bool
+ranked_rows(const Query *q, int64 *from, int64 *to)
+{
+	const int64 n = count_of(q->limitCount);
+
+	*from = q->limitOffset == NULL ? 0 : count_of(q->limitOffset);
+	*to = *from + n;
+	return q->sortClause != NIL && n >= 1 && *from >= 0 && *to > *from && !(n == 1 && *from == 0);
+}
+
+/*
+ * the table of a sub-select that is one table, read through its plain relation, cut to its first row by LIMIT 1 or to the rows of some ranks of its order, whose quals tie it to the outer query by
+ * equalities; NULL for any other
+ */
 static const RangeTblEntry *
 one_row_table(const Query *q)
 {
 	const RangeTblEntry *rte;
+	int64		from,
+				to;
 
 	if (q->commandType != CMD_SELECT || q->setOperations != NULL || q->hasAggs || q->hasWindowFuncs || q->hasTargetSRFs || q->hasSubLinks || q->hasForUpdate || q->hasRecursive ||
-		q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL || q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL || q->limitOffset != NULL ||
-		q->limitOption != LIMIT_OPTION_COUNT || !limit_is_one(q->limitCount) ||
+		q->groupClause != NIL || q->groupingSets != NIL || q->havingQual != NULL || q->distinctClause != NIL || q->cteList != NIL || q->rowMarks != NIL ||
+		q->limitOption != LIMIT_OPTION_COUNT || !((q->limitOffset == NULL && limit_is_one(q->limitCount)) || ranked_rows(q, &from, &to)) ||
 		list_length(q->rtable) != 1 || list_length(q->jointree->fromlist) != 1 || q->jointree->quals == NULL || !IsA(linitial(q->jointree->fromlist), RangeTblRef))
 		return NULL;
 	rte = linitial_node(RangeTblEntry, q->rtable);
@@ -438,6 +466,78 @@ dimension_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, bool
 	return q;
 }
 
+/* rank > n or rank <= n of the int8 rank */
+static Expr *
+rank_bound(Var *rank, StrategyNumber strategy, int64 n)
+{
+	return make_opclause(get_opfamily_member(INTEGER_BTREE_FAM_OID, INT8OID, INT8OID, strategy), BOOLOID, false, (Expr *) copyObject(rank),
+						 (Expr *) makeConst(INT8OID, -1, InvalidOid, sizeof(int64), Int64GetDatum(n), false, FLOAT8PASSBYVAL), InvalidOid, InvalidOid);
+}
+
+/*
+ * the rows of ranks (from, to] of each key in the order of the sub-select, then of the table: the outputs and keys of the sub-select without its equalities and LIMIT, numbered by
+ * row_number() OVER (PARTITION BY the keys ORDER BY ..), under a query that keeps those ranks
+ */
+static Query *
+ranked_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, int64 from, int64 to, Levels *r)
+{
+	Query	   *in = (Query *) copyObject(sub);
+	Query	   *q = makeNode(Query);
+	List	   *junk = NIL;
+	List	   *cols = NIL;
+	WindowClause *wc = makeNode(WindowClause);
+	WindowFunc *rank = makeNode(WindowFunc);
+	TargetEntry *tid = makeTargetEntry((Expr *) makeVar(1, SelfItemPointerAttributeNumber, TIDOID, -1, InvalidOid, 0), 0, "sift_tid", true);
+	RangeTblEntry *rte = makeNode(RangeTblEntry);
+	RangeTblRef *ref = makeNode(RangeTblRef);
+	Var		   *rv;
+	int			k = 0,
+				resno = 0;
+
+	in->targetList = visible_outputs(lateral, in, &junk);
+	in->jointree->quals = t->rest == NIL ? NULL : (Node *) make_ands_explicit(copyObject(t->rest));
+	in->limitCount = in->limitOffset = NULL;
+	foreach_node(Var, key, t->keys)
+	{
+		TargetEntry *te = makeTargetEntry((Expr *) copyObject((Node *) key), 0, psprintf("sift_key%d", ++k), false);
+
+		in->targetList = lappend(in->targetList, te);
+		wc->partitionClause = lappend(wc->partitionClause, sort_clause(in, te));
+	}
+	query_tree_walker(in, levels_walker, r, 0);
+	*rank = (WindowFunc) {.xpr.type = T_WindowFunc,.winfnoid = F_ROW_NUMBER,.wintype = INT8OID,.winref = 1,.location = -1};
+	in->targetList = list_concat(lappend(in->targetList, makeTargetEntry((Expr *) rank, 0, "sift_rank", false)), junk);
+	in->targetList = lappend(in->targetList, tid);
+	wc->orderClause = lappend(list_copy(in->sortClause), sort_clause(in, tid));
+	wc->frameOptions = FRAMEOPTION_DEFAULTS;
+	wc->winref = 1;
+	in->windowClause = list_make1(wc);
+	in->hasWindowFuncs = true;
+	in->sortClause = NIL;
+	foreach_node(TargetEntry, te, in->targetList)
+	{
+		te->resno = ++resno;
+		if (!te->resjunk)
+			cols = lappend(cols, makeString(pstrdup(te->resname != NULL ? te->resname : "c")));
+	}
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = in;
+	rte->eref = makeAlias("sift_ranked", cols);
+	rte->inFromCl = true;
+	q->commandType = CMD_SELECT;
+	q->querySource = QSRC_ORIGINAL;
+	q->canSetTag = true;
+	q->rtable = list_make1(rte);
+	foreach_node(TargetEntry, te, in->targetList)
+		if (!te->resjunk && te->expr != (Expr *) rank)
+			q->targetList = lappend(q->targetList, makeTargetEntry((Expr *) makeVarFromTargetEntry(1, te), list_length(q->targetList) + 1, te->resname, false));
+	rv = makeVar(1, list_length(q->targetList) + 1, INT8OID, -1, InvalidOid, 0);
+	ref->rtindex = 1;
+	q->jointree = makeFromExpr(list_make1(ref), (Node *) make_andclause(list_make2(rank_bound(rv, BTGreaterStrategyNumber, from),
+																									  rank_bound(rv, BTLessEqualStrategyNumber, to))));
+	return q;
+}
+
 /* the path of the planned dimension: its cheapest, or with ix the scan of ix (under the projection of the relation) that meets the rows of a key in the order of its entries, cut to the first row of each key (NULL: none) */
 static Path *
 first_rows_path(PlannerInfo *sub, const IndexOptInfo *ix, int nkeys)
@@ -579,18 +679,25 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 	const IndexOptInfo *ix = NULL;
 	bool		unique,
 				heap = true;
+	int64		from,
+				to;
 
 	if (lateral->rtekind != RTE_SUBQUERY || lateral->lateral_relids == NULL || (rte = one_row_table(lrte->subquery)) == NULL || !split_ties(lrte->subquery, &t))
 		return false;
 	unique = unique_key(rte, &t);
 	if (!unique && lrte->subquery->sortClause != NIL && native_backward(lateral) && !total_order(rte, lrte->subquery, &t))
 		return false;
-	if (!unique && lrte->subquery->sortClause == NIL && reads_row_value(lateral, lrte->subquery))
-		ix = native_order(lateral, &t, &heap);
-	if (ix == NULL && !heap)
-		return false;
-	dq = dimension_query(lateral, lrte->subquery, &t, unique, ix);
-	query_tree_walker(dq, levels_walker, &r, 0);
+	if (ranked_rows(lrte->subquery, &from, &to))
+		dq = ranked_query(lateral, lrte->subquery, &t, from, to, &r);
+	else
+	{
+		if (!unique && lrte->subquery->sortClause == NIL && reads_row_value(lateral, lrte->subquery))
+			ix = native_order(lateral, &t, &heap);
+		if (ix == NULL && !heap)
+			return false;
+		dq = dimension_query(lateral, lrte->subquery, &t, unique, ix);
+		query_tree_walker(dq, levels_walker, &r, 0);
+	}
 	if (r.up1 || r.up2 || r.deeper)
 		return false;
 	sub = sift_subquery_planner(root->glob, dq, root, lrte->eref->aliasname);
