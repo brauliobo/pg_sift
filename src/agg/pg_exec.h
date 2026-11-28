@@ -20,6 +20,7 @@ typedef struct SiftV6Exec
 	SiftV6PgExpr *qual;			/* the clauses of SiftV6Spec.vqual that need the executor, as one conjunction (NULL: none) */
 	SiftV6PgExpr **item;		/* of each item of SiftV6Spec.pgexpr, its expression when it needs the executor, else NULL */
 	ExprState  *heap_qual;		/* SiftV6Ext.heap_where, the test of a row an unnest reads again from the heap (NULL: none) */
+	struct SiftV6KeyExpr **joined;	/* of each expression of the joined rows (SiftV6Ext.jexpr), the same; NULL when none needs it */
 } SiftV6Exec;
 
 /* An expression context of the node, which heap_qual is evaluated in: its sub-plans and the outputs of its InitPlans are the node's (FreeExprContext when the scan ends) */

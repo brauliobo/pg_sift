@@ -7,11 +7,13 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 
+#include "agg/expr/pg.h"
 #include "agg/join/pairs.h"
 
 typedef struct PairCtx
 {
 	V6Plan	   *p;
+	int			in_sub;			/* below a sub-plan the evaluator may run (its parameters are its own or of an InitPlan) */
 	bool		ok;
 } PairCtx;
 
@@ -74,6 +76,17 @@ pair_var(Node *n, PairCtx *c)
 
 	if (n == NULL || !c->ok)
 		return n;
+	if (IsA(n, SubPlan) && sift_v6_pgexpr_plan_ok(c->p->root, (Expr *) n))
+	{
+		Node	   *out;
+
+		c->in_sub++;
+		out = expression_tree_mutator(n, pair_var, c);
+		c->in_sub--;
+		return out;
+	}
+	if (IsA(n, Param) && c->in_sub > 0)
+		return n;
 	if (IsA(n, PlaceHolderVar) || IsA(n, Param) || IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, Aggref) || IsA(n, WindowFunc))
 	{
 		c->ok = false;
@@ -90,7 +103,7 @@ pair_var(Node *n, PairCtx *c)
 Node *
 sift_v6_pair_expr(V6Plan *p, Node *e)
 {
-	PairCtx		c = {p, true};
+	PairCtx		c = {.p = p,.ok = true};
 	Node	   *out = pair_var(e, &c);
 
 	return c.ok ? out : NULL;

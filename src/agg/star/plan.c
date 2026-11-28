@@ -608,7 +608,7 @@ sift_v6_star_joined_col(V6Plan *p, Expr *e, bool key, SiftV6Col *out)
 	const Oid	restype = getBaseType(exprType((Node *) e));
 	Node	   *je;
 
-	if (x == NULL || x->ndims == 0 || !sift_v6_pgexpr_plan_ok(NULL, e) || !contain_var_clause((Node *) e) ||
+	if (x == NULL || x->ndims == 0 || !sift_v6_pgexpr_plan_ok(p->root, e) || !contain_var_clause((Node *) e) ||
 		!(sift_v6_type_native(restype) || (key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))))
 		return false;
 	if ((je = sift_v6_pair_expr(p, (Node *) e)) == NULL)

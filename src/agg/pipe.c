@@ -14,6 +14,7 @@
 #include "agg/gather.h"
 #include "agg/expr/pg.h"
 #include "agg/join/found.h"
+#include "agg/pg_exec.h"
 #include "agg/pipe.h"
 #include "agg/topn/rows.h"
 #include "core/popcount.h"
@@ -38,11 +39,10 @@ struct SiftV6PipeBatch
 };
 
 /* the virtual attribute of a Var of the expression is the 1-based place of its column in x->rcol: the inputs of the evaluator are those the expression reads */
-static SiftV6KeyExpr *
-key_expr_new(SiftV6Pipe *p, Expr *e)
+SiftV6KeyExpr *
+sift_v6_key_expr_new(MemoryContext cx, PlanState *ps, const SiftV6Ext *x, Expr *e)
 {
-	SiftV6KeyExpr *ke = MemoryContextAllocZero(p->cx, sizeof(SiftV6KeyExpr));
-	const SiftV6Ext *x = p->spec->ext;
+	SiftV6KeyExpr *ke = MemoryContextAllocZero(cx, sizeof(SiftV6KeyExpr));
 	SiftV6PgIn	pin[SIFT_V6_MAX_COLS];
 	List	   *vars;
 
@@ -55,10 +55,21 @@ key_expr_new(SiftV6Pipe *p, Expr *e)
 		ke->col[j] = (int) (c - x->rcol);
 		pin[j] = (SiftV6PgIn) {.typid = c->typid,.scale = c->scale};
 	}
-	ke->x = sift_v6_pgexpr_open(p->cx, NULL, sift_v6_pgexpr_renumber(e, SIFT_V6_PGX_RELID, 0, vars), ke->nin, pin);
+	ke->x = sift_v6_pgexpr_open(cx, ps, sift_v6_pgexpr_renumber(e, SIFT_V6_PGX_RELID, 0, vars), ke->nin, pin);
 	ke->x->restype = getBaseType(exprType((Node *) e));
-	sift_vx_out_init(&ke->out, p->cx);
+	sift_vx_out_init(&ke->out, cx);
 	return ke;
+}
+
+/* expression j of the joined rows: the one the node opened when it runs a sub-plan (agg/pg_exec.h), else one of the pipe */
+static SiftV6KeyExpr *
+joined_expr(SiftV6Pipe *p, int j)
+{
+	const SiftV6Exec *e = p->spec->exec;
+
+	if (e != NULL && e->joined != NULL && e->joined[j] != NULL)
+		return e->joined[j];
+	return sift_v6_key_expr_new(p->cx, NULL, p->spec->ext, list_nth(p->spec->ext->jexpr, j));
 }
 
 SiftV6Pipe *
@@ -105,7 +116,7 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 	{
 		const int	s = p->pay_slot[SIFT_V6_JOINED_DIM] + j;
 
-		p->joined[j] = key_expr_new(p, list_nth(x->jexpr, j));
+		p->joined[j] = joined_expr(p, j);
 		const Oid	restype = p->joined[j]->x->restype;
 
 		p->type[s] = sift_v6_type_native(restype) ? sift_v6_result_vec_type(restype) : SVEC_DATUM;
@@ -120,7 +131,7 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 	for (int d = 0; d < p->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
 			if (x->dim[d].kx[k] > 0)
-				p->kexpr[d][k] = key_expr_new(p, list_nth(x->kexpr, x->dim[d].kx[k] - 1));
+				p->kexpr[d][k] = sift_v6_key_expr_new(cx, NULL, x, list_nth(x->kexpr, x->dim[d].kx[k] - 1));
 	p->semi_slot = -1;
 	p->match = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
 	p->fact_idx = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint16));

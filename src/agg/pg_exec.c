@@ -5,6 +5,7 @@
 
 #include "agg/ext.h"
 #include "agg/pg_exec.h"
+#include "agg/pipe.h"
 #include "agg/qual/pg.h"
 
 static bool
@@ -38,6 +39,14 @@ sift_v6_exec_begin(SiftV6Spec *spec, PlanState *ps)
 			x->item[i] = sift_v6_pgexpr_open(cx, ps, it.expr, it.nin, pin);
 			x->item[i]->restype = it.restype;
 		}
+	if (spec->ext != NULL)
+		foreach_ptr(Expr, e, spec->ext->jexpr)
+			if (sift_v6_pgexpr_exec((Node *) e))
+			{
+				if (x->joined == NULL)
+					x->joined = MemoryContextAllocZero(cx, list_length(spec->ext->jexpr) * sizeof(SiftV6KeyExpr *));
+				x->joined[foreach_current_index(e)] = sift_v6_key_expr_new(cx, ps, spec->ext, e);
+			}
 	spec->exec = x;
 }
 

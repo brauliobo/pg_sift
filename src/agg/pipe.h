@@ -13,6 +13,8 @@
 
 #include "postgres.h"
 
+#include "nodes/execnodes.h"
+
 #include "agg/engine.h"
 #include "agg/ext.h"
 #include "agg/join/lookup.h"
@@ -21,6 +23,9 @@
 typedef struct SiftV6PipeBatch SiftV6PipeBatch;
 
 typedef struct SiftV6KeyExpr SiftV6KeyExpr;
+
+/* An expression of the columns of the pairs (SiftV6Ext.rcol): a key a dimension is probed by, or an expression of the joined rows; ps: the node, when it runs a sub-plan */
+extern SiftV6KeyExpr *sift_v6_key_expr_new(MemoryContext cx, PlanState *ps, const SiftV6Ext *x, Expr *e);
 
 typedef struct SiftV6Pipe
 {
