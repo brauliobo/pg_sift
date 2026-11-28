@@ -28,7 +28,7 @@ FROM (VALUES
 	('02 aggregate',  'SELECT g, sum(x * (random() * 0)::int) FROM er GROUP BY g', 'random()'),
 	('03 order by',   'SELECT g, sum(x ORDER BY random()) FROM er GROUP BY g', 'ORDER BY (random())'),
 	('04 jsonb',      $q$SELECT sum((doc->>'f')::float8) FILTER (WHERE jsonb_typeof(doc->'f') = 'number'), count(*) FROM er$q$, NULL),
-	('05 json order', $q$SELECT sum((doc->>'f')::float8) FILTER (WHERE x > 3) FROM er$q$, NULL),
+	('05 json order', $q$SELECT sum((doc->>'f')::float8 * 2) FILTER (WHERE x > 3) FROM er$q$, NULL),
 	('06 where',      'SELECT g, count(*) FROM er WHERE random() < 2 GROUP BY g', NULL),
 	('07 table key',  'SELECT random() > 2, count(*) FROM et GROUP BY 1', 'random()')
 ) s(n, q, names), LATERAL sift.explain_why(s.q) w
