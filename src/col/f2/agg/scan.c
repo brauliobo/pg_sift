@@ -950,6 +950,7 @@ sift_v6_scan_morsel(SiftV6Scan *s, SiftV6Group *into, const SiftParPartRef *ref,
 	if (s->scan == NULL)
 	{
 		sift_f2_store_scan_morsel(s->store_scan, ref, first, n, sift_f2_v6_sink, s);
+		sift_f2_v6_flush_grans(s);
 		return;
 	}
 	if (s->preagg != NULL)

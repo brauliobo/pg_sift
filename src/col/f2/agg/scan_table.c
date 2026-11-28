@@ -27,7 +27,7 @@ sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *qua
 	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, NULL);
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
-		.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols)};
+		.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols),.grans = &s->grans};
 	s->store_scan = sift_f2_store_scan_open(o);
 	s->unsatisfiable = !quals->possible;
 }
@@ -47,7 +47,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 {
 	const SiftTidBridge *bridge = NULL;
 	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip};
+	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip,.grans = &s->grans};
 
 	s->host = rel;
 	s->is_table = true;
@@ -76,6 +76,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 		o.bridge = bridge;
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
 	}
+	sift_f2_v6_flush_grans(s);
 	if (s->pipe != NULL)
 		sift_v6_star_scan_end(star, s->pipe);
 	if (s->preagg != NULL)

@@ -33,9 +33,9 @@ step s1rr: BEGIN ISOLATION LEVEL REPEATABLE READ; SELECT count(*) FROM iso_pa;
 step s2ins: INSERT INTO iso_pa SELECT 200000 + i, i % 7, i FROM generate_series(1, 3000) i;
 step s3v: VACUUM iso_pa;
 step s1q: SELECT * FROM iso_pa_check();
-     n|same|pre
-------+----+---
-120000|t   |all
+     n|same|pre 
+------+----+----
+120000|t   |some
 (1 row)
 
 step s1c: COMMIT;

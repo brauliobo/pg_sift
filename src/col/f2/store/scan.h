@@ -44,6 +44,7 @@ typedef struct SiftStoreScanOpts
 	void		(*pinwin_done) (void *sink_arg);	/* after the last granule, with the scan still open: the owner of the window runs it and the scan replays what the threads left */
 	SiftF2GranSink gran_sink;	/* a sift_table: offered each granule before it is loaded, as sift_f2_scan_set_gran_sink offers those of an index; NULL: none */
 	void	   *gran_arg;
+	SiftF2GranCounts *grans;	/* not NULL: the granules the scan reads are counted here, as sift_f2_scan_count_granules counts those of an index */
 } SiftStoreScanOpts;
 
 /* The rows of the relation to the sink: granules of up to 8192 rows, as sift_f2_scan_sink hands them */

@@ -357,13 +357,19 @@ part_load_granule(SiftStorePart *p)
 	if (!p->started)
 		part_open_pin(p);
 	while (p->r != NULL && part_next_granule_id(p, &g))
-		if (bridge_wants(p, g) && !granule_answered(p, g) && !part_handed_over(p, g))
+	{
+		if (!bridge_wants(p, g) || granule_answered(p, g))
+			continue;
+		if (s->o->grans != NULL && !s->replaying)
+			s->o->grans->scanned++;
+		if (!part_handed_over(p, g))
 		{
 			p->r->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);
 			if (s->delta != NULL)
 				sift_col_delta_scan_attach(s->delta, p->e, p->r->gb);
 			return true;
 		}
+	}
 	part_release_pin(p);
 	return false;
 }
