@@ -228,7 +228,10 @@ fill_exceptions(SiftV1Src *s, SiftV6Batch *b)
 		{
 			const Jsonb *m;
 
-			if (sift_src_bit(s->jexc[i], r) && (b->mask == NULL || sift_src_bit(b->mask, r)) && (m = exception_member(s, i, r)) != NULL)
+			if (!sift_src_bit(s->jexc[i], r) || (b->mask != NULL && !sift_src_bit(b->mask, r)))
+				continue;
+			s->reread[r >> 6] |= UINT64CONST(1) << (r & 63);
+			if ((m = exception_member(s, i, r)) != NULL)
 				put_exception(s, i, r, m);
 		}
 	b->raises = s->has_raises ? s->raises : NULL;
@@ -265,6 +268,7 @@ fill_members(SiftV1Src *s, const SiftV6Batch *b)
 
 			if (!sift_src_bit(sift_v1_member_poison(s->col_mem[i]), r) || (b->mask != NULL && !sift_src_bit(b->mask, r)))
 				continue;
+			s->reread[r >> 6] |= UINT64CONST(1) << (r & 63);
 			found = sift_v1_src_fetch(&s->base, b->tag[r], &s->mem_att[i], 1, &doc, &isnull);
 			SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its document is read");
 			if (!isnull && sift_v1_member_doc(s->col_mem[i], doc, &v))
@@ -280,9 +284,12 @@ fill_members(SiftV1Src *s, const SiftV6Batch *b)
 void
 sift_v1_src_fill_heap(SiftV1Src *s, SiftV6Batch *b)
 {
+	memset(s->reread, 0, sizeof(s->reread));
 	fill_docs(s, b);
 	fill_exceptions(s, b);
 	fill_members(s, b);
+	for (int w = 0; w < (b->n + 63) / 64; w++)
+		s->rows_reread += pg_popcount64(s->reread[w]);
 }
 
 /* The heap row of tag into fslot: the version the snapshot sees of the chain an index entry names, or the row of a sift_table; false when it sees none */

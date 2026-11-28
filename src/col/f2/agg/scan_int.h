@@ -113,6 +113,7 @@ struct SiftV6Scan
 	SiftV6Bq   *bq;				/* those quals (SiftV6Spec.vqual), run over every batch */
 	SiftV6Bq   *bq_uncast;		/* those of them that convert no value of a JSON key that can raise: the rows PostgreSQL keeps before the cast of the others runs (NULL: none) */
 	SiftBatchSel bs;
+	uint64		read_again[SIFT_VEC_WORDS];	/* the rows of the batch whose value of a JSON key the leaf could not hold, read from the payload of its exception */
 	MemoryContext batch_cx;
 	bool		count_only;
 	bool		minmax_only;	/* every aggregate is a MIN or MAX of an integer column and nothing else is asked: the zones of a part answer it */

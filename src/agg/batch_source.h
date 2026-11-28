@@ -65,7 +65,8 @@ typedef struct SiftV6Batch
 typedef struct SiftV6Source SiftV6Source;
 typedef struct SiftV6Vexpr SiftV6Vexpr;
 
-/* The granules (units) a source read, and those its zones and its summaries of key columns ruled out before it read them; the rows of the granules it read, and of those the rows it checked against the heap */
+/* The granules (units) a source read, and those its zones and its summaries of key columns ruled out before it read them; the rows of the granules it read, of those the rows it checked against the heap, and
+ * the rows it read again from the heap */
 typedef struct SiftV6GranCounts
 {
 	uint64		read;
@@ -73,6 +74,7 @@ typedef struct SiftV6GranCounts
 	uint64		pruned_skip;
 	uint64		rows;
 	uint64		vetted;
+	uint64		reread;			/* the rows whose value the leaves cannot hold, read again from the heap row */
 } SiftV6GranCounts;
 
 struct SiftV6Source

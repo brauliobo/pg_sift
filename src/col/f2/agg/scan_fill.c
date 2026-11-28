@@ -189,8 +189,13 @@ fill_held(V6Scan *s, V6Col *c, const ColView *cv, int off, int n)
 	MemoryContext old = MemoryContextSwitchTo(s->batch_cx);
 
 	for (int i = 0; i < n; i++)
-		if (is_exception(cv, off + i) && ((s->bs.mask[i >> 6] >> (i & 63)) & 1) && sift_shred_held_int(cv->xpay[off + i], cv->xplen[off + i], &((int64 *) c->vec.data)[i]))
+	{
+		if (!is_exception(cv, off + i) || !((s->bs.mask[i >> 6] >> (i & 63)) & 1))
+			continue;
+		s->read_again[i >> 6] |= UINT64CONST(1) << (i & 63);
+		if (sift_shred_held_int(cv->xpay[off + i], cv->xplen[off + i], &((int64 *) c->vec.data)[i]))
 			c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
+	}
 	MemoryContextSwitchTo(old);
 }
 
@@ -220,6 +225,7 @@ sift_f2_v6_fill_exceptions(V6Scan *s, V6Col *c, const ColView *cv, int off, int 
 		if (!is_exception(cv, r) || !((s->bs.mask[i >> 6] >> (i & 63)) & 1))
 			continue;
 		SIFT_INVARIANT(cv->xpay[r] != NULL, "a value a leaf of a JSON key could not hold has its payload");
+		s->read_again[i >> 6] |= UINT64CONST(1) << (i & 63);
 		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, cv->xpay[r], cv->xplen[r], s->batch_cx, &val);
 		if (res == SV6JX_RAISES)
 		{
@@ -469,6 +475,7 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const f
 
 	if (s->batch_cx != NULL)
 		MemoryContextReset(s->batch_cx);
+	memset(s->read_again, 0, sizeof(s->read_again));
 	for (int i = 0; i < s->ncols; i++)
 	{
 		V6Col	   *c = &s->cols[i];
@@ -492,6 +499,8 @@ sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const f
 			raises[i] = rows;
 		}
 	}
+	for (int w = 0; w < (n + 63) / 64; w++)
+		s->stats->heap_reread_rows += pg_popcount64(s->read_again[w]);
 	return raises;
 }
 

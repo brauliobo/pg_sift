@@ -623,7 +623,7 @@ typedef struct SiftV6ScanStats
 	uint64		heap_rows_dead;
 	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/agg/preagg.h) */
 	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
-	uint64		heap_reread_rows;	/* rows of an unnest whose document the leaves cannot hold, which the function takes apart again from the heap */
+	uint64		heap_reread_rows;	/* rows whose value the leaves cannot hold, read again: the document an unnest takes apart from the heap, the value of a JSON key from its payload or heap row */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
 	uint64		global_order_reads;	/* row Top-Ns answered off an order of the key the store keeps (the order arrays of Format 1), not off its units */

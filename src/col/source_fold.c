@@ -576,6 +576,7 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 	f->a.stats->grans_pruned_skip += grans.pruned_skip;
 	f->a.stats->rows += grans.rows;
 	f->a.stats->heap_vet_rows += grans.vetted;
+	f->a.stats->heap_reread_rows += grans.reread;
 	src->close(src);
 }
 

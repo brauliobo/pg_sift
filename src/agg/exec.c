@@ -870,7 +870,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyInteger("Bridge Chunks", NULL, st->stats.chunks, es);
 		ExplainPropertyInteger("Bridge TIDs", NULL, st->stats.bridge_tids, es);
 	}
-	if (es->analyze && ((st->spec->ext != NULL && st->spec->ext->unnest) || st->spec->jmembers != NIL))
+	if (es->analyze && ((st->spec->ext != NULL && st->spec->ext->unnest) || st->spec->jmembers != NIL || st->stats.heap_reread_rows > 0))
 		ExplainPropertyUInteger("Rows Read Again From The Heap", NULL, st->stats.heap_reread_rows, es);
 	if (st->arm.cohort != NULL)
 	{

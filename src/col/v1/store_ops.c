@@ -675,6 +675,7 @@ v1_granules(SiftV6Source *base, SiftV6GranCounts *out)
 
 	out->read += s->units_read;
 	out->rows += s->rows_read;
+	out->reread += s->rows_reread;
 	s->rd->pruned(s->src, out);
 }
 

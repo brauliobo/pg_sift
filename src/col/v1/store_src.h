@@ -39,6 +39,8 @@ typedef struct SiftV1Src
 	void	   *src;
 	uint64		units_read;		/* the units whose leaves the source decoded */
 	uint64		rows_read;		/* ... and their rows */
+	uint64		rows_reread;	/* ... and the rows of the batches whose value of a JSON key or member the leaves could not hold, read again from the heap row */
+	uint64		reread[SIFT_VEC_WORDS];	/* those rows of the batch in hand */
 	SiftV6Input in;
 	const SiftSrcLayout *lay;
 	const SiftSrcLeaf *col_leaf[SIFT_V6_MAX_COLS];
