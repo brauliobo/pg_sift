@@ -15,6 +15,7 @@ CREATE FUNCTION reads(OUT n int, OUT same boolean, OUT route text) RETURNS SETOF
 DECLARE
 	k record;
 BEGIN
+	ANALYZE events, tenant_scope;
 	FOR k IN SELECT * FROM (VALUES (1, 'SELECT count(*), sum(v), min(id), max(id) FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = 3'),
 		(2, 'SELECT count(*), sum(v), min(id), max(id) FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (ARRAY[2, 5, 7]))')) v(n, q) LOOP
 		SELECT r.same, r.route INTO same, route FROM scope_read(k.q) r;
