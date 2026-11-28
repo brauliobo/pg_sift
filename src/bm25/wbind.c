@@ -173,10 +173,33 @@ doc_matches(const SiftPlan *p, const EvalNode *n, const bool *hit)
 	return false;
 }
 
-static int
-hit_cmp(const void *a, const void *b)
+/* The hits by key ascending: a byte at a time over the bits their keys differ in (the tids of a buffer are near one another), stable, in O(n) */
+static void
+sort_hits(WbufHit *hit, int64 n, MemoryContext cx)
 {
-	return pg_cmp_u64(((const WbufHit *) a)->key, ((const WbufHit *) b)->key);
+	WbufHit    *from = hit,
+			   *to = MemoryContextAllocHuge(cx, n * sizeof(WbufHit));
+	SiftKey		diff = 0;
+
+	for (int64 i = 1; i < n; i++)
+		diff |= hit[i].key ^ hit[0].key;
+	for (int shift = 0; shift < 64 && diff >> shift != 0; shift += 8)
+	{
+		int64		at[257] = {0};
+		WbufHit    *swap = from;
+
+		for (int64 i = 0; i < n; i++)
+			at[((from[i].key >> shift) & 0xFF) + 1]++;
+		for (int b = 1; b < 257; b++)
+			at[b] += at[b - 1];
+		for (int64 i = 0; i < n; i++)
+			to[at[(from[i].key >> shift) & 0xFF]++] = from[i];
+		from = to;
+		to = swap;
+	}
+	if (from != hit)
+		memcpy(hit, from, n * sizeof(WbufHit));
+	pfree(from == hit ? to : from);
 }
 
 /* The leaf's write buffer term of the zero padded key, created with df 0 */
@@ -366,7 +389,7 @@ bind_wbuf(SiftPlan *p)
 	{
 		int64		k = 1;
 
-		qsort(p->mhit, p->nmhit, sizeof(WbufHit), hit_cmp);
+		sort_hits(p->mhit, p->nmhit, p->mcxt);
 		for (int64 j = 1; j < p->nmhit; j++)
 			if (p->mhit[j].key != p->mhit[k - 1].key)
 				p->mhit[k++] = p->mhit[j];
