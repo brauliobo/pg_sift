@@ -30,7 +30,7 @@ INSERT INTO pa_q VALUES
 	(9, 'range cuts a unit',        'SELECT count(DISTINCT kt) FROM %s WHERE id BETWEEN 7000 AND 21000'),
 	(10, 'no rows',                 'SELECT count(DISTINCT ki) FROM %s WHERE id > 100000000'),
 	(11, 'the key of the group',    'SELECT ki, count(DISTINCT ki), count(*) FROM %s GROUP BY ki'),
-	(12, 'two columns: scan',       'SELECT count(DISTINCT ki), count(DISTINCT kt) FROM %s'),
+	(12, 'two columns',             'SELECT count(DISTINCT ki), count(DISTINCT kt) FROM %s'),
 	(13, 'other key: scan',         'SELECT kt, count(DISTINCT ki) FROM %s GROUP BY kt'),
 	(14, 'many values: scan',       'SELECT count(DISTINCT kb) FROM %s'),
 	(15, 'FILTER: scan',            'SELECT count(DISTINCT ki) FILTER (WHERE ki > 2) FROM %s'),
