@@ -76,7 +76,7 @@ BEGIN
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		keys := substring(plan from 'Scope Keys: ([^\n]*)');
+		keys := regexp_replace(substring(plan from 'Scope Keys: ([^\n]*)'), 'InitPlan (expr_|array_)?(\d+)', 'InitPlan \2', 'g');
 		RETURN 'scope read, ' || CASE WHEN keys ~ '^\d+$' THEN keys || ' keys' ELSE 'keys ' || keys END || ', ' || substring(plan from 'Scope Semantics: ([^\n]*)');
 	END IF;
 	RETURN CASE WHEN plan ~ 'Lookup Joins|Join: pushed' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;

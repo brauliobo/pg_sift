@@ -84,7 +84,7 @@ BEGIN
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		keys := substring(plan from 'Scope Keys: ([^\n]*)');
+		keys := regexp_replace(substring(plan from 'Scope Keys: ([^\n]*)'), 'InitPlan (expr_|array_)?(\d+)', 'InitPlan \2', 'g');
 		RETURN 'scope read, ' || keys || ' keys, ' || substring(plan from 'Scope Semantics: ([^\n]*)');
 	END IF;
 	SELECT regexp_replace(reason, '^.*the join runs as written \((.*)\)$', '\1') INTO r FROM sift.explain_why(q) WHERE arm = 'scope';

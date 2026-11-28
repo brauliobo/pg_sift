@@ -76,7 +76,7 @@ BEGIN
 		plan := plan || l || E'\n';
 	END LOOP;
 	IF plan ~ 'Scope Index: ' THEN
-		keys := substring(plan from 'Scope Keys: ([^\n]*)');
+		keys := regexp_replace(substring(plan from 'Scope Keys: ([^\n]*)'), 'InitPlan (expr_|array_)?(\d+)', 'InitPlan \2', 'g');
 		RETURN 'scope read, ' || CASE WHEN keys ~ '^\d+$' THEN keys || ' keys' ELSE 'keys ' || keys END || ', ' || substring(plan from 'Scope Semantics: ([^\n]*)');
 	END IF;
 	RETURN CASE WHEN plan ~ 'Lookup Joins|Join: pushed' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
@@ -149,10 +149,10 @@ FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) OR
  IN, ANY ($1) of bigint                            | force_generic_plan | scope read, keys $1, once                                                   | t
  IN, a text $1 cast                                | force_custom_plan  | scope read, 1 keys, per pair                                                | t
  IN, a text $1 cast                                | force_generic_plan | scope read, keys ($1)::integer, per pair                                    | t
- IN, scalar sub-select                             | force_custom_plan  | scope read, keys (InitPlan expr_1).col1, per pair                           | t
- IN, scalar sub-select                             | force_generic_plan | scope read, keys (InitPlan expr_1).col1, per pair                           | t
- IN, table of keys as ARRAY(SELECT ..)             | force_custom_plan  | scope read, keys (InitPlan array_1).col1, once                              | t
- IN, table of keys as ARRAY(SELECT ..)             | force_generic_plan | scope read, keys (InitPlan array_1).col1, once                              | t
+ IN, scalar sub-select                             | force_custom_plan  | scope read, keys (InitPlan 1).col1, per pair                                | t
+ IN, scalar sub-select                             | force_generic_plan | scope read, keys (InitPlan 1).col1, per pair                                | t
+ IN, table of keys as ARRAY(SELECT ..)             | force_custom_plan  | scope read, keys (InitPlan 1).col1, once                                    | t
+ IN, table of keys as ARRAY(SELECT ..)             | force_generic_plan | scope read, keys (InitPlan 1).col1, once                                    | t
  groups, ANY ($1)                                  | force_custom_plan  | scope read, 3 keys, once                                                    | t
  groups, ANY ($1)                                  | force_generic_plan | scope read, keys $1, once                                                   | t
  join, $1                                          | force_custom_plan  | scope read, 1 keys, per pair                                                | t
@@ -161,8 +161,8 @@ FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) OR
  join, $1 in the first position                    | force_generic_plan | scope read, keys $1, per pair                                               | t
  join, ANY ($1), a row for each pair               | force_custom_plan  | scope read, 3 keys, per pair                                                | t
  join, ANY ($1), a row for each pair               | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope read, keys (InitPlan array_1).col1, per pair                          | t
- join, ANY (ARRAY(SELECT ..)), a row for each pair | force_generic_plan | scope read, keys (InitPlan array_1).col1, per pair                          | t
+ join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope read, keys (InitPlan 1).col1, per pair                                | t
+ join, ANY (ARRAY(SELECT ..)), a row for each pair | force_generic_plan | scope read, keys (InitPlan 1).col1, per pair                                | t
  join, IN ($1, $2), a row for each pair            | force_custom_plan  | scope read, 2 keys, per pair                                                | t
  join, IN ($1, $2), a row for each pair            | force_generic_plan | scope read, keys ARRAY[$1, $2], per pair                                    | t
  join, bigint $1                                   | force_custom_plan  | scope read, 1 keys, per pair                                                | t
