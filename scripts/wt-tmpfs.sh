@@ -6,16 +6,17 @@
 #   scripts/wt-tmpfs.sh status                        the use of /tmp and /dev/shm, the checkouts, builds and clusters with their sizes, the hits of the compiler cache
 #   scripts/wt-tmpfs.sh prune [--dry-run] [--verbose] remove what no run uses any more: the clusters whose checkout is gone (unless a postmaster runs in them), the builds whose
 #                                                     checkout is gone or that sat idle SIFT_BUILD_TTL_MIN minutes (60) and no process uses, the kept budget failures past their bounds
-#                                                     (scripts/budget.sh prune), the dead perf gate runs and stale templates, the orphaned PostgreSQL DSM segments (scripts/tmpfs-reap.py);
+#                                                     (scripts/budget.sh prune), the dead perf gate runs and stale templates, the orphaned PostgreSQL DSM segments, the idle ad-hoc
+#                                                     sift-*, corpus.*, ci<N>* and empty tmp.* leftovers in SIFT_TMPDIR_ROOT (/tmp) and /dev/shm (scripts/tmpfs-reap.py);
 #                                                     past 45% of /dev/shm used, the compiler cache is trimmed to its cap (at most every 30 minutes)
 #   scripts/wt-tmpfs.sh auto-prune                    a prune in the background when /tmp or /dev/shm is past 45% used, at most every 10 minutes: create and scripts/pgtest.sh install run it
 #   scripts/wt-tmpfs.sh timer                         installs and starts the user systemd timer that prunes every 15 minutes (sift-tmpfs-prune.timer) with the script of
 #                                                     the main checkout of this repository: a throwaway worktree does not outlive the tmpfs
 #   scripts/wt-tmpfs.sh --selftest
-# SIFT_WT_ROOT, SIFT_PG_ROOT, SIFT_BUILD_ROOT and SIFT_SHM_ROOT move the four directories (default /tmp/sift-wt, /tmp/sift-pg, /tmp/sift-build, /dev/shm).
+# SIFT_WT_ROOT, SIFT_PG_ROOT, SIFT_BUILD_ROOT, SIFT_SHM_ROOT and SIFT_TMPDIR_ROOT move the five directories (default /tmp/sift-wt, /tmp/sift-pg, /tmp/sift-build, /dev/shm, /tmp).
 set -euo pipefail
 REPO=${SIFT_WT_REPO:-$(cd "$(dirname "$0")/.." && pwd)}
-WT=${SIFT_WT_ROOT:-/tmp/sift-wt} PG=${SIFT_PG_ROOT:-/tmp/sift-pg} BUILD=${SIFT_BUILD_ROOT:-/tmp/sift-build} SHM=${SIFT_SHM_ROOT:-/dev/shm}
+WT=${SIFT_WT_ROOT:-/tmp/sift-wt} PG=${SIFT_PG_ROOT:-/tmp/sift-pg} BUILD=${SIFT_BUILD_ROOT:-/tmp/sift-build} SHM=${SIFT_SHM_ROOT:-/dev/shm} TMPROOT=${SIFT_TMPDIR_ROOT:-/tmp}
 HERE=$(cd "$(dirname "$0")" && pwd)
 PRUNE_PCT=${SIFT_PRUNE_PCT:-45}
 # shellcheck source=scripts/ccache-env.sh
@@ -89,7 +90,7 @@ prune() {
 		live "$d" || { echo "prune: ${dry:+would remove }$d"; [[ -n $dry ]] || rm -rf "$d"; }
 	done
 	[[ -n $dry || ! -d $SHM/sift-budget-fail ]] || "$HERE/budget.sh" prune "$SHM/sift-budget-fail"
-	python3 -I "$HERE/tmpfs-reap.py" --builds "$BUILD" --perf "${SIFT_PERF_CACHE:-$SHM/sift-perf-gate}" --shm "$SHM" $dry $verbose
+	python3 -I "$HERE/tmpfs-reap.py" --builds "$BUILD" --perf "${SIFT_PERF_CACHE:-$SHM/sift-perf-gate}" --shm "$SHM" --tmp "$TMPROOT" $dry $verbose
 	if [[ -z $dry && -d $SHM/sift-ccache ]] && command -v ccache >/dev/null && (( $(used_pct "$SHM") >= PRUNE_PCT )) && due "$SHM/sift-ccache/.trimmed" 30; then
 		echo "prune: $SHM is $(used_pct "$SHM")% used: the compiler cache is trimmed to $(ccache_ram_maxsize)"
 		CCACHE_DIR=$SHM/sift-ccache CCACHE_MAXSIZE=$(ccache_ram_maxsize) ccache -c >/dev/null
@@ -119,7 +120,7 @@ timer() {
 selftest() {
 	local t out; t=$(mktemp -d); trap "rm -rf '$t'" EXIT
 	git init -q "$t/repo" && git -C "$t/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m base
-	export SIFT_WT_REPO=$t/repo SIFT_WT_ROOT=$t/wt SIFT_PG_ROOT=$t/pg SIFT_BUILD_ROOT=$t/build SIFT_SHM_ROOT=$t/shm SIFT_PRUNE_PCT=101
+	export SIFT_WT_REPO=$t/repo SIFT_WT_ROOT=$t/wt SIFT_PG_ROOT=$t/pg SIFT_BUILD_ROOT=$t/build SIFT_SHM_ROOT=$t/shm SIFT_TMPDIR_ROOT=$t/tmp SIFT_PRUNE_PCT=101
 	unset SIFT_PERF_CACHE
 	out=$("$0" create a); [[ $out == *"export SIFT_WT=$t/wt/a SIFT_TMP=$t/pg/a"* && -f $t/wt/a/.git ]] || die "selftest: create made no worktree: $out"
 	"$0" create a 2>/dev/null && die "selftest: create over an existing checkout"
@@ -130,14 +131,15 @@ selftest() {
 	mkdir -p "$t/shm/sift-budget-fail/old" "$t/shm/sift-budget-fail/new" "$t/shm/sift-perf-gate/tpl-old" "$t/build/idle-01234567/flavor"
 	touch -d '-2 hours' "$t/shm/sift-budget-fail/old" "$t/shm/sift-perf-gate/tpl-old" "$t/build/idle-01234567/flavor" "$t/build/idle-01234567"
 	printf x >"$t/shm/PostgreSQL.12345"; touch -d '-1 hour' "$t/shm/PostgreSQL.12345"
+	mkdir -p "$t/tmp/corpus.old" "$t/tmp/corpus.new"; touch -d '-1 hour' "$t/tmp/corpus.old"
 	out=$("$0" prune --dry-run)
-	[[ $out == *"would remove $t/pg/gone"* && $out == *"would remove $t/build/idle-01234567"* && $out == *"would remove $t/shm/PostgreSQL.12345"* ]] \
+	[[ $out == *"would remove $t/pg/gone"* && $out == *"would remove $t/build/idle-01234567"* && $out == *"would remove $t/shm/PostgreSQL.12345"* && $out == *"would remove $t/tmp/corpus.old"* ]] \
 		|| die "selftest: prune --dry-run does not name what prune removes: $out"
-	[[ -e $t/pg/gone && -e $t/build/gone-89abcdef && -e $t/build/idle-01234567 && -e $t/shm/sift-budget-fail/old && -e $t/shm/sift-perf-gate/tpl-old && -e $t/shm/PostgreSQL.12345 ]] \
+	[[ -e $t/pg/gone && -e $t/build/gone-89abcdef && -e $t/build/idle-01234567 && -e $t/shm/sift-budget-fail/old && -e $t/shm/sift-perf-gate/tpl-old && -e $t/shm/PostgreSQL.12345 && -e $t/tmp/corpus.old ]] \
 		|| die "selftest: prune --dry-run removed something"
 	"$0" prune >/dev/null
-	[[ ! -e $t/build/idle-01234567 && ! -e $t/shm/sift-budget-fail/old && -d $t/shm/sift-budget-fail/new && ! -e $t/shm/sift-perf-gate/tpl-old && ! -e $t/shm/PostgreSQL.12345 ]] \
-		|| die "selftest: prune left an idle build, an old budget failure, a stale perf template or an orphaned segment, or removed a new failure"
+	[[ ! -e $t/build/idle-01234567 && ! -e $t/shm/sift-budget-fail/old && -d $t/shm/sift-budget-fail/new && ! -e $t/shm/sift-perf-gate/tpl-old && ! -e $t/shm/PostgreSQL.12345 && ! -e $t/tmp/corpus.old && -d $t/tmp/corpus.new ]] \
+		|| die "selftest: prune left an idle build, an old budget failure, a stale perf template, an orphaned segment or an idle corpus output, or removed a new one"
 	"$0" auto-prune; [[ ! -e $t/wt/.auto-prune ]] || die "selftest: auto-prune ran under its threshold"
 	SIFT_PRUNE_PCT=0 "$0" auto-prune; [[ -e $t/wt/.auto-prune ]] || die "selftest: auto-prune did not run past its threshold"
 	touch -d '-2 min' "$t/wt/.auto-prune"; SIFT_PRUNE_PCT=0 "$0" auto-prune

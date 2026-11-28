@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """What dead runs leave in tmpfs, removed only when no process can still use it (scripts/wt-tmpfs.sh prune runs it):
 
-  python3 -I scripts/tmpfs-reap.py --builds DIR --perf DIR --shm DIR [--build-ttl MIN] [--dry-run] [--verbose]
+  python3 -I scripts/tmpfs-reap.py --builds DIR --perf DIR --shm DIR --tmp DIR [--build-ttl MIN] [--dry-run] [--verbose]
   python3 -I scripts/tmpfs-reap.py --selftest
 
   builds   a directory of DIR (one checkout's builds) whose checkout is gone or where nothing changed for --build-ttl minutes (60), that no process has as its
            working directory, names on its command line, holds open or maps (a loaded .so)
   perf     the runs of the perf gates that died and their templates unused for an hour (scripts/perf/gate.py clean_stale)
   shm      a PostgreSQL.<handle> segment of the user, unchanged for 5 minutes, that no process maps or holds open and whose handle is in no live postmaster's
-           control segment (the one that starts with the magic 0x9a503d32); when a postgres process of the user cannot be read, no segment is removed
+           control segment (the one that starts with the magic 0x9a503d32); when a postgres process of the user cannot be read, no segment is removed;
+           and an ad-hoc sift-* file or directory of the user outside the managed ones (MANAGED) idle for an hour
+  tmp      what runs of the user left in DIR (/tmp) idle that long: corpus.* directories of test/corpus/run.py (15 min), ad-hoc sift-* (an hour, as in shm),
+           ci<N>* artifacts (an hour) and empty tmp.* files of mktemp (an hour)
+  Nothing a process uses (as for builds) is removed.
 """
 import argparse
 import contextlib
 import io
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -31,6 +36,8 @@ import gate  # noqa: E402
 DSM_MAGIC = struct.pack('<I', 0x9a503d32)
 DSM_MIN_AGE = 300
 PERF_TTL = 3600
+CORPUS_TTL, STRAY_TTL = 900, 3600
+MANAGED = {'sift-wt', 'sift-pg', 'sift-build', 'sift-ccache', 'sift-ccache-bin', 'sift-budget-fail', 'sift-perf-gate'}
 
 
 class Procs:
@@ -81,6 +88,38 @@ def recent(d, cutoff):
     return False
 
 
+def idle(p, cutoff):
+    """Nothing in p, a file or a directory and all under it, changed after cutoff."""
+    return not (recent(p, cutoff) if p.is_dir() and not p.is_symlink() else os.lstat(p).st_mtime > cutoff)
+
+
+def unmanaged(p, st):
+    return p.name not in MANAGED
+
+
+def empty_file(p, st):
+    return stat.S_ISREG(st.st_mode) and st.st_size == 0
+
+
+SHM_RULES = (('sift-*', STRAY_TTL, unmanaged),)
+TMP_RULES = (('corpus.*', CORPUS_TTL, lambda p, st: stat.S_ISDIR(st.st_mode)), ('sift-*', STRAY_TTL, unmanaged),
+             ('ci[0-9]*', STRAY_TTL, lambda p, st: True), ('tmp.*', STRAY_TTL, empty_file))
+
+
+def strays(root, rules, procs, uid=None):
+    """The entries of root that a rule (glob, idle seconds, test of the path and its lstat) matches, owned by uid (the user), idle that long, used by no process."""
+    uid, now, found = os.getuid() if uid is None else uid, time.time(), []
+    for pat, ttl, test in rules:
+        for p in sorted(Path(root).glob(pat)):
+            try:
+                st = os.lstat(p)
+                if st.st_uid == uid and test(p, st) and idle(p, now - ttl) and not procs.uses(p):
+                    found.append(p)
+            except FileNotFoundError:
+                pass
+    return found
+
+
 def orphan(d):
     """The checkout the builds were made from (.repo, scripts/pgtest.sh install) is gone."""
     repo = d / '.repo'
@@ -122,7 +161,7 @@ def remove(paths, dry, why):
     for p in paths:
         print(f'reap: {"would remove" if dry else "remove"} {p} ({why})')
         if not dry:
-            shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+            shutil.rmtree(p, ignore_errors=True) if p.is_dir() and not p.is_symlink() else p.unlink(missing_ok=True)
 
 
 def main(argv):
@@ -130,6 +169,7 @@ def main(argv):
     p.add_argument('--builds')
     p.add_argument('--perf')
     p.add_argument('--shm')
+    p.add_argument('--tmp')
     p.add_argument('--build-ttl', type=int, default=int(os.environ.get('SIFT_BUILD_TTL_MIN', 60)))
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--verbose', action='store_true')
@@ -146,6 +186,9 @@ def main(argv):
         if procs.blind:
             print('reap: a postgres process cannot be read: no shared memory segment is removed')
         remove(segments(a.shm, procs), a.dry_run, 'unmapped, unregistered, 5 min old')
+        remove(strays(a.shm, SHM_RULES, procs), a.dry_run, 'ad-hoc, idle, used by no process')
+    if a.tmp:
+        remove(strays(a.tmp, TMP_RULES, procs), a.dry_run, 'left by a run, idle, used by no process')
     if a.verbose:
         print(f'reap: {procs.count} processes read, {len(procs.files)} paths in use{", postgres unreadable" if procs.blind else ""}')
     return 0
@@ -163,6 +206,7 @@ class Selftest(unittest.TestCase):
         for k in self.kids:
             k.kill()
             k.wait()
+            k.stdout.close()
         shutil.rmtree(self.t)
 
     def hold(self, code, *args, cwd=None):
@@ -212,6 +256,52 @@ class Selftest(unittest.TestCase):
         self.assertEqual(len(list(s.iterdir())), 7)
         self.assertEqual(main(['--shm', str(s)]), 0)
         self.assertEqual(sorted(f.name for f in s.iterdir()), ['PostgreSQL.2', 'PostgreSQL.3', 'PostgreSQL.4', 'PostgreSQL.5'])
+
+    def test_tmp(self):
+        t = self.t / 'tmp'
+        for n, age in (('corpus.old', 1000), ('corpus.new', 600), ('corpus.used', 1000), ('corpus.deep', 1000),
+                       ('sift-adhoc', 7200), ('sift-young', 1800), ('sift-used', 7200), ('ci123', 7200), ('ci9-new', 600), ('cix', 7200)):
+            self.make(t / n / 'f', age=age)
+        os.utime(t / 'corpus.deep' / 'f', None)
+        for n in sorted(MANAGED):
+            self.make(t / n / 'f')
+        self.make(t / 'corpus.file', age=1000)
+        self.make(t / 'ci7.log')
+        self.make(t / 'sift-stray.log')
+        self.make(t / 'tmp.empty', b'')
+        self.make(t / 'tmp.full')
+        self.make(t / 'tmp.fresh', b'', age=600)
+        self.make(t / 'tmp.used', b'')
+        self.make(t / 'tmp.dir' / 'x', b'')
+        os.utime(t / 'tmp.dir', (0, 0))
+        (t / 'tmp.link').symlink_to(t / 'tmp.full')
+        os.utime(t / 'tmp.link', (0, 0), follow_symlinks=False)
+        os.utime(t, (0, 0))
+        self.hold('', cwd=t / 'corpus.used')
+        self.hold('', t / 'sift-used')
+        self.hold('import sys; f = open(sys.argv[1], "rb")', t / 'tmp.used')
+        procs = Procs()
+        reaped = ['ci123', 'ci7.log', 'corpus.old', 'sift-adhoc', 'sift-stray.log', 'tmp.empty']
+        self.assertEqual(sorted(p.name for p in strays(t, TMP_RULES, procs)), reaped)
+        self.assertEqual(strays(t, TMP_RULES, procs, uid=os.getuid() + 1), [])
+        before = sorted(p.name for p in t.iterdir())
+        self.assertEqual(main(['--tmp', str(t), '--dry-run']), 0)
+        self.assertEqual(sorted(p.name for p in t.iterdir()), before)
+        self.assertEqual(main(['--tmp', str(t)]), 0)
+        self.assertEqual(sorted(p.name for p in t.iterdir()), sorted(set(before) - set(reaped)))
+        self.assertTrue((t / 'tmp.full').is_file())
+
+    def test_shm_strays(self):
+        s = self.t / 'shm'
+        for n in sorted(MANAGED) + ['sift-adhoc', 'sift-used']:
+            self.make(s / n / 'f')
+        self.make(s / 'sift-young' / 'f', age=1800)
+        self.make(s / 'sift-file')
+        self.make(s / 'other' / 'f')
+        self.hold('', cwd=s / 'sift-used')
+        self.assertEqual([p.name for p in strays(s, SHM_RULES, Procs())], ['sift-adhoc', 'sift-file'])
+        self.assertEqual(main(['--shm', str(s)]), 0)
+        self.assertEqual(sorted(p.name for p in s.iterdir()), sorted(MANAGED | {'other', 'sift-used', 'sift-young'}))
 
     def test_perf(self):
         p = self.t / 'perf'
