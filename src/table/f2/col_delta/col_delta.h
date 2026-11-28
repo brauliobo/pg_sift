@@ -426,7 +426,7 @@ extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
 extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(SiftColDeltaPartMap *old, bool old_goes, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 /*
  * The map of the collector's patches alone, built over the collector's own array, which the map keeps (the collector is left empty): a long chain's patches are never held twice. The collector's
- * patches were collected in the context the map is made in.
+ * patches were collected in the context the map is made in. NULL for a collector that holds no patch (its records changed no column).
  */
 extern SiftColDeltaPartMap *sift_col_delta_part_map_take(SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 

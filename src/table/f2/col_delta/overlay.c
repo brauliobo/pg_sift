@@ -453,9 +453,11 @@ sift_col_delta_part_map_merge(SiftColDeltaPartMap *old, bool old_goes, SiftColDe
 SiftColDeltaPartMap *
 sift_col_delta_part_map_take(SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
 {
-	int			n = latest_only(c->v, c->n);
-	SiftColDeltaPartMap *m = map_of(NULL, 0, c->v, n, part_gen, ngranules, c->tid_bloom, true);
+	SiftColDeltaPartMap *m;
 
+	if (c->n == 0)
+		return NULL;
+	m = map_of(NULL, 0, c->v, latest_only(c->v, c->n), part_gen, ngranules, c->tid_bloom, true);
 	c->v = NULL;
 	c->n = c->cap = 0;
 	return m;
