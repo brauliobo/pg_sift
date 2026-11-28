@@ -16,6 +16,9 @@
 
 typedef struct SiftV6ParScan SiftV6ParScan;
 
+/* Fewer granules than this are not worth the start of the threads (a granule is a few hundred microseconds of work, the start about a millisecond): the scan replays them itself */
+#define SIFT_PAR_ITEMS_MIN	16
+
 /* Whether the threads of the backend run the statement (its shape, and the backend has threads): the planner then leaves the statement to the serial node, which starts them */
 extern bool sift_v6_par_wanted(const SiftV6Spec *spec);
 

@@ -15,9 +15,6 @@
 #include "core/memtrack.h"
 #include "core/par/pool.h"
 
-/* Fewer granules than this are not worth the start of the threads (a granule is a few hundred microseconds of work, the start about a millisecond) */
-#define PAR_ITEMS_MIN	16
-
 static const ParKind *const kinds[] = {&par_kind_group, &par_kind_distinct, &par_kind_rows};
 
 int
@@ -371,7 +368,7 @@ sift_v6_par_end(SiftV6ParScan *p)
 	{
 		if (items == 0)
 			;
-		else if ((!p->sh.kind->merges && (p->stats->rows > 0 || p->stats->grans_preagg > 0 || sift_pin_win_refused(p->win) > 0)) || nthreads < 2 || items < PAR_ITEMS_MIN ||
+		else if ((!p->sh.kind->merges && (p->stats->rows > 0 || p->stats->grans_preagg > 0 || sift_pin_win_refused(p->win) > 0)) || nthreads < 2 || items < SIFT_PAR_ITEMS_MIN ||
 				 !arenas_size(&p->sh, p->spec->groups_est, sift_pin_win_rows(p->win), nthreads, &sz, &state))
 		{
 			elog(DEBUG1, "sift agg v6: %u granules replayed by the scan (%u refused, %lu rows read)", items, sift_pin_win_refused(p->win), (unsigned long) p->stats->rows);

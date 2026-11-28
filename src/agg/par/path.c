@@ -298,6 +298,13 @@ par_total(const CostPick *c, int nworkers, bool forced)
 	return c->serial_total * (forced ? Min(share, PAR_MIN_GAIN) : share);
 }
 
+/* The compute threads of the backend take the scan: a shape they run, and for the threads of agg/par/run.h the granules that are worth their start */
+static bool
+threads_take(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups)
+{
+	return sift_v6_pin_wanted(spec) || (sift_v6_par_wanted(spec) && sift_v6_granule_rows(root, rel, spec, groups) / GRANULE_ROWS >= SIFT_PAR_ITEMS_MIN);
+}
+
 /* The threads split the scan as the participants of a Gather do, with no launch; the waits for memory of a large table stay the backend's */
 void
 sift_v6_threads_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups, Path *path)
@@ -306,7 +313,7 @@ sift_v6_threads_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec
 	const double serial = scan + (groups >= PAR_COLD_GROUPS ? rel->rows * cold_ns(root, rel, spec) / 1e6 : 0.0);
 	double		share;
 
-	if (!sift_v6_par_wanted(spec) && !sift_v6_pin_wanted(spec))
+	if (!threads_take(root, rel, spec, groups))
 		return;
 	share = (scan / (1.0 + SIFT_PAR_EFFICIENCY * (sift_par_pool_threads() - 1)) + serial - scan) / Max(serial, 1e-6);
 	path->startup_cost *= share;
@@ -517,7 +524,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	if ((why = plan_serial_why(root, rel, &spec, &child_paths, passes, as_written)) != NULL)
 		return why;
 	set_topk(root, &spec, scan_tlist, having);
-	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
+	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && threads_take(root, rel, &spec, groups))
 		return "the threads of the backend share its scan";
 	pick.topk = spec.topk;
 	pick.rows = rel->rows;
