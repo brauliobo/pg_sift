@@ -33,6 +33,11 @@ extern void sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, Rel
 /* The tests of the quals of the table and of the FILTERs of the statement p is bound to, seeded as the streams of an unnest of the rows (SiftV6Ext.row_tests): p->xseed stays NULL when
  * the statement has none; false when one is not a test the scan decides */
 extern bool sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra);
+/* The tests of sift_v6_unnest_tests_seed when the statement has some the scan decides; false, with no Ext, otherwise. A plan so seeded compiles with sift_v6_unnest_exists_compile, and
+ * its scan costs sift_v6_unnest_exists_cost more */
+extern bool sift_v6_unnest_exists_seed(V6Plan *p, GroupPathExtraData *extra);
+extern bool sift_v6_unnest_exists_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs);
+extern Cost sift_v6_unnest_exists_cost(const RelOptInfo *rel);
 /* The path of the scan of the statement over one table when a qual of the table or a FILTER is such a test; nothing when the statement is not of that shape */
 extern void sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs);
 

@@ -131,7 +131,7 @@ INSERT INTO stmts VALUES
 -- no row, no item, nothing the lookup finds
 (36, 'SELECT count(*) FROM d JOIN u ON u.id = d.tenant WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) LEFT JOIN LATERAL (SELECT mp.derived FROM mp WHERE mp.category = upper(i.category) LIMIT 1) m ON true WHERE m.derived IS NOT NULL)'),
 (37, 'SELECT count(*) FROM d JOIN u ON u.id = d.tenant WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) WHERE i.qty > 100)'),
--- the normal plan: NOT EXISTS, an OR, two of them, a joined table that holds a key more than once
+-- the normal plan: NOT EXISTS, an OR, a joined table that holds a key more than once (two EXISTS beside the join are two tests of the scan)
 (38, 'SELECT u.kind, count(*) FROM d JOIN u ON u.id = d.tenant WHERE NOT EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) LEFT JOIN LATERAL (SELECT mp.derived FROM mp WHERE mp.category = i.category LIMIT 1) m ON true WHERE m.derived = ''x'') GROUP BY u.kind'),
 (39, 'SELECT u.kind, count(*) FROM d JOIN u ON u.id = d.tenant WHERE d.total = 5 OR EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) LEFT JOIN LATERAL (SELECT mp.derived FROM mp WHERE mp.category = i.category LIMIT 1) m ON true WHERE m.derived = ''x'') GROUP BY u.kind'),
 (40, 'SELECT u.kind, count(*) FROM d JOIN u ON u.id = d.tenant WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) WHERE i.qty = 1) AND EXISTS (SELECT 1 FROM jsonb_to_recordset(d.items) AS i(category text, kind text, qty int) WHERE i.qty = 2) GROUP BY u.kind'),

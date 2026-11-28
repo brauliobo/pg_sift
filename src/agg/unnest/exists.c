@@ -168,7 +168,7 @@ where_or_cands(PlannerInfo *root, Node *clause, List *cands)
 	return cands;
 }
 
-/* the tests the WHERE and the FILTERs of the statement have: a WHERE that is a test, and the tests of the arms of an OR of the WHERE where the scan reads their flags (agg/plan/filter.c) */
+/* the tests the WHERE and the FILTERs of the statement have (a SELECT DISTINCT has no extra, and no FILTER): a WHERE that is a test, and the tests of the arms of an OR of the WHERE where the scan reads their flags (agg/plan/filter.c) */
 static List *
 collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms)
 {
@@ -185,7 +185,8 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 			cands = where_or_cands(root, (Node *) ri->clause, cands);
 	}
 	collect_filters((Node *) out->reltarget->exprs, &w);
-	collect_filters(extra->havingQual, &w);
+	if (extra != NULL)
+		collect_filters(extra->havingQual, &w);
 	foreach_ptr(Expr, filter, w.filters)
 		cands = filter_cands(root, (Node *) filter, cands);
 	return list_length(cands) <= SIFT_V6_XTESTS ? cands : NIL;
@@ -525,8 +526,8 @@ sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri)
 	return false;
 }
 
-static Cost
-exists_cost(const RelOptInfo *rel)
+Cost
+sift_v6_unnest_exists_cost(const RelOptInfo *rel)
 {
 	return rel->tuples * cpu_operator_cost * EXISTS_ROW_OPERATORS;
 }
@@ -545,16 +546,35 @@ sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra)
 	return store_tests(p);
 }
 
+bool
+sift_v6_unnest_exists_seed(V6Plan *p, GroupPathExtraData *extra)
+{
+	const bool	batch_ok = p->batch_ok;
+	const bool	seeded = sift_v6_unnest_tests_seed(p, extra) && p->xseed != NULL;
+
+	if (!seeded)
+	{
+		p->tests = NIL;
+		p->xseed = NULL;
+		p->batch_ok = batch_ok;
+	}
+	return seeded;
+}
+
+bool
+sift_v6_unnest_exists_compile(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
+{
+	return sift_v6_unnest_compile(p, extra, group_exprs) && sift_v6_unnest_where(p);
+}
+
 static void
 try_source(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, List *group_exprs, const SiftV6RelSource *src)
 {
 	V6Plan		p = {.root = root,.rel = rel,.out = out};
 	Relation	source = sift_v6_source_open(src->reloid, src->is_table, AccessShareLock, NULL);
-	bool		ok;
 
-	ok = sift_v6_plan_bind(&p, src, source) && sift_v6_unnest_tests_seed(&p, extra) && p.xseed != NULL && sift_v6_unnest_compile(&p, extra, group_exprs) && sift_v6_unnest_where(&p);
-	if (ok)
-		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, exists_cost(rel), rel->rows);
+	if (sift_v6_plan_bind(&p, src, source) && sift_v6_unnest_exists_seed(&p, extra) && sift_v6_unnest_exists_compile(&p, extra, group_exprs))
+		sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_exists_cost(rel), rel->rows);
 	sift_v6_source_close(source, src->is_table, NoLock);
 }
 

@@ -23,6 +23,7 @@
 #include "agg/ht/ht.h"
 #include "agg/plan/int.h"
 #include "agg/refuse.h"
+#include "agg/unnest/exists.h"
 #include "agg/cost/card.h"
 #include "agg/datum.h"
 #include "agg/dim_keys.h"
@@ -402,7 +403,7 @@ sift_v6_in_target(const RelOptInfo *rel, const Var *v)
 static bool
 seed_dims(V6Plan *p, StarDim *dims, int nd)
 {
-	SiftV6Ext  *x = sift_v6_ext_new();
+	SiftV6Ext  *x = p->xseed != NULL ? p->xseed : sift_v6_ext_new();
 
 	x->ndims = nd;
 	for (int d = 0; d < nd; d++)
@@ -474,12 +475,14 @@ typedef struct StarStmt
 	double		input_rows;
 } StarStmt;
 
+/* the tests of the elements of the fact's arrays among its quals and FILTERs make each row of it one pair of the scan of an unnest, which probes the dimensions (not a sift_table's pipe of rows) */
 static bool
 star_compile_fn(V6Plan *p, const void *arg)
 {
 	const StarStmt *s = arg;
+	const bool	tests = s->goal->topk == 0 && !p->is_table && sift_v6_unnest_exists_seed(p, s->goal->extra);
 
-	return seed_dims(p, s->dims, s->nd) && star_compile(p, s->goal);
+	return seed_dims(p, s->dims, s->nd) && (tests ? sift_v6_unnest_exists_compile(p, s->goal->extra, s->goal->group_exprs) : star_compile(p, s->goal));
 }
 
 static void
@@ -499,7 +502,7 @@ star_add_fn(V6Plan *p, const void *arg)
 		xs += found ? 0 : sift_v6_dim_cost(child);
 		xt += (found ? 0 : sift_v6_dim_cost(child) + child->rows * cpu_operator_cost * 2.0) + s->input_rows * cpu_operator_cost;
 	}
-	star_add(p, s->goal, s->input_rows, children, xs, xt);
+	star_add(p, s->goal, s->input_rows, children, xs, xt + (p->xseed->row_tests ? sift_v6_unnest_exists_cost(p->rel) : 0));
 }
 
 /* the plan each dimension is read with: its cheapest, or the one that probes it by the constant keys of the fact table's filter */
