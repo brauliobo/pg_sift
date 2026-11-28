@@ -6,7 +6,7 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
 SET search_path = s1, public;
--- A joined table of more than 524,288 keys is joined by SiftAggV6Join: the answers are those of the normal plan, NULL keys and keys the table does not have included.
+-- A joined table of more than 524,288 keys is a lookup join of SiftAggV6: the answers are those of the normal plan, NULL keys and keys the table does not have included.
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET client_min_messages = warning;
