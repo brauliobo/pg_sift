@@ -142,7 +142,7 @@ leaf_pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, SiftV1
 	{
 		const NullTest *nt = (const NullTest *) clause;
 
-		if (nt->argisrow || (var = heap_var((const Node *) nt->arg)) == NULL || (l = qual_leaf(host, lay, var->varattno)) == NULL || !sift_v1_leaf_plain(l))
+		if (nt->argisrow || (var = heap_var((const Node *) nt->arg)) == NULL || (l = qual_leaf(host, lay, var->varattno)) == NULL || l->wide || l->lossy)
 			return false;
 		*p = (SiftV1Pred) {.kind = nt->nulltesttype == IS_NULL ? SV1P_NULL : SV1P_NOTNULL,.leaf = l->id};
 		return true;
@@ -265,9 +265,9 @@ leaf_verdict(const SiftV1Pred *p, const SiftSrcUnitAgg *z)
 	if (p->kind == SV1P_CAL)
 		return SV1V_SOME;
 	if (p->kind == SV1P_NULL)
-		return z->nnull == z->nvals ? SV1V_ALL : z->nnull == 0 ? SV1V_NONE : SV1V_SOME;
+		return z->nnull == 0 ? SV1V_NONE : z->nnull == z->nvals && !z->overflow ? SV1V_ALL : SV1V_SOME;
 	if (p->kind == SV1P_NOTNULL)
-		return z->nnull == 0 ? SV1V_ALL : z->nnull == z->nvals ? SV1V_NONE : SV1V_SOME;
+		return z->nnull == 0 ? SV1V_ALL : z->nnull == z->nvals && !z->overflow ? SV1V_NONE : SV1V_SOME;
 	if (z->nnull == z->nvals)
 		return SV1V_NONE;
 	if (!z->has_minmax || p->str != NULL)

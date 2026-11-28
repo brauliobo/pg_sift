@@ -183,6 +183,7 @@ typedef struct SiftSrcUnitAgg
 	SiftSrcI128 sumsq;
 	double		sum_f;			/* SCV_F64: the sum in the unit's row order (the order caveat of a parallel sum) */
 	bool		has_nan;
+	bool		overflow;		/* some NULL slot holds a value the zone does not describe (a numeric NaN, or one too large for its integers): it is no NULL */
 	bool		is_const;		/* every non-NULL value equal */
 	bool		loose;			/* a unit net of its dead rows: min and max only bound the values left (the counts and the integer sums are exact) */
 } SiftSrcUnitAgg;

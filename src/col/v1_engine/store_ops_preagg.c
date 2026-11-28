@@ -503,8 +503,11 @@ offer(void *arg, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
 	if (!sift_v6_group_takes_cells(c->group) || (live.nrow = rd->unit_rows(src, unit)) < 0)
 		return false;
 	if ((v = unit_verdict(c, rd, src, &live, &except, &alone)) == SV1V_NONE)
-		done = true;
-	else if (c->nkeys > 1)
+	{
+		c->stats->grans_pruned_zone += Max(unit->nsu, 1);
+		return true;
+	}
+	if (c->nkeys > 1)
 		done = fold_rollup(c, rd, src, &live);
 	else if (v == SV1V_SOME)
 		done = fold_rollup(c, rd, src, &live) || fold_except(c, rd, src, &live, except, alone);
@@ -653,6 +656,16 @@ first_filter_leaf(const SiftV1Cube *c)
 	return -1;
 }
 
+/* The leaf of the first test the groups of a histogram decide: a NULL test is decided by the NULL count of the zone of a unit (or its exceptions) */
+static int
+first_test_leaf(const SiftV1Cube *c)
+{
+	for (int i = 0; i < c->npred; i++)
+		if (c->pred[i].kind != SV1P_NULL && c->pred[i].kind != SV1P_NOTNULL)
+			return c->pred[i].leaf;
+	return c->pred[0].leaf;
+}
+
 /* Every FILTER tests the dimension the units are folded from, under no COUNT(DISTINCT) of a statement without a key (whose values come from the zone of the unit) */
 static bool
 filters_on_hist(const SiftV1Cube *c)
@@ -667,7 +680,7 @@ filters_on_hist(const SiftV1Cube *c)
 }
 
 /*
- * The dimension a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else of the first FILTER, else the leaf of the first test, whose groups pass it or not. A calendar key, a date
+ * The dimension a unit is folded from: the key, else the leaf of COUNT(DISTINCT), else of the first FILTER, else the leaf of the first test that is no NULL test, whose groups pass it or not. A calendar key, a date
  * key, and the first test of a date or timestamp leaf with no key, may be answered from the calendar cells of a unit too, under no FILTER or COUNT(DISTINCT)
  */
 static void
@@ -675,7 +688,7 @@ hist_of(SiftV1Cube *c, const SiftSrcLayout *lay, MemoryContext cx)
 {
 	Oid			t;
 
-	c->hist_leaf = c->nkeys > 0 ? c->key_leaf[0] : c->dist_leaf >= 0 ? c->dist_leaf : c->filtered ? first_filter_leaf(c) : c->npred > 0 ? c->pred[0].leaf : -1;
+	c->hist_leaf = c->nkeys > 0 ? c->key_leaf[0] : c->dist_leaf >= 0 ? c->dist_leaf : c->filtered ? first_filter_leaf(c) : c->npred > 0 ? first_test_leaf(c) : -1;
 	c->hist_text = c->hist_leaf >= 0 && lay->leaf[c->hist_leaf].vtype == SCV_CODE;
 	t = c->hist_leaf >= 0 && c->hist_leaf < SIFT_SRC_CAL ? lay->leaf[c->hist_leaf].typid : InvalidOid;
 	if (c->dist_leaf >= 0 || c->filtered || (c->cal_key == NULL && (c->nkeys > 0 ? t != DATEOID : c->npred == 0 || (t != DATEOID && t != TIMESTAMPOID && t != TIMESTAMPTZOID))))

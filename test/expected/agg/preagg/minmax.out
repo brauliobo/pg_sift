@@ -323,7 +323,7 @@ SELECT * FROM pa_check('mx');
   5 | only NULLs          | some | t
   6 | no rows, grouped    | none | t
   7 | keys in list        | some | t
-  8 | test of dim, no key | some | t
+  8 | test of dim, no key | none | t
   9 | FILTER on the dim   | some | t
  10 | FILTER on the key   | some | t
  11 | other test: scan    | none | t
@@ -359,7 +359,7 @@ SELECT sift.col_verify('mx_col', true);
 SELECT * FROM pa_sum('mx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |      11 |        1 |      6
+      19 |      0 |      10 |        2 |      6
 (1 row)
 
 SET sift.test_col_format_minor = 6;
@@ -402,7 +402,7 @@ SELECT sift.col_verify('mx_col', true);
 SELECT * FROM pa_sum('mx');
  queries | differ | all_pre | some_pre | no_pre 
 ---------+--------+---------+----------+--------
-      19 |      0 |      11 |        1 |      6
+      19 |      0 |      10 |        2 |      6
 (1 row)
 
 -- 7. built by parallel workers (several segments), then read by the workers of the scan: each folds its share and the states merge

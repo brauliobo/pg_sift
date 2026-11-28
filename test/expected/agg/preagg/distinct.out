@@ -231,7 +231,7 @@ SELECT * FROM pa_check('dd');
   4 | test of the column     | all  | t
   5 | text test              | all  | t
   6 | IN list                | some | t
-  7 | IS NULL                | all  | t
+  7 | IS NULL                | some | t
   8 | zone of another column | some | t
   9 | range cuts a unit      | some | t
  10 | no rows                | none | t

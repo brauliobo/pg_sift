@@ -33,7 +33,8 @@ sift_v1_unit_agg(const SiftColUnit *unit, int col, const SiftColDef *def, SiftSr
 
 	if (!sift_col_unit_agg(unit, col, &a))
 		return false;
-	*agg = (SiftSrcUnitAgg) {.nvals = a.nvals,.nnull = a.nnull,.has_nan = (a.zflags & SIFT_COLZ_NAN) != 0,.is_const = (a.zflags & SIFT_COLZ_CONST) != 0,
+	*agg = (SiftSrcUnitAgg) {.nvals = a.nvals,.nnull = a.nnull,.has_nan = (a.zflags & SIFT_COLZ_NAN) != 0,
+		.overflow = (a.zflags & SIFT_COLZ_OVERFLOW) != 0,.is_const = (a.zflags & SIFT_COLZ_CONST) != 0,
 		.loose = (a.flags & SIFT_CAGG_LOOSE) != 0};
 	agg->has_minmax = a.nnull < a.nvals && def->store != SIFT_COLS_STR && !(a.zflags & SIFT_COLZ_INLINE);
 	if (def->store == SIFT_COLS_F4 || def->store == SIFT_COLS_F8)

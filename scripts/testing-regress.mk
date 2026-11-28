@@ -88,6 +88,7 @@ TESTING_REGRESS += agg/mapped_direct_values
 TESTING_REGRESS += agg/matrix_remaining_tail
 TESTING_REGRESS += agg/matrix_topn_const
 TESTING_REGRESS += agg/mem_spill
+TESTING_REGRESS += agg/null_zone
 TESTING_REGRESS += agg/nullable_filters_f1
 TESTING_REGRESS += agg/numeric_nan
 TESTING_REGRESS += agg/pacer_foreground

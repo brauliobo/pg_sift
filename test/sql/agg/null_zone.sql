@@ -4,6 +4,8 @@
 -- nu holds a NaN in unit 5 (a NaN is stored as a NULL slot with a flag: it is not NULL) and NULLs in unit 6, ts is NULL in the units 15 to 19.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 1: its units are superblocks of 256 pages (a Format 2 granule holds all 5120 rows)
+SET sift.test_create_format1 = on;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -20,16 +22,19 @@ SELECT units FROM sift.col_segments('nz_idx') WHERE kind = 'immutable';
 
 -- the units a statement reads, prunes and answers from pre-aggregates ('normal' when SiftAgg does not run it), and whether its rows are those of the normal plan
 CREATE FUNCTION chk(q text) RETURNS TABLE (plan text, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-DECLARE l text; read text; pruned text := '0'; pre text;
+DECLARE l text; scanned int := 0; pruned int := 0; pre int := 0;
 BEGIN
 	plan := 'normal';
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN plan := 'SiftAgg'; END IF;
-		IF l ~ 'Units: (\d+)' THEN read := substring(l from 'Units: (\d+)'); END IF;
-		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
-		IF l ~ '(\d+) from pre-aggregates' THEN pre := substring(l from '(\d+) from pre-aggregates'); END IF;
+		IF l ~ 'Granules: scanned=' THEN
+			scanned := substring(l from 'scanned=(\d+)');
+			pruned := substring(l from 'pruned_zone=(\d+)');
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
-	IF plan = 'SiftAgg' THEN plan := format('SiftAgg read %s pruned %s pre-agg %s', read, pruned, pre); END IF;
+	-- read: the units the zones leave, scanned or answered from their pre-aggregates
+	IF plan = 'SiftAgg' THEN plan := format('SiftAgg read %s pruned %s pre-agg %s', scanned + pre, pruned, pre); END IF;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);

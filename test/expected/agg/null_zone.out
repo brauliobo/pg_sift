@@ -4,6 +4,8 @@
 -- nu holds a NaN in unit 5 (a NaN is stored as a NULL slot with a flag: it is not NULL) and NULLs in unit 6, ts is NULL in the units 15 to 19.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 1: its units are superblocks of 256 pages (a Format 2 granule holds all 5120 rows)
+SET sift.test_create_format1 = on;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
@@ -23,16 +25,19 @@ SELECT units FROM sift.col_segments('nz_idx') WHERE kind = 'immutable';
 
 -- the units a statement reads, prunes and answers from pre-aggregates ('normal' when SiftAgg does not run it), and whether its rows are those of the normal plan
 CREATE FUNCTION chk(q text) RETURNS TABLE (plan text, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-DECLARE l text; read text; pruned text := '0'; pre text;
+DECLARE l text; scanned int := 0; pruned int := 0; pre int := 0;
 BEGIN
 	plan := 'normal';
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN plan := 'SiftAgg'; END IF;
-		IF l ~ 'Units: (\d+)' THEN read := substring(l from 'Units: (\d+)'); END IF;
-		IF l ~ '(\d+) pruned' THEN pruned := substring(l from '(\d+) pruned'); END IF;
-		IF l ~ '(\d+) from pre-aggregates' THEN pre := substring(l from '(\d+) from pre-aggregates'); END IF;
+		IF l ~ 'Granules: scanned=' THEN
+			scanned := substring(l from 'scanned=(\d+)');
+			pruned := substring(l from 'pruned_zone=(\d+)');
+			pre := coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
-	IF plan = 'SiftAgg' THEN plan := format('SiftAgg read %s pruned %s pre-agg %s', read, pruned, pre); END IF;
+	-- read: the units the zones leave, scanned or answered from their pre-aggregates
+	IF plan = 'SiftAgg' THEN plan := format('SiftAgg read %s pruned %s pre-agg %s', scanned + pre, pruned, pre); END IF;
 	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
@@ -75,13 +80,13 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
   19 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NULL                      | SiftAgg read 5 pruned 15 pre-agg 5   |              0
   20 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NULL                      | SiftAgg read 0 pruned 20 pre-agg 0   |              0
   21 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NULL                       | SiftAgg read 0 pruned 20 pre-agg 0   |              0
-  22 | SELECT a, count(*) FROM nz WHERE a_all IS NULL GROUP BY a                               | SiftAgg read 10 pruned 10 pre-agg    |              0
-  23 | SELECT a, count(*) FROM nz WHERE mixed IS NULL GROUP BY a                               | SiftAgg read 20 pruned 0 pre-agg     |              0
-  24 | SELECT a, count(*) FROM nz WHERE tx IS NULL GROUP BY a                                  | SiftAgg read 7 pruned 13 pre-agg     |              0
-  25 | SELECT a, count(*) FROM nz WHERE nu IS NULL GROUP BY a                                  | SiftAgg read 2 pruned 18 pre-agg     |              0
-  26 | SELECT a, count(*) FROM nz WHERE ts IS NULL GROUP BY a                                  | SiftAgg read 5 pruned 15 pre-agg     |              0
-  27 | SELECT a, count(*) FROM nz WHERE id IS NULL GROUP BY a                                  | SiftAgg read 0 pruned 20 pre-agg     |              0
-  28 | SELECT a, count(*) FROM nz WHERE g IS NULL GROUP BY a                                   | SiftAgg read 0 pruned 20 pre-agg     |              0
+  22 | SELECT a, count(*) FROM nz WHERE a_all IS NULL GROUP BY a                               | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+  23 | SELECT a, count(*) FROM nz WHERE mixed IS NULL GROUP BY a                               | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+  24 | SELECT a, count(*) FROM nz WHERE tx IS NULL GROUP BY a                                  | SiftAgg read 7 pruned 13 pre-agg 0   |              0
+  25 | SELECT a, count(*) FROM nz WHERE nu IS NULL GROUP BY a                                  | SiftAgg read 2 pruned 18 pre-agg 0   |              0
+  26 | SELECT a, count(*) FROM nz WHERE ts IS NULL GROUP BY a                                  | SiftAgg read 5 pruned 15 pre-agg 0   |              0
+  27 | SELECT a, count(*) FROM nz WHERE id IS NULL GROUP BY a                                  | SiftAgg read 0 pruned 20 pre-agg 0   |              0
+  28 | SELECT a, count(*) FROM nz WHERE g IS NULL GROUP BY a                                   | SiftAgg read 0 pruned 20 pre-agg 0   |              0
   29 | SELECT count(*), sum(a) FROM nz WHERE a_all IS NOT NULL                                 | SiftAgg read 10 pruned 10 pre-agg 10 |              0
   30 | SELECT count(*), sum(a) FROM nz WHERE mixed IS NOT NULL                                 | SiftAgg read 20 pruned 0 pre-agg 0   |              0
   31 | SELECT count(*), sum(a) FROM nz WHERE tx IS NOT NULL                                    | SiftAgg read 13 pruned 7 pre-agg 13  |              0
@@ -103,13 +108,13 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
   47 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NOT NULL                  | SiftAgg read 15 pruned 5 pre-agg 15  |              0
   48 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NOT NULL                  | SiftAgg read 20 pruned 0 pre-agg 20  |              0
   49 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NOT NULL                   | SiftAgg read 20 pruned 0 pre-agg 20  |              0
-  50 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL GROUP BY a                           | SiftAgg read 10 pruned 10 pre-agg    |              0
-  51 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL GROUP BY a                           | SiftAgg read 20 pruned 0 pre-agg     |              0
-  52 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL GROUP BY a                              | SiftAgg read 13 pruned 7 pre-agg     |              0
-  53 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL GROUP BY a                              | SiftAgg read 19 pruned 1 pre-agg     |              0
-  54 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL GROUP BY a                              | SiftAgg read 15 pruned 5 pre-agg     |              0
-  55 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL GROUP BY a                              | SiftAgg read 20 pruned 0 pre-agg     |              0
-  56 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL GROUP BY a                               | SiftAgg read 20 pruned 0 pre-agg     |              0
+  50 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL GROUP BY a                           | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+  51 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL GROUP BY a                           | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+  52 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL GROUP BY a                              | SiftAgg read 13 pruned 7 pre-agg 0   |              0
+  53 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL GROUP BY a                              | SiftAgg read 19 pruned 1 pre-agg 0   |              0
+  54 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL GROUP BY a                              | SiftAgg read 15 pruned 5 pre-agg 0   |              0
+  55 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL GROUP BY a                              | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+  56 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL GROUP BY a                               | SiftAgg read 20 pruned 0 pre-agg 0   |              0
   57 | SELECT count(*), sum(a) FROM nz WHERE a_all IS NULL AND a < 50                          | SiftAgg read 10 pruned 10 pre-agg 0  |              0
   58 | SELECT count(*), sum(a) FROM nz WHERE mixed IS NULL AND a < 50                          | SiftAgg read 20 pruned 0 pre-agg 0   |              0
   59 | SELECT count(*), sum(a) FROM nz WHERE tx IS NULL AND a < 50                             | SiftAgg read 7 pruned 13 pre-agg 0   |              0
@@ -131,13 +136,13 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
   75 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NULL AND a < 50           | SiftAgg read 5 pruned 15 pre-agg 0   |              0
   76 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NULL AND a < 50           | SiftAgg read 0 pruned 20 pre-agg 0   |              0
   77 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NULL AND a < 50            | SiftAgg read 0 pruned 20 pre-agg 0   |              0
-  78 | SELECT a, count(*) FROM nz WHERE a_all IS NULL AND a < 50 GROUP BY a                    | SiftAgg read 10 pruned 10 pre-agg    |              0
-  79 | SELECT a, count(*) FROM nz WHERE mixed IS NULL AND a < 50 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg     |              0
-  80 | SELECT a, count(*) FROM nz WHERE tx IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 7 pruned 13 pre-agg     |              0
-  81 | SELECT a, count(*) FROM nz WHERE nu IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 2 pruned 18 pre-agg     |              0
-  82 | SELECT a, count(*) FROM nz WHERE ts IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 5 pruned 15 pre-agg     |              0
-  83 | SELECT a, count(*) FROM nz WHERE id IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 0 pruned 20 pre-agg     |              0
-  84 | SELECT a, count(*) FROM nz WHERE g IS NULL AND a < 50 GROUP BY a                        | SiftAgg read 0 pruned 20 pre-agg     |              0
+  78 | SELECT a, count(*) FROM nz WHERE a_all IS NULL AND a < 50 GROUP BY a                    | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+  79 | SELECT a, count(*) FROM nz WHERE mixed IS NULL AND a < 50 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+  80 | SELECT a, count(*) FROM nz WHERE tx IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 7 pruned 13 pre-agg 0   |              0
+  81 | SELECT a, count(*) FROM nz WHERE nu IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 2 pruned 18 pre-agg 0   |              0
+  82 | SELECT a, count(*) FROM nz WHERE ts IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 5 pruned 15 pre-agg 0   |              0
+  83 | SELECT a, count(*) FROM nz WHERE id IS NULL AND a < 50 GROUP BY a                       | SiftAgg read 0 pruned 20 pre-agg 0   |              0
+  84 | SELECT a, count(*) FROM nz WHERE g IS NULL AND a < 50 GROUP BY a                        | SiftAgg read 0 pruned 20 pre-agg 0   |              0
   85 | SELECT count(*), sum(a) FROM nz WHERE a_all IS NOT NULL AND a < 50                      | SiftAgg read 10 pruned 10 pre-agg 0  |              0
   86 | SELECT count(*), sum(a) FROM nz WHERE mixed IS NOT NULL AND a < 50                      | SiftAgg read 20 pruned 0 pre-agg 0   |              0
   87 | SELECT count(*), sum(a) FROM nz WHERE tx IS NOT NULL AND a < 50                         | SiftAgg read 13 pruned 7 pre-agg 0   |              0
@@ -159,13 +164,13 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
  103 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NOT NULL AND a < 50       | SiftAgg read 15 pruned 5 pre-agg 0   |              0
  104 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NOT NULL AND a < 50       | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  105 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NOT NULL AND a < 50        | SiftAgg read 20 pruned 0 pre-agg 0   |              0
- 106 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL AND a < 50 GROUP BY a                | SiftAgg read 10 pruned 10 pre-agg    |              0
- 107 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL AND a < 50 GROUP BY a                | SiftAgg read 20 pruned 0 pre-agg     |              0
- 108 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 13 pruned 7 pre-agg     |              0
- 109 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 19 pruned 1 pre-agg     |              0
- 110 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 15 pruned 5 pre-agg     |              0
- 111 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 20 pruned 0 pre-agg     |              0
- 112 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL AND a < 50 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg     |              0
+ 106 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL AND a < 50 GROUP BY a                | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+ 107 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL AND a < 50 GROUP BY a                | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 108 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 13 pruned 7 pre-agg 0   |              0
+ 109 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 19 pruned 1 pre-agg 0   |              0
+ 110 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 15 pruned 5 pre-agg 0   |              0
+ 111 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL AND a < 50 GROUP BY a                   | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 112 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL AND a < 50 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  113 | SELECT count(*), sum(a) FROM nz WHERE a_all IS NULL AND g = 2                           | SiftAgg read 10 pruned 10 pre-agg 10 |              0
  114 | SELECT count(*), sum(a) FROM nz WHERE mixed IS NULL AND g = 2                           | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  115 | SELECT count(*), sum(a) FROM nz WHERE tx IS NULL AND g = 2                              | SiftAgg read 7 pruned 13 pre-agg 7   |              0
@@ -187,13 +192,13 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
  131 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NULL AND g = 2            | SiftAgg read 5 pruned 15 pre-agg 0   |              0
  132 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NULL AND g = 2            | SiftAgg read 0 pruned 20 pre-agg 0   |              0
  133 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NULL AND g = 2             | SiftAgg read 0 pruned 20 pre-agg 0   |              0
- 134 | SELECT a, count(*) FROM nz WHERE a_all IS NULL AND g = 2 GROUP BY a                     | SiftAgg read 10 pruned 10 pre-agg    |              0
- 135 | SELECT a, count(*) FROM nz WHERE mixed IS NULL AND g = 2 GROUP BY a                     | SiftAgg read 20 pruned 0 pre-agg     |              0
- 136 | SELECT a, count(*) FROM nz WHERE tx IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 7 pruned 13 pre-agg     |              0
- 137 | SELECT a, count(*) FROM nz WHERE nu IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 2 pruned 18 pre-agg     |              0
- 138 | SELECT a, count(*) FROM nz WHERE ts IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 5 pruned 15 pre-agg     |              0
- 139 | SELECT a, count(*) FROM nz WHERE id IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 0 pruned 20 pre-agg     |              0
- 140 | SELECT a, count(*) FROM nz WHERE g IS NULL AND g = 2 GROUP BY a                         | SiftAgg read 0 pruned 20 pre-agg     |              0
+ 134 | SELECT a, count(*) FROM nz WHERE a_all IS NULL AND g = 2 GROUP BY a                     | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+ 135 | SELECT a, count(*) FROM nz WHERE mixed IS NULL AND g = 2 GROUP BY a                     | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 136 | SELECT a, count(*) FROM nz WHERE tx IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 7 pruned 13 pre-agg 0   |              0
+ 137 | SELECT a, count(*) FROM nz WHERE nu IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 2 pruned 18 pre-agg 0   |              0
+ 138 | SELECT a, count(*) FROM nz WHERE ts IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 5 pruned 15 pre-agg 0   |              0
+ 139 | SELECT a, count(*) FROM nz WHERE id IS NULL AND g = 2 GROUP BY a                        | SiftAgg read 0 pruned 20 pre-agg 0   |              0
+ 140 | SELECT a, count(*) FROM nz WHERE g IS NULL AND g = 2 GROUP BY a                         | SiftAgg read 0 pruned 20 pre-agg 0   |              0
  141 | SELECT count(*), sum(a) FROM nz WHERE a_all IS NOT NULL AND g = 2                       | SiftAgg read 10 pruned 10 pre-agg 10 |              0
  142 | SELECT count(*), sum(a) FROM nz WHERE mixed IS NOT NULL AND g = 2                       | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  143 | SELECT count(*), sum(a) FROM nz WHERE tx IS NOT NULL AND g = 2                          | SiftAgg read 13 pruned 7 pre-agg 13  |              0
@@ -215,19 +220,19 @@ SELECT n, left(q, 90) AS query, c.* FROM nz_q, LATERAL chk(q) c ORDER BY n;
  159 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE ts IS NOT NULL AND g = 2        | SiftAgg read 15 pruned 5 pre-agg 0   |              0
  160 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE id IS NOT NULL AND g = 2        | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  161 | SELECT count(*), sum(a), min(id), max(id) FROM nz WHERE g IS NOT NULL AND g = 2         | SiftAgg read 20 pruned 0 pre-agg 0   |              0
- 162 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL AND g = 2 GROUP BY a                 | SiftAgg read 10 pruned 10 pre-agg    |              0
- 163 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL AND g = 2 GROUP BY a                 | SiftAgg read 20 pruned 0 pre-agg     |              0
- 164 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 13 pruned 7 pre-agg     |              0
- 165 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 19 pruned 1 pre-agg     |              0
- 166 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 15 pruned 5 pre-agg     |              0
- 167 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg     |              0
- 168 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL AND g = 2 GROUP BY a                     | SiftAgg read 20 pruned 0 pre-agg     |              0
- 169 | SELECT count(*) FROM nz WHERE a_all IS NULL OR g = 3                                    | SiftAgg read 20 pruned 0 pre-agg     |              0
- 170 | SELECT g, sum(a) FROM nz WHERE tx IS NULL OR mixed IS NULL GROUP BY g                   | SiftAgg read 20 pruned 0 pre-agg     |              0
+ 162 | SELECT a, count(*) FROM nz WHERE a_all IS NOT NULL AND g = 2 GROUP BY a                 | SiftAgg read 10 pruned 10 pre-agg 0  |              0
+ 163 | SELECT a, count(*) FROM nz WHERE mixed IS NOT NULL AND g = 2 GROUP BY a                 | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 164 | SELECT a, count(*) FROM nz WHERE tx IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 13 pruned 7 pre-agg 0   |              0
+ 165 | SELECT a, count(*) FROM nz WHERE nu IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 19 pruned 1 pre-agg 0   |              0
+ 166 | SELECT a, count(*) FROM nz WHERE ts IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 15 pruned 5 pre-agg 0   |              0
+ 167 | SELECT a, count(*) FROM nz WHERE id IS NOT NULL AND g = 2 GROUP BY a                    | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 168 | SELECT a, count(*) FROM nz WHERE g IS NOT NULL AND g = 2 GROUP BY a                     | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 169 | SELECT count(*) FROM nz WHERE a_all IS NULL OR g = 3                                    | SiftAgg read 20 pruned 0 pre-agg 0   |              0
+ 170 | SELECT g, sum(a) FROM nz WHERE tx IS NULL OR mixed IS NULL GROUP BY g                   | SiftAgg read 20 pruned 0 pre-agg 0   |              0
  171 | SELECT count(*) FROM nz WHERE a_all IS NULL AND tx IS NULL                              | SiftAgg read 4 pruned 16 pre-agg 4   |              0
  172 | SELECT count(*) FROM nz WHERE a_all IS NOT NULL AND ts IS NULL                          | SiftAgg read 5 pruned 15 pre-agg 5   |              0
  173 | SELECT count(a_all) AS c1, count(tx) AS c2, count(*) AS c3 FROM nz WHERE nu IS NOT NULL | SiftAgg read 19 pruned 1 pre-agg 18  |              0
- 174 | SELECT count(*) FILTER (WHERE a_all IS NULL) AS f, count(*) AS n FROM nz WHERE g < 3    | SiftAgg read 20 pruned 0 pre-agg     |              0
+ 174 | SELECT count(*) FILTER (WHERE a_all IS NULL) AS f, count(*) AS n FROM nz WHERE g < 3    | SiftAgg read 20 pruned 0 pre-agg 0   |              0
 (174 rows)
 
 DROP FUNCTION chk(text);
