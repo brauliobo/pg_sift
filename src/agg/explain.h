@@ -23,6 +23,9 @@ extern void sift_v6_explain_pushed_aggs(CustomScanState *css, List *ancestors, E
 /* Lookup Joins: the relations the plans of the dimensions of a star join read */
 extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es);
 
+/* an expression of a statement being planned as the statement names its relations: the columns of every relation of its range table (prefix: qualified by their relation) */
+extern char *sift_v6_deparse_planning(PlannerInfo *root, Node *e, bool prefix);
+
 /* Top-N: the sort keys and the limit of the groups (the spec of the aggregate scan, when it gives the best groups in order) */
 extern void sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es);
 

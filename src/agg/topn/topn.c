@@ -68,47 +68,17 @@ initplan_mutator(Node *n, PlannerInfo *root)
 	return expression_tree_mutator(n, initplan_mutator, root);
 }
 
-/* the expression reads columns of the table rti only */
-static bool
-reads_only(Node *e, Index rti)
-{
-	foreach_node(Var, v, pull_var_clause(e, PVC_RECURSE_AGGREGATES | PVC_RECURSE_WINDOWFUNCS | PVC_RECURSE_PLACEHOLDERS))
-		if (v->varno != rti)
-			return false;
-	return true;
-}
-
-/* the namespace of every relation of the statement, as EXPLAIN names them */
-static List *
-statement_context(PlannerInfo *root)
-{
-	PlannedStmt *ps = makeNode(PlannedStmt);
-
-	ps->rtable = root->parse->rtable;
-	return deparse_context_for_plan_tree(ps, select_rtable_names_for_explain(ps->rtable, bms_add_range(NULL, 1, list_length(ps->rtable))));
-}
-
-/* a sort key of the table in hand as it is named in its own namespace; a column of another relation of the statement by its name, an expression of several by their aliases */
+/* a sort key as the statement names it, whichever of its relations the key reads */
 static char *
-sort_key_text(PlannerInfo *root, Index rti, List *dcx, Node *e)
+sort_key_text(PlannerInfo *root, Node *e)
 {
-	const Var  *v = (const Var *) e;
-
-	if (IsA(e, Var) && v->varno != rti)
-		return get_rte_attribute_name(planner_rt_fetch(v->varno, root), v->varattno);
-	e = initplan_mutator(e, root);
-	if (!reads_only(e, rti))
-		return deparse_expression(e, statement_context(root), true, false);
-	ChangeVarNodes(e, rti, 1, 0);
-	return deparse_expression(e, dcx, false, false);
+	return sift_v6_deparse_planning(root, initplan_mutator(e, root), false);
 }
 
 char *
-sift_v6_topn_desc(PlannerInfo *root, Index rti)
+sift_v6_topn_desc(PlannerInfo *root)
 {
 	const Query *q = root->parse;
-	const Oid	relid = planner_rt_fetch(rti, root)->relid;
-	List	   *dcx = deparse_context_for(get_rel_name(relid), relid);
 	StringInfoData buf;
 
 	initStringInfo(&buf);
@@ -117,7 +87,7 @@ sift_v6_topn_desc(PlannerInfo *root, Index rti)
 		bool		desc;
 
 		get_equality_op_for_ordering_op(sgc->sortop, &desc);
-		appendStringInfo(&buf, "%s%s%s", buf.len > 0 ? ", " : "", sort_key_text(root, rti, dcx, (Node *) get_sortgroupclause_expr(sgc, q->targetList)),
+		appendStringInfo(&buf, "%s%s%s", buf.len > 0 ? ", " : "", sort_key_text(root, (Node *) get_sortgroupclause_expr(sgc, q->targetList)),
 						 desc ? " DESC" : "");
 		if (sgc->nulls_first != desc)
 			appendStringInfoString(&buf, sgc->nulls_first ? " NULLS FIRST" : " NULLS LAST");
@@ -452,7 +422,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		p.spec.rti = input_rel->relid;
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
-			p.spec.desc = sift_v6_topn_desc(root, input_rel->relid);
+			p.spec.desc = sift_v6_topn_desc(root);
 			p.spec.serial_because = sift_v6_par_rows_serial_why(root, input_rel, false);
 			topn_add_path(&p);
 			return;

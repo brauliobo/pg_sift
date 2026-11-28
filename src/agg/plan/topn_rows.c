@@ -119,7 +119,7 @@ rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost di
 	const double kept = Min((double) k, p->rel->rows);
 	Path		price;
 
-	p->spec.topn_desc = sift_v6_topn_desc(root, p->rel->relid);
+	p->spec.topn_desc = sift_v6_topn_desc(root);
 	p->spec.serial_because = sift_v6_par_rows_serial_why(root, p->rel, dims != NIL);
 	scan += cpu_operator_cost * p->rel->rows * log2(kept + 1.0) + sort_exprs_cost(root, p->rel->rows);
 	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + dims_total};

@@ -101,6 +101,15 @@ search_desc(const SiftV6Spec *spec)
 	return buf.data;
 }
 
+char *
+sift_v6_deparse_planning(PlannerInfo *root, Node *e, bool prefix)
+{
+	PlannedStmt stmt = {.type = T_PlannedStmt,.rtable = root->parse->rtable};
+	List	   *names = select_rtable_names_for_explain(stmt.rtable, bms_add_range(NULL, 1, list_length(stmt.rtable)));
+
+	return deparse_expression(e, deparse_context_for_plan_tree(&stmt, names), prefix, false);
+}
+
 void
 sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es)
 {
