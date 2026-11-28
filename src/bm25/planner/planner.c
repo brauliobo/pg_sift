@@ -22,6 +22,7 @@
 #include "agg/join/push.h"
 #include "agg/join/join.h"
 #include "agg/live.h"
+#include "agg/plan/rewrite.h"
 #include "agg/refuse.h"
 #include "core/catalog.h"
 #include "core/compat.h"
@@ -422,6 +423,8 @@ sift_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti, RangeTblEnt
 		prev_pathlist_hook(root, rel, rti, rte);
 	if (rte->rtekind == RTE_RELATION && sift_v6_rels_have_index(root, rel->relids))
 		sift_agg_v6_rel_paths(root, rel, rti, rte);
+	else if (rte->rtekind == RTE_SUBQUERY)
+		sift_v6_subquery_ordered(root, rel, rti);
 	if (!scannable(root, rel, rte))
 		return;
 	/* a relation the planner proved empty is left out of root->total_table_pages, which the page costs of a scan divide by */

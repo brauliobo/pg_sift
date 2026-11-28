@@ -11,6 +11,8 @@
 #include "agg/engine.h"
 
 #define SIFT_TOPK_MAX_K		65536
+/* the K of a node that gives all its groups in order */
+#define SIFT_TOPK_ALL		PG_UINT32_MAX
 /* the value of the sort column item of the row being offered */
 typedef Datum (*SiftTopKValue) (void *ctx, int item, bool *isnull);
 

@@ -878,6 +878,7 @@ sift_agg_v6_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *
 	}
 	sift_v6_unnest_exists_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
 	sift_v6_scan_paths(root, input_rel, output_rel, (GroupPathExtraData *) extra, group_exprs);
+	sift_v6_sorted_group_paths(root, output_rel);
 }
 
 typedef struct DependentCols

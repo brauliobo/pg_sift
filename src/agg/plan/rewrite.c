@@ -13,7 +13,9 @@
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
+#include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/paths.h"
 #include "optimizer/pathnode.h"
 #include "parser/parsetree.h"
 
@@ -23,6 +25,8 @@
 #include "agg/safety.h"
 #include "agg/topn/topn.h"
 #include "agg/datum.h"
+#include "agg/jsonpath.h"
+#include "core/compat.h"
 
 static bool
 func_named(Oid funcid, const char *name)
@@ -647,13 +651,13 @@ sift_v6_limit_of(const Query *q)
 	return limit_plus_offset(q, SIFT_LOCK_MAX_K);
 }
 
-/* the sort columns of the query as positions of the scan tuple; false when one is not a key or an aggregate the node makes */
-bool
-sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
+/* the sort columns of clauses as positions of the scan tuple; false when one is not a key or an aggregate the node makes */
+static bool
+order_items(const Query *q, const List *clauses, const List *scan_tlist, SiftV6Spec *s)
 {
-	if (list_length(q->sortClause) > SIFT_V6_MAX_TOPK_ITEMS)
+	if (list_length(clauses) > SIFT_V6_MAX_TOPK_ITEMS)
 		return false;
-	foreach_node(SortGroupClause, sgc, q->sortClause)
+	foreach_node(SortGroupClause, sgc, clauses)
 	{
 		const Expr *e = (const Expr *) get_sortgroupclause_expr(sgc, q->targetList);
 		int			pos = 0;
@@ -666,11 +670,47 @@ sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
 				break;
 			pos++;
 		}
-		if (!found || (pos < s->nkeys && sift_v6_key_generic(s, &s->key[pos])))
+		if (!found || !OidIsValid(sgc->sortop) || (pos < s->nkeys && sift_v6_key_generic(s, &s->key[pos])))
 			return false;
 		s->topk_item[s->ntopk++] = (SiftV6TopKItem) {.pos = pos,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}
 	return true;
+}
+
+bool
+sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spec *s)
+{
+	return order_items(q, q->sortClause, scan_tlist, s);
+}
+
+/* the path of the same node that gives the best k groups of path in the order of clauses (pathkeys), at extra over its cost; NULL: the node cannot give them so */
+static Path *
+ordered_group_path(PlannerInfo *root, Path *path, RelOptInfo *out, PathTarget *target, uint32 k, const List *clauses, List *pathkeys, Cost extra)
+{
+	const CustomPath *cp = (const CustomPath *) path;
+	SiftV6Spec *s;
+	CustomPath *top;
+
+	if (!IsA(path, CustomPath) || cp->methods != sift_v6_group_path_methods() || !equal(path->pathtarget->exprs, target->exprs))
+		return NULL;
+	s = sift_v6_spec_unpack(linitial(cp->custom_private), NULL);
+	if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
+		return NULL;
+	s->topk = k;
+	s->having = lthird(cp->custom_private) != NIL;
+	if (!order_items(root->parse, clauses, lsecond(cp->custom_private), s))
+		return NULL;
+	top = makeNode(CustomPath);
+	*top = *cp;
+	top->path.parent = out;
+	top->path.pathtarget = target;
+	top->path.pathkeys = pathkeys;
+	top->path.rows = Min(clamp_row_est(path->rows), (double) k);
+	top->path.total_cost = path->total_cost + extra;
+	if (k == SIFT_TOPK_ALL)
+		top->path.startup_cost = top->path.total_cost;
+	top->custom_private = list_make3(sift_v6_spec_pack(s), lsecond(cp->custom_private), lthird(cp->custom_private));
+	return &top->path;
 }
 
 void
@@ -683,27 +723,97 @@ sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 		return;
 	foreach_ptr(Path, path, input_rel->pathlist)
 	{
-		const CustomPath *cp = (const CustomPath *) path;
-		SiftV6Spec *s;
-		CustomPath *top;
+		Path	   *top = ordered_group_path(root, path, output_rel, target, k, root->parse->sortClause, root->sort_pathkeys, 0.0001 * path->rows);
 
-		if (!IsA(path, CustomPath) || cp->methods != sift_v6_group_path_methods() || !equal(path->pathtarget->exprs, target->exprs))
-			continue;
-		s = sift_v6_spec_unpack(linitial(cp->custom_private), NULL);
-		if (s->nsets > 0 || s->topk > 0 || s->ext != NULL || s->nparts > 0 || s->par_strategy != 0 || cp->custom_paths != NIL || path->parallel_aware)
-			continue;
-		s->topk = k;
-		s->having = lthird(cp->custom_private) != NIL;
-		if (!sift_v6_topk_items(root->parse, lsecond(cp->custom_private), s))
-			continue;
-		top = makeNode(CustomPath);
-		*top = *cp;
-		top->path.parent = output_rel;
-		top->path.pathtarget = target;
-		top->path.pathkeys = root->sort_pathkeys;
-		top->path.rows = Min(clamp_row_est(path->rows), (double) k);
-		top->path.total_cost = path->total_cost + 0.0001 * path->rows;
-		top->custom_private = list_make3(sift_v6_spec_pack(s), lsecond(cp->custom_private), lthird(cp->custom_private));
-		add_path(output_rel, &top->path);
+		if (top != NULL)
+			add_path(output_rel, top);
 	}
+}
+
+void
+sift_v6_sorted_group_paths(PlannerInfo *root, RelOptInfo *output_rel)
+{
+	List	   *pathkeys;
+	List	   *sorted = NIL;
+
+	if (root->parent_root == NULL || root->parent_root->query_pathkeys == NIL || root->parent_root->parse->limitCount != NULL ||
+		(pathkeys = make_pathkeys_for_sortclauses(root, root->processed_groupClause, root->parse->targetList)) == NIL)
+		return;
+	foreach_ptr(Path, path, output_rel->pathlist)
+	{
+		const Cost	sort = 2.0 * cpu_operator_cost * path->rows * log2(Max(path->rows, 2.0));
+		Path	   *top = ordered_group_path(root, path, output_rel, path->pathtarget, SIFT_TOPK_ALL, root->processed_groupClause, pathkeys, sort);
+
+		if (top != NULL)
+			sorted = lappend(sorted, top);
+	}
+	foreach_ptr(Path, top, sorted)
+		add_path(output_rel, top);
+}
+
+/* the pathkey is on a column the sub-select rti gives as a constant: the member of its class for rti is one, or a Var of rti whose target entry is one */
+static bool
+constant_for(const RelOptInfo *rel, PathKey *pk, Index rti)
+{
+	EquivalenceMemberIterator it;
+	EquivalenceMember *em;
+
+	setup_eclass_member_iterator(&it, pk->pk_eclass, bms_make_singleton(rti));
+	while ((em = eclass_member_iterator_next(&it)) != NULL)
+	{
+		const Node *x = strip_relabel((Node *) em->em_expr);
+
+		if (IsA(x, Const) && bms_is_member(rti, em->em_relids))
+			return true;
+		if (IsA(x, Var) && ((const Var *) x)->varno == rti && ((const Var *) x)->varlevelsup == 0 && ((const Var *) x)->varattno > 0 &&
+			((const Var *) x)->varattno <= list_length(rel->subroot->parse->targetList) &&
+			IsA(strip_relabel((Node *) list_nth_node(TargetEntry, rel->subroot->parse->targetList, ((const Var *) x)->varattno - 1)->expr), Const))
+			return true;
+	}
+	return false;
+}
+
+/* the longest prefix of the query's pathkeys a scan of the sub-select ordered by pathkeys gives: its own, and between them those on columns it gives as constants */
+static int
+ordered_prefix(PlannerInfo *root, const RelOptInfo *rel, Index rti, const List *pathkeys)
+{
+	int			n = 0,
+				own = 0;
+
+	foreach_node(PathKey, pk, root->query_pathkeys)
+	{
+		if (own < list_length(pathkeys) && list_nth(pathkeys, own) == pk)
+			own++;
+		else if (!constant_for(rel, pk, rti))
+			break;
+		n++;
+	}
+	return own == list_length(pathkeys) ? n : 0;
+}
+
+void
+sift_v6_subquery_ordered(PlannerInfo *root, RelOptInfo *rel, Index rti)
+{
+	List	   *more = NIL;
+
+	if (root->query_pathkeys == NIL || rel->subroot == NULL)
+		return;
+	foreach_ptr(Path, p, rel->pathlist)
+	{
+		const Path *sub = IsA(p, SubqueryScanPath) ? ((const SubqueryScanPath *) p)->subpath : NULL;
+		int			n;
+		SubqueryScanPath *np;
+
+		if (sub != NULL && IsA(sub, ProjectionPath))
+			sub = ((const ProjectionPath *) sub)->subpath;
+		if (sub == NULL || !IsA(sub, CustomPath) || ((const CustomPath *) sub)->methods != sift_v6_group_path_methods() || p->pathkeys == NIL ||
+			(n = ordered_prefix(root, rel, rti, p->pathkeys)) <= list_length(p->pathkeys))
+			continue;
+		np = makeNode(SubqueryScanPath);
+		*np = *(const SubqueryScanPath *) p;
+		np->path.pathkeys = list_copy_head(root->query_pathkeys, n);
+		more = lappend(more, np);
+	}
+	foreach_ptr(Path, p, more)
+		add_path(rel, p);
 }

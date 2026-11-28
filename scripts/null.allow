@@ -1,7 +1,7 @@
 # FILE<TAB>FUNCTION<TAB>RULE<TAB>REASON: a site that scripts/check-null.sh flags and that cannot be NULL (or empty). A new site is read, then fixed or listed here with the reason.
 src/agg/join/push.c	push_begin	list-first	cs is the CustomScan of push_plan_path, whose custom_private is a list_make2 of the spec and the join
 src/agg/join/push.c	push_plan_path	list-first	best is a CustomPath of this node: its custom_private is the list_make4 of add_push_path (spec, scan tlist, quals, join)
-src/agg/plan/rewrite.c	sift_v6_topk_paths	list-first	cp is a CustomPath of sift_v6_group_path_methods, whose custom_private is the list_make3 of plan.c (spec, scan tlist, having)
+src/agg/plan/rewrite.c	ordered_group_path	list-first	cp is a CustomPath of sift_v6_group_path_methods, whose custom_private is the list_make3 of plan.c (spec, scan tlist, having)
 src/agg/scope/plan.c	scope_plan_path	list-first	best is a CustomPath of scope_path_methods: its custom_private is the list of add_scope_path or sift_v6_scope_topk_paths (spec, scan tlist, having, keys, then the scan's spec and prices)
 src/bm25/analyze/config.c	sift_analyze_validate_fields	null-result	the fields were validated as comma separated before the loop, so every field before s ends with a comma
 src/bm25/cscan/exec.c	sift_begin	list-first	custom_private is built by make_path with every SIFT_PRIV_ slot and custom_exprs by sift_plan_scan with its five lists

@@ -18,6 +18,7 @@
 
 #include "agg/explain.h"
 #include "agg/expr/num.h"
+#include "agg/group/topk.h"
 #include "agg/qual/bqual.h"
 #include "agg/qual/step.h"
 #include "agg/topn/topn.h"
@@ -399,7 +400,7 @@ sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es)
 		get_ordering_op_properties(spec->topk_item[i].sortop, &opfamily, &opcintype, &cmptype);
 		keys[i] = (TopNKey) {.col = spec->key[spec->topk_item[i].pos],.desc = cmptype == SIFT_CMP_GT,.nulls_first = spec->topk_item[i].nulls_first};
 	}
-	explain_topn(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), keys, spec->ntopk, psprintf("%u", spec->topk), es);
+	explain_topn(sift_v6_spec_part_oid(spec, 0), sift_v6_spec_part_is_table(spec, 0), keys, spec->ntopk, spec->topk == SIFT_TOPK_ALL ? "all" : psprintf("%u", spec->topk), es);
 }
 
 /*

@@ -68,6 +68,10 @@ extern bool sift_v6_topk_items(const Query *q, const List *scan_tlist, SiftV6Spe
 /* the K of GROUP BY .. LIMIT K with no ORDER BY, HAVING or DISTINCT (0: the query is not one, or K is over SIFT_LOCK_MAX_K) */
 extern uint32 sift_v6_limit_of(const Query *q);
 extern void sift_v6_topk_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
+/* Beside each group path of the node in output_rel of a sub-select whose parent is ordered and reads every row (under a LIMIT the sub-select keeps the plan that gives its first group at once), the same node giving all its groups in the order of the GROUP BY (pathkeys a Merge Append above reads), at the cost of their sort */
+extern void sift_v6_sorted_group_paths(PlannerInfo *root, RelOptInfo *output_rel);
+/* Beside a scan of the sub-select rti whose node gives its groups in order, the same scan with the longer pathkeys of the query it also gives: those between its own on the columns it gives as constants */
+extern void sift_v6_subquery_ordered(PlannerInfo *root, RelOptInfo *rel, Index rti);
 
 /* The derivations, the derived key and argument columns and the affine range of a spec as ints after those of sift_v6_spec_pack, and back from position at */
 extern List *sift_v6_derive_pack(List *ints, const SiftV6Spec *s);

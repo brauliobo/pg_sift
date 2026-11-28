@@ -14,24 +14,24 @@ CREATE FUNCTION plan(q text) RETURNS SETOF text LANGUAGE plpgsql AS $$ DECLARE l
 -- two arms, the second with a column the first has as a constant
 SELECT l FROM plan($q$SELECT * FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u ORDER BY g, h$q$) l
 WHERE l ~ '(Sort|Merge Append|SiftAgg)';
-             l             
----------------------------
+              l              
+-----------------------------
  Merge Append
  Sort Key: g, h
- ->  Custom Scan (SiftAgg)
- ->  Custom Scan (SiftAgg)
+ ->  Custom Scan (SiftAggV6)
+ ->  Custom Scan (SiftAggV6)
 (4 rows)
 
 -- the window of the statement: the previous value of a group
 SELECT l FROM plan($q$SELECT u.*, lag(n) OVER (PARTITION BY g ORDER BY h) AS prev FROM (SELECT g, h, count(*) AS n FROM ua GROUP BY g, h UNION ALL SELECT g, NULL::int, count(*) FROM ua GROUP BY g) u$q$) l
 WHERE l ~ '(Sort|Merge Append|SiftAgg|WindowAgg)';
-             l             
----------------------------
+              l              
+-----------------------------
  WindowAgg
  ->  Merge Append
  Sort Key: g, h
- ->  Custom Scan (SiftAgg)
- ->  Custom Scan (SiftAgg)
+ ->  Custom Scan (SiftAggV6)
+ ->  Custom Scan (SiftAggV6)
 (5 rows)
 
 -- the rows are the normal plan's
