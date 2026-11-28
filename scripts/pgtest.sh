@@ -339,15 +339,19 @@ batch_key() { echo "${REGRESS_CUT:+cut/}$(safe_id "$1")${REGRESS_CUT:+-$#}"; }
 
 # batch_run TEST...: the batch in one pg_regress run and its checks; the findings (diffs, leaks, leftovers) go to $TMP/regress/<key>.report, not to the terminal
 # (a cut, REGRESS_CUT=1, also keeps the progress of pg_regress back, and drops its database and the output of a batch that passed). 0 when every test passed and left nothing
+# The database of a batch that passed is dropped (SIFT_KEEP_DB=1 keeps it); a failed batch keeps it for a look, but a cut drops it all the same
 batch_run() {
 	local key db rc=0
 	key=$(batch_key "$@")
 	db=contrib_regression_$(safe_id "$1")${REGRESS_CUT:+_$#}
 	batch_checks "$key" "$db" "$@" || rc=1
-	[[ -z ${REGRESS_CUT:-} ]] || dropdb -U postgres --force --if-exists "$db" || rc=1
+	! drop_db "$rc" || dropdb -U postgres --force --if-exists "$db" || rc=1
 	(( rc )) || [[ -z ${REGRESS_CUT:-} ]] || rm -rf "$TMP/regress/$key" "$TMP/regress/$key.report"
 	return $rc
 }
+
+# drop_db RC: true when the database of a batch that ended with RC goes: always in a cut, else when it passed and SIFT_KEEP_DB is unset
+drop_db() { [[ -n ${REGRESS_CUT:-} ]] || { (( $1 == 0 )) && [[ -z ${SIFT_KEEP_DB:-} ]]; }; }
 
 batch_checks() {
 	local key=$1 db=$2 out report pats now left rc=0 unit
