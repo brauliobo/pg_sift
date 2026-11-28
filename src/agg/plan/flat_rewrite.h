@@ -21,4 +21,9 @@ extern bool sift_agg_inline_laterals(Query *q, bool apply);
 /* ... and a scalar sub-select of one aggregate, an EXISTS or a LATERAL sub-select of aggregates tied to the query by equalities of columns made a join to the table grouped by them, taken when it costs less */
 extern bool sift_agg_flat_decorrelate(Query *q, bool apply);
 
+/* flat_rewrite.c, for agg/plan/lateral_inline.c: at most one row, and no effect but its rows: LIMIT 1 (not WITH TIES), no volatile function, no row lock, no data-modifying CTE */
+extern bool sift_agg_one_row_query(Query *sq);
+/* the expression with the columns of the grouping entry of 18 as the expressions they group by (in a sub-select of it too), as 17 parses it */
+extern Node *sift_agg_ungroup_expr(Query *q, Node *n);
+
 #endif							/* SIFT_AGG_PLAN_FLAT_REWRITE_H */
