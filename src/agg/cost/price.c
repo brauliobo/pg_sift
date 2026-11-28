@@ -17,6 +17,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "parser/parsetree.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
@@ -103,11 +104,34 @@ var_correlation(PlannerInfo *root, Node *var, AttrNumber lead_att)
 	return corr;
 }
 
-/* the share of the granules a clause leaves: a column that follows the order of the rows keeps the share of the rows, from |correlation| 0.7 up to Yao's at 0.7 and below (v6_card_cost.h) */
+/* an operator that is an equality or an ordering comparison, by its estimator */
+static bool
+ordering_op(Oid opno)
+{
+	const RegProcedure rest = get_oprrest(opno);
+
+	return rest == F_EQSEL || rest == F_SCALARLTSEL || rest == F_SCALARLESEL || rest == F_SCALARGTSEL || rest == F_SCALARGESEL;
+}
+
+/* the clause compares a column with the order of its values (a comparison, a list of constants, a test for NULL): what the zone of a granule can answer */
+static bool
+zone_answers(const Expr *clause)
+{
+	if (IsA(clause, NullTest))
+		return true;
+	if (IsA(clause, OpExpr))
+		return ordering_op(((const OpExpr *) clause)->opno);
+	return IsA(clause, ScalarArrayOpExpr) && ordering_op(((const ScalarArrayOpExpr *) clause)->opno);
+}
+
+/*
+ * the share of the granules a clause leaves: a column that follows the order of the rows keeps the share of the rows, from |correlation| 0.7 up to Yao's at 0.7 and below (v6_card_cost.h); a clause
+ * no zone answers leaves every granule
+ */
 static double
 clause_share(PlannerInfo *root, RestrictInfo *ri, AttrNumber lead_att)
 {
-	const double sel = clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
+	const double sel = zone_answers(ri->clause) ? clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL) : 1.0;
 	List	   *vars = pull_var_clause((Node *) ri->clause, PVC_RECURSE_PLACEHOLDERS);
 	const double corr = list_length(vars) == 1 ? var_correlation(root, linitial(vars), lead_att) : 0;
 	const double alpha = Min(Max((corr - SIFT_CORR_CLUSTERED) / (1.0 - SIFT_CORR_CLUSTERED), 0.0), 1.0);
