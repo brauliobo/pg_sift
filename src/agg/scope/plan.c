@@ -33,6 +33,7 @@
 #include "agg/agg.h"
 #include "agg/cost/card.h"
 #include "agg/cost/model.h"
+#include "agg/explain.h"
 #include "agg/refuse.h"
 #include "agg/safety.h"
 #include "agg/scope/scope.h"
@@ -372,6 +373,24 @@ compile_scan(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	return sift_v6_compile_fact(p->root, p->fact, out, p->index, extra, &p->v6, &p->v6_tlist);
 }
 
+/* The statement groups by no column of the pairs but the scope key: a pair's other columns are not in the summary or the scan of the members */
+static bool
+pairs_groups_ok(ScopePlan *p)
+{
+	foreach_node(SortGroupClause, sgc, p->root->processed_groupClause)
+	{
+		Node	   *g = get_sortgroupclause_expr(sgc, p->root->parse->targetList);
+
+		if (!sift_v6_scope_key_var(p, g) && bms_is_member(p->pairs->relid, pull_varnos(p->root, g)))
+		{
+			if (p->why == NULL)
+				p->why = psprintf("the statement reads a column of the scope relation other than its key as a group key: %s", sift_v6_deparse_planning(p->root, g, true));
+			return false;
+		}
+	}
+	return true;
+}
+
 static bool
 compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 {
@@ -381,7 +400,7 @@ compile_on(ScopePlan *p, GroupPathExtraData *extra, RelOptInfo *out)
 	for (int ord = 0; ord < p->scope->nscopes(p->irel) && !ok; ord++)
 	{
 		reset_spec(p, ord);
-		ok = sift_v6_scope_matches(p, ord) && ((p->scope->exec != NULL && compile_target(p, extra, out) && sift_v6_scope_semi_ok(p)) ||
+		ok = sift_v6_scope_matches(p, ord) && pairs_groups_ok(p) && ((p->scope->exec != NULL && compile_target(p, extra, out) && sift_v6_scope_semi_ok(p)) ||
 											   (p->index != NULL && (reset_spec(p, ord), compile_scan(p, extra, out)) && sift_v6_scope_semi_ok(p)));
 	}
 	relation_close(p->irel, NoLock);
@@ -763,9 +782,9 @@ sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *
 	return ok;
 }
 
-/* The facts of an outer or anti join, a plain table: only far enough to name the scope that refuses the join */
+/* The facts, a plain table: what else joins them to the pairs is a condition on the pairs (sift_v6_scope_key_filter), and an outer or anti join is refused by the scope that matches */
 static bool
-fact_outer_ok(PlannerInfo *root, RelOptInfo *rel)
+fact_ok(PlannerInfo *root, RelOptInfo *rel)
 {
 	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL;
 }
@@ -785,8 +804,7 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 	{
 		ScopePlan	p = {.scope = scope,.root = root,.fact = root->simple_rel_array[swap ? b : a],.pairs = root->simple_rel_array[swap ? a : b],.outer = sift_v6_scope_outer_join(root)};
 
-		if (p.fact == NULL || p.pairs == NULL || !(p.outer ? fact_outer_ok(root, p.fact) : sift_v6_scope_plain_relation(root, p.fact)) || !sift_v6_scope_pairs_ok(&p) ||
-			!sift_v6_scope_pairs_joined(&p))
+		if (p.fact == NULL || p.pairs == NULL || !fact_ok(root, p.fact) || !sift_v6_scope_pairs_ok(&p) || !sift_v6_scope_pairs_joined(&p))
 			continue;
 		if (table_usable(&p) && compile_on(&p, (GroupPathExtraData *) extra, out))
 		{

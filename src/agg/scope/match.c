@@ -573,7 +573,7 @@ sift_v6_scope_pairs_ok(ScopePlan *p)
 {
 	RelOptInfo *rel = p->pairs;
 
-	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL || (rel->joininfo != NIL && !p->outer) ||
+	if (rel == NULL || rel->reloptkind != RELOPT_BASEREL || rel->lateral_relids != NULL ||
 		!(agg_rel_security_ok(p->root, rel) || barrier_view_ok(p->root, rel)))
 		return false;
 	if (sift_v6_plain_table(planner_rt_fetch(rel->relid, p->root)))

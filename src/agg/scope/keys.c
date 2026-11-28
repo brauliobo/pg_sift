@@ -16,6 +16,7 @@
 #include "utils/lsyscache.h"
 #include "utils/ruleutils.h"
 
+#include "agg/explain.h"
 #include "agg/scope/scope.h"
 #include "core/catname.h"
 
@@ -115,17 +116,15 @@ refuse(ScopePlan *p, const char *why)
 		p->why = why;
 }
 
-/* A condition on the pairs as the statement wrote it: over the relation of the sub-select (inner), or over the pairs side of the statement */
+/* A condition on the pairs as the statement wrote it: over the relation of the sub-select (inner), or over the relations of the statement */
 static char *
 condition_text(const ScopePlan *p, Node *c, bool inner, bool prefix)
 {
-	Node	   *e = copyObject(c);
-
 	if (inner)
-		return deparse_expression(e, deparse_context_for(sift_rel_name(p->leg.rel), p->leg.rel), prefix, false);
-	ChangeVarNodes(e, p->pairs->relid, 1, 0);
-	return deparse_expression(e, deparse_context_for(planner_rt_fetch(p->pairs->relid, p->root)->eref->aliasname, p->leg.rel), prefix, false);
+		return deparse_expression(c, deparse_context_for(sift_rel_name(p->leg.rel), p->leg.rel), prefix, false);
+	return sift_v6_deparse_planning(p->root, c, prefix);
 }
+
 
 /* The conditions of the statement on the pairs besides the key are the predicate of the unique btree that makes the pairs, no more and no less: it reads exactly the rows that are pairs */
 static bool
@@ -135,18 +134,18 @@ pairs_predicate_ok(ScopePlan *p, List *rest, bool inner)
 	const int	varno = inner ? 1 : p->pairs->relid;
 
 	ChangeVarNodes((Node *) pred, 1, varno, 0);
-	if (pred != NIL && (rest == NIL || !predicate_implied_by(pred, rest, false)))
-	{
-		refuse(p, psprintf("the pairs of the scope are the rows of its unique btree that satisfy %s: the statement does not state it",
-						   condition_text(p, (Node *) make_ands_explicit(pred), inner, false)));
-		return false;
-	}
 	foreach_ptr(Node, c, rest)
 		if (pred == NIL || !predicate_implied_by(list_make1(c), pred, false))
 		{
 			refuse(p, psprintf("the scope relation has another condition: %s", condition_text(p, c, inner, true)));
 			return false;
 		}
+	if (pred != NIL && (rest == NIL || !predicate_implied_by(pred, rest, false)))
+	{
+		refuse(p, psprintf("the pairs of the scope are the rows of its unique btree that satisfy %s: the statement does not state it",
+						   condition_text(p, (Node *) make_ands_explicit(pred), inner, false)));
+		return false;
+	}
 	return true;
 }
 
@@ -186,6 +185,11 @@ sift_v6_scope_key_filter(ScopePlan *p)
 	if (nkeys > 1)
 	{
 		refuse(p, "the scope key is bound twice");
+		return false;
+	}
+	if (p->pairs->joininfo != NIL && !p->outer)
+	{
+		refuse(p, psprintf("the scope relation has another condition: %s", condition_text(p, (Node *) linitial_node(RestrictInfo, p->pairs->joininfo)->clause, false, true)));
 		return false;
 	}
 	if (p->pairs_query != NULL && rest_outer != NIL)

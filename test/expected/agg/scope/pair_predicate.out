@@ -135,7 +135,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  a condition instead                        | join, the scope relation has another condition: (grants.status = 'live'::text)                                                                                 | t
  a condition reading the facts              | join, the scope relation has another condition: (e.amount < (g.tenant_id * 25))                                                                                | t
  barrier view                               | join, the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                               | t
- barrier view with the predicate of its own | join, the view over the scope relation has a condition of its own                                                                                              | t
+ barrier view with the predicate of its own | scope read, 1 keys                                                                                                                                             | t
  barrier view, predicate                    | scope read, 1 keys                                                                                                                                             | t
  function                                   | join, the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                               | t
  function, predicate                        | scope read, 1 keys                                                                                                                                             | t
@@ -147,7 +147,7 @@ SELECT name, label(q) AS plan, same(q) AS same_rows FROM forms ORDER BY name;
  plain view                                 | join, the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                               | t
  predicate and a condition                  | join, the scope relation has another condition: (grants.status = 'live'::text)                                                                                 | t
  table of keys                              | join, the pairs of the scope are the rows of its unique btree that satisfy (deleted_at IS NULL): the statement does not state it                               | t
- table of keys, predicate                   | scope read, ARRAY(SELECT my_tenants.tenant_id FROM my_tenants) keys, once                                                                                      | t
+ table of keys, predicate                   | scope read, (InitPlan 1).col1 keys, once                                                                                                                       | t
  the rows that are not pairs                | join, the scope relation has another condition: (grants.deleted_at IS NOT NULL)                                                                                | t
  top 5 ids, predicate                       | scope read, 1 keys                                                                                                                                             | t
  two conditions, a third                    | join, the scope relation has another condition: (grants_live.dim_a_id > 100)                                                                                   | t
