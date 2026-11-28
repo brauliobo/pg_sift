@@ -7,6 +7,11 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/jsonb/key_forms_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET sift.agg_force = on;
@@ -133,7 +138,7 @@ SELECT * FROM kf_run('kn');
 SELECT * FROM kf_run('kc');
 SELECT * FROM kf_run('ko');
 
--- the workers test the same: the scan plans two workers, and the rows are the same
+-- the workers test the same: the scan plans workers (one for each two granules it reads), and the rows are the same
 CREATE TABLE kp (id int, g int, doc jsonb NOT NULL) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO kp SELECT i, i % 5, shape(i) FROM generate_series(1, 12000) i;
 CREATE INDEX kp_col ON kp USING sift_col (id, g, doc) WITH (paths = 'doc.k int4, doc.j int4, doc."é" int4');
@@ -147,7 +152,7 @@ CREATE FUNCTION kf_workers(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; g bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
-		g := g OR l LIKE '%Workers Planned: 2%';
+		g := g OR l ~ 'Workers Planned: [1-9]';
 	END LOOP;
 	RETURN g;
 END $$;

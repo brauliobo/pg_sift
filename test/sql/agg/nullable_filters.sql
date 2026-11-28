@@ -2,6 +2,11 @@
 -- over the elements, written with a sub-select that PostgreSQL pulls up, a jsonpath test, and the aggregate filters that read them.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/nullable_filters_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE dates (day date PRIMARY KEY);
 INSERT INTO dates SELECT d::date FROM generate_series('2026-01-01'::date, '2026-01-20', '1 day') d;

@@ -2,9 +2,14 @@
 -- `boolean` (the chunks keep the kind of each value, so a string "true" does not pass); a JSON null is the type `null` (agg/plan_contains.c, contains_conjuncts). Every
 -- statement runs with sift on and off and the rows are compared (md5 of the sorted rows); `engaged` says the scan ran. jd holds documents that are no object (an array, a
 -- string, a number, a JSON null) and values of another type than the leaf says: the rows must still be the same. A path no leaf of the index holds is refused as
--- jsonb_path_not_declared, naming it.
+-- a condition of the WHERE the scan cannot test (where), naming it.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/jsonb/contain_object_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET sift.agg_force = on;
 CREATE TABLE jc (id int PRIMARY KEY, g int, doc jsonb);
@@ -72,7 +77,7 @@ SELECT count(*) FROM jc WHERE doc @> '{"b": "x", "flag": true}';
 SELECT count(*) FROM jc WHERE doc @> '{"flag": "true"}';
 SELECT count(*) FROM jc WHERE doc @> '{"o": {"p": true, "q": null}, "b": "x"}';
 
--- the refusal names the path no leaf holds
+-- the refusal names the condition whose path no leaf holds
 SET client_min_messages = notice;
 SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT count(*) FROM jc WHERE doc @> '{"zz": "x"}';

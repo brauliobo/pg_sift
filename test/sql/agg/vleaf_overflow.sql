@@ -5,6 +5,11 @@
 -- the error with its SQLSTATE and message, must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/vleaf_overflow_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
