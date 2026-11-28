@@ -4,7 +4,9 @@
 # VACUUM's xid aborted and writes HEAP_XMAX_INVALID on the old version (and XMIN_INVALID on a new one in another page) while the VACUUM is still to commit. The row is then
 # visible twice, or its update is lost, and pruning the page raises "dead heap-only tuple (N, M) is not linked to from any HOT chain". So a VACUUM of a table with a sift_col
 # index must not take a transaction id: the choices of the index that the VACUUM's merge makes (key_cut, key_columns, point_tid_columns, order columns: 'auto') are not written
-# by it, nor by a worker: the explicit rewrite chooses again and writes them. A VACUUM stopped at its cleanup gate (sift.test_cleanup_gate, a testing build, right after its merge) while a second session reads the index's
+# by it, nor by a worker: the explicit rewrite chooses again and writes them. The cleanup of a table with two indexes runs at the pre-commit of its VACUUM, after the heap's own
+# truncation, whose AccessExclusiveLock PostgreSQL logs with a transaction id: the gated VACUUM is VACUUM (TRUNCATE false), so the xid it holds at the gate is the merge's.
+# A VACUUM stopped at its cleanup gate (sift.test_cleanup_gate, a testing build, right after its merge) while a second session reads the index's
 # pg_class row: the VACUUM has no xid, no tuple of pg_class has a committed updater and XMAX_INVALID, the row is there once, VACUUM pg_class and a scan of pg_class end
 # without an error, and the choice the VACUUM saw is written by the explicit rewrite.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
@@ -32,7 +34,7 @@ damaged_rows() {
 }
 damaged() { damaged_rows | awk 'END { print NR }'; }
 rows_of_index() { sql vc "SET enable_indexscan = off" "SET enable_bitmapscan = off" "SELECT count(*) FROM pg_class WHERE relname = 'rc_ix'" | tail -1; }
-vacuum_xids() { sql vc "SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM rc' AND backend_xid IS NOT NULL"; }
+vacuum_xids() { sql vc "SELECT count(*) FROM pg_stat_activity WHERE query = 'VACUUM (TRUNCATE false) rc' AND backend_xid IS NOT NULL"; }
 errors() { grep -cE 'ERROR|TRAP|dead heap-only' "$D/postgres.log"; }
 
 # one VACUUM stopped at its cleanup gate: a second session commits something (its xid passes the VACUUM's) and reads the row of the index by its two paths, then the VACUUM goes on
@@ -46,7 +48,7 @@ gated_vacuum() {
 	} | sql vc >/dev/null &
 	local hp=$! vp
 	until [[ -e $D/locked ]]; do sleep 0.05; done
-	sql vc "LOAD 'pg_sift'" "SET sift.test_cleanup_gate = on" "VACUUM rc" >"$D/vacuum" 2>&1 &
+	sql vc "LOAD 'pg_sift'" "SET sift.test_cleanup_gate = on" "VACUUM (TRUNCATE false) rc" >"$D/vacuum" 2>&1 &
 	vp=$!
 	for _ in $(seq 400); do [[ $(sql vc "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted") -ge 1 ]] && break; sleep 0.05; done
 	XIDS=$((XIDS + $(vacuum_xids)))
