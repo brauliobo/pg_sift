@@ -705,6 +705,8 @@ v6_fold_stats(const V6State *st)
 	SiftV6ParSummary ps = {0};
 	uint64		spills = 0,
 				spill_bytes;
+	uint32		dim_hits = 0,
+				dim_built = 0;
 
 	if (st->par != NULL)
 		sift_v6_par_node_summary(st->par, &ps);
@@ -719,8 +721,12 @@ v6_fold_stats(const V6State *st)
 	sift_stat_add(SIFT_STAT_UNITS_PREAGG, st->stats.grans_preagg + ps.grans_preagg);
 	sift_stat_add(SIFT_STAT_UNITS_PRUNED_ZONE, st->stats.grans_pruned_zone + ps.grans_pruned_zone);
 	sift_stat_add(SIFT_STAT_UNITS_PRUNED_SET, st->stats.grans_pruned_skip + ps.grans_pruned_skip);
-	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows);
+	sift_stat_add(SIFT_STAT_ROWS_DECODED, st->stats.rows + ps.rows_scanned);
 	sift_stat_add(SIFT_STAT_ROWS_VETTED, st->stats.heap_vet_rows + ps.heap_vet_rows);
+	if (st->star != NULL)
+		sift_v6_star_cache(st->star, &dim_hits, &dim_built);
+	sift_stat_add(SIFT_STAT_LOOKUP_HITS, dim_hits);
+	sift_stat_add(SIFT_STAT_LOOKUP_MISSES, dim_built);
 }
 
 /* The sorts the heaps of ORDER BY .. LIMIT moved to past work_mem end before their context goes */

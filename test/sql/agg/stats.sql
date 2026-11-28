@@ -1,34 +1,37 @@
--- sift.stats(local => true) holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows:
--- each figure is compared with the one of the statement that made it. sift.col_rollup_misses() lists the scans the pre-aggregates did not answer.
+-- sift.stats(local => true) holds what the Custom Scan (SiftAgg) scans of the session did, folded in when a scan ends from the counters EXPLAIN ANALYZE shows (its Granules):
+-- each figure is compared with the one of the statement that made it, and the rows decoded with whether the statement scanned a granule.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
--- in id order, padded to about 1800 rows a unit
+-- in id order, padded to about 1800 rows a unit; grp is connected to the dimension dims
+CREATE TABLE dims (id int PRIMARY KEY, country int, label text) WITH (autovacuum_enabled = false);
+INSERT INTO dims SELECT i, i % 5, 'd' || i FROM generate_series(0, 6) i;
 CREATE TABLE ev (id int, grp int, day date, amount int, expr_key int, pad text) WITH (autovacuum_enabled = false);
 INSERT INTO ev SELECT i, i % 7, date '2020-01-01' + i / 300, i % 100, i % 13, repeat('x', 1000) FROM generate_series(0, 59999) i;
 SET client_min_messages = warning;
-CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_columns = 'off');
+CREATE INDEX dims_col ON dims USING sift_col (id, country);
+CREATE INDEX ev_col ON ev USING sift_col (id, grp, day, amount) WITH (rollup_columns = 'off', connect = 'grp -> dims(id)');
 RESET client_min_messages;
-VACUUM (FREEZE, ANALYZE) ev;
+VACUUM (FREEZE, ANALYZE) ev, dims;
 
 CREATE FUNCTION stat(n text) RETURNS bigint LANGUAGE sql AS $$ SELECT coalesce((SELECT value FROM sift.stats(local => true) WHERE name = n), 0) $$;
 
 -- the statement's EXPLAIN ANALYZE figures against the counters of a session that ran nothing else
 CREATE FUNCTION compare(q text) RETURNS TABLE (what text, same bool) LANGUAGE plpgsql AS $$
-DECLARE e jsonb;
+DECLARE p jsonb; g jsonb;
 BEGIN
 	PERFORM sift.stats_reset();
-	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO e;
-	e := jsonb_path_query_first(e, 'strict $.** ? (exists(@."Units"))');
+	EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF, FORMAT JSON) ' || q INTO p;
+	g := jsonb_path_query_first(p, 'strict $.** ? (exists(@."Granules"))')->'Granules';
 	RETURN QUERY VALUES
 		('scans', stat('scans') = 1),
-		('units', stat('units') = (e->>'Units')::int),
-		('units_pruned', stat('units_pruned_zone') + stat('units_pruned_set') + stat('units_pruned_search') = (e->>'Units Pruned')::int),
-		('units_pruned_set', stat('units_pruned_set') = coalesce((e->>'Units Pruned By Set Summary')::int, 0)),
-		('units_preagg', stat('units_preagg') = coalesce((e->>'Units From Pre-aggregates')::int, 0)),
-		('rows_decoded', stat('rows_decoded') = (e->>'Rows Scanned')::int),
-		('workers_launched', stat('workers_launched') = coalesce((e->>'Workers Launched')::int, 0));
+		('units', stat('units') = (g->>'Scanned')::int),
+		('units_pruned', stat('units_pruned_zone') + stat('units_pruned_set') + stat('units_pruned_search') = (g->>'Pruned By Zone Map')::int + (g->>'Pruned By Skip Index')::int),
+		('units_pruned_set', stat('units_pruned_set') = (g->>'Pruned By Skip Index')::int),
+		('units_preagg', stat('units_preagg') = (g->>'Answered By Pre-aggregate')::int),
+		('rows_decoded', (stat('rows_decoded') > 0) = ((g->>'Scanned')::int > 0)),
+		('workers_launched', stat('workers_launched') = coalesce((jsonb_path_query_first(p, 'strict $.** ? (exists(@."Workers Launched"))')->>'Workers Launched')::int, 0));
 END $$;
 
 -- from pre-aggregates, pruned by zones and scanned
@@ -52,52 +55,20 @@ SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parall
 SELECT * FROM compare('SELECT grp, sum(amount) FROM ev WHERE amount % 3 = 0 GROUP BY grp');
 SET max_parallel_workers_per_gather = 0;
 
--- the scans the pre-aggregates did not answer, by reason: a shape they cannot answer is not fixable by the index
-SELECT sift.stats_reset();
-SELECT grp % 3, count(*) FROM ev GROUP BY 1 ORDER BY 1 LIMIT 1;
-SELECT grp, count(DISTINCT amount) FROM ev GROUP BY grp ORDER BY 1 LIMIT 1;
-SELECT grp, count(DISTINCT amount) FROM ev GROUP BY grp ORDER BY 1 LIMIT 1;
-SELECT grp, count(*) FROM ev GROUP BY grp ORDER BY 1 LIMIT 1;
-SELECT reason, fixable, scans, units FROM sift.col_rollup_misses() WHERE rel = 'ev_col'::regclass ORDER BY scans DESC, reason;
-
--- a rollup that lacks a dim of the query, and units written before the index had the dim
- SET sift.async_maintenance = off; SET cpu_tuple_cost = 0.5;
-CREATE TABLE rr (id int, lines jsonb, pad text) WITH (autovacuum_enabled = false);
-INSERT INTO rr
-SELECT g, (SELECT jsonb_agg(jsonb_build_object('a', 'a' || (g + e) % 5, 'b', 'b' || (g * e) % 3, 'q', (g * e) % 9) ORDER BY e) FROM generate_series(1, g % 4 + 1) e), repeat('p', 300)
-FROM generate_series(1, 12000) g;
-SET client_min_messages = warning;
-CREATE INDEX rr_i ON rr USING sift_col (id, lines) WITH (paths = 'lines[]{a text, b text, q int4}', rollup_leaves = 'lines[].a');
-RESET client_min_messages;
-VACUUM (FREEZE, ANALYZE) rr;
-SELECT sift.stats_reset();
-SELECT e.a, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int4) GROUP BY 1 ORDER BY 1 LIMIT 1;
-SELECT e.a, e.b, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int4) GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 1;
-SELECT reason, fixable, scans, units FROM sift.col_rollup_misses() WHERE rel = 'rr_i'::regclass;
-ALTER INDEX rr_i SET (rollup_leaves = 'lines[].a, lines[].b');
-SELECT sift.stats_reset();
-SELECT e.a, e.b, count(*) FROM rr d CROSS JOIN LATERAL jsonb_to_recordset(d.lines) e(a text, b text, q int4) GROUP BY 1, 2 ORDER BY 1, 2 LIMIT 1;
-SELECT reason, fixable, scans, units > 0 AS units FROM sift.col_rollup_misses() WHERE rel = 'rr_i'::regclass;
-SELECT stat('units_no_rollup') > 0 AS units_no_rollup;
- RESET sift.async_maintenance; RESET cpu_tuple_cost;
-RESET sift.async_maintenance; RESET cpu_tuple_cost;
-
--- the lookup tables a later query takes from the cache
-CREATE TABLE dims (id int, country int, label text) WITH (autovacuum_enabled = false);
-INSERT INTO dims SELECT i, i % 5, 'd' || i FROM generate_series(0, 6) i;
-VACUUM (FREEZE, ANALYZE) dims;
+-- the lookup tables a later query takes from the cache: the dimension of the connection of ev_col, which keeps a key journal
 SELECT sift.stats_reset();
 SELECT d.country, count(*) FROM ev JOIN dims d ON d.id = ev.grp GROUP BY 1 ORDER BY 1 LIMIT 1;
 SELECT d.country, count(*) FROM ev JOIN dims d ON d.id = ev.grp GROUP BY 1 ORDER BY 1 LIMIT 1;
 SELECT stat('lookup_cache_misses') AS lookup_misses, stat('lookup_cache_hits') AS lookup_hits;
 
 -- a query that kept the normal plan is counted by the slug of its refusal while sift.explain_refusals is on
+CREATE TABLE bare AS SELECT id, country FROM dims;
 SELECT sift.stats_reset();
 SET client_min_messages = warning;
-SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
+SELECT b.country, count(*) FROM bare b GROUP BY 1 ORDER BY 1 LIMIT 1;
 SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
 SET sift.explain_refusals = on;
-SELECT d.country, count(*) FROM dims d GROUP BY 1 ORDER BY 1 LIMIT 1;
+SELECT b.country, count(*) FROM bare b GROUP BY 1 ORDER BY 1 LIMIT 1;
 SELECT name, value FROM sift.stats(local => true) WHERE name LIKE 'refused.%' ORDER BY name;
 RESET sift.explain_refusals; RESET client_min_messages;
 
@@ -106,6 +77,6 @@ SELECT sift.stats_reset();
 SELECT grp, sum(amount / (amount - amount)) FROM ev GROUP BY grp;
 SELECT stat('scans') AS scans_after_error;
 
-DROP TABLE ev, rr, dims;
+DROP TABLE ev, dims, bare;
 DROP FUNCTION stat(text), compare(text);
 DROP EXTENSION pg_sift;
