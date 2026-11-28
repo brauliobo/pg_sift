@@ -575,8 +575,13 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	if (!joins_ok(root, dims, nd) || !equivalence_keys(root, base, fact->relid, dims, nd) || !join_clause_keys(root, base, fact->relid, dims, nd))
 		return;
 	for (int d = 0; d < nd; d++)
-		if (dims[d].nkeys == 0 || !dim_fits(root, &dims[d], budget))
+		if (dims[d].nkeys == 0)
 			return;
+		else if (!dim_fits(root, &dims[d], budget))
+		{
+			sift_agg_arm_refused_by("single", AGG_REFUSE_JOIN, psprintf("a table it looks up (%.0f rows) passes its share of work_mem", dims[d].rel->rows));
+			return;
+		}
 	plan_dims(root, fact, dims, nd);
 	guess = guessed_keys(root, fact, dims, nd, input_rel->rows);
 	if (goal->charge != NULL)

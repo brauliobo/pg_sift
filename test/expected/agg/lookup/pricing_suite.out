@@ -42,9 +42,9 @@ SHOW work_mem;
 (1 row)
 
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
-  arm   | used |    slug    
---------+------+------------
- single | f    | join_child
+  arm   | used | slug 
+--------+------+------
+ single | f    | join
 (1 row)
 
 SELECT same(:'q') AS default_budget;
@@ -56,9 +56,9 @@ SELECT same(:'q') AS default_budget;
 -- 2,000,000 rows of 8 bytes and the 64 of a row are 137 MB: half of 128 MB is under them, half of 512 MB over
 SET work_mem = '128MB';
 SELECT arm, used, slug FROM sift.explain_why(:'q') WHERE arm = 'single';
-  arm   | used |    slug    
---------+------+------------
- single | f    | join_child
+  arm   | used | slug 
+--------+------+------
+ single | f    | join
 (1 row)
 
 SELECT same(:'q') AS small_budget;
