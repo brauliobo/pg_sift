@@ -9,6 +9,10 @@ SET max_parallel_maintenance_workers = 0;
 SET sift.async_maintenance = off;
 SET sift.agg_force = on;
 SET jit = off;
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 
 CREATE FUNCTION same(q text, ix text, hp text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text; b text; plan text := ''; l text;
