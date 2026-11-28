@@ -182,23 +182,23 @@ SELECT label, same(q), left(runq(q, true), 70) AS scan_answer FROM (VALUES
  key             | same | ERR 22023 cannot cast jsonb string to type double precision
 (3 rows)
 
--- reads of the member the row read again cannot answer for keep the normal plan: the `->` and `->>` forms, an EXISTS over the members (alone and under
--- an OR), a materialized CTE that reads them where no walk of the query sees, and a filter on the member of a key
-SELECT label, CASE WHEN pushed(q) THEN 'PUSHED' ELSE same(q) END AS refused
+-- the `->` and `->>` forms and a materialized CTE read the member in the scan, with the rows or the error of the normal plan; an EXISTS over the members (alone and
+-- under an OR) and a filter on the member of a key keep the normal plan
+SELECT label, pushed(q) AS pushed, same(q) AS same
 FROM (VALUES ('arrow cast', 'SELECT t.src, sum((t.metrics -> $$catg_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
              ('arrow text', 'SELECT t.src, sum((t.metrics ->> $$catg_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
              ('exists', 'SELECT t.src, count(*) FROM m_t t WHERE id <= 100 AND EXISTS (SELECT 1 FROM jsonb_each(t.metrics) x WHERE CAST(x.value AS float8) > 100) GROUP BY t.src'),
              ('exists under or', mq('e.key, avg(CAST(e.value AS float8))', 'id <= 100 OR EXISTS (SELECT 1 FROM jsonb_each(t.metrics) x WHERE CAST(x.value AS float8) > 100)')),
              ('materialized cte', 'WITH x AS MATERIALIZED (SELECT t.id, e.key, e.value FROM m_t t JOIN LATERAL jsonb_each(t.metrics) e ON true) SELECT key, avg(CAST(value AS float8)) FROM x WHERE id <= 100 GROUP BY key'),
              ('key filter', mq('e.key, avg(CAST(e.value AS float8))', 'id <= 100 AND CAST(jsonb_extract_path(t.metrics, $$catg_k$$) AS integer) > 1'))) v(label, q);
-      label       | refused 
-------------------+---------
- arrow cast       | same
- arrow text       | same
- exists           | same
- exists under or  | same
- materialized cte | same
- key filter       | same
+      label       | pushed | same 
+------------------+--------+------
+ arrow cast       | t      | same
+ arrow text       | t      | same
+ exists           | f      | same
+ exists under or  | f      | same
+ materialized cte | t      | same
+ key filter       | f      | same
 (6 rows)
 
 -- the same cast also in an unconditional aggregate: the dirty member raises

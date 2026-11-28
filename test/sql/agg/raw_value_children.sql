@@ -64,7 +64,7 @@ SELECT * FROM check_query('int out of range', $q$SELECT c.category, count(*) AS 
 SELECT * FROM check_query('bigint out of range', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'
    JOIN LATERAL (SELECT 'all' AS category UNION ALL SELECT CASE WHEN r.value::bigint > 6 THEN 'high' ELSE 'low' END) c ON true
    WHERE f.id = 20002 GROUP BY 1$q$);
--- A member the index cannot hold as a number (a string, an object) keeps the query native, which raises the same errors.
+-- A member the index cannot hold as a number (a string, an object) is read from the exception of its row: the scan raises the error of the normal plan.
 INSERT INTO facts VALUES (20003, 3, '{"m_total": "abc"}', NULL), (20004, 4, '{"m_total": {"a": 1}}', NULL);
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('string member', $q$SELECT c.category, count(*) AS n FROM facts f JOIN LATERAL jsonb_each(f.metrics) r ON r.key = 'm_total'

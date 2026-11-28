@@ -156,20 +156,20 @@ SELECT pushed(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score 
  f
 (1 row)
 
--- a call that declares other columns does not read the score: it cannot raise for it, and a call that declares them beside one that does keeps the normal plan
+-- a call that declares other columns does not read the score: it cannot raise for it, alone or beside a call that does
 SELECT same(iq('t.id BETWEEN 90 AND 110', 'EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_other_columns;
  exists_other_columns 
 ----------------------
  same
 (1 row)
 
-SELECT same(iq('t.id BETWEEN 90 AND 110', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)'), false) AS exists_two_calls;
+SELECT same(iq('t.id BETWEEN 90 AND 110', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_two_calls;
                           exists_two_calls                          
 --------------------------------------------------------------------
  same ERR 22P02 invalid input syntax for type double precision: "x"
 (1 row)
 
-SELECT same(iq('t.id BETWEEN 90 AND 99', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)'), false) AS exists_two_calls_clean;
+SELECT same(iq('t.id BETWEEN 90 AND 99', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_two_calls_clean;
  exists_two_calls_clean 
 ------------------------
  same
@@ -432,7 +432,7 @@ SELECT same('SELECT t.kind, e.key, sum(CAST(e.value AS float8)) FROM events t JO
  same ERR 22023 cannot cast jsonb string to type double precision
 (1 row)
 
-SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (WHERE t.id > 100)'), false) AS filtered_member;
+SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (WHERE t.id > 100)')) AS filtered_member;
  filtered_member 
 -----------------
  same
@@ -450,7 +450,7 @@ SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) > 2', 'cou
  same ERR 22023 cannot cast jsonb string to type double precision
 (1 row)
 
-SELECT same(kq('t.id BETWEEN 90 AND 110 AND CAST(r.value AS float8) > 2', 'count(*)'), false) AS filtered_on_clean_member;
+SELECT same(kq('t.id BETWEEN 90 AND 110 AND CAST(r.value AS float8) > 2', 'count(*)')) AS filtered_on_clean_member;
  filtered_on_clean_member 
 --------------------------
  same

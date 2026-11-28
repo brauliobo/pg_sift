@@ -72,9 +72,9 @@ SELECT label, same(q), left(runq(q, true), 70) AS scan_answer FROM (VALUES
 	('filter reads it', mq('avg(CAST(e.value AS float8)) FILTER (WHERE e.key = $$catg_i$$)', 'id IN (100, 101)', 't.src')),
 	('no filter', mq('count(*) FILTER (WHERE e.key = $$m_total$$), max(CAST(e.value AS float8))', 'id IN (100, 101)', 't.src')),
 	('key', mq('CAST(e.value AS float8), count(*)', 'id IN (100, 101)', 'CAST(e.value AS float8)'))) v(label, q);
--- reads of the member the row read again cannot answer for keep the normal plan: the `->` and `->>` forms, an EXISTS over the members (alone and under
--- an OR), a materialized CTE that reads them where no walk of the query sees, and a filter on the member of a key
-SELECT label, CASE WHEN pushed(q) THEN 'PUSHED' ELSE same(q) END AS refused
+-- the `->` and `->>` forms and a materialized CTE read the member in the scan, with the rows or the error of the normal plan; an EXISTS over the members (alone and
+-- under an OR) and a filter on the member of a key keep the normal plan
+SELECT label, pushed(q) AS pushed, same(q) AS same
 FROM (VALUES ('arrow cast', 'SELECT t.src, sum((t.metrics -> $$catg_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
              ('arrow text', 'SELECT t.src, sum((t.metrics ->> $$catg_i$$)::float8) FROM m_t t WHERE id <= 100 GROUP BY t.src'),
              ('exists', 'SELECT t.src, count(*) FROM m_t t WHERE id <= 100 AND EXISTS (SELECT 1 FROM jsonb_each(t.metrics) x WHERE CAST(x.value AS float8) > 100) GROUP BY t.src'),

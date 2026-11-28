@@ -79,10 +79,10 @@ SELECT same(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score > 
 SELECT same(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$') || ' AND ' || ex('p.score > 3'))) AS two_exists;
 SELECT same(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score > 3') || ' OR t.kind = $$cat_b$$'), false) AS or_exists;
 SELECT pushed(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score > 3') || ' OR t.kind = $$cat_b$$')) AS or_exists_pushed;
--- a call that declares other columns does not read the score: it cannot raise for it, and a call that declares them beside one that does keeps the normal plan
+-- a call that declares other columns does not read the score: it cannot raise for it, alone or beside a call that does
 SELECT same(iq('t.id BETWEEN 90 AND 110', 'EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_other_columns;
-SELECT same(iq('t.id BETWEEN 90 AND 110', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)'), false) AS exists_two_calls;
-SELECT same(iq('t.id BETWEEN 90 AND 99', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)'), false) AS exists_two_calls_clean;
+SELECT same(iq('t.id BETWEEN 90 AND 110', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_two_calls;
+SELECT same(iq('t.id BETWEEN 90 AND 99', ex('p.score > 3') || ' AND EXISTS (SELECT 1 FROM jsonb_to_recordset(t.doc -> $$parts$$) p(kind text) WHERE p.kind = $$cat_a$$)')) AS exists_two_calls_clean;
 SELECT same(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score > 3'), 't.kind, sum((t.doc -> $$parts$$ -> 0 ->> $$score$$)::float8)'), false) AS exists_with_path_read;
 SELECT same(iq('t.id BETWEEN 495 AND 505', ex('p.kind = $$cat_a$$ AND p.score > 3'), 't.kind, sum(jsonb_array_length(t.doc -> $$parts$$))'), false) AS exists_with_length;
 
@@ -168,10 +168,10 @@ SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CAST(r.value AS float8))')) AS 
 SELECT same(kq('t.id BETWEEN 990 AND 1010 AND t.kind = $$cat_b$$', 'sum(CAST(r.value AS float8))')) AS dirty_dropped_by_kind;
 -- the member read next to a read of every member, or inside a conditional branch, keeps the normal plan or the same answer
 SELECT same('SELECT t.kind, e.key, sum(CAST(e.value AS float8)) FROM events t JOIN LATERAL jsonb_each(t.doc) e ON true WHERE t.id BETWEEN 99 AND 100 GROUP BY 1, 2') AS every_member;
-SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (WHERE t.id > 100)'), false) AS filtered_member;
+SELECT same(kq('t.id BETWEEN 90 AND 110', 'sum(CAST(r.value AS float8)) FILTER (WHERE t.id > 100)')) AS filtered_member;
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CASE WHEN t.id < 1000 THEN CAST(r.value AS float8) END)'), false) AS conditional_member;
 SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) > 2', 'count(*)')) AS filtered_on_member;
-SELECT same(kq('t.id BETWEEN 90 AND 110 AND CAST(r.value AS float8) > 2', 'count(*)'), false) AS filtered_on_clean_member;
+SELECT same(kq('t.id BETWEEN 90 AND 110 AND CAST(r.value AS float8) > 2', 'count(*)')) AS filtered_on_clean_member;
 SELECT same(kq('t.id BETWEEN 990 AND 1010 AND CAST(r.value AS float8) + 1 > 3', 'count(*)'), false) AS filtered_on_expression;
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'sum(CAST(r.value AS float8)), sum(CAST(r.value AS integer))'), false) AS two_casts;
 SELECT same(kq('t.id BETWEEN 990 AND 1010', 'count(*)', 'm_a', 'CAST(r.value AS integer) > 3')) AS cast_in_group_key;
