@@ -203,7 +203,7 @@ others_quiet(const SiftV6Spec *s)
 	return true;
 }
 
-/* a join of dimensions that drops fact rows after the scan converted them: an inner, semi, anti or right one, or a condition of the join no key says (a format may hold the errors of the reads of its rows until they reach the groups, SiftJsonbOps.raise_in_groups) */
+/* a join of dimensions that drops fact rows after the scan converted them: an inner, semi, anti or right one, or a condition of the join no key says (a format may raise the cast of a WHERE clause at once, as PostgreSQL tests the quals of the fact table before the join, and hold the errors of the reads of its rows until they reach the groups, SiftJsonbOps.raise_in_groups) */
 static bool
 join_drops_rows(const SiftV6Ext *x)
 {
@@ -298,7 +298,7 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 		cast = ri;
 		cast_leaves = leaves;
 	}
-	if (join_drops_rows(p->xseed) && (cast != NULL || (other != NULL && (p->xseed->unnest || !p->ops->jsonb->raise_in_groups))))
+	if (join_drops_rows(p->xseed) && (cast != NULL || other != NULL) && (p->xseed->unnest || !p->ops->jsonb->raise_in_groups))
 		return false;
 	if (cast == NULL)
 		return other == NULL || (!filtered && !computed && (s->vqual == NIL || p->ops->jsonb->raise_after_quals));

@@ -55,6 +55,10 @@ INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"m_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1', false);
 SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1', false);
+-- beside an inner join the cast of the fact's WHERE clause raises for a row the join keeps, as PostgreSQL tests it before the join
+SELECT * FROM check_query('string member, join', $q$
+ SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id WHERE f.id > 20002 AND (f.metrics -> 'm_total')::int = 1 GROUP BY 1
+$q$, false);
 DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dim_a;
 DROP EXTENSION pg_sift;

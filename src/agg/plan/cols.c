@@ -225,7 +225,7 @@ json_vars(V6Plan *p, const Expr *e, bool values, bool truth)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values, truth, member_vatt, p);
+	return p->xseed != NULL && p->xseed->unnest ? (Expr *) e : sift_v6_json_vars(&rel, e, values, truth, member_vatt, p);
 }
 
 Expr *
