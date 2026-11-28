@@ -124,6 +124,7 @@ struct SiftV6Scan
 	SiftV6Bq   *bq_uncast;		/* those of them that convert no value of a JSON key that can raise: the rows PostgreSQL keeps before the cast of the others runs (NULL: none) */
 	SiftBatchSel bs;
 	uint64		read_again[SIFT_VEC_WORDS];	/* the rows of the batch whose value of a JSON key the leaf could not hold, read from the payload of its exception */
+	MemoryContext cx;			/* what the setup of the scan allocates, deleted by sift_f2_v6_scan_end */
 	MemoryContext batch_cx;
 	bool		count_only;
 	bool		minmax_only;	/* every aggregate is a MIN or MAX of an integer column and nothing else is asked: the zones of a part answer it */
@@ -166,6 +167,8 @@ typedef struct V6Raises
 
 /* f2_v6_scan.c: what the scan of a sift_table (f2_v6_scan_table.c) shares with the scan of an index */
 extern void sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, struct SiftV6StarRun *star);
+/* the end of a scan: the rows it read again for their members, and what its setup allocated */
+extern void sift_f2_v6_scan_end(V6Scan *s);
 extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
 extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
 extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);

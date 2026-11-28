@@ -155,9 +155,5 @@ sift_v6_scan_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relat
 		if (a.s[i].pipe != NULL)
 			sift_v6_star_scan_end(arms[i].star, a.s[i].pipe);
 	for (int i = 0; i < cohort->narms; i++)
-	{
-		sift_f2_v6_member_end(&a.s[i]);
-		if (a.s[i].batch_cx != NULL)
-			MemoryContextDelete(a.s[i].batch_cx);
-	}
+		sift_f2_v6_scan_end(&a.s[i]);
 }

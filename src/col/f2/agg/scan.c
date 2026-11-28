@@ -403,7 +403,10 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 	const SiftV6Spec *spec = s->spec;
 	const SiftV6Ext *x = spec->ext;
 	const int	nvec = sift_v6_spec_nvec(spec);
+	MemoryContext old;
 
+	s->cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 scan");
+	old = MemoryContextSwitchTo(s->cx);
 	s->defs = defs;
 	s->first = first;
 	s->cols = palloc0((spec->nkeys + nvec + spec->nderive * (1 + SIFT_V6_MAX_CASE) + sift_v6_spec_pg_inputs(spec) + (x != NULL ? x->ndims * SIFT_STAR_MAX_KEYS + x->nrcol : 0) + (spec->vqual != NIL ? SIFT_V6_MAX_COLS : 0)) * SIFT_COL_MAX_LANES * sizeof(V6Col));
@@ -417,6 +420,14 @@ sift_f2_v6_scan_setup(V6Scan *s, const SiftColDef *defs, const int *first, SiftV
 	sift_f2_v6_cols_setup(s);
 	if (x != NULL && x->ndims > 0)
 		setup_pipe(s, first, star);
+	MemoryContextSwitchTo(old);
+}
+
+void
+sift_f2_v6_scan_end(V6Scan *s)
+{
+	sift_f2_v6_member_end(s);
+	MemoryContextDelete(s->cx);
 }
 
 static void
@@ -797,9 +808,7 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 	sift_v6_vet_end(&s->vet);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
-	sift_f2_v6_member_end(s);
-	if (s->batch_cx != NULL)
-		MemoryContextDelete(s->batch_cx);
+	sift_f2_v6_scan_end(s);
 }
 
 void
@@ -868,9 +877,7 @@ void
 sift_v6_fold_end(SiftV6Fold *s)
 {
 	sift_v6_vet_end(&s->vet);
-	sift_f2_v6_member_end(s);
-	if (s->batch_cx != NULL)
-		MemoryContextDelete(s->batch_cx);
+	sift_f2_v6_scan_end(s);
 }
 
 /* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit, through the lookup tables of star */
@@ -958,9 +965,7 @@ sift_v6_scan_end(SiftV6Scan *s)
 		index_endscan(s->scan);
 		sift_v6_vet_end(&s->vet);
 	}
-	sift_f2_v6_member_end(s);
-	if (s->batch_cx != NULL)
-		MemoryContextDelete(s->batch_cx);
+	sift_f2_v6_scan_end(s);
 	pfree(s->leaves);
 	pfree(s);
 }

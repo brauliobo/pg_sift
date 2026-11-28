@@ -94,9 +94,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 		sift_v6_star_scan_end(star, s->pipe);
 	if (s->preagg != NULL)
 		sift_v6_preagg_end(s->preagg);
-	sift_f2_v6_member_end(s);
-	if (s->batch_cx != NULL)
-		MemoryContextDelete(s->batch_cx);
+	sift_f2_v6_scan_end(s);
 }
 
 void
