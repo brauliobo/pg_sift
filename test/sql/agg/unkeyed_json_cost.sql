@@ -1,7 +1,7 @@
--- A lookup table joined on `jsonb_build_array(a) = jsonb_build_array(b)` is probed by hash when b is a column of it. When b is a cast of its column
--- (a stable one) there is no key: the scan tests every row of the table for every distinct value of a, and each test builds two jsonb values in
--- PostgreSQL's executor. The scan is priced for the builds, and the normal plan (a merge join) keeps the statement; the keyed form uses the scan.
--- The statements run with enable_agg on and off: the rows must be the same.
+-- A lookup table joined on `jsonb_build_array(a) = jsonb_build_array(b)` is probed by hash when each element of a and b has a key type that agrees with the other's
+-- (two integers, two dates): the arrays are equal exactly when their texts are. An integer against a numeric has no key (5 and 5.0 are equal arrays, not equal texts): the scan
+-- tests every row of the table for every row of the lookup, and each test builds two jsonb values in PostgreSQL's executor. The scan is priced for the builds, and the normal
+-- plan (a merge join) keeps the statement; the keyed form uses the scan. The statements run with enable_agg on and off: the rows must be the same.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -14,11 +14,8 @@ VACUUM (FREEZE, ANALYZE) ev;
 CREATE FUNCTION differences(q text) RETURNS bigint LANGUAGE sql AS $$ SELECT sift_helpers.differences_agg(q) $$;
 
 CREATE FUNCTION days_query(keyed boolean) RETURNS text LANGUAGE sql AS $$
-	SELECT format('SELECT g.d%s AS day, count(e.id) AS n FROM %s LEFT JOIN ev e ON jsonb_build_array(e.day) = jsonb_build_array(g.d%s) GROUP BY 1 ORDER BY 1',
-	              CASE WHEN keyed THEN '' ELSE '::date' END,
-	              CASE WHEN keyed THEN '(SELECT d::date AS d FROM generate_series(date ''2024-01-01'', date ''2024-10-26'', interval ''1 day'') s(d) OFFSET 0) g'
-	                   ELSE 'generate_series(date ''2024-01-01'', date ''2024-10-26'', interval ''1 day'') g(d)' END,
-	              CASE WHEN keyed THEN '' ELSE '::date' END)
+	SELECT format('SELECT g.n AS day, count(e.id) AS n FROM generate_series(0, 299) g(n) LEFT JOIN ev e ON jsonb_build_array(e.day - date ''2024-01-01'') = jsonb_build_array(g.n%s) GROUP BY 1 ORDER BY 1',
+	              CASE WHEN keyed THEN '' ELSE '::numeric' END)
 $$;
 
 SELECT keyed, bool_or(used) AS scan, bool_or(scan_cost < normal_cost) AS scan_cheaper

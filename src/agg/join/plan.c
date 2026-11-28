@@ -17,9 +17,11 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/tlist.h"
+#include "catalog/pg_collation_d.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "parser/parsetree.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 
 #include "agg/agg.h"
@@ -350,7 +352,7 @@ place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 
 /* the equality of a column of a dimension (other) and a column or an expression of the relations before it (arg), as a key of the dimension */
 static bool
-place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
+place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other, Oid inputcollid)
 {
 	const Var  *key;
 	const Node *kexpr;
@@ -360,7 +362,56 @@ place_key(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *arg, Node *other)
 
 	if (d < 0 || sift_v6_join_expr_role(sh, probe) == ROLE_NONE || sift_v6_join_expr_role(sh, probe) >= d)
 		return false;
-	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr, ((const OpExpr *) ri->clause)->inputcollid);
+	return (column != NULL || sift_v6_pgexpr_plan_ok(NULL, (const Expr *) probe)) && clause_level_ok(ri, sh->dim[d].mode) && sift_v6_join_add_expr_key(&sh->dim[d], probe, key, kexpr, inputcollid);
+}
+
+static bool
+place_key_either(SiftV6JoinShape *sh, const RestrictInfo *ri, Node *a, Node *b, Oid inputcollid)
+{
+	return place_key(sh, ri, a, b, inputcollid) || place_key(sh, ri, b, a, inputcollid);
+}
+
+/* jsonb_build_array(a1, .. an): its arguments, or NIL when it is not one (or takes a VARIADIC array) */
+static List *
+jsonb_array_args(const Node *e)
+{
+	const FuncExpr *f = (const FuncExpr *) e;
+
+	return IsA(e, FuncExpr) && f->funcid == F_JSONB_BUILD_ARRAY_ANY && !f->funcvariadic ? f->args : NIL;
+}
+
+/* the text of the jsonb array e, compared by its bytes */
+static Node *
+jsonb_text(Node *e)
+{
+	CoerceViaIO *c = makeNode(CoerceViaIO);
+
+	c->arg = (Expr *) e;
+	c->resulttype = TEXTOID;
+	c->resultcollid = C_COLLATION_OID;
+	c->coerceformat = COERCE_IMPLICIT_CAST;
+	c->location = -1;
+	return (Node *) c;
+}
+
+/*
+ * jsonb_build_array(a1, .. an) = jsonb_build_array(b1, .. bn), each ai and bi of key types that agree: the two arrays are equal exactly when their texts are (an integer is the same number,
+ * a date, timestamp, bool or string the same text, a NULL element the same null), so the texts are a key of the dimension, probed by hash where the equality of the arrays tests every pair
+ */
+static bool
+place_jsonb_array_key(SiftV6JoinShape *sh, const RestrictInfo *ri)
+{
+	const OpExpr *op = (const OpExpr *) ri->clause;
+	List	   *a,
+			   *b;
+
+	if (!IsA(op, OpExpr) || get_opcode(op->opno) != F_JSONB_EQ || (a = jsonb_array_args(linitial(op->args))) == NIL || (b = jsonb_array_args(lsecond(op->args))) == NIL ||
+		list_length(a) != list_length(b))
+		return false;
+	for (int i = 0; i < list_length(a); i++)
+		if (!sift_v6_key_types_agree(exprType(list_nth(a, i)), exprType(list_nth(b, i)), C_COLLATION_OID))
+			return false;
+	return place_key_either(sh, ri, jsonb_text(linitial(op->args)), jsonb_text(lsecond(op->args)), C_COLLATION_OID);
 }
 
 /* a semi or anti join matches a row once, by its first dimension row: a condition on the pairs would decide on that one only */
@@ -428,7 +479,7 @@ place_clause(SiftV6JoinShape *sh, RestrictInfo *ri)
 	if (place_period(sh, ri))
 		return true;
 	if (IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && op_hashjoinable(op->opno, exprType(linitial(op->args))) &&
-		(place_key(sh, ri, linitial(op->args), lsecond(op->args)) || place_key(sh, ri, lsecond(op->args), linitial(op->args))))
+		(place_jsonb_array_key(sh, ri) || place_key_either(sh, ri, linitial(op->args), lsecond(op->args), op->inputcollid)))
 		return true;
 	if (!ri->is_pushed_down)
 		return place_on(sh, ri);
