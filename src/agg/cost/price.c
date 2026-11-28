@@ -450,6 +450,12 @@ in_lists_cost(const SiftCardStatsView *view, const IndexOptInfo *ix, bool index_
 	return ops * cpu_operator_cost;
 }
 
+Cost
+sift_v6_in_lists_cost(const IndexOptInfo *ix, const List *clauses)
+{
+	return in_lists_cost(index_view(ix), ix, false, clauses);
+}
+
 SiftV6AggPrice
 sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups)
 {

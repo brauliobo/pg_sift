@@ -29,9 +29,9 @@ SELECT differences(in_query(1000000, 256)) AS differences_wide, differences(in_q
 
 DROP FUNCTION in_query(int, int), scan_cost(text), differences(text);
 
--- A generic plan does not see the array of `key = ANY($1)`: its scan is priced for the param_set_elems limit elements, as the paths that fetch the rows
--- one key at a time are charged them. A scan priced for the 10 elements PostgreSQL assumes took the generic plan at 256 keys over a range of a million,
--- where the index plan is several times faster; the plan cache then keeps the custom plans.
+-- A generic plan does not see the array of `key = ANY($1)`: PostgreSQL prices it for 10 elements. The scan of the sift_col index tests every row of the units it reads against
+-- the list (256 keys over a range of a million: 9 ms of 200,000 rows), so a custom plan of 256 keys reads the b-tree (0.3 ms), and the generic plan, the same b-tree priced for
+-- 10 keys, is taken after five of them, as fast; 8 keys keep the custom plans.
 CREATE FUNCTION key_list(n int) RETURNS text LANGUAGE sql AS $$
 	SELECT (SELECT string_agg(key::text, ',') FROM (SELECT key FROM items ORDER BY id LIMIT n) k)
 $$;
@@ -48,7 +48,7 @@ BEGIN
 	RETURN QUERY SELECT p.generic_plans, p.custom_plans FROM pg_prepared_statements p WHERE p.name = 'by_keys';
 END $$;
 
--- the keys of the list are spread over a range of a million: 8 and 256 of them keep the custom plans (1,000 of them, the size the generic plan assumes, are a tie)
+-- the keys of the list are spread over a range of a million
 SELECT n, generic_plans, custom_plans FROM unnest(ARRAY[8, 256]) n, LATERAL executions(n) ORDER BY n;
 
 DEALLOCATE ALL;

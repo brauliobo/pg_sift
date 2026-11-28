@@ -26,6 +26,7 @@
 #include "col/f2/point_dir.h"
 #include "col/f2/cost_model.h"
 #include "col/f2/scan/ord_stream.h"
+#include "agg/cost/card.h"
 #include "core/sift.h"
 #include "catalog/pg_statistic.h"
 #include "access/stratnum.h"
@@ -258,7 +259,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 		c = sift_scan_cost(&in);
 	}
 	*indexStartupCost = c.startup;
-	*indexTotalCost = c.total;
+	*indexTotalCost = c.total + sift_v6_in_lists_cost(index, quals) * rows * in.f_prune;
 	if (path->path.pathtype == T_IndexOnlyScan)
 		*indexTotalCost += cpu_index_tuple_cost * F2_RETURN_ROW_FACTOR * Max(sel * rows, 1.0);
 	*indexSelectivity = sel;

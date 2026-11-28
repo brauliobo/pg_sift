@@ -70,6 +70,9 @@ extern SiftV6AggPrice sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, cons
  */
 extern void sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, AttrNumber key, Cost *open, Cost *total);
 
+/* Per row decoded, the search of the constants of the IN lists among the clauses (over the columns of the table) that a scan of the index ix tests each row against */
+extern Cost sift_v6_in_lists_cost(const IndexOptInfo *ix, const List *clauses);
+
 /* What a scan pays to give one row it fetches by its tag: of a sift_table its locate and decode (SIFT_TABLE_FETCH_OPS), of an index the tuple of the heap */
 extern Cost sift_v6_fetch_cost(bool is_table);
 
