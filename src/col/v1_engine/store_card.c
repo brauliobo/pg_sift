@@ -54,13 +54,33 @@ leaf_bytes(const SiftSrcLayout *lay, const SiftSrcStats *st, double *per_row)
 		per_row[i] = Min(per_row[i] * st->bytes / st->nrows / total, per_row[i]);
 }
 
+/* the mean width of the zones of the units over the range of the leaf: 0 when each unit holds one value, 1 when every unit may hold any (no zones) */
+static double
+zone_overlap(const SiftSrcLeaf *l, const SiftSrcStats *st)
+{
+	const SiftSrcZones *z = st->zones;
+	const int	i = l->id;
+	double		span = 0;
+	int			used = 0;
+
+	if (z == NULL || z->lo[i] == NULL || !has_range(l, st))
+		return 1.0;
+	for (int k = 0; k < z->n; k++)
+		if (z->lo[i][k] <= z->hi[i][k])
+		{
+			span += Min(((double) z->hi[i][k] - (double) z->lo[i][k]) / (st->max[i] - st->min[i]), 1.0);
+			used++;
+		}
+	return used > 0 ? span / used : 1.0;
+}
+
 static SiftColCardStats
 leaf_stats(const SiftSrcLeaf *l, const SiftSrcStats *st, double rows, double bytes_row)
 {
 	const int	i = l->id;
 	const double vals = l->parent >= 0 ? rows * Max(st->elems_per_row[l->parent], 1.0) : rows;
 	SiftColCardStats cs = {.col = (uint16) i,.total_rows = (uint64) vals,.null_rows = (uint64) (st->null_frac[i] * vals),
-		.avg_comp_bytes_row = bytes_row,.avg_dec_bytes_row = Max(8.0, bytes_row)};
+		.avg_comp_bytes_row = bytes_row,.avg_dec_bytes_row = Max(8.0, bytes_row),.zone_overlap_ratio = zone_overlap(l, st)};
 
 	if (l->kind == SCL_SCALAR && st->ndistinct[i] > 0)
 	{
