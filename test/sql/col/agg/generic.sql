@@ -53,6 +53,17 @@ SELECT (SELECT count(*) FROM r_null) AS arr_null_rows, (SELECT count(*) FROM r_n
 -- a lookup by the primary key keeps the index scan: the bound parameter is as selective as the estimate says
 SELECT plan_uses_scan($$EXECUTE one(1234)$$) AS one_scan;
 
+-- a NULL list of a new session: the list is no key of the pull of the unnest, which then has no row to keep
+\c
+SET max_parallel_workers_per_gather = 0;
+SET plan_cache_mode = force_generic_plan;
+PREPARE arr(int[], date, date) AS
+SELECT t.kind, count(*) AS c FROM g_t t CROSS JOIN LATERAL jsonb_to_recordset(t.doc -> 'lines') AS l(k text, n float8)
+WHERE t.grp = ANY($1) AND t.created >= $2 AND t.created <= $3 GROUP BY t.kind;
+CREATE TEMP TABLE r_null_list AS EXECUTE arr(NULL, '2024-01-01', '2026-06-30');
+CREATE TEMP TABLE r_null_list2 AS EXECUTE arr(NULL, '2024-01-01', '2026-06-30');
+SELECT (SELECT count(*) FROM r_null_list) AS null_list_rows, (SELECT count(*) FROM r_null_list2) AS null_list_rows2;
+
 DEALLOCATE ALL;
 DROP TABLE g_t;
 DROP FUNCTION plan_uses_scan(text);

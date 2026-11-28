@@ -44,7 +44,7 @@ where_key(Relation index, const Node *q, ScanKeyData *k)
 	k->sk_subtype = c->consttype;
 	k->sk_collation = exprInputCollation((const Node *) q);
 	k->sk_argument = c->constvalue;
-	k->sk_flags = IsA(q, ScalarArrayOpExpr) ? SK_SEARCHARRAY : c->constisnull ? SK_ISNULL : 0;
+	k->sk_flags = (IsA(q, ScalarArrayOpExpr) ? SK_SEARCHARRAY : 0) | (c->constisnull ? SK_ISNULL : 0);
 	return strategy != 0;
 }
 
