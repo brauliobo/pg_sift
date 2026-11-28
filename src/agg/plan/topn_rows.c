@@ -210,6 +210,11 @@ sift_v6_add_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out
 	RelOptInfo *rel;
 	Path	   *path;
 
+	if (q->sortClause != NIL && q->limitCount != NULL && (q->distinctClause != NIL || q->setOperations != NULL))
+	{
+		sift_agg_arm_refused_by("topn", AGG_REFUSE_TOPN_SHAPE, "the query has DISTINCT or a set operation");
+		return;
+	}
 	if (k == 0 || q->hasAggs || q->groupClause != NIL || q->groupingSets != NIL || q->hasTargetSRFs || q->hasDistinctOn || q->setOperations != NULL || q->rowMarks != NIL)
 		return;
 	if (bms_membership(root->all_baserels) == BMS_MULTIPLE)

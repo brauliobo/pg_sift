@@ -80,11 +80,23 @@ total_out(V6Plan *p, const WindowFunc *wf, SiftV6RowOut *out)
 	const WindowClause *wc = window_of(p->root->parse, wf);
 	Aggref	   *a;
 
-	if (wc == NULL || !whole_set(wc) || !wf->winagg)
+	if (wc == NULL || !whole_set(wc))
+	{
+		sift_agg_arm_refused_by("topn", AGG_REFUSE_TOPN_SHAPE, "a window has PARTITION BY, ORDER BY or a frame that is not all the rows");
 		return false;
+	}
+	if (!wf->winagg)
+	{
+		sift_agg_arm_refused_by("topn", AGG_REFUSE_TOPN_SHAPE,
+								psprintf("%s() OVER is not an aggregate: only aggregates over the whole set are computed with the top-N", get_func_name(wf->winfnoid)));
+		return false;
+	}
 	a = window_aggref(wf);
 	if (!sift_v6_compile_agg_native(p, a))
+	{
+		sift_agg_arm_refused_by("topn", AGG_REFUSE_AGGREGATE, psprintf("%s OVER () is not an aggregate the scan computes over its arguments and filter", get_func_name(wf->winfnoid)));
 		return false;
+	}
 	add_agg_desc(p, a);
 	*out = (SiftV6RowOut) {.from = SV6OUT_TOTAL,.at = p->spec.naggs - 1};
 	return true;
