@@ -34,8 +34,8 @@ FROM unnest(ARRAY['ev2', 'ev1']::regclass[]) t, unnest(ARRAY['JOIN', 'LEFT JOIN'
 -----+-----------+------+--------
  ev2 | JOIN      | same | t
  ev2 | LEFT JOIN | same | t
- ev1 | JOIN      | same | f
- ev1 | LEFT JOIN | same | f
+ ev1 | JOIN      | same | t
+ ev1 | LEFT JOIN | same | t
 (4 rows)
 
 DROP TABLE gone, ev2, ev1;
