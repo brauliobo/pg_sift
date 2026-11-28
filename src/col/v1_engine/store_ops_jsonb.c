@@ -183,6 +183,7 @@ const SiftJsonbOps v1_jsonb_ops = {
 	.member_leaf = jsonb_member_leaf,
 	.table_key_leaf = jsonb_table_key_leaf,
 	.key_exists = true,
+	.key_presence = true,
 	.path_declared = jsonb_path_declared,
 	.unnest_run = sift_v1_unnest_run
 };

@@ -1,6 +1,6 @@
 -- An aggregate FILTER (WHERE doc ? 'k') over a key whose leaf an index of format major 2 keeps: SiftAggV6 reads the presence of the key from the tags of its leaf (a document that is no
 -- object has the key when it holds it as a string, as jsonb_exists finds it), and a value of that key beside it is converted for the rows that have it only. A SQL NULL document has not the
--- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 reads the presence from its leaf too. Each statement runs with the scan and without it: `scan` or `plain`, then
 -- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -107,17 +107,17 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke_obj  | 11 | or                     | scan same why
  ke_obj  | 12 | read of another key    | plain same
  ke_obj  | 13 | read under is not true | plain same
- ke_f1   |  1 | headline               | plain same
- ke_f1   |  2 | count                  | plain same
- ke_f1   |  3 | grouped                | plain same
- ke_f1   |  4 | two keys               | plain same
- ke_f1   |  5 | and another test       | plain same
- ke_f1   |  6 | is true                | plain same
- ke_f1   |  7 | is not true            | plain same
- ke_f1   |  8 | with a where           | plain same
+ ke_f1   |  1 | headline               | scan same why
+ ke_f1   |  2 | count                  | scan same why
+ ke_f1   |  3 | grouped                | scan same why
+ ke_f1   |  4 | two keys               | scan same why
+ ke_f1   |  5 | and another test       | scan same why
+ ke_f1   |  6 | is true                | scan same why
+ ke_f1   |  7 | is not true            | scan same why
+ ke_f1   |  8 | with a where           | scan same why
  ke_f1   |  9 | undeclared key         | plain same
  ke_f1   | 10 | not                    | plain same
- ke_f1   | 11 | or                     | plain same
+ ke_f1   | 11 | or                     | scan same why
  ke_f1   | 12 | read of another key    | plain same
  ke_f1   | 13 | read under is not true | plain same
 (52 rows)

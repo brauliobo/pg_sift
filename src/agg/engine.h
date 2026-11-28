@@ -414,9 +414,10 @@ typedef int (*SiftV6MemberVatt) (void *arg, const Expr *e, Oid *typid);
 
 /*
  * e with every jsonb_typeof(doc -> 'key') of a shredded scalar key as a Var of the virtual attribute SIFT_V6_JTYPE_VATT + leaf (varno rel->relid, a copy), and with values every
- * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is
+ * `doc ->> 'key'` and its float8 cast as one of the text or float8 kind: the scan reads a value a leaf cannot hold from the exception of its chunk, which a scan key (a FILTER) does not; the column such a Var is.
+ * A key test (`?`, `?|`, `?&`) of a NOT NULL document, or one read for its truth alone (truth: e is a WHERE or FILTER clause), is the presence of its keys (SIFT_V6_JPRES_VATT)
  */
-extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, SiftV6MemberVatt member, void *arg);
+extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, bool truth, SiftV6MemberVatt member, void *arg);
 extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
 extern bool sift_v6_json_type_clash(const SiftV6Spec *s);

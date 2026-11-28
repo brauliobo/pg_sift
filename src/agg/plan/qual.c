@@ -312,7 +312,7 @@ batch_clause(V6Plan *p, Expr *where)
 		return false;
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
-	clause = sift_v6_plan_json_vars(p, where, true);
+	clause = sift_v6_plan_json_test(p, where, true);
 	clause = clause == where ? copyObject(clause) : clause;
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
 	if (!sift_v6_bq_plan_ok(p->root, &in, clause))
@@ -372,6 +372,27 @@ compile_lowered(V6Plan *p, const List *tests)
 	return true;
 }
 
+/* the tests of the leaves a clause is the conjunction of: of a containment (agg/qual/contains.h), or of the presence of keys and the test of a document that may be NULL (sift_v6_json_vars) */
+static List *
+lowered_tests(V6Plan *p, const SiftV6Rel *rel, Expr *clause)
+{
+	List	   *tests = sift_v6_contains_quals(rel, clause);
+
+	return tests != NIL ? tests : (tests = sift_v6_conjuncts(sift_v6_plan_json_test(p, clause, true))) != NIL && list_length(tests) > 1 ? tests : NIL;
+}
+
+List *
+sift_v6_conjuncts(Expr *clause)
+{
+	List	   *out = NIL;
+
+	if (!is_andclause(clause))
+		return list_make1(clause);
+	foreach_ptr(Expr, arg, ((BoolExpr *) clause)->args)
+		out = list_concat(out, sift_v6_conjuncts(arg));
+	return out;
+}
+
 /* the scan of an unnest of a table can read every row again by its address, where the quals of the statement decide it (sift_v6_unnest_where): a clause the executor evaluates alone needs no scan key there */
 static bool
 heap_decides(const V6Plan *p, const Expr *clause)
@@ -400,7 +421,7 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 	else if (heap_decides(p, ri->clause))
 		p->heap_rows = true;
 	else
-		return !ri->pseudoconstant && (tests = sift_v6_contains_quals(rel, ri->clause)) != NIL && compile_lowered(p, tests);
+		return !ri->pseudoconstant && (tests = lowered_tests(p, rel, ri->clause)) != NIL && compile_lowered(p, tests);
 	return true;
 }
 

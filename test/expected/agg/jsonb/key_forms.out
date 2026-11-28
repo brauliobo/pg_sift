@@ -183,7 +183,7 @@ SELECT * FROM kf_run('kc');
  34 type test forms           | same [{"count": 720}] pushed
  35 type case                 | same [{"sum": 962700}] pushed
  36 type guard read           | same [{"sum": 750.0}] normal
- 37 key in an output          | same [{"count": 1400, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1400, "bool_or": true}] pushed
  38 no document               | same [{"count": 1400}]
 (38 rows)
 
@@ -226,7 +226,7 @@ SELECT * FROM kf_run('ko');
  34 type test forms           | same [{"count": 720}] pushed
  35 type case                 | same [{"sum": 962700}] pushed
  36 type guard read           | same [{"sum": 750.0}] normal
- 37 key in an output          | same [{"count": 1400, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1400, "bool_or": true}] pushed
  38 no document               | same [{"count": 1400}]
 (38 rows)
 
@@ -322,7 +322,7 @@ SELECT * FROM kf_run('kc');
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
- 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] pushed
  38 no document               | same [{"count": 1355}]
 (38 rows)
 
@@ -365,7 +365,7 @@ SELECT * FROM kf_run('ko');
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
- 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] pushed
  38 no document               | same [{"count": 1355}]
 (38 rows)
 
@@ -459,7 +459,7 @@ SELECT * FROM kf_run('kc');
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
- 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] pushed
  38 no document               | same [{"count": 1355}]
 (38 rows)
 
@@ -502,7 +502,7 @@ SELECT * FROM kf_run('ko');
  34 type test forms           | same [{"count": 698}] pushed
  35 type case                 | same [{"sum": 987683}] pushed
  36 type guard read           | same [{"sum": 714.0}] normal
- 37 key in an output          | same [{"count": 1355, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 1355, "bool_or": true}] pushed
  38 no document               | same [{"count": 1355}]
 (38 rows)
 
@@ -569,7 +569,7 @@ SELECT * FROM kf_run('kp');
  34 type test forms           | same [{"count": 2700}] pushed
  35 type case                 | same [{"sum": 13510125}] pushed
  36 type guard read           | same [{"sum": 2812.5}] normal
- 37 key in an output          | same [{"count": 5250, "bool_or": true}] normal
+ 37 key in an output          | same [{"count": 5250, "bool_or": true}] pushed
  38 no document               | same [{"count": 5250}]
 (38 rows)
 

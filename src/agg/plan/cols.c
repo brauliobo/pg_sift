@@ -204,12 +204,24 @@ sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *o
 
 static int member_vatt(void *arg, const Expr *e, Oid *typid);
 
-Expr *
-sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values)
+static Expr *
+json_vars(V6Plan *p, const Expr *e, bool values, bool truth)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values, member_vatt, p);
+	return p->xseed != NULL ? (Expr *) e : sift_v6_json_vars(&rel, e, values, truth, member_vatt, p);
+}
+
+Expr *
+sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values)
+{
+	return json_vars(p, e, values, false);
+}
+
+Expr *
+sift_v6_plan_json_test(V6Plan *p, const Expr *test, bool values)
+{
+	return json_vars(p, test, values, true);
 }
 
 /* An expression of the query that is a column of the index (its indexprs entry, which PostgreSQL has built over the same range table entry): the scan reads what the index stored of it */
@@ -427,7 +439,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
-	e = sift_v6_json_vars(&rel, e, true, member_vatt, p);
+	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);
 	if (!join_derive_ok(p, e))
 		return sift_v6_star_joined_col(p, e, key, col);
 	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||

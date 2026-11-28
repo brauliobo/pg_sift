@@ -1,6 +1,6 @@
 -- An aggregate FILTER (WHERE doc ? 'k') over a key whose leaf an index of format major 2 keeps: SiftAggV6 reads the presence of the key from the tags of its leaf (a document that is no
 -- object has the key when it holds it as a string, as jsonb_exists finds it), and a value of that key beside it is converted for the rows that have it only. A SQL NULL document has not the
--- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 keeps the normal plan. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 reads the presence from its leaf too. Each statement runs with the scan and without it: `scan` or `plain`, then
 -- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;

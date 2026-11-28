@@ -169,6 +169,10 @@ extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
 extern Node *sift_v6_placeholder_contents(Node *n, void *context);
 /* e with the jsonb_typeof(doc -> 'key') of its shredded keys, and with values their `->>` text and its float8 cast, as virtual columns (agg/qual/jsonb.c), for a scan that reads them; e itself when this one cannot */
 extern Expr *sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values);
+/* the conjuncts of a clause, its nested ANDs flattened */
+extern List *sift_v6_conjuncts(Expr *clause);
+/* sift_v6_plan_json_vars of a WHERE or FILTER clause, read for its truth alone (sift_v6_json_vars) */
+extern Expr *sift_v6_plan_json_test(V6Plan *p, const Expr *test, bool values);
 /* The scan raises the error of a float8 cast of a key of a document for the rows PostgreSQL's own plan raises it for (agg/jsonb_order.c) */
 extern bool sift_v6_json_cast_order_ok(V6Plan *p);
 /* The statement is one the node may answer, whatever its relations; and the relation is a plain table the node may read (no inheritance, sampling or security quals) */

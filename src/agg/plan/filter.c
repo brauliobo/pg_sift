@@ -14,6 +14,15 @@
 #include "agg/qual/qual.h"
 #include "agg/unnest/jsonb.h"
 
+/* the presence column `doc ? 'k'` reads, or e is (sift_v6_plan_json_test made it one); InvalidAttrNumber: neither */
+static int
+presence_of(const V6Plan *p, const Expr *e)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+
+	return IsA(e, Var) && sift_v6_vatt_is_presence(((const Var *) e)->varattno) ? ((const Var *) e)->varattno : sift_v6_json_presence(&rel, e);
+}
+
 /*
  * `doc ? 'k'`, or IS TRUE or IS NOT TRUE of it, of a key whose presence the scan reads: the test of the presence. A SQL NULL document has not the key, where `?` is NULL: the same to a FILTER, which
  * keeps neither, but not to NOT, which stays the query's
@@ -21,10 +30,9 @@
 static Expr *
 presence_qual(V6Plan *p, Expr *c)
 {
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	const BooleanTest *bt = IsA(c, BooleanTest) ? (const BooleanTest *) c : NULL;
 	const bool	has = bt == NULL || bt->booltesttype == IS_TRUE;
-	const int	attno = p->xseed == NULL && (has || bt->booltesttype == IS_NOT_TRUE) ? sift_v6_json_presence(&rel, bt != NULL ? bt->arg : c) : InvalidAttrNumber;
+	const int	attno = p->xseed == NULL && (has || bt->booltesttype == IS_NOT_TRUE) ? presence_of(p, bt != NULL ? bt->arg : c) : InvalidAttrNumber;
 	Var		   *v = makeVar(p->rel->relid, attno, BOOLOID, -1, InvalidOid, 0);
 
 	if (attno == InvalidAttrNumber)
@@ -41,7 +49,7 @@ filter_qual(V6Plan *p, Expr *c)
 
 	if (q != NULL || on_elem)
 		return q;
-	return (q = presence_qual(p, c)) != NULL ? q : sift_v6_index_qual(p, sift_v6_plan_json_vars(p, c, false));
+	return (q = presence_qual(p, c)) != NULL ? q : sift_v6_index_qual(p, sift_v6_plan_json_test(p, c, false));
 }
 
 /* a boolean column, or NOT of one, as its comparison with true or false: the forms the quals of a scan take (a NULL passes neither) */
@@ -107,7 +115,7 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	List	   *quals = NIL;
 
 	p->in_filter = true;
-	foreach_ptr(Expr, conjunct, make_ands_implicit(filter))
+	foreach_ptr(Expr, conjunct, sift_v6_conjuncts(filter))
 	{
 		Expr	   *q = conjunct_qual(p, conjunct);
 
@@ -153,7 +161,7 @@ sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 	SiftBytes	canon;
 	int			id;
 
-	filter = (Expr *) sift_v6_placeholder_contents((Node *) filter, NULL);
+	filter = sift_v6_plan_json_test(p, (Expr *) sift_v6_placeholder_contents((Node *) filter, NULL), false);
 	quals = native_filter_quals(p, filter);
 	sift_bytes_init(&canon, CurrentMemoryContext);
 	if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))

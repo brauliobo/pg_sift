@@ -353,17 +353,114 @@ sift_v6_json_qual(const SiftV6Rel *rel, const Expr *clause)
 	return NIL;
 }
 
+typedef struct VarsCtx
+{
+	const SiftV6Rel *rel;
+	bool		values;
+	bool		truth;			/* the expression is read for its truth alone: a NULL is as false */
+	SiftV6MemberVatt member;
+	void	   *arg;
+} VarsCtx;
+
+/* the column of whether the document doc has the key (SIFT_V6_JPRES_VATT + its leaf), of a format that reads it; InvalidAttrNumber: none */
+static int
+presence_vatt(const SiftV6Rel *rel, const Expr *doc, const char *key)
+{
+	int			att;
+
+	if (rel->table != NULL || rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->key_presence || key == NULL || !doc_of(rel, doc, &att) || !exists_leaf(rel, att, key))
+		return InvalidAttrNumber;
+	return SIFT_V6_JPRES_VATT + key_leaf(rel, att, key);
+}
+
 int
 sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause)
 {
-	const char *key;
-	int			att;
-
 	clause = strip(clause);
-	if (rel->table != NULL || rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->key_presence || func_of(clause) != F_JSONB_EXISTS || list_length(args_of(clause)) != 2 || (key = text_const(lsecond(args_of(clause)))) == NULL ||
-		!doc_of(rel, linitial(args_of(clause)), &att) || !exists_leaf(rel, att, key))
+	if (func_of(clause) != F_JSONB_EXISTS || list_length(args_of(clause)) != 2)
 		return InvalidAttrNumber;
-	return SIFT_V6_JPRES_VATT + key_leaf(rel, att, key);
+	return presence_vatt(rel, linitial(args_of(clause)), text_const(lsecond(args_of(clause))));
+}
+
+/* the keys of the text[] constant of ?| and ?&: NIL for no constant, no key or a NULL among them */
+static List *
+array_keys(const Expr *e)
+{
+	const Const *c = (const Const *) strip(e);
+	List	   *keys = NIL;
+	Datum	   *el;
+	bool	   *nl;
+	int			n;
+
+	if (c == NULL || !IsA(c, Const) || c->constisnull || c->consttype != TEXTARRAYOID)
+		return NIL;
+	deconstruct_array_builtin(DatumGetArrayTypeP(c->constvalue), TEXTOID, &el, &nl, &n);
+	for (int i = 0; i < n; i++)
+	{
+		if (nl[i])
+			return NIL;
+		keys = lappend(keys, TextDatumGetCString(el[i]));
+	}
+	return keys;
+}
+
+/* `doc ? 'k'`, `doc ?| keys` and `doc ?& keys` as the presence columns of the keys, ORed or ANDed, and its document; NULL: no such test. A SQL NULL document has no key, where the test is NULL */
+static Node *
+presence_of(const SiftV6Rel *rel, const Expr *e, const Var **doc)
+{
+	const Oid	fn = func_of(e = strip(e));
+	List	   *keys;
+	List	   *tests = NIL;
+
+	*doc = list_length(args_of(e)) == 2 ? (const Var *) strip(linitial(args_of(e))) : NULL;
+	if ((fn != F_JSONB_EXISTS && fn != F_JSONB_EXISTS_ANY && fn != F_JSONB_EXISTS_ALL) || *doc == NULL || !IsA(*doc, Var))
+		return NULL;
+	keys = fn == F_JSONB_EXISTS ? list_make1((void *) text_const(lsecond(args_of(e)))) : array_keys(lsecond(args_of(e)));
+	foreach_ptr(const char, key, keys)
+	{
+		const int	vatt = presence_vatt(rel, (const Expr *) *doc, key);
+
+		if (vatt == InvalidAttrNumber)
+			return NULL;
+		tests = lappend(tests, makeVar(rel->relid, vatt, BOOLOID, -1, InvalidOid, 0));
+	}
+	if (tests == NIL)
+		return NULL;
+	return list_length(tests) == 1 ? linitial(tests) : (Node *) (fn == F_JSONB_EXISTS_ANY ? make_orclause(tests) : make_andclause(tests));
+}
+
+static Expr *
+doc_null_test(const Var *doc, NullTestType type)
+{
+	NullTest   *nt = makeNode(NullTest);
+
+	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = (Expr *) copyObject(doc),.nulltesttype = type,.location = -1};
+	return (Expr *) nt;
+}
+
+/*
+ * A key test as the presence of its keys where the document is NOT NULL or only the truth of the test counts (truth: a WHERE, a FILTER, a CASE WHEN, the argument of IS [NOT] TRUE, through
+ * AND and OR); NOT, IS FALSE and IS NOT FALSE of the test of a document that may be NULL, read for their truth, tell the NULL document apart with a test of it (IS NOT NULL, IS NULL), a scan
+ * key of a WHERE or a FILTER. NULL: none of those
+ */
+static Node *
+presence_test(const VarsCtx *ctx, const Node *n)
+{
+	const BooleanTest *bt = IsA(n, BooleanTest) ? (const BooleanTest *) n : NULL;
+	const bool	negated = is_notclause(n);
+	const Var  *doc;
+	Node	   *pres = presence_of(ctx->rel, bt != NULL ? bt->arg : negated ? get_notclausearg(n) : (const Expr *) n, &doc);
+	const bool	nullable = pres != NULL && !bms_is_member(doc->varattno, ctx->rel->notnull);
+
+	if (pres == NULL)
+		return NULL;
+	if (bt == NULL && !negated)
+		return !nullable || ctx->truth ? pres : NULL;
+	if (!nullable || !ctx->truth || (bt != NULL && bt->booltesttype != IS_FALSE && bt->booltesttype != IS_NOT_FALSE))
+		return NULL;
+	if (bt != NULL && bt->booltesttype == IS_NOT_FALSE)
+		return (Node *) make_orclause(list_make2(pres, doc_null_test(doc, IS_NULL)));
+	return (Node *) make_andclause(list_make2(make_notclause((Expr *) pres), doc_null_test(doc, IS_NOT_NULL)));
 }
 
 /* the format reads the values of the keys of a document as the heap does, or the scan runs alone, where a value no leaf holds is refused */
@@ -511,32 +608,44 @@ read_vatt(const SiftV6Rel *rel, const Node *n, bool values, Oid *typid)
 	return sift_v6_col_input_attno(&col);
 }
 
-typedef struct VarsCtx
-{
-	const SiftV6Rel *rel;
-	bool		values;
-	SiftV6MemberVatt member;
-	void	   *arg;
-} VarsCtx;
-
 static Node *
 vars_mutator(Node *n, VarsCtx *ctx)
 {
 	Oid			typid;
 	int			vatt;
+	const bool	truth = ctx->truth;
+	Node	   *out;
 
 	if (n == NULL)
 		return NULL;
 	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber ||
 		(ctx->values && ctx->member != NULL && (vatt = ctx->member(ctx->arg, (const Expr *) n, &typid)) != InvalidAttrNumber))
 		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
-	return expression_tree_mutator(n, vars_mutator, ctx);
+	if ((out = presence_test(ctx, n)) != NULL)
+		return out;
+	if (IsA(n, CaseWhen))
+	{
+		CaseWhen   *w = palloc(sizeof(CaseWhen));
+
+		*w = *(const CaseWhen *) n;
+		ctx->truth = true;
+		w->expr = (Expr *) vars_mutator((Node *) w->expr, ctx);
+		ctx->truth = false;
+		w->result = (Expr *) vars_mutator((Node *) w->result, ctx);
+		ctx->truth = truth;
+		return (Node *) w;
+	}
+	ctx->truth = (truth && (IsA(n, List) || is_andclause(n) || is_orclause(n))) ||
+		(IsA(n, BooleanTest) && (((const BooleanTest *) n)->booltesttype == IS_TRUE || ((const BooleanTest *) n)->booltesttype == IS_NOT_TRUE));
+	out = expression_tree_mutator(n, vars_mutator, ctx);
+	ctx->truth = truth;
+	return out;
 }
 
 Expr *
-sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, SiftV6MemberVatt member, void *arg)
+sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, bool truth, SiftV6MemberVatt member, void *arg)
 {
-	VarsCtx		ctx = {rel, values, member, arg};
+	VarsCtx		ctx = {rel, values, truth, member, arg};
 
 	return (Expr *) vars_mutator((Node *) e, &ctx);
 }

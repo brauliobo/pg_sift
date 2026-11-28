@@ -89,7 +89,7 @@ SELECT same(q) FROM doc_queries() q;
                                                                                                    same                                                                                                   
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'latency'
- same normal 0 1 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
+ same node 0 0 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
  same node 0 0 SELECT count(*) FROM events WHERE jsonb_exists(metrics, 'channel')
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'channel' AND analysis ? 'flag'
  same normal 0 1 SELECT count(*) FROM events WHERE analysis ? 'items'
@@ -108,8 +108,8 @@ SELECT same(q) FROM doc_queries() q;
  same normal 0 1 SELECT metrics ->> 'channel' AS channel, count(*), count(metrics ->> 'latency') FROM events WHERE metrics ? 'latency' GROUP BY 1
  same node 0 0 SELECT analysis ->> 'flag' AS flag, count(*) FROM events WHERE analysis ? 'flag' GROUP BY 1
  same node 0 0 SELECT count(*), max((metrics ->> 'latency')::float8), min((metrics ->> 'latency')::float8) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'number'
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics) = 'object'
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency' -> 'a') = 'number'
 (24 rows)
@@ -142,7 +142,7 @@ SELECT same(q) FROM doc_queries() q;
                                                                                                    same                                                                                                   
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'latency'
- same normal 0 1 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
+ same node 0 0 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
  same node 0 0 SELECT count(*) FROM events WHERE jsonb_exists(metrics, 'channel')
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'channel' AND analysis ? 'flag'
  same normal 0 1 SELECT count(*) FROM events WHERE analysis ? 'items'
@@ -161,8 +161,8 @@ SELECT same(q) FROM doc_queries() q;
  same normal 0 1 SELECT metrics ->> 'channel' AS channel, count(*), count(metrics ->> 'latency') FROM events WHERE metrics ? 'latency' GROUP BY 1
  same node 0 0 SELECT analysis ->> 'flag' AS flag, count(*) FROM events WHERE analysis ? 'flag' GROUP BY 1
  same node 0 0 SELECT count(*), max((metrics ->> 'latency')::float8), min((metrics ->> 'latency')::float8) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'number'
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics) = 'object'
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency' -> 'a') = 'number'
 (24 rows)
@@ -175,7 +175,7 @@ SELECT same(q) FROM scoped_queries() q;
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND NOT (e.metrics ? 'channel')
  same node 0 0 SELECT count(*), sum(e.amount) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 4 AND e.analysis ? 'flag'
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 5 AND jsonb_typeof(e.metrics -> 'latency') = 'string'
- same node 8 0 SELECT e.metrics ->> 'channel' AS channel, count(*), round(avg((e.metrics ->> 'latency')::float8)::numeric, 6) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id+
+ same node 0 0 SELECT e.metrics ->> 'channel' AS channel, count(*), round(avg((e.metrics ->> 'latency')::float8)::numeric, 6) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id+
                  WHERE ep.parent_id = 1 AND jsonb_typeof(e.metrics -> 'latency') = 'number' GROUP BY 1
  same node 0 1 SELECT count(*), min(e.id), max(e.id) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 2 AND e.deleted_at IS NULL AND e.analysis ? 'items'
  same node 0 0 SELECT count(*) FROM events e JOIN entity_parents ep ON ep.entity_id = e.entity_id WHERE ep.parent_id = 99 AND e.analysis ? 'flag'
@@ -189,7 +189,7 @@ SELECT same(q) FROM doc_queries() q;
                                                                                                    same                                                                                                   
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'latency'
- same normal 0 1 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
+ same node 0 0 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
  same node 0 0 SELECT count(*) FROM events WHERE jsonb_exists(metrics, 'channel')
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'channel' AND analysis ? 'flag'
  same normal 0 1 SELECT count(*) FROM events WHERE analysis ? 'items'
@@ -208,8 +208,8 @@ SELECT same(q) FROM doc_queries() q;
  same normal 0 1 SELECT metrics ->> 'channel' AS channel, count(*), count(metrics ->> 'latency') FROM events WHERE metrics ? 'latency' GROUP BY 1
  same node 0 0 SELECT analysis ->> 'flag' AS flag, count(*) FROM events WHERE analysis ? 'flag' GROUP BY 1
  same node 0 0 SELECT count(*), max((metrics ->> 'latency')::float8), min((metrics ->> 'latency')::float8) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'number'
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics) = 'object'
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency' -> 'a') = 'number'
 (24 rows)
@@ -238,7 +238,7 @@ SELECT same(q) FROM doc_queries() q WHERE q LIKE '%latency%' OR q LIKE '%flag%';
                                                                                                    same                                                                                                   
 ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'latency'
- same normal 0 1 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
+ same node 0 0 SELECT count(*) FROM events WHERE NOT (metrics ? 'latency')
  same node 0 0 SELECT count(*) FROM events WHERE metrics ? 'channel' AND analysis ? 'flag'
  same node 0 0 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'number'
  same node 0 0 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'string'
@@ -252,8 +252,8 @@ SELECT same(q) FROM doc_queries() q WHERE q LIKE '%latency%' OR q LIKE '%flag%';
  same normal 0 1 SELECT metrics ->> 'channel' AS channel, count(*), count(metrics ->> 'latency') FROM events WHERE metrics ? 'latency' GROUP BY 1
  same node 0 0 SELECT analysis ->> 'flag' AS flag, count(*) FROM events WHERE analysis ? 'flag' GROUP BY 1
  same node 0 0 SELECT count(*), max((metrics ->> 'latency')::float8), min((metrics ->> 'latency')::float8) FROM events WHERE jsonb_typeof(metrics -> 'latency') = 'number'
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
- same normal 0 1 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?| ARRAY['latency', 'channel']
+ same node 0 0 SELECT count(*) FROM events WHERE metrics ?& ARRAY['latency', 'channel']
  same normal 0 1 SELECT count(*) FROM events WHERE jsonb_typeof(metrics -> 'latency' -> 'a') = 'number'
 (18 rows)
 
