@@ -19,6 +19,7 @@
 #include "bm25/am.h"
 #include "core/meta_peek.h"
 #include "core/f2/progress.h"
+#include "core/maint/vacuum.h"
 #include "core/ops.h"
 #include "core/quarantine/quarantine.h"
 
@@ -159,7 +160,7 @@ route_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	if (sift_quarantine_skips(info->index, SIFT_SKIP_VACUUM))
 		return vacuum_stats(stats);
-	return sift_col_ops(info->index)->amvacuumcleanup(info, stats);
+	return sift_vacuum_cleanup(info, stats, sift_col_ops(info->index)->amvacuumcleanup);
 }
 
 /* A scan without an order hands the rows over by heap address: its matches are not contiguous in the heap, which any correlation above 0 tells the planner */

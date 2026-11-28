@@ -58,5 +58,24 @@ SELECT sift.col_verify('cs_col', true);
 -- the setting takes a boolean
 ALTER INDEX cs_col SET (vacuum_truncate = 2);
 DROP TABLE cs;
+
+-- Format 2: the primary key and the index make VACUUM parallel, whose cleanup of the index waits for the end of the parallel phase to give the space back
+SET sift.test_create_format1 = off;
+SET min_parallel_index_scan_size = 0;
+CREATE TABLE cs2 (id int PRIMARY KEY, grp int, amount numeric(10,2)) WITH (autovacuum_enabled = off);
+INSERT INTO cs2 SELECT g, g % 50, g % 1000 FROM generate_series(1, 50000) g;
+SET client_min_messages = warning;
+CREATE INDEX cs2_col ON cs2 USING sift_col (grp, amount);
+RESET client_min_messages;
+SELECT blocks('cs2_col') AS built2 \gset
+UPDATE cs2 SET amount = amount + 1 WHERE id % 3 = 0;
+UPDATE cs2 SET amount = amount + 1 WHERE id % 2 = 0;
+SELECT blocks('cs2_col') AS churned2 \gset
+VACUUM cs2;
+SELECT blocks('cs2_col') * 2 < :churned2 AS shrunk, blocks('cs2_col') <= 2 * :built2 AS near_built;
+SELECT count(*), sum(amount) FROM cs2 WHERE grp = 7;
+SELECT sift.col_verify('cs2_col', true);
+DROP TABLE cs2;
+RESET min_parallel_index_scan_size;
 DROP FUNCTION blocks(regclass);
 DROP EXTENSION pg_sift;

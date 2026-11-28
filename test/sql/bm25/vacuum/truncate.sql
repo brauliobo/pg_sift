@@ -48,16 +48,13 @@ SELECT blocks('vt2_idx') AS kept \gset
 VACUUM vt2;
 SELECT blocks('vt2_idx') = :kept AS file_kept, free_blocks > :kept / 2 AS mostly_free FROM sift.index_info('vt2_idx');
 ALTER INDEX vt2_idx RESET (vacuum_truncate);
--- a sift index is not vacuumed by workers, so a VACUUM that has one btree besides it is not in parallel mode. With two the leader
--- runs the index cleanup in parallel mode, where the exclusive lock cannot be taken (it needs a transaction id): it does not truncate
--- and does not fail; autovacuum and a VACUUM without workers do
+-- a sift index is not vacuumed by workers. With two btrees beside it VACUUM is in parallel mode, where the exclusive lock cannot be taken (it needs a
+-- transaction id): the leader runs the cleanup of the index once the parallel phase is over, so a parallel VACUUM truncates as one without workers does
 CREATE INDEX vt2_id ON vt2 (id);
 CREATE INDEX vt2_id2 ON vt2 (id, body);
 SET min_parallel_index_scan_size = 0;
 VACUUM (PARALLEL 2) vt2;
 RESET min_parallel_index_scan_size;
-SELECT blocks('vt2_idx') = :kept AS parallel_keeps;
-VACUUM (PARALLEL 0) vt2;
 SELECT blocks('vt2_idx') < :kept / 4 AS truncated, sized('vt2_idx');
 SELECT sift.verify('vt2_idx', true);
 SELECT count(*) AS hits FROM vt2 WHERE body @@> 'common';

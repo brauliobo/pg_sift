@@ -641,7 +641,8 @@ sift_am_routine(int strategies, int support, bool multicol)
 	am->amsupport = support;
 	am->amcanmulticol = am->amoptionalkey = multicol;
 	am->amcanbuildparallel = am->amusemaintenanceworkmem = true;
-	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP;
+	/* the leader calls the cleanup, which waits for VACUUM to leave parallel mode (core/maint/vacuum_owed.c) */
+	am->amparallelvacuumoptions = VACUUM_OPTION_PARALLEL_BULKDEL;
 	am->amkeytype = InvalidOid;
 	return am;
 }

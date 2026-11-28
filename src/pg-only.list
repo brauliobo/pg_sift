@@ -836,6 +836,7 @@ core/maint/maint.h
 core/maint/cut.c
 core/maint/inspect.c
 core/maint/jobs.c
+core/maint/vacuum_owed.c
 core/maint/int.h
 core/maint/pacer.c
 core/maint/pacer.h
