@@ -15,6 +15,7 @@
 #include "rewrite/rewriteManip.h"
 
 #include "agg/plan/flat_rewrite.h"
+#include "agg/plan/int.h"
 #include "agg/safety.h"
 
 /* a sub-select of one row without FROM: its select list reads the query a level up, its WHERE (a gate) too */
@@ -145,24 +146,6 @@ raising_inline_ok(Query *q, Inline *in, JoinExpr *j)
 	return bms_is_subset(in->read, in->always);
 }
 
-/* CASE WHEN cond THEN e END */
-static Node *
-when(Node *cond, Node *e)
-{
-	CaseExpr   *c = makeNode(CaseExpr);
-	CaseWhen   *w = makeNode(CaseWhen);
-
-	w->expr = (Expr *) cond;
-	w->result = (Expr *) e;
-	w->location = -1;
-	c->casetype = exprType(e);
-	c->casecollid = exprCollation(e);
-	c->args = list_make1(w);
-	c->defresult = (Expr *) makeNullConst(c->casetype, exprTypmod(e), c->casecollid);
-	c->location = -1;
-	return (Node *) c;
-}
-
 /* an expression of a sub-select in the terms of the query a level up */
 static Node *
 lifted(Node *e)
@@ -182,7 +165,7 @@ fromless_cols(const Query *s, JoinType jointype, Inline *in)
 
 		if (agg_node_may_raise(e))
 			in->raising = bms_add_member(in->raising, te->resno);
-		in->cols = lappend(in->cols, s->jointree->quals != NULL && jointype == JOIN_LEFT ? when(lifted(s->jointree->quals), e) : e);
+		in->cols = lappend(in->cols, s->jointree->quals != NULL && jointype == JOIN_LEFT ? sift_v6_case_when(lifted(s->jointree->quals), e) : e);
 	}
 }
 
@@ -269,7 +252,7 @@ hoist_cols(Index rti, RangeTblEntry *rte, Inline *in)
 	for (int c = -1; (c = bms_next_member(in->raising, c)) >= 0;)
 	{
 		te = list_nth_node(TargetEntry, h.s->targetList, c - 1);
-		lfirst(list_nth_cell(in->cols, c - 1)) = when(found, hoist_mutator((Node *) te->expr, &h));
+		lfirst(list_nth_cell(in->cols, c - 1)) = sift_v6_case_when(found, hoist_mutator((Node *) te->expr, &h));
 		te->expr = (Expr *) makeNullConst(exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr));
 	}
 }

@@ -4,6 +4,8 @@
 #include "postgres.h"
 
 #include "nodes/pathnodes.h"
+#include "optimizer/clauses.h"
+#include "optimizer/optimizer.h"
 
 #include "agg/cost/card.h"
 #include "agg/join/shape.h"
@@ -86,6 +88,27 @@ under_semi(const SpecialJoinInfo *sj, const List *joins)
 	return false;
 }
 
+/*
+ * the LEFT JOIN of the element: its nullable side is the element, or the element and the relations of LEFT JOINs nested in that side after it (the lookups of the element), which are dimensions
+ * of the pairs: a pair with no element matches none of them as long as their keys read the element (the caller's to check)
+ */
+static bool
+elem_left_join(PlannerInfo *root, SiftV6JoinShape *sh, const SpecialJoinInfo *sj)
+{
+	Relids		rest;
+
+	if (sh->elem == NULL || sj->jointype != JOIN_LEFT || !bms_is_member(sh->elem->relid, sj->min_righthand))
+		return false;
+	rest = bms_del_member(bms_copy(sj->min_righthand), sh->elem->relid);
+	foreach_node(SpecialJoinInfo, o, root->join_info_list)
+		if (o != sj && o->jointype == JOIN_LEFT && bms_is_subset(o->syn_righthand, sj->min_righthand) && bms_is_subset(o->min_lefthand, sj->min_righthand))
+			rest = bms_del_members(bms_del_member(rest, o->ojrelid), o->syn_righthand);
+	if (!bms_is_empty(rest))
+		return false;
+	sh->elem_nest = bms_del_member(bms_difference(sj->min_righthand, root->outer_join_rels), sh->elem->relid);
+	return true;
+}
+
 bool
 sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 {
@@ -100,7 +123,7 @@ sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	{
 		if (!bms_is_empty(sj->commute_above_r) || !bms_is_empty(sj->commute_below_r))
 			return false;
-		if (sh->elem != NULL && sj->jointype == JOIN_LEFT && bms_equal(sj->min_righthand, bms_make_singleton(sh->elem->relid)))
+		if (elem_left_join(root, sh, sj))
 		{
 			if (sh->elem_left)
 				return false;
@@ -138,4 +161,39 @@ sift_v6_join_guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double i
 		rels[d] = jd->rel;
 	}
 	return sift_v6_lookups_guess(root, sh->fact, atts, rels, sh->nd, input_rows);
+}
+
+/* the probe is NULL for the pair a LEFT JOIN keeps without an element: it reads the element, through functions that are NULL for a NULL (a gate's CASE keeps the probe or NULL) */
+static bool
+null_without_elem(const SiftV6JoinShape *sh, const Node *probe)
+{
+	const CaseExpr *c = (const CaseExpr *) probe;
+
+	if (IsA(probe, CaseExpr) && list_length(c->args) == 1 && c->arg == NULL && IsA(c->defresult, Const) && ((const Const *) c->defresult)->constisnull)
+		probe = (const Node *) linitial_node(CaseWhen, c->args)->result;
+	return !contain_nonstrict_functions((Node *) probe) && bms_is_member(sh->elem->relid, pull_varnos(NULL, (Node *) probe));
+}
+
+/*
+ * the lookups inside the nullable side of the LEFT JOIN of the element match no row for a pair without one, as the statement's join gives them none (each has a key that reads the element),
+ * and no condition but their keys joins them there (a condition of that side would empty it for a row the scan keeps)
+ */
+bool
+sift_v6_join_elem_nest_ok(const SiftV6JoinShape *sh)
+{
+	for (int d = 0; d < sh->nd; d++)
+	{
+		bool		keyed = false;
+
+		if (!bms_is_subset(sh->dim[d].rels, sh->elem_nest))
+			continue;
+		for (int k = 0; k < sh->dim[d].nkeys; k++)
+			keyed |= null_without_elem(sh, sh->dim[d].probe[k]);
+		if (!keyed || sh->dim[d].on != NIL)
+			return false;
+	}
+	foreach_node(RestrictInfo, ri, sh->resid)
+		if (bms_overlap(ri->clause_relids, sh->elem_nest))
+			return false;
+	return true;
 }

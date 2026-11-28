@@ -19,6 +19,8 @@
 
 /* The virtual attribute of the quals the scan evaluates on its batches (an INDEX_VAR varattno above every column of an index): column c of the element (the leaf of a jsonb key of the fact table is SIFT_V6_JTEXT_VATT, agg/engine.h) */
 #define SIFT_V6_ELEM_VATT	(1 << 13)
+/* The attribute of the relation of an unnest that is whether a pair has an element (not NULL) or is the row a LEFT JOIN keeps without one (NULL), a column of type int8 */
+#define SIFT_V6_ELEM_PRESENT	(SIFT_V6_ELEM_VATT - 1)
 
 /* The lateral function scan of the statement: its function, the column of the fact table it takes, and what it declares */
 typedef struct SiftV6ElemRte
@@ -127,6 +129,7 @@ typedef struct SiftV6RecFn
 	TupleTableSlot *slot;
 	int			ncols;
 	Oid			type[SIFT_V6_XELEM_COLS];
+	bool		present[SIFT_V6_XELEM_COLS];	/* a kind column of a recordset (sift_v6_unnest_column of SIFT_V6_ELEM_PRESENT): 1 for each element, which the function gives */
 	SiftV6ElemFn fn;
 	SiftV6ValueRead vread;		/* jsonb_each, jsonb_each_text: the members come with the value as the function gives it, which values() reads as the statement does */
 	FmgrInfo	vfn;			/* the cast of jsonb_each's jsonb to the type of the value, or its #>> '{}' */

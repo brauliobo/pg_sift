@@ -168,7 +168,9 @@ sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 	SiftBytes	canon;
 	int			id;
 
-	filter = sift_v6_plan_json_test(p, (Expr *) sift_v6_placeholder_contents((Node *) filter, NULL), false);
+	if (!sift_v6_placeholder_values(p, (Node *) filter, (Node **) &filter))
+		return false;
+	filter = sift_v6_plan_json_test(p, filter, false);
 	quals = native_filter_quals(p, filter);
 	sift_bytes_init(&canon, CurrentMemoryContext);
 	if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))

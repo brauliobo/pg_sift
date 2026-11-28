@@ -1,5 +1,5 @@
 -- LEFT JOIN LATERAL over the list of a row (jsonb_to_recordset, jsonb_array_elements), ON true or with conditions of its own: a row none of whose
--- elements passes is one tuple with NULL element columns (sift.agg_left_lateral). Every query runs with and without the scan: the rows must be the
+-- elements passes is one tuple with NULL element columns. Every query runs with and without the scan: the rows must be the
 -- same, and the scan answers the query. Rows with no list, an empty list, a list whose elements all fail the lateral's conditions, NULL members,
 -- and rows the snapshot does not see (deleted, updated) are in the table; groups by the row id and by a column several rows share.
 CREATE EXTENSION pg_sift;
@@ -53,6 +53,10 @@ SELECT * FROM check_same($q$SELECT s.parent_id, count(s.id) AS n, avg(s.weight) 
   (SELECT i.id, i.parent_id, max(i.weight) AS weight, avg(p.n) AS score
    FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true GROUP BY i.id, i.parent_id) s GROUP BY s.parent_id$q$);
 
+-- a column of the lateral that is not strict is NULL for a row with no element, not its value over NULLs
+SELECT * FROM check_same($q$SELECT m.c, count(*) AS tuples
+  FROM items i LEFT JOIN LATERAL (SELECT coalesce(p.k, 'none') AS c FROM jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text)) m ON true GROUP BY m.c$q$);
+
 -- the elements joined to a lookup inside the lateral: a row with no element is one NULL tuple, a placeholder that defaults a missing match reads NULL there
 CREATE TABLE kinds (k text PRIMARY KEY, flag_a text);
 INSERT INTO kinds VALUES ('a', 'x'), ('b', 'y');
@@ -70,16 +74,12 @@ SELECT * FROM check_same($q$SELECT m.c, count(*) AS tuples, count(DISTINCT i.id)
     FROM jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) LEFT JOIN LATERAL (SELECT flag_a FROM kinds WHERE kinds.k = p.k LIMIT 1) kk ON true) m ON true GROUP BY m.c$q$);
 DROP TABLE kinds;
 
--- a condition above the join on an element column that is not strict sees the NULL tuple: the normal plan (equal rows)
+-- a condition above the join on an element column that is not strict sees the NULL tuple, in the scan too
 SELECT * FROM check_same($q$SELECT i.parent_id, count(*) AS tuples
   FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true WHERE p.n IS NULL GROUP BY i.parent_id$q$);
 -- a strict one makes it an inner join, which was pushed down before: rows without elements are gone
 SELECT * FROM check_same($q$SELECT i.parent_id, count(*) AS tuples
   FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true WHERE p.n > 3 GROUP BY i.parent_id$q$);
-
--- the setting off keeps the normal plan
-SELECT * FROM check_same($q$SELECT i.id, max(i.weight) AS weight, avg(p.n) AS n
-  FROM items i LEFT JOIN LATERAL jsonb_to_recordset(i.doc -> 'parts') AS p(k text, n int, tag text) ON true GROUP BY i.id$q$);
 
 DROP TABLE items;
 DROP FUNCTION check_same(text);

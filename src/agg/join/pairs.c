@@ -122,3 +122,39 @@ sift_v6_pair_expr(V6Plan *p, Node *e)
 
 	return c.ok ? out : NULL;
 }
+
+static bool
+opaque_placeholder(Node *n, void *context)
+{
+	PlannerInfo *root = (PlannerInfo *) context;
+
+	return n != NULL && ((IsA(n, PlaceHolderVar) && !sift_v6_placeholder_is_expr(root, (PlaceHolderVar *) n)) || expression_tree_walker(n, opaque_placeholder, context));
+}
+
+/*
+ * a placeholder other than a strict expression (sift_v6_placeholder_is_expr) in a condition of the join or of a relation, or in a class of equal expressions a condition made (not the
+ * order of a key): the keys and conditions of the pairs read columns, the other placeholders are the output's (sift_v6_placeholder_values)
+ */
+bool
+sift_v6_join_placeholder_in_quals(PlannerInfo *root, Relids base)
+{
+	int			r = -1;
+
+	if (root->placeholder_list == NIL)
+		return false;
+	while ((r = bms_next_member(base, r)) >= 0)
+	{
+		const RelOptInfo *rel = root->simple_rel_array[r];
+
+		if (rel == NULL)
+			continue;
+		foreach_node(RestrictInfo, ri, list_concat_copy(rel->baserestrictinfo, rel->joininfo))
+			if (opaque_placeholder((Node *) ri->clause, root))
+				return true;
+	}
+	foreach_node(EquivalenceClass, ec, root->eq_classes)
+		foreach_node(EquivalenceMember, em, ec->ec_members)
+			if (ec->ec_sources != NIL && opaque_placeholder((Node *) em->em_expr, root))
+				return true;
+	return false;
+}

@@ -665,7 +665,7 @@ shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh, bool rows)
 	if (!sift_v6_join_make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
 		!sift_v6_exists_main_unique(root, sh))
 		return false;
-	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh));
+	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh)) && sift_v6_join_elem_nest_ok(sh);
 }
 
 static bool
@@ -929,16 +929,6 @@ try_fact(PlannerInfo *root, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo
 	sift_v6_fact_paths(root, fact, output_rel, join_compile, join_add, &js);
 }
 
-/* the pairs carry the expression of each placeholder (sift_v6_placeholder_is_expr) */
-static bool
-placeholders_ok(PlannerInfo *root)
-{
-	foreach_node(PlaceHolderInfo, phi, root->placeholder_list)
-		if (!sift_v6_placeholder_is_expr(root, phi->ph_var))
-			return false;
-	return true;
-}
-
 static void
 try_facts(PlannerInfo *root, RelOptInfo *output_rel, const JoinStmt *js)
 {
@@ -946,7 +936,7 @@ try_facts(PlannerInfo *root, RelOptInfo *output_rel, const JoinStmt *js)
 	const int	nrels = bms_num_members(base);
 	int			f = -1;
 
-	if (nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || !placeholders_ok(root))
+	if (nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || sift_v6_join_placeholder_in_quals(root, base))
 		return;
 	while ((f = bms_next_member(base, f)) >= 0)
 	{

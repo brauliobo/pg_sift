@@ -569,6 +569,35 @@ value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return true;
 }
 
+/*
+ * whether a pair has an element of the recordset: the kind of its first member, which every element read from the leaves has (a missing member is kind 0) and the pair a LEFT JOIN keeps
+ * without one has not (NULL); a column of the elements added at its first read
+ */
+static bool
+present_column(V6Plan *p, SiftV6Col *out)
+{
+	SiftV6XElem *el = p->elem_stream == 0 ? &p->xseed->elem : &p->xseed->streams[p->elem_stream - 1];
+	List	  **names = p->elem_stream == 0 ? &p->xseed->elem_names : (List **) &list_nth_cell(p->xseed->stream_names, p->elem_stream - 1)->ptr_value;
+	int			at = 0;
+
+	if (el->fn != SV6E_RECORDSET || el->group_leaf < 0 || el->ncols == 0)
+		return false;
+	while (at < el->ncols && !el->col_kind[at])
+		at++;
+	if (at == el->ncols)
+	{
+		if (el->ncols == SIFT_V6_XELEM_COLS)
+			return false;
+		el->col_leaf[at] = el->col_leaf[0];
+		el->col_type[at] = INT8OID;
+		el->col_kind[at] = true;
+		el->ncols++;
+		*names = lappend(*names, makeString(pstrdup(strVal(linitial(*names)))));
+	}
+	*out = (SiftV6Col) {.attno = el->attno,.typid = INT8OID,.src = SV6SRC_ELEM,.slot = at};
+	return true;
+}
+
 bool
 sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 {
@@ -579,6 +608,8 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 
 	if (p->elem_rel == NULL || el == NULL)
 		return false;
+	if (IsA(e, Var) && v->varno == p->elem_rel->relid && v->varattno == SIFT_V6_ELEM_PRESENT)
+		return present_column(p, out);
 	if (el->fn == SV6E_MEMBERS)
 		return sift_v6_members_column(p, e, out);
 	if (el->fn >= SV6E_EACH && !IsA(e, Var))
@@ -661,7 +692,7 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names)
 			f->member[c] = cstring_to_text(strVal(n));
 		else
 		{
-			TupleDescInitEntry(f->desc, c + 1, strVal(n), e->col_type[c], -1, 0);
+			TupleDescInitEntry(f->desc, c + 1, strVal(n), e->col_kind[c] ? JSONBOID : e->col_type[c], -1, 0);
 			TupleDescInitEntryCollation(f->desc, c + 1, sift_v6_class(e->col_type[c]) == SV6C_TEXT ? DEFAULT_COLLATION_OID : InvalidOid);
 		}
 		c++;
@@ -669,6 +700,7 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names)
 	for (c = 0; c < f->ncols; c++)
 	{
 		f->type[c] = e->col_type[c];
+		f->present[c] = e->col_kind[c];
 		if (!sift_v6_elem_late(e, c))
 			continue;
 		getTypeInputInfo(f->type[c], &typinput, &f->vio[c]);
@@ -808,7 +840,7 @@ sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max)
 			continue;
 		}
 		for (int c = 0; c < f->ncols; c++)
-			put_cell(cx, &ev[c], f->type[c], k, f->slot->tts_values[c], f->slot->tts_isnull[c]);
+			put_cell(cx, &ev[c], f->type[c], k, f->present[c] ? Int64GetDatum(1) : f->slot->tts_values[c], f->present[c] ? false : f->slot->tts_isnull[c]);
 	}
 	for (int c = 0; c < f->ncols; c++)
 		ev[c].len = (uint16) Min(k, UINT16_MAX);

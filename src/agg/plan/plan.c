@@ -239,16 +239,6 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	return true;
 }
 
-Node *
-sift_v6_placeholder_contents(Node *n, void *context)
-{
-	if (n == NULL)
-		return NULL;
-	if (IsA(n, PlaceHolderVar))
-		return sift_v6_placeholder_contents((Node *) ((PlaceHolderVar *) n)->phexpr, context);
-	return expression_tree_mutator(n, sift_v6_placeholder_contents, context);
-}
-
 /* any other aggregate, and the ones whose arguments or collation the kernels do not take: PostgreSQL's own functions over the values the scan decodes (v6_gen.h); the arguments are
  * evaluated over the columns of the scan, where a placeholder is the expression it holds */
 static bool
@@ -258,10 +248,9 @@ compile_agg_gen(V6Plan *p, Aggref *a)
 	Aggref		unfiltered = *a;
 	Aggref	   *ref;
 
-	unfiltered.args = (List *) sift_v6_placeholder_contents((Node *) a->args, NULL);
-	unfiltered.aggdirectargs = (List *) sift_v6_placeholder_contents((Node *) a->aggdirectargs, NULL);
 	unfiltered.aggfilter = NULL;
-	if ((ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
+	if (!sift_v6_placeholder_values(p, (Node *) a->args, (Node **) &unfiltered.args) ||
+		!sift_v6_placeholder_values(p, (Node *) a->aggdirectargs, (Node **) &unfiltered.aggdirectargs) || (ref = sift_v6_gen_compile(p, &unfiltered, &g)) == NULL || (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause)))
 		return false;
 	p->spec.genref = lappend(p->spec.genref, ref);
 	p->spec.gen_written = lappend(p->spec.gen_written, a);
@@ -497,20 +486,19 @@ static bool
 compile_keys(V6Plan *p, List *group_exprs)
 {
 	p->spec.key = palloc(Max(list_length(group_exprs), 1) * sizeof(SiftV6Col));
-	foreach_ptr(Expr, e, group_exprs)
+	foreach_ptr(Expr, out, group_exprs)
 	{
 		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
+		Expr	   *e = out;
 
 		if (IsA(e, Const) && !((Const *) e)->constisnull && p->root->parse->groupingSets == NIL)
 			continue;
 		if (affine_key(p, e))
 			continue;
-		if (IsA(e, PlaceHolderVar))
-			e = ((PlaceHolderVar *) e)->phexpr;
-		if (p->spec.nkeys == SIFT_V6_MAX_KEYS || !compile_key(p, e, k))
+		if (!sift_v6_placeholder_values(p, (Node *) e, (Node **) &e) || p->spec.nkeys == SIFT_V6_MAX_KEYS || !compile_key(p, e, k))
 			return agg_refused_at(p, AGG_REFUSE_KEY, (Node *) e);
 		p->spec.nkeys++;
-		add_scan_var(p, e);
+		add_scan_var(p, out);
 	}
 	p->spec.constant_groups = p->spec.nkeys == 0 && p->root->parse->groupClause != NIL && p->root->parse->groupingSets == NIL;
 	if (p->spec.nkeys > 0 || p->spec.constant_groups || group_exprs == NIL)
@@ -524,7 +512,8 @@ sift_v6_plan_query_ok(PlannerInfo *root, RelOptInfo *output_rel)
 	const Query *parse = root->parse;
 
 	return sift_enable_agg && !parse->hasDistinctOn && !parse->hasTargetSRFs &&
-		(parse->hasAggs || parse->groupClause != NIL || parse->distinctClause != NIL) && output_rel->reltarget != NULL;
+		(parse->hasAggs || parse->groupClause != NIL || parse->distinctClause != NIL) && output_rel->reltarget != NULL &&
+		!sift_v6_nulled_placeholder((Node *) list_make3(parse->targetList, parse->havingQual, parse->jointree), root);
 }
 
 bool
@@ -693,7 +682,7 @@ refused_text(const V6Plan *p)
 
 	if (p->why_at == NULL || !bms_is_subset(pull_varnos(p->root, p->why_at), p->rel->relids) || sift_v6_pgexpr_exec(p->why_at))
 		return NULL;
-	e = sift_v6_placeholder_contents(p->why_at, NULL);
+	sift_v6_placeholder_values(p, p->why_at, &e);
 	ChangeVarNodes(e, p->rel->relid, 1, 0);
 	return deparse_expression(e, deparse_context_for(get_rel_name(relid), relid), false, false);
 }

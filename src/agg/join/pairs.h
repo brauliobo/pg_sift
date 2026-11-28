@@ -18,5 +18,7 @@ extern Node *sift_v6_pair_expr(V6Plan *p, Node *e);
 /* The placeholder is its expression in every row: a strict expression of columns of the relations it is evaluated at, all NULL in a row an outer join nulls it in (PostgreSQL wraps the
  * outputs of a sub-select pulled up under grouping sets so) */
 extern bool sift_v6_placeholder_is_expr(PlannerInfo *root, PlaceHolderVar *phv);
+/* A placeholder other than a strict expression in a condition of the join of base: the keys and conditions of the pairs read columns */
+extern bool sift_v6_join_placeholder_in_quals(PlannerInfo *root, Relids base);
 
 #endif							/* SIFT_AGG_V6_JOIN_PAIRS_H */

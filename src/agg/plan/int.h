@@ -172,8 +172,12 @@ extern bool sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause);
 /* An OR of the WHERE one of whose arms is a test of the elements of the row (p->tests): the OR of the flag of the test and the quals of the other arms, as a FILTER has them (NULL: none) */
 extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
 
-/* the expression with each placeholder replaced by what it holds: the value the scan computes where the expression is read */
-extern Node *sift_v6_placeholder_contents(Node *n, void *context);
+/* n with each placeholder as its expression, and NULL where the LEFT JOIN of the unnest of p gives a pair no element (CASE WHEN the element is there): false when one is nulled by another join */
+extern bool sift_v6_placeholder_values(const V6Plan *p, Node *n, Node **out);
+/* CASE WHEN cond THEN e END */
+extern Node *sift_v6_case_when(Node *cond, Node *e);
+/* n reads a placeholder an outer join nulls (NULL where the join adds a row with no match, its expression elsewhere), other than of the LEFT JOIN of an unnest, whose pairs say it */
+extern bool sift_v6_nulled_placeholder(Node *n, PlannerInfo *root);
 /* e with the jsonb_typeof(doc -> 'key') of its shredded keys, and with values their `->>` text and its float8 cast, as virtual columns (agg/qual/jsonb.c), for a scan that reads them; e itself when this one cannot */
 extern Expr *sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values);
 /* the conjuncts of a clause, its nested ANDs flattened */

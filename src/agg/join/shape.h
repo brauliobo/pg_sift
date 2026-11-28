@@ -39,6 +39,7 @@ typedef struct SiftV6JoinShape
 	RelOptInfo *elem;
 	SiftV6ElemRte rte;			/* the function of elem */
 	bool		elem_left;
+	Relids		elem_nest;		/* the lookups the LEFT JOIN of elem joins inside its nullable side, to the element (LEFT JOIN LATERAL (SELECT .. FROM elem LEFT JOIN LATERAL lookup ..) ON true) */
 	bool		semi;			/* elem is the array of an EXISTS: a row of the fact table counts once when some element passes */
 	int			nd;
 	int			nmain;			/* the dimensions of the statement's own join; those after them are the EXISTS' */
@@ -60,5 +61,8 @@ extern bool sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinSha
 
 /* How many times more keys than PostgreSQL counts the inner and semi dimensions of one relation on one column of the fact pass to it (sift_v6_lookups_guess) */
 extern double sift_v6_join_guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double input_rows);
+
+/* The lookups inside the nullable side of the LEFT JOIN of the element match no row for a pair without one, and no condition but their keys joins them there */
+extern bool sift_v6_join_elem_nest_ok(const SiftV6JoinShape *sh);
 
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */
