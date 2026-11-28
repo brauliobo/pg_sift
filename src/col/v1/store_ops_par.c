@@ -26,6 +26,7 @@ typedef struct V1ParScan
 	const struct SiftStoreQuals *quals;
 	Snapshot	snap;
 	struct SiftV6ScanStats *stats;
+	struct SiftV6StarRun *star;	/* the lookup tables of the joins (NULL: none): no unit is answered from its pre-aggregates */
 	void		(*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 	void	   *emit_arg;
 	MemoryContext cx;
@@ -37,13 +38,13 @@ typedef struct V1ParScan
 
 static struct SiftV6Scan *
 par_begin(const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap, struct SiftV6ScanStats *stats,
-		  void (*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg)
+		  struct SiftV6StarRun *star, void (*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 parallel scan");
 	V1ParScan  *s = MemoryContextAllocZero(cx, sizeof(V1ParScan));
 
 	SIFT_INVARIANT((index == NULL) == (quals != NULL), "a parallel scan of Format 1 reads a sift_col index by its scan keys or a sift_table by its quals");
-	*s = (V1ParScan) {.spec = spec,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.quals = quals,.snap = snap,.stats = stats,.emit = emit,.emit_arg = emit_arg,.cx = cx,
+	*s = (V1ParScan) {.spec = spec,.heap = heap,.index = index,.keys = keys,.nkeys = nkeys,.quals = quals,.snap = snap,.stats = stats,.star = star,.emit = emit,.emit_arg = emit_arg,.cx = cx,
 	.key_scan = index != NULL ? sift_v1_key_scan(index, keys, nkeys) : (SiftV1Scan) {0}};
 	return (struct SiftV6Scan *) s;
 }
@@ -78,14 +79,14 @@ par_morsel_begin(struct SiftV6Scan *scan, const uint64 *view, uint32 nview)
 {
 	V1ParScan  *s = (V1ParScan *) scan;
 	const bool	is_table = s->index == NULL;
-	SiftSrcFoldArgs a = {.spec = s->spec,.stats = s->stats,.emit = s->emit,.emit_arg = s->emit_arg,.host = is_table ? s->heap : s->index,.is_table = is_table,
+	SiftSrcFoldArgs a = {.spec = s->spec,.stats = s->stats,.star = s->star,.emit = s->emit,.emit_arg = s->emit_arg,.host = is_table ? s->heap : s->index,.is_table = is_table,
 		.quals = is_table ? s->quals->clauses : sift_srcfold_scankey_quals(s->index, s->keys, s->nkeys),.estate = is_table ? s->quals->estate : NULL};
 
 	const SiftV1Scan ks = sift_v1_spec_scan(&s->key_scan, s->spec);
 
 	s->view = nview > 0 ? view : NULL;
 	s->fold = sift_srcfold_new(&a, sift_mem_allocset_create(s->cx, "sift v1 parallel fold"));
-	s->cube = sift_v1_cube_begin(&(SiftSrcFoldArgs) {.spec = a.spec,.stats = a.stats,.host = a.host,.is_table = is_table,.quals = a.quals,.estate = a.estate}, &ks, s->cx);
+	s->cube = s->star != NULL ? NULL : sift_v1_cube_begin(&(SiftSrcFoldArgs) {.spec = a.spec,.stats = a.stats,.host = a.host,.is_table = is_table,.quals = a.quals,.estate = a.estate}, &ks, s->cx);
 }
 
 typedef struct V1Morsel

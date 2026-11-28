@@ -34,7 +34,7 @@ SELECT count(*), sum(v) FROM own;
 ROLLBACK;
 SELECT count(*), sum(v) FROM own;
 
--- the plan of a child that a worker starts per combination reads an index of its own table, and the rows the transaction holds back for it are not in a page either
+-- the lookup table of a sub-select per row, which the leader reads for the workers from an index of its own table: the rows the transaction holds back for it are not in a page either
 -- (ORDER BY: the row LIMIT 1 keeps of a key is the statement's, not the one the plan of the sub-select meets first)
 CREATE TABLE zones (id int, name text) WITH (autovacuum_enabled = false);
 INSERT INTO zones SELECT i, 'z' || i % 7 FROM generate_series(0, 59) i;

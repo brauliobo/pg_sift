@@ -409,6 +409,7 @@ first_rows_path(PlannerInfo *sub, const IndexOptInfo *ix, int nkeys)
 	return NULL;
 }
 
+/* the scan of the planned dimension: parallel safe as its plan is, which has no LIMIT (the first row of each key, ties split by the row) and gives the same rows in any process */
 static Path *
 dimension_path(RelOptInfo *dim, Path *subpath)
 {
@@ -417,6 +418,7 @@ dimension_path(RelOptInfo *dim, Path *subpath)
 	p->path.pathtype = T_SubqueryScan;
 	p->path.parent = dim;
 	p->path.pathtarget = dim->reltarget;
+	p->path.parallel_safe = subpath->parallel_safe;
 	p->subpath = subpath;
 	p->path.rows = p->subpath->rows;
 	p->path.startup_cost = p->subpath->startup_cost;

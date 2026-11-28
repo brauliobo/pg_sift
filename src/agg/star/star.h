@@ -165,6 +165,10 @@ extern bool sift_star_dim_add_key(SiftStarDim *d, const SiftStarRow *row);
 /* the index over the rows added */
 extern void sift_star_dim_finish(SiftStarDim *d);
 extern void sift_star_dim_free(SiftStarDim *d);
+/* The finished table as one block of bytes (agg/star/flat.c): its size, its copy into dst (MAXALIGN'd), and the table that reads the arrays of such a block in place (never freed, never written) */
+extern uint64 sift_star_dim_flat_bytes(const SiftStarDim *d);
+extern void sift_star_dim_flat_write(const SiftStarDim *d, char *dst);
+extern void sift_star_dim_flat_map(SiftStarDim *d, const char *src);
 
 /* The key columns of the fact batch the dimension is probed with (a range join: key[0] is the column the periods are of) */
 typedef struct SiftStarProbe

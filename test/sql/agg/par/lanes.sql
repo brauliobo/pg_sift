@@ -71,7 +71,7 @@ SELECT n, l_launched(q, 3) AS parallel,
        l_rows(q, true, 3, false) = l_rows(q, true, 3, true) AS leader_out
 FROM l_q ORDER BY n;
 
--- a child plan run for each combination of the leaves: the workers are the same for any number of them, a plan without workers is the normal plan's (ungrouped: no sort in it)
+-- a sub-select run for each row (LATERAL .. LIMIT 1) is a lookup table the leader reads once: the rows are the same for any number of workers, none included
 CREATE TABLE l_c (n int, q text);
 INSERT INTO l_c VALUES
 	(1, 'SELECT f.h, sum(f.v) AS s, avg(f.w) AS a FROM fl f JOIN LATERAL (SELECT d.tag FROM l_d d WHERE d.h = f.h ORDER BY d.tag LIMIT 1) c ON true GROUP BY f.h, c.tag'),
@@ -81,7 +81,7 @@ SELECT n, l_launched(q, 3) AS parallel,
        l_rows(q, true, 2, true) = l_rows(q, true, 3, true) AS two_three,
        l_rows(q, true, 3, false) = l_rows(q, true, 3, true) AS leader_out
 FROM l_c ORDER BY n;
-SELECT n, l_rows(q, true, 0, true) = l_rows(q, false, 0, true) AS none_is_normal FROM l_c WHERE q NOT LIKE '%GROUP BY%' ORDER BY n;
+SELECT n, l_rows(q, true, 0, true) = l_rows(q, true, 3, true) AS none_three FROM l_c ORDER BY n;
 
 -- a plan with workers differs from the normal plan by reordered additions: at most 2 (n - 1) 2^-53 of the sum of the absolute values (terms of 1e16 that cancel here)
 CREATE TABLE l_b (n int, q text);

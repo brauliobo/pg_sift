@@ -287,12 +287,14 @@ typedef struct SiftDictOps
 
 /*
  * 9. Parallel scan: the leader lists the units of the scan once (plan, in memory a DSM chunk holds), the participants read runs of the granules of a unit. begin makes a scan that is
- * not run apart; morsel_begin and morsel are a participant's. morsel folds what a store answers without rows (its pre-aggregates) into into; with into NULL every row goes to the emit.
+ * not run apart; morsel_begin and morsel are a participant's. morsel folds what a store answers without rows (its pre-aggregates) into into; with into NULL every row goes to the emit. star: the
+ * lookup tables of the joins of the spec, open for the one pass of the scan; the rows go through them to the emit (agg/pipe.h), and no pre-aggregate answers a unit.
  */
 typedef struct SiftStoreParOps
 {
 	struct SiftV6Scan *(*begin) (const struct SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
-								 struct SiftV6ScanStats *stats, void (*emit) (void *arg, const struct SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec), void *emit_arg);
+								 struct SiftV6ScanStats *stats, struct SiftV6StarRun *star, void (*emit) (void *arg, const struct SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec),
+								 void *emit_arg);
 	void		(*plan) (struct SiftV6Scan *s, SiftF2ParPlan *out);
 	void		(*morsel_begin) (struct SiftV6Scan *s, const uint64 *staged_dead, uint32 nstaged);
 	void		(*morsel) (struct SiftV6Scan *s, struct SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n);

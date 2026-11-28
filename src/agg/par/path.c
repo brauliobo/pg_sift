@@ -28,6 +28,7 @@
 #include "agg/par/pinrun.h"
 #include "agg/par/run.h"
 #include "agg/par/pg.h"
+#include "agg/pipe.h"
 #include "agg/test_gucs.h"
 #include "agg/plan/rewrite.h"
 #include "agg/settings.h"
@@ -325,16 +326,16 @@ set_topk(PlannerInfo *root, SiftV6Spec *spec, const List *scan_tlist, const List
 		spec->topk = spec->ntopk = 0;
 }
 
-/* The rules of the statement that keep any scan of rel in one process: PostgreSQL plans no workers for it, or the process of the scan loads the tables of its joins */
+/* The rules of the statement that keep any scan of rel in one process: PostgreSQL plans no workers for it */
 static const char *
-statement_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins)
+statement_serial_why(PlannerInfo *root, const RelOptInfo *rel)
 {
 	if (!rel->consider_parallel || !root->glob->parallelModeOK)
 		return "PostgreSQL plans no workers for the statement or its table: a function that is not parallel safe, a write, a cursor";
-	if (joins)
-		return "the lookup tables of its joins are loaded by the process that runs the scan";
 	return NULL;
 }
+
+#define LOOKUP_LOADED	"the lookup tables of its joins are loaded by the process that runs the scan"
 
 const char *
 sift_v6_par_rows_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins)
@@ -343,21 +344,85 @@ sift_v6_par_rows_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins
 
 	if (max_parallel_workers_per_gather <= 0)
 		return NULL;
-	if ((why = statement_serial_why(root, rel, joins)) != NULL)
+	if ((why = statement_serial_why(root, rel)) != NULL)
 		return why;
-	return "a Top-N of rows reads its units in one process";
+	return joins ? LOOKUP_LOADED : "a Top-N of rows reads its units in one process";
+}
+
+/* An aggregate reads a column of a lookup table, or an expression of the joined rows */
+static bool
+reads_lookup_column(const SiftV6Spec *spec)
+{
+	for (int v = 0; v < sift_v6_spec_nvec(spec); v++)
+	{
+		const SiftV6Col *c = sift_v6_vec_col(spec, v);
+
+		if (c != NULL && c->src == SV6SRC_DIM)
+			return true;
+	}
+	return false;
+}
+
+/* The plans the leader reads the lookup tables with: of each dimension, its plan when it is parallel safe, else the cheapest one of its relation that is; NIL when a dimension has none */
+static List *
+parallel_safe_children(List *child_paths)
+{
+	List	   *safe = NIL;
+
+	foreach_ptr(Path, child, child_paths)
+	{
+		Path	   *best = child->parallel_safe ? child : NULL;
+
+		foreach_ptr(Path, p, best == NULL ? child->parent->pathlist : NIL)
+			if (p->parallel_safe && p->param_info == NULL && (best == NULL || p->total_cost < best->total_cost))
+				best = p;
+		if (best == NULL)
+			return NIL;
+		safe = lappend(safe, best);
+	}
+	return safe;
+}
+
+/*
+ * The rules of the lookup joins that keep the scan in one process. The leader reads each lookup table once and the participants probe it in the shared block (agg/par/lookup.h), so its plan and the
+ * expressions the pipe evaluates must be parallel safe, it must be read in one pass, and no participant may owe the rows of a preserved table that no fact row matched (each sees only its own rows).
+ */
+static const char *
+lookup_serial_why(PlannerInfo *root, const SiftV6Spec *spec, List *child_paths, double passes)
+{
+	const SiftV6Ext *x = spec->ext;
+
+	if (child_paths == NIL)
+		return "the plan of a lookup table is not parallel safe";
+	if (!is_parallel_safe(root, (Node *) x->kexpr) || !is_parallel_safe(root, (Node *) x->jexpr) || !is_parallel_safe(root, (Node *) x->resid))
+		return "an expression of its joins is not parallel safe";
+	for (int d = 0; d < x->ndims; d++)
+	{
+		if (!is_parallel_safe(root, (Node *) x->on[d]))
+			return "an expression of its joins is not parallel safe";
+		if (sift_star_preserves_dim(x->dim[d].mode))
+			return "the rows of a preserved lookup table that no fact row matched are known once every process has scanned";
+	}
+	if (passes > 1)
+		return "a lookup table past its share of work_mem is joined in passes of the scan";
+	if (reads_lookup_column(spec))
+		return LOOKUP_LOADED;
+	return NULL;
 }
 
 /* The rules of the plan that keep the scan in one process, before the numbers of the query are looked at: its joins, a LIMIT that stops it, an output a Gather cannot find, what a worker cannot compute */
 static const char *
-plan_serial_why(PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, bool children, bool as_written)
+plan_serial_why(PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec, List **child_paths, double passes, bool as_written)
 {
 	const char *why;
 
-	if ((why = statement_serial_why(root, rel, children || (spec->ext != NULL && spec->ext->ndims > 0))) != NULL)
+	if ((why = statement_serial_why(root, rel)) != NULL)
 		return why;
-	if (spec->ext != NULL)
+	*child_paths = parallel_safe_children(*child_paths);
+	if (spec->ext != NULL && (spec->ext->unnest || spec->ext->ndims == 0))
 		return "the rows it unnests are made by the process that runs the scan";
+	if (spec->ext != NULL && (why = lookup_serial_why(root, spec, *child_paths, passes)) != NULL)
+		return why;
 	if (spec->lock_k > 0)
 		return "a LIMIT with no ORDER BY stops it at the first groups it holds";
 	if (!as_written)
@@ -372,7 +437,7 @@ plan_serial_why(PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec
 
 const char *
 sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist, List *having, double groups,
-					 Cost serial_total, bool children, bool as_written)
+					 Cost serial_total, List *child_paths, double passes, bool as_written)
 {
 	SiftV6Spec	spec = *serial_spec;
 	CostPick	pick = {.serial_total = serial_total,.groups = clamp_row_est(groups)};
@@ -386,7 +451,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 
 	if (max_parallel_workers_per_gather <= 0)
 		return NULL;
-	if ((why = plan_serial_why(root, rel, &spec, children, as_written)) != NULL)
+	if ((why = plan_serial_why(root, rel, &spec, &child_paths, passes, as_written)) != NULL)
 		return why;
 	set_topk(root, &spec, scan_tlist, having);
 	if (parallel_setup_cost > 0 && debug_parallel_query == DEBUG_PARALLEL_OFF && (sift_v6_par_wanted(&spec) || sift_v6_pin_wanted(&spec)))
@@ -417,6 +482,7 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	cp->path.startup_cost = cp->path.total_cost = pick.total;
 	cp->path.rows = clamp_row_est(total_groups / participants(nworkers));
 	cp->methods = methods;
+	cp->custom_paths = child_paths;
 	cp->custom_private = list_make3(sift_v6_spec_pack(&spec), scan_tlist, having);
 	gather = create_gather_path(root, output_rel, &cp->path, output_rel->reltarget, NULL, &total_groups);
 	gather->path.startup_cost = gather->path.total_cost = pick.total;

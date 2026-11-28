@@ -37,9 +37,10 @@ typedef struct SiftV6ParSummary
 	uint64		workers;
 } SiftV6ParSummary;
 
-extern SiftV6ParNode *sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, Snapshot snap, MemoryContext mcx,
+/* star: the lookup tables of the joins of the scan (NULL: none), which the leader reads once and the workers map from the shared block */
+extern SiftV6ParNode *sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, struct SiftV6StarRun *star, Snapshot snap, MemoryContext mcx,
 											 MemoryContext tuple_cx);
-/* false: there is no shared block (a Gather with no workers makes none) and the node runs as a serial one */
+/* false: there is no shared block (a Gather with no workers makes none), or the leader runs the scan alone (SiftV6ParDsmHdr.alone): the node runs as a serial one */
 extern bool sift_v6_par_node_attached(const SiftV6ParNode *pn);
 extern Size sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt);
 extern void sift_v6_par_node_initialize(SiftV6ParNode *pn, ParallelContext *pcxt, void *chunk);
@@ -49,6 +50,8 @@ extern void sift_v6_par_node_shutdown(SiftV6ParNode *pn);
 extern bool sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull);
 extern void sift_v6_par_node_end(SiftV6ParNode *pn);
 extern void sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out);
+/* The rows of the lookup tables the leader shared with the workers through the block */
+extern uint64 sift_v6_par_node_lookup_rows(const SiftV6ParNode *pn);
 extern const char *sift_v6_par_strategy_name(int strategy);
 
 #endif							/* SIFT_AGG_V6_PAR_NODE_H */

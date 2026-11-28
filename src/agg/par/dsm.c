@@ -48,7 +48,10 @@ lay_out(const SiftV6ParShape *sh, SiftV6ParDsmHdr *h)
 	h->plain_off = at;
 	at = LINE(at + mul_size(participants, sh->plain_slot_bytes));
 	h->stats_off = at;
-	h->total_bytes = LINE(at + mul_size(participants, sizeof(SiftV6ParWorkerStats)));
+	at = LINE(at + mul_size(participants, sizeof(SiftV6ParWorkerStats)));
+	h->lookup_off = at;
+	h->lookup_bytes = sh->lookup_bytes;
+	h->total_bytes = LINE(at + sh->lookup_bytes);
 }
 
 Size
@@ -89,7 +92,7 @@ sift_v6_par_dsm_init(void *raw, dsm_segment *seg, const SiftV6ParShape *sh, cons
 	Assert(sh->strategy != SV6P_SERIAL && sh->n_dist <= SIFT_PAR_MAX_DIST);
 	memset(h, 0, sizeof(*h));
 	lay_out(sh, h);
-	memset((char *) h + h->plain_off, 0, h->total_bytes - h->plain_off);
+	memset((char *) h + h->plain_off, 0, h->lookup_off - h->plain_off);
 	h->magic = SIFT_V6_PAR_DSM_MAGIC;
 	h->strategy = (uint16) sh->strategy;
 	h->nworkers_planned = (uint16) sh->nworkers;
@@ -113,7 +116,7 @@ sift_v6_par_dsm_init(void *raw, dsm_segment *seg, const SiftV6ParShape *sh, cons
 void
 sift_v6_par_dsm_reinit(SiftV6ParDsmHdr *h, const uint32 *granules)
 {
-	memset((char *) h + h->plain_off, 0, h->total_bytes - h->plain_off);
+	memset((char *) h + h->plain_off, 0, h->lookup_off - h->plain_off);
 	init_shared_words(h);
 	sift_morsel_init(sift_v6_par_morsels(h), h->n_parts, granules, (uint32) h->nworkers_planned + 1);
 	sift_par_coord_reset(sift_v6_par_coord(h));

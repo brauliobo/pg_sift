@@ -181,7 +181,7 @@ begin_par(V6State *st, CustomScanState *node, EState *estate)
 		if (st->sources[k].index == NULL)
 			st->sources[k].ops->zone->bind_quals(st->sources[k].heap, st->sources[k].quals, node->ss.ps.ps_ExprContext);
 	}
-	st->par = sift_v6_par_node_begin(st->spec, node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->sources, st->nsources, estate->es_snapshot, estate->es_query_cxt,
+	st->par = sift_v6_par_node_begin(st->spec, node->ss.ss_ScanTupleSlot->tts_tupleDescriptor, st->sources, st->nsources, st->star, estate->es_snapshot, estate->es_query_cxt,
 									 node->ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
 }
 
@@ -211,7 +211,7 @@ v6_begin(CustomScanState *node, EState *estate, int eflags)
 		for (int k = 0; k < st->nsources; k++)
 			sift_v6_source_enter(st->sources[k].index != NULL ? st->sources[k].index : st->sources[k].heap, st->sources[k].index == NULL, estate->es_snapshot);
 	require_formats(st);
-	if (st->star != NULL && st->nsources == 1)
+	if (st->star != NULL && st->nsources == 1 && st->spec->par_strategy == 0)
 		sift_v6_star_fact(st->star, st->spec, &(SiftV6FoundFact) {st->sources[0].ops, st->sources[0].heap, st->sources[0].index, estate->es_snapshot});
 	begin_arm(st, node, estate, eflags);
 	if (st->spec->par_strategy != 0)
@@ -898,7 +898,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (st->spec->ext != NULL && st->spec->ext->ndims > 0)
 	{
 		ExplainPropertyInteger("Star Dimensions", NULL, st->spec->ext->ndims, es);
-		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, es);
+		sift_v6_explain_lookup_joins(&st->css, st->spec->ext, st->par != NULL ? sift_v6_par_node_lookup_rows(st->par) : 0, es);
 	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);

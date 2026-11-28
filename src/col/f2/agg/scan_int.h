@@ -168,7 +168,7 @@ extern void sift_f2_v6_bin_keys(V6Scan *s);
 extern uint16 sift_f2_v6_vet_slice(V6Scan *s, const uint64 *live, const uint64 *tid, bool visible, int off, int n);
 extern bool sift_f2_v6_batch_visible(const V6Scan *s, const SiftF2Batch *b);
 /* f2_v6_scan_table.c */
-extern void sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap);
+extern void sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, struct SiftV6StarRun *star);
 extern void sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, const uint64 *skip, int nskip, struct SiftV6StarRun *star,
 								  SiftV6ChunkFn next_chunk, void *chunk_arg);
 

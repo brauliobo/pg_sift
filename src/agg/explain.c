@@ -189,7 +189,7 @@ lookup_reads(PlanState *ps, LookupReads *r)
 }
 
 static void
-explain_lookup_reads(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es)
+explain_lookup_reads(CustomScanState *css, const SiftV6Ext *ext, uint64 rows_shared, ExplainState *es)
 {
 	LookupReads r = {0};
 	SiftExplainLine ln;
@@ -202,11 +202,12 @@ explain_lookup_reads(CustomScanState *css, const SiftV6Ext *ext, ExplainState *e
 	sift_explain_int(&ln, "Lookup Rows Read", NULL, "rows read", (int64) r.read, SIFT_XI_KEEP);
 	sift_explain_int(&ln, "Lookup Rows Loaded", NULL, "rows loaded", (int64) r.loaded, SIFT_XI_KEEP);
 	sift_explain_int(&ln, "Lookup Index Scans", NULL, "index scans", (int64) r.index_scans, SIFT_XI_OPT);
+	sift_explain_int(&ln, "Lookup Rows Shared", NULL, "rows shared", (int64) rows_shared, SIFT_XI_OPT);
 	sift_explain_end(&ln);
 }
 
 void
-sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es)
+sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, uint64 rows_shared, ExplainState *es)
 {
 	List	   *names = NIL;
 
@@ -221,7 +222,7 @@ sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, Explain
 	}
 	if (names != NIL)
 		ExplainPropertyList("Lookup Joins", names, es);
-	explain_lookup_reads(css, ext, es);
+	explain_lookup_reads(css, ext, rows_shared, es);
 }
 
 /* a column of the scan that the statement names as it is, by the name of the table: derived, jsonb, joined and index expression columns have no name, and print no line rather than a made-up one */

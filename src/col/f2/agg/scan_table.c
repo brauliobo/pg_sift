@@ -14,8 +14,18 @@
 #include "col/f2/agg/preagg.h"
 #include "col/f2/agg/scan_int.h"
 
+bool *
+sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves)
+{
+	bool	   *nan_ok = palloc0(Max(nleaves, 1) * sizeof(bool));
+
+	for (int i = 0; i < s->ncols; i++)
+		nan_ok[s->cols[i].leaf] = s->cols[i].nan_ok;
+	return nan_ok;
+}
+
 void
-sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap)
+sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *quals, Snapshot snap, SiftV6StarRun *star)
 {
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftStoreScanOpts *o = palloc(sizeof(SiftStoreScanOpts));
@@ -24,7 +34,7 @@ sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *qua
 	s->is_table = true;
 	s->rows_rel = rel;
 	s->rows_snap = snap;
-	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, NULL);
+	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, star);
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
 		.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols),.grans = &s->grans};

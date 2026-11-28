@@ -52,6 +52,11 @@ extern uint64 sift_v6_star_budget(int ndims);
 extern double sift_v6_star_dim_bytes(SiftV6JoinMode mode, Oid ktype, const Oid *ptypes, int npay, double rows, double width, double span, uint64 budget);
 /* What the planner expects of dimension d of rows rows of width bytes: the times the node reads its plan, and in passes the passes of the fact table its parts or chunks make */
 extern double sift_v6_star_reads(const SiftV6Ext *x, int d, double rows, double width, double *passes);
+/* The tables of the pass, every dimension in one (sift_v6_star_one_pass), as one block of bytes: its size, its copy into dst (MAXALIGN'd; returns the rows of the tables), and the run that reads the
+ * tables of such a block in place, which it neither writes nor frees: the leader of a parallel scan reads its dimensions once and the participants map them from the shared block */
+extern uint64 sift_v6_star_flat_bytes(const SiftV6StarRun *r);
+extern uint64 sift_v6_star_flat_write(const SiftV6StarRun *r, char *dst);
+extern void sift_v6_star_map(SiftV6StarRun *r, const char *src);
 /* The passes the dimensions need (known after pass 0) and the bytes the largest table took */
 extern uint32 sift_v6_star_passes(const SiftV6StarRun *r);
 extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);

@@ -14,7 +14,7 @@ extern void sift_v6_fold_batch(SiftV6Fold *f, const uint64 *tid, const uint64 *l
 extern void sift_v6_fold_batch_scored(SiftV6Fold *f, const uint64 *tid, const uint64 *live, const uint64 *maybe, const void *views, const float4 *score, int n);
 extern void sift_v6_fold_end(SiftV6Fold *f);
 extern SiftV6Scan *sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
-									  SiftV6ScanStats *stats, SiftV6BatchFn emit, void *emit_arg);
+									  SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6BatchFn emit, void *emit_arg);
 extern void sift_v6_scan_run_ext(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const uint64 *skip, int nskip,
 								 const struct SiftScopeRouter *router, SiftV6ScanStats *stats, struct SiftV6StarRun *star, SiftV6ChunkFn next_chunk, void *chunk_arg);
 extern void sift_v6_scan_plan(SiftV6Scan *s, struct SiftF2ParPlan *out);

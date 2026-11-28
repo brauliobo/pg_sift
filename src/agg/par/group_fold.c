@@ -34,6 +34,7 @@ typedef struct ParEnv
 	MemoryContext tuple_cx;		/* what a finished group is made in: the per-tuple memory of the node */
 	SiftV6ParDsmHdr *hdr;
 	const SiftV6ScanSrc *sources;
+	struct SiftV6StarRun *star;	/* the lookup tables of the joins (NULL: none) */
 	uint32		nsources;
 	Snapshot	snap;
 	SiftV6Scan **scan;			/* of each source, begun by the first morsel of it */
@@ -221,7 +222,7 @@ open_scan(ParEnv *e, uint32 child)
 	const uint64 *staged = sift_v6_par_staged_dead(e->hdr, child, &nstaged);
 	MemoryContext old = MemoryContextSwitchTo(e->cx);
 
-	e->scan[child] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, batch_to_local, e);
+	e->scan[child] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, e->snap, &e->stats, e->star, batch_to_local, e);
 	src->ops->par->morsel_begin(e->scan[child], staged, nstaged);
 	MemoryContextSwitchTo(old);
 	return e->scan[child];
@@ -672,7 +673,8 @@ par_local_set_dist(void *local, uint32 slot, uint64 total)
 }
 
 void
-sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources, Snapshot snap)
+sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources,
+						struct SiftV6StarRun *star, Snapshot snap)
 {
 	ParEnv	   *e = MemoryContextAllocZero(cx, sizeof(ParEnv));
 
@@ -686,6 +688,7 @@ sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryCont
 	e->tuple_cx = tuple_cx;
 	e->hdr = hdr;
 	e->sources = sources;
+	e->star = star;
 	e->nsources = hdr->n_children;
 	e->snap = snap;
 	e->scan = MemoryContextAllocZero(cx, e->nsources * sizeof(SiftV6Scan *));

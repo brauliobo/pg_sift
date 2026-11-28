@@ -20,8 +20,8 @@ extern void sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, co
 extern void sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es);
 /* Pushed Aggregates: the aggregates the scan runs (a CASE of an aggregate as its FILTER), as the statement names their columns */
 extern void sift_v6_explain_pushed_aggs(CustomScanState *css, List *ancestors, ExplainState *es);
-/* Lookup Joins: the relations the plans of the dimensions of a star join read */
-extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, ExplainState *es);
+/* Lookup Joins: the relations the plans of the dimensions of a star join read; rows_shared: the rows of their tables the leader of a parallel scan shared with its workers */
+extern void sift_v6_explain_lookup_joins(CustomScanState *css, const SiftV6Ext *ext, uint64 rows_shared, ExplainState *es);
 
 /* an expression of a statement being planned as the statement names its relations: the columns of every relation of its range table (prefix: qualified by their relation) */
 extern char *sift_v6_deparse_planning(PlannerInfo *root, Node *e, bool prefix);

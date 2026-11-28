@@ -17,6 +17,7 @@
 #include "agg/group/int.h"
 #include "agg/par/dist.h"
 #include "agg/par/pg.h"
+#include "agg/star/run.h"
 
 #define SIFT_PAR_MIN_POOL_BYTES	(4 << 20)
 #define SIFT_PAR_POOL_BIG_GROUPS	400000	/* from this many expected groups a run fills its pool, and the estimate is the low one (it leaves out part of the key bytes) */
@@ -41,18 +42,56 @@ sift_v6_par_strategy_name(int strategy)
 }
 
 SiftV6ParNode *
-sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, Snapshot snap, MemoryContext mcx, MemoryContext tuple_cx)
+sift_v6_par_node_begin(const SiftV6Spec *spec, TupleDesc desc, const SiftV6ScanSrc *sources, int nsources, SiftV6StarRun *star, Snapshot snap, MemoryContext mcx, MemoryContext tuple_cx)
 {
 	SiftV6ParNode *pn = MemoryContextAllocZero(mcx, sizeof(SiftV6ParNode));
 
-	*pn = (SiftV6ParNode) {.spec = spec,.desc = desc,.sources = sources,.nsources = nsources,.snap = snap,.mcx = mcx,.tuple_cx = tuple_cx};
+	*pn = (SiftV6ParNode) {.spec = spec,.desc = desc,.base = sources,.nsources = nsources,.star = star,.snap = snap,.mcx = mcx,.tuple_cx = tuple_cx};
+	pn->sources = MemoryContextAlloc(mcx, nsources * sizeof(SiftV6ScanSrc));
+	memcpy(pn->sources, sources, nsources * sizeof(SiftV6ScanSrc));
 	return pn;
 }
 
 bool
 sift_v6_par_node_attached(const SiftV6ParNode *pn)
 {
-	return pn->hdr != NULL;
+	return pn->hdr != NULL && !(pn->hdr->alone && !IsParallelWorker());
+}
+
+/* The index of each source is scanned with the keys of the lookup tables too (the range or the list of the keys a table holds), which every participant computes alike from the same tables */
+static void
+lookup_keys(SiftV6ParNode *pn)
+{
+	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
+
+	for (int k = 0; k < pn->nsources; k++)
+		if (pn->base[k].index != NULL)
+			pn->sources[k].keys = sift_v6_star_scan_keys(pn->star, pn->base[k].index, pn->base[k].keys, pn->base[k].nkeys, &pn->sources[k].nkeys);
+	MemoryContextSwitchTo(old);
+}
+
+/*
+ * The leader reads the lookup tables of the joins once, before the workers start: the bytes they take in the shared block. A table that needs passes of the scan (past its share of work_mem), or an
+ * inner join with a table of no row, leaves the scan to the leader alone, which runs it as the serial node does.
+ */
+static Size
+lookup_read(SiftV6ParNode *pn)
+{
+	pn->alone = sift_v6_star_open(pn->star, 0, (uint32) pn->nsources) != SSO_SCAN || !sift_v6_star_one_pass(pn->star);
+	if (pn->alone)
+		return 0;
+	lookup_keys(pn);
+	return sift_v6_star_flat_bytes(pn->star);
+}
+
+/* The tables go to the shared block (a rescan reads them again: they leave the scan to the leader when they no longer fit the bytes the block has for them) */
+static void
+lookup_share(SiftV6ParNode *pn, SiftV6ParDsmHdr *h, Size bytes)
+{
+	h->alone = pn->alone || bytes > h->lookup_bytes;
+	pn->alone = h->alone;
+	if (!h->alone)
+		pn->lookup_rows = sift_v6_star_flat_write(pn->star, (char *) h + h->lookup_off);
 }
 
 void
@@ -62,6 +101,12 @@ sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out)
 		.morsels_stolen = pn->total.morsels_stolen,.radix_parts = pn->radix_parts,.partial_recs = pn->ring_recs,.partial_bytes = pn->ring_bytes,
 		.rows_scanned = pn->total.rows_scanned,.grans_scanned = pn->total.grans_scanned,.grans_pruned_zone = pn->total.grans_pruned_zone,.grans_pruned_skip = pn->total.grans_pruned_skip,.grans_preagg = pn->total.grans_preagg,.grans_preagg_delta = pn->total.grans_preagg_delta,.heap_vet_rows = pn->total.heap_vet_rows,
 		.topk_dropped = pn->total.topk_dropped,.workers = pn->total.workers};
+}
+
+uint64
+sift_v6_par_node_lookup_rows(const SiftV6ParNode *pn)
+{
+	return pn->alone ? 0 : pn->lookup_rows;
 }
 
 static uint32
@@ -118,7 +163,7 @@ list_units(SiftV6ParNode *pn)
 	{
 		const SiftV6ScanSrc *src = &pn->sources[k];
 
-		scan[k] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, NULL, NULL);
+		scan[k] = src->ops->par->begin(src->spec, src->heap, src->index, src->keys, src->nkeys, src->quals, pn->snap, &stats, pn->star, NULL, NULL);
 		src->ops->par->plan(scan[k], &each[k]);
 		nrefs += each[k].nrefs;
 		nstaged += each[k].nstaged;
@@ -151,12 +196,13 @@ sift_v6_par_node_estimate(SiftV6ParNode *pn, ParallelContext *pcxt)
 	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
 	const SiftV6Spec *spec = pn->spec;
 	const uint32 radix_nparts = sift_v6_par_radix_parts((SiftV6ParStrategy) spec->par_strategy, pcxt->nworkers);
+	const Size	lookup_bytes = pn->star != NULL ? lookup_read(pn) : 0;
 
 	list_units(pn);
 	pn->shape = (SiftV6ParShape) {.strategy = (SiftV6ParStrategy) spec->par_strategy,.nworkers = pcxt->nworkers,.n_parts = pn->plan.nrefs,.part_ref_bytes = sizeof(SiftParPartRef),
 		.n_children = pn->nsources,.n_staged_dead = pn->plan.nstaged,.n_aggs = (uint32) spec->naggs,.n_dist = count_distinct(spec),
 		.max_chunks = sift_v6_par_chunks((SiftV6ParStrategy) spec->par_strategy, chunk_budget(pn, pcxt->nworkers + 1, radix_nparts)),.radix_nparts = radix_nparts,
-		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc))};
+		.plain_slot_bytes = (uint32) (sizeof(SiftV6RecHdr) + (Size) Max(spec->naggs, 1) * sizeof(V6Acc)),.lookup_bytes = lookup_bytes};
 	MemoryContextSwitchTo(old);
 	return sift_v6_par_dsm_size(&pn->shape);
 }
@@ -183,6 +229,8 @@ sift_v6_par_node_initialize(SiftV6ParNode *pn, ParallelContext *pcxt, void *chun
 	memcpy(sift_v6_par_staged_starts(h), pn->staged_start, (Size) (pn->nsources + 1) * sizeof(uint64));
 	if (pn->plan.nstaged > 0)
 		memcpy(sift_v6_par_staged_starts(h) + pn->nsources + 1, pn->plan.staged_dead, (Size) pn->plan.nstaged * sizeof(uint64));
+	if (pn->star != NULL)
+		lookup_share(pn, h, h->lookup_bytes);
 	pn->hdr = h;
 }
 
@@ -198,6 +246,8 @@ sift_v6_par_node_reinitialize(SiftV6ParNode *pn, void *chunk)
 	pn->hdr = sift_v6_par_dsm_block(chunk);
 	sift_v6_par_dsm_reinit(pn->hdr, granules);
 	pfree(granules);
+	if (pn->star != NULL)
+		lookup_share(pn, pn->hdr, lookup_read(pn));
 }
 
 void
@@ -208,17 +258,25 @@ sift_v6_par_node_worker(SiftV6ParNode *pn, void *chunk)
 	SIFT_INVARIANT(h->magic == SIFT_V6_PAR_DSM_MAGIC, "the leader initialized the shared block of the parallel aggregate");
 	sift_par_worker_attach_custom(sift_v6_par_coord(h), dsm_find_mapping(h->seg_handle));
 	pn->hdr = h;
+	if (pn->star != NULL && !h->alone)
+	{
+		sift_v6_star_map(pn->star, (const char *) h + h->lookup_off);
+		lookup_keys(pn);
+	}
 }
 
 bool
 sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 {
-	MemoryContext old = MemoryContextSwitchTo(pn->mcx);
+	MemoryContext old;
 	bool		got;
 
+	if (pn->hdr->alone)
+		return false;
+	old = MemoryContextSwitchTo(pn->mcx);
 	if (pn->run == NULL)
 	{
-		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->sources, pn->snap);
+		sift_v6_par_engine_make(&pn->eng, pn->spec, pn->mcx, pn->tuple_cx, pn->desc, pn->hdr, pn->sources, pn->star, pn->snap);
 		if (pn->spec->topk > 0)
 			pn->topk = sift_v6_par_topk_new(pn->mcx, pn->spec, pn->desc);
 		pn->run = sift_v6_par_run_new(pn->hdr, &pn->eng, pn->topk != NULL ? sift_v6_par_topk_heap(pn->topk) : NULL);
@@ -232,6 +290,8 @@ sift_v6_par_node_next(SiftV6ParNode *pn, Datum *values, bool *isnull)
 void
 sift_v6_par_node_end(SiftV6ParNode *pn)
 {
+	if (pn->star != NULL)
+		sift_v6_star_close(pn->star);
 	if (pn->run == NULL)
 		return;
 	sift_v6_par_run_end(pn->run);

@@ -224,6 +224,7 @@ typedef struct SiftV6ParDsmHdr
 	dsm_handle	seg_handle;			/* the workers find their segment by it: InitializeWorkerCustomScan has the table of contents, not the segment */
 	uint32		plain_slot_bytes;	/* of the record each participant leaves for the final state (the distinct strategy) */
 	uint32		n_children;			/* the relations the parts are of (the partitions of a table, else one) */
+	bool		alone;				/* the leader runs the scan by itself (its lookup tables need passes of the scan, or join no row): the workers return nothing */
 
 	/* byte offsets from this header, each on a cache line */
 	Size		parts_off;
@@ -232,6 +233,8 @@ typedef struct SiftV6ParDsmHdr
 	Size		coord_off;
 	Size		plain_off;
 	Size		stats_off;
+	Size		lookup_off;			/* the lookup tables of the joins, which the leader read (agg/star/run.h: sift_v6_star_flat_write) */
+	Size		lookup_bytes;
 	Size		total_bytes;
 
 	Barrier		phase_barrier pg_attribute_aligned(PG_CACHE_LINE_SIZE);
@@ -258,6 +261,7 @@ typedef struct SiftV6ParShape
 	uint32		max_chunks;
 	uint32		radix_nparts;
 	uint32		plain_slot_bytes;
+	Size		lookup_bytes;
 } SiftV6ParShape;
 
 extern uint32 sift_v6_par_chunks(SiftV6ParStrategy strategy, double expected_bytes);

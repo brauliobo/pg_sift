@@ -19,8 +19,12 @@ struct SiftV6ParNode
 {
 	const SiftV6Spec *spec;
 	TupleDesc	desc;
-	const SiftV6ScanSrc *sources;	/* the relations of the scan: one, or a partition each */
+	const SiftV6ScanSrc *base;	/* the relations of the scan: one, or a partition each */
+	SiftV6ScanSrc *sources;		/* the same, with the keys the lookup tables of the joins add */
 	int			nsources;
+	struct SiftV6StarRun *star;	/* the lookup tables of the joins (NULL: none): read by the leader, mapped from the shared block by a worker */
+	bool		alone;			/* the leader runs the scan by itself (SiftV6ParDsmHdr.alone) */
+	uint64		lookup_rows;	/* the rows of the lookup tables the leader put in the shared block */
 	Snapshot	snap;
 	MemoryContext mcx;			/* of the query */
 	MemoryContext tuple_cx;		/* of the tuple the node returns */
@@ -43,16 +47,16 @@ struct SiftV6ParNode
 };
 
 extern void sift_v6_par_engine_make(SiftV6ParEngine *eng, const SiftV6Spec *spec, MemoryContext cx, MemoryContext tuple_cx, TupleDesc desc, SiftV6ParDsmHdr *hdr, const SiftV6ScanSrc *sources,
-									Snapshot snap);
+									struct SiftV6StarRun *star, Snapshot snap);
 extern void sift_v6_par_engine_end(SiftV6ParEngine *eng);
 
 /*
  * Adds the Gather of a parallel node next to the serial path of add_group_path, when sift_v6_par_choose_strategy picks a parallel strategy; the spec of the path carries it. Returns the rule that
- * keeps the scan in one process when none is added (NULL: one is, or the session allows no workers); children: the serial path reads the plans of its joins; as_written: the node returns the
- * expressions of the target as the statement writes them
+ * keeps the scan in one process when none is added (NULL: one is, or the session allows no workers); child_paths: the plans of the lookup tables of its joins, read in passes passes of the
+ * scan; as_written: the node returns the expressions of the target as the statement writes them
  */
 extern const char *sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *serial_spec, const CustomPathMethods *methods, List *scan_tlist,
-										List *having, double groups, Cost serial_total, bool children, bool as_written);
+										List *having, double groups, Cost serial_total, List *child_paths, double passes, bool as_written);
 /* The rule that keeps a Top-N of the rows of rel in one process (NULL: the session allows no workers); joins: it reads the plans of lookup tables */
 extern const char *sift_v6_par_rows_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins);
 /* Prices the serial path by the compute threads of the backend that run its scan, when the spec is one they take (agg/par/run.h, agg/par/pinrun.h) */

@@ -63,6 +63,8 @@ typedef struct SiftV6Pipe
 
 /* The types of the fact slots (SVEC_I64, SVEC_F64 or SVEC_STRVIEW); the dimensions are in place with their parts chosen */
 extern SiftV6Pipe *sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, SiftV6Rows *rows, int nfact, const SiftVecType *ftype);
+/* The batches of the scan that made the pipe go through it to *emit (a participant of a parallel run), which the scan no longer calls: *emit is NULL after; nothing changes when it is NULL */
+extern void sift_v6_pipe_take_emit(SiftV6Pipe *p, SiftV6BatchFn *emit, void **emit_arg);
 /* A pipe over the dimensions, parts and slots of p, with every level made, whose batches go to sink: running it calls neither palloc nor the server, so that a compute thread may run it (the dimensions are read, never written) */
 extern SiftV6Pipe *sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, void *sink_arg);
 /* The column the vector v of a batch is: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second, then the columns of the COUNT(DISTINCT ..) rows and those of the FILTER clauses; NULL for none */

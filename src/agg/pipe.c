@@ -175,6 +175,14 @@ level_of(SiftV6Pipe *p, int l)
 	return b;
 }
 
+void
+sift_v6_pipe_take_emit(SiftV6Pipe *p, SiftV6BatchFn *emit, void **emit_arg)
+{
+	p->sink = *emit;
+	p->sink_arg = *emit_arg;
+	*emit = NULL;
+}
+
 SiftV6Pipe *
 sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, void *sink_arg)
 {

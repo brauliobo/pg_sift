@@ -228,6 +228,7 @@ setup_pipe(V6Scan *s, const int *first, SiftV6StarRun *star)
 		s->tidvec.data = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 	}
 	s->pipe = sift_v6_pipe_new(CurrentMemoryContext, spec, s->group, s->rows, nfact, type);
+	sift_v6_pipe_take_emit(s->pipe, &s->emit, &s->emit_arg);
 	sift_v6_star_attach(star, s->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -651,16 +652,6 @@ sift_f2_v6_scan_leaves(const V6Scan *s)
 	return leaves;
 }
 
-bool *
-sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves)
-{
-	bool	   *nan_ok = palloc0(Max(nleaves, 1) * sizeof(bool));
-
-	for (int i = 0; i < s->ncols; i++)
-		nan_ok[s->cols[i].leaf] = s->cols[i].nan_ok;
-	return nan_ok;
-}
-
 static bool *
 dict_leaves(const V6Scan *s)
 {
@@ -888,10 +879,10 @@ sift_v6_fold_end(SiftV6Fold *s)
 		MemoryContextDelete(s->batch_cx);
 }
 
-/* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit */
+/* A scan of a parallel run: begun by the leader to list the units of the scan, and by each participant to read the runs of granules it takes; its batches go to emit, through the lookup tables of star */
 SiftV6Scan *
 sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, int nkeys, const SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats,
-				   SiftV6BatchFn emit, void *emit_arg)
+				   SiftV6StarRun *star, SiftV6BatchFn emit, void *emit_arg)
 {
 	V6Scan	   *s = sift_palloc0_aligned(V6Scan, 1);
 	const SiftColPrune *zones;
@@ -903,11 +894,11 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	s->emit_arg = emit_arg;
 	if (index == NULL)
 	{
-		sift_f2_v6_scan_table_morsels(s, heap, quals, snap);
+		sift_f2_v6_scan_table_morsels(s, heap, quals, snap, star);
 		return s;
 	}
 	s->host = index;
-	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, NULL);
+	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	sift_v6_vet_begin(&s->vet, heap, snap, stats);
 	s->rows_rel = heap;
@@ -918,7 +909,7 @@ sift_v6_scan_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKe
 	sift_f2_scan_count_granules(s->scan, &s->grans);
 	zones = sift_f2_v6_zone_tests(spec, index, &nzones, stats);
 	sift_f2_scan_set_zones(s->scan, zones, nzones);
-	s->preagg = emit != NULL && !spec->tid_range && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
+	s->preagg = s->emit != NULL && !spec->tid_range && !sift_v6_spec_distinct(spec) ? sift_v6_preagg_begin(spec, NULL, sift_col_rel(index)->first, &s->vet, stats) : NULL;
 	if (s->preagg != NULL)
 		sift_f2_scan_set_gran_sink(s->scan, sift_v6_preagg_try_granule, s->preagg);
 	return s;

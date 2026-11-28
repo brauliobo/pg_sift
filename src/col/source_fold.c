@@ -155,6 +155,7 @@ setup_pipe(SiftSrcFold *f)
 			.data = MemoryContextAllocAligned(f->cx, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0)};
 	}
 	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, f->a.rows, nfact, type);
+	sift_v6_pipe_take_emit(f->pipe, &f->a.emit, &f->a.emit_arg);
 	sift_v6_star_attach(f->a.star, f->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)

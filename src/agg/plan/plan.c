@@ -741,23 +741,23 @@ cheapest_total(const RelOptInfo *rel)
 	return c;
 }
 
-/* What the node pays again when a dimension is over its share of work_mem: the reads of the dimensions for each part or chunk, and a scan of the fact table for each pass (agg/star/run.h) */
+/* What the node pays again when a dimension is over its share of work_mem: the reads of the dimensions for each part or chunk, and a scan of the fact table for each of the *passes (agg/star/run.h) */
 static Cost
-passes_cost(const V6Plan *p, List *child_paths, Cost scan)
+passes_cost(const V6Plan *p, List *child_paths, Cost scan, double *passes)
 {
-	double		passes = 1;
 	Cost		cost = 0;
 
+	*passes = 1;
 	for (int d = list_length(child_paths) - 1; d >= 0; d--)
 	{
 		const Path *child = list_nth(child_paths, d);
 		double		parts;
 		const double reads = sift_v6_star_reads(p->spec.ext, d, child->rows, child->pathtarget->width, &parts);
 
-		cost += (reads * passes - 1) * sift_v6_dim_cost(child);
-		passes *= parts;
+		cost += (reads * *passes - 1) * sift_v6_dim_cost(child);
+		*passes *= parts;
 	}
-	return cost + (passes - 1) * scan;
+	return cost + (*passes - 1) * scan;
 }
 
 void
@@ -765,7 +765,8 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 {
 	CustomPath *cp = makeNode(CustomPath);
 	Cost		serial_total,
-				passes;
+				passes_extra;
+	double		passes = 1;
 	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
 	const char *lack = format_lacks(p);
 
@@ -789,16 +790,16 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->path.pathtarget = p->out->reltarget;
 	cp->path.rows = clamp_row_est(having == NIL ? groups : groups * sift_v6_quals_sel(p->root, having, 0));
 	scan_cost(p, groups, &cp->path.startup_cost, &cp->path.total_cost);
-	passes = child_paths == NIL ? 0 : passes_cost(p, child_paths, cp->path.total_cost);
-	cp->path.startup_cost += extra_startup + passes;
-	cp->path.total_cost += extra_total + passes;
+	passes_extra = child_paths == NIL ? 0 : passes_cost(p, child_paths, cp->path.total_cost, &passes);
+	cp->path.startup_cost += extra_startup + passes_extra;
+	cp->path.total_cost += extra_total + passes_extra;
 	cp->methods = &v6_path_methods;
 	cp->custom_paths = child_paths;
 	p->spec.groups_est = (uint32) Min(groups, (double) INT_MAX);
 	serial_total = sift_v6_forced(cp->path.total_cost);
 	sift_v6_threads_price(p->root, p->rel, &p->spec, groups, &cp->path);
 	p->spec.lock_k = child_paths == NIL && p->spec.ext == NULL && p->spec.nparts == 0 ? sift_v6_limit_of(p->root->parse) : 0;
-	p->spec.serial_because = sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total, child_paths != NIL,
+	p->spec.serial_because = sift_v6_par_add_path(p->root, p->rel, p->out, &p->spec, &v6_path_methods, p->scan_tlist, having, groups, serial_total, child_paths, passes,
 												   outputs_as_written(p->out->reltarget));
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
 	p->spec.lock_k = 0;

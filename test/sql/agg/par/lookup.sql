@@ -13,6 +13,8 @@ SET min_parallel_table_scan_size = 0;
 SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET seq_page_cost = 10000;
+-- the scan takes the workers it may whatever they save: these tables are a few granules
+SET sift.test_agg_par_min_rows = 0;
 
 CREATE TABLE zones (id int PRIMARY KEY, name text, tier int, w numeric, tag text);
 INSERT INTO zones SELECT i, CASE WHEN i % 11 = 0 THEN NULL ELSE 'z' || i % 7 END, i % 3, CASE WHEN i % 13 = 0 THEN NULL ELSE i * 1.25 END,

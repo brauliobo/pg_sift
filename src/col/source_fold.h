@@ -18,7 +18,7 @@
 
 typedef struct SiftSrcFold SiftSrcFold;
 
-/* What a fold needs of the scan: spec, and where its rows go: group, else emit (a participant of a parallel run), else the pipe of star (into rows for a row Top-N) */
+/* What a fold needs of the scan: spec, and where its rows go: group, else emit (a participant of a parallel run), else the pipe of star (into rows for a row Top-N; it hands them to emit when there is one) */
 typedef struct SiftSrcFoldArgs
 {
 	const struct SiftV6Spec *spec;

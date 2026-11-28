@@ -737,6 +737,52 @@ sift_v6_star_one_pass(const SiftV6StarRun *r)
 	return true;
 }
 
+/* The tables as one block: the offset of each from the start, then each table flat (agg/star/flat.c) */
+uint64
+sift_v6_star_flat_bytes(const SiftV6StarRun *r)
+{
+	uint64		bytes = MAXALIGN(r->x->ndims * sizeof(uint64));
+
+	for (int d = 0; d < r->x->ndims; d++)
+		bytes += sift_star_dim_flat_bytes(&r->dim[d]);
+	return bytes;
+}
+
+uint64
+sift_v6_star_flat_write(const SiftV6StarRun *r, char *dst)
+{
+	uint64	   *off = (uint64 *) dst;
+	uint64		at = MAXALIGN(r->x->ndims * sizeof(uint64)),
+				rows = 0;
+
+	for (int d = 0; d < r->x->ndims; d++)
+	{
+		off[d] = at;
+		sift_star_dim_flat_write(&r->dim[d], dst + at);
+		at += sift_star_dim_flat_bytes(&r->dim[d]);
+		rows += r->dim[d].nrows;
+	}
+	return rows;
+}
+
+void
+sift_v6_star_map(SiftV6StarRun *r, const char *src)
+{
+	const uint64 *off = (const uint64 *) src;
+
+	for (int d = 0; d < r->x->ndims; d++)
+	{
+		free_dim(r, d);
+		sift_star_dim_flat_map(&r->dim[d], src + off[d]);
+		r->have[d] = r->shared[d] = true;
+		r->found[d] = NULL;
+		r->part[d] = r->chunk[d] = 0;
+		r->nparts[d] = r->nchunks[d] = 1;
+		r->dirty[d] = false;
+	}
+	r->passes = 1;
+}
+
 uint32
 sift_v6_star_passes(const SiftV6StarRun *r)
 {
