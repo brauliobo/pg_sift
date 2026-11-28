@@ -20,7 +20,6 @@
 #include "agg/group/topk.h"
 #include "agg/plan/rewrite.h"
 #include "agg/safety.h"
-#include "agg/topn/rows.h"
 #include "agg/topn/topn.h"
 #include "agg/datum.h"
 
@@ -605,14 +604,11 @@ sift_v6_rows_count_of(const Query *q)
 	return list_make2(q->limitCount, q->limitOffset);
 }
 
-/*
- * the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed, and a K past the heap of the best rows, which the node keeps
- * in a bounded sort (agg/topn/rows.c); a K that parameters give is planned as a typical page
- */
+/* the K of the best rows of the query: the same, window functions over the whole set (the node of the rows computes them) allowed; a K that parameters give is planned as a typical page */
 uint32
 sift_v6_rows_k_of(const Query *q)
 {
-	const uint32 k = q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_V6_ROWS_ALL - 1);
+	const uint32 k = q->sortClause == NIL ? 0 : limit_plus_offset(q, SIFT_TOPK_MAX_K);
 
 	return k == 0 && sift_v6_rows_count_of(q) != NIL ? SIFT_V6_PARAM_ROWS : k;
 }
