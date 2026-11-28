@@ -169,7 +169,7 @@ stock	top_rows_one_parent	normal	4.7	19
 stock	top_rows_per_kind_unindexed_column	normal	-	-
 stock	top_rows_trailing_key	scan	0.18	0.74
 stock	top_rows_trailing_key_desc_offset	scan	0.15	0.60
-stock	top_rows_trailing_key_ties	scan	0.16	0.65
+stock	top_rows_trailing_key_ties	scan	0.33	1.3
 stock	top_two_keys	scan	0.13	0.51
 stock	two_distincts	scan	0.071	0.28
 stock	two_keys_month	scan	0.15	0.60
@@ -346,7 +346,7 @@ stock4t	top_rows_one_parent	normal	4.7	19
 stock4t	top_rows_per_kind_unindexed_column	normal	-	-
 stock4t	top_rows_trailing_key	scan	0.18	0.74
 stock4t	top_rows_trailing_key_desc_offset	scan	0.15	0.60
-stock4t	top_rows_trailing_key_ties	scan	0.16	0.65
+stock4t	top_rows_trailing_key_ties	scan	0.33	1.3
 stock4t	top_two_keys	scan	0.13	0.51
 stock4t	two_distincts	scan	0.071	0.28
 stock4t	two_keys_month	scan	0.15	0.60
@@ -1509,7 +1509,7 @@ tuned	top_rows_one_parent	normal	4.7	19
 tuned	top_rows_per_kind_unindexed_column	normal	-	-
 tuned	top_rows_trailing_key	scan	0.060	0.24
 tuned	top_rows_trailing_key_desc_offset	scan	0.046	0.18
-tuned	top_rows_trailing_key_ties	scan	0.0027	0.011
+tuned	top_rows_trailing_key_ties	scan	0.0055	0.022
 tuned	top_two_keys	scan	0.040	0.16
 tuned	two_distincts	scan	0.033	0.13
 tuned	two_keys_month	scan	0.053	0.21

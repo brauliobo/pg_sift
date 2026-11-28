@@ -101,13 +101,11 @@ SELECT (SELECT count(*) FROM ((SELECT * FROM kp_on EXCEPT ALL SELECT * FROM kp_o
 
 DEALLOCATE kp;
 RESET plan_cache_mode;
--- the keyset page of a top-N: the same rows as the normal plan, from the key on, and the granules read with the key far in the table and near its start (the scan forced:
--- at 10000 a page, the heap rows the top-N fetches price it above the index-only scan of the index)
+-- the keyset page of a top-N: the same rows as the normal plan, from the key on, and the granules read with the key far in the table and near its start
 CREATE FUNCTION page_granules(key int, n int) RETURNS TABLE (granules int, rows_ok bool) LANGUAGE plpgsql AS $$
 DECLARE l text; u int; q text := format('SELECT id FROM rc WHERE (id, a) > (%s, 0) ORDER BY id, a LIMIT %s', key, n);
 	got int[]; want int[];
 BEGIN
-	SET LOCAL sift.agg_force = on;
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		u := coalesce(substring(l from 'Granules: scanned=(\d+)')::int, u);
 	END LOOP;
@@ -115,7 +113,6 @@ BEGIN
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE 'SELECT array_agg(id ORDER BY id) FROM (' || q || ') x' INTO want;
 	RESET sift.enable_agg;
-	RESET sift.agg_force;
 	granules := u; rows_ok := got = want;
 	RETURN NEXT;
 END $$;

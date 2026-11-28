@@ -2,9 +2,8 @@
 -- the heap in the order of the key, and the b-tree on (entity, key) reads the same pages without the sorted runs: measured, the top-N scan took 1.9 to 2.4 times its
 -- instructions and 2.0 to 2.5 times its cycles (pgbench -c 4: 8,300 against 15,500 statements a second), while the cost model priced the fetch at half a page
 -- (a fifth of the b-tree plan's cost with sorted runs); where a b-tree gives the first key of the order the price now has the pages of its plan as a floor.
--- `plan` is where the rows come from: the b-tree ("native") or the extension ("sift"). The Top-N scan pays the heap pages of the rows it gives, as the b-tree plan does. The lists a b-tree cannot give
--- in order (another key, the whole table) stay with the extension: they take 4 to 80 times fewer instructions; a filter on a column the b-tree does not hold reads the index-only scan of the
--- extension's index and sorts, as fast as its Top-N scan (6.0 against 6.3 ms).
+-- `plan` is where the rows come from: the b-tree ("native") or the extension ("sift"). The lists a b-tree cannot give in order (another key, the whole table) stay with the extension: they
+-- take 4 to 80 times fewer instructions; a filter on a column the b-tree does not hold reads the index-only scan of the extension's index and sorts, as fast as its Top-N scan.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
 SET client_min_messages = warning;
