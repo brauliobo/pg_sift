@@ -38,12 +38,17 @@
 
 /* ---- the leaves a scan decodes as they are stored ---- */
 
-/* the leaf of attribute att when it is the only one (the lanes of a wide value, which have no type, are its head's): a scalar of the attribute itself, none for a document, a declared path or a list */
+/*
+ * the leaf of attribute att when it is the only one (the lanes of a wide value, which have no type, are its head's): a scalar of the attribute itself, none for a document, a declared path or a
+ * list, nor for what a statement reads of a key of a document (its type, its text, a cast: SIFT_V6_JVIRT_VATT and up), which no leaf holds as it is
+ */
 const SiftSrcLeaf *
 sift_v1_att_leaf(const SiftSrcLayout *lay, int att)
 {
 	const SiftSrcLeaf *found = NULL;
 
+	if (sift_v6_vatt_is_json(att))
+		return NULL;
 	if (att >= SIFT_V6_JLEAF_VATT)
 		return lay->leaf[att - SIFT_V6_JLEAF_VATT].parent < 0 ? &lay->leaf[att - SIFT_V6_JLEAF_VATT] : NULL;
 	for (int i = 0; i < lay->nleaves; i++)
