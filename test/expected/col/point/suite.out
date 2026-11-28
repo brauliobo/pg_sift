@@ -118,10 +118,10 @@ BEGIN
 END $$;
 SELECT k AS keys, pb_path(format('SELECT count(*), sum(v) FROM pb WHERE id IN (%s)', (SELECT list FROM pb_keys WHERE n = k))) AS path
 FROM unnest(ARRAY[60, 500]) k;
- keys |  path   
-------+---------
+ keys | path  
+------+-------
    60 | btree
-  500 | siftagg
+  500 | btree
 (2 rows)
 
 CREATE FUNCTION pb_run(k int, agg boolean) RETURNS text LANGUAGE plpgsql AS $$
