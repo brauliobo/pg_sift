@@ -721,6 +721,7 @@ col/v1_engine/store_ops_preagg_ext.c
 col/v1_engine/store_ops_preagg_ext.h
 col/v1_engine/store_ops_preagg_pred.c
 col/v1_engine/store_ops_preagg_pred.h
+col/v1_engine/store_ops_range_count.c
 col/v1_engine/store_ops_scope.c
 col/v1_engine/store_ops_text.c
 col/v1_engine/store_ops_vet.c
