@@ -288,25 +288,28 @@ $$ SELECT gr_chk(format('SELECT %s FROM %s WHERE %s', sel, t, w)), 1::bigint
 					 'ent_id = 7 AND created BETWEEN ''2024-02-01'' AND ''2024-02-15'' AND score < 2500']) WITH ORDINALITY x(w, wi)
    WHERE (si + wi + stage) % 4 = 0 AND NOT (sel = 'id, created' AND w ~ '2030|2025-01-01') $$;
 SELECT result, count(*) FROM gr_all('gr', 0) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    13
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     4
+ units    |     9
+(2 rows)
 
 SELECT result, count(*) FROM gr_all('gs', 1) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    13
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     4
+ units    |     9
+(2 rows)
 
 -- a write buffer next to the segment, then a promotion
 INSERT INTO gr SELECT 300000 + i, i % 400, timestamp '2024-02-05' + i * interval '1 second', i % 5000, 'w' FROM generate_series(1, 1500) i;
 INSERT INTO gs SELECT * FROM gr WHERE id > 300000;
 SELECT result, count(*) FROM gr_all('gr', 2) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    12
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     5
+ units    |     7
+(2 rows)
 
 SELECT sift.col_promote('gr_i') >= 0 AS promoted_r, sift.col_promote('gs_i') >= 0 AS promoted_s;
  promoted_r | promoted_s 
@@ -317,16 +320,18 @@ SELECT sift.col_promote('gr_i') >= 0 AS promoted_r, sift.col_promote('gs_i') >= 
 VACUUM gr;
 VACUUM gs;
 SELECT result, count(*) FROM gr_all('gr', 3) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    12
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     2
+ units    |    10
+(2 rows)
 
 SELECT result, count(*) FROM gr_all('gs', 4) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    13
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     4
+ units    |     9
+(2 rows)
 
 -- rows deleted and updated (the units that hold them are read), an update and an insert rolled back
 DELETE FROM gr WHERE id % 53 = 0;
@@ -338,30 +343,34 @@ UPDATE gr SET created = timestamp '2024-02-10' WHERE id % 3 = 0;
 INSERT INTO gr SELECT 400000 + i, 7, timestamp '2024-02-10', i, 'r' FROM generate_series(1, 300) i;
 ROLLBACK;
 SELECT result, count(*) FROM gr_all('gr', 5) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    13
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     4
+ units    |     9
+(2 rows)
 
 SELECT result, count(*) FROM gr_all('gs', 6) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    12
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     5
+ units    |     7
+(2 rows)
 
 VACUUM gr;
 VACUUM gs;
 SELECT result, count(*) FROM gr_all('gr', 7) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    12
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     2
+ units    |    10
+(2 rows)
 
 SELECT result, count(*) FROM gr_all('gs', 8) GROUP BY 1 ORDER BY 1;
- result | count 
---------+-------
- units  |    13
-(1 row)
+  result  | count 
+----------+-------
+ narrowed |     4
+ units    |     9
+(2 rows)
 
 SELECT sift.col_verify('gr_i'), sift.col_verify('gs_i');
  col_verify | col_verify 

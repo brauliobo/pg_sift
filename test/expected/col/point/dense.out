@@ -31,8 +31,8 @@ FROM (VALUES ('u IN (11, 5000, 29000)'), ('u = 77')) t(w)
 ORDER BY w;
            w            | answered_by 
 ------------------------+-------------
- u = 77                 | units
- u IN (11, 5000, 29000) | units
+ u = 77                 | directory
+ u IN (11, 5000, 29000) | directory
 (2 rows)
 
 -- the same rows with the directory ignored (a copy of the table without the option)
