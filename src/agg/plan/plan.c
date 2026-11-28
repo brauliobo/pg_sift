@@ -726,18 +726,6 @@ format_lacks(const V6Plan *p)
 	return NULL;
 }
 
-/* the cost of the cheapest path the relation has so far (-1: none) */
-static double
-cheapest_total(const RelOptInfo *rel)
-{
-	double		c = -1;
-
-	foreach_ptr(Path, path, rel->pathlist)
-		if (c < 0 || path->total_cost < c)
-			c = path->total_cost;
-	return c;
-}
-
 /* What the node pays again when a dimension is over its share of work_mem: the reads of the dimensions for each part or chunk, and a scan of the fact table for each of the *passes (agg/star/run.h) */
 static Cost
 passes_cost(const V6Plan *p, List *child_paths, Cost scan, double *passes)
@@ -803,7 +791,7 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	cp->custom_private = list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, having);
 	p->spec.lock_k = 0;
 	p->spec.serial_because = NULL;
-	sift_agg_arm_priced("single", cp->path.total_cost, cheapest_total(p->out));
+	sift_agg_arm_priced("single", cp->path.total_cost, sift_agg_normal_cost(p->out, -1));
 	sift_v6_force_price(&cp->path);
 	add_path(p->out, &cp->path);
 }
@@ -954,7 +942,7 @@ sift_agg_v6_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List
 	CustomScan *cs = makeNode(CustomScan);
 	SiftV6Spec *spec = sift_v6_spec_unpack(linitial(best->custom_private), NULL);
 
-	sift_agg_arm_used("single");
+	sift_agg_arm_used(spec->rows ? "topn" : "single");
 	cs->scan.plan.targetlist = rewrite_tlist(tlist);
 	if (spec->rows)
 		cs->scan.plan.targetlist = (List *) sift_v6_rows_window_aggs((Node *) cs->scan.plan.targetlist);

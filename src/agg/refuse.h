@@ -7,7 +7,7 @@
 
 #include "postgres.h"
 
-#include "nodes/pg_list.h"
+#include "nodes/pathnodes.h"
 
 #include "core/limits.h"
 
@@ -60,6 +60,8 @@ extern void sift_agg_refuse(const char *arm, AggRefusal why, const char *detail,
  */
 extern void sift_agg_arm_priced(const char *arm, double scan, double normal);
 extern void sift_agg_arm_used(const char *arm);
+/* the cheapest path of rel that no arm of the aggregate added, once a LIMIT stops it after k rows (k < 0: all of them); -1: none */
+extern double sift_agg_normal_cost(const RelOptInfo *rel, double k);
 extern void sift_agg_arm_refused(const char *arm, AggRefusal why);
 extern void sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail);
 /* the same, for a reason about the shape of the form of the statement being planned: one that a planning of another form of it names (agg/plan/cte.c) replaces */

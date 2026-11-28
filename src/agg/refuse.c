@@ -178,6 +178,29 @@ sift_agg_arm_priced(const char *arm, double scan, double normal)
 		a->normal = a->normal < 0 ? normal : Min(a->normal, normal);
 }
 
+static bool
+agg_path(const Path *p)
+{
+	while (IsA(p, ProjectionPath) || IsA(p, GatherPath) || IsA(p, GatherMergePath))
+		p = IsA(p, ProjectionPath) ? ((const ProjectionPath *) p)->subpath : IsA(p, GatherPath) ? ((const GatherPath *) p)->subpath : ((const GatherMergePath *) p)->subpath;
+	return IsA(p, CustomPath) && strncmp(((const CustomPath *) p)->methods->CustomName, "SiftAgg", 7) == 0;
+}
+
+double
+sift_agg_normal_cost(const RelOptInfo *rel, double k)
+{
+	double		c = -1;
+
+	foreach_ptr(Path, path, rel->pathlist)
+	{
+		const double at_k = k < 0 ? path->total_cost : path->startup_cost + (path->total_cost - path->startup_cost) * Min(1.0, k / Max(path->rows, 1.0));
+
+		if (!agg_path(path) && (c < 0 || at_k < c))
+			c = at_k;
+	}
+	return c;
+}
+
 void
 sift_agg_arm_used(const char *arm)
 {
