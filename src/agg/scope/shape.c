@@ -25,6 +25,9 @@ scope_legs(PlannerInfo *root, Relids rels)
 	int			r = -1;
 
 	while ((r = bms_next_member(rels, r)) >= 0)
+	{
+		if (root->simple_rel_array[r] == NULL)
+			continue;
 		foreach_node(IndexOptInfo, ix, root->simple_rel_array[r]->indexlist)
 		{
 			Relation	index;
@@ -44,6 +47,7 @@ scope_legs(PlannerInfo *root, Relids rels)
 			}
 			index_close(index, AccessShareLock);
 		}
+	}
 	return legs;
 }
 

@@ -107,6 +107,7 @@ agg/scope/match.c
 agg/scope/plan.c
 agg/scope/rewrite.c
 agg/scope/scan.c
+agg/scope/shape.c
 agg/scope/scope.h
 agg/scope/show.c
 agg/scope/unread.c
