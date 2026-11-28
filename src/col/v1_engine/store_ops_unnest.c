@@ -291,6 +291,31 @@ restrict_where(UnRun *u, const SiftV6Batch *b)
 		bs->mask[w] &= keep[w];
 }
 
+/* the rows of the batch the quals no scan key says keep, decided on the columns as the statement reads them; a row whose array the leaves cannot hold is the heap's, which tests it */
+static void
+restrict_quals(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
+{
+	SiftBatchSel *bs = &u->bs;
+	const int	words = (b->n + 63) / 64;
+	uint64		heap[SIFT_VEC_WORDS];
+
+	bs->n_raw = b->n;
+	bs->n_active = 0;
+	for (int w = 0; w < words; w++)
+	{
+		heap[w] = bs->mask[w] & eb->poison[w];
+		bs->mask[w] &= ~heap[w];
+		bs->n_active += sift_pc64(bs->mask[w]);
+	}
+	bs->all_active = bs->n_active == bs->n_raw;
+	bs->has_sel = false;
+	for (int i = 0; i < u->nbq; i++)
+		u->bqv[i] = u->fv[u->bqcol[i]];
+	sift_v6_bq_filter(u->bq, bs);
+	for (int w = 0; w < words; w++)
+		bs->mask[w] |= heap[w];
+}
+
 /* the pairs of the rows of the batch whose elements the leaves hold; the rows they cannot hold (poison) are read from their heap row */
 static void
 emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
@@ -339,6 +364,8 @@ sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 	if (u->has_where)
 		restrict_where(u, b);
 	compute_columns(u, b, bs);
+	if (u->bq != NULL && eb != NULL)
+		restrict_quals(u, b, eb);
 	for (int w = 0; w < words; w++)
 		u->stats->rows += sift_pc64(bs->mask[w]);
 	if (u->ntests > 0)
@@ -351,8 +378,33 @@ sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 				sift_v1_unnest_emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
 }
 
+static const SiftVec *
+bq_col(void *arg, const SiftV6InCol *c)
+{
+	UnRun	   *u = arg;
+	const SiftV6Col col = sift_v6_vatt_is_json(c->attno) ? sift_v6_spec_vatt_col(u->spec, c->attno, c->typid, c->scale) : (SiftV6Col) {.attno = c->attno,.typid = c->typid,.scale = c->scale};
+
+	u->bqcol[u->nbq] = sift_v1_unnest_col_index(u, &col, false);
+	return &u->bqv[u->nbq++];
+}
+
+/* the quals of the table no scan key says, over the columns of the batch the source decodes */
 static void
-setup_clauses(UnRun *u)
+setup_bq(UnRun *u, Relation host)
+{
+	SiftV6Input in;
+
+	if (u->spec->vqual == NIL)
+		return;
+	if (u->spec->is_table)
+		sift_v6_input_init_table(&in, host);
+	else
+		sift_v6_input_init_rel(&in, host);
+	u->bq = sift_v6_bq_open(CurrentMemoryContext, u->spec->vqual, &in, bq_col, u, u->spec->exec);
+}
+
+static void
+setup_clauses(UnRun *u, Relation host)
 {
 	const SiftV6Spec *spec = u->spec;
 	bool		bound;
@@ -369,6 +421,7 @@ setup_clauses(UnRun *u)
 	}
 	if (u->x->elem_where != NIL)
 		u->eev = sift_v6_elem_eval_open(CurrentMemoryContext, u->x->elem_where);
+	setup_bq(u, host);
 	sift_v1_unnest_setup_tests(u);
 }
 
@@ -456,7 +509,7 @@ sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 		if (v->varno != INNER_VAR)
 			sift_v1_unnest_heap_att(u, v->varattno);
 	setup_cols(u);
-	setup_clauses(u);
+	setup_clauses(u, spec->is_table ? heap : index);
 	setup_pipe(u, g, star);
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].month)

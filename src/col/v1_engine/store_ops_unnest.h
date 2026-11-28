@@ -27,6 +27,7 @@
 #include "agg/expr/pg.h"
 #include "agg/pipe.h"
 #include "agg/plan/rewrite.h"
+#include "agg/qual/bqual.h"
 #include "agg/star/run.h"
 #include "agg/unnest/late.h"
 #include "agg/unnest/unnest.h"
@@ -102,6 +103,10 @@ typedef struct UnRun
 	bool		has_where;
 	SiftVec   **wvecs;
 	int		   *wcol;			/* the column of each vector the WHERE clause reads (-1: not one of the table) */
+	SiftV6Bq   *bq;				/* the quals of the table no scan key says (SiftV6Spec.vqual), NULL: none */
+	int			nbq;
+	int			bqcol[SIFT_V6_MAX_COLS];	/* the column of the batch each input of bq is */
+	SiftVec		bqv[SIFT_V6_MAX_COLS];
 	SiftV6ElemEval *eev;		/* the quals of the element of a lateral unnest */
 	SiftV6RowTests *tests;		/* the tests of the elements of a row (SiftV6Ext.test), NULL without any */
 	int			ntests;

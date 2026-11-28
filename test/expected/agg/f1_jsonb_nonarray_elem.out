@@ -114,9 +114,9 @@ SELECT * FROM check_err($$SELECT e.kind, count(*) FROM b CROSS JOIN LATERAL json
 (1 row)
 
 SELECT * FROM check_q($$SELECT e.kind, count(*) FROM b CROSS JOIN LATERAL jsonb_to_recordset(b.doc -> 'parts') AS e(kind text, score float8) WHERE b.id NOT IN (700, 800) GROUP BY 1$$);
- node | unnest | same 
-------+--------+------
- none | -      | t
+   node    |      unnest      | same 
+-----------+------------------+------
+ SiftAggV6 | lateral columnar | t
 (1 row)
 
 DROP TABLE a, b;
