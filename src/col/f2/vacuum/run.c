@@ -409,6 +409,13 @@ sift_f2_maint_step(Relation rel, const SiftMaintClaim *claim)
 	return r;
 }
 
+/* The tail of the file a VACUUM in parallel mode owed to the end of its transaction: the relocation and the cuts it could not run (core/maint/vacuum.h) */
+static void
+owed_tail(Relation rel, const void *arg pg_attribute_unused(), int message_level pg_attribute_unused())
+{
+	(void) shrink_tail(rel, sift_standby_safe_horizon(rel, false), sift_f2_hot_cut(sift_f2_rel(rel)));
+}
+
 IndexBulkDeleteResult *
 sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool force_sync_full)
 {
@@ -475,7 +482,7 @@ sift_f2_vacuum_run(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, bool for
 			(void) sift_compact_pack_tails(rel);
 	}
 	sift_horizon_vacuum_read_end(rel);
-	if (here)
+	if (here && !sift_vacuum_owes(info, owed_tail, NULL))
 	{
 		sift_f2_trace_phase(&tr, "shrink");
 		shrink = sift_fsm_tail_shrink(rel);

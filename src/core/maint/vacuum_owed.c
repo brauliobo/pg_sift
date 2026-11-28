@@ -1,8 +1,8 @@
 /*
- * core/maint/vacuum_owed.c - the cleanup of a sift index that VACUUM calls in parallel mode runs at the end of the VACUUM of its table. A table with two indexes or more is vacuumed in parallel
- * mode, where no transaction id can be assigned: the steps that lock the index exclusively (the lock is WAL-logged for a standby) would never run, so the space step would not give the file back.
- * The leader calls the cleanup (the sift access methods leave VACUUM_OPTION_PARALLEL_CLEANUP out) and owes it to the pre-commit of the transaction of the table, where VACUUM has left parallel
- * mode and still holds the locks of the table and its indexes.
+ * core/maint/vacuum_owed.c - the space step of a sift index whose cleanup VACUUM calls in parallel mode runs at the end of the VACUUM of its table. A table with two indexes or more is vacuumed in
+ * parallel mode, where no transaction id can be assigned: the steps that lock the index exclusively (the lock is WAL-logged for a standby) would never run, so the file would keep its free end.
+ * The leader calls the cleanup (the sift access methods leave VACUUM_OPTION_PARALLEL_CLEANUP out), which runs as VACUUM calls it, its merge included, and owes the space step to the pre-commit of
+ * the transaction of the table, where VACUUM has left parallel mode and still holds the locks of the table and its indexes.
  */
 #include "postgres.h"
 
@@ -18,46 +18,58 @@
 
 #include "core/dispatch.h"
 #include "core/maint/vacuum.h"
+#include "core/quarantine/quarantine.h"
+#include "core/restrict.h"
 
 typedef struct Owed
 {
 	Oid			index;
 	Oid			heap;
 	int			message_level;
-	bool		estimated_count;
-	double		num_heap_tuples;
-	IndexBulkDeleteResult *stats;	/* of the bulk deletion, NULL: none ran */
-	SiftVacuumCleanup cleanup;
+	SiftVacuumSpace space;
+	const void *arg;
 } Owed;
+
+typedef struct OwedRun
+{
+	const Owed *owed;
+	Relation	index;
+} OwedRun;
 
 static List *owed = NIL;
 static bool hooked = false;
 
 static void
-note_relstats(Relation index, const IndexBulkDeleteResult *stats)
+note_size(Relation index)
 {
+	const BlockNumber pages = RelationGetNumberOfBlocks(index);
+
 #if PG_VERSION_NUM >= 180000
-	vac_update_relstats(index, stats->num_pages, stats->num_index_tuples, 0, 0, false, InvalidTransactionId, InvalidMultiXactId, NULL, NULL, false);
+	vac_update_relstats(index, pages, index->rd_rel->reltuples, 0, 0, false, InvalidTransactionId, InvalidMultiXactId, NULL, NULL, false);
 #else
-	vac_update_relstats(index, stats->num_pages, stats->num_index_tuples, 0, false, InvalidTransactionId, InvalidMultiXactId, NULL, NULL, false);
+	vac_update_relstats(index, pages, index->rd_rel->reltuples, 0, false, InvalidTransactionId, InvalidMultiXactId, NULL, NULL, false);
 #endif
+}
+
+static void
+space_step(void *arg)
+{
+	const OwedRun *r = arg;
+
+	r->owed->space(r->index, r->owed->arg, r->owed->message_level);
 }
 
 static void
 run_owed(const Owed *o)
 {
 	Relation	heap = table_open(o->heap, ShareUpdateExclusiveLock);
-	Relation	index = index_open(o->index, RowExclusiveLock);
-	IndexVacuumInfo info = {.index = index,.heaprel = heap,.estimated_count = o->estimated_count,.message_level = o->message_level,.num_heap_tuples = o->num_heap_tuples,
-	.strategy = GetAccessStrategy(BAS_VACUUM)};
-	IndexBulkDeleteResult *stats;
+	OwedRun		r = {o, index_open(o->index, RowExclusiveLock)};
 
 	PushActiveSnapshot(GetTransactionSnapshot());
-	stats = o->cleanup(&info, o->stats);
+	if (sift_quarantine_run(r.index, SIFT_SKIP_VACUUM, space_step, &r))
+		note_size(r.index);
 	PopActiveSnapshot();
-	if (stats != NULL && !stats->estimated_count)
-		note_relstats(index, stats);
-	index_close(index, NoLock);
+	index_close(r.index, NoLock);
 	table_close(heap, NoLock);
 }
 
@@ -72,28 +84,18 @@ owed_xact(XactEvent event, void *arg pg_attribute_unused())
 			run_owed(o);
 }
 
-static void
-owe(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, SiftVacuumCleanup cleanup)
+bool
+sift_vacuum_owes(IndexVacuumInfo *info, SiftVacuumSpace space, const void *arg)
 {
-	MemoryContext old = MemoryContextSwitchTo(TopTransactionContext);
-	Owed	   *o = palloc(sizeof(Owed));
+	MemoryContext old;
 
-	*o = (Owed) {RelationGetRelid(info->index), RelationGetRelid(info->heaprel), info->message_level, info->estimated_count, info->num_heap_tuples,
-		stats != NULL ? memcpy(palloc(sizeof(IndexBulkDeleteResult)), stats, sizeof(IndexBulkDeleteResult)) : NULL, cleanup};
-	owed = lappend(owed, o);
+	if (!sift_xid_unassignable())
+		return false;
+	old = MemoryContextSwitchTo(TopTransactionContext);
+	owed = lappend(owed, memcpy(palloc(sizeof(Owed)), &(Owed) {RelationGetRelid(info->index), RelationGetRelid(info->heaprel), info->message_level, space, arg}, sizeof(Owed)));
 	MemoryContextSwitchTo(old);
 	if (!hooked)
 		sift_xact_callback(owed_xact, NULL);
 	hooked = true;
-}
-
-IndexBulkDeleteResult *
-sift_vacuum_cleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, SiftVacuumCleanup cleanup)
-{
-	if (!IsInParallelMode())
-		return cleanup(info, stats);
-	owe(info, stats, cleanup);
-	if (stats != NULL)
-		stats->estimated_count = true;
-	return stats;
+	return true;
 }

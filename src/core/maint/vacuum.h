@@ -18,10 +18,10 @@ extern uint64 sift_vacuum_rewrite_budget(bool aggressive);
 extern void sift_vacuum_say_deferred(int message_level, uint64 written);
 
 /*
- * The cleanup of a sift index (amvacuumcleanup): run now, or, when VACUUM calls it in parallel mode (core/maint/vacuum_owed.c), at the pre-commit of the transaction of its table, where the
- * steps that lock the index exclusively can run; the stats VACUUM gets then are estimated, and the cleanup updates the index's pg_class row itself
+ * The space step of the cleanup of a sift index, which locks the index exclusively: when VACUUM calls the cleanup in parallel mode, where no transaction id can be assigned, the step is owed
+ * (true) to the pre-commit of the transaction of its table (core/maint/vacuum_owed.c), which then updates the size in the index's pg_class row; the rest of the cleanup runs where VACUUM calls it
  */
-typedef IndexBulkDeleteResult *(*SiftVacuumCleanup) (IndexVacuumInfo *info, IndexBulkDeleteResult *stats);
-extern IndexBulkDeleteResult *sift_vacuum_cleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, SiftVacuumCleanup cleanup);
+typedef void (*SiftVacuumSpace) (Relation index, const void *arg, int message_level);
+extern bool sift_vacuum_owes(IndexVacuumInfo *info, SiftVacuumSpace space, const void *arg);
 
 #endif

@@ -185,6 +185,26 @@ relock_exclusive(const SiftMaintOps *ops, Relation index)
 	maint_lock_mode(index, true, ExclusiveLock);
 }
 
+/* The space step: the free end of the file given back, under the maintenance lock held exclusively */
+static void
+vacuum_space(const SiftMaintOps *ops, Relation index, int message_level)
+{
+	if (!ops->vacuum_truncate || !ops->vacuum_truncate(index))
+		return;
+	(void) online_shrink(ops, index, message_level);
+	sift_maint_space_rounds(index, NULL, message_level, sift_vacuum_rewrite_cap());
+	online_fallback(ops, index, message_level);
+}
+
+/* The space step a VACUUM in parallel mode owed to the end of its transaction, which takes the maintenance lock again */
+static void
+owed_space(Relation index, const void *ops, int message_level)
+{
+	sift_maint_lock(index, true);
+	vacuum_space(ops, index, message_level);
+	sift_maint_unlock(index);
+}
+
 typedef struct VacuumCleanup
 {
 	const SiftMaintOps *ops;
@@ -237,12 +257,8 @@ vacuumcleanup_index(void *arg)
 	sift_recycle(index);
 	sift_maint_orphan_sweep(index);
 	sift_progress_phase(index, "space");
-	if (ops->vacuum_truncate && ops->vacuum_truncate(index))
-	{
-		(void) online_shrink(ops, index, info->message_level);
-		sift_maint_space_rounds(index, NULL, info->message_level, sift_vacuum_rewrite_cap());
-		online_fallback(ops, index, info->message_level);
-	}
+	if (!sift_vacuum_owes(info, owed_space, ops))
+		vacuum_space(ops, index, info->message_level);
 	sift_progress_end(began);
 	sift_errctx_pop(&ctx);
 	sift_maint_unlock(index);

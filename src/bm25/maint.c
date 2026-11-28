@@ -19,7 +19,6 @@
 #include "core/live/live.h"
 #include "core/maint/maint.h"
 #include "core/maint/int.h"
-#include "core/maint/vacuum.h"
 #include "bm25/merge/merge.h"
 #include "bm25/wbuf.h"
 #include "core/memtrack.h"
@@ -139,16 +138,10 @@ sift_ambulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats, IndexBulk
 	return sift_mops_bulkdelete(&bm25_ops, info, stats, callback, callback_state);
 }
 
-static IndexBulkDeleteResult *
-bm25_cleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
-{
-	return sift_mops_vacuumcleanup(&bm25_ops, info, stats);
-}
-
 IndexBulkDeleteResult *
 sift_amvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	return sift_vacuum_cleanup(info, stats, bm25_cleanup);
+	return sift_mops_vacuumcleanup(&bm25_ops, info, stats);
 }
 
 /*
