@@ -4,7 +4,10 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "catalog/pg_type_d.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
+#include "utils/uuid.h"
 
 #include "agg/dictseen.h"
 #include "agg/distinct/distinct.h"
@@ -809,6 +812,28 @@ sift_dkey_uuid(SiftDistinctKey *k, const SiftUuid16 *u)
 	sift_bytes_put(k, u, sizeof(*u));
 }
 
+bool
+sift_dkey_datum_type(Oid typid)
+{
+	return typid == NUMERICOID || typid == UUIDOID;
+}
+
+void
+sift_dkey_datum(SiftDistinctKey *k, Oid typid, Datum d)
+{
+	char	   *s;
+
+	if (typid == UUIDOID)
+	{
+		sift_dkey_uuid(k, (const SiftUuid16 *) DatumGetUUIDP(d));
+		return;
+	}
+	SIFT_INVARIANT(typid == NUMERICOID, "count distinct: a key from a datum of type %u", typid);
+	s = numeric_normalize(DatumGetNumeric(d));
+	sift_dkey_bytes(k, s, (uint32) strlen(s));
+	pfree(s);
+}
+
 void
 sift_dkey_group(SiftDistinctKey *k, const void *prefix, uint32 plen)
 {
@@ -857,6 +882,9 @@ sift_dkey_vec(SiftDistinctKey *k, const SiftVec *v, uint32 row, const char *slab
 
 				sift_dkey_bytes(k, s->len <= 12 ? (const void *) s->prefix : slab != NULL ? (const void *) (slab + s->u.offset) : (const void *) s->u.ptr, s->len);
 			}
+			break;
+		case SVEC_DATUM:
+			sift_dkey_datum(k, v->typid, ((const Datum *) v->data)[row]);
 			break;
 		default:
 			SIFT_INVARIANT(false, "count distinct: a key from a vector of type %d", (int) v->type);

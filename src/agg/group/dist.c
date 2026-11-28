@@ -206,11 +206,13 @@ flat_add(SiftV6Group *g, V6Set *set, uint32 slot, const uint64 *vals, uint32 n)
 		sift_distinct_add_u64(dist_of(g, set), slot, vals[i]);
 }
 
-/* the values of the aggregate go to the exact set as the bytes of a row: it has columns beyond the first, its values are floats or strings, or the set hands them to a sum */
+/* the values of the aggregate go to the exact set as the bytes of a row: it has columns beyond the first, its values are no integers, or the set hands them to a sum */
 static bool
 dist_by_row(const SiftV6Agg *a)
 {
-	return a->nxcols > 0 || sift_v6_class(a->arg.typid) == SV6C_F64 || sift_v6_class(a->arg.typid) == SV6C_TEXT || sift_v6_kind_valued(a->kind);
+	const SiftV6Class cls = sift_v6_col_class(&a->arg);
+
+	return a->nxcols > 0 || !(cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_BOOL) || sift_v6_kind_valued(a->kind);
 }
 
 /* the columns of the row r of aggregate j after what is in the key */

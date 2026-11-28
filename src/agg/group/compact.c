@@ -28,6 +28,7 @@ static bool
 agg_fits(const SiftV6Agg *a)
 {
 	const Oid	t = a->arg.typid;
+	const SiftV6Class cls = sift_v6_col_class(&a->arg);
 
 	if (a->fclause != 0 || a->nxcols != 0)
 		return false;
@@ -36,7 +37,7 @@ agg_fits(const SiftV6Agg *a)
 		case SV6_COUNT_STAR:
 			return true;
 		case SV6_COUNT_DISTINCT:
-			return sift_v6_class(t) != SV6C_F64 && sift_v6_class(t) != SV6C_TEXT && t != NUMERICOID;
+			return (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_BOOL) && t != NUMERICOID;
 		case SV6_COUNT:
 			return t == BOOLOID || t == INT2OID || t == INT4OID || t == INT8OID;
 		case SV6_SUM:

@@ -18,7 +18,7 @@
 static inline bool
 flat_kind(const SiftV6Agg *a)
 {
-	const SiftV6Class cls = sift_v6_class(a->arg.typid);
+	const SiftV6Class cls = sift_v6_col_class(&a->arg);
 
 	return a->nxcols == 0 && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_BOOL);
 }

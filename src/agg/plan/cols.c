@@ -38,11 +38,13 @@
 #include "agg/engine.h"
 #include "agg/join/push.h"
 #include "agg/cost/card.h"
+#include "agg/distinct/distinct.h"
 #include "agg/vexpr.h"
 #include "agg/expr/num.h"
 #include "agg/argext/argext.h"
 #include "agg/argext/sql.h"
 #include "agg/cost/card.h"
+#include "agg/distinct/distinct.h"
 #include "agg/cost/cost.h"
 #include "agg/filter/pg.h"
 #include "agg/gen/gen.h"
@@ -460,7 +462,8 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
 }
 
-/* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector, a key may be of any type that can be grouped */
+/* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector or holds datums an exact distinct
+ * set takes (sift_dkey_datum_type), a key may be of any type that can be grouped */
 bool
 sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 {
@@ -468,6 +471,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	SiftV6Derive d = {0};
 	Oid			restype;
+	bool		datum;
 	int			at;
 
 	e = index_exprs_as_columns(p, e);
@@ -476,9 +480,11 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);
 	if (!join_derive_ok(p, e))
 		return sift_v6_star_joined_col(p, e, key, col);
-	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr) ||
-		!(sift_v6_type_native(restype) || (key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
+	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr))
 		return false;
-	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.derive = at,.collid = exprCollation((Node *) e)};
+	datum = !key && !sift_v6_type_native(restype) && sift_dkey_datum_type(restype);
+	if (!(sift_v6_type_native(restype) || datum || (key && sift_v6_type_generic(restype) && sift_genkey_supported(restype))) || (at = add_derive(p, &d)) == 0)
+		return false;
+	*col = (SiftV6Col) {.attno = d.src.attno,.typid = restype,.scale = datum ? SIFT_V6_SCALE_DATUM : 0,.derive = at,.collid = exprCollation((Node *) e)};
 	return true;
 }

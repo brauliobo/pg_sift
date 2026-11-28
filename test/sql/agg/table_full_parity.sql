@@ -162,7 +162,7 @@ INSERT INTO ops VALUES
 	(17, 'count distinct (edge rows)', $q$SELECT count(DISTINCT @C), count(@C), count(*) FROM @T WHERE id > 150000 AND id < 150013$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(18, 'qual = (edge rows)', $q$SELECT count(*), count(@C) FROM @T WHERE id > 150000 AND id < 150013 AND @C = @W$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(20, 'parallel group key', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
-	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
+	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{char(n),bytea,name}', '{}', 'k', NULL),
 	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(32, 'rows (payload)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY k, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
@@ -183,7 +183,7 @@ INSERT INTO ops VALUES
 	(61, 'partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Custom Scan (SiftAggV6)', 'pp1', false, '{}', '{}', 'v', NULL),
 	(62, 'partitioned qual =', $q$SELECT g, count(*) FROM @P WHERE @C = @V GROUP BY g$q$, 'n', 'Custom Scan (SiftAggV6)', 'pp1', false, '{}', '{}', 'v', NULL),
 	(70, 'parallel partitioned key', $q$SELECT @C, count(*), sum(v) FROM @P GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'g', NULL),
-	(71, 'parallel partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL),
+	(71, 'parallel partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{char(n),bytea,name}', '{}', 'v', NULL),
 	(80, 'parallel mixed key', $q$SELECT @C, count(*), sum(v) FROM @M GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pm1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'g', NULL),
 	(81, 'parallel mixed count distinct', $q$SELECT g, count(DISTINCT @C) FROM @M GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pm1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL);
 

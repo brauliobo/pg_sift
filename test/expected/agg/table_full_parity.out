@@ -161,7 +161,7 @@ INSERT INTO ops VALUES
 	(17, 'count distinct (edge rows)', $q$SELECT count(DISTINCT @C), count(@C), count(*) FROM @T WHERE id > 150000 AND id < 150013$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(18, 'qual = (edge rows)', $q$SELECT count(*), count(@C) FROM @T WHERE id > 150000 AND id < 150013 AND @C = @W$q$, 'n', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'k', NULL),
 	(20, 'parallel group key', $q$SELECT @C, count(*), sum(v) FROM @T GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
-	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'k', NULL),
+	(21, 'parallel count distinct', $q$SELECT g, count(DISTINCT @C) FROM @T GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'ft', true, '{char(n),bytea,name}', '{}', 'k', NULL),
 	(30, 'top-n', $q$SELECT id, @C FROM @T ORDER BY @C, id LIMIT 7$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(31, 'top-n desc offset', $q$SELECT id, @C FROM @T ORDER BY @C DESC NULLS LAST, id DESC LIMIT 9 OFFSET 3$q$, 'o', 'Top-N:', 'ft', false, '{}', '{}', 'v', 'Custom Scan (SiftAggV6)'),
 	(32, 'rows (payload)', $q$SELECT id, @C FROM @T WHERE k < 10 ORDER BY k, id LIMIT 5$q$, 'o', 'Custom Scan (SiftAggV6)', 'ft', false, '{}', '{}', 'v', NULL),
@@ -182,7 +182,7 @@ INSERT INTO ops VALUES
 	(61, 'partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Custom Scan (SiftAggV6)', 'pp1', false, '{}', '{}', 'v', NULL),
 	(62, 'partitioned qual =', $q$SELECT g, count(*) FROM @P WHERE @C = @V GROUP BY g$q$, 'n', 'Custom Scan (SiftAggV6)', 'pp1', false, '{}', '{}', 'v', NULL),
 	(70, 'parallel partitioned key', $q$SELECT @C, count(*), sum(v) FROM @P GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'g', NULL),
-	(71, 'parallel partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL),
+	(71, 'parallel partitioned count distinct', $q$SELECT g, count(DISTINCT @C) FROM @P GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pp1', true, '{char(n),bytea,name}', '{}', 'v', NULL),
 	(80, 'parallel mixed key', $q$SELECT @C, count(*), sum(v) FROM @M GROUP BY @C$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pm1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'g', NULL),
 	(81, 'parallel mixed count distinct', $q$SELECT g, count(DISTINCT @C) FROM @M GROUP BY g$q$, 'n', 'Parallel Custom Scan (SiftAggV6)', 'pm1', true, '{uuid,numeric,char(n),bytea,name}', '{}', 'v', NULL);
 CREATE TEMP TABLE matrix (phase text, ord int, tord int, op text, ty text, expect text, plan_ok boolean, rows_ok boolean);
@@ -240,7 +240,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  count distinct (edge rows)          |     12 |       0 | t       | t
  qual = (edge rows)                  |     12 |       0 | t       | t
  parallel group key                  |      2 |      10 | t       | t
- parallel count distinct             |      2 |      10 | t       | t
+ parallel count distinct             |      6 |       6 | t       | t
  top-n                               |     12 |       0 | t       | t
  top-n desc offset                   |     12 |       0 | t       | t
  rows (payload)                      |     12 |       0 | t       | t
@@ -261,7 +261,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  partitioned count distinct          |     12 |       0 | t       | t
  partitioned qual =                  |     12 |       0 | t       | t
  parallel partitioned key            |      2 |      10 | t       | t
- parallel partitioned count distinct |      2 |      10 | t       | t
+ parallel partitioned count distinct |      6 |       6 | t       | t
  parallel mixed key                  |      2 |      10 | t       | t
  parallel mixed count distinct       |      2 |      10 | t       | t
 (34 rows)
@@ -287,7 +287,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  count distinct (edge rows)          | v6      | v6      | v6      | v6      | v6      | v6
  qual = (edge rows)                  | v6      | v6      | v6      | v6      | v6      | v6
  parallel group key                  | v6      | refused | refused | refused | refused | refused
- parallel count distinct             | v6      | refused | refused | refused | refused | refused
+ parallel count distinct             | v6      | v6      | v6      | refused | refused | refused
  top-n                               | v6      | v6      | v6      | v6      | v6      | v6
  top-n desc offset                   | v6      | v6      | v6      | v6      | v6      | v6
  rows (payload)                      | v6      | v6      | v6      | v6      | v6      | v6
@@ -308,7 +308,7 @@ FROM matrix GROUP BY ord, op ORDER BY ord;
  partitioned count distinct          | v6      | v6      | v6      | v6      | v6      | v6
  partitioned qual =                  | v6      | v6      | v6      | v6      | v6      | v6
  parallel partitioned key            | v6      | refused | refused | refused | refused | refused
- parallel partitioned count distinct | v6      | refused | refused | refused | refused | refused
+ parallel partitioned count distinct | v6      | v6      | v6      | refused | refused | refused
  parallel mixed key                  | v6      | refused | refused | refused | refused | refused
  parallel mixed count distinct       | v6      | refused | refused | refused | refused | refused
 (34 rows)

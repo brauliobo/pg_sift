@@ -74,9 +74,13 @@ extern void sift_dkey_i64(SiftDistinctKey *k, int64 v);
 extern void sift_dkey_f64(SiftDistinctKey *k, double v);
 extern void sift_dkey_bytes(SiftDistinctKey *k, const void *p, uint32 len);
 extern void sift_dkey_uuid(SiftDistinctKey *k, const SiftUuid16 *u);
+/* A value of a type the set takes as datums (sift_dkey_datum_type): bytes that are equal exactly when the values are, a numeric without the trailing zeros of its scale (1.0 is 1.00) */
+extern bool sift_dkey_datum_type(Oid typid);
+extern void sift_dkey_datum(SiftDistinctKey *k, Oid typid, Datum d);
 /* Starts the key of a grouped set: the prefix of the group (the key is cleared first) */
 extern void sift_dkey_group(SiftDistinctKey *k, const void *prefix, uint32 plen);
-/* The value of a row of a vector (SVEC_I32, SVEC_I64, SVEC_NUM64, SVEC_BOOL, SVEC_F64, SVEC_UUID, SVEC_STRVIEW, SVEC_DICT32 whose dict is a SiftDictSrc; slab as for sift_distinct_add_str); a NULL is sift_dkey_null */
+/* The value of a row of a vector (SVEC_I32, SVEC_I64, SVEC_NUM64, SVEC_BOOL, SVEC_F64, SVEC_UUID, SVEC_STRVIEW, SVEC_DICT32 whose dict is a SiftDictSrc, SVEC_DATUM of a
+ * sift_dkey_datum_type; slab as for sift_distinct_add_str); a NULL is sift_dkey_null */
 extern void sift_dkey_vec(SiftDistinctKey *k, const SiftVec *v, uint32 row, const char *slab);
 extern void sift_distinct_add_dkey(SiftDistinct *d, uint32 slot, const SiftDistinctKey *k);
 /* Every key the table holds (a set that never spilled holds them all) */

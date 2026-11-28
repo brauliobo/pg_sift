@@ -34,6 +34,7 @@
 #include "agg/safety.h"
 #include "agg/agg.h"
 #include "agg/ht/ht.h"
+#include "agg/distinct/distinct.h"
 #include "agg/plan/int.h"
 #include "agg/par/pg.h"
 #include "agg/ext.h"
@@ -221,8 +222,10 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 
 		if (list_length(unfiltered.args) != (two ? 2 : 1) ||
 			!(score || ((sift_v6_read_of(p, arg, !two, &g.arg) || (derived_ok && (sift_v6_derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
-			sift_v6_col_class(&g.arg) == SV6C_DATUM)
+			(sift_v6_col_class(&g.arg) == SV6C_DATUM && !(g.kind == SV6_COUNT_DISTINCT && sift_dkey_datum_type(g.arg.typid))))
 			return false;
+		if (sift_v6_class(g.arg.typid) == SV6C_NONE)
+			g.arg.scale = SIFT_V6_SCALE_DATUM;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_PG_EXPR && g.kind >= SV6_STDDEV_POP && g.kind <= SV6_VAR_SAMP)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)

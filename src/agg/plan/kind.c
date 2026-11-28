@@ -13,6 +13,7 @@
 #include "agg/ext.h"
 #include "agg/argext/argext.h"
 #include "agg/argext/sql.h"
+#include "agg/distinct/distinct.h"
 
 bool
 sift_v6_agg_kind(const Aggref *a, SiftV6Kind *kind)
@@ -55,7 +56,7 @@ sift_v6_kind_takes(SiftV6Kind kind, Oid typid)
 		case SV6_COUNT:
 			return cls != SV6C_NONE;
 		case SV6_COUNT_DISTINCT:
-			return cls != SV6C_NONE;
+			return cls != SV6C_NONE || sift_dkey_datum_type(typid);
 		case SV6_SUM:
 		case SV6_SUM_DISTINCT:
 			return typid != FLOAT4OID && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_F64);
