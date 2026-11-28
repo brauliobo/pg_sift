@@ -251,6 +251,8 @@ col/f2/compact/compact.c
 col/f2/compact/compact.h
 col/f2/compact/dict.c
 col/f2/compact/join.c
+col/f2/compact/merge.c
+col/f2/compact/merge.h
 col/f2/compact/neighbours.c
 col/f2/compact/outputs.c
 col/f2/compact/par.c

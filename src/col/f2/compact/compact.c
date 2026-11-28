@@ -12,6 +12,7 @@
 #include "storage/procarray.h"
 
 #include "col/f2/compact/adopt.h"
+#include "col/f2/compact/merge.h"
 #include "col/f2/compact/par.h"
 #include "col/f2/part/idx.h"
 #include "core/memtrack.h"
@@ -22,6 +23,7 @@
 #include "col/f2/kll/kll.h"
 #include "col/f2/preagg/v2.h"
 #include "col/f2/store/store.h"
+#include "core/cmp.h"
 #include "core/compat.h"
 #include "core/crash_point.h"
 #include "core/f2/col_delta_anchor.h"
@@ -383,7 +385,7 @@ slice_rows(Sink *s, int nrows, int left)
 
 static void
 add_slice(Sink *sink, const SiftGranuleView *v, const SiftRowVer *vers, int r0, int r1, const SiftCodeMap *code_map, const SiftColRemap *remap, uint64 part_gen, void *fold,
-		  GranuleRows *gr, SiftExtent **rel_ext, int *nrel)
+		  GranuleRows *gr, SiftCompactMerge *merge, int input, SiftExtent **rel_ext, int *nrel)
 {
 	MemoryContext old = MemoryContextSwitchTo(sink->cx);
 	SiftRowBuf *one = sift_rowbuf_new(sink->spec);
@@ -395,32 +397,34 @@ add_slice(Sink *sink, const SiftGranuleView *v, const SiftRowVer *vers, int r0, 
 	sink->row_bytes = Max(one->mem_bytes / (Size) Max(one->n, 1), 1);
 	gr->row0 = (uint32) r0;
 	(void) sift_rowbuf_drop_if(one, row_goes, gr);
+	sift_compact_merge_read(merge, input, one);
 	sink_take(sink, one);
 }
 
+/* The granules of input i from *g_lo on while it is the one merge reads next (*g_lo raised past them); the blocks of the part go to *rel_ext once its last granule is read */
 static bool
-add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 g_lo, uint32 g_hi, Sink *sink, const SiftCodeMap *code_map,
-			  const SiftColRemap *remap, SiftXidHorizonCache *hc, void *fold, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel)
+add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_id, uint32 *g_lo, uint32 g_hi, Sink *sink, const SiftCodeMap *code_map,
+			  const SiftColRemap *remap, SiftXidHorizonCache *hc, void *fold, SiftCompactMerge *merge, int input, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel)
 {
+	MemoryContext visit_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact visit");
+	MemoryContext granule_cx = sift_mem_allocset_create(visit_cx, "sift compact granule");
+	MemoryContext outer = MemoryContextSwitchTo(visit_cx);
 	SiftGranuleDesc *dir = sift_part_granule_dir(rel, part);
 	uint16	   *grows = palloc(Max(part->hdr.ngranules, 1) * sizeof(uint16));
 	DeadBits	dead = NULL;
-	MemoryContext granule_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift compact granule");
+	bool		unsettled = false;
 
 	for (uint32 g = 0; g < part->hdr.ngranules; g++)
 		grows[g] = dir[g].nrows;
 	if (d->dv_blk != InvalidBlockNumber)
-	{
-		bool		unsettled = false;
-
 		dead = bits_of(rel, d, part->hdr.ngranules, grows, true, hc, &res->stripped, &unsettled, sink->mem);
-		if (unsettled)
-		{
-			MemoryContextDelete(granule_cx);
-			return false;
-		}
+	MemoryContextSwitchTo(outer);
+	if (unsettled)
+	{
+		MemoryContextDelete(visit_cx);
+		return false;
 	}
-	for (uint32 g = g_lo; g < g_hi; g++)
+	for (uint32 g = *g_lo; g < g_hi && sift_compact_merge_next(merge) == input; *g_lo = ++g)
 	{
 		MemoryContext old = MemoryContextSwitchTo(granule_cx);
 		SiftGranuleDesc gd;
@@ -438,7 +442,7 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 			if (sink->row_bytes == 0)
 				measure_row(sink, &v, vers, code_map, remap);
 			r1 = r0 + slice_rows(sink, v.hdr->nrows, v.hdr->nrows - r0);
-			add_slice(sink, &v, vers, r0, r1, code_map, remap, d->part_gen, fold, &gr, rel_ext, nrel);
+			add_slice(sink, &v, vers, r0, r1, code_map, remap, d->part_gen, fold, &gr, merge, input, rel_ext, nrel);
 			least_held = granule_sliced(sink, v.hdr->nrows) ? sink->flush_bytes / 2 : 0;
 			if (r1 < v.hdr->nrows && least_held > 0)
 				sink_flush_due(sink, least_held);
@@ -447,8 +451,10 @@ add_part_rows(Relation rel, SiftPart *part, const SiftPartDesc *d, uint32 part_i
 		MemoryContextReset(granule_cx);
 		sink_flush_due(sink, least_held);
 	}
-	MemoryContextDelete(granule_cx);
-	sift_compact_release_part(part, rel_ext, nrel);
+	MemoryContextDelete(visit_cx);
+	merge->done[input] = *g_lo == g_hi;
+	if (merge->done[input])
+		sift_compact_release_part(part, rel_ext, nrel);
 	return true;
 }
 
@@ -552,7 +558,7 @@ folds_any(void *fold, const SiftPartDesc **at, int n)
 
 /* The rows read and the outputs written by the participants of a VACUUM (PARALLEL n), each a share of the granules of the inputs (compact/par.c); the blocks of the inputs are given back as those of a serial compaction are */
 static SiftCompactParResult
-par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel,
+par_written(Relation rel, uint64 part_id, const CompactIn *in, const int *order, int ngens, const SiftCompactCut *cut, bool bounds_hold, FullTransactionId horizon, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel,
 			SiftPartDesc **out, int *nout)
 {
 	SiftPartDesc *descs = palloc(Max(ngens, 1) * sizeof(SiftPartDesc));
@@ -561,8 +567,8 @@ par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, const 
 
 	for (int i = 0; i < ngens; i++)
 	{
-		descs[i] = in[i].d;
-		granules[i] = in[i].ngranules;
+		descs[i] = in[order[i]].d;
+		granules[i] = in[order[i]].ngranules;
 	}
 	par = sift_compact_par_write(rel, part_id, descs, granules, ngens, cut, bounds_hold, horizon, res, out, nout);
 	if (par == SIFT_COMPACT_PAR_UNSETTLED)
@@ -607,6 +613,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 	bool		mapped = false,
 				read = true;
 	SiftCompactParResult par;
+	SiftCompactMerge *merge;
 
 	for (int i = 0; i < ngens; i++)
 	{
@@ -627,7 +634,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		*nout = 0;
 		return true;
 	}
-	if (!slice && !mapped && !folds_any(fold, at, ngens) && (par = par_written(rel, part_id, in, ngens, cut, bounds_hold, hc->horizon, res, rel_ext, nrel, out, nout)) != SIFT_COMPACT_PAR_OFF)
+	if (!slice && !mapped && !folds_any(fold, at, ngens) && (par = par_written(rel, part_id, in, sift_compact_key_order(at, ngens), ngens, cut, bounds_hold, hc->horizon, res, rel_ext, nrel, out, nout)) != SIFT_COMPACT_PAR_OFF)
 		return par == SIFT_COMPACT_PAR_DONE;
 	dm = sift_dict_merge_plan(rel, (uint32) part_id, at, ngens, spec, fold != NULL ? sift_compact_fold->folded_leaves(fold) : NULL, remap, mem->budget / SIFT_COMPACT_DICT_SHARE);
 	mspec = sift_dict_merge_spec(dm, spec);
@@ -645,12 +652,13 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 		.res = res,.cx = CurrentMemoryContext};
 	sink.rb[0] = sift_rowbuf_new(&mspec);
 	sink.rb[1] = split ? sift_rowbuf_new(&mspec) : NULL;
-	for (int i = 0; i < ngens && read; i++)
+	merge = sift_compact_merge_begin(at, ngens);
+	for (int i; read && (i = sift_compact_merge_next(merge)) >= 0;)
 	{
 		MemoryContext icx = NULL;
 		SiftPart   *part = i == dominant ? dominant_part : sift_compact_open_input(rel, at[i], (uint32) part_id, &icx);
 
-		read = add_part_rows(rel, part, at[i], (uint32) part_id, in[i].g_lo, in[i].g_hi, &sink, &dm->map[i * dm->ncols], remap[i], hc, fold, res, rel_ext, nrel);
+		read = add_part_rows(rel, part, at[i], (uint32) part_id, &in[i].g_lo, in[i].g_hi, &sink, &dm->map[i * dm->ncols], remap[i], hc, fold, merge, i, res, rel_ext, nrel);
 		if (icx != NULL)
 			MemoryContextDelete(icx);
 	}
@@ -801,15 +809,6 @@ ref_by_gen(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-static int
-blk_cmp(const void *a, const void *b)
-{
-	BlockNumber x = *(const BlockNumber *) a,
-				y = *(const BlockNumber *) b;
-
-	return x < y ? -1 : x > y;
-}
-
 /* The packed pages that no part is a slot of once the inputs are gone, written to out as the extents the commit releases; how many: the manifest is read once for all of them */
 static int
 release_packed_pages(Relation rel, uint64 part_id, const CompactIn *in, int ngens, SiftExtent *out)
@@ -830,7 +829,7 @@ release_packed_pages(Relation rel, uint64 part_id, const CompactIn *in, int ngen
 	if (npages > 0)
 	{
 		qsort(leaving, nleaving, sizeof(SiftPartRef), ref_by_gen);
-		qsort(pages, npages, sizeof(BlockNumber), blk_cmp);
+		sift_sort_u32(pages, npages);
 		sift_live_packed_set_build(rel, &live);
 		for (int i = 0; i < npages; i++)
 			if ((i == 0 || pages[i] != pages[i - 1]) && sift_packed_unreferenced_in(rel, pages[i], leaving, nleaving, &live))
