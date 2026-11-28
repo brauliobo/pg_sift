@@ -11,6 +11,7 @@ removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
 test/expected/agg/append_children_1.out	5cd2ba5d2b7850383285de762257a1d653fdf733	17	f      | t        |           0
+test/expected/agg/array/image_cost_1.out	ed8254aeaef11e8bfe60afaa7fa9d7ab2dda83cf	19	long_tags  | COL @> ARRAY['t5', 't6']        | f
 test/expected/agg/child/member_value_1.out	a3cd0f22ffbf7eb536454bcc61c88d9d45edce9d	17	float cast | t    | t
 test/expected/agg/child/member_value_1.out	d382ae8e60a98118dc9011f67feb05033c5d9477	17	int cast | t    | t
 test/expected/agg/correlated/fanout_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
