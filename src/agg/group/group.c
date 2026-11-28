@@ -295,6 +295,13 @@ v6g_group_hash(const V6Set *set, const void *key, uint32 klen, uint64 nulls)
 
 	if (set->wide)
 		return sift_aggk6_hash1(sift_aggk6_hash_bytes(key, klen) ^ nulls);
+	if (set->packed)
+	{
+		SiftInlineKey16 ik;
+
+		memcpy(&ik, key, sizeof(ik));
+		return sift_pack_hash(&ik);
+	}
 	memcpy(&x, key, sizeof(x));
 	return sift_aggk6_hash1((uint64) x);
 }

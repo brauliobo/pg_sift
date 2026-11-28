@@ -62,13 +62,6 @@ prefix_hash(const V6Set *set, const uint8 *prefix, uint32 plen)
 	uint64		nulls;
 
 	memcpy(&nulls, prefix, sizeof(nulls));
-	if (set->packed)
-	{
-		SiftInlineKey16 ik;
-
-		memcpy(&ik, key, sizeof(ik));
-		return sift_pack_hash(&ik);
-	}
 	return v6g_group_hash(set, key, plen - (uint32) sizeof(nulls), nulls);
 }
 
