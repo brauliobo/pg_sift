@@ -195,13 +195,22 @@ join_of(PlannerInfo *root, RelOptInfo *rel, const Node *l, const Node *r, bool p
 	return true;
 }
 
+/* a placeholder in a condition of a relation is evaluated by its scan: its expression, as PostgreSQL's plan of a scan has it */
+static Node *
+scan_expr(Node *n, void *context)
+{
+	if (n != NULL && IsA(n, PlaceHolderVar))
+		return scan_expr((Node *) ((PlaceHolderVar *) n)->phexpr, context);
+	return expression_tree_mutator(n, scan_expr, context);
+}
+
 static List *
 clauses_of(const List *restrictinfos)
 {
 	List	   *l = NIL;
 
 	foreach_node(RestrictInfo, ri, (List *) restrictinfos)
-		l = lappend(l, ri->clause);
+		l = lappend(l, scan_expr((Node *) ri->clause, NULL));
 	return l;
 }
 

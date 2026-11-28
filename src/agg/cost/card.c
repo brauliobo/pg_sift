@@ -331,7 +331,7 @@ sift_v6_card_undecided(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *i
 	for (uint32 i = 0; i < n; i++)
 		if (cq.q.preds[i].col < view->ncols)
 			keep[cq.q.preds[i].col] = Max(keep[cq.q.preds[i].col], 1.0 - est.decided[i]);
-	foreach_node(Var, v, pull_var_clause((Node *) extract_actual_clauses(cq.rest, false), 0))
+	foreach_node(Var, v, pull_var_clause((Node *) extract_actual_clauses(cq.rest, false), PVC_RECURSE_PLACEHOLDERS))
 	{
 		const int	leaf = leaf_of(ix, rel->relid, (Node *) v);
 

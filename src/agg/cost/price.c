@@ -106,7 +106,7 @@ static double
 clause_share(PlannerInfo *root, RestrictInfo *ri, AttrNumber lead_att)
 {
 	const double sel = clause_selectivity(root, (Node *) ri, 0, JOIN_INNER, NULL);
-	List	   *vars = pull_var_clause((Node *) ri->clause, 0);
+	List	   *vars = pull_var_clause((Node *) ri->clause, PVC_RECURSE_PLACEHOLDERS);
 	const double corr = list_length(vars) == 1 ? var_correlation(root, linitial(vars), lead_att) : 0;
 	const double alpha = Min(Max((corr - SIFT_CORR_CLUSTERED) / (1.0 - SIFT_CORR_CLUSTERED), 0.0), 1.0);
 

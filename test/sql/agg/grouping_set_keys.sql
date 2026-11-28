@@ -69,8 +69,16 @@ INSERT INTO gs_sub VALUES
 	(6, 'SELECT k, count(*) AS n FROM (SELECT split_part(e.key, ''_'', 1) AS k FROM gs_facts f CROSS JOIN LATERAL jsonb_each(f.metrics_a) e) p GROUP BY GROUPING SETS ((k), ()) ORDER BY 1 NULLS FIRST, 2'),
 	(7, 'SELECT k, count(*) AS n, sum(c) AS total FROM (SELECT lower(kind) AS k, id % 10 AS c FROM gs_facts) p GROUP BY GROUPING SETS ((k), ()) HAVING GROUPING(k) = 1 OR count(*) > 100 ORDER BY 1 NULLS FIRST, 2');
 SELECT n, (check_query(q)).*, same_order(q) AS same_order FROM gs_sub ORDER BY n;
+-- A dimension the facts join to
+CREATE TABLE gs_dims (id int PRIMARY KEY, region text NOT NULL);
+INSERT INTO gs_dims SELECT i, 'r' || i % 3 FROM generate_series(0, 6) i;
+ANALYZE gs_dims;
+-- a condition on the placeholders of both tables is planned, and gives the rows of the normal plan
+SELECT differences FROM check_query($q$
+ SELECT p.k, count(*) AS n FROM (SELECT upper(f.kind) AS k, d.region FROM gs_facts f JOIN gs_dims d ON d.id = f.dim_a_id) p WHERE p.k <> 'B' AND p.region = 'r1' GROUP BY ROLLUP (p.k)
+$q$);
 DROP TABLE gs_sub;
 DROP FUNCTION same_order(text);
 DROP FUNCTION check_query(text);
-DROP TABLE gs_facts;
+DROP TABLE gs_facts, gs_dims;
 DROP EXTENSION pg_sift;
