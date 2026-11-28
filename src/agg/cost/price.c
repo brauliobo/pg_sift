@@ -415,6 +415,51 @@ filter_bytes(const SiftCardStatsView *view, const Bitmapset *filter, const Bitma
 	return bytes;
 }
 
+/* the share of the rows of a granule that hold a value it has not met yet, for a column of ndv distinct values spread by chance */
+static double
+granule_new_share(double ndv)
+{
+	return ndv * -expm1(-SIFT_GRANULE_ROWS / Max(ndv, 1.0)) / SIFT_GRANULE_ROWS;
+}
+
+/* the distinct values of the column att of the table of rel, from the statistics of PostgreSQL: every row's own without them */
+static double
+heap_ndistinct(PlannerInfo *root, const RelOptInfo *rel, Oid relid, AttrNumber att, Oid type)
+{
+	VariableStatData vd;
+	bool		isdefault;
+	double		nd;
+
+	examine_variable(root, (Node *) makeVar(rel->relid, att, type, -1, InvalidOid, 0), 0, &vd);
+	nd = get_variable_numdistinct(&vd, &isdefault);
+	ReleaseVariableStats(vd);
+	return isdefault ? rel->tuples : nd;
+}
+
+/*
+ * per row decoded, the operators of the arrays of the columns in cols (as cols_bytes): a unit hashes, interns and inflates each array it has not met before a test reads it, its width and its
+ * distinct values those of the statistics of PostgreSQL
+ */
+static double
+arrays_intern_ops(PlannerInfo *root, const RelOptInfo *rel, const IndexOptInfo *ix, const Bitmapset *cols, bool index_cols)
+{
+	const Oid	relid = planner_rt_fetch(rel->relid, root)->relid;
+	double		ops = 0;
+	int			a = -1;
+
+	while ((a = bms_next_member(cols, a)) >= 0)
+	{
+		const int	col = a + FirstLowInvalidHeapAttributeNumber;
+		const int	icol = index_cols ? col - 1 : agg_index_col(ix, col);
+		const AttrNumber att = icol >= 0 && icol < ix->ncolumns ? ix->indexkeys[icol] : 0;
+		const Oid	type = att > 0 ? get_atttype(relid, att) : InvalidOid;
+
+		if (type_is_array(type))
+			ops += granule_new_share(heap_ndistinct(root, rel, relid, att, type)) * get_attavgwidth(relid, att) / 64.0 * SIFT_ARRAY_INTERN_OPS;
+	}
+	return ops;
+}
+
 /* the bytes of a row of the leaves: as cols_bytes, for the columns the statistics hold by leaf */
 static double
 leaves_bytes(const SiftCardStatsView *view, const Bitmapset *leaves, bool stored, double unsized)
@@ -439,9 +484,9 @@ add_vatt_leaf(const SiftV6Spec *spec, Bitmapset **leaves, int attno)
 	*leaves = bms_add_member(*leaves, sift_v6_spec_vatt_col(spec, attno, FLOAT8OID, 0).jleaf - 1);
 }
 
-/* the columns of the index the clauses (filter) or the keys and arguments read, and the leaves of the keys of documents they read instead of the document: a scan decodes those alone */
+/* the columns of the index the clauses (filter: of the scan keys over the index, of the batch quals over the table) or the keys and arguments read, and the leaves of the keys of documents they read instead of the document: a scan decodes those alone */
 static Bitmapset *
-spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
+spec_cols(const SiftV6Spec *spec, const IndexOptInfo *ix, bool filter, Bitmapset **leaves)
 {
 	Bitmapset  *cols = NULL;
 
@@ -460,8 +505,15 @@ spec_cols(const SiftV6Spec *spec, bool filter, Bitmapset **leaves)
 				cols = bms_del_member(cols, a);
 			}
 		for (a = -1; (a = bms_next_member(virt, a)) >= 0;)
-			if (sift_v6_vatt_is_json(a + FirstLowInvalidHeapAttributeNumber))
-				add_vatt_leaf(spec, leaves, a + FirstLowInvalidHeapAttributeNumber);
+		{
+			const int	att = a + FirstLowInvalidHeapAttributeNumber,
+						col = att > 0 ? agg_index_col(ix, att) : -1;
+
+			if (sift_v6_vatt_is_json(att))
+				add_vatt_leaf(spec, leaves, att);
+			else if (col >= 0)
+				cols = bms_add_member(cols, col + 1 - FirstLowInvalidHeapAttributeNumber);
+		}
 		return cols;
 	}
 	for (int i = 0; i < spec->nkeys + spec->naggs; i++)
@@ -666,8 +718,8 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	SiftV6AggPrice price;
 	Bitmapset  *filter_leaves = NULL,
 			   *measure_leaves = NULL,
-			   *filter = spec_cols(spec, true, &filter_leaves),
-			   *read = spec_cols(spec, false, &measure_leaves),
+			   *filter = spec_cols(spec, ix, true, &filter_leaves),
+			   *read = spec_cols(spec, ix, false, &measure_leaves),
 			   *measure = bms_difference(read, filter),
 			   *keys = spec_keys(spec);
 	const double *keep;
@@ -681,7 +733,8 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	b.measure_io_row = cols_bytes(b.view, measure, ix, true, NULL, NULL, true, b.io_col_row) + leaves_bytes(b.view, measure_leaves, true, b.io_col_row);
 	price.in = scan_inputs(&b);
 	price.in.n_groups = Max(groups, 1.0);
-	price.in.qual_row = pg_qual_cost(root, ix, spec->vqual) + in_lists_cost(b.view, ix, true, spec->indexqual);
+	price.in.qual_row = pg_qual_cost(root, ix, spec->vqual) + in_lists_cost(b.view, ix, true, spec->indexqual) +
+		arrays_intern_ops(root, rel, ix, bms_union(filter, measure), true) * cpu_operator_cost;
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
 	price.open = open_cost(scan_parts(&b));
 	price.granule_rows = b.table_rows / b.granules;
@@ -718,7 +771,7 @@ sift_v6_scan_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, A
 	b.filter_io_row = filter_bytes(b.view, filter, read, ix, false, NULL, NULL, true, b.io_col_row, keep);
 	b.measure_io_row = cols_bytes(b.view, measure, ix, false, NULL, NULL, true, b.io_col_row);
 	in = scan_inputs(&b);
-	in.qual_row = in_lists_cost(b.view, ix, false, rel->baserestrictinfo);
+	in.qual_row = in_lists_cost(b.view, ix, false, rel->baserestrictinfo) + arrays_intern_ops(root, rel, ix, bms_union(filter, measure), false) * cpu_operator_cost;
 	*open = open_cost(scan_parts(&b));
 	sift_agg_choose_workers(&in, Min(b.surv / (in.g_eff * SIFT_GRANULE_ROWS), 1.0), false, false, *open, 0, &startup, total);
 }

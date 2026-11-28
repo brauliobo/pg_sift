@@ -27,6 +27,8 @@
 /* a level of the binary search of the constants of an IN list a row is tested against (5.8 ns warm, the branch of each level mispredicted), and the span of the values of a chunk below which the test is a bitmap (SET_BITMAP_BITS of col/granule/cfilt/kern.c) */
 #define SIFT_IN_LEVEL_OPS		2.3
 #define SIFT_IN_BITMAP_SPAN		262144.0
+/* the operators per 64 bytes of the image of an array a unit hashes, interns and inflates the first time it meets it (2.3 ns a byte for text elements, 1.1 for integers, warm) */
+#define SIFT_ARRAY_INTERN_OPS	45.0
 
 typedef struct SiftCostInputs
 {
