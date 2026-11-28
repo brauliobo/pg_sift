@@ -238,6 +238,17 @@ sift_v6_lookups_guess(PlannerInfo *root, RelOptInfo *rel, const AttrNumber *atts
 	return Min(f, Max(rel->rows / Max(input_rows, 1.0), 1.0));
 }
 
+/* The most groups a lifted count adds to the plan's own (sift_v6_reported_groups) */
+#define SIFT_V6_LIFT_GROUPS	1000
+
+double
+sift_v6_reported_groups(const V6Plan *p, List *group_exprs, double groups)
+{
+	if (p->lift_rows <= 0 || p->spec.nkeys == 0)
+		return groups;
+	return Min(sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, p->lift_rows) * Max(p->spec.nsets, 1), groups + SIFT_V6_LIFT_GROUPS);
+}
+
 double
 sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att)
 {

@@ -58,4 +58,7 @@ extern bool sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMod
 /* the dimensions in the order the pipe probes them: a join of inner relations, then the others in the order the statement joins them, each probing columns of the relations before it */
 extern bool sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh);
 
+/* How many times more keys than PostgreSQL counts the inner and semi dimensions of one relation on one column of the fact pass to it (sift_v6_lookups_guess) */
+extern double sift_v6_join_guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double input_rows);
+
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */

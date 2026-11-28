@@ -66,7 +66,7 @@ typedef struct V6Plan
 	int			elem_stream;	/* the stream of the Ext (sift_v6_ext_stream) whose elements are the columns of elem_rel */
 	bool		heap_rows;		/* the unnest of a sift_table reads every row again by its address: a qual or a test of the statement only the row itself decides (sift_v6_unnest_ready) */
 	bool		rows_from_store;	/* the columns a row Top-N gives are those its scan decodes, which it carries beside the sort columns: no heap row is fetched (sift_v6_rows_store_path) */
-	double		lift_rows;		/* the rows a join of lookups PostgreSQL only guesses passes (sift_v6_lookup_keys_guess), whose groups the path reports to the plan above; 0: its own count */
+	double		lift_rows;		/* the rows a join of lookups PostgreSQL only guesses passes (sift_v6_lookups_guess), whose groups the path reports to the plan above; 0: its own count */
 } V6Plan;
 
 /* An index of format major 2 with no expression; usable also has no predicate (a partial index serves a statement that implies it, which only plan.c judges) */
@@ -184,6 +184,12 @@ extern bool sift_v6_plan_fact_ok(PlannerInfo *root, RelOptInfo *rel);
 extern Relids sift_v6_plan_base_relids(PlannerInfo *root, RelOptInfo *rel);
 /* The path of a join: child_paths are the plans of the dimensions, whose cost and that of the join come on top of the scan's */
 extern void sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows);
+/*
+ * The groups the path reports to the plan above. Where PostgreSQL's count of a lookup is a default guess (lift_rows), a plan above that takes one group for one nests loops on a
+ * null-safe key and runs the aggregate under it again for each row: the groups are those of the lifted rows, up to the plan's own and a thousand, where more only multiplies in the join
+ * above. The price keeps the plan's own count: the choice of the scan does not move.
+ */
+extern double sift_v6_reported_groups(const V6Plan *p, List *group_exprs, double groups);
 
 /* The columns the planners of joins and unnests answer for plan.c: false when the expression is not one of theirs */
 extern bool sift_v6_star_column(V6Plan *p, const Expr *e, SiftV6Col *out);

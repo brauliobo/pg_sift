@@ -5,7 +5,9 @@
 
 #include "nodes/pathnodes.h"
 
+#include "agg/cost/card.h"
 #include "agg/join/shape.h"
+#include "agg/plan/int.h"
 
 bool
 sift_v6_join_add_dim(SiftV6JoinShape *sh, Relids rels, SiftV6JoinMode mode)
@@ -119,4 +121,21 @@ sift_v6_join_make_dims(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 	memcpy(&sh->dim[0], inner, ni * sizeof(SiftV6JoinDim));
 	sh->nd += ni;
 	return sh->nd > 0 || sh->elem != NULL;
+}
+
+double
+sift_v6_join_guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double input_rows)
+{
+	AttrNumber	atts[SIFT_STAR_MAX_DIMS];
+	RelOptInfo *rels[SIFT_STAR_MAX_DIMS];
+
+	for (int d = 0; d < sh->nd; d++)
+	{
+		const SiftV6JoinDim *jd = &sh->dim[d];
+		const Var  *v = jd->nkeys == 1 && jd->kexpr[0] == NULL ? sift_v6_plain_var(jd->probe[0]) : NULL;
+
+		atts[d] = (jd->mode == SV6J_INNER_EQUI || jd->mode == SV6J_SEMI_EQUI) && bms_membership(jd->rels) == BMS_SINGLETON && v != NULL && v->varno == sh->fact->relid ? v->varattno : 0;
+		rels[d] = jd->rel;
+	}
+	return sift_v6_lookups_guess(root, sh->fact, atts, rels, sh->nd, input_rows);
 }

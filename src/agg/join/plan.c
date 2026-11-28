@@ -859,24 +859,6 @@ plan_dims(PlannerInfo *root, SiftV6JoinShape *sh)
 	}
 }
 
-/* How many times more keys than PostgreSQL counts the inner and semi dimensions of one relation on one column of the fact pass to it (sift_v6_lookups_guess) */
-static double
-guessed_keys(PlannerInfo *root, const SiftV6JoinShape *sh, double input_rows)
-{
-	AttrNumber	atts[SIFT_STAR_MAX_DIMS];
-	RelOptInfo *rels[SIFT_STAR_MAX_DIMS];
-
-	for (int d = 0; d < sh->nd; d++)
-	{
-		const SiftV6JoinDim *jd = &sh->dim[d];
-		const Var  *v = jd->nkeys == 1 && jd->kexpr[0] == NULL ? sift_v6_plain_var(jd->probe[0]) : NULL;
-
-		atts[d] = (jd->mode == SV6J_INNER_EQUI || jd->mode == SV6J_SEMI_EQUI) && bms_membership(jd->rels) == BMS_SINGLETON && v != NULL && v->varno == sh->fact->relid ? v->varattno : 0;
-		rels[d] = jd->rel;
-	}
-	return sift_v6_lookups_guess(root, sh->fact, atts, rels, sh->nd, input_rows);
-}
-
 /* the statement, the shape of its join and what the planner of the node needs to make a path of a plan that compiled: the groups of an aggregate, or the best topk rows of the join */
 typedef struct JoinStmt
 {
@@ -940,7 +922,7 @@ try_fact(PlannerInfo *root, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo
 		(js.topk > 0 && !rows_shape_ok(root, &sh)))
 		return;
 	plan_dims(root, &sh);
-	guess = guessed_keys(root, &sh, js.input_rel->rows);
+	guess = sift_v6_join_guessed_keys(root, &sh, js.input_rel->rows);
 	if (js.charge != NULL)
 		sift_v6_charge_probes(fact, guess, &js.charge[fact->relid], output_rel);
 	js.lift_rows = guess > 1.0 ? js.input_rel->rows * guess : 0;
