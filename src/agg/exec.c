@@ -566,6 +566,7 @@ v6_run_rows(V6State *st, EState *estate)
 		src->fetch_slot = table_slot_create(src->heap, NULL);
 	}
 	sift_v6_rows_finish(st->rows);
+	sift_v6_rows_skip(st->rows, sift_v6_offset_value(st->spec->skip, st->css.ss.ps.ps_ExprContext));
 	if (st->group != NULL)
 		v6_totals(st);
 }

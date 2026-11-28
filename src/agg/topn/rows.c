@@ -218,6 +218,20 @@ sift_v6_rows_given_k(const List *count, ExprContext *ec)
 	return (uint32) sum;
 }
 
+int64
+sift_v6_offset_value(const Node *offset, ExprContext *ec)
+{
+	bool		isnull;
+	int64		n;
+
+	if (offset == NULL)
+		return 0;
+	n = DatumGetInt64(ExecEvalExprSwitchContext(ExecInitExpr((Expr *) offset, NULL), ec, &isnull));
+	if (!isnull && n < 0)
+		ereport(ERROR, (errcode(ERRCODE_INVALID_ROW_COUNT_IN_RESULT_OFFSET_CLAUSE), errmsg("OFFSET must not be negative")));
+	return isnull ? 0 : n;
+}
+
 /* the rows sorted by the sort columns of the spec (the positions of desc, the keys then the address), the first K of them kept */
 static void
 rows_sort_begin(SiftV6Rows *r, TupleDesc desc)
@@ -481,6 +495,16 @@ sift_v6_rows_next(SiftV6Rows *r, uint32 *source, uint64 *tid)
 	*source = (uint32) (addr >> SIFT_V6_ROWS_ADDR_BITS);
 	*tid = addr & ((UINT64CONST(1) << SIFT_V6_ROWS_ADDR_BITS) - 1);
 	return true;
+}
+
+void
+sift_v6_rows_skip(SiftV6Rows *r, int64 n)
+{
+	if (r->sort != NULL)
+		tuplesort_skiptuples(r->sort, n, true);
+	else
+		while (n-- > 0 && sift_v6_topk_run_next(r->run, r->values, r->isnull))
+			CHECK_FOR_INTERRUPTS();
 }
 
 Datum

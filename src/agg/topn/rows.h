@@ -19,6 +19,10 @@
 extern void sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec);
 /* The K of a row Top-N whose LIMIT and OFFSET the execution gives (SiftV6Spec.topk_count), evaluated in ec as the Limit node above evaluates them: their sum, SIFT_V6_ROWS_ALL for no limit */
 extern uint32 sift_v6_rows_given_k(const List *count, ExprContext *ec);
+/* The rows an OFFSET passes over, evaluated in ec as the Limit node evaluates it: 0 for none or NULL, the Limit's own error for a negative one */
+extern int64 sift_v6_offset_value(const Node *offset, ExprContext *ec);
+/* the next n best rows are passed over */
+extern void sift_v6_rows_skip(SiftV6Rows *r, int64 n);
 /* spec.topk rows, the sort columns being the keys of the spec in the order of spec.topk_item: a heap of the best, or a sort bounded by K for a K past what the heap holds */
 extern SiftV6Rows *sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec);
 /* the rows of bs, whose keys are keyvec and whose heap addresses are tid[row] */

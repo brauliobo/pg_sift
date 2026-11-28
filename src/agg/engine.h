@@ -318,6 +318,7 @@ typedef struct SiftV6Spec
 	uint32		groups_est;		/* the groups the planner expects (0: unknown): the group table is sized for them at the start */
 	uint32		topk;			/* LIMIT + OFFSET of the query when the node gives the best groups in order (0: all groups, unordered) */
 	List	   *topk_count;		/* a row Top-N whose LIMIT and OFFSET an execution gives (expressions of parameters): the two, whose sum is its K (topk is the planner's guess); NIL: topk is the K */
+	Node	   *skip;			/* a row Top-N under a Limit that has no OFFSET: the OFFSET of the statement, whose rows the node passes over itself (NULL: none) */
 	int			ntopk;
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
 	bool		having;			/* the node runs a HAVING qual on the groups: the K best are the best that pass it, not the best of all groups */

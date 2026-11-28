@@ -33,6 +33,7 @@
 #include "agg/explain.h"
 #include "agg/refuse.h"
 #include "agg/par/pg.h"
+#include "agg/topn/rows.h"
 #include "agg/topn/topn.h"
 #include "agg/settings.h"
 #include "core/memtrack.h"
@@ -400,6 +401,55 @@ topn_add_path(TopNPlan *p)
 					 list_make3(sift_v6_topn_spec_pack(&p->spec), p->scan_tlist, p->quals), NIL);
 }
 
+/* the Top-N scan a path of the final relation reads, through the projection that computes the output columns from its rows: this node's, or the row Top-N of SiftAggV6; NULL: none */
+static CustomPath **
+topn_under(Path **pp)
+{
+	if (IsA(*pp, ProjectionPath))
+		pp = &((ProjectionPath *) *pp)->subpath;
+	return IsA(*pp, CustomPath) && (((CustomPath *) *pp)->methods == &topn_path_methods || ((CustomPath *) *pp)->methods == sift_v6_group_path_methods()) ?
+		(CustomPath **) pp : NULL;
+}
+
+/* the spec of the scan cp that passes over the rows of offset itself; NIL when its rows are not a Top-N's, or WITH TIES needs them in the Limit */
+static List *
+offset_spec(const CustomPath *cp, Node *offset)
+{
+	SiftV6TopNSpec *topn;
+	SiftV6Spec *rows;
+
+	if (cp->methods == &topn_path_methods)
+	{
+		topn = sift_v6_topn_spec_unpack(linitial(cp->custom_private));
+		topn->skips_offset = true;
+		return topn->with_ties ? NIL : sift_v6_topn_spec_pack(topn);
+	}
+	rows = sift_v6_spec_unpack(linitial(cp->custom_private), NULL);
+	rows->skip = offset;
+	return rows->rows ? sift_v6_spec_pack(rows) : NIL;
+}
+
+/* the OFFSET of a Limit over a Top-N scan goes into the scan, which passes over those rows itself: the Limit neither receives nor discards them */
+static void
+push_offsets(RelOptInfo *final_rel)
+{
+	foreach_ptr(Path, path, final_rel->pathlist)
+	{
+		LimitPath  *lp = (LimitPath *) path;
+		CustomPath **cp,
+				   *pushed;
+		List	   *spec;
+
+		if (!IsA(path, LimitPath) || lp->limitOffset == NULL || (cp = topn_under(&lp->subpath)) == NULL || (spec = offset_spec(*cp, lp->limitOffset)) == NIL)
+			continue;
+		pushed = makeNode(CustomPath);
+		*pushed = **cp;
+		pushed->custom_private = lcons(spec, list_copy_tail((*cp)->custom_private, 1));
+		*cp = pushed;
+		lp->limitOffset = NULL;
+	}
+}
+
 void
 sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra)
 {
@@ -407,6 +457,8 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 	SiftV6RelSource *src;
 	int			nsrc;
 
+	if (stage == UPPERREL_FINAL)
+		push_offsets(output_rel);
 	if (stage != UPPERREL_ORDERED || !sift_v6_base_rel_ok(root, input_rel) || !shape_ok(root, &shape))
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
@@ -452,7 +504,8 @@ sift_v6_topn_spec_pack(const SiftV6TopNSpec *s)
 		l = lappend_int(lappend_int(l, s->key[i].scale), s->order[i].desc | (s->order[i].nulls_first << 1));
 		l = lappend_int(lappend_int(l, (int) s->sortop[i]), (int) s->collation[i]);
 	}
-	return list_make2(l, list_make5(s->limit, s->offset, makeBoolConst(s->with_ties, false), makeString(s->desc), s->serial_because != NULL ? makeString(pstrdup(s->serial_because)) : NULL));
+	return list_make2(l, lappend(list_make5(s->limit, s->offset, makeBoolConst(s->with_ties, false), makeString(s->desc),
+											s->serial_because != NULL ? makeString(pstrdup(s->serial_because)) : NULL), makeBoolConst(s->skips_offset, false)));
 }
 
 SiftV6TopNSpec *
@@ -480,6 +533,7 @@ sift_v6_topn_spec_unpack(const List *l)
 	s->with_ties = DatumGetBool(((Const *) lthird(rest))->constvalue);
 	s->desc = strVal(lfourth(rest));
 	s->serial_because = list_nth(rest, 4) != NULL ? strVal(list_nth(rest, 4)) : NULL;
+	s->skips_offset = DatumGetBool(((Const *) list_nth(rest, 5))->constvalue);
 	return s;
 }
 
@@ -509,10 +563,16 @@ typedef struct TopNState
 	const SiftTopNWinRow *rows;
 	uint32		nrows;
 	uint32		pos;
+	int64		skip;			/* the OFFSET rows the node passes over */
 	SiftV6Gpu	gpu;
 	bool		ran;
 	Tuplesortstate *sort;		/* the run that sorted its rows */
 	TupleTableSlot *sorted;
+	int64		ties_at;		/* WITH TIES: offset + limit, the rows given before only ties of the last follow (-1: no ties) */
+	int64		given;
+	TupleTableSlot *last;		/* WITH TIES: the last row given */
+	AttrNumber	keycol[SIFT_TOURN_MAX_KEYS];
+	FmgrInfo	eq[SIFT_TOURN_MAX_KEYS];
 } TopNState;
 
 static void
@@ -541,7 +601,9 @@ topn_release(TopNState *st)
 	{
 		tuplesort_end(st->sort);
 		ExecDropSingleTupleTableSlot(st->sorted);
+		ExecDropSingleTupleTableSlot(st->last);
 	}
+	st->last = NULL;
 	st->sort = NULL;
 	st->sorted = NULL;
 	sift_v6_gpu_end(&st->gpu);
@@ -566,7 +628,6 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	TupleTableSlot *slot = st->css.ss.ss_ScanTupleSlot;
 	SiftV6Source *src = sift_v6_rel_open(estate, in, quals, false);
 	List	   *tlist = lsecond(((CustomScan *) st->css.ss.ps.plan)->custom_private);
-	AttrNumber	keycols[SIFT_TOURN_MAX_KEYS];
 	bool		nullsfirst[SIFT_TOURN_MAX_KEYS];
 	SiftV6Batch b;
 	int64		limit,
@@ -575,13 +636,20 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 
 	for (int k = 0; k < spec->nkeys; k++)
 	{
-		keycols[k] = (AttrNumber) (tlist_pos(tlist, in, spec->key[k].attno) + 1);
+		st->keycol[k] = (AttrNumber) (tlist_pos(tlist, in, spec->key[k].attno) + 1);
 		nullsfirst[k] = spec->order[k].nulls_first;
+		fmgr_info(get_opcode(get_equality_op_for_ordering_op(spec->sortop[k], NULL)), &st->eq[k]);
 	}
-	st->sort = tuplesort_begin_heap(desc, spec->nkeys, keycols, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
+	st->sort = tuplesort_begin_heap(desc, spec->nkeys, st->keycol, (Oid *) spec->sortop, (Oid *) spec->collation, nullsfirst, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
 	count_value(estate->es_param_list_info, spec->offset, &offset);
-	if (!spec->with_ties && count_value(estate->es_param_list_info, spec->limit, &limit) && !pg_add_s64_overflow(limit, offset, &bound))
-		tuplesort_set_bound(st->sort, bound);
+	st->ties_at = -1;
+	if (count_value(estate->es_param_list_info, spec->limit, &limit) && !pg_add_s64_overflow(limit, offset, &bound))
+	{
+		if (spec->with_ties)
+			st->ties_at = bound;
+		else
+			tuplesort_set_bound(st->sort, bound);
+	}
 	PG_TRY();
 	{
 		while (src->next(src, &b))
@@ -609,6 +677,38 @@ topn_sort_rows(TopNState *st, EState *estate, const SiftV6Input *in, const SiftV
 	PG_END_TRY();
 	tuplesort_performsort(st->sort);
 	st->sorted = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+	st->last = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
+}
+
+/* the row of the sort ties with the last row given: equal in every sort key, NULL equal to NULL */
+static bool
+topn_tie(TopNState *st)
+{
+	int			k = 0;
+
+	for (; k < st->spec->nkeys; k++)
+	{
+		bool		null_a,
+					null_b;
+		const Datum a = slot_getattr(st->last, st->keycol[k], &null_a),
+					b = slot_getattr(st->sorted, st->keycol[k], &null_b);
+
+		if (null_a != null_b || (!null_a && !DatumGetBool(FunctionCall2Coll(&st->eq[k], st->spec->collation[k], a, b))))
+			break;
+	}
+	return k == st->spec->nkeys;
+}
+
+/* the next row of the sort; WITH TIES, past offset + limit rows only those that tie with the last one given */
+static TupleTableSlot *
+topn_sorted_next(TopNState *st, TupleTableSlot *slot)
+{
+	if (!tuplesort_gettupleslot(st->sort, true, false, st->sorted, NULL) || (st->ties_at >= 0 && st->given >= st->ties_at && !topn_tie(st)))
+		return NULL;
+	st->given++;
+	if (st->ties_at >= 0)
+		ExecCopySlot(st->last, st->sorted);
+	return ExecCopySlot(slot, st->sorted);
 }
 
 /* ORDER BY one key LIMIT n that the order of the parts cannot answer early: the device takes the best rows of the parts it reads, and the tournament the rest */
@@ -628,6 +728,16 @@ topn_device(TopNState *st, EState *estate, Relation index, SiftV6Input *in)
 		st->src.device(st->src.src, &dev);
 }
 
+/* the first row the node returns, past the rows it skips */
+static void
+topn_rewind(TopNState *st)
+{
+	st->pos = (uint32) Min((uint64) st->skip, (uint64) st->nrows);
+	st->given = st->skip;
+	if (st->sort != NULL)
+		tuplesort_skiptuples(st->sort, st->skip, true);
+}
+
 static void
 topn_run(TopNState *st, EState *estate)
 {
@@ -638,12 +748,12 @@ topn_run(TopNState *st, EState *estate)
 	bool		(*topn_open) (EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst);
 	Relation	source = sift_v6_source_open(st->spec->indexoid, st->spec->is_table, AccessShareLock, &in);
 
+	st->skip = st->spec->skips_offset ? sift_v6_offset_value(st->spec->offset, st->css.ss.ps.ps_ExprContext) : 0;
 	sift_v6_source_enter(source, st->spec->is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
 	sift_v6_input_bind(&in, estate);
 	compiled = sift_v6_vexpr_quals(st->cx, st->quals, st->spec->rti, estate->es_param_list_info, &in, &quals);
 	SIFT_INVARIANT(compiled, "the quals of the Top-N scan of relation %u are not compiled", st->spec->indexoid);
-	st->pos = 0;
 	st->ran = true;
 	topn_open = tournament_keys_ok(st->spec) ? sift_store_ops_for_oid(st->spec->indexoid, false)->order->topn_open : NULL;
 	opened = topn_open != NULL && tournament_rows(estate->es_param_list_info, st->spec, &st->spec->rows) &&
@@ -652,11 +762,13 @@ topn_run(TopNState *st, EState *estate)
 	{
 		sift_v6_source_close(source, st->spec->is_table, NoLock);
 		topn_sort_rows(st, estate, &in, st->quals == NIL ? NULL : &quals);
+		topn_rewind(st);
 		return;
 	}
 	topn_device(st, estate, source, &in);
 	sift_v6_source_close(source, st->spec->is_table, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
+	topn_rewind(st);
 }
 
 static TupleTableSlot *
@@ -670,7 +782,7 @@ topn_next(ScanState *ss)
 		topn_run(st, ss->ps.state);
 	ExecClearTuple(slot);
 	if (st->sort != NULL)
-		return tuplesort_gettupleslot(st->sort, true, false, st->sorted, NULL) ? ExecCopySlot(slot, st->sorted) : NULL;
+		return topn_sorted_next(st, slot);
 	if (st->pos == st->nrows)
 		return NULL;
 	fetched = st->src.fetch(st->src.src, &st->rows[st->pos++], st->attnos, st->nattrs, slot->tts_values, slot->tts_isnull);
@@ -704,9 +816,10 @@ topn_rescan(CustomScanState *node)
 
 	if (node->ss.ps.chgParam != NULL)
 		topn_release(st);
-	st->pos = 0;
 	if (st->sort != NULL)
 		tuplesort_rescan(st->sort);
+	if (st->ran)
+		topn_rewind(st);
 }
 
 static void

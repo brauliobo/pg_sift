@@ -119,7 +119,8 @@ sift_v6_spec_pack(const SiftV6Spec *s)
 	l = list_concat(l, list_make5(s->text_queries, s->vqual, s->pgexpr, s->genref, desc_list(s->topn_desc)));
 	l = list_concat(l, list_make3(desc_list(s->agg_desc), s->jmembers, desc_list(s->serial_because)));
 	l = lappend(l, s->topk_count);
-	return lappend(l, s->prune != NULL ? list_make3(s->prune, s->prune_rels, s->prune_array) : NIL);
+	l = lappend(l, s->prune != NULL ? list_make3(s->prune, s->prune_rels, s->prune_array) : NIL);
+	return lappend(l, s->skip);
 }
 
 SiftV6Spec *
@@ -209,6 +210,7 @@ sift_v6_spec_unpack(const List *l, ParamListInfo params)
 	s->prune = list_nth(l, 14) != NIL ? linitial(list_nth(l, 14)) : NULL;
 	s->prune_rels = list_nth(l, 14) != NIL ? lsecond(list_nth(l, 14)) : NIL;
 	s->prune_array = list_nth(l, 14) != NIL ? lthird(list_nth(l, 14)) : NULL;
+	s->skip = list_nth(l, 15);
 	s->ext = sift_v6_ext_unpack(list_nth(l, 4));
 	sift_v6_bind_params(s, params);
 	return s;

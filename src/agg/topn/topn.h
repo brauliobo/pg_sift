@@ -30,6 +30,7 @@ typedef struct SiftV6TopNSpec
 	Node	   *offset;			/* NULL: none */
 	uint64		rows;			/* offset + limit, when a run found them small enough for the tournament */
 	bool		with_ties;
+	bool		skips_offset;	/* the node passes over the OFFSET rows itself: the Limit above it has none */
 	char	   *desc;			/* EXPLAIN: the sort keys */
 	const char *serial_because;	/* EXPLAIN VERBOSE: the rule that keeps the scan in one process while the session allows workers (NULL: none) */
 } SiftV6TopNSpec;
