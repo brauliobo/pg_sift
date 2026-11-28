@@ -172,7 +172,7 @@ SELECT p.idea, p.name, c.* FROM pairs p, LATERAL having_same(p.a, p.b, p.expect)
 (37 rows)
 
 -- A sub-select that reads a function of the key that the rows of a group may not agree on (numeric groups 1.0 with 1.00, whose scales differ) tests the group, not each of its
--- rows: it stays a HAVING.
+-- rows: it stays a HAVING, and one in a WHERE stays a WHERE.
 CREATE TABLE hv_scaled (id int, k numeric) WITH (autovacuum_enabled = false);
 INSERT INTO hv_scaled SELECT i, CASE WHEN i % 2 = 0 THEN 1.0 ELSE 1.00 END + i % 3 FROM generate_series(1, 3000) i;
 CREATE INDEX hv_scaled_col ON hv_scaled USING sift_col (id, k);
@@ -187,6 +187,13 @@ SELECT served, rows_same, n FROM having_run($q$SELECT k, count(*) AS c FROM hv_s
  served | rows_same | n 
 --------+-----------+---
  t      | t         | 3
+(1 row)
+
+-- the same in a WHERE tests each row: it stays a condition of the rows, which the scan cannot test
+SELECT served, rows_same, n FROM having_run($q$SELECT k, count(*) AS c FROM hv_scaled WHERE (SELECT scale(hv_scaled.k)) = 1 GROUP BY 1$q$, false);
+ served | rows_same | n 
+--------+-----------+---
+ f      | t         | 3
 (1 row)
 
 DROP TABLE pairs, hv_events, hv_tenants, hv_empty, hv_scaled;

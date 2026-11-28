@@ -10,7 +10,8 @@
 extern void sift_agg_drop_unused_laterals(Query *q);
 
 /*
- * The rewrites the caller plans against the statement as written; whether the statement has one, apply: they are made. The HAVING conditions of the rows moved to WHERE, the plan
+ * The rewrites the caller plans against the statement as written; whether the statement has one, apply: they are made. The HAVING conditions of the rows moved to WHERE and the
+ * WHERE conditions of the groups to HAVING, the plan
  * taken whenever it runs the aggregate scan (the rows form reads less in every shape measured, where the estimates may say otherwise) ...
  */
 extern bool sift_agg_having_to_where(Query *q, bool apply);

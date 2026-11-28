@@ -132,13 +132,15 @@ UPDATE pairs SET expect = 'differs' WHERE idea = 'differs by design';
 SELECT p.idea, p.name, c.* FROM pairs p, LATERAL having_same(p.a, p.b, p.expect) c ORDER BY p.ord;
 
 -- A sub-select that reads a function of the key that the rows of a group may not agree on (numeric groups 1.0 with 1.00, whose scales differ) tests the group, not each of its
--- rows: it stays a HAVING.
+-- rows: it stays a HAVING, and one in a WHERE stays a WHERE.
 CREATE TABLE hv_scaled (id int, k numeric) WITH (autovacuum_enabled = false);
 INSERT INTO hv_scaled SELECT i, CASE WHEN i % 2 = 0 THEN 1.0 ELSE 1.00 END + i % 3 FROM generate_series(1, 3000) i;
 CREATE INDEX hv_scaled_col ON hv_scaled USING sift_col (id, k);
 VACUUM (FREEZE, ANALYZE) hv_scaled;
 SELECT served, rows_same, n FROM having_run($q$SELECT k, count(*) AS c FROM hv_scaled GROUP BY 1 HAVING EXISTS (SELECT 1 WHERE scale(hv_scaled.k) = 1)$q$, false);
 SELECT served, rows_same, n FROM having_run($q$SELECT k, count(*) AS c FROM hv_scaled GROUP BY 1 HAVING EXISTS (SELECT 1 FROM hv_tenants t WHERE t.id = scale(hv_scaled.k))$q$, false);
+-- the same in a WHERE tests each row: it stays a condition of the rows, which the scan cannot test
+SELECT served, rows_same, n FROM having_run($q$SELECT k, count(*) AS c FROM hv_scaled WHERE (SELECT scale(hv_scaled.k)) = 1 GROUP BY 1$q$, false);
 
 DROP TABLE pairs, hv_events, hv_tenants, hv_empty, hv_scaled;
 DROP FUNCTION having_plan(text), having_rows(text, bool, bool), having_run(text, bool), having_same(text, text, text);

@@ -2,7 +2,8 @@
  * agg/plan/flat_rewrite.c - rewrites of a statement before it is planned, each giving the rows of the form it replaces, that leave the aggregate scan a statement it takes:
  * - a HAVING `key IN (sub-select)` or EXISTS of a plain GROUP BY that reads no aggregate is a condition of the rows (every row of a group has its key): it moves to WHERE, where the
  *   planner makes a semi join of it that the scan answers, where a HAVING runs it as a sub-plan once for each group. PostgreSQL moves the HAVING conditions without a sub-select
- *   itself (subquery_planner). Grouping sets stay (a key is NULL in the rows of a super-aggregate), and so does a HAVING with no GROUP BY (its one group is there when no row is);
+ *   itself (subquery_planner). Grouping sets stay (a key is NULL in the rows of a super-aggregate), and so does a HAVING with no GROUP BY (its one group is there when no row is).
+ *   The other way, a WHERE condition with a scalar sub-select of the keys, which the scan cannot test for each row, is a condition of the groups: it moves to HAVING;
  * - a LEFT JOIN LATERAL (.. LIMIT 1) that nothing reads keeps every row of its left side once: the join is its left side. The planner does not see it, its join removal needs the
  *   right side unique on the join conditions and `ON true` gives none;
  * - a scalar sub-select of one aggregate over one table tied to the query by equalities of columns, `(SELECT max(b.v) FROM t b WHERE b.k = a.k)`, is a LEFT JOIN of the query to
@@ -215,6 +216,42 @@ having_to_where(Query *q, bool apply)
 	return true;
 }
 
+/*
+ * A condition of the WHERE that PostgreSQL runs as a sub-plan for each row and that reads the query only as keys alike in every row of a group (a scalar sub-select of the key): it
+ * holds for every row of a group or for none, so it is tested once for each group. A top-level EXISTS or IN stays a condition of the rows: the planner makes a join of it.
+ */
+static bool
+group_condition(Query *q, Node *c)
+{
+	KeyReads	k = {q, 0};
+	const Node *test = is_notclause(c) ? (Node *) get_notclausearg((Expr *) c) : c;
+
+	return !IsA(test, SubLink) && checkExprHasSubLink(c) && contain_vars_of_level(c, 0) && !contain_volatile_functions(c) && !reads_beyond_keys(c, &k);
+}
+
+/* the conditions of the groups of the WHERE moved to HAVING (apply), or whether there is one */
+static bool
+where_to_having(Query *q, bool apply)
+{
+	List	   *keep = NIL,
+			   *groups = NIL;
+
+	if (q->commandType != CMD_SELECT || q->jointree->quals == NULL || !q->hasSubLinks || q->groupClause == NIL || q->groupingSets != NIL)
+		return false;
+	foreach_ptr(Node, c, make_ands_implicit((Expr *) q->jointree->quals))
+	{
+		if (group_condition(q, c))
+			groups = lappend(groups, c);
+		else
+			keep = lappend(keep, c);
+	}
+	if (groups == NIL || !apply)
+		return groups != NIL;
+	q->jointree->quals = keep == NIL ? NULL : (Node *) make_ands_explicit(keep);
+	q->havingQual = (Node *) make_ands_explicit(list_concat(make_ands_implicit((Expr *) q->havingQual), groups));
+	return true;
+}
+
 /* at every level of the statement; with apply false the walk stops at the first */
 static bool
 having_walker(Node *n, bool *apply)
@@ -227,6 +264,7 @@ having_walker(Node *n, bool *apply)
 	if (!IsA(n, Query))
 		return expression_tree_walker(n, having_walker, apply);
 	found = having_to_where((Query *) n, *apply);
+	found |= where_to_having((Query *) n, *apply);
 	return query_tree_walker((Query *) n, having_walker, apply, 0) || (found && !*apply);
 }
 
