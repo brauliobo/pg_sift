@@ -177,6 +177,22 @@ ANALYZE th_dim;
 SELECT * FROM same('SELECT d.label, count(*) AS n, sum(f.v) AS s FROM th f JOIN th_dim d ON d.g = f.g WHERE f.ctid >= ''(10,4)'' AND f.ctid < ''(300,2)'' AND d.g <> 3 GROUP BY d.label');
 SELECT * FROM same('SELECT d.label, count(*) AS n, sum(f.v) AS s FROM tt f JOIN th_dim d ON d.g = f.g WHERE f.ctid >= ''(10,4)'' AND f.ctid < ''(300,2)'' AND d.g <> 3 GROUP BY d.label');
 
+-- the unnest of the documents of a range: the scan keeps the rows of the range before it unnests them, on an index and on a sift_table, alone and beside an
+-- unnest of the whole table that could share its read
+CREATE TABLE tu (id int, doc jsonb) WITH (autovacuum_enabled = false, fillfactor = 60);
+INSERT INTO tu SELECT i, jsonb_build_object('items', (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || ((i + k) % 5), 'qty', k)) FROM generate_series(1, 1 + i % 3) k), 'pad', repeat('x', 400))
+FROM generate_series(1, 6000) i;
+CREATE INDEX tu_col ON tu USING sift_col (id, doc) WITH (paths = 'doc.items[]{cat text, qty int4}');
+CREATE TABLE tu_t (LIKE tu) USING sift_table;
+SELECT sift.table_set_paths('tu_t', 'doc', 'doc.items[]{cat text, qty int4}');
+INSERT INTO tu_t SELECT * FROM tu;
+VACUUM (FREEZE, ANALYZE) tu, tu_t;
+SELECT t.rel, s.* FROM (VALUES ('tu'), ('tu_t')) t(rel),
+	same(format('SELECT i.cat, count(*) AS n, sum(i.qty) AS q FROM %I o CROSS JOIN LATERAL jsonb_to_recordset(o.doc -> ''items'') AS i(cat text, qty int) WHERE o.ctid >= ''(30,1)'' AND o.ctid < ''(310,1)'' GROUP BY i.cat', t.rel)) s
+ORDER BY 1;
+SELECT * FROM same('SELECT i.cat, count(*) AS n FROM tu o CROSS JOIN LATERAL jsonb_to_recordset(o.doc -> ''items'') AS i(cat text, qty int) WHERE o.ctid < ''(100,1)'' GROUP BY i.cat
+	UNION ALL SELECT i.cat, count(*) FROM tu o CROSS JOIN LATERAL jsonb_to_recordset(o.doc -> ''items'') AS i(cat text, qty int) GROUP BY i.cat');
+
 -- an invalid constant is an error as in any plan
 SELECT count(*) FROM th WHERE ctid >= '(1,2,3)';
 
@@ -185,6 +201,6 @@ DROP FUNCTION all_ranges(text);
 DROP FUNCTION th_q(int, int);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE tp, tr_range, tt, th, th_before, th_dim;
+DROP TABLE tp, tr_range, tt, th, th_before, th_dim, tu, tu_t;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

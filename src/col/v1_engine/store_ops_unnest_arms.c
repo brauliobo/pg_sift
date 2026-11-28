@@ -50,13 +50,15 @@ union_child(SiftV1ElemSpec *es, const SiftV1ElemSpec *a, int c)
 	return es->nchild++;
 }
 
-/* the columns of the run u added to the shared input and elements; false (both unchanged) when they do not fit or the elements are of another array */
+/* the columns of the run u added to the shared input and elements; false (both unchanged) when they do not fit, the elements are of another array or the run reads a ctid range */
 static bool
 union_arm(SiftV6Input *in, SiftV1ElemSpec *es, bool *elems, const UnRun *u, ArmMap *m)
 {
 	SiftV6Input next = *in;
 	SiftV1ElemSpec enext = *es;
 
+	if (u->spec->tid_range)
+		return false;
 	for (int i = 0; i < u->in.ncols; i++)
 		if ((m->col[i] = union_col(&next, &u->in.col[i])) < 0)
 			return false;
@@ -100,7 +102,8 @@ arm_batch(UnRun *u, ArmMap *m, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 static void
 run_own_source(UnRun *u, Snapshot snap)
 {
-	SiftV1Scan	scan = {.elem = u->has_elems ? &u->espec : NULL};
+	const SiftV1Scan base = {.elem = u->has_elems ? &u->espec : NULL};
+	const SiftV1Scan scan = sift_v1_spec_scan(&base, u->spec);
 	SiftV6Batch b;
 
 	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, NULL, &scan);

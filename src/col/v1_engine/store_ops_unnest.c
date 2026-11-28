@@ -533,7 +533,8 @@ void
 sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range)
 {
 	SiftV6Batch b;
-	SiftV1Scan	scan = {.range = range,.elem = u->has_elems ? &u->espec : NULL,.cube = u->cube};
+	const SiftV1Scan base = {.range = range,.elem = u->has_elems ? &u->espec : NULL,.cube = u->cube};
+	const SiftV1Scan scan = sift_v1_spec_scan(&base, u->spec);
 
 	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, keys, nkeys, &u->in), &scan);
 	while (u->src->next(u->src, &b))
