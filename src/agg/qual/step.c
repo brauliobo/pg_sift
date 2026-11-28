@@ -3,6 +3,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "catalog/pg_type_d.h"
 #include "datatype/timestamp.h"
 #include "nodes/nodeFuncs.h"
@@ -17,17 +19,24 @@
 typedef struct StepUnit
 {
 	const char *name;
-	int64		us;
+	int64		us;				/* the step its value changes on */
+	double		len;			/* the microseconds one value spans on average */
+	int			cycle;			/* extract: the values it repeats after, 0: it does not */
 } StepUnit;
 
+#define US_MONTH	(USECS_PER_DAY * DAYS_PER_YEAR / MONTHS_PER_YEAR)
+#define US_YEAR		(USECS_PER_DAY * DAYS_PER_YEAR)
+
 /* the units of date_trunc: a week and the longer ones change on a day */
-static const StepUnit trunc_units[] = {{"second", USECS_PER_SEC}, {"minute", USECS_PER_MINUTE}, {"hour", USECS_PER_HOUR}, {"day", USECS_PER_DAY}, {"week", USECS_PER_DAY},
-	{"month", USECS_PER_DAY}, {"quarter", USECS_PER_DAY}, {"year", USECS_PER_DAY}, {"decade", USECS_PER_DAY}, {"century", USECS_PER_DAY}, {"millennium", USECS_PER_DAY}, {NULL, 0}};
+static const StepUnit trunc_units[] = {{"second", USECS_PER_SEC, USECS_PER_SEC}, {"minute", USECS_PER_MINUTE, USECS_PER_MINUTE}, {"hour", USECS_PER_HOUR, USECS_PER_HOUR},
+	{"day", USECS_PER_DAY, USECS_PER_DAY}, {"week", USECS_PER_DAY, 7 * USECS_PER_DAY}, {"month", USECS_PER_DAY, US_MONTH}, {"quarter", USECS_PER_DAY, 3 * US_MONTH},
+	{"year", USECS_PER_DAY, US_YEAR}, {"decade", USECS_PER_DAY, 10 * US_YEAR}, {"century", USECS_PER_DAY, 100 * US_YEAR}, {"millennium", USECS_PER_DAY, 1000 * US_YEAR}, {NULL}};
 
 /* the fields of extract that are whole numbers of a step (second, epoch and julian have fractions of a second) */
-static const StepUnit field_units[] = {{"minute", USECS_PER_MINUTE}, {"hour", USECS_PER_HOUR}, {"day", USECS_PER_DAY}, {"dow", USECS_PER_DAY}, {"isodow", USECS_PER_DAY},
-	{"doy", USECS_PER_DAY}, {"week", USECS_PER_DAY}, {"month", USECS_PER_DAY}, {"quarter", USECS_PER_DAY}, {"year", USECS_PER_DAY}, {"isoyear", USECS_PER_DAY},
-	{"decade", USECS_PER_DAY}, {"century", USECS_PER_DAY}, {"millennium", USECS_PER_DAY}, {NULL, 0}};
+static const StepUnit field_units[] = {{"minute", USECS_PER_MINUTE, USECS_PER_MINUTE, 60}, {"hour", USECS_PER_HOUR, USECS_PER_HOUR, 24}, {"day", USECS_PER_DAY, USECS_PER_DAY, 31},
+	{"dow", USECS_PER_DAY, USECS_PER_DAY, 7}, {"isodow", USECS_PER_DAY, USECS_PER_DAY, 7}, {"doy", USECS_PER_DAY, USECS_PER_DAY, 366}, {"week", USECS_PER_DAY, 7 * USECS_PER_DAY, 53},
+	{"month", USECS_PER_DAY, US_MONTH, 12}, {"quarter", USECS_PER_DAY, 3 * US_MONTH, 4}, {"year", USECS_PER_DAY, US_YEAR}, {"isoyear", USECS_PER_DAY, US_YEAR},
+	{"decade", USECS_PER_DAY, 10 * US_YEAR}, {"century", USECS_PER_DAY, 100 * US_YEAR}, {"millennium", USECS_PER_DAY, 1000 * US_YEAR}, {NULL}};
 
 typedef enum Clock
 {
@@ -45,18 +54,27 @@ typedef struct StepCtx
 	bool		ok;
 } StepCtx;
 
-/* the step of the unit named by the first argument of a call (a text Const), 0 for one the table does not have */
-static int64
-unit_step(const FuncExpr *f, const StepUnit *units)
+/* the unit named by the first argument of a call (a text Const), NULL for one the table does not have */
+static const StepUnit *
+unit_of(const FuncExpr *f, const StepUnit *units)
 {
 	const Const *k = linitial(f->args);
 
 	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID)
-		return 0;
+		return NULL;
 	for (const StepUnit *u = units; u->name != NULL; u++)
 		if (pg_strcasecmp(u->name, TextDatumGetCString(k->constvalue)) == 0)
-			return u->us;
-	return 0;
+			return u;
+	return NULL;
+}
+
+/* the step of the unit of a call, 0 for one the table does not have */
+static int64
+unit_step(const FuncExpr *f, const StepUnit *units)
+{
+	const StepUnit *u = unit_of(f, units);
+
+	return u != NULL ? u->us : 0;
 }
 
 /* date_bin(stride, x, origin) of whole seconds changes only where x crosses origin + k * stride: on the multiples of gcd(stride, origin), counted from 2000-01-01. 0 for a stride with months, or an origin or a stride that is no constant of whole seconds */
@@ -235,6 +253,70 @@ sift_v6_calendar_step(const Node *e, Index relid, const Var **col, bool *local)
 	*col = c.col;
 	*local = c.clock == CLOCK_SESSION;
 	return c.step;
+}
+
+typedef struct CalUnits
+{
+	const StepUnit *finest;
+	int			calls;
+	bool		bare;			/* a column read outside a calendar call */
+} CalUnits;
+
+/* the unit of a date_trunc, extract or date_part call of a constant unit, of a date or a timestamp; NULL for any other node */
+static const StepUnit *
+call_unit(const Node *n)
+{
+	const FuncExpr *f = (const FuncExpr *) n;
+
+	if (!IsA(n, FuncExpr) || list_length(f->args) < 2)
+		return NULL;
+	switch (f->funcid)
+	{
+		case F_DATE_TRUNC_TEXT_TIMESTAMP:
+		case F_DATE_TRUNC_TEXT_TIMESTAMPTZ:
+		case F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT:
+			return unit_of(f, trunc_units);
+		case F_EXTRACT_TEXT_DATE:
+		case F_EXTRACT_TEXT_TIMESTAMP:
+		case F_EXTRACT_TEXT_TIMESTAMPTZ:
+		case F_DATE_PART_TEXT_DATE:
+		case F_DATE_PART_TEXT_TIMESTAMP:
+		case F_DATE_PART_TEXT_TIMESTAMPTZ:
+			return unit_of(f, field_units);
+		default:
+			return NULL;
+	}
+}
+
+static bool
+units_walker(Node *n, CalUnits *cu)
+{
+	const StepUnit *u;
+
+	if (n == NULL)
+		return false;
+	if ((u = call_unit(n)) != NULL)
+	{
+		cu->calls++;
+		if (cu->finest == NULL || u->len < cu->finest->len)
+			cu->finest = u;
+		return false;
+	}
+	cu->bare |= IsA(n, Var);
+	return expression_tree_walker(n, units_walker, cu);
+}
+
+double
+sift_v6_calendar_values(const Node *e, double span_us)
+{
+	CalUnits	cu = {0};
+	double		n;
+
+	units_walker((Node *) e, &cu);
+	if (cu.finest == NULL || cu.bare)
+		return 0;
+	n = floor(Max(span_us, 0) / cu.finest->len) + 1;
+	return cu.calls == 1 && cu.finest->cycle > 0 ? Min(n, cu.finest->cycle) : n;
 }
 
 bool

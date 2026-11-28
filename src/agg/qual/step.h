@@ -27,6 +27,12 @@ typedef struct SiftV6Step
  */
 extern int64 sift_v6_calendar_step(const Node *e, Index relid, const Var **col, bool *local);
 
+/*
+ * The values the calendar calls of e take over span_us microseconds of the column they read: as many as the units of its finest date_trunc, extract or date_part of a constant unit the span
+ * holds, no more than the values a field repeats after when it is the only call; 0 when e makes none
+ */
+extern double sift_v6_calendar_values(const Node *e, double span_us);
+
 /* The step of e as sift_v6_calendar_step finds it, the zone opened in cx when it is on the session's clock; false when e has none */
 extern bool sift_v6_step_open(MemoryContext cx, const Node *e, Index relid, SiftV6Step *out, const Var **col);
 

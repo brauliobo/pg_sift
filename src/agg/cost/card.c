@@ -5,6 +5,7 @@
 
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_type_d.h"
+#include "datatype/timestamp.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/restrictinfo.h"
@@ -15,6 +16,7 @@
 #include "agg/safety.h"
 #include "agg/engine.h"
 #include "agg/cost/card.h"
+#include "agg/qual/step.h"
 #include "agg/vexpr.h"
 
 /* the integer a Const stands for in the order of its leaf: int2, int4, int8, date, timestamp, timestamptz; false for any other type */
@@ -339,6 +341,38 @@ sift_v6_card_undecided(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *i
 	return keep;
 }
 
+/* the microseconds a date or timestamp leaf spans under the quals of the table on its column alone, its rows taken as spread over the span */
+static double
+leaf_span_us(PlannerInfo *root, RelOptInfo *rel, const Var *v, const SiftColCardStats *cs)
+{
+	const double span = (double) cs->max_i64 - (double) cs->min_i64;
+	List	   *own = NIL;
+
+	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	{
+		List	   *vars = pull_var_clause((Node *) ri->clause, PVC_RECURSE_PLACEHOLDERS);
+
+		if (list_length(vars) == 1 && ((Var *) linitial(vars))->varattno == v->varattno)
+			own = lappend(own, ri);
+	}
+	return (v->vartype == DATEOID ? (span + 1) * USECS_PER_DAY : span) * clauselist_selectivity(root, own, 0, JOIN_INNER, NULL);
+}
+
+/* the groups of a calendar key of one date or timestamp leaf (date_trunc, extract): the units its span holds, where PostgreSQL counts the column's values; -1: no such key */
+static double
+calendar_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const Node *e)
+{
+	List	   *vars = pull_var_clause((Node *) e, PVC_RECURSE_PLACEHOLDERS);
+	const Var  *v = list_length(vars) == 1 ? linitial(vars) : NULL;
+	const int	leaf = v != NULL && (v->vartype == DATEOID || v->vartype == TIMESTAMPOID || v->vartype == TIMESTAMPTZOID) ? leaf_of(ix, rel->relid, (Node *) v) : -1;
+	const SiftColCardStats *cs = leaf >= 0 && (uint32) leaf < view->ncols ? &view->cols[leaf] : NULL;
+	double		n;
+
+	if (cs == NULL || !(cs->flags & SIFT_CSTAT_HAS_RANGE) || (n = sift_v6_calendar_values(e, leaf_span_us(root, rel, v, cs))) <= 0)
+		return -1;
+	return cs->flags & SIFT_CSTAT_HAS_NDV ? Min(n, Max(cs->ndv_est, 1.0)) : n;
+}
+
 double
 sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const List *group_exprs, double rows)
 {
@@ -350,10 +384,14 @@ sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, 
 	foreach_ptr(Node, e, (List *) group_exprs)
 	{
 		const int	leaf = leaf_of(ix, rel->relid, e);
+		const double cal = leaf < 0 ? calendar_groups(root, rel, ix, view, e) : -1;
 
-		if (leaf < 0 || (uint32) leaf >= view->ncols || !(view->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
+		if (cal > 0)
+			d[n++] = Min(cal, rows);
+		else if (leaf < 0 || (uint32) leaf >= view->ncols || !(view->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
 			return -1;
-		d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);
+		else
+			d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);
 	}
 	return n == 0 ? 1.0 : sift_card_ndv_multi(d, n, rows, 0);
 }
