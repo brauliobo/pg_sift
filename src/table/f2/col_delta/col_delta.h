@@ -417,6 +417,11 @@ extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *pa
 extern uint32 sift_col_delta_page_cut(const char *page, uint32 from_used, uint64 part_gen, bool (*keep) (void *ctx, TransactionId xmin), void *ctx);
 extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
 extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
+/*
+ * The map of the collector's patches alone, built over the collector's own array, which the map keeps (the collector is left empty): a long chain's patches are never held twice. The collector's
+ * patches were collected in the context the map is made in.
+ */
+extern SiftColDeltaPartMap *sift_col_delta_part_map_take(SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 
 /* One record (a row of a batch as a record of its own) collected, whatever its writer: the reader decided it counts */
 extern void sift_col_delta_collect_record(SiftColDeltaCollector *c, const uint8 *rec, const SiftColDeltaEntryHdr *h);

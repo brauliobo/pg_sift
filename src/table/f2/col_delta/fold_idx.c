@@ -48,7 +48,7 @@ sift_col_delta_fold_idx_seal(SiftColDeltaFoldIdx *x)
 		CHECK_FOR_INTERRUPTS();
 		if (x->c[g] == NULL)
 			continue;
-		x->map[g] = sift_col_delta_part_map_merge(NULL, x->c[g], x->gens[g], x->ngranules[g]);
+		x->map[g] = sift_col_delta_part_map_take(x->c[g], x->gens[g], x->ngranules[g]);
 		sift_col_delta_collector_free(x->c[g]);
 		x->c[g] = NULL;
 	}
