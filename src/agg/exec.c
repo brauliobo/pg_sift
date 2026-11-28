@@ -56,6 +56,7 @@ typedef struct V6State
 	SiftV6StarRun *star;		/* the dimensions of a star join */
 	uint32		star_passes;
 	uint32		star_shared;
+	uint32		star_key_filters;
 	SiftV6TopKRun *topk;
 	SiftV6Rows *rows;
 	Datum	   *totals;			/* a row Top-N with aggregates of the whole set: their values, which every row it gives carries */
@@ -267,6 +268,16 @@ v6_scan_unnest(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 	src->ops->jsonb->unnest_run(src->spec, st->group, src->heap, src->index, snap, &st->stats, st->star);
 }
 
+/* The counts of the dimensions EXPLAIN shows, kept before their tables are freed */
+static void
+star_finish(V6State *st)
+{
+	st->star_passes = sift_v6_star_passes(st->star);
+	st->star_shared = sift_v6_star_shared(st->star);
+	st->star_key_filters = sift_v6_star_key_filters(st->star);
+	sift_v6_star_close(st->star);
+}
+
 /* One scan of a fact table of a join or an unnest: a source of the node, the partitions of a partitioned fact being one each */
 static void
 v6_scan_fact(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
@@ -306,9 +317,7 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
-	st->star_passes = sift_v6_star_passes(st->star);
-	st->star_shared = sift_v6_star_shared(st->star);
-	sift_v6_star_close(st->star);
+	star_finish(st);
 }
 
 static void
@@ -399,11 +408,7 @@ finish_arms(const SiftV6FuseCohort *c, const SiftV6ScanArm *arms)
 		V6State    *owner = c->arms[i]->owner;
 
 		if (owner->star != NULL)
-		{
-			owner->star_passes = sift_v6_star_passes(owner->star);
-			owner->star_shared = sift_v6_star_shared(owner->star);
-			sift_v6_star_close(owner->star);
-		}
+			star_finish(owner);
 		sift_v6_group_finish(arms[i].group);
 	}
 }
@@ -516,9 +521,7 @@ v6_scan_rows(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 		MemoryContextSwitchTo(old);
 		MemoryContextDelete(pass_cx);
 	}
-	st->star_passes = sift_v6_star_passes(st->star);
-	st->star_shared = sift_v6_star_shared(st->star);
-	sift_v6_star_close(st->star);
+	star_finish(st);
 }
 
 /* the aggregates of the whole set: the one row of the group the scan folded every row it kept into */
@@ -910,6 +913,8 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(source_host(&st->sources[0])), st->spec->ext->elem.attno - 1)->attname)), es);
 	if (st->star_passes > 1)
 		ExplainPropertyInteger("Star Passes", NULL, st->star_passes, es);
+	if (st->star_key_filters > 0)
+		ExplainPropertyInteger("Join Key Filters", NULL, st->star_key_filters, es);
 	if (st->star != NULL && sift_v6_star_cache(st->star, &dim_hits, &dim_built))
 		ExplainPropertyText("Dimension Cache", psprintf("%u hit, %u built", dim_hits, dim_built), es);
 	if (st->star_shared > 0)

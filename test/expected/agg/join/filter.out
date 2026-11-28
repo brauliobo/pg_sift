@@ -39,7 +39,7 @@ DECLARE l text; r text := 'normal';
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAgg%' THEN r := 'SiftAgg'; END IF;
-		IF l ~ '(\d+) key filters' THEN r := r || ' key filters ' || substring(l from '(\d+) key filters'); END IF;
+		IF l ~ 'Join Key Filters: (\d+)' THEN r := r || ' key filters ' || substring(l from 'Join Key Filters: (\d+)'); END IF;
 		IF l ~ '[1-9]\d* pruned' THEN r := r || ' units pruned'; END IF;
 		IF l LIKE '%Workers Launched: _%' AND l NOT LIKE '%Workers Launched: 0%' THEN r := r || ' with workers'; END IF;
 	END LOOP;
@@ -62,8 +62,8 @@ END $$;
 -- an inner join that returns a column of the table, selective (a country: its keys span the events, 1,500 of the 15,000 entities) and a few entities
 SELECT * FROM same($$SELECT e.country, e.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 7 GROUP BY 1, 2$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 |           1 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |           1 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id < 40 AND e.country = e.id % 60 GROUP BY 1$$);
@@ -75,15 +75,15 @@ SELECT * FROM same($$SELECT e.label, count(*) AS n, sum(amount) AS s FROM ev JOI
 -- the duplicate key multiplies the events of its entity; a NULL key, a key far away and a negative one match nothing
 SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 11 GROUP BY 1$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 |         251 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |         251 |            0 |              0
 (1 row)
 
 -- the whole table, the leaves' own filters, and a table with no rows or no matching row
 SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE day >= '2025-01-01' AND small_id < 30 GROUP BY 1$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 |          60 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |          60 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT count(*) AS n FROM ev JOIN nothing e ON e.id = ev.dim_a_id$$);
@@ -114,8 +114,8 @@ SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE EXISTS (SELECT 1 F
 -- two joins on two leaves, a join on two keys, an int8 key table (keys past int4 match no event), a date key
 SELECT * FROM same($$SELECT e.country, d.name, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id JOIN days d ON d.d = ev.day WHERE e.country < 3 GROUP BY 1, 2$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 2 |          43 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 2 units pruned |          43 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT p.w % 5 AS w, count(*) AS n FROM ev JOIN pairs p ON p.dim_a_id = ev.dim_a_id AND p.small_id = ev.small_id GROUP BY 1$$);
@@ -171,21 +171,21 @@ SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id =
 
 SELECT * FROM same($$SELECT e.label, count(*) AS n FROM ev JOIN ents e ON e.id = ev.dim_a_id LEFT JOIN ents e2 ON e2.id = e.id AND e2.id IN (5, 4000) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 |           5 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |           5 |            0 |              0
 (1 row)
 
 -- a LEFT join and an anti join keep the tuples without a match: no filter
 SELECT * FROM same($$SELECT e.country, count(*) AS n FROM ev LEFT JOIN ents e ON e.id = ev.dim_a_id AND e.country = 7 GROUP BY 1$$);
   plan   | result_rows | vs_no_filter | vs_normal_plan 
----------+-------------+--------------+----------------
- SiftAgg |           2 |            0 |              0
+----------------------+-------------+--------------+----------------
+ SiftAgg units pruned |           2 |            0 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT kind, count(*) AS n FROM ev WHERE NOT EXISTS (SELECT 1 FROM ents e WHERE e.id = ev.dim_a_id AND e.country = 7) GROUP BY kind$$);
   plan   | result_rows | vs_no_filter | vs_normal_plan 
----------+-------------+--------------+----------------
- SiftAgg |           4 |            0 |              0
+----------------------+-------------+--------------+----------------
+ SiftAgg units pruned |           4 |            0 |              0
 (1 row)
 
 -- a sub-select as the table
@@ -245,8 +245,8 @@ SELECT * FROM same($$WITH periods AS (SELECT * FROM (VALUES ('a', daterange('202
 -- a divisor that is zero only on entities outside the table's rows is never evaluated for their events, as in the normal plan; a zero on a matching one raises the same error
 SELECT * FROM same($$SELECT count(*) AS n, sum(amount / e.tier) AS s FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.country = 7 AND e.tier > 0$$);
          plan          | result_rows | vs_no_filter | vs_normal_plan 
------------------------+-------------+--------------+----------------
- SiftAgg key filters 1 |           1 |            0 |              0
+------------------------------------+-------------+--------------+----------------
+ SiftAgg key filters 1 units pruned |           1 |            0 |              0
 (1 row)
 
 CREATE FUNCTION error_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -327,7 +327,7 @@ CREATE FUNCTION agg_cost_of(q text) RETURNS float8 LANGUAGE plpgsql AS $$
 DECLARE j json;
 BEGIN
 	EXECUTE 'EXPLAIN (FORMAT JSON) ' || q INTO j;
-	IF j::text NOT LIKE '%"SiftAgg"%' THEN RETURN NULL; END IF;
+	IF j::text NOT LIKE '%"SiftAggV6%' THEN RETURN NULL; END IF;
 	RETURN (j -> 0 -> 'Plan' ->> 'Total Cost')::float8;
 END $$;
 SELECT agg_cost_of($$SELECT e.label, count(*) FROM ev JOIN ents e ON e.id = ev.dim_a_id WHERE e.id IN (5, 4000) GROUP BY 1$$) <

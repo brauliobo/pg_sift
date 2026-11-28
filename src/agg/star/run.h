@@ -41,7 +41,7 @@ extern void sift_v6_star_scan_end(SiftV6StarRun *r, SiftV6Pipe *p);
  * at most SIFT_STAR_IN_MAX of them, the keys themselves as an IN list (no fact row outside them finds a match), which the zones, the marks and the point directory of the parts prune by.
  * None when a join keeps the fact rows that match nothing (left, full). Palloc'd; *n of them.
  */
-extern ScanKey sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n);
+extern ScanKey sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n);
 /* The dimensions of the pass for a pipe */
 extern void sift_v6_star_attach(const SiftV6StarRun *r, SiftV6Pipe *p);
 /* After pass 0: every dimension fits in one pass (no class of keys or chunk is left for another) */
@@ -64,6 +64,8 @@ extern uint64 sift_v6_star_bytes(const SiftV6StarRun *r);
 extern bool sift_v6_star_cache(const SiftV6StarRun *r, uint32 *hits, uint32 *built);
 /* The tables of its dimensions that another node of the statement had read */
 extern uint32 sift_v6_star_shared(const SiftV6StarRun *r);
+/* The dimensions whose keys (their range, and the keys themselves when few) the last scan of the fact table took as its scan keys */
+extern uint32 sift_v6_star_key_filters(const SiftV6StarRun *r);
 /* The tables are freed; the next open reads the plans again */
 extern void sift_v6_star_close(SiftV6StarRun *r);
 

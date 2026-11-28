@@ -48,6 +48,7 @@ struct SiftV6StarRun
 	bool		keyed[SIFT_STAR_MAX_DIMS];	/* the last chunk is the distinct keys of the part: a dimension of an outer, semi or anti join read in chunks */
 	bool		dirty[SIFT_STAR_MAX_DIMS];	/* the part or chunk of the pass is not the one the table holds */
 	uint32		passes;
+	uint32		key_filters;	/* the columns of the fact table the keys of a dimension filtered in its last scan (sift_v6_star_scan_keys) */
 	uint32		scans_left;		/* the scans of the fact table the pass still has to read */
 	uint64		budget;
 	uint64		bytes;
@@ -795,6 +796,12 @@ sift_v6_star_shared(const SiftV6StarRun *r)
 	return r->nshared;
 }
 
+uint32
+sift_v6_star_key_filters(const SiftV6StarRun *r)
+{
+	return r->key_filters;
+}
+
 uint64
 sift_v6_star_bytes(const SiftV6StarRun *r)
 {
@@ -854,12 +861,14 @@ in_key(Relation index, AttrNumber att, Oid typid, Oid opno, const SiftStarPush *
 }
 
 ScanKey
-sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n)
+sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, int *n)
 {
 	ScanKey		out = palloc(((Size) nkeys + 3 * r->x->ndims) * sizeof(ScanKeyData));
+	Bitmapset  *filtered = NULL;
 
 	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
 	*n = nkeys;
+	r->key_filters = 0;
 	for (int d = 0; d < r->x->ndims; d++)
 		if (sift_star_preserves_dim(r->x->dim[d].mode))
 			return out;
@@ -879,9 +888,11 @@ sift_v6_star_scan_keys(const SiftV6StarRun *r, Relation index, ScanKey keys, int
 			continue;
 		bound_key(index, att, type, BTGreaterEqualStrategyNumber, ge, push.lo, &out[(*n)++]);
 		bound_key(index, att, type, BTLessEqualStrategyNumber, le, push.hi, &out[(*n)++]);
+		filtered = bms_add_member(filtered, att);
 		if (push.kind == SSP_EXACT && OidIsValid(eq))
 			in_key(index, att, type, eq, &push, &out[(*n)++]);
 	}
+	r->key_filters = (uint32) bms_num_members(filtered);
 	return out;
 }
 

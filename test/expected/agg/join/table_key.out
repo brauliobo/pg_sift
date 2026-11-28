@@ -146,19 +146,19 @@ SELECT * FROM each_join('d.n4 = f.k');
 (3 rows)
 
 -- the cast is the key: an inner join tests the fact's date against the keys of the loaded rows before tuples are made (EXPLAIN: Join Key Filters),
--- where a condition of the rows alone has no key to test
+-- and so does an expression of the columns of the loaded rows: the keys are the values it gives them
 CREATE FUNCTION key_filters(cond text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE l text; r bigint := 0;
 BEGIN
 	FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) SELECT count(*), sum(f.amount) FROM facts f JOIN dims d ON %s WHERE d.label = ''e''', cond) LOOP
-		IF l ~ '(\d+) key filters' THEN r := substring(l from '(\d+) key filters')::bigint; END IF;
+		IF l ~ 'Join Key Filters: (\d+)' THEN r := substring(l from 'Join Key Filters: (\d+)')::bigint; END IF;
 	END LOOP;
 	RETURN r;
 END $$;
-SELECT key_filters('d.at::date = f.ts') AS cast_key, key_filters('d.n2::int = f.k') AS widened_key, key_filters('d.n4 + 1 = f.k') AS no_key;
- cast_key | widened_key | no_key 
-----------+-------------+--------
-        1 |           1 |      0
+SELECT key_filters('d.at::date = f.ts') AS cast_key, key_filters('d.n2::int = f.k') AS widened_key, key_filters('d.n4 + 1 = f.k') AS expression_key;
+ cast_key | widened_key | expression_key 
+----------+-------------+----------------
+        1 |           1 |              1
 (1 row)
 
 -- a boolean key on both sides, with NULLs: an inner, a LEFT, a preserved and a semi join of the table of its two values
