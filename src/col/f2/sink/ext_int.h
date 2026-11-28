@@ -26,6 +26,9 @@ typedef struct PullGroup
 	SiftVecType child_type[SIFT_F2_PULL_MAX_CHILD];
 	SiftGranuleDict *child_dict[SIFT_F2_PULL_MAX_CHILD];
 	uint32		n_elems;
+	uint32		(*runs)[2];		/* the elements [runs[k][0], runs[k][1]) the rows the consumer may keep hold, ascending; the element columns decode no other */
+	int			nruns;
+	bool		every_elem;		/* the runs are every element of the granule */
 } PullGroup;
 
 /* How the pull reaches the granules of its host: the next one (false at the end), the columns of a slice of it and the payload of an exception of a row of it (at: the row in the granule) */

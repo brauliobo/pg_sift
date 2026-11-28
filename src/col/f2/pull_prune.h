@@ -11,6 +11,7 @@
 #include "col/f2/f2.h"
 #include "col/f2/sink/ext.h"
 #include "col/f2/key/plan.h"
+#include "col/granule/filter.h"
 #include "table/f2/col_delta/col_delta.h"
 
 typedef struct SiftF2PullPrune
@@ -21,6 +22,8 @@ typedef struct SiftF2PullPrune
 	int			nelem;
 	const SiftColPred *elem;
 	bool		possible;		/* false: the predicates contradict one another, no row passes them */
+	SiftCfiltPred *cf;			/* of pred: the test of each on a chunk as it is stored, where cf_ok */
+	bool	   *cf_ok;
 	SiftF2KeySet keys;
 	SiftKeyPlan plan;
 	SiftF2TimeWin win;
@@ -59,6 +62,13 @@ extern bool sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullSt
 extern void sift_f2_pull_prune_range(SiftF2PullPrune *pr, uint32 lo, uint32 hi);
 /* Whether the zones of the leaves of the predicates of the rows say that every row of granule g of the open part passes them all */
 extern bool sift_f2_pull_prune_all(const SiftF2PullPrune *pr, uint32 g);
+/*
+ * The rows of granule g of the open part (rows: SIFT_CFILT_WORDS words) that pass the predicates of the rows, less those a predicate rules out on its chunk as stored (col/granule/filter.h): a
+ * predicate whose chunk lg has not loaded, or with a value of the granule its leaf could not hold or a column delta patches, rules out none.
+ */
+extern void sift_f2_pull_prune_rows(const SiftF2PullPrune *pr, const SiftLazyGranule *lg, const SiftGranuleView *v, uint32 g, uint64 *rows);
+/* The elements of the rows (a bit for each of the n rows of the layout) as ascending runs [runs[k][0], runs[k][1]), allocated in the current memory context; true: they are every element */
+extern bool sift_f2_pull_elem_runs(const SiftArrayLayout *lay, const uint64 *rows, uint32 n, uint32 (**runs)[2], int *nruns);
 /* Whether the zones of the element leaves say that no element of granule g, which has n_elems of them, passes the predicates of the elements */
 extern bool sift_f2_pull_prune_elems(const SiftF2PullPrune *pr, uint32 g, uint32 n_elems);
 

@@ -459,6 +459,15 @@ heap_decides(const V6Plan *p, const Expr *clause)
 		!agg_node_has_param((const Node *) clause);
 }
 
+static bool
+key_column_qual(const V6Plan *p, const Expr *q)
+{
+	const Node *arg = IsA(q, NullTest) ? (const Node *) ((const NullTest *) q)->arg :
+		IsA(q, OpExpr) ? linitial(((const OpExpr *) q)->args) : IsA(q, ScalarArrayOpExpr) ? linitial(((const ScalarArrayOpExpr *) q)->args) : NULL;
+
+	return p->index != NULL && arg != NULL && IsA(arg, Var) && ((const Var *) arg)->varattno >= 1 && ((const Var *) arg)->varattno <= p->index->nkeycolumns;
+}
+
 /* a clause of the WHERE that is none of the special ones: a scan key, a key of the JSON leaves, a batch qual, tests of the leaves of a document, or one the heap decides */
 static bool
 compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
@@ -469,6 +478,8 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 		q = sift_v6_tests_or_qual(p, ri->clause);
 	List	   *jq = ri->pseudoconstant || q != NULL || heap_decides(p, ri->clause) || (p->is_table && !p->ops->zone->table_json) ? NIL : sift_v6_json_qual(rel, ri->clause);
 
+	if (q != NULL && key_column_qual(p, q))
+		p->key_quals = lappend(p->key_quals, ri);
 	if (q != NULL)
 		p->spec.indexqual = lappend(p->spec.indexqual, q);
 	else if (jq != NIL)

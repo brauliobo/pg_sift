@@ -114,6 +114,13 @@ typedef struct SiftVec
 	bool		typbyval;		/* SVEC_DATUM: pg_type.typbyval */
 } SiftVec;
 
+/* The bytes of one value of a vector of the type */
+static inline size_t
+sift_vec_cell_size(SiftVecType t)
+{
+	return t == SVEC_BOOL ? 1 : t == SVEC_I32 || t == SVEC_DICT32 ? 4 : t == SVEC_I64 || t == SVEC_F64 || t == SVEC_NUM64 || t == SVEC_DATUM ? 8 : t == SVEC_NUM256 ? 32 : 16;
+}
+
 /* The active rows of a batch of n_raw <= SIFT_VEC_LEN rows: the bitmap always, the selection vector once an operator asks for it */
 typedef struct SiftBatchSel
 {

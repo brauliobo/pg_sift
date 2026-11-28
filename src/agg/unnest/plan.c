@@ -276,13 +276,13 @@ sift_v6_unnest_filter_as_case(const V6Plan *p, Aggref *a)
 /* one operator per pair, and each group of a distinct count or a percentile keeps the values it sees (7 times a pair that folds into a counter, as measured on 3.7M pairs in 60,000 groups) */
 #define HEAVY_AGG_PAIR_FACTOR	6
 
-/* the quals of the table whose values the plan knows: the selectivity of a qual of $n is the guess of a generic plan, which the normal plan is priced with too */
+/* the quals whose values the plan knows: the selectivity of a qual of $n is the guess of a generic plan, which the normal plan is priced with too */
 static List *
-known_quals(const RelOptInfo *rel)
+known_quals(const List *quals)
 {
 	List	   *known = NIL;
 
-	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
+	foreach_node(RestrictInfo, ri, quals)
 		if (!agg_node_has_extern_param((Node *) ri->clause))
 			known = lappend(known, ri);
 	return known;
@@ -377,17 +377,28 @@ reread_cost(const V6Plan *p)
 	return rows * (sift_v6_fetch_cost(p->is_table) + fn->total_cost + p->elem_rel->rows * cpu_tuple_cost * REREAD_ELEM_TUPLES);
 }
 
-/* the pairs of the rows of the granules the zones of the quals of the table leave, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
+/*
+ * the share of the work of a pair that each element of a granule read costs whatever its row: its chunks are read and taken apart whole, while only the elements of the rows the scan keys of
+ * the key columns leave are decoded (col/f2/sink/ext.h). Measured: 100,000 rows of 12 elements, a range of dates that keeps 3% to 100% of them runs at 4% of the whole scan plus the share it keeps
+ */
+#define ELEM_CHUNK_SHARE	0.04
+
+/*
+ * the pairs of the rows of the granules the zones of the quals of the table leave, which a column the rows are not ordered by does not narrow: their elements are read, and those of the rows
+ * the scan keys of the key columns keep are decoded
+ */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {
-	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel), 0, JOIN_INNER, NULL), 1.0e-6),
-				read = Min(sift_v6_granule_rows(p->root, p->rel, &p->spec, 1.0) / Max(p->rel->tuples, 1.0), 1.0);
+	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel->baserestrictinfo), 0, JOIN_INNER, NULL), 1.0e-6),
+				read = Min(sift_v6_granule_rows(p->root, p->rel, &p->spec, 1.0) / Max(p->rel->tuples, 1.0), 1.0),
+				keys = Max(clauselist_selectivity(p->root, known_quals(p->key_quals), 0, JOIN_INNER, NULL), sel),
+				pairs = input_rel->rows / sel;
 	int			heavy = 0;
 
 	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)
 		heavy += sift_v6_kind_distinct(p->spec.agg[j].kind) || p->spec.agg[j].kind == SV6_PCT_CONT;
-	return input_rel->rows / sel * read * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy) + reread_cost(p);
+	return pairs * (read * ELEM_CHUNK_SHARE + Min(keys, read) * (1 - ELEM_CHUNK_SHARE)) * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy) + reread_cost(p);
 }
 
 static void

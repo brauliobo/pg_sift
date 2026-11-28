@@ -363,7 +363,6 @@ sift_vec_cursor_decode(SiftGranVecCursor *cur, uint32 row_off, uint16 nrows, Sif
 				k1;
 	uint64		local[SIFT_VEC_WORDS];
 	const uint64 *valid = local;
-	size_t		esz;
 
 	if (nrows > SIFT_VEC_LEN || row_off + nrows > c->nrows)
 		cursor_bad_rows(cur, row_off, nrows);
@@ -419,8 +418,7 @@ sift_vec_cursor_decode(SiftGranVecCursor *cur, uint32 row_off, uint16 nrows, Sif
 			cursor_fill_strs(cur, k0, k1, nrows, dst, valid);
 			break;
 	}
-	esz = dst->type == SVEC_BOOL ? 1 : dst->type == SVEC_I32 ? 4 : dst->type == SVEC_DICT32 ? 4 : dst->type == SVEC_I64 || dst->type == SVEC_NUM64 || dst->type == SVEC_F64 ? 8 : 16;
-	memset((char *) dst->data + (size_t) nrows * esz, 0, SIFT_VEC_PAD);
+	memset((char *) dst->data + (size_t) nrows * sift_vec_cell_size(dst->type), 0, SIFT_VEC_PAD);
 }
 
 /*

@@ -18,6 +18,10 @@ sift_f2_pull_prune_begin(SiftF2PullPrune *pr, Relation index, const SiftF2PullSp
 	*pr = (SiftF2PullPrune) {.index = index,.npred = spec->npred,.pred = spec->pred,.nelem = spec->nelem_pred,.elem = spec->elem_pred,.possible = true};
 	if (pr->npred == 0)
 		return;
+	pr->cf = palloc(pr->npred * sizeof(SiftCfiltPred));
+	pr->cf_ok = palloc(pr->npred);
+	for (int k = 0; k < pr->npred; k++)
+		pr->cf_ok[k] = sift_cfilt_compile(&pr->cf[k], &sift_col_rel(index)->schema->cols[pr->pred[k].col], &pr->pred[k]);
 	sift_f2_key_plan(sift_f2_rel(index), sift_col_rel(index)->schema->cols, pr->pred, pr->npred, &pr->plan);
 	pr->possible = sift_f2_key_set(index, sift_f2_rel(index), pr->pred, pr->npred, &pr->keys) && sift_f2_time_window(sift_f2_rel(index), pr->pred, pr->npred, &pr->win) && pr->plan.state != SIFT_KEY_PLAN_EMPTY;
 }
@@ -183,6 +187,49 @@ sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullStats *st)
 		st->granules_zone_skipped++;
 	}
 	return false;
+}
+
+void
+sift_f2_pull_prune_rows(const SiftF2PullPrune *pr, const SiftLazyGranule *lg, const SiftGranuleView *v, uint32 g, uint64 *rows)
+{
+	uint64		mask[SIFT_CFILT_WORDS + 2];
+
+	for (int k = 0; k < pr->npred; k++)
+	{
+		SiftCfiltResult res;
+
+		if (!pr->cf_ok[k] || !lg->loaded[pr->pred[k].col + 1] || has_exception(pr, g, pr->pred[k].col))
+			continue;
+		res = sift_granule_filter_compressed_live(v, &pr->cf[k], rows, mask);
+		if (res == SIFT_CFILT_ALL_FALSE)
+			memset(rows, 0, SIFT_CFILT_WORDS * sizeof(uint64));
+		else if (res == SIFT_CFILT_BITS)
+			for (int w = 0; w < SIFT_CFILT_WORDS; w++)
+				rows[w] &= mask[w];
+	}
+}
+
+bool
+sift_f2_pull_elem_runs(const SiftArrayLayout *lay, const uint64 *rows, uint32 n, uint32 (**runs)[2], int *nruns)
+{
+	uint32		(*out)[2] = palloc((n / 2 + 1) * sizeof(*out));
+	int			k = 0;
+
+	for (uint32 r = 0; r < n; r++)
+	{
+		if (!((rows[r >> 6] >> (r & 63)) & 1) || lay->offsets[r] == lay->offsets[r + 1])
+			continue;
+		if (k > 0 && out[k - 1][1] == lay->offsets[r])
+			out[k - 1][1] = lay->offsets[r + 1];
+		else
+		{
+			out[k][0] = lay->offsets[r];
+			out[k++][1] = lay->offsets[r + 1];
+		}
+	}
+	*runs = out;
+	*nruns = k;
+	return k == 1 && out[0][0] == 0 && out[0][1] == lay->n_elems;
 }
 
 bool

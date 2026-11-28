@@ -5,7 +5,8 @@
  * column (SIFT_COLK_GROUP) the layout of the elements of the rows of the slice and the element columns decoded for the whole granule.
  *
  * The consumer may tell the pull what its rows must satisfy (SiftF2PullSpec.pred, elem_pred): the partitions, parts and granules that hold no such row (by the key ranges, the time bounds, the key marks
- * and the zones of the leaves, col/f2/pull_prune.h) are not read at all. That is a hint: the batches of the granules that are read carry every row of them, and the consumer tests its rows.
+ * and the zones of the leaves, col/f2/pull_prune.h) are not read at all. That is a hint: the batches of the granules that are read carry every row of them, and the consumer tests its rows;
+ * the element columns hold only the elements of the rows that a chunk of a leaf of pred, as stored, does not rule out (the others are zero and not valid).
  * A spec may name several array columns of a row (one group each), each read as its own layout and element columns. A group that names the lengths of an array and no element column reads no
  * element chunk: the layout is all the consumer gets.
  *
