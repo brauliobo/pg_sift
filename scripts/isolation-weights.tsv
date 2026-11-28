@@ -37,7 +37,7 @@ bm25/vacuum_scan	1.3
 bm25/vacuum_truncate	6.1
 col/auto_merge	0.8
 col/build_progress	0.3
-col/conn/ddl	0.4
+col/conn/ddl	0.4	quiet
 col/conn/found	0.1
 col/conn/inserted	0.0	quiet
 col/conn/journal_cache	0.1	quiet
