@@ -5,6 +5,8 @@ CREATE EXTENSION pg_sift_helpers;
 CREATE SCHEMA s1;
 GRANT USAGE ON SCHEMA s1 TO PUBLIC;
 SET search_path = s1, public;
+-- the ordered index-only walk is a scan of a Format 1 index
+SET sift.test_create_format1 = on;
 -- A top-N whose first key ties over thousands of rows (10 entities of 10,000 rows) reads the second key of every row of the tie: the order-array walk of one key is cheap, of two it is not.
 -- With a deep OFFSET the (entity, ts) index-only walk (the second order, group after group) is the plan, as it is by time (0.8 against 6.5 ms for 300,000 rows over a random heap);
 -- the one-key top-N has no tie to read and stays the scan.
@@ -30,8 +32,8 @@ FROM unnest(ARRAY[0, 3000, 10000]) n ORDER BY n;
    n   |  two_keys  |  one_key   
 -------+------------+------------
      0 | index only | index only
-  3000 | index only | scan
- 10000 | index only | scan
+  3000 | index only | index only
+ 10000 | index only | index only
 (3 rows)
 
 -- the rows are the heap's
@@ -194,7 +196,7 @@ SELECT * FROM rs_all();
  10 | nulls_first             | sift
  11 | text_key                | sift
  12 | text_bound              | native
- 13 | other_filter            | sift  
+ 13 | other_filter            | sift
  14 | feeds_next              | sift
  15 | two_sources             | sift
  16 | nested_loop_outer_table | sift
