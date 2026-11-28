@@ -43,6 +43,7 @@ BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, BUFFERS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAggV6First)%' THEN engine := 'SiftAggV6First'; END IF;
 		IF l LIKE '%Custom Scan (SiftAggV6Window)%' THEN engine := 'SiftAggV6Window'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6Two)%' THEN engine := 'SiftAggV6Two'; END IF;
 		IF l LIKE '%Custom Scan (SiftAggV6)%' AND engine = 'normal' THEN engine := 'SiftAggV6'; END IF;
 		IF l ~ 'Spilled Rows: [1-9]' THEN spilled := true; END IF;
 	END LOOP;

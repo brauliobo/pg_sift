@@ -62,6 +62,7 @@ BEGIN
 	SET LOCAL enable_memoize = off;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAggV6)%' THEN engine := 'SiftAggV6'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6Two)%' THEN engine := 'SiftAggV6Two'; END IF;
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
 	SET LOCAL sift.enable_agg = off;

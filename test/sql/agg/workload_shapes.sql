@@ -70,20 +70,21 @@ SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc
 -- a strict path raises for a document that has no such key: the heap raises, the scan must not answer instead
 SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc), 'strict $.parts[*] ? (@.category == "catg_d")')$$) AS strict_path;
 
--- per-item arms under an outer aggregate over a text leaf with the cast in the aggregate (guarded: a score may be text): one fused scan
+-- per-item arms under an outer aggregate over a text leaf with the cast in the aggregate (guarded: a score may be text): one fused scan; the average of the
+-- cells rounds to 10 digits: the float sums of two plans add the cells in other orders
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, CASE WHEN i.score ~ '^[0-9.]+$' THEN i.score::float8 END AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, round(sum(s)::numeric, 6) AS total
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items, round(sum(s)::numeric, 6) AS total
 	FROM (SELECT rid, k, avg(n) AS a, sum(n) AS s FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n), sum(n) FROM b GROUP BY rid) x GROUP BY k$$);
 -- the arms share a WHERE that keeps the cast off the text scores: it is the scan's own, and the scan casts only what passes it
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid) x GROUP BY k$$);
--- a WHERE of each arm's own (they differ) would have the fused scan cast every item, the text scores too: not fused (an arm may be its own scan)
+-- a WHERE of each arm's own (they differ) would have the fused scan cast every item, the text scores too: not fused (each arm scans alone under the two-level node)
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid, k
 		  UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' AND k <> 'catg_m' GROUP BY rid) x GROUP BY k$$);
 -- the plain cast raises for a text score, in both plans

@@ -240,7 +240,7 @@ SET hash_mem_multiplier = 1;
 SELECT same(report('NULL::date AS bucket_date', 'category, bucket_date')) AS small_memory;
  small_memory 
 --------------
- f
+ t
 (1 row)
 
 RESET work_mem;
@@ -549,8 +549,8 @@ SET hash_mem_multiplier = 1;
 SELECT * FROM each_join('TABLE buckets', 'm.kind IS NOT DISTINCT FROM sp.kind');
  jointype  | ok 
 -----------+----
- JOIN      | f
- LEFT JOIN | f
+ JOIN      | t
+ LEFT JOIN | t
 (2 rows)
 
 RESET work_mem;

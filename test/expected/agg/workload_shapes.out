@@ -80,9 +80,9 @@ SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE dim_a_id = ANY (ARRAY(SELECT
 -- EXISTS over the parts of an index expression, with the members of one element and the other elements not counting
 SELECT * FROM same($$SELECT count(*) FILTER (WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(op_txt(doc) -> 'parts') AS o(category text, dir_a text)
 	WHERE o.category = 'catg_j' AND o.dir_a = 'down')) AS catg_j_negative, count(*) AS n FROM ev$$);
-                       plan                        | result_rows | vs_normal_plan 
----------------------------------------------------+-------------+----------------
- SiftAgg (Pushed Aggregates: count(*), count(*); ) |           1 |              0
+                                        plan                                        | result_rows | vs_normal_plan 
+------------------------------------------------------------------------------------+-------------+----------------
+ SiftAgg (Pushed Aggregates: count(*) FILTER (WHERE EXISTS(SubPlan 1)), count(*); ) |           1 |              0
 (1 row)
 
 SELECT * FROM same($$SELECT op_txt(doc) ->> 'lang' AS lang, count(*) AS n FROM ev
@@ -132,10 +132,11 @@ SELECT plan_of($$SELECT count(*) AS n FROM ev WHERE jsonb_path_exists(op_txt(doc
  normal
 (1 row)
 
--- per-item arms under an outer aggregate over a text leaf with the cast in the aggregate (guarded: a score may be text): one fused scan
+-- per-item arms under an outer aggregate over a text leaf with the cast in the aggregate (guarded: a score may be text): one fused scan; the average of the
+-- cells rounds to 10 digits: the float sums of two plans add the cells in other orders
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, CASE WHEN i.score ~ '^[0-9.]+$' THEN i.score::float8 END AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items, round(sum(s)::numeric, 6) AS total
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items, round(sum(s)::numeric, 6) AS total
 	FROM (SELECT rid, k, avg(n) AS a, sum(n) AS s FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n), sum(n) FROM b GROUP BY rid) x GROUP BY k$$);
                                     plan                                    | result_rows | vs_normal_plan 
 ----------------------------------------------------------------------------+-------------+----------------
@@ -145,22 +146,22 @@ SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, CASE WHEN i
 -- the arms share a WHERE that keeps the cast off the text scores: it is the scan's own, and the scan casts only what passes it
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid) x GROUP BY k$$);
                               plan                              | result_rows | vs_normal_plan 
 ----------------------------------------------------------------+-------------+----------------
  SiftAgg (Pushed Aggregates: avg(inner), count(DISTINCT row); ) |           5 |              0
 (1 row)
 
--- a WHERE of each arm's own (they differ) would have the fused scan cast every item, the text scores too: not fused (an arm may be its own scan)
+-- a WHERE of each arm's own (they differ) would have the fused scan cast every item, the text scores too: not fused (each arm scans alone under the two-level node)
 SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
-	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
+	SELECT k, round(avg(a)::numeric, 10) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b WHERE n ~ '^[0-9.]+$' GROUP BY rid, k
 		  UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b WHERE n ~ '^[0-9.]+$' AND k <> 'catg_m' GROUP BY rid) x GROUP BY k$$);
-                                                          plan                                                          | result_rows | vs_normal_plan 
-------------------------------------------------------------------------------------------------------------------------+-------------+----------------
- 2 SiftAgg (Pushed Aggregates: avg((i.score)::double precision); Pushed Aggregates: avg((i.score)::double precision); ) |           5 |              0
+                              plan                              | result_rows | vs_normal_plan 
+----------------------------------------------------------------+-------------+----------------
+ SiftAgg (Pushed Aggregates: avg(inner), count(DISTINCT row); ) |           5 |              0
 (1 row)
 
 -- the plain cast raises for a text score, in both plans
@@ -169,12 +170,12 @@ SELECT * FROM same($$WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS 
 	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b GROUP BY rid) x GROUP BY k$$);
 ERROR:  invalid input syntax for type double precision: "n/a"
-CONTEXT:  sift index "public.ev_col"
-SQL statement "CREATE TEMP TABLE r_on ON COMMIT DROP AS WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
+CONTEXT:  SQL statement "CREATE TEMP TABLE r_on ON COMMIT DROP AS WITH b AS (SELECT r.id AS rid, i.category AS k, i.score AS n
 	FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE r.deleted_at IS NULL)
 	SELECT k, avg(a) AS value, count(DISTINCT rid) AS items
 	FROM (SELECT rid, k, avg(n::float8) AS a FROM b GROUP BY rid, k UNION ALL SELECT rid, NULL::text, avg(n::float8) FROM b GROUP BY rid) x GROUP BY k"
-PL/pgSQL function sift_helpers.agg_plan_and_differences(text,text) line 4 at EXECUTE
+PL/pgSQL function sift_helpers.agg_rows_diff(text,boolean) line 4 at EXECUTE
+SQL function "agg_plan_and_differences" statement 1
 SQL function "same" statement 1
 SET sift.enable_agg = off;
 SELECT count(*) AS n FROM ev r, jsonb_to_recordset(op_txt(r.doc) -> 'parts') AS i(category text, score text) WHERE i.score::float8 > 5;

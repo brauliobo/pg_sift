@@ -175,8 +175,8 @@ SELECT same(replace(report('count(DISTINCT parent_id) AS parents, count(DISTINCT
 -- the column of the distinct count is an outer key, next to another column and the ids (many groups: the sets follow the groups as they grow)
 SELECT same(replace(report('count(DISTINCT parent_id) AS parents, count(DISTINCT region) AS regions, count(DISTINCT id) AS ids, count(*) AS cells'),
                     'GROUP BY k', 'GROUP BY k, parent_id')) AS outer_key;
--- not a column the arms group by: PostgreSQL's plan
-SELECT pushed(report('count(DISTINCT s) AS sums')) AS pushed_not_a_key;
+-- not a column the arms group by: the distinct values of the inner sums, which the outer groups count like any other value
+SELECT same(report('count(DISTINCT s) AS sums')) AS not_a_key;
 
 -- more ids than hash_mem holds: the set moves to a hash and a sort, and the answer is the same
 SET work_mem = '64kB';

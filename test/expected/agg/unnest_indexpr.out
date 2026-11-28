@@ -58,6 +58,7 @@ BEGIN
 	SET LOCAL enable_memoize = off;
 	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
 		IF l LIKE '%Custom Scan (SiftAggV6)%' THEN engine := 'SiftAggV6'; END IF;
+		IF l LIKE '%Custom Scan (SiftAggV6Two)%' THEN engine := 'SiftAggV6Two'; END IF;
 	END LOOP;
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS SELECT x::text AS r FROM (%s) x', q);
 	SET LOCAL sift.enable_agg = off;
@@ -111,25 +112,25 @@ INSERT INTO stmts VALUES
 (16, 'SELECT i.category, count(*) FROM ux r, jsonb_to_recordset(coalesce(r.doc, ''{}'') -> ''parts'') AS i(category text, score text) GROUP BY 1'),
 (17, 'SELECT i.category, count(*), sum(i.score) FROM ux r, jsonb_to_recordset(ux_norm(r.doc) -> ''parts'') AS i(category text, score float8) WHERE r.id IN (10, 11, 25) GROUP BY 1');
 SELECT s.id, r.* FROM stmts s, LATERAL same(s.q) r ORDER BY s.id;
- id |  engine   | result_rows | vs_heap 
-----+-----------+-------------+---------
-  1 | SiftAggV6 |          37 |       0
-  2 | SiftAggV6 |          45 |       0
-  3 | SiftAggV6 |           1 |       0
-  4 | SiftAggV6 |           5 |       0
-  5 | SiftAggV6 |         420 |       0
-  6 | SiftAggV6 |          37 |       0
-  7 | SiftAggV6 |          37 |       0
-  8 | SiftAggV6 |          37 |       0
-  9 | SiftAggV6 |           7 |       0
- 10 | SiftAggV6 |          37 |       0
- 11 | SiftAggV6 |          36 |       0
- 12 | SiftAggV6 |          36 |       0
- 13 | SiftAggV6 |           4 |       0
- 14 | SiftAggV6 |           5 |       0
- 15 | normal    |           0 |       0
- 16 | normal    |          37 |       0
- 17 | SiftAggV6 |           3 |       0
+ id |    engine    | result_rows | vs_heap 
+----+--------------+-------------+---------
+  1 | SiftAggV6    |          37 |       0
+  2 | SiftAggV6    |          45 |       0
+  3 | SiftAggV6    |           1 |       0
+  4 | SiftAggV6    |           5 |       0
+  5 | SiftAggV6    |         420 |       0
+  6 | SiftAggV6    |          37 |       0
+  7 | SiftAggV6    |          37 |       0
+  8 | SiftAggV6    |          37 |       0
+  9 | SiftAggV6    |           7 |       0
+ 10 | SiftAggV6    |          37 |       0
+ 11 | SiftAggV6Two |          36 |       0
+ 12 | SiftAggV6Two |          36 |       0
+ 13 | SiftAggV6    |           4 |       0
+ 14 | SiftAggV6    |           5 |       0
+ 15 | normal       |           0 |       0
+ 16 | normal       |          37 |       0
+ 17 | SiftAggV6    |           3 |       0
 (17 rows)
 
 -- values only the heap row gives (statement 17): a score written as a string, a category that is a nested object
@@ -167,13 +168,13 @@ UPDATE ux SET doc = jsonb_build_object('parts', jsonb_build_array(jsonb_build_ob
 DELETE FROM ux WHERE id % 61 = 0;
 INSERT INTO ux SELECT 2000 + i, i % 7, NULL, jsonb_build_object('parts', jsonb_build_array(jsonb_build_object('category', 'new' || i % 3, 'score', i * 0.5))) FROM generate_series(1, 40) i;
 SELECT s.id, r.* FROM stmts s, LATERAL same(s.q) r WHERE s.id IN (1, 2, 8, 11, 12) ORDER BY s.id;
- id |  engine   | result_rows | vs_heap 
-----+-----------+-------------+---------
-  1 | SiftAggV6 |          41 |       0
-  2 | SiftAggV6 |          73 |       0
-  8 | SiftAggV6 |          41 |       0
- 11 | SiftAggV6 |          40 |       0
- 12 | SiftAggV6 |          40 |       0
+ id |    engine    | result_rows | vs_heap 
+----+--------------+-------------+---------
+  1 | SiftAggV6    |          41 |       0
+  2 | SiftAggV6    |          73 |       0
+  8 | SiftAggV6    |          41 |       0
+ 11 | SiftAggV6Two |          40 |       0
+ 12 | SiftAggV6Two |          40 |       0
 (5 rows)
 
 -- an error of the function is the error of the statement, from the index and from the heap alike

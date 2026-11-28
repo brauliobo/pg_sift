@@ -278,11 +278,11 @@ SELECT same(replace(report('count(DISTINCT parent_id) AS parents, count(DISTINCT
  t
 (1 row)
 
--- not a column the arms group by: PostgreSQL's plan
-SELECT pushed(report('count(DISTINCT s) AS sums')) AS pushed_not_a_key;
- pushed_not_a_key 
-------------------
- f
+-- not a column the arms group by: the distinct values of the inner sums, which the outer groups count like any other value
+SELECT same(report('count(DISTINCT s) AS sums')) AS not_a_key;
+ not_a_key 
+-----------
+ t
 (1 row)
 
 -- more ids than hash_mem holds: the set moves to a hash and a sort, and the answer is the same
@@ -366,14 +366,14 @@ SELECT * FROM same($q$SELECT cat, avg(a) FILTER (WHERE a > 5) AS m1, round((sum(
 (1 row)
 
 EXPLAIN (COSTS OFF) SELECT cat, count(*) FILTER (WHERE a >= 8) FROM (SELECT cat, who, avg(x) AS a FROM ev GROUP BY 1, 2) c GROUP BY 1;
-            QUERY PLAN             
------------------------------------
+              QUERY PLAN              
+--------------------------------------
  HashAggregate
    Group Key: ev.cat
-   ->  Custom Scan (SiftAgg)
+   ->  Custom Scan (SiftAggV6)
          Index: ev_col
          Group Keys: cat, who
-         Pushed Aggregates: avg(x)
+         Pushed Aggregates: avg(ev.x)
 (6 rows)
 
 SET sift.agg_force = on;
@@ -1068,10 +1068,7 @@ SELECT * FROM join_lines(report());
                                         join_lines                                        
 ------------------------------------------------------------------------------------------
  Pushed Aggregates: avg(inner), sum(inner int8), count(DISTINCT row), count(DISTINCT key)
- Lookup Joins: values, items, rm (subquery)
- Name: values
- Name: rm (subquery)
-(4 rows)
+(1 row)
 
 -- rows that were updated and deleted since the index was built are read from the heap
 UPDATE events SET doc = jsonb_set(doc, '{parts,0,score}', '9') WHERE id % 17 = 0 AND doc IS NOT NULL;
