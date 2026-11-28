@@ -14,14 +14,14 @@ CREATE INDEX events_col ON events USING sift_col (id, dim_id, ts, kind, amount);
 VACUUM (FREEZE, ANALYZE) events, dims;
 \ir test/common/sql/agg/base.sql
 CREATE FUNCTION same(q text) RETURNS bool LANGUAGE sql AS $$ SELECT outcome(q, false) = outcome(q, true) $$;
--- the units the scan reads (NULL when the plan is not a scan)
+-- the granules the scan reads (NULL when the plan is not a scan)
 CREATE FUNCTION units_read(q text) RETURNS bigint LANGUAGE plpgsql AS $$
 DECLARE j jsonb;
 BEGIN
   PERFORM set_config('sift.enable_agg', 'true', true);
   PERFORM set_config(s, 'false', true) FROM unnest(ARRAY['enable_seqscan', 'enable_indexscan', 'enable_bitmapscan', 'enable_indexonlyscan']) s;
   EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, FORMAT JSON) ' || q INTO j;
-  RETURN (jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAgg")."Units"') #>> '{}')::bigint;
+  RETURN (jsonb_path_query_first(j, '$.** ? (@."Custom Plan Provider" == "SiftAggV6")."Sift"."Granules"."Scanned"') #>> '{}')::bigint;
 END $$;
 CREATE FUNCTION spine_query(filter text) RETURNS text LANGUAGE sql AS $$ SELECT format($f$
  WITH periods AS (SELECT * FROM (VALUES ('cur', daterange('2024-03-01', '2025-03-01')), ('prev', daterange('2023-03-01', '2024-03-01'))) p(period, rng))

@@ -920,6 +920,13 @@ in_key(Relation index, AttrNumber att, Oid typid, Oid opno, const SiftStarPush *
 						   PointerGetDatum(construct_array(vals, (int) push->nkeys, typid, len, byval, align)));
 }
 
+/* A dimension that holds no key joins no fact row: a range no value is in, which the zones of every granule rule out (a preserved dimension still gets its rows) */
+static SiftStarPush
+empty_push(SiftStarPush push)
+{
+	return push.empty ? (SiftStarPush) {.kind = SSP_RANGE,.lo = 1,.hi = 0,.empty = true} : push;
+}
+
 ScanKey
 sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys, uint32 in_max, int *n)
 {
@@ -933,7 +940,7 @@ sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys
 	for (int d = 0; d < r->x->ndims && !sift_star_preserves_dim(r->x->dim[d].mode); d++)
 	{
 		const SiftV6XDim *xd = &r->x->dim[d];
-		const SiftStarPush push = r->found[d] != NULL ? (SiftStarPush) {.kind = SSP_NONE} : sift_star_push(&r->dim[d]);
+		const SiftStarPush push = r->found[d] != NULL ? (SiftStarPush) {.kind = SSP_NONE} : empty_push(sift_star_push(&r->dim[d]));
 		const AttrNumber att = (AttrNumber) xd->fatt[0];
 		const Oid	type = xd->ftype[0],
 					family = att >= 1 && att <= index->rd_index->indnatts ? index->rd_opfamily[att - 1] : InvalidOid,
