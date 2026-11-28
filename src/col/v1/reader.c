@@ -285,6 +285,12 @@ sift_v1_idx_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 }
 
 static bool
+idx_dict_match(void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *lut)
+{
+	return sift_col_unit_dict_match(&((SiftV1Idx *) impl)->unit, leaf, op, c, lut);
+}
+
+static bool
 idx_filter_types(void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits, bool *known)
 {
 	SiftV1Idx  *r = impl;
@@ -358,6 +364,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.vet = sift_v1_idx_vet,
 	.filter_types = idx_filter_types,
 	.read = sift_v1_idx_read,
+	.dict_match = idx_dict_match,
 	.tids = sift_v1_idx_tids,
 	.unit_rows = idx_unit_rows,
 	.unit_agg = idx_unit_agg,

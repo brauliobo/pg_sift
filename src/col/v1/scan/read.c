@@ -234,6 +234,23 @@ sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on)
 	((ColUnit *) unit->priv)->dict_lazy = on;
 }
 
+bool
+sift_col_unit_dict_match(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *lut)
+{
+	ColUnit    *cu = unit->priv;
+	SiftCDict  *d;
+	int64		code;
+
+	if (cu->seg == NULL || unit_inline(cu, col))
+		return false;
+	d = sift_cseg_dict_search(cu->seg, col, op);
+	if (op != SIFT_COLOP_EQ)
+		sift_cdict_match(d, op, c, 1, lut);
+	else if ((code = sift_cdict_find(d, c->v.s, c->len)) >= 0)
+		lut[code >> 6] |= UINT64CONST(1) << (code & 63);
+	return true;
+}
+
 void
 sift_col_read_text(const SiftColUnit *unit, int col, const SiftColSel *sel, SiftColVec *vec)
 {

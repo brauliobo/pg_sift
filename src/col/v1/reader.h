@@ -50,6 +50,8 @@ typedef struct SiftV1ReaderOps
 	/* the rows of bits whose value in the leaf has none of the JSON types (SIFT_SRC_JT_*) are cleared; false when none is left. *known is false, and bits are not to be used, when the unit cannot tell the types apart */
 	bool		(*filter_types) (void *impl, const SiftSrcUnit *unit, int leaf, uint32 types, uint64 *bits, bool *known);
 	void		(*read) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
+	/* sift_col_unit_dict_match over the dictionary of text leaf leaf that read gives the unit */
+	bool		(*dict_match) (void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *lut);
 	void		(*tids) (void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 	/* the rows the unit answers for from its pre-aggregates, the live rows the snapshot sees (stored, every heap page all-visible, no dead row or a sidecar net of them), so the two below
 	 * answer for them; -1: the unit is read */

@@ -494,6 +494,7 @@ const SiftV1ReaderOps sift_v1_tbl_reader = {
 	.vet = sift_v1_tbl_vet,
 	.filter_types = tbl_filter_types,
 	.read = sift_v1_tbl_read,
+	.dict_match = sift_v1_tbl_dict_match,
 	.tids = sift_v1_tbl_tids,
 	.unit_rows = tbl_unit_rows,
 	.unit_agg = tbl_unit_agg,

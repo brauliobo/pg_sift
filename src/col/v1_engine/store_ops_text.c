@@ -55,12 +55,22 @@ sift_v1_src_bind_tests(SiftV1Src *s, const SiftV1Scan *scan)
 	bind_texts(s, scan->texts);
 }
 
-/* whether each string of dictionary d passes the qual of t, kept while the units share d */
+/* the test of the dictionary that q is over its strings */
+static SiftColOp
+text_op(const SiftTextQual *q)
+{
+	if (!q->like || q->shape == SIFT_LIKE_EQUAL)
+		return SIFT_COLOP_EQ;
+	return q->shape == SIFT_LIKE_CONTAINS ? SIFT_COLOP_CONTAINS : q->shape == SIFT_LIKE_PREFIX ? SIFT_COLOP_PREFIX : SIFT_COLOP_SUFFIX;
+}
+
+/* whether each string of dictionary d passes the qual of t, searched where the segment keeps the dictionary when it can, kept while the units share d */
 static const bool *
 dict_pass(SiftV1Src *s, SiftV1TextTest *t, const SiftSrcDict *d)
 {
 	char		buf[SIFT_SRC_DICT_ENTRY];
 	uint32		len;
+	uint64	   *lut;
 
 	if (t->dict == d->id)
 		return t->pass;
@@ -68,12 +78,18 @@ dict_pass(SiftV1Src *s, SiftV1TextTest *t, const SiftSrcDict *d)
 		pfree(t->pass);
 	t->pass = MemoryContextAlloc(s->cx, Max(d->n, 1) * sizeof(bool));
 	t->dict = d->id;
-	for (uint32 c = 0; c < d->n; c++)
-	{
-		const char *str = sift_srcdict_str(d, c, &len, buf);
+	lut = palloc0(SIFT_COL_NWORDS(Max(d->n, 1)) * sizeof(uint64));
+	if (s->rd->dict_match(s->src, &s->unit, t->leaf, text_op(t->q), &(SiftColValue) {.v.s = (const char *) t->q->bytes,.len = t->q->len}, lut))
+		for (uint32 c = 0; c < d->n; c++)
+			t->pass[c] = (lut[c >> 6] >> (c & 63) & 1) != t->q->negate;
+	else
+		for (uint32 c = 0; c < d->n; c++)
+		{
+			const char *str = sift_srcdict_str(d, c, &len, buf);
 
-		t->pass[c] = sift_text_qual_holds(t->q, (const uint8 *) str, len);
-	}
+			t->pass[c] = sift_text_qual_holds(t->q, (const uint8 *) str, len);
+		}
+	pfree(lut);
 	return t->pass;
 }
 

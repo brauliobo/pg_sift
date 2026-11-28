@@ -186,6 +186,9 @@ typedef struct SiftColUnit
 
 /* Whether the next sift_col_read and sift_col_read_idx of the unit may give a STR leaf a dictionary that stays in the segment (get, no off and bytes): for a reader that asks for the strings of a few codes */
 extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
+/* The codes of the dictionary of STR leaf col whose string passes op (EQ, PREFIX, SUFFIX, CONTAINS) against c, set in lut (cleared, a bit a code), searched where the segment keeps the dictionary (the trigram signatures
+ * of its blocks spare the blocks without the literal) instead of reading every string; false when the unit holds the leaf inline or in a write buffer */
+extern bool sift_col_unit_dict_match(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *lut);
 
 /*
  * The keys of the key_cut that a conjunction of predicates confines a scan to, when it confines it: the leading cut leaves each equal to a value (or NULL) and the next one in a range or

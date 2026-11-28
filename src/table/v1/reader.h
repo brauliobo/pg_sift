@@ -89,6 +89,7 @@ extern bool sift_v1_tbl_vet_needed(void *impl, const SiftSrcUnit *unit);
 extern void sift_v1_tbl_vet(void *impl, const SiftSrcUnit *unit, uint64 *bits);
 extern void sift_v1_tbl_tids(void *impl, const SiftSrcUnit *unit, const uint32 *rows, int n, ItemPointerData *tids);
 extern void sift_v1_tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec);
+extern bool sift_v1_tbl_dict_match(void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *lut);
 extern void sift_v1_tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec);
 extern void sift_v1_tbl_read_sel(void *impl, const SiftSrcUnit *unit, int leaf, const uint64 *bits, SiftSrcVec *vec);
 extern void sift_v1_tbl_wide_read(SiftV1Tbl *t, int leaf, const TblPart *p, const SiftColVec *v, size_t n, Datum dflt, bool dnull, SiftSrcVec *vec);

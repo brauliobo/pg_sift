@@ -15,6 +15,8 @@ SELECT i,
 	   CASE WHEN i % 61 = 0 THEN NULL ELSE 'v' || (i * 7) % 3000 END,
 	   i
 FROM generate_series(1, 6000) i;
+-- the long strings come after the segment is written: a unit with a string over the entry limit stores all its strings inline, with no dictionary to read in place
+VACUUM tf;
 INSERT INTO tf SELECT 6000 + i, repeat('long', 100) || i, 'x', 6000 + i FROM generate_series(1, 20) i;
 CREATE TABLE tf_heap AS SELECT * FROM tf;
 VACUUM tf;

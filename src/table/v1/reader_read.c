@@ -163,6 +163,13 @@ sift_v1_tbl_read(void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcVec *vec)
 	read_vec(t, leaf, p, &v, vec);
 }
 
+bool
+sift_v1_tbl_dict_match(void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *lut)
+{
+	TblPart    *p = unit->priv;
+
+	return p->col[leaf] >= 0 && sift_col_unit_dict_match(&p->unit, p->col[leaf], op, c, lut);
+}
 
 void
 sift_v1_tbl_read_rows(void *impl, const SiftSrcUnit *unit, int leaf, const uint32 *rows, int n, SiftSrcVec *vec)
