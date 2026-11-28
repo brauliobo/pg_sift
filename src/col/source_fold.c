@@ -560,11 +560,14 @@ sift_srcfold_tags(const SiftSrcFold *f)
 void
 sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 {
-	SiftV6Source *src = f->src = open(open_arg, &f->in, f->quals, f->bq);
+	SiftV6Source *src;
 	SiftV6Batch b;
 	SiftErrCtx	ctx;
 	SiftV6GranCounts grans = {0};
 
+	if (f->pipe != NULL && sift_v6_star_joins_none(f->a.star))
+		return;
+	src = f->src = open(open_arg, &f->in, f->quals, f->bq);
 	sift_errctx_push(&ctx, RelationGetRelid(f->a.host));
 	while (src->next(src, &b))
 		sift_srcfold_batch(f, &b);

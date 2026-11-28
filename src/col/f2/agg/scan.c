@@ -774,11 +774,13 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 		 void *chunk_arg)
 {
 	const SiftTidBridge *bridge = NULL;
+	bool		reads;
 
 	s->count_only = s->rows == NULL && s->spec->ext == NULL && s->spec->vqual == NIL && sift_v6_spec_count_only(s->spec);
 	s->host = index;
 	sift_f2_v6_scan_setup(s, sift_col_rel(index)->schema->cols, sift_col_rel(index)->first, star);
 	s->minmax_only = s->rows == NULL && s->pipe == NULL && sift_v6_spec_minmax_only(s->spec);
+	reads = s->pipe == NULL || !sift_v6_star_joins_none(star);
 	sift_v6_vet_begin(&s->vet, heap, snap, s->stats);
 	s->rows_rel = heap;
 	s->rows_snap = snap;
@@ -794,9 +796,10 @@ scan_run(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Snap
 			s->par = sift_v6_par_begin(s->spec, s->group, s->rows, s->stats, sift_col_rel(index)->first, index, snap, par_part_ok, s);
 		if (s->par == NULL && s->rows == NULL && s->emit == NULL && s->gate == NULL && s->group != NULL && !s->spec->tid_range)
 			s->pin = pin_begin(s, index, snap);
-		scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
+		if (reads)
+			scan_pass(s, heap, index, keys, nkeys, snap, skip, nskip, NULL);
 	}
-	while (next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	while (reads && next_chunk != NULL && next_chunk(chunk_arg, &bridge))
 	{
 		s->stats->chunks++;
 		s->stats->bridge_tids += bridge->ntids;

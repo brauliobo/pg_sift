@@ -60,12 +60,14 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	SiftF2Store *store = sift_f2_store_open(rel);
 	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip,.grans = &s->grans,
 	.tid_range = s->spec->tid_range,.tid_lo = s->spec->tid_lo,.tid_hi = s->spec->tid_hi};
+	bool		reads;
 
 	s->host = rel;
 	s->is_table = true;
 	s->rows_rel = rel;
 	s->rows_snap = snap;
 	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, star);
+	reads = quals->possible && (s->pipe == NULL || !sift_v6_star_joins_none(star));
 	o.leaves = sift_f2_v6_scan_leaves(s);
 	o.zones = sift_f2_v6_zone_tests(s->spec, rel, &o.nzones, s->stats);
 	o.nleaves = s->ncols;
@@ -80,9 +82,9 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 		o.pinwin = sift_v6_par_window(s->par);
 		o.pinwin_done = table_par_done;
 	}
-	if (quals->possible && next_chunk == NULL)
+	if (reads && next_chunk == NULL)
 		sift_f2_store_scan_sink(&o, sift_f2_v6_sink, s);
-	while (quals->possible && next_chunk != NULL && next_chunk(chunk_arg, &bridge))
+	while (reads && next_chunk != NULL && next_chunk(chunk_arg, &bridge))
 	{
 		s->stats->chunks++;
 		s->stats->bridge_tids += bridge->ntids;

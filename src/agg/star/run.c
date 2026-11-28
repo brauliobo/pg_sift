@@ -704,6 +704,16 @@ sift_v6_star_found_stats(const SiftV6StarRun *r)
 	return &r->fstats;
 }
 
+bool
+sift_v6_star_joins_none(const SiftV6StarRun *r)
+{
+	for (int d = 0; d < r->x->ndims && !sift_star_preserves_dim(r->x->dim[d].mode); d++)
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 &&
+			(r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))
+			return true;
+	return false;
+}
+
 SiftStarOpen
 sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 {
@@ -728,9 +738,9 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->found[d] == NULL && r->dim[d].nrows == 0 && ((r->x->dim[d].mode == SV6J_RIGHT_EQUI && !streams_nulls(r, d)) || r->x->dim[d].mode == SV6J_RANGE_RIGHT || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 && ((r->x->dim[d].mode == SV6J_RIGHT_EQUI && !streams_nulls(r, d)) || r->x->dim[d].mode == SV6J_RANGE_RIGHT))
 			return SSO_EMPTY;
-	return SSO_SCAN;
+	return !preserves && sift_v6_star_joins_none(r) ? SSO_EMPTY : SSO_SCAN;
 }
 
 /* The rows of a NULL key of preserved dimension d, read from its plan in tables of a budget each, come out as rows no fact row matched */
