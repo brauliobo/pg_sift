@@ -549,8 +549,8 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 }
 
 /*
- * e reads a member of a document as a number or a boolean: the float8 of its `->>` text, or the cast of its jsonb to float8, an integer or bool (a JSON null casts to NULL from PostgreSQL 18 on, where it raised before,
- * which the leaf does not tell). The document, the keys from it, the type and whether it is the cast of the jsonb; NULL: e is no such read
+ * e reads a member of a document: its `->>` text, the float8 of that text, or the cast of its jsonb to float8, an integer or bool (a JSON null casts to NULL from PostgreSQL 18 on, where it
+ * raised before, which the leaf does not tell). The document, the keys from it, the type and whether it is the cast of the jsonb; NULL: e is no such read
  */
 static const Var *
 member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
@@ -564,13 +564,16 @@ member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
 		*typid = ((const FuncExpr *) x)->funcresulttype;
 		return sift_v6_doc_chain(linitial(args_of(x)), path);
 	}
-	if (x == NULL || !IsA(x, CoerceViaIO) || ((const CoerceViaIO *) x)->resulttype != FLOAT8OID || exprType((const Node *) ((const CoerceViaIO *) x)->arg) != TEXTOID)
-		return NULL;
-	*typid = FLOAT8OID;
-	return sift_v6_doc_chain(((const CoerceViaIO *) x)->arg, path);
+	*typid = TEXTOID;
+	if (x != NULL && IsA(x, CoerceViaIO) && ((const CoerceViaIO *) x)->resulttype == FLOAT8OID)
+	{
+		*typid = FLOAT8OID;
+		x = ((const CoerceViaIO *) x)->arg;
+	}
+	return x != NULL && (IsA(x, OpExpr) || IsA(x, FuncExpr)) && exprType((const Node *) x) == TEXTOID ? sift_v6_doc_chain(x, path) : NULL;
 }
 
-/* the leaf of a member holds what the read converts: any of its numbers from float8, integers to an integer type at least as wide, the booleans of a bool leaf to bool */
+/* the leaf of a member holds what the read converts: the strings of a text read, any of its numbers from float8, integers to an integer type at least as wide, the booleans of a bool leaf to bool */
 static bool
 member_leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 {
@@ -578,6 +581,8 @@ member_leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 
 	if (typid == BOOLOID)
 		return d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL;
+	if (typid == TEXTOID)
+		return d->store == SIFT_COLS_STR;
 	return d->store == SIFT_COLS_F8 || (is_int_type(typid) && int_leaf_fits(d, typid));
 }
 
@@ -846,23 +851,6 @@ exception_text(const char *payload, uint32 len)
 		default:
 			return NULL;
 	}
-}
-
-bool
-sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f)
-{
-	MemoryContext old = MemoryContextSwitchTo(cx);
-	char	   *s = exception_text(payload, len);
-
-	if (s != NULL && cls == SV6C_F64)
-		*f = DatumGetFloat8(DirectFunctionCall1(float8in, CStringGetDatum(s)));
-	else if (s != NULL)
-	{
-		*text = s;
-		*tlen = strlen(s);
-	}
-	MemoryContextSwitchTo(old);
-	return s != NULL;
 }
 
 /* the number of the jsonb of a (doc -> 'k')::float8, as its text; NULL: a JSON null (NULL from PostgreSQL 18 on, the only version the cast is read in) or a value the cast raises for (*raises) */

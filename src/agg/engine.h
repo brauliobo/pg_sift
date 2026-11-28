@@ -503,8 +503,6 @@ extern const Var *sift_v6_doc_chain(const Expr *e, List **path);
 extern bool sift_v6_json_doc_att(const SiftV6Rel *rel, const Expr *e, int *att);
 /* keys and nkeys with the scan keys of spec->jsonqual appended, in a new array: for keys that no IndexRuntimeKeyInfo points into */
 extern void sift_v6_json_scankeys(const SiftV6Spec *spec, Relation index, ScanKey *keys, int *nkeys);
-/* The value of a row whose leaf could not hold it, from the payload of its exception (a jsonb datum): the `->>` text, or its float8 cast; false: NULL */
-extern bool sift_v6_json_exception(SiftV6Class cls, const char *payload, uint32 len, MemoryContext cx, const char **text, uint32 *tlen, double *f);
 
 typedef enum SiftV6JsonExc
 {

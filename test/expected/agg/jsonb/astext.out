@@ -92,11 +92,11 @@ SELECT query, same, pushed FROM a_compare();
  SELECT count(*) FROM a_t d WHERE d.doc->>'label' = '1.50'                                                                                                                                      | t    | t
  SELECT count(*) FROM a_t d WHERE d.doc->>'label' IN ('true', '12', '100')                                                                                                                      | t    | t
  SELECT length(d.doc->>'label') AS len, count(*) FROM a_t d GROUP BY 1                                                                                                                          | t    | t
- SELECT d.metrics_a->>'k1' AS v, count(*) FROM a_t d GROUP BY 1                                                                                                                                 | t    | f
- SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k2' ~ '^[0-9]' GROUP BY 1                                                                                                               | t    | f
- SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k1' = '7' GROUP BY 1                                                                                                                    | t    | f
- SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k1' IN ('7', 'true', '1.50')                                                                                                                   | t    | f
- SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k2' LIKE '1%'                                                                                                                                  | t    | f
+ SELECT d.metrics_a->>'k1' AS v, count(*) FROM a_t d GROUP BY 1                                                                                                                                 | t    | t
+ SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k2' ~ '^[0-9]' GROUP BY 1                                                                                                               | t    | t
+ SELECT d.grp, count(*) FROM a_t d WHERE d.metrics_a->>'k1' = '7' GROUP BY 1                                                                                                                    | t    | t
+ SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k1' IN ('7', 'true', '1.50')                                                                                                                   | t    | t
+ SELECT count(*) FROM a_t d WHERE d.metrics_a->>'k2' LIKE '1%'                                                                                                                                  | t    | t
  SELECT count(*) FROM a_t d WHERE d.items @> '[{"score": "7.5"}]'                                                                                                                               | t    | f
  SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, '$[*] ? (@.score == "12")')                                                                                                        | t    | f
  SELECT count(*) FROM a_t d WHERE jsonb_path_exists(d.items, '$[*] ? (@.score == "true")')                                                                                                      | t    | f

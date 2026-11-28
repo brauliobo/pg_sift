@@ -60,7 +60,7 @@ value_leaf(const SiftColDef *d)
 	return float8_leaf(d) || (d->store == SIFT_COLS_INT && ((d->type >= SIFT_COLT_INT2 && d->type <= SIFT_COLT_INT8) || d->type == SIFT_COLT_BOOL));
 }
 
-/* the leaf of the values of the map whose member the path names (`doc.a.*` for doc -> 'a' -> 'k'), when they are float8 and the keys are text; -1: none */
+/* the leaf of the values of the map whose member the path names (`doc.a.*` for doc -> 'a' -> 'k'), when they are float8 or text and the keys are text; -1: none */
 static int
 map_value_leaf(const SiftF2Store *st, int att, const List *path)
 {
@@ -73,7 +73,8 @@ map_value_leaf(const SiftF2Store *st, int att, const List *path)
 			key = c;
 		else if (st->schema->cols[c].parent == group)
 			value = c;
-	return key >= 0 && value >= 0 && st->schema->cols[key].store == SIFT_COLS_STR && float8_leaf(&st->schema->cols[value]) ? value : -1;
+	return key >= 0 && value >= 0 && st->schema->cols[key].store == SIFT_COLS_STR &&
+		(float8_leaf(&st->schema->cols[value]) || st->schema->cols[value].store == SIFT_COLS_STR) ? value : -1;
 }
 
 int

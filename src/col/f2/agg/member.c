@@ -1,5 +1,5 @@
 /*
- * col/f2/agg/member.c - a member of a document that a column of the scan reads by a path (SiftV6Col.jmember) and converts as the statement does: of a map (`doc.* float8`, `doc.a.* float8`), found
+ * col/f2/agg/member.c - a member of a document that a column of the scan reads by a path (SiftV6Col.jmember) and converts as the statement does: of a map (`doc.* float8`, `doc.a.* text`), found
  * by its key, where the group leaf of the map gives each row the number of its members, which follow those of the rows before it in the leaves of the keys and of the values; of a path the index
  * declares, its leaf. A value the leaf could not hold is the payload of its exception, and so is a map the leaves could not hold (more members than the index keeps, or no object, which has none);
  * a row whose leaves cannot answer (a key the index could not keep) is read again by its address, and its member is the one of its document.
@@ -20,6 +20,7 @@ typedef enum CellKind
 	MC_NULL,
 	MC_FLOAT,					/* f: the number a float8 leaf holds */
 	MC_INT,						/* i: the integer an integer leaf holds */
+	MC_TEXT,					/* str: the string a text leaf holds */
 	MC_JSONB					/* pay: the jsonb of the member */
 } CellKind;
 
@@ -28,6 +29,7 @@ typedef struct Cell
 	CellKind	kind;
 	double		f;
 	int64		i;
+	SiftStrView str;
 	const char *pay;
 	uint32		plen;
 } Cell;
@@ -106,10 +108,12 @@ cut_cell(V6Scan *s, const V6Col *c, const ColView *g, int r, uint64 tid)
 	return jsonb_cell(s, g->xpay[r], g->xplen[r], c->member->name);
 }
 
-/* the value at i of a leaf of numbers: the number it holds, the payload of the exception of a value it could not hold, or none */
+/* the value at i of a leaf of numbers or strings: the value it holds, the payload of the exception of a value it could not hold, or none */
 static Cell
-leaf_cell(const ColView *v, uint32 i)
+leaf_cell(const V6Scan *s, const ColView *v, uint32 i)
 {
+	if (!v->isnull[i] && v->kind == SIFT_CELL_STR)
+		return (Cell) {.kind = MC_TEXT,.str = sift_f2_v6_text_view(v, (int) i, s->is_table)};
 	if (!v->isnull[i])
 		return v->kind == SIFT_CELL_F8 ? (Cell) {.kind = MC_FLOAT,.f = v->f[i]} : (Cell) {.kind = MC_INT,.i = v->i[i]};
 	return v->xpay != NULL && v->xpay[i] != NULL ? (Cell) {.kind = MC_JSONB,.pay = v->xpay[i],.plen = v->xplen[i]} : (Cell) {.kind = MC_NULL};
@@ -125,7 +129,7 @@ member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first
 	bool		lost = false;
 
 	if (c->member == NULL)
-		return leaf_cell(v, (uint32) r);
+		return leaf_cell(s, v, (uint32) r);
 	g = &views[c->member->group];
 	k = &views[c->member->key];
 	if (g->isnull[r])
@@ -136,7 +140,7 @@ member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first
 
 		lost |= k->isnull[e];
 		if (!k->isnull[e] && key.len == c->member->len && memcmp(sift_vstr_bytes(&key), c->member->name, key.len) == 0)
-			return leaf_cell(v, e);
+			return leaf_cell(s, v, e);
 	}
 	return lost ? row_cell(s, c, tid) : (Cell) {.kind = MC_NULL};
 }
@@ -157,15 +161,20 @@ put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
 		res = sift_v6_json_float_int(c->typid, m->f, &val.value) ? SV6JX_VALUE : SV6JX_RAISES;
 	else if (m->kind == MC_JSONB)
 		res = sift_v6_json_exception_read(c->typid, c->jsonb_cast, m->pay, m->plen, s->batch_cx, &val);
+	if (m->kind == MC_TEXT)
+		((SiftStrView *) c->vec.data)[i] = m->str;
 	if (m->kind == MC_INT)
-	{
 		((int64 *) c->vec.data)[i] = m->i;
+	if (m->kind == MC_TEXT || m->kind == MC_INT)
+	{
 		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
 		return true;
 	}
 	if (res != SV6JX_VALUE)
 		return res != SV6JX_RAISES;
-	if (c->typid == FLOAT8OID)
+	if (c->typid == TEXTOID)
+		((SiftStrView *) c->vec.data)[i] = sift_vstr_make(val.text, val.tlen);
+	else if (c->typid == FLOAT8OID)
 		((double *) c->vec.data)[i] = DatumGetFloat8(val.value);
 	else
 		((int64 *) c->vec.data)[i] = sift_v6_json_int(c->typid, val.value);
@@ -203,7 +212,7 @@ sift_f2_v6_fill_member(V6Scan *s, V6Col *c, const ColView *views, const uint64 *
 		raises = raises != NULL ? raises : MemoryContextAllocZero(s->batch_cx, SIFT_VEC_WORDS * sizeof(uint64));
 		raises[i >> 6] |= UINT64CONST(1) << (i & 63);
 	}
-	*v = (SiftVec) {.data = v->data,.valid = c->valid,.len = n,.all_valid = false,.dense = true,.type = c->typid == FLOAT8OID ? SVEC_F64 : SVEC_I64};
+	*v = (SiftVec) {.data = v->data,.valid = c->valid,.len = n,.all_valid = false,.dense = true,.type = c->typid == TEXTOID ? SVEC_STRVIEW : c->typid == FLOAT8OID ? SVEC_F64 : SVEC_I64};
 	return raises;
 }
 
