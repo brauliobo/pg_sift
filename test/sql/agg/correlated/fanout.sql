@@ -43,8 +43,8 @@ SELECT * FROM check_query($q$
  SELECT e.region, label, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
  CROSS JOIN LATERAL unnest(e.labels) label GROUP BY e.region, label
 $q$);
--- The fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out): the scan computes it
--- on the pairs every join kept, so not for the rows that PostgreSQL's plan has not joined either.
+-- Stays native: the fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out), so it
+-- is not computed for the rows that PostgreSQL's plan has not joined yet.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f JOIN dim_a e ON e.id = f.dim_a_id

@@ -13,7 +13,9 @@
 #include "rewrite/rewriteManip.h"
 
 #include "agg/agg.h"
+#include "agg/plan/flat_rewrite.h"
 #include "agg/plan/lateral_union.h"
+#include "agg/safety.h"
 
 typedef struct Arms
 {
@@ -191,6 +193,19 @@ arm_numbers(const Query *setop, const Arms *s)
 	return q;
 }
 
+/* the columns of the sub-select of the arms' numbers that may raise; all of them when its condition may */
+static Bitmapset *
+raising_cols(const Query *arms)
+{
+	Bitmapset  *raising = NULL;
+	bool		all = agg_node_may_raise(arms->jointree->quals);
+
+	foreach_node(TargetEntry, te, arms->targetList)
+		if (all || agg_node_may_raise((Node *) te->expr))
+			raising = bms_add_member(raising, te->resno);
+	return raising;
+}
+
 /* the sub-select of the arms' numbers that the lateral set operation sub of rte stands for; NULL when it is not one */
 static Query *
 union_of_rows(const RangeTblEntry *rte)
@@ -225,7 +240,7 @@ walk(Node *n, Walk *w)
 	{
 		Query	   *arms = union_of_rows(rte);
 
-		if (arms == NULL)
+		if (arms == NULL || !sift_agg_lateral_raising_ok((Query *) n, foreach_current_index(rte) + 1, raising_cols(arms)))
 			continue;
 		w->found = true;
 		if (w->apply)

@@ -4,6 +4,7 @@
 #ifndef SIFT_AGG_PLAN_FLAT_REWRITE_H
 #define SIFT_AGG_PLAN_FLAT_REWRITE_H
 
+#include "nodes/bitmapset.h"
 #include "nodes/parsenodes.h"
 
 /* in place, at every level of a SELECT: the LEFT JOIN LATERAL (.. LIMIT 1) that nothing reads is its left side */
@@ -21,6 +22,12 @@ extern bool sift_agg_inline_laterals(Query *q, bool apply);
 
 /* ... and a scalar sub-select of one aggregate, an EXISTS or a LATERAL sub-select of aggregates tied to the query by equalities of columns made a join to the table grouped by them, taken when it costs less */
 extern bool sift_agg_flat_decorrelate(Query *q, bool apply);
+
+/*
+ * lateral_inline.c, for agg/plan/lateral_union.c: may the columns raising (attnos) of the LATERAL entry rti move to where q reads them: the lateral is joined to the one table of a
+ * grouped q for every row of it, no condition reads them and a key or an aggregate of every row does, so both plans evaluate them for the same rows
+ */
+extern bool sift_agg_lateral_raising_ok(Query *q, Index rti, Bitmapset *raising);
 
 /* flat_rewrite.c, for agg/plan/lateral_inline.c: at most one row, and no effect but its rows: LIMIT 1 (not WITH TIES), no volatile function, no row lock, no data-modifying CTE */
 extern bool sift_agg_one_row_query(Query *sq);

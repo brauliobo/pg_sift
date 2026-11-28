@@ -146,6 +146,28 @@ raising_inline_ok(Query *q, Inline *in, JoinExpr *j)
 	return bms_is_subset(in->read, in->always);
 }
 
+/* a join whose right side gives its rows for every row of its left side: an inner join, or a LEFT JOIN on true */
+static bool
+on_every_row(const JoinExpr *j)
+{
+	return j->jointype != JOIN_LEFT || j->quals == NULL || (IsA(j->quals, Const) && !((Const *) j->quals)->constisnull && DatumGetBool(((Const *) j->quals)->constvalue));
+}
+
+bool
+sift_agg_lateral_raising_ok(Query *q, Index rti, Bitmapset *raising)
+{
+	JoinExpr   *j = list_length(q->jointree->fromlist) == 1 ? linitial(q->jointree->fromlist) : NULL;
+	Inline		in = {.rti = rti,.raising = raising};
+
+	if (bms_is_empty(raising))
+		return true;
+	if (j == NULL || !IsA(j, JoinExpr) || (j->jointype != JOIN_INNER && j->jointype != JOIN_LEFT) || !on_every_row(j) || !IsA(j->rarg, RangeTblRef) ||
+		((RangeTblRef *) j->rarg)->rtindex != rti)
+		return false;
+	in.jrti = j->rtindex;
+	return raising_inline_ok(q, &in, j);
+}
+
 /* an expression of a sub-select in the terms of the query a level up */
 static Node *
 lifted(Node *e)
@@ -282,7 +304,7 @@ inline_in(Query *q, Node **at, bool apply)
 	fromless = fromless_row(rte);
 	if (!fromless && !raising_lookup(rte, &in))
 		return false;
-	if (j->jointype == JOIN_LEFT && j->quals != NULL && !(IsA(j->quals, Const) && !((Const *) j->quals)->constisnull && DatumGetBool(((Const *) j->quals)->constvalue)))
+	if (!on_every_row(j))
 		return false;
 	if (fromless)
 		fromless_cols(rte->subquery, j->jointype, &in);

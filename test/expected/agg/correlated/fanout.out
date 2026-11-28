@@ -74,8 +74,8 @@ $q$);
  f      | f        |           0
 (1 row)
 
--- The fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out): the scan computes it
--- on the pairs every join kept, so not for the rows that PostgreSQL's plan has not joined either.
+-- Stays native: the fan-out casts a joined text column, which can raise ('none' is the code of the rows without an entity, that the join leaves out), so it
+-- is not computed for the rows that PostgreSQL's plan has not joined yet.
 SELECT * FROM check_query($q$
  SELECT c.category, count(*) AS n
  FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
@@ -84,7 +84,7 @@ SELECT * FROM check_query($q$
 $q$);
  pushed | eligible | differences 
 --------+----------+-------------
- t      | t        |           0
+ f      | f        |           0
 (1 row)
 
 -- The same fan-out on a comparison of the text, which cannot raise, is joined by the scan.
