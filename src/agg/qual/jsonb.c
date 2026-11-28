@@ -62,7 +62,7 @@ sift_v6_rel_leaves(const SiftV6Rel *rel)
 	return rel->table != NULL ? rel->table->leaves : rel->colrel != NULL ? rel->colrel->schema : NULL;
 }
 
-/* The column of the index (1-based) that holds the jsonb attribute e is, and is shredded; of a table, the attribute that has the leaves of declared paths */
+/* The column of the index (1-based) that holds the jsonb attribute e is, or the expression column of the index e stands for (SIFT_V6_IXPR_VATT), and is shredded; of a table, the attribute that has the leaves of declared paths */
 static bool
 doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 {
@@ -75,6 +75,9 @@ doc_of(const SiftV6Rel *rel, const Expr *e, int *att)
 		*att = v->varattno;
 		return v->varattno > 0 && v->varattno <= rel->table->natts && rel->table->att_nleaves[v->varattno] > 1;
 	}
+	*att = v->varattno - SIFT_V6_IXPR_VATT;
+	if (*att > 0 && *att <= rel->index->ncolumns)
+		return rel->colrel->json[*att];
 	for (int i = 0; i < rel->index->ncolumns; i++)
 		if (rel->index->indexkeys[i] == v->varattno)
 		{

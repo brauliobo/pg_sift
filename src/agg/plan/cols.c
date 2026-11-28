@@ -64,9 +64,6 @@
 #include "core/catname.h"
 
 
-/* the virtual attribute of a column of the index that an expression of the query is (its indexprs entry, index_exprs_as_columns): SIFT_V6_IXPR_VATT + the column, below SIFT_V6_JLEAF_VATT */
-#define SIFT_V6_IXPR_VATT	(1 << 13)
-
 /* The attribute of the host a column of the table is: the column of the index, or the attribute of the table; 0: the host does not hold it */
 static int
 host_attno(const V6Plan *p, AttrNumber attno)
@@ -220,6 +217,26 @@ sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *o
 		sift_v6_star_column(p, e, out) || (exprType((Node *) e) != NUMERICOID && sift_v6_unnest_column(p, e, out));
 }
 
+/* the jsonb documents of e that are shredded expression columns of the index, as their virtual columns: the reads of their keys are reads of the leaves of the column */
+static Node *
+index_docs_mutator(Node *n, V6Plan *p)
+{
+	int			k = 0;
+
+	if (n == NULL || IsA(n, Var) || p->index->indexprs == NIL)
+		return n;
+	for (int i = 0; i < p->index->ncolumns; i++)
+		if (p->index->indexkeys[i] == 0 && equal(n, list_nth(p->index->indexprs, k++)) && p->colrel->json[i + 1])
+			return (Node *) makeVar(p->rel->relid, (AttrNumber) (SIFT_V6_IXPR_VATT + i + 1), JSONBOID, -1, InvalidOid, 0);
+	return expression_tree_mutator(n, index_docs_mutator, p);
+}
+
+static const Expr *
+index_docs_as_columns(V6Plan *p, const Expr *e)
+{
+	return p->colrel == NULL ? e : (const Expr *) index_docs_mutator((Node *) e, p);
+}
+
 static int member_vatt(void *arg, const Expr *e, Oid *typid);
 
 static Expr *
@@ -227,7 +244,7 @@ json_vars(V6Plan *p, const Expr *e, bool values, bool truth)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL && p->xseed->unnest ? (Expr *) e : sift_v6_json_vars(&rel, e, values, truth, member_vatt, p);
+	return p->xseed != NULL && p->xseed->unnest ? (Expr *) e : sift_v6_json_vars(&rel, index_docs_as_columns(p, e), values, truth, member_vatt, p);
 }
 
 Expr *
@@ -356,7 +373,7 @@ sift_v6_read_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
 	return column_of(p, e, numeric_ok, out) || sift_v6_plan_expr_column(p, e, out) ||
-		sift_v6_json_read(&rel, e, out) || member_of(p, &rel, e, out) || sift_v6_plan_read_column(p, e, numeric_ok, out);
+		sift_v6_json_read(&rel, index_docs_as_columns(p, e), out) || member_of(p, &rel, e, out) || sift_v6_plan_read_column(p, e, numeric_ok, out);
 }
 
 bool
@@ -445,6 +462,15 @@ sift_v6_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	return true;
 }
 
+/* the attribute of the host the document is: of an index, also its expression column that index_docs_as_columns made a column */
+static int
+doc_attno(const V6Plan *p, const Var *doc)
+{
+	const int	col = doc->varattno - SIFT_V6_IXPR_VATT;
+
+	return !p->is_table && col > 0 && col <= p->index->ncolumns ? col : host_attno(p, doc->varattno);
+}
+
 /* a use of a jsonb document in e that is no chain of -> and ->> over a path the index declares: the index does not hold what it reads (a format that declares no paths holds the keys it shreds); a format that cannot read the value of a key its leaf cannot hold leaves every use to its legacy planner */
 static bool
 undeclared_doc_walker(Node *n, const V6Plan *p)
@@ -459,7 +485,7 @@ undeclared_doc_walker(Node *n, const V6Plan *p)
 		return expression_tree_walker(n, undeclared_doc_walker, (void *) p);
 	if (p->ops->jsonb == NULL || p->ops->jsonb->path_declared == NULL)
 		return false;
-	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, host_attno(p, doc->varattno), path);
+	return path == NIL || !p->ops->jsonb->path_declared(p->relid, p->is_table, doc_attno(p, doc), path);
 }
 
 /*

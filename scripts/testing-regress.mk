@@ -53,6 +53,7 @@ TESTING_REGRESS += agg/joined_args_types
 TESTING_REGRESS += agg/jsonb/astext_f1
 TESTING_REGRESS += agg/jsonb/cast_order
 TESTING_REGRESS += agg/jsonb/contains_members
+TESTING_REGRESS += agg/jsonb/expr_key
 TESTING_REGRESS += agg/jsonb/filter_exists
 TESTING_REGRESS += agg/jsonb/int_cast_f1
 TESTING_REGRESS += agg/jsonb/jsonpath_exists

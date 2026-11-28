@@ -31,6 +31,9 @@ sift_v6_attno_found(int attno)
 	return attno <= SIFT_V6_FOUND_ATTNO(0) ? SIFT_V6_FOUND_ATTNO(0) - attno : -1;
 }
 
+/* the virtual attribute of a column of the index that an expression of the query is (its indexprs entry): SIFT_V6_IXPR_VATT + the column, below SIFT_V6_JLEAF_VATT */
+#define SIFT_V6_IXPR_VATT		(1 << 13)
+
 /* SiftV6InCol.attno of a column that is a leaf of the layout of the index, not an attribute: SIFT_V6_JLEAF_VATT + the leaf (a typed path of a document, `doc ->> 'k'`) */
 #define SIFT_V6_JLEAF_VATT		(1 << 14)
 

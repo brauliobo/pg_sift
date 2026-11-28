@@ -1,0 +1,29 @@
+-- A key of a jsonb document that the index holds as an expression column (`(pick(doc))` with paths `pick.k astext`) is read from the leaf of the column: `pick(doc) ->> 'k'` as a
+-- group key, an aggregate argument, a WHERE and a FILTER, with the documents that are no object (NULL for pick), a number and a JSON null as the member, and a missing key. Every statement runs
+-- with the scan and without it and the rows must be the same; `scan` says that the plan is the scan. A key the paths do not declare keeps the normal plan; a cast of a text
+-- that is no number raises as PostgreSQL does.
+CREATE EXTENSION pg_sift;
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
+CREATE FUNCTION pick(doc jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$ SELECT CASE WHEN jsonb_typeof(doc) = 'object' THEN doc END $$;
+CREATE TABLE xk (id int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO xk SELECT i, CASE i % 11
+	WHEN 0 THEN '[]' WHEN 1 THEN NULL WHEN 2 THEN '{"k": 5, "n": 1.5}' WHEN 3 THEN '{"k": null}' WHEN 4 THEN '{"n": 2}'
+	ELSE jsonb_build_object('k', (ARRAY['en', 'de', 'fr'])[1 + i % 3], 'n', i % 5, 'z', 'q') END FROM generate_series(1, 4000) i;
+CREATE INDEX xk_col ON xk USING sift_col (id, (pick(doc))) WITH (paths = 'pick.k astext, pick.n float8');
+VACUUM (FREEZE, ANALYZE) xk;
+
+SELECT n, sift_helpers.agg_check_outcome(q) FROM (VALUES
+	(1, $$SELECT pick(doc) ->> 'k', count(*), sum(id) FROM xk GROUP BY 1$$),
+	(2, $$SELECT pick(doc) ->> 'k', sum((pick(doc) ->> 'n')::float8) FROM xk GROUP BY 1$$),
+	(3, $$SELECT count(*) FROM xk WHERE pick(doc) ->> 'k' = 'de'$$),
+	(4, $$SELECT id % 3, count(*) FILTER (WHERE pick(doc) ->> 'k' IN ('en', '5')) FROM xk GROUP BY 1$$),
+	(5, $$SELECT pick(doc) ->> 'z', count(*) FROM xk GROUP BY 1$$),
+	(6, $$SELECT pick(doc) ->> 'k', sum((pick(doc) ->> 'k')::float8) FROM xk GROUP BY 1$$)) t(n, q) ORDER BY n;
+
+DROP TABLE xk;
+DROP FUNCTION pick(jsonb);
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift;
