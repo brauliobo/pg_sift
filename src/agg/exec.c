@@ -279,21 +279,28 @@ star_finish(V6State *st)
 	sift_v6_star_close(st->star);
 }
 
-/* One scan of a fact table of a join or an unnest: a source of the node, the partitions of a partitioned fact being one each */
+/* One scan of a source of the node (a partition of a partitioned table is one each) in a context of its own: what the scan sets up leaves with it, not with the groups */
 static void
-v6_scan_fact(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
+v6_scan_source(V6State *st, const SiftV6ScanSrc *src, Snapshot snap)
 {
-	if (st->spec->ext->unnest)
+	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 source");
+	MemoryContext old = MemoryContextSwitchTo(cx);
+	SiftV6ScanSrc pass = *src;
+
+	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		v6_scan_unnest(st, src, snap);
+	else if (src->ops->zone == NULL)
+		sift_v6_open_scan_run(src->spec, st->group, src->ops, st->css.ss.ps.state, src->heap, src->index, &st->stats);
 	else if (src->index == NULL)
 		scan_table_with_text(st, src, snap, st->star);
 	else
 	{
-		SiftV6ScanSrc pass = *src;
-
-		pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, src->nkeys, &pass.nkeys);
+		if (st->star != NULL)
+			pass.keys = sift_v6_star_scan_keys(st->star, src->index, src->keys, src->nkeys, &pass.nkeys);
 		scan_with_text(st, &pass, snap, st->star);
 	}
+	MemoryContextSwitchTo(old);
+	MemoryContextDelete(cx);
 }
 
 /* The scans of the fact table of a join or an unnest: once for each pass of the dimensions of a star join (one when they all fit work_mem), each pass reading every source */
@@ -309,15 +316,8 @@ v6_scan_ext(V6State *st, Snapshot snap)
 		return;
 	}
 	while ((open = sift_v6_star_open(st->star, pass++, st->nsources)) != SSO_DONE)
-	{
-		MemoryContext pass_cx = sift_mem_allocset_create(CurrentMemoryContext, "sift agg v6 star pass");
-		MemoryContext old = MemoryContextSwitchTo(pass_cx);
-
 		for (int k = 0; open == SSO_SCAN && k < st->nsources; k++)
-			v6_scan_fact(st, &st->sources[k], snap);
-		MemoryContextSwitchTo(old);
-		MemoryContextDelete(pass_cx);
-	}
+			v6_scan_source(st, &st->sources[k], snap);
 	star_finish(st);
 }
 
@@ -337,16 +337,7 @@ v6_scan(V6State *st, Snapshot snap)
 		return;
 	}
 	for (int k = 0; k < st->nsources; k++)
-	{
-		SiftV6ScanSrc *src = &st->sources[k];
-
-		if (src->ops->zone == NULL)
-			sift_v6_open_scan_run(src->spec, st->group, src->ops, st->css.ss.ps.state, src->heap, src->index, &st->stats);
-		else if (src->index != NULL)
-			scan_with_text(st, src, snap, NULL);
-		else
-			scan_table_with_text(st, src, snap, NULL);
-	}
+		v6_scan_source(st, &st->sources[k], snap);
 	sift_v6_group_finish(st->group);
 }
 
