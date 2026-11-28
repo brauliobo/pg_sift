@@ -72,10 +72,10 @@ sift_tbl_rowlock_staged_written(Relation rel)
 	tids = palloc(sizeof(uint64) * ntouched);
 	for (uint32 i = 0; i < ntouched; i++)
 	{
-		const SiftTouched *t = sift_touched_at(i);
+		const SiftTouched t = sift_touched_at(i);
 
-		if (t->part_id == SIFT_ESC_PART_ALL && RelFileLocatorEquals(t->key.locator, rel->rd_locator))
-			tids[n++] = t->key.tid;
+		if (t.part_id == SIFT_ESC_PART_ALL && RelFileLocatorEquals(t.key.locator, rel->rd_locator))
+			tids[n++] = t.key.tid;
 	}
 	held = palloc0(sizeof(bool) * Max(n, 1));
 	sift_stage_rows_among(rel, tids, (int) n, held);

@@ -385,25 +385,36 @@ settle_window(const uint32 *at, uint32 base, uint32 n, bool commit, bool keep_sp
 {
 	uint16		order[SETTLE_WINDOW];
 	MultiXactId overflow[SETTLE_WINDOW];
-	const SiftTouched *t[SETTLE_WINDOW];
+	uint32		pos[SETTLE_WINDOW];
+	int16		stripe[SETTLE_WINDOW];
 
 	sift_touched_by_stripe(at, base, n, order);
 	for (uint32 j = 0; j < n; j++)
-		t[j] = sift_touched_at(at != NULL ? at[order[j]] : base + order[j]);
+	{
+		const SiftRowLockKey k = sift_touched_key(pos[j] = at != NULL ? at[order[j]] : base + order[j]);
+
+		stripe[j] = (int16) sift_rowlock_stripe_of(&k);
+	}
 	for (uint32 lo = 0, hi; lo < n; lo = hi)
 	{
-		int			si = sift_rowlock_stripe_of(&t[lo]->key);
+		int			si = stripe[lo];
 
 		sift_rowlock_stripe_acquire(rows, si, LW_EXCLUSIVE);
-		for (hi = lo; hi < n && sift_rowlock_stripe_of(&t[hi]->key) == si; hi++)
+		for (hi = lo; hi < n && stripe[hi] == si; hi++)
 		{
+			const SiftTouched t = sift_touched_at(pos[hi]);
+
 			overflow[hi] = InvalidMultiXactId;
-			settled[order[hi]] = settle_locked(t[hi], si, commit, keep_speculative, &overflow[hi]);
+			settled[order[hi]] = settle_locked(&t, si, commit, keep_speculative, &overflow[hi]);
 		}
 		stripe_unlock(si);
 		for (uint32 j = lo; commit && j < hi; j++)
 			if (MultiXactIdIsValid(overflow[j]))
-				retire_overflow(&t[j]->key, overflow[j]);
+			{
+				const SiftRowLockKey k = sift_touched_key(pos[j]);
+
+				retire_overflow(&k, overflow[j]);
+			}
 	}
 }
 
@@ -507,7 +518,7 @@ sift_rowlock_release_tier1(const RelFileLocator *loc, uint64 part_id, SubTransac
 		for (uint32 j = 0; j < w; j++)
 			if (settled[j])
 			{
-				sift_esc_note_tier1_release(loc, sift_touched_at(at[lo + j])->part_id, 1);
+				sift_esc_note_tier1_release(loc, sift_touched_at(at[lo + j]).part_id, 1);
 				(void) sift_touched_remove(at[lo + j]);
 			}
 	}
@@ -527,7 +538,11 @@ sift_tbl_rowlock_xact_callback(XactEvent event, void *arg pg_attribute_unused())
 		sift_esc_pre_prepare(sift_rowlock_release_tier1);
 		SIFT_POINT("sift-rowlock-prepare-rows");
 		for (uint32 i = 0; i < sift_touched_count(); i++)
-			prepare_row(sift_touched_at(i));
+		{
+			const SiftTouched t = sift_touched_at(i);
+
+			prepare_row(&t);
+		}
 		sift_esc_prepared();
 		return;
 	}
@@ -553,7 +568,7 @@ sift_tbl_rowlock_subxact_callback(SubXactEvent event, SubTransactionId mysubid, 
 	{
 		for (int32 i; (i = sift_touched_sub_first(mysubid)) >= 0;)
 		{
-			SiftTouched t = *sift_touched_at((uint32) i);
+			SiftTouched t = sift_touched_at((uint32) i);
 
 			(void) sift_touched_remove((uint32) i);
 			settle(&t, false, false);

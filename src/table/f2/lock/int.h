@@ -11,15 +11,19 @@
 
 #include "table/f2/lock/esc.h"
 
+/* A row the transaction holds in tier 1, as the table gives it back */
 typedef struct SiftTouched
 {
 	SiftRowLockKey key;
 	uint64		part_id;		/* 0 for the entries of speculative inserts, whose partition is not known */
 	TransactionId xid;
 	SubTransactionId subxid;
-	int32		sub_prev;		/* the neighbours in the list of the subtransaction, -1 at its ends */
-	int32		sub_next;
 } SiftTouched;
+
+/* The bytes of the backend a row of tier 1 takes in the table of the transaction, its index aside */
+#define SIFT_TOUCHED_ROW_BYTES	32
+/* The rows of a chunk of that table, which the first row of the transaction allocates */
+#define SIFT_TOUCHED_CHUNK_ROWS	512
 
 /* True when the (sub)transaction did not hold the row already: a row is one entry for each xid that holds it, however many statements lock or update it */
 extern bool sift_touched_add(const SiftRowLockKey *k, uint64 part_id);
@@ -28,7 +32,8 @@ extern bool sift_touched_add(const SiftRowLockKey *k, uint64 part_id);
 extern void sift_touched_forget(const SiftRowLockKey *k);
 
 extern uint32 sift_touched_count(void);
-extern const SiftTouched *sift_touched_at(uint32 i);
+extern SiftTouched sift_touched_at(uint32 i);
+extern SiftRowLockKey sift_touched_key(uint32 i);
 
 /* The first entry of the list of a subtransaction, -1 with none; sift_touched_next is the one after i */
 extern int32 sift_touched_sub_first(SubTransactionId sub);

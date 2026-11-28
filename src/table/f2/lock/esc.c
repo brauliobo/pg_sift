@@ -17,6 +17,7 @@
 #include "utils/rel.h"
 
 #include "col/dsmreg.h"
+#include "core/cachebudget.h"
 #include "core/memtrack.h"
 #include "core/part_lock.h"
 #include "table/f2/lock/2pc.h"
@@ -753,13 +754,16 @@ sift_esc_before_row_lock(Relation rel, uint64 part_id, LockTupleMode mode, LockW
 }
 
 /*
- * The rows of a relation the transaction holds one by one: each is an entry of the backend (touched.c: the dense array and up to four slots of its index), and both arrays double, so the
- * entries of a statement at the cap fill at most work_mem. A bulk statement holds the partition or the relation once it is there, and holds as much at any size of the table.
+ * The rows of a relation the transaction holds one by one: each is a row of the table of the backend (touched.c) and up to four slots of its index, and the rows of a relation at the cap take
+ * at most a quarter of sift.backend_cache_kb, the memory the backend keeps beside its statements. A bulk statement holds the partition or the relation once it is there, and holds as much
+ * at any size of the table; the rows of one chunk of the table are always held one by one.
  */
 static uint32
 rel_row_cap(void)
 {
-	return (uint32) Min(SIFT_ROWLOCK_REL_ROW_CAP, (uint64) work_mem * 1024 / (2 * (sizeof(SiftTouched) + 4 * sizeof(uint32))));
+	const uint64 rows = (uint64) sift_backend_cache_kb * 1024 / 4 / (SIFT_TOUCHED_ROW_BYTES + 4 * sizeof(uint32));
+
+	return (uint32) Min(SIFT_ROWLOCK_REL_ROW_CAP, Max(SIFT_TOUCHED_CHUNK_ROWS, rows));
 }
 
 bool
