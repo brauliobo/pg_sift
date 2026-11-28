@@ -150,6 +150,16 @@ sift_f2_scan_set_bridge(IndexScanDesc scan, const SiftTidBridge *bridge, uint64 
 }
 
 void
+sift_f2_scan_set_tid_range(IndexScanDesc scan, uint64 lo, uint64 hi)
+{
+	F2Scan	   *s = scan->opaque;
+
+	s->tid_range = true;
+	s->tid_lo = lo;
+	s->tid_hi = hi;
+}
+
+void
 sift_f2_scan_set_scope_router(IndexScanDesc scan, const SiftScopeRouter *router)
 {
 	F2Scan	   *s = scan->opaque;

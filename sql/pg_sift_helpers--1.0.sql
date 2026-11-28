@@ -36,14 +36,14 @@ CREATE FUNCTION sift_helpers.plan_pushed(plan text) RETURNS bool LANGUAGE sql IM
 
 -- plan_label: SiftAgg or normal for the plan, with the partitions it names and ' with workers' for each line that plans workers
 CREATE FUNCTION sift_helpers.plan_label(q text, partitions bool DEFAULT false) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE l text; r text := 'normal'; p text := '';
+DECLARE l text; r text := 'normal'; w text := ''; p text := '';
 BEGIN
 	FOR l IN SELECT regexp_split_to_table(sift_helpers.plan_text(q), E'\n') LOOP
 		IF sift_helpers.plan_pushed(l) THEN r := 'SiftAgg'; END IF;
 		IF partitions AND l LIKE '%Partitions:%' THEN p := ' ' || trim(split_part(l, ':', 2)); END IF;
-		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN r := r || ' with workers'; END IF;
+		IF l LIKE '%Workers Planned: _%' AND l NOT LIKE '%Workers Planned: 0%' THEN w := ' with workers'; END IF;
 	END LOOP;
-	RETURN r || p;
+	RETURN r || w || p;
 END $$;
 
 -- set_scans: the table scans on (the normal plan) or off (the pushdown), the index-only scan too unless ios is false

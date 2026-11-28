@@ -14,6 +14,14 @@ sift_f2_bridge_part_excluded(const SiftTidBridge *br, uint64 part_tid_min, uint6
 }
 
 bool
+sift_f2_tid_range_excludes(uint64 lo, uint64 hi, bool remapped, uint64 tid_min, uint64 tid_max)
+{
+	if (remapped || tid_max == 0)
+		return false;
+	return lo >= hi || (tid_max >> 16) < (lo >> 16) || (tid_min >> 16) > ((hi - 1) >> 16);
+}
+
+bool
 sift_f2_bridge_granule_excluded(const SiftTidBridge *br, bool have_tix, bool remapped, uint64 tid_min, uint64 tid_max, uint64 blk_bloom)
 {
 	return have_tix && !remapped && !sift_tidbridge_granule_may_match(br, tid_min, tid_max, blk_bloom);

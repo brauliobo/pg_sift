@@ -19,10 +19,16 @@ typedef bool (*SiftBridgeDeadFn) (void *arg, uint64 tid);
 
 /* The part carries a TID index that the scan needs: a pending delete names rows of it, or a bridge asks which granules hold its TIDs */
 static inline bool
-sift_f2_bridge_needs_tix(bool pending_deletes, const SiftTidBridge *br)
+sift_f2_bridge_needs_tix(bool pending_deletes, const SiftTidBridge *br, bool tid_range)
 {
-	return pending_deletes || br != NULL;
+	return pending_deletes || br != NULL || tid_range;
 }
+
+/*
+ * No row of the addresses [tid_min, tid_max] is on a block of the ctid range [lo, hi): blocks, not addresses, since the index keeps the root of a HOT chain, whose versions are on its
+ * block. remapped: the column delta chain moved the addresses, and nothing is excluded
+ */
+extern bool sift_f2_tid_range_excludes(uint64 lo, uint64 hi, bool remapped, uint64 tid_min, uint64 tid_max);
 
 /*
  * No row of a part whose addresses lie in [part_tid_min, part_tid_max] is in the bridge; a part with tid_max 0 has no envelope and is never excluded. remapped: the column delta chain moved

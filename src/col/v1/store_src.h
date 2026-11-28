@@ -125,6 +125,8 @@ extern bool sift_v1_src_bridge_narrow(SiftV1Src *s, SiftV6Batch *b);
 
 /* Narrows the mask of b to the rows whose heap row's ctid is in the range of the scan; false when none is left */
 extern bool sift_v1_src_tid_narrow(SiftV1Src *s, SiftV6Batch *b);
+/* The pages of the blocks of the ctid range (of the heap, or of the addresses of a table), every offset of each, in the source's context: the units with no row on them are not read */
+extern const SiftFilter *sift_v1_src_tid_pages(SiftV1Src *s);
 
 /* Narrows the mask of b to the rows of the unit (from vet_from) the snapshot sees, read from the heap for the pages that are not all-visible (col/v1_engine/store_ops_vet.c); false when none is left */
 extern bool sift_v1_src_vet(SiftV1Src *s, SiftV6Batch *b);

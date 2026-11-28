@@ -57,7 +57,8 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 {
 	const SiftTidBridge *bridge = NULL;
 	SiftF2Store *store = sift_f2_store_open(rel);
-	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip,.grans = &s->grans};
+	SiftStoreScanOpts o = {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.skip_gens = skip,.nskip_gens = nskip,.grans = &s->grans,
+	.tid_range = s->spec->tid_range,.tid_lo = s->spec->tid_lo,.tid_hi = s->spec->tid_hi};
 
 	s->host = rel;
 	s->is_table = true;

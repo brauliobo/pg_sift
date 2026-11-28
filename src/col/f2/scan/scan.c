@@ -333,6 +333,7 @@ granule_ruled_out(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2Pa
 		(*s->bridge_seen)++;
 	if (bridge_miss && s->bridge_skipped)
 		(*s->bridge_skipped)++;
+	skip = skip || sift_f2_scan_tid_granule_miss(s, g, tix);
 	if (skip && !ruled)
 	{
 		F2_STAT(zone_skipped);
@@ -425,7 +426,7 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 	const SiftPart *part = pin->part;
 	const SiftGranuleDesc *dir = pin->gdir;
 	const SiftDv *dv = pin->dv;
-	const SiftTidIndexEntry *tix = sift_f2_bridge_needs_tix(px != NULL, s->bridge) ? pin->tidx : NULL;
+	const SiftTidIndexEntry *tix = sift_f2_bridge_needs_tix(px != NULL, s->bridge, s->tid_range) ? pin->tidx : NULL;
 	const SiftVariantExcSummary *exc = pp->exc;
 	int			nexc = pp->nexc;
 	const SiftZone **zones = pred_zones(rel, s, pin, g0);
@@ -879,7 +880,8 @@ walk_units(Relation rel, F2Scan *s, const SiftPlanSnapshot *plan, Snapshot snap,
 			px = sift_f2_pending_index(rel, e, snap, staged_px);
 		for (int p = 0; p < list->nparts; p++)
 		{
-			if (!sift_f2_part_overlaps(&list->parts[p], &s->keys) || part_skipped(s, list->parts[p].part_gen) || sift_f2_scan_bridge_part_skip(s, e, &list->parts[p]))
+			if (!sift_f2_part_overlaps(&list->parts[p], &s->keys) || part_skipped(s, list->parts[p].part_gen) || sift_f2_scan_bridge_part_skip(s, e, &list->parts[p]) ||
+				sift_f2_scan_tid_part_skip(s, e, &list->parts[p]))
 				continue;
 			if (!in_window || !sift_f2_part_meets_time(&list->parts[p], &win))
 				F2_STAT(parts_time_skipped);

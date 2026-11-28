@@ -22,6 +22,7 @@
 #include "col/f2/marks.h"
 #include "col/f2/part/pin_scan.h"
 #include "col/f2/pred/pred.h"
+#include "col/f2/scan/bridge_core.h"
 #include "col/f2/store/schema.h"
 #include "col/f2/view.h"
 #include "col/f2/store/scan.h"
@@ -170,10 +171,17 @@ granule_batch(SiftStorePart *p, SiftF2Batch *b)
 
 /* ---- the parts ---- */
 
+/* no row of the addresses [tid_min, tid_max] of a part of the partition is on a block of the ctid range of the scan; a column delta may give its rows other addresses */
 static bool
-part_wanted(const SiftStoreScan *s, const SiftPartDesc *d, const bool dirty[SIFT_MANIFEST_TIME_COLS])
+tid_excludes(const SiftStoreScan *s, const SiftPartitionEntry *e, uint64 tid_min, uint64 tid_max)
 {
-	if (sift_store_gen_skipped(s->o->skip_gens, s->o->nskip_gens, d->part_gen) || !sift_f2_part_overlaps(d, &s->ks))
+	return s->o->tid_range && sift_f2_tid_range_excludes(s->o->tid_lo, s->o->tid_hi, (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0, tid_min, tid_max);
+}
+
+static bool
+part_wanted(const SiftStoreScan *s, const SiftPartitionEntry *e, const SiftPartDesc *d, const bool dirty[SIFT_MANIFEST_TIME_COLS])
+{
+	if (sift_store_gen_skipped(s->o->skip_gens, s->o->nskip_gens, d->part_gen) || !sift_f2_part_overlaps(d, &s->ks) || tid_excludes(s, e, d->tid_min, d->tid_max))
 		return false;
 	for (int k = 0; k < SIFT_MANIFEST_TIME_COLS; k++)
 	{
@@ -315,9 +323,9 @@ part_next_granule_id(SiftStorePart *p, uint32 *g)
 	return false;
 }
 
-/* the hybrid scan counts the granules it misses, and reads none of them */
+/* the granule has a row in the ctid range of the scan and in its bridge; the hybrid scan counts the granules it misses, and reads none of them */
 static bool
-bridge_wants(const SiftStorePart *p, uint32 g)
+granule_wanted(const SiftStorePart *p, uint32 g)
 {
 	const SiftStoreScanOpts *o = p->s->o;
 	const SiftTidIndexEntry *t = &p->pin->tidx[g];
@@ -327,7 +335,7 @@ bridge_wants(const SiftStorePart *p, uint32 g)
 		(*o->bridge_seen)++;
 	if (!wanted && o->bridge_skipped != NULL)
 		(*o->bridge_skipped)++;
-	return wanted;
+	return wanted && !tid_excludes(p->s, p->e, t->tid_min, t->tid_max);
 }
 
 static void part_replay(void *arg, const void *host, SiftF2PartPin *pin, uint32 g);
@@ -358,7 +366,7 @@ part_load_granule(SiftStorePart *p)
 		part_open_pin(p);
 	while (p->r != NULL && part_next_granule_id(p, &g))
 	{
-		if (!bridge_wants(p, g) || granule_answered(p, g))
+		if (!granule_wanted(p, g) || granule_answered(p, g))
 			continue;
 		if (s->o->grans != NULL && !s->replaying)
 			s->o->grans->scanned++;
@@ -481,7 +489,7 @@ run_add_partition(SiftStoreScan *s, int i)
 	px = s->vis == &table_vis ? table_pending(s, e) : index_pending(s, e);
 	s->pxs = lappend(s->pxs, px);
 	for (int j = 0; j < list->nparts; j++)
-		if (part_wanted(s, &list->parts[j], dirty))
+		if (part_wanted(s, e, &list->parts[j], dirty))
 		{
 			SiftStorePart *p = part_new(s, e, &list->parts[j], px);
 
@@ -706,7 +714,7 @@ sift_f2_store_par_plan(SiftStoreScan *s, SiftF2ParPlan *out)
 		if (!partition_in_window(s, e, dirty))
 			continue;
 		for (int j = 0; j < s->view->partlists[i].nparts; j++)
-			if (part_wanted(s, &s->view->partlists[i].parts[j], dirty))
+			if (part_wanted(s, e, &s->view->partlists[i].parts[j], dirty))
 				add_part_units(s, &u, e, &s->view->partlists[i].parts[j]);
 	}
 	out->staged_dead = sift_stage_dead(s->o->rel, s->o->snap, &nstaged);

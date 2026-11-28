@@ -928,6 +928,8 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	s->vctx = sift_vexpr_ctx_new(cx);
 	if (scan->keep != NULL)
 		s->rd->select(s->src, scan->keep);
+	else if (s->tid_range)
+		s->rd->select(s->src, sift_v1_src_tid_pages(s));
 	sift_v1_src_bind_tests(s, scan);
 	sift_v1_src_prune_begin(s, scan);
 	sift_errctx_pop(&ctx);

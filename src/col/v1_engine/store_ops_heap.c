@@ -6,6 +6,8 @@
 #include "postgres.h"
 
 #include "access/tableam.h"
+#include "miscadmin.h"
+#include "nodes/tidbitmap.h"
 #include "port/pg_bitutils.h"
 #include "utils/builtins.h"
 #include "utils/jsonb.h"
@@ -15,6 +17,7 @@
 #include "col/v1/store_ops.h"
 #include "col/v1/store_src.h"
 #include "core/compat.h"
+#include "core/filter.h"
 
 #define JT_NONE		5			/* the index of sift_v1_json_types of a path with no value */
 
@@ -323,6 +326,20 @@ tid_keeps(SiftV1Src *s, uint64 tag)
 		return false;
 	key = (uint64) ItemPointerGetBlockNumber(&s->fslot->tts_tid) << 16 | ItemPointerGetOffsetNumber(&s->fslot->tts_tid);
 	return key >= s->tid_lo && key < s->tid_hi;
+}
+
+const SiftFilter *
+sift_v1_src_tid_pages(SiftV1Src *s)
+{
+	const uint64 nblocks = (uint64) s->rd->nsb(s->src) * SIFT_SB_PAGES;
+	TIDBitmap  *tbm = tbm_create(work_mem * (Size) 1024, NULL);
+	const SiftFilter *f;
+
+	for (uint64 b = s->tid_lo >> 16; s->tid_lo < s->tid_hi && b <= s->tid_hi >> 16 && b < nblocks; b++)
+		tbm_add_page(tbm, (BlockNumber) b);
+	f = sift_filter_build(tbm, work_mem * (Size) 1024, s->cx);
+	tbm_free(tbm);
+	return f;
 }
 
 /* only the rows of the batch whose heap row's ctid is in the range of the scan */

@@ -111,6 +111,9 @@ typedef struct F2Scan
 	uint64	   *bridge_seen;
 	uint64	   *bridge_skipped;
 	uint64	   *bridge_parts_skipped;
+	bool		tid_range;		/* the rows of a ctid range [tid_lo, tid_hi) (block << 16 | offset): a part or a granule whose rows lie on no block of it is not read */
+	uint64		tid_lo;
+	uint64		tid_hi;
 	const struct SiftScopeRouter *router;	/* a scan for the facts of one scope key: the granules the summary of the scope does not name for it are skipped (f2_scope_route.h) */
 	float4	   *bscores;		/* the scores of the rows of the granule or slab last probed against the bridge */
 	const SiftColPred *ext_preds;	/* the predicates of a hybrid scan, appended to the index quals' (bridge.c) */
@@ -168,6 +171,8 @@ extern void sift_f2_sink_verdict(const F2Scan *s, Verdict v, uint64 *live, uint6
 /* col/f2/scan/bridge.c */
 extern bool sift_f2_scan_bridge_part_skip(F2Scan *s, const SiftPartitionEntry *e, const SiftPartDesc *d);
 extern bool sift_f2_scan_bridge_granule_miss(const F2Scan *s, uint32 g, const SiftTidIndexEntry *tix);
+extern bool sift_f2_scan_tid_part_skip(const F2Scan *s, const SiftPartitionEntry *e, const SiftPartDesc *d);
+extern bool sift_f2_scan_tid_granule_miss(const F2Scan *s, uint32 g, const SiftTidIndexEntry *tix);
 extern int	sift_f2_scan_bridge_probe(Relation rel, F2Scan *s, uint32 g, SiftLazyGranule *lg, const SiftGranuleView *v, const SiftDvGran *dg, const SiftPendDelIndex *px, bool pend_hit,
 									  Snapshot snap, uint64 *active);
 extern uint64 *sift_f2_scan_slab_bridge(F2Scan *s, const uint64 *tids, int n);

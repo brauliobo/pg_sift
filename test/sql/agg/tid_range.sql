@@ -1,23 +1,35 @@
--- ctid range predicates in the aggregate scan (docs/AGG.md, "ctid ranges"): the scan reads the superblocks of the range and tests the TIDs of the rows of its
--- edges. Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
+-- ctid range predicates in the aggregate scan (docs/AGG.md, "ctid ranges"): the scan reads the parts and granules with a row on a block of the range and tests
+-- the TIDs of the rows of its edges. Every statement is run with the pushdown and with sift.enable_agg = off: the rows must be the same, after every kind of write.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index and the table are Format 2 on every run); agg/tid_range_f1 runs the same statements on Format 1, whose units are superblocks.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AND current_setting('sift.test_agg_par_min_rows', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 SET enable_tidscan = off;
 
--- rows of 500 bytes at a fill factor that leaves room for HOT updates: 9 rows a page, three superblocks (256 pages each)
+-- rows of 500 bytes at a fill factor that leaves room for HOT updates: 9 rows a page, one granule (8192 rows)
 CREATE TABLE th (id int, g int, v int, pad text) WITH (autovacuum_enabled = false, fillfactor = 60);
 INSERT INTO th SELECT i, i % 7, i % 100, repeat('x', 500) FROM generate_series(1, 6000) i;
 CREATE INDEX th_col ON th USING sift_col (id, g, v);
 VACUUM (FREEZE, ANALYZE) th;
 SELECT max(ctid) AS last_tid, count(DISTINCT (ctid::text::point)[0]::int / 256) AS superblocks FROM th;
 
--- a sift_table: 47 rows a block, 12032 a superblock, one write buffer of the rows inserted last
+-- a sift_table: about 290 rows a block, four granules
 CREATE TABLE tt (id int, g int, v int, pad text) USING sift_table;
 INSERT INTO tt SELECT i, i % 7, i % 100, repeat('x', 100) FROM generate_series(1, 30000) i;
 SELECT max(ctid) AS last_tid, count(DISTINCT (ctid::text::point)[0]::int / 256) AS superblocks FROM tt;
+
+-- narrow rows: about 220 pages, four granules of 8192 rows in the order of their TIDs; gb is the block of the last row of the first granule
+CREATE TABLE tg (id int, g int, v int) WITH (autovacuum_enabled = false);
+INSERT INTO tg SELECT i, i % 7, i % 100 FROM generate_series(1, 30000) i;
+CREATE INDEX tg_col ON tg USING sift_col (id, g, v);
+VACUUM (FREEZE, ANALYZE) tg;
+SELECT (ctid::text::point)[0]::int AS gb FROM tg WHERE id = 8192 \gset
 
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_workers_label(q) $$;
 
@@ -61,22 +73,27 @@ RESET sift.enable_agg;
 SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
        array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('th');
 
--- the plan shows the range, and the scan reads the superblocks it touches only
+-- the plan shows the range, and the scan reads the granules it touches only
 SELECT plan_of('SELECT count(*) FROM th WHERE ctid >= ''(10,1)'' AND ctid < ''(20,1)''') AS range,
        plan_of('SELECT count(*) FROM th WHERE NOT (ctid >= ''(10,1)'')') AS negated_range;
+-- the granules the SiftAgg node read or answered from their pre-aggregates, not those the range ruled out (NULL: no SiftAgg)
 CREATE FUNCTION units_of(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text;
+DECLARE l text; n int;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		IF l LIKE '%Units: %' THEN RETURN substring(l from 'Units: (\d+)')::int; END IF;
+		IF l ~ 'SiftAgg' AND n IS NULL THEN n := 0; END IF;
+		IF l ~ '^\s*Granules: ' THEN
+			n := n + (SELECT sum(m[1]::int) FROM regexp_matches(l, '(?:scanned|preagg)=(\d+)', 'g') m);
+		END IF;
 	END LOOP;
-	RETURN NULL;
+	RETURN n;
 END $$;
-SELECT units_of('SELECT count(*) FROM th') AS all_units,
-       units_of('SELECT count(*) FROM th WHERE ctid >= ''(10,1)'' AND ctid < ''(20,1)''') AS one_superblock,
-       units_of('SELECT count(*) FROM th WHERE ctid >= ''(255,1)'' AND ctid < ''(256,5)''') AS two_superblocks,
-       units_of('SELECT count(*) FROM th WHERE ctid >= ''(100000,1)''') AS beyond_the_end,
-       units_of('SELECT count(*) FROM th WHERE ctid > ''(5,3)'' AND ctid < ''(5,3)''') AS empty_range;
+SELECT units_of('SELECT count(*), sum(v) FROM tg') AS all_units,
+       units_of(format('SELECT count(*), sum(v) FROM tg WHERE ctid >= ''(%s,1)'' AND ctid < ''(%s,1)''', :gb - 20, :gb - 10)) AS one_granule,
+       units_of(format('SELECT count(*), sum(v) FROM tg WHERE ctid >= ''(%s,1)'' AND ctid < ''(%s,1)''', :gb - 2, :gb + 2)) AS two_granules,
+       units_of('SELECT count(*), sum(v) FROM tg WHERE ctid >= ''(100000,1)''') AS beyond_the_end,
+       units_of('SELECT count(*), sum(v) FROM tg WHERE ctid > ''(5,3)'' AND ctid < ''(5,3)''') AS empty_range;
+SELECT * FROM same(format('SELECT g, count(*) AS n, sum(v) AS s FROM tg WHERE ctid >= ''(%s,1)'' AND ctid < ''(%s,1)'' GROUP BY g', :gb - 2, :gb + 2));
 
 -- HOT updates of a column the index does not hold: the row keeps the TID of the root of its chain in the index, its ctid is the new version's, on the
 -- same page; the edge blocks of a range are the ones that need the version
@@ -120,17 +137,23 @@ DELETE FROM tt WHERE id % 11 = 0;
 INSERT INTO tt SELECT i, i % 7, i % 100, repeat('n', 100) FROM generate_series(30001, 31000) i;
 SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS scanned, sum(vs_normal_plan) AS differing_rows,
        array_agg(n || '/' || form) FILTER (WHERE plan NOT LIKE 'SiftAgg%' OR vs_normal_plan <> 0) AS failing FROM all_ranges('tt');
-SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= ''(255,30)'' AND ctid < ''(257,10)'' AND v < 60 GROUP BY g');
+SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= ''(50,30)'' AND ctid < ''(52,10)'' AND v < 60 GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= (SELECT min(ctid) FROM tt WHERE id > 20000) GROUP BY g');
-SELECT units_of('SELECT count(*) FROM tt') AS all_units,
-       units_of('SELECT count(*) FROM tt WHERE ctid >= ''(10,1)'' AND ctid < ''(20,1)''') AS one_superblock;
 
--- parallel workers take the superblocks of the range
+-- parallel workers take the granules of the range (the test library plans them for tables this small)
+\set with_workers 'SiftAgg'
+\if :testing
+SET sift.test_agg_par_min_rows = 0;
+\set with_workers 'SiftAgg with workers'
+\endif
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
-SELECT plan, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th') GROUP BY plan;
-SELECT plan, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt') GROUP BY plan;
+SELECT plan = :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th') GROUP BY 1;
+SELECT plan = :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt') GROUP BY 1;
 SET max_parallel_workers_per_gather = 0;
+\if :testing
+RESET sift.test_agg_par_min_rows;
+\endif
 
 -- what stays on the normal plan: <>, ctid in an expression, an OR, a list, a column of another table, a partitioned table, a parameter of a generic plan
 SELECT plan_of('SELECT count(*) FROM th WHERE ctid <> ''(3,2)''') AS ne,
@@ -177,6 +200,6 @@ DROP FUNCTION all_ranges(text);
 DROP FUNCTION th_q(int, int);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE tp, tr_range, tt, th, th_before, th_dim;
+DROP TABLE tp, tr_range, tt, th, th_before, th_dim, tg;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

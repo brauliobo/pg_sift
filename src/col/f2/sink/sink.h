@@ -144,6 +144,8 @@ extern uint64 sift_f2_scan_survey(IndexScanDesc scan);
 /* A hybrid scan: the granules the bridge misses are skipped and the rows not in it dropped before any column is decoded; seen and skipped count the granules */
 struct SiftTidBridge;
 extern void sift_f2_scan_set_bridge(IndexScanDesc scan, const struct SiftTidBridge *bridge, uint64 *seen, uint64 *skipped);
+/* The scan reads only the parts and granules with a row on a block of the ctid range [lo, hi) (block << 16 | offset); it still gives their other rows */
+extern void sift_f2_scan_set_tid_range(IndexScanDesc scan, uint64 lo, uint64 hi);
 
 /* The parts of the generations given (ascending; they must outlive the scan) are not read: the slabs, the pending deletes and every other part are as in any scan. Call it after the rescan. */
 extern void sift_f2_scan_skip_parts(IndexScanDesc scan, const uint64 *gens, int ngens);

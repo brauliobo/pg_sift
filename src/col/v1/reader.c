@@ -98,7 +98,10 @@ sift_v1_units_pruned(const SiftColSource *src, SiftV6GranCounts *out)
 static void
 idx_pruned(void *impl, SiftV6GranCounts *out)
 {
-	sift_v1_units_pruned(((SiftV1Idx *) impl)->cs, out);
+	const SiftV1Idx *r = impl;
+
+	sift_v1_units_pruned(r->cs, out);
+	out->pruned_zone += r->sel.units_skipped;
 }
 
 static const SiftSrcLayout *

@@ -731,8 +731,9 @@ scan_pass(V6Scan *s, Relation heap, Relation index, ScanKey keys, int nkeys, Sna
 	index_rescan(scan, keys, nkeys, NULL, 0);
 	sift_f2_scan_skip_parts(scan, skip, nskip);
 	sift_f2_scan_set_scope_router(scan, s->router);
-	if (bridge != NULL)
-		sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
+	sift_f2_scan_set_bridge(scan, bridge, NULL, NULL);
+	if (s->spec->tid_range)
+		sift_f2_scan_set_tid_range(scan, s->spec->tid_lo, s->spec->tid_hi);
 	sift_f2_scan_set_part_sink(scan, part_offer);
 	sift_f2_scan_set_part_dict_sink(scan, part_dict_offer);
 	sift_f2_scan_set_zone_sink(scan, zone_offer);

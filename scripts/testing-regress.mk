@@ -164,6 +164,7 @@ TESTING_REGRESS += agg/table_jsonb
 TESTING_REGRESS += agg/text_absent_cost
 TESTING_REGRESS += agg/text_collation
 TESTING_REGRESS += agg/text_phrase
+TESTING_REGRESS += agg/tid_range_f1
 TESTING_REGRESS += agg/topn/offset_bulk
 TESTING_REGRESS += agg/topn/offset_ties_suite
 TESTING_REGRESS += agg/topn_card_vexpr

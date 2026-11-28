@@ -34,6 +34,18 @@ sift_f2_scan_bridge_granule_miss(const F2Scan *s, uint32 g, const SiftTidIndexEn
 	return s->bridge != NULL && tix != NULL && sift_f2_bridge_granule_excluded(s->bridge, true, sift_cdi_scan_remaps(s, g), tix[g].tid_min, tix[g].tid_max, tix[g].blk_bloom);
 }
 
+bool
+sift_f2_scan_tid_part_skip(const F2Scan *s, const SiftPartitionEntry *e, const SiftPartDesc *d)
+{
+	return s->tid_range && sift_f2_tid_range_excludes(s->tid_lo, s->tid_hi, (e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0, d->tid_min, d->tid_max);
+}
+
+bool
+sift_f2_scan_tid_granule_miss(const F2Scan *s, uint32 g, const SiftTidIndexEntry *tix)
+{
+	return s->tid_range && sift_f2_tid_range_excludes(s->tid_lo, s->tid_hi, sift_cdi_scan_remaps(s, g), tix[g].tid_min, tix[g].tid_max);
+}
+
 int
 sift_f2_scan_bridge_probe(Relation rel, F2Scan *s, uint32 g, SiftLazyGranule *lg, const SiftGranuleView *v, const SiftDvGran *dg, const SiftPendDelIndex *px, bool pend_hit, Snapshot snap, uint64 *active)
 {

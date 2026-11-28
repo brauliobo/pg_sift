@@ -220,6 +220,7 @@ tbl_pruned(void *impl, SiftV6GranCounts *out)
 
 	for (int k = 0; k < t->nparts; k++)
 		sift_v1_units_pruned(t->part[k].src, out);
+	out->pruned_zone += t->sel.units_skipped;
 }
 
 const SiftSrcLayout *

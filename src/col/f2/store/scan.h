@@ -38,6 +38,9 @@ typedef struct SiftStoreScanOpts
 	const struct SiftTidBridge *bridge;	/* a hybrid scan: the granules it misses are skipped and the rows not in it dropped */
 	uint64	   *bridge_seen;
 	uint64	   *bridge_skipped;
+	bool		tid_range;		/* a sift_table: the parts and granules with no row on a block of the ctid range [tid_lo, tid_hi) are not read */
+	uint64		tid_lo;
+	uint64		tid_hi;
 	const struct SiftPlanSnapshot *plan;	/* the manifest the caller made its own plan from: read as it is; NULL: the current one */
 	bool		emit_maybe;		/* the sink takes the rows no predicate could decide on the stored values (SiftF2Batch.maybe) */
 	struct SiftPinWin *pinwin;	/* a sift_table scan: the granules settled for the snapshot go to the window instead of the sink (col/f2/pin_win.h) */
