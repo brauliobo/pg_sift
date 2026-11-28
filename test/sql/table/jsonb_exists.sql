@@ -1,12 +1,16 @@
 -- The key tests of a jsonb document of a sift_table beside a test of another column: ?, ?|, ?&, NOT ?, @> and ->> over every shape of document (an object with the key, its JSON null,
 -- a value its declared path cannot hold, an array and a string that hold the key, a SQL NULL). The leaves of a table keep no presence of their key: ? is no test of the scan, the node
--- reads it from the document. Each statement runs on both formats against a heap twin (the truth): the first word says that the answers agree, the second whether the plan is the node's.
+-- reads it from the document. Each statement runs against a heap twin (the truth): the first word says that the answers agree, the second whether the plan is the node's.
+-- Format 2 (with the test library the table is Format 2 on every run); table/jsonb_exists_f1 runs the same statements on Format 1.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000;
 SET random_page_cost = 10000;
-SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
 
 CREATE FUNCTION same(q text, t text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE a text; b text; line text; node boolean := false;
@@ -22,16 +26,7 @@ CREATE TABLE heap_docs AS SELECT i AS id, i % 10 AS n, CASE i % 7 WHEN 0 THEN NU
 CREATE TABLE t2 (id int, n int, doc jsonb) USING sift_table;
 SELECT sift.table_set_paths('t2', 'doc', 'doc.a float8, doc.b astext');
 INSERT INTO t2 SELECT * FROM heap_docs;
-\if :testing
-SET sift.test_create_format1 = on;
-\endif
-CREATE TABLE t1 (id int, n int, doc jsonb) USING sift_table;
-SELECT sift.table_set_paths('t1', 'doc', 'doc.a float8, doc.b astext');
-INSERT INTO t1 SELECT * FROM heap_docs;
-\if :testing
-RESET sift.test_create_format1;
-\endif
-VACUUM (FREEZE, ANALYZE) heap_docs, t1, t2;
+VACUUM (FREEZE, ANALYZE) heap_docs, t2;
 
 CREATE TEMP TABLE queries (q text);
 INSERT INTO queries VALUES
@@ -44,7 +39,6 @@ INSERT INTO queries VALUES
 	('SELECT count(*) FROM @T WHERE doc->>''b'' = ''y'' AND n < 5'),
 	('SELECT count(*), sum((doc->>''a'')::float8) FROM @T WHERE jsonb_typeof(doc->''a'') = ''number'' AND n < 5');
 SELECT same(q, 't2') AS format2 FROM queries ORDER BY q;
-SELECT same(q, 't1') AS format1 FROM queries ORDER BY q;
-DROP TABLE heap_docs, t1, t2;
+DROP TABLE heap_docs, t2;
 DROP FUNCTION same(text, text);
 DROP EXTENSION pg_sift;

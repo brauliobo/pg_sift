@@ -118,7 +118,7 @@ SELECT s.id, r.* FROM stmts s, LATERAL same(s.q) r ORDER BY s.id;
  22 | SiftAggV6 |           1 |       0
  23 | SiftAggV6 |           6 |       0
  24 | SiftAggV6 |           4 |       0
- 25 | normal    |           1 |       0
+ 25 | SiftAggV6 |           1 |       0
  26 | SiftAggV6 |           5 |       0
  27 | SiftAggV6 |           1 |       0
  28 | SiftAggV6 |           1 |       0

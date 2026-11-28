@@ -780,6 +780,7 @@ TESTING_REGRESS += table/fetch_dict
 TESTING_REGRESS += table/filter
 TESTING_REGRESS += table/hot_sift_index
 TESTING_REGRESS += table/hot_update
+TESTING_REGRESS += table/jsonb_exists_f1
 TESTING_REGRESS += table/key
 TESTING_REGRESS += table/key_order
 TESTING_REGRESS += table/layouts_open
