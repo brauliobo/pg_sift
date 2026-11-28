@@ -48,8 +48,8 @@ END $$;
 SELECT name, (plan_of(q)).* FROM reads ORDER BY name COLLATE "C";
          name          | same |                      route                       | planned | launched 
 -----------------------+------+--------------------------------------------------+---------+----------
- count by score        | t    |                                                  |       0 |        0
- sum by member         | t    | scan of the facts (the members of the key)       |       2 |        0
+ count by score        | t    |                                                  |       2 |        2
+ sum by member         | t    |                                                  |       2 |        2
  sum by month, a bound | t    | join (the summary is not exact for the snapshot) |       2 |        2
 (3 rows)
 

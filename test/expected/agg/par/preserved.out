@@ -72,7 +72,7 @@ FROM shapes s ORDER BY s.n;
  distinct lookup   | parallel | t       | t       | t       | t
  distinct left     | serial   | t       | t       | t       | t
  distinct global   | serial   | t       | t       | t       | t
- chained lookups   | serial   | t       | t       | t       | t
+ chained lookups   | parallel | t       | t       | t       | t
  chained preserved | serial   | t       | t       | t       | t
  cte lookup        | serial   | t       | t       | t       | t
  distinct filter   | serial   | t       | t       | t       | t
