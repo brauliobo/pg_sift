@@ -33,33 +33,10 @@ struct SiftTblF2Prune
 
 static ExecutorStart_hook_type prev_executor_start;
 
-/* The leaf of the part that holds leaf of the store, -1 when the part holds it in another type or not at all */
-static int
-phys_leaf(const SiftF2PartPin *pin, int leaf)
-{
-	const SiftF2ColMap *map = pin->col_map;
-
-	return map == NULL ? leaf : map->mode[leaf] == SIFT_CMAP_DIRECT ? map->phys_col[leaf] : -1;
-}
-
 bool
 sift_tbl_f2_prune_granule(const SiftTblF2Prune *p, Relation rel, const SiftF2Store *store, SiftF2PartPin *pin, uint32 g, const SiftColDeltaGranMap *gm)
 {
-	int			nexc;
-	const SiftVariantExcSummary *exc;
-
-	if (gm != NULL && (gm->attnum_bloom & p->attnum_bloom) != 0)
-		return false;
-	exc = sift_f2_pin_exc(rel, pin, &nexc);
-	for (int k = 0; k < p->npreds; k++)
-	{
-		const int	leaf = phys_leaf(pin, p->preds[k].col);
-		const SiftZone *zones = leaf >= 0 ? sift_f2_pin_zones(rel, pin, leaf) : NULL;
-
-		if (zones != NULL && sift_f2_zone_verdict(&store->schema->cols[p->preds[k].col], &p->preds[k], &zones[g], pin->gdir[g].nrows, sift_f2_exc_has(exc, nexc, g, leaf)) == Z_NONE)
-			return true;
-	}
-	return false;
+	return (gm == NULL || (gm->attnum_bloom & p->attnum_bloom) == 0) && sift_f2_store_zones_exclude(rel, store, pin, p->preds, p->npreds, g);
 }
 
 /* The predicates of the quals of the scan the store decides, in the statement's memory; NULL when none */

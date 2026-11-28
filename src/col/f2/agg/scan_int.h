@@ -159,7 +159,7 @@ extern int *sift_f2_v6_scan_leaves(const V6Scan *s);
 extern bool *sift_f2_v6_scan_nan_leaves(const V6Scan *s, int nleaves);
 extern void sift_f2_v6_sink(void *arg, const SiftF2Batch *b);
 /* zones.c: the OR quals of the spec, and its equalities of a periodic calendar step, as zone tests of the granules of the index (*n of them; the second kind counted in stats) */
-extern const SiftColPrune *sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n, SiftV6ScanStats *stats);
+extern const SiftColPrune *sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation host, int *n, SiftV6ScanStats *stats);
 /* The granules the scan counted since the last call, added to its stats */
 extern void sift_f2_v6_flush_grans(V6Scan *s);
 extern int	sift_f2_v6_slot_of(V6Scan *s, const int *first, const SiftV6Col *c, bool takes_nan);

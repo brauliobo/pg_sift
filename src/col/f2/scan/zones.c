@@ -5,6 +5,7 @@
 #include "postgres.h"
 
 #include "col/f2/scan/int.h"
+#include "col/f2/store/scan.h"
 
 void
 sift_f2_scan_set_zones(IndexScanDesc scan, const SiftColPrune *zones, int nzones)
@@ -15,20 +16,21 @@ sift_f2_scan_set_zones(IndexScanDesc scan, const SiftColPrune *zones, int nzones
 	s->nzones = nzones;
 }
 
-/* whether a row of granule g may pass the test: each of its predicates may select a row the zone of its leaf holds, and its kids keep the granule (one of them for an OR) */
-static bool
-admits(Relation rel, const SiftColSchema *schema, SiftF2PartPin *pin, const SiftColPrune *z, uint32 g, uint32 nrows, const SiftVariantExcSummary *exc, int nexc)
+bool
+sift_f2_zone_admits(Relation rel, const struct SiftColSchema *schema, SiftF2PartPin *pin, const SiftColPrune *z, uint32 g, uint32 nrows, const SiftVariantExcSummary *exc, int nexc,
+					const int16 *phys)
 {
 	for (int k = 0; k < z->npreds; k++)
 	{
 		const SiftColPred *p = &z->preds[k];
-		const SiftZone *zones = sift_f2_pin_zones(rel, pin, p->col);
+		const int	leaf = phys != NULL ? phys[p->col] : p->col;
+		const SiftZone *zones = leaf >= 0 ? sift_f2_pin_zones(rel, pin, leaf) : NULL;
 
-		if (zones != NULL && sift_f2_zone_verdict(&schema->cols[p->col], p, &zones[g], nrows, sift_f2_exc_has(exc, nexc, g, p->col)) == Z_NONE)
+		if (zones != NULL && sift_f2_zone_verdict(&schema->cols[p->col], p, &zones[g], nrows, sift_f2_exc_has(exc, nexc, g, leaf)) == Z_NONE)
 			return false;
 	}
 	for (int i = 0; i < z->nkids; i++)
-		if (admits(rel, schema, pin, &z->kids[i], g, nrows, exc, nexc) == z->any)
+		if (sift_f2_zone_admits(rel, schema, pin, &z->kids[i], g, nrows, exc, nexc, phys) == z->any)
 			return z->any;
 	return !z->any || z->nkids == 0;
 }
@@ -53,7 +55,7 @@ bool
 sift_f2_zones_exclude(Relation rel, const F2Scan *s, const SiftColSchema *schema, SiftF2PartPin *pin, uint32 g, uint32 nrows, const SiftVariantExcSummary *exc, int nexc)
 {
 	for (int i = 0; i < s->nzones; i++)
-		if (!admits(rel, schema, pin, &s->zones[i], g, nrows, exc, nexc))
+		if (!sift_f2_zone_admits(rel, schema, pin, &s->zones[i], g, nrows, exc, nexc, NULL))
 			return true;
 	return false;
 }

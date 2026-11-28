@@ -227,7 +227,7 @@ part_open_pin(SiftStorePart *p)
 	p->pin = sift_f2_pin_open(s->o->rel, s->store, p->d, (uint32) p->e->part_id);
 	p->r->nspans = sift_f2_granule_spans(s->o->rel, p->pin->part, &s->f, &s->ks, &s->plan, p->r->spans);
 	p->r->g = p->r->nspans > 0 ? p->r->spans[0][0] : 0;
-	p->r->phys = s->o->gran_sink != NULL && s->vis == &table_vis ? sift_f2_store_part_phys(s->store, p->pin->col_map, p->cx) : NULL;
+	p->r->phys = sift_f2_store_part_phys(s->store, p->pin->col_map, p->cx);
 	p->started = true;
 }
 
@@ -356,6 +356,63 @@ part_handed_over(SiftStorePart *p, uint32 g)
 	return sift_pin_win_take_table(s->o->pinwin, s->o->rel, s->store->schema, p->e, p->pin, g, eligible, part_replay, (void *) s);
 }
 
+bool
+sift_f2_store_zones_exclude(Relation rel, const SiftF2Store *store, struct SiftF2PartPin *pin, const SiftColPred *preds, int npreds, uint32 g)
+{
+	const SiftF2ColMap *map = pin->col_map;
+	int			nexc;
+	const SiftVariantExcSummary *exc = sift_f2_pin_exc(rel, pin, &nexc);
+
+	for (int k = 0; k < npreds; k++)
+	{
+		const int	col = preds[k].col,
+					leaf = map == NULL ? col : map->mode[col] == SIFT_CMAP_DIRECT ? map->phys_col[col] : -1;
+		const SiftZone *zones = leaf >= 0 ? sift_f2_pin_zones(rel, pin, leaf) : NULL;
+
+		if (zones != NULL && sift_f2_zone_verdict(&store->schema->cols[col], &preds[k], &zones[g], pin->gdir[g].nrows, sift_f2_exc_has(exc, nexc, g, leaf)) == Z_NONE)
+			return true;
+	}
+	return false;
+}
+
+/* Column deltas patch granule g: a table's scan asks its deltas, any other scan takes every granule of a part with deltas as patched */
+static bool
+granule_patched(const SiftStorePart *p, uint32 g)
+{
+	if (p->s->delta == NULL)
+		return (p->e->flags & SIFT_PARTENTRY_HAS_COL_DELTA) != 0;
+	return sift_col_delta_scan_granule(p->s->delta, p->e, p->pin, g) != NULL;
+}
+
+/* No row of granule g passes a predicate of the scan, by the zones: a patched granule keeps none that holds for it */
+static bool
+zones_exclude(const SiftStorePart *p, uint32 g)
+{
+	const SiftStoreScan *s = p->s;
+	int			nexc;
+	const SiftVariantExcSummary *exc;
+
+	if ((s->o->npreds == 0 && s->o->nzones == 0) || granule_patched(p, g))
+		return false;
+	exc = sift_f2_pin_exc(s->o->rel, p->pin, &nexc);
+	for (int i = 0; i < s->o->nzones; i++)
+		if (!sift_f2_zone_admits(s->o->rel, s->store->schema, p->pin, &s->o->zones[i], g, p->pin->gdir[g].nrows, exc, nexc, p->r->phys))
+			return true;
+	return sift_f2_store_zones_exclude(s->o->rel, s->store, p->pin, s->o->preds, s->o->npreds, g);
+}
+
+/* The granule in the counts of the scan: ruled out by its zones, or read */
+static void
+count_granule(const SiftStoreScan *s, bool pruned)
+{
+	if (s->o->grans == NULL || s->replaying)
+		return;
+	if (pruned)
+		s->o->grans->pruned_zone++;
+	else
+		s->o->grans->scanned++;
+}
+
 static bool
 part_load_granule(SiftStorePart *p)
 {
@@ -366,10 +423,14 @@ part_load_granule(SiftStorePart *p)
 		part_open_pin(p);
 	while (p->r != NULL && part_next_granule_id(p, &g))
 	{
+		bool		pruned;
+
 		if (!granule_wanted(p, g) || granule_answered(p, g))
 			continue;
-		if (s->o->grans != NULL && !s->replaying)
-			s->o->grans->scanned++;
+		pruned = zones_exclude(p, g);
+		count_granule(s, pruned);
+		if (pruned)
+			continue;
 		if (!part_handed_over(p, g))
 		{
 			p->r->gb = sift_f2_gbuf_load(s->o->rel, s->store, p->pin, g);

@@ -38,6 +38,7 @@ sift_f2_v6_scan_table_morsels(V6Scan *s, Relation rel, const SiftStoreQuals *qua
 	s->leaves = sift_f2_v6_scan_leaves(s);
 	*o = (SiftStoreScanOpts) {.rel = rel,.store = store,.snap = snap,.preds = quals->preds,.npreds = quals->npreds,.leaves = s->leaves,.nleaves = s->ncols,
 		.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols),.grans = &s->grans};
+	o->zones = sift_f2_v6_zone_tests(s->spec, rel, &o->nzones, s->stats);
 	s->store_scan = sift_f2_store_scan_open(o);
 	s->unsatisfiable = !quals->possible;
 }
@@ -66,6 +67,7 @@ sift_f2_v6_scan_table_run(V6Scan *s, Relation rel, const SiftStoreQuals *quals, 
 	s->rows_snap = snap;
 	sift_f2_v6_scan_setup(s, store->schema->cols, store->att_first, star);
 	o.leaves = sift_f2_v6_scan_leaves(s);
+	o.zones = sift_f2_v6_zone_tests(s->spec, rel, &o.nzones, s->stats);
 	o.nleaves = s->ncols;
 	o.nan_leaves = sift_f2_v6_scan_nan_leaves(s, store->ncols);
 	s->preagg = quals->possible && !s->spec->tid_range && s->rows == NULL && s->group != NULL ? sift_v6_preagg_begin(s->spec, s->group, store->att_first, NULL, s->stats) : NULL;

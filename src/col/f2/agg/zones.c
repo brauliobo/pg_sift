@@ -8,6 +8,7 @@
 #include "col/am.h"
 #include "col/f2/agg/scan_int.h"
 #include "col/f2/sink/sink.h"
+#include "col/f2/store/store.h"
 
 /* a range as the AND of the comparisons of its bounds, on the leaves of the index */
 static bool
@@ -42,14 +43,18 @@ range_test(const SiftV6Input *in, const int *first, const SiftV6Range *r, SiftCo
 }
 
 const SiftColPrune *
-sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation index, int *n, SiftV6ScanStats *stats)
+sift_f2_v6_zone_tests(const SiftV6Spec *spec, Relation host, int *n, SiftV6ScanStats *stats)
 {
 	SiftColPrune *zones = palloc(SIFT_V6_MAX_SETS * sizeof(SiftColPrune));
-	const int  *first = sift_col_rel(index)->first;
+	const bool	table = host->rd_rel->relkind != RELKIND_INDEX;
+	const int  *first = table ? sift_f2_store_open(host)->att_first : sift_col_rel(host)->first;
 	SiftV6Input in;
 
+	if (table)
+		sift_v6_input_init_table(&in, host);
+	else
+		sift_v6_input_init_rel(&in, host);
 	*n = 0;
-	sift_v6_input_init_rel(&in, index);
 	foreach_ptr(Node, clause, spec->vqual)
 	{
 		SiftV6RangeSet set;

@@ -47,8 +47,18 @@ typedef struct SiftStoreScanOpts
 	void		(*pinwin_done) (void *sink_arg);	/* after the last granule, with the scan still open: the owner of the window runs it and the scan replays what the threads left */
 	SiftF2GranSink gran_sink;	/* a sift_table: offered each granule before it is loaded, as sift_f2_scan_set_gran_sink offers those of an index; NULL: none */
 	void	   *gran_arg;
+	const SiftColPrune *zones;	/* the OR tests of the statement on the zones (col/f2/agg/zones.c): a granule one of them rules out is not read */
+	int			nzones;
 	SiftF2GranCounts *grans;	/* not NULL: the granules the scan reads are counted here, as sift_f2_scan_count_granules counts those of an index */
 } SiftStoreScanOpts;
+
+struct SiftF2PartPin;
+struct SiftVariantExcSummary;
+/* Whether a row of granule g of the pinned part, of nrows rows, may pass the zone test z over the leaves of schema, the exceptions of the part those of exc; phys maps the leaves to those of the part (NULL: the same) */
+extern bool sift_f2_zone_admits(Relation rel, const struct SiftColSchema *schema, struct SiftF2PartPin *pin, const SiftColPrune *z, uint32 g, uint32 nrows,
+								const struct SiftVariantExcSummary *exc, int nexc, const int16 *phys);
+/* Whether the zones of granule g of the pinned part say that no row passes one of the npreds predicates over the leaves of the store */
+extern bool sift_f2_store_zones_exclude(Relation rel, const SiftF2Store *store, struct SiftF2PartPin *pin, const SiftColPred *preds, int npreds, uint32 g);
 
 /* The rows of the relation to the sink: granules of up to 8192 rows, as sift_f2_scan_sink hands them */
 extern void sift_f2_store_scan_sink(const SiftStoreScanOpts *opts, SiftF2Sink sink, void *sink_arg);
