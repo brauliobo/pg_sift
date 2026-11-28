@@ -228,47 +228,101 @@ lower_positive(Lower *l, const Expr *clause)
 	}
 }
 
-/* the clause of NOT (clause) or (clause) IS FALSE, NULL for another expression */
-static const Expr *
-negated_arg(const Expr *e)
+/* the presence leaf of the document, NULL where it is SQL NULL, which a scan reads as a column wherever the test is; the document itself when the index has none */
+static Expr *
+doc_present(const Lower *l, const Var *doc)
 {
-	if (is_notclause(e))
-		return get_notclausearg(e);
-	return IsA(e, BooleanTest) && ((const BooleanTest *) e)->booltesttype == IS_FALSE ? ((const BooleanTest *) e)->arg : NULL;
+	const SiftColSchema *sch = sift_v6_rel_leaves(l->rel);
+
+	for (int c = 0; c < sch->ncols; c++)
+		if (sch->cols[c].attno == l->att && sift_col_def_is_present(&sch->cols[c]))
+			return (Expr *) vatt(l, SIFT_V6_JHELD_VATT, c, INT8OID);
+	return (Expr *) copyObject(doc);
 }
 
-/* NOT (doc @> c), and (doc @> c) IS FALSE: doc IS NOT NULL and the tests not all true (a test of a missing key is NULL) */
+/* (doc @> c) IS NOT TRUE: the tests not all true (a test of a missing key, or of a SQL NULL document, is NULL) */
 static bool
-lower_negated(Lower *l, const Expr *arg)
+lower_none(Lower *l, const Expr *clause)
 {
-	const OpExpr *op = (const OpExpr *) arg;
-	const Oid	fid = IsA(arg, OpExpr) && list_length(op->args) == 2 ? get_opcode(op->opno) : InvalidOid;
-	const Expr *lhs = fid == InvalidOid ? NULL : strip(fid == F_JSONB_CONTAINED ? lsecond(op->args) : linitial(op->args));
-	const Var  *doc = (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED) && IsA(lhs, Var) ? (const Var *) lhs : NULL;
 	BooleanTest *none = makeNode(BooleanTest);
-	NullTest   *nt;
 
-	if (doc == NULL || !lower_positive(l, arg))
+	if (!lower_positive(l, clause))
 		return false;
 	*none = (BooleanTest) {.xpr.type = T_BooleanTest,.arg = make_ands_explicit(l->tests),.booltesttype = IS_NOT_TRUE,.location = -1};
 	l->tests = list_make1(none);
-	if (bms_is_member(doc->varattno, l->rel->notnull))
+	return true;
+}
+
+/* NOT (doc @> c), or (doc @> c) IS FALSE: doc IS NOT NULL and the tests not all true */
+static bool
+lower_negated(Lower *l, const Expr *clause)
+{
+	const OpExpr *op = (const OpExpr *) strip(clause);
+	const Oid	fid = IsA(op, OpExpr) && list_length(op->args) == 2 ? get_opcode(op->opno) : InvalidOid;
+	const Expr *lhs = fid == F_JSONB_CONTAINED ? strip(lsecond(op->args)) : fid == F_JSONB_CONTAINS ? strip(linitial(op->args)) : NULL;
+	NullTest   *nt;
+
+	if (lhs == NULL || !IsA(lhs, Var) || !lower_none(l, clause))
+		return false;
+	if (bms_is_member(((const Var *) lhs)->varattno, l->rel->notnull))
 		return true;
 	nt = makeNode(NullTest);
-	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = (Expr *) copyObject(doc),.nulltesttype = IS_NOT_NULL,.location = -1};
+	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = doc_present(l, (const Var *) lhs),.nulltesttype = IS_NOT_NULL,.location = -1};
 	l->tests = lappend(l->tests, nt);
 	return true;
+}
+
+/* the containment, its NOT, or IS TRUE, IS FALSE or IS NOT TRUE of it */
+static bool
+lower_clause(Lower *l, const Expr *clause)
+{
+	const Expr *e = strip(clause);
+	const BooleanTest *bt = IsA(e, BooleanTest) ? (const BooleanTest *) e : NULL;
+
+	if (is_notclause(e))
+		return lower_negated(l, get_notclausearg(e));
+	if (bt == NULL)
+		return lower_positive(l, e);
+	switch (bt->booltesttype)
+	{
+		case IS_TRUE:
+			return lower_positive(l, bt->arg);
+		case IS_FALSE:
+			return lower_negated(l, bt->arg);
+		case IS_NOT_TRUE:
+			return lower_none(l, bt->arg);
+		default:
+			return false;
+	}
 }
 
 List *
 sift_v6_contains_quals(const SiftV6Rel *rel, const Expr *clause)
 {
 	Lower		l = {.rel = rel};
-	const Expr *negated = negated_arg(strip(clause));
 
 	if (sift_v6_rel_leaves(rel) == NULL || !sift_v6_values_exact(rel) || !rel->ops->jsonb->exact_values)
 		return NIL;
-	return (negated != NULL ? lower_negated(&l, negated) : lower_positive(&l, clause)) ? l.tests : NIL;
+	return lower_clause(&l, clause) ? l.tests : NIL;
+}
+
+Node *
+sift_v6_null_test_folded(const SiftV6Rel *rel, const Node *n)
+{
+	const NullTest *nt = IsA(n, NullTest) ? (const NullTest *) n : NULL;
+	const BooleanTest *bt = IsA(n, BooleanTest) ? (const BooleanTest *) n : NULL;
+	NullTest   *flip;
+
+	if (nt != NULL && !nt->argisrow && IsA(nt->arg, Var) && ((const Var *) nt->arg)->varno == rel->relid && ((const Var *) nt->arg)->varlevelsup == 0 &&
+		bms_is_empty(((const Var *) nt->arg)->varnullingrels) && bms_is_member(((const Var *) nt->arg)->varattno, rel->notnull))
+		return (Node *) makeBoolConst(nt->nulltesttype == IS_NOT_NULL, false);
+	if (bt == NULL || !IsA(bt->arg, NullTest))
+		return NULL;
+	if (bt->booltesttype == IS_TRUE || bt->booltesttype == IS_NOT_FALSE)
+		return copyObject((Node *) bt->arg);
+	flip = copyObject((NullTest *) bt->arg);
+	flip->nulltesttype = flip->nulltesttype == IS_NULL ? IS_NOT_NULL : IS_NULL;
+	return (Node *) flip;
 }
 
 bool

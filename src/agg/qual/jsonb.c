@@ -9,6 +9,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -653,6 +654,11 @@ vars_mutator(Node *n, VarsCtx *ctx)
 	if (!ctx->presence && ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber ||
 						   (ctx->values && ctx->member != NULL && (vatt = ctx->member(ctx->arg, (const Expr *) n, &typid)) != InvalidAttrNumber)))
 		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
+	if ((out = sift_v6_null_test_folded(ctx->rel, n)) != NULL)
+		return vars_mutator(out, ctx);
+	/* read for its truth, X IS TRUE is X and X IS FALSE is NOT X (pushed below its AND and OR): a NULL X is as false in each */
+	if (ctx->truth && IsA(n, BooleanTest) && (((const BooleanTest *) n)->booltesttype == IS_TRUE || ((const BooleanTest *) n)->booltesttype == IS_FALSE))
+		return vars_mutator(((const BooleanTest *) n)->booltesttype == IS_TRUE ? (Node *) ((const BooleanTest *) n)->arg : negate_clause(copyObject((Node *) ((const BooleanTest *) n)->arg)), ctx);
 	if ((out = presence_test(ctx, n)) != NULL)
 		return out;
 	if (ctx->truth && !ctx->presence && (tests = sift_v6_contains_quals(ctx->rel, (const Expr *) n)) != NIL)

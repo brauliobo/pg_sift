@@ -226,23 +226,38 @@ sift_v6_doc_present_var(const V6Plan *p, const Expr *doc, int *att)
 }
 
 /*
- * IS [NOT] NULL of a shredded document, to a format that reads the documents as the heap does: of a WHERE, a scan key of the column of the index, which its presence leaf decides; of a FILTER, the
- * test of the value the presence leaf holds, which the scan reads as a column. NULL: the index has no such leaf
+ * IS [NOT] NULL of a shredded document (or of its presence leaf leaf, which the tests of a document name), to a format that reads the documents as the heap does: of a WHERE, a scan key of the
+ * column att of the index, which its presence leaf decides; of a FILTER, the test of the value the presence leaf holds, which the scan reads as a column
  */
 static Expr *
-doc_null_test(V6Plan *p, NullTest *nt)
+present_null_test(V6Plan *p, NullTest *nt, int att, int leaf)
 {
 	NullTest   *q = copyObject(nt);
+	Var		   *present = makeVar(p->rel->relid, SIFT_V6_JHELD_VATT + leaf, INT8OID, -1, InvalidOid, 0);
 	SiftV6Col	col;
-	int			att;
-	Var		   *present = sift_v6_doc_present_var(p, nt->arg, &att);
 
-	if (present == NULL)
-		return NULL;
 	if (p->in_filter && !key_column(p, (Expr *) present, false, &col))
 		return NULL;
-	q->arg = index_var(p->in_filter ? (Expr *) present : nt->arg, att - 1);
+	q->arg = p->in_filter ? index_var((Expr *) present, att - 1) : (Expr *) makeVar(INDEX_VAR, att, JSONBOID, -1, InvalidOid, 0);
 	return (Expr *) q;
+}
+
+/* the document a NullTest reads, as its column att of the index and its presence leaf; false: the index has no such leaf, or the format reads no documents as the heap does */
+static bool
+doc_present_of(V6Plan *p, const NullTest *nt, int *att, int *leaf)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	const Var  *v = (const Var *) nt->arg;
+
+	if (p->is_table || p->colrel == NULL || p->ops->jsonb == NULL || !p->ops->jsonb->exact_values || nt->argisrow || !IsA(v, Var))
+		return false;
+	if (v->vartype == JSONBOID)
+		return sift_v6_json_doc_att(&rel, nt->arg, att) && (*leaf = present_leaf(p, *att)) >= 0;
+	*leaf = v->varattno - SIFT_V6_JHELD_VATT;
+	if (v->varattno < SIFT_V6_JHELD_VATT || *leaf >= p->colrel->schema->ncols || !sift_col_def_is_present(&p->colrel->schema->cols[*leaf]))
+		return false;
+	*att = p->colrel->schema->cols[*leaf].attno;
+	return true;
 }
 
 static Expr *
@@ -250,11 +265,13 @@ qual_null_test(V6Plan *p, NullTest *nt)
 {
 	NullTest   *q = copyObject(nt);
 	SiftV6Col	col;
+	int			att,
+				leaf;
 
-	if (nt->argisrow)
+	if (doc_present_of(p, nt, &att, &leaf))
+		return present_null_test(p, nt, att, leaf);
+	if (nt->argisrow || (IsA(nt->arg, Var) && ((const Var *) nt->arg)->vartype == JSONBOID))
 		return NULL;
-	if (IsA(nt->arg, Var) && ((const Var *) nt->arg)->vartype == JSONBOID)
-		return doc_null_test(p, nt);
 	if (!key_column(p, nt->arg, true, &col))
 		return NULL;
 	q->arg = index_var(nt->arg, col.attno - 1);
@@ -429,8 +446,12 @@ static List *
 lowered_tests(V6Plan *p, const SiftV6Rel *rel, Expr *clause)
 {
 	List	   *tests = sift_v6_contains_quals(rel, clause);
+	Expr	   *lowered;
 
-	return tests != NIL ? tests : (tests = sift_v6_conjuncts(sift_v6_plan_json_test(p, clause, true))) != NIL && list_length(tests) > 1 ? tests : NIL;
+	if (tests != NIL)
+		return tests;
+	lowered = sift_v6_plan_json_test(p, clause, true);
+	return equal(lowered, clause) ? NIL : sift_v6_conjuncts(lowered);
 }
 
 /* the tests of the leaves of a clause, or of a containment whose lists of strings the tests of the plan read: the quals of their flags and the tests of the other members */

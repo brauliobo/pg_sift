@@ -7,6 +7,7 @@
 #include "catalog/pg_operator_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "utils/lsyscache.h"
 
@@ -166,7 +167,45 @@ sift_v6_tests_or_qual(V6Plan *p, Expr *clause)
 	return q;
 }
 
-/* the conjuncts of the clause the scan decides on the stored values (NIL: one is not of those); an AND or OR the index stores, or its negation, is one */
+/* the clause as a boolean PostgreSQL's own functions compute over the datums of its columns: the test that the derived column is true (NULL: none) */
+static Expr *
+derived_qual(V6Plan *p, Expr *e)
+{
+	SiftV6Col	col;
+	BooleanTest *bt;
+	int			i = 0;
+
+	if (exprType((Node *) e) != BOOLOID || !sift_v6_pg_derived_col(p, e, false, &col))
+		return NULL;
+	while (i < p->spec.nfcols && !sift_v6_col_same(&p->spec.fcol[i], &col))
+		i++;
+	if (i == p->spec.nfcols && p->spec.nfcols == SIFT_V6_MAX_FCOLS)
+		return NULL;
+	p->spec.fcol[i] = col;
+	p->spec.nfcols = Max(p->spec.nfcols, i + 1);
+	bt = makeNode(BooleanTest);
+	bt->arg = (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(i + 1), false, true);
+	bt->booltesttype = IS_TRUE;
+	return (Expr *) bt;
+}
+
+static bool
+raising_read(Node *n, void *context)
+{
+	return n != NULL && ((IsA(n, Var) && sift_v6_vatt_raises(((const Var *) n)->varattno)) || expression_tree_walker(n, raising_read, context));
+}
+
+/* the conjunct may raise for a row an earlier conjunct drops: a function that is not leakproof reads a column, or a column whose conversion raises */
+static bool
+may_raise(Expr *conjunct)
+{
+	return contain_leaked_vars((Node *) conjunct) || raising_read((Node *) conjunct, NULL);
+}
+
+/*
+ * the conjuncts of the clause the scan decides on the stored values, or of a conjunct that is none of those and cannot raise the derived column PostgreSQL's functions compute for every
+ * row (NIL: one is neither); an AND or OR the index stores, or its negation, is one
+ */
 static List *
 native_filter_quals(V6Plan *p, Expr *filter)
 {
@@ -184,6 +223,9 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	{
 		Expr	   *q = conjunct_qual(p, conjunct);
 
+		p->in_filter = false;
+		q = q != NULL || may_raise(conjunct) ? q : derived_qual(p, conjunct);
+		p->in_filter = true;
 		if (q == NULL)
 		{
 			quals = NIL;
@@ -195,33 +237,12 @@ native_filter_quals(V6Plan *p, Expr *filter)
 	return quals;
 }
 
-/* the clause as a boolean PostgreSQL's own functions compute over the datums of its columns: the test that the derived column is true */
-static List *
-derived_filter_quals(V6Plan *p, Expr *filter)
-{
-	SiftV6Col	col;
-	BooleanTest *bt;
-	int			i = 0;
-
-	if (exprType((Node *) filter) != BOOLOID || !sift_v6_pg_derived_col(p, filter, false, &col))
-		return NIL;
-	while (i < p->spec.nfcols && !sift_v6_col_same(&p->spec.fcol[i], &col))
-		i++;
-	if (i == p->spec.nfcols && p->spec.nfcols == SIFT_V6_MAX_FCOLS)
-		return NIL;
-	p->spec.fcol[i] = col;
-	p->spec.nfcols = Max(p->spec.nfcols, i + 1);
-	bt = makeNode(BooleanTest);
-	bt->arg = (Expr *) makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(i + 1), false, true);
-	bt->booltesttype = IS_TRUE;
-	return list_make1(bt);
-}
-
 /* FILTER (WHERE ..): a conjunction of the quals of a scan, over the columns of the index; the same clause of two aggregates is one clause (at most 64 of them: a bit of the mask of a row each) */
 bool
 sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 {
 	List	   *quals;
+	Expr	   *q;
 	SiftClause *clause = palloc(sizeof(SiftClause));
 	SiftBytes	canon;
 	int			id;
@@ -234,7 +255,7 @@ sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause)
 	if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))
 	{
 		sift_bytes_init(&canon, CurrentMemoryContext);
-		quals = derived_filter_quals(p, filter);
+		quals = (q = derived_qual(p, filter)) != NULL ? list_make1(q) : NIL;
 		if (quals == NIL || !sift_v6_clause_make_params(CurrentMemoryContext, quals, &p->spec, clause, &canon))
 			return false;
 	}
