@@ -437,6 +437,15 @@ heap_ndistinct(PlannerInfo *root, const RelOptInfo *rel, Oid relid, AttrNumber a
 	return isdefault ? rel->tuples : nd;
 }
 
+/* the attribute of the table a scan decodes for col: of the index (index_cols: its 1-based column), or of the table, which a sift_table (ix NULL) holds whole */
+static AttrNumber
+scan_heap_att(const IndexOptInfo *ix, int col, bool index_cols)
+{
+	if (index_cols)
+		return col > 0 && col <= ix->ncolumns ? ix->indexkeys[col - 1] : 0;
+	return col > 0 && (ix == NULL || agg_index_col(ix, col) >= 0) ? col : 0;
+}
+
 /*
  * per row decoded, the operators of the arrays of the columns in cols (as cols_bytes): a unit hashes, interns and inflates each array it has not met before a test reads it, its width and its
  * distinct values those of the statistics of PostgreSQL
@@ -450,9 +459,7 @@ arrays_intern_ops(PlannerInfo *root, const RelOptInfo *rel, const IndexOptInfo *
 
 	while ((a = bms_next_member(cols, a)) >= 0)
 	{
-		const int	col = a + FirstLowInvalidHeapAttributeNumber;
-		const int	icol = index_cols ? col - 1 : agg_index_col(ix, col);
-		const AttrNumber att = icol >= 0 && icol < ix->ncolumns ? ix->indexkeys[icol] : 0;
+		const AttrNumber att = scan_heap_att(ix, a + FirstLowInvalidHeapAttributeNumber, index_cols);
 		const Oid	type = att > 0 ? get_atttype(relid, att) : InvalidOid;
 
 		if (type_is_array(type))
