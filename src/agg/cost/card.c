@@ -373,6 +373,18 @@ calendar_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, cons
 	return cs->flags & SIFT_CSTAT_HAS_NDV ? Min(n, Max(cs->ndv_est, 1.0)) : n;
 }
 
+/* the groups of one key over rows: the distinct values of its leaf, or the units of a calendar key; -1: unknown */
+static double
+key_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const Node *e, double rows)
+{
+	const int	leaf = leaf_of(ix, rel->relid, e);
+	double		cal;
+
+	if (leaf >= 0 && (uint32) leaf < view->ncols && (view->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
+		return sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);
+	return leaf < 0 && (cal = calendar_groups(root, rel, ix, view, e)) > 0 ? Min(cal, rows) : -1;
+}
+
 double
 sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const List *group_exprs, double rows)
 {
@@ -383,15 +395,11 @@ sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, 
 		return -1;
 	foreach_ptr(Node, e, (List *) group_exprs)
 	{
-		const int	leaf = leaf_of(ix, rel->relid, e);
-		const double cal = leaf < 0 ? calendar_groups(root, rel, ix, view, e) : -1;
+		const double g = key_groups(root, rel, ix, view, e, rows);
 
-		if (cal > 0)
-			d[n++] = Min(cal, rows);
-		else if (leaf < 0 || (uint32) leaf >= view->ncols || !(view->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
+		if (g < 0)
 			return -1;
-		else
-			d[n++] = sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);
+		d[n++] = g;
 	}
 	return n == 0 ? 1.0 : sift_card_ndv_multi(d, n, rows, 0);
 }
