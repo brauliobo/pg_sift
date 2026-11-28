@@ -18,6 +18,7 @@
 #include "storage/spin.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
+#include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "utils/pg_locale.h"
@@ -146,6 +147,21 @@ sift_plan_disabled(const Plan *plan, double *cost)
 #define sift_fallthrough	pg_fallthrough
 #else
 #define sift_fallthrough	__attribute__((fallthrough))
+#endif
+
+/* A jsonb value built token by token (19 keeps the parse state and the result in a JsonbInState): zero it, push each token, and the last push returns the whole value */
+#if PG_VERSION_NUM >= 190000
+typedef JsonbInState SiftJsonbBuild;
+
+static inline JsonbValue *
+sift_jsonb_push(SiftJsonbBuild *st, JsonbIteratorToken seq, JsonbValue *v)
+{
+	pushJsonbValue(st, seq, v);
+	return st->result;
+}
+#else
+typedef JsonbParseState *SiftJsonbBuild;
+#define sift_jsonb_push(st, seq, v)	pushJsonbValue(st, seq, v)
 #endif
 
 /* The per-node runtime counters of a PlanState (19 split them from Instrumentation into NodeInstrumentation) */

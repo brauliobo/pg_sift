@@ -126,7 +126,7 @@ eval_pg(const ElemStep *st, const SiftVec *ev, uint32 at, uint32 cnt, uint64 *ch
 {
 	SiftBatchSel bs = {.n_raw = (uint16) cnt};
 	SiftVec		in[SIFT_V6_MAX_COLS];
-	const SiftVec *inp[SIFT_V6_MAX_COLS];
+	const SiftVec *inp[SIFT_V6_MAX_COLS] = {0};
 
 	memcpy(bs.mask, chunk, ((cnt + 63) / 64) * sizeof(uint64));
 	for (int i = 0; i < st->pg->nin; i++)

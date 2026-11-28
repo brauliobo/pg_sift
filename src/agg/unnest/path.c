@@ -212,7 +212,7 @@ sift_v6_unnest_path_members(const Node *clause, Expr **rest)
 	const Expr *doc;
 	Oid			opno;
 	const Jsonb *pat = object_pattern(clause, &doc, &opno);
-	JsonbParseState *st = NULL;
+	SiftJsonbBuild st = {0};
 	JsonbIterator *it;
 	JsonbValue	k,
 				v,
@@ -222,7 +222,7 @@ sift_v6_unnest_path_members(const Node *clause, Expr **rest)
 	if (pat == NULL)
 		return NIL;
 	it = JsonbIteratorInit(unconstify(JsonbContainer *, &pat->root));
-	(void) pushJsonbValue(&st, JsonbIteratorNext(&it, &k, true), NULL);
+	sift_jsonb_push(&st, JsonbIteratorNext(&it, &k, true), NULL);
 	while (JsonbIteratorNext(&it, &k, true) == WJB_KEY)
 	{
 		Expr	   *test;
@@ -233,11 +233,11 @@ sift_v6_unnest_path_members(const Node *clause, Expr **rest)
 			tests = lappend(tests, test);
 		else
 		{
-			(void) pushJsonbValue(&st, WJB_KEY, &k);
-			(void) pushJsonbValue(&st, WJB_VALUE, &v);
+			sift_jsonb_push(&st, WJB_KEY, &k);
+			sift_jsonb_push(&st, WJB_VALUE, &v);
 		}
 	}
-	obj = pushJsonbValue(&st, WJB_END_OBJECT, NULL);
+	obj = sift_jsonb_push(&st, WJB_END_OBJECT, NULL);
 	*rest = tests == NIL || obj->val.object.nPairs == 0 ? NULL :
 		make_opclause(opno, BOOLOID, false, copyObject(unconstify(Expr *, doc)), (Expr *) makeConst(JSONBOID, -1, InvalidOid, -1, JsonbPGetDatum(JsonbValueToJsonb(obj)), false, false),
 					  InvalidOid, InvalidOid);
