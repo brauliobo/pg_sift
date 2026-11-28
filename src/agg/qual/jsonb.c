@@ -546,7 +546,7 @@ sift_v6_json_read(const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 }
 
 /*
- * e reads a member of a document as a number: the float8 of its `->>` text, or the cast of its jsonb to float8 or an integer (a JSON null casts to NULL from PostgreSQL 18 on, where it raised before,
+ * e reads a member of a document as a number or a boolean: the float8 of its `->>` text, or the cast of its jsonb to float8, an integer or bool (a JSON null casts to NULL from PostgreSQL 18 on, where it raised before,
  * which the leaf does not tell). The document, the keys from it, the type and whether it is the cast of the jsonb; NULL: e is no such read
  */
 static const Var *
@@ -555,7 +555,7 @@ member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
 	const Expr *x = strip(e);
 
 	*jsonb_cast = x != NULL && IsA(x, FuncExpr) && list_length(args_of(x)) == 1 &&
-		(func_of(x) == F_FLOAT8_JSONB || func_of(x) == F_INT2_JSONB || func_of(x) == F_INT4_JSONB || func_of(x) == F_INT8_JSONB);
+		(func_of(x) == F_FLOAT8_JSONB || func_of(x) == F_INT2_JSONB || func_of(x) == F_INT4_JSONB || func_of(x) == F_INT8_JSONB || func_of(x) == F_BOOL_JSONB);
 	if (*jsonb_cast && !SIFT_JSON_NULL_CAST_RAISES)
 	{
 		*typid = ((const FuncExpr *) x)->funcresulttype;
@@ -567,12 +567,14 @@ member_read(const Expr *e, List **path, Oid *typid, bool *jsonb_cast)
 	return sift_v6_doc_chain(((const CoerceViaIO *) x)->arg, path);
 }
 
-/* the leaf of a member holds what the read converts: any of its numbers from float8, integers to an integer type at least as wide */
+/* the leaf of a member holds what the read converts: any of its numbers from float8, integers to an integer type at least as wide, the booleans of a bool leaf to bool */
 static bool
 member_leaf_reads(const SiftV6Rel *rel, int leaf, Oid typid)
 {
 	const SiftColDef *d = &sift_v6_rel_leaves(rel)->cols[leaf];
 
+	if (typid == BOOLOID)
+		return d->store == SIFT_COLS_INT && d->type == SIFT_COLT_BOOL;
 	return d->store == SIFT_COLS_F8 || (is_int_type(typid) && int_leaf_fits(d, typid));
 }
 
@@ -891,19 +893,21 @@ text_cast_in(Oid typid)
 	}
 }
 
-/* the cast of a jsonb to an integer: of a number only, rounded half away from zero as numeric is, raising for one the type cannot hold */
+/* the cast of a jsonb to bool (of a boolean only) or to an integer (of a number only, rounded half away from zero as numeric is, raising for one the type cannot hold) */
 static SiftV6JsonExc
-jsonb_int_read(Oid typid, const char *payload, uint32 len, Datum *out)
+jsonb_scalar_read(Oid typid, const char *payload, uint32 len, Datum *out)
 {
 	Jsonb	   *jb = memcpy(palloc(len), payload, len);
 	JsonbValue	jv;
 	bool		err = false;
 	int64		v;
 
-	if (!JsonbExtractScalar(&jb->root, &jv) || (jv.type != jbvNumeric && jv.type != jbvNull))
+	if (!JsonbExtractScalar(&jb->root, &jv) || (jv.type != (typid == BOOLOID ? jbvBool : jbvNumeric) && jv.type != jbvNull))
 		return SV6JX_RAISES;
 	if (jv.type == jbvNull)
 		return SV6JX_NULL;
+	if (typid == BOOLOID)
+		return (*out = BoolGetDatum(jv.val.boolean), SV6JX_VALUE);
 	v = sift_numeric_int8(jv.val.numeric, &err);
 	if (err || (typid == INT4OID && (v < PG_INT32_MIN || v > PG_INT32_MAX)) || (typid == INT2OID && (v < PG_INT16_MIN || v > PG_INT16_MAX)))
 		return SV6JX_RAISES;
@@ -923,6 +927,8 @@ jsonb_cast_fn(Oid typid)
 			return jsonb_int4;
 		case INT8OID:
 			return jsonb_int8;
+		case BOOLOID:
+			return jsonb_bool;
 		default:
 			return jsonb_float8;
 	}
@@ -939,7 +945,7 @@ sift_v6_json_exception_read(Oid typid, bool jsonb_cast, const char *payload, uin
 
 	if (jsonb_cast && typid != FLOAT8OID)
 	{
-		res = jsonb_int_read(typid, payload, len, &out->value);
+		res = jsonb_scalar_read(typid, payload, len, &out->value);
 		MemoryContextSwitchTo(old);
 		return res;
 	}

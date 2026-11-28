@@ -83,6 +83,22 @@ SELECT * FROM check_query('integer path, out of range', $q$SELECT (doc -> 'k')::
 INSERT INTO idocs VALUES (-3, '{"k": "7"}');
 SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
 FROM (VALUES ($q$SELECT (doc -> 'k')::int8 AS k, count(*) AS n FROM idocs WHERE id <> -2 GROUP BY 1$q$)) v(q);
+-- a bool path: its leaf holds the booleans, a JSON null casts as PostgreSQL's does, and a value of another JSON type raises. The leaf's values are read with
+-- the exceptions of their rows, which a Format 2 store keeps
+DO $$ BEGIN
+	IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN
+		PERFORM set_config('sift.test_create_format1', 'off', false);
+	END IF;
+END $$;
+CREATE TABLE bdocs (id int, doc jsonb);
+INSERT INTO bdocs SELECT i, CASE i % 4 WHEN 0 THEN '{"ok": null}'::jsonb WHEN 1 THEN '{}'::jsonb ELSE jsonb_build_object('ok', i % 3 = 0) END FROM generate_series(1, 20000) i;
+CREATE INDEX bdocs_col ON bdocs USING sift_col (id, doc) WITH (paths = 'doc.ok bool');
+VACUUM (FREEZE, ANALYZE) bdocs;
+SELECT * FROM check_query('bool path', $q$SELECT count(*) AS n, sum(id) AS s FROM bdocs WHERE (doc -> 'ok')::bool$q$, true);
+SELECT * FROM check_query('bool path, grouped', $q$SELECT (doc -> 'ok')::bool AS ok, count(*) AS n FROM bdocs GROUP BY 1$q$, true);
+INSERT INTO bdocs VALUES (-1, '{"ok": "yes"}');
+SELECT runs_in_scan(q) = (current_setting('server_version_num')::int >= 180000) AS scan, outcome(q, true) AS raised, outcome(q, false) = outcome(q, true) AS same
+FROM (VALUES ($q$SELECT count(*) AS n FROM bdocs WHERE (doc -> 'ok')::bool$q$)) v(q);
 DROP FUNCTION check_query(text, text, bool, bool), outcome(text, bool), runs_in_scan(text);
-DROP TABLE docs, dim_b, late, tdocs, idocs;
+DROP TABLE docs, dim_b, late, tdocs, idocs, bdocs;
 DROP EXTENSION pg_sift;
