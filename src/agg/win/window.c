@@ -18,6 +18,8 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
+
+#include "agg/refuse.h"
 #include "utils/tuplestore.h"
 
 #include "agg/safety.h"
@@ -566,6 +568,17 @@ window_try(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, con
 	return collect_funcs(&p, wc) && run_condition(&p) && window_finish(&p, mode == WIN_REGROUP ? NIL : root->window_pathkeys, input_rel->rows);
 }
 
+/* a window function of the statement is cut by a condition on it (WHERE rn <= N): the first rows of each group are asked */
+static bool
+cut_asked(const RelOptInfo *output_rel)
+{
+	bool		cut = false;
+
+	foreach_ptr(Node, e, output_rel->reltarget->exprs)
+		cut |= IsA(e, WindowFunc) && ((const WindowFunc *) e)->runCondition != NIL;
+	return cut;
+}
+
 static void
 window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 {
@@ -574,8 +587,14 @@ window_path(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel)
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!q->hasWindowFuncs || list_length(q->windowClause) != 1 || q->distinctClause != NIL)
+	if (!q->hasWindowFuncs || q->distinctClause != NIL)
 		return;
+	if (list_length(q->windowClause) != 1)
+	{
+		if (cut_asked(output_rel))
+			sift_agg_arm_refused_by("window", AGG_REFUSE_WINDOW_FIRST, "the sub-select has another window function");
+		return;
+	}
 	wc = linitial(q->windowClause);
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)

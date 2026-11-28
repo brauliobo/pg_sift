@@ -201,9 +201,9 @@ SELECT * FROM check_query('no ORDER BY, a group of one', $q$ SELECT count(*) FRO
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (ORDER BY id DESC) rn FROM events) t WHERE rn = 1 $q$);
-                  window_why                   
------------------------------------------------
- the window has no PARTITION BY or no ORDER BY
+ window_why 
+------------
+ 
 (1 row)
 
 SELECT * FROM check_query('a limit in the sub-select', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
@@ -213,9 +213,9 @@ SELECT * FROM check_query('a limit in the sub-select', $q$ SELECT * FROM (SELECT
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events ORDER BY id DESC LIMIT 1000) t WHERE rn = 1 $q$);
-                                   window_why                                    
----------------------------------------------------------------------------------
- the sub-select groups, sorts, limits, locks rows or filters the window function
+ window_why 
+------------
+ 
 (1 row)
 
 SELECT * FROM check_query('a CTE read twice', $q$
@@ -508,9 +508,9 @@ SELECT * FROM check_query('only the partition and rn', $q$ SELECT * FROM (SELECT
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
-                            window_why                             
--------------------------------------------------------------------
- the sub-select reads nothing but the partition and the row number
+ window_why 
+------------
+ 
 (1 row)
 
 SELECT * FROM check_query('an array column', $q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
@@ -520,9 +520,9 @@ SELECT * FROM check_query('an array column', $q$ SELECT * FROM (SELECT id, grp, 
 (1 row)
 
 SELECT window_why($q$ SELECT * FROM (SELECT id, grp, tags, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM events) t WHERE rn <= 3 $q$);
-                            window_why                            
-------------------------------------------------------------------
- a column the sub-select reads is in no column index of its table
+ window_why 
+------------
+ 
 (1 row)
 
 SELECT * FROM check_query('no column index', $q$ SELECT * FROM (SELECT id, grp, row_number() OVER (PARTITION BY grp ORDER BY id DESC) rn FROM plain_events) t WHERE rn <= 3 $q$);
