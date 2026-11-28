@@ -1,0 +1,34 @@
+-- A WHERE on a numeric column of the table beside the unnest of its documents is a qual of the batches PostgreSQL's own functions decide over the numeric datums: the scan of the unnest over
+-- Format 1 reads the column as datums (a NaN and a value of any digits are what they are) and gives the rows of the normal plan, on an index and on a sift_table, instead of refusing at execution.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
+SET max_parallel_workers_per_gather = 0;
+SET jit = off;
+
+\ir test/common/sql/agg/base.sql
+
+CREATE TABLE nq (id int, num numeric(12,2), doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO nq SELECT i, CASE WHEN i % 97 = 0 THEN NULL ELSE (i % 1000) + (i % 7) / 4.0 END,
+	jsonb_build_object('parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || ((i + k) % 4), 'score', (i * k) % 5)) FROM generate_series(1, 1 + i % 3) k))
+FROM generate_series(1, 3000) i;
+INSERT INTO nq VALUES (9001, 'NaN', '{"parts": [{"cat": "cat_9", "score": 1}]}'), (9002, 802, '{"parts": [{"cat": "cat_8", "score": 2}]}'), (9003, 801.99, '{"parts": [{"cat": "cat_8"}]}');
+CREATE INDEX nq_col ON nq USING sift_col (id, num, doc) WITH (paths = 'doc.parts[]{cat text, score float8}');
+CREATE TABLE nq_t (LIKE nq) USING sift_table WITH (autovacuum_enabled = false);
+SELECT sift.table_set_paths('nq_t', 'doc', 'doc.parts[]{cat text, score float8}');
+INSERT INTO nq_t SELECT * FROM nq;
+VACUUM (FREEZE, ANALYZE) nq, nq_t;
+
+CREATE TABLE q (n int, sql text);
+INSERT INTO q VALUES
+	(1, $$SELECT o.cat, count(*) FROM %s e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, score float8) WHERE e.num >= 802 GROUP BY 1$$),
+	(2, $$SELECT o.cat, count(DISTINCT e.id), sum(o.score) FROM %s e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, score float8) WHERE e.num < 10.5 GROUP BY 1$$),
+	(3, $$SELECT o.cat, count(*) FROM %s e CROSS JOIN LATERAL jsonb_to_recordset(e.doc -> 'parts') o(cat text, score float8) WHERE e.num > 990 AND e.id > 100 GROUP BY 1$$),
+	(4, $$SELECT count(*), min(e.num) FROM %s e CROSS JOIN LATERAL jsonb_array_elements(e.doc -> 'parts') p WHERE e.num BETWEEN 801.99 AND 802$$);
+SELECT q.n, t.rel, left(outcome(format(q.sql, t.rel), true), 60) AS scan, outcome(format(q.sql, t.rel), false) = outcome(format(q.sql, t.rel), true) AS same,
+	runs_in_scan(format(q.sql, t.rel)) AS pushed
+FROM q, (VALUES ('nq'), ('nq_t')) t(rel) ORDER BY 1, 2;
+
+DROP TABLE q, nq, nq_t;
+DROP FUNCTION runq(text, bool), pushed(text), outcome(text, bool), runs_in_scan(text);
+DROP EXTENSION pg_sift;

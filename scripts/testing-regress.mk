@@ -192,6 +192,7 @@ TESTING_REGRESS += agg/two_level_rows_consolidated
 TESTING_REGRESS += agg/two_level_rows_consolidated_2
 TESTING_REGRESS += agg/unnest_heap_row_mem
 TESTING_REGRESS += agg/unnest_int_cast_scale_f1
+TESTING_REGRESS += agg/unnest_numeric_qual_f1
 TESTING_REGRESS += agg/vis_counts
 TESTING_REGRESS += agg/vk/churn
 TESTING_REGRESS += agg/vk/dict

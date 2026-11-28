@@ -14,10 +14,12 @@
 #include "col/v1_engine/store_ops_unnest.h"
 #include "core/popcount.h"
 
-/* the vector a column of the table is read as: a numeric as the scaled integers its leaf holds */
+/* the vector a column of the table is read as: a numeric as the scaled integers its leaf holds, or as datums when the plan reads it so (a PostgreSQL qual of the batches) */
 static SiftVecType
 col_vec_type(const UnCol *c)
 {
+	if (c->scale == SIFT_V6_SCALE_DATUM)
+		return SVEC_DATUM;
 	return c->typid == NUMERICOID ? SVEC_NUM64 : un_vec_type(c->cls);
 }
 
@@ -55,11 +57,11 @@ sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *col, bool month)
 	cls = sift_v6_class(c->typid);
 	presence = c->jtype && c->typid == BOOLOID;
 	attno = presence ? sift_v6_col_input_attno(c) : c->jleaf > 0 ? SIFT_V6_JLEAF_VATT + c->jleaf - 1 : c->attno;
-	if ((c->jtype && !presence) || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE || (c->typid == NUMERICOID && c->scale == SIFT_V6_SCALE_DATUM))
+	if ((c->jtype && !presence) || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the aggregate scan of an unnest over Format 1 reads no column of type %u", c->typid),
 						errhint("Group by and aggregate integer, numeric, date, timestamp, float8 or text columns of the table that is unnested.")));
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].attno == attno && u->cols[i].month == month)
+		if (u->cols[i].attno == attno && u->cols[i].month == month && u->cols[i].scale == c->scale)
 			return i;
 	if (u->ncols == SIFT_V6_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_V6_MAX_COLS),
