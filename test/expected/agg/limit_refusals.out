@@ -55,9 +55,10 @@ SELECT slug, class FROM sift.refusal_slugs() ORDER BY slug;
  other        | semantic
  scope        | semantic
  topn_shape   | semantic
+ two_arms     | semantic
  where        | semantic
  window_first | semantic
-(13 rows)
+(14 rows)
 
 SELECT count(*) = count(*) FILTER (WHERE a.action <> '' AND a.action IS NOT NULL) AS every_slug_has_an_action FROM sift.refusal_slugs() LEFT JOIN sift.refusal_actions() a USING (slug);
  every_slug_has_an_action 
