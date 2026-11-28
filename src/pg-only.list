@@ -707,6 +707,7 @@ col/v1_engine/gorder_cursor.c
 col/v1_engine/gorder_cursor.h
 col/v1_engine/store_card.c
 col/v1_engine/store_ops_bridge.c
+col/v1_engine/store_ops_dict_count.c
 col/v1_engine/store_ops_ext.c
 col/v1_engine/store_ops_heap.c
 col/v1_engine/store_ops_hybrid.c

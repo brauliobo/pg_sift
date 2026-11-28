@@ -9,6 +9,7 @@
 
 #include "col/am.h"
 #include "col/col.h"
+#include "col/v1/pagg.h"
 #include "col/v1/src_zone.h"
 #include "col/v1/reader_int.h"
 #include "core/memtrack.h"
@@ -316,6 +317,23 @@ idx_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim), r->hcx, NULL, NULL, need, &r->hdict, h);
 }
 
+static const void *
+idx_unit_seg(void *impl, const SiftSrcUnit *unit)
+{
+	SiftColSegment *seg;
+	uint32		u;
+
+	return sift_col_unit_stored(&((SiftV1Idx *) impl)->unit, &seg, &u) ? seg : NULL;
+}
+
+static bool
+idx_seg_count(void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *rows)
+{
+	SiftV1Idx  *r = impl;
+
+	return !r->sel.compact && sift_col_unit_seg_count(&r->unit, leaf, op, c, rows);
+}
+
 const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
@@ -339,5 +357,7 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.tids = sift_v1_idx_tids,
 	.unit_rows = idx_unit_rows,
 	.unit_agg = idx_unit_agg,
-	.unit_hist = idx_unit_hist
+	.unit_hist = idx_unit_hist,
+	.unit_seg = idx_unit_seg,
+	.seg_count = idx_seg_count
 };

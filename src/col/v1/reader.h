@@ -58,6 +58,10 @@ typedef struct SiftV1ReaderOps
 	bool		(*unit_agg) (void *impl, const SiftSrcUnit *unit, int leaf, SiftSrcUnitAgg *agg);
 	/* GROUP BY dim over a unit unit_rows answers for, with the measures need names; the arrays live until the next call; false when the unit holds no histogram of dim or lacks a measure */
 	bool		(*unit_hist) (void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupNeed *need, SiftSrcHist *h);
+	/* the stored segment the unit is of (NULL: a unit of memory, or a reader with no segments), and count(*) of the rows of that segment whose string of leaf passes op against c,
+	 * from the row counts of its dictionary, when every unit of it is exact; false: the segment is read */
+	const void *(*unit_seg) (void *impl, const SiftSrcUnit *unit);
+	bool		(*seg_count) (void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *rows);
 } SiftV1ReaderOps;
 
 extern const SiftV1ReaderOps sift_v1_idx_reader;

@@ -30,6 +30,9 @@ extern bool sift_col_unit_dead_hist(const SiftColUnit *unit, SiftCHistDim *h);
 extern bool sift_col_unit_dead_rollup(const SiftColUnit *unit, SiftCRollup *r);
 extern bool sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *ndead, uint32 *nnull, SiftCLeafAgg *la);
 
+/* count(*) of a test of a string leaf over the stored segment of the unit, from the row counts of its dictionary, when every unit of the segment is exact (col/v1/scan/unit.c) */
+extern bool sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows);
+
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);
 

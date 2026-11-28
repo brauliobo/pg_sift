@@ -543,6 +543,28 @@ sift_col_unit_exact(const SiftColUnit *unit)
 	return sift_col_unit_allvisible(unit);
 }
 
+/*
+ * The rows of the stored segment of the unit whose string of leaf col passes op against c, from the row counts of its dictionary (option count_columns): every unit of the
+ * segment exact (every page all-visible by the page masks of its summary, then the directory current, then no dead row or exception), as the pre-aggregates of a unit want. false: the
+ * segment is read.
+ */
+bool
+sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows)
+{
+	ColUnit    *cu = unit->priv;
+	SiftColSource *src = cu->src;
+	SiftColSegment *seg = cu->seg;
+	uint64		pm[SIFT_PAGEMASK_WORDS];
+
+	if (seg == NULL || src->sx_on || (src->flags & COLO_TABLE) || !sift_cseg_dict_counted(seg, col))
+		return false;
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (!sift_cseg_unit_pagemask(seg, u, pm) || (sift_cseg_keyed(&seg->entry) ? !col_range_allvisible(src, seg, (uint32) pm[0], (uint32) (pm[0] >> 32)) :
+													  !col_sb_covers(src, seg, sift_cseg_unit_sb(seg, u), NULL, pm)))
+			return false;
+	return segments_current(src) && !sift_cseg_dirty_any(seg, 0, seg->nsb) && sift_cseg_dict_count(seg, col, op, c, rows);
+}
+
 /* ---------- pre-aggregates (col/v1/pagg.c, docs/COL-PREAGG.md) ---------- */
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */
