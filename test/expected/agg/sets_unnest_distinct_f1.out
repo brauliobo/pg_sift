@@ -56,7 +56,7 @@ SELECT su_scan($q$SELECT count(DISTINCT id) AS orders, sum(n) AS n, max(q) AS q
 		  UNION ALL SELECT o.id, NULL, count(*), sum(i.qty) FROM su_orders o CROSS JOIN LATERAL jsonb_to_recordset(o.items) AS i(kind text, qty int) GROUP BY 1) x$q$) AS arms_scan;
  arms_scan 
 -----------
- f
+ t
 (1 row)
 
 RESET seq_page_cost;
