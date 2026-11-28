@@ -4,6 +4,11 @@
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_test;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run): the scope node reads Format 2 indexes.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET jit = off;
 SET sift.agg_force = on;
 
