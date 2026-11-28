@@ -70,8 +70,13 @@ extern void sift_agg_arm_refused_by_shape(const char *arm, AggRefusal why, const
 extern bool sift_agg_arms_noted(void);
 
 extern void agg_explain_begin(void);
-/* The statement EXPLAIN (SIFT) explains is planned (its outermost planning ended): the arms it priced join its refusals, and what it plans while it runs is not its own */
-extern void agg_explain_planned(void);
+/* the outermost planning of a statement begins: with sift.explain_refusals or sift.count_refusals its arms are reported when it ends (agg_explain_planned) */
+extern void agg_refusals_begin(void);
+/*
+ * The statement EXPLAIN (SIFT) explains is planned (its outermost planning ended, ps its plan; NULL: none): the arms it priced join its refusals, and what it plans while it runs is not its
+ * own. With sift.explain_refusals or sift.count_refusals they are reported now.
+ */
+extern void agg_explain_planned(const struct PlannedStmt *ps);
 extern List *agg_explain_take(void);
 extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);
 

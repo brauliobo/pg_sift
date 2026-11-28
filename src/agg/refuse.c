@@ -52,7 +52,8 @@ static List *explained;
 static MemoryContext explain_cx;			/* the context of the EXPLAIN statement: it holds explained until the plan is printed */
 static Tuplestorestate *why_store;
 static TupleDesc why_desc;
-static MemoryContext why_cx;				/* the context of the sift.explain_why call: it holds the arms of the statement it plans */
+static bool noticing = false;			/* sift.explain_refusals or sift.count_refusals: the arms of the statement being planned are reported when its planning ends */
+static MemoryContext arms_cx;				/* the context that holds the arms of the statement being planned: of the EXPLAIN or sift.explain_why call, or of the planning */
 
 /* an arm of the aggregate that priced a path for the statement sift.explain_why plans: the cheapest of its paths, of the normal plan beside it, and whether the plan takes it */
 typedef struct ArmPrice
@@ -145,7 +146,7 @@ sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan
 static bool
 noting_arms(void)
 {
-	return why_store != NULL || explaining;
+	return why_store != NULL || explaining || noticing;
 }
 
 static ArmPrice *
@@ -157,7 +158,7 @@ arm_of(const char *name)
 	foreach_ptr(ArmPrice, x, arms)
 		if (strcmp(x->name, name) == 0)
 			return x;
-	old = MemoryContextSwitchTo(why_store != NULL ? why_cx : explain_cx);
+	old = MemoryContextSwitchTo(arms_cx);
 	a = palloc(sizeof(ArmPrice));
 	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE, NULL, false};
 	arms = lappend(arms, a);
@@ -219,7 +220,7 @@ arm_refused(const char *arm, AggRefusal why, const char *detail, bool of_shape)
 	if (a->why != AGG_REFUSE_NONE && (of_shape || !a->of_shape))
 		return;
 	a->why = why;
-	a->detail = detail != NULL ? MemoryContextStrdup(why_cx, detail) : NULL;
+	a->detail = detail != NULL ? MemoryContextStrdup(arms_cx, detail) : NULL;
 	a->of_shape = of_shape;
 }
 
@@ -261,20 +262,26 @@ arm_why(const ArmPrice *a)
  * uses the arm: what a planning of another form of the statement (agg/plan/cte.c) refused is not about it
  */
 static void
+why_scope_used(const PlannedStmt *ps)
+{
+	if (sift_v6_scope_planned(ps))
+		foreach_ptr(ArmPrice, x, arms)
+			if (strcmp(x->name, "scope") == 0)
+				x->used = true;
+}
+
+static void
 why_scope_placed(const PlannedStmt *ps)
 {
 	const char *why = sift_v6_scope_placed(ps);
 	ArmPrice   *a;
 
-	if (sift_v6_scope_planned(ps))
-		foreach_ptr(ArmPrice, x, arms)
-			if (strcmp(x->name, "scope") == 0)
-				x->used = true;
+	why_scope_used(ps);
 	if (why == NULL)
 		return;
 	a = arm_of("scope");
 	a->why = AGG_REFUSE_SCOPE;
-	a->detail = MemoryContextStrdup(why_cx, why);
+	a->detail = MemoryContextStrdup(arms_cx, why);
 }
 
 /* the row of the scope arm when no site of the planner named why the statement reads no scope summary */
@@ -311,18 +318,30 @@ agg_explain_begin(void)
 {
 	explaining = true;
 	explained = NIL;
-	explain_cx = CurrentMemoryContext;
+	explain_cx = arms_cx = CurrentMemoryContext;
 	set_explain_refusals();
 }
 
 void
-agg_explain_planned(void)
+agg_refusals_begin(void)
 {
-	if (!explaining)
+	if (explaining || why_store != NULL || !(notice_refusals || count_refusals))
 		return;
+	noticing = true;
+	arms = NIL;
+	arms_cx = CurrentMemoryContext;
+}
+
+void
+agg_explain_planned(const PlannedStmt *ps)
+{
+	if (!explaining && !noticing)
+		return;
+	if (ps != NULL)
+		why_scope_used(ps);
 	why_arms();
 	arms = NIL;
-	explaining = false;
+	explaining = noticing = false;
 	set_explain_refusals();
 }
 
@@ -332,7 +351,7 @@ agg_explain_take(void)
 {
 	List	   *notes;
 
-	agg_explain_planned();
+	agg_explain_planned(NULL);
 	notes = explained;
 	explained = NIL;
 	return notes;
@@ -343,7 +362,7 @@ static void
 forget_arms(void)
 {
 	explained = NIL;
-	explaining = false;
+	explaining = noticing = false;
 	arms = NIL;
 	set_explain_refusals();
 }
@@ -631,7 +650,7 @@ sift_agg_explain_why(PG_FUNCTION_ARGS)
 	{
 		why_store = rsi->setResult;
 		why_desc = rsi->setDesc;
-		why_cx = CurrentMemoryContext;
+		arms_cx = CurrentMemoryContext;
 		arms = NIL;
 		sift_explain_refusals = true;
 		if (IsA(raw->stmt, ExecuteStmt))

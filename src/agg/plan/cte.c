@@ -364,9 +364,11 @@ agg_planner(SIFT_PLANNER_PARAMS)
 
 	PG_TRY();
 	{
+		if (col_plan)
+			agg_refusals_begin();
 		stmt = plan_statement(SIFT_PLANNER_ARGS(parse));
 		if (col_plan)
-			agg_explain_planned();
+			agg_explain_planned(stmt);
 	}
 	PG_FINALLY();
 	{

@@ -519,7 +519,8 @@ sift_v6_compile_quals(V6Plan *p)
 			continue;
 		if (!compile_clause(p, &rel, ri))
 		{
-			sift_agg_arm_refused("single", AGG_REFUSE_WHERE);
+			p->why = AGG_REFUSE_WHERE;
+			p->why_at = (Node *) ri->clause;
 			return false;
 		}
 	}

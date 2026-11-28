@@ -800,10 +800,8 @@ fact_ok(PlannerInfo *root, RelOptInfo *rel)
 static void
 scope_refuse(const char *why, bool of_shape)
 {
-	if (why != NULL && sift_agg_arms_noted())
+	if (why != NULL)
 		(of_shape ? sift_agg_arm_refused_by_shape : sift_agg_arm_refused_by) ("scope", AGG_REFUSE_SCOPE, why);
-	else if (why != NULL)
-		sift_agg_refuse("scope", AGG_REFUSE_SCOPE, why, 0, -1);
 }
 
 void
