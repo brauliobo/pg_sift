@@ -625,6 +625,8 @@ extern void sift_scope_columns(Relation index, const char *key_name, int *kept, 
 /* The groups (via values) the joined relation lists under snap for the keys (sorted, distinct), of a scope of two paths */
 extern int64 *sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapshot snap, const int64 *keys, uint32 nkeys, uint32 *n);
 extern int64 *sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
+/* The pairs (member, key) with one of the keys under snap (keys NULL: with any), ascending by member then key, each once */
+extern SiftScopePair *sift_scope_key_pairs(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n);
 /* The map of the codes of the scope key (NULL for an integer key): one for each statement that reads the scope, which every key, pair and group of the read goes through (col/scope/keys.c) */
 extern SiftKeyMap *sift_scope_keymap(Relation heap, Relation index, const char *key_name);
 /* The code of a value of a scope key column (an integer, or a text, varchar or uuid value as the code of km), the value of a code, and the scan key of a btree on the column for a value (col/scope/keys.c) */

@@ -19,6 +19,7 @@
 #include "col/f2/scope/spool.h"
 #include "col/scope/scope.h"
 #include "core/memtrack.h"
+#include "core/store/ops.h"
 
 bool
 sift_f2s_int_type(Oid type)
@@ -291,27 +292,40 @@ sift_f2s_load_pairs(Relation heap, Relation index, const SiftF2ScopeCfg *sc, Sna
 	return pm;
 }
 
-/* The members of the pairs of one scope key as the snapshot sees them, ascending, as values of the member column (the codes of a string member decoded): the pairs of the declaration, its predicates and both of its paths included */
-ArrayType *
-sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, SiftKeyMap *km, int64 key, Oid member_type, uint32 *n)
+/* How many of the keys the pairs give the member */
+static uint32
+owned_keys(const SiftScopePairMap *pm, int64 member, const int64 *keys, uint32 nkeys)
+{
+	uint32		c = 0;
+
+	for (uint32 k = 0; k < nkeys; k++)
+		c += sift_spm_owns_key(pm, member, keys[k]);
+	return c;
+}
+
+/* The members of the pairs of the scope keys as the snapshot sees them, ascending, as values of the member column (the codes of a string member decoded), and how many of the keys each has a pair
+ * with: the pairs of the declaration, its predicates and both of its paths included */
+void
+sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, SiftKeyMap *km, const int64 *keys, uint32 nkeys, Oid member_type, SiftScopeMembers *out)
 {
 	SiftF2ScopeCfg sc;
 	SiftScopePairMap *pm;
 	SiftKeyMap *mm;
-	Datum	   *vals;
-	int16		len;
-	bool		byval;
-	char		align;
 
 	sift_f2s_cfg(index, sift_f2_store_open(index), ord, &sc);
 	pm = sift_f2s_load_pairs(heap, index, &sc, snap, km, false);
 	mm = sift_f2s_mem_map(sc.mem);
-	vals = palloc(Max(pm->nmembers, 1) * sizeof(Datum));
-	*n = 0;
+	out->member = palloc(Max(pm->nmembers, 1) * sizeof(Datum));
+	out->nkeys = palloc(Max(pm->nmembers, 1) * sizeof(uint32));
+	out->n = 0;
 	for (uint32 i = 0; i < pm->nmembers; i++)
-		if (sift_spm_owns_key(pm, pm->member_ids[i], key))
-			vals[(*n)++] = sift_scope_key_datum(member_type, mm, pm->member_ids[i]);
+	{
+		const uint32 c = owned_keys(pm, pm->member_ids[i], keys, nkeys);
+
+		if (c == 0)
+			continue;
+		out->member[out->n] = sift_scope_key_datum(member_type, mm, pm->member_ids[i]);
+		out->nkeys[out->n++] = c;
+	}
 	sift_spm_free(pm);
-	get_typlenbyvalalign(member_type, &len, &byval, &align);
-	return construct_array(vals, (int) *n, member_type, len, byval, align);
 }

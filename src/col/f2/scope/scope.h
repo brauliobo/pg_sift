@@ -17,11 +17,13 @@
 /* The map of the codes of the key of scope ord (a text, varchar or uuid key; NULL for an integer key), the reader's own for a statement: made in the current memory context */
 extern SiftKeyMap *sift_f2_scope_keymap(Relation rel, int ord);
 
+struct SiftScopeMembers;
+
 /* The scopes the relation declares, and whether it declares any */
 extern int	sift_f2_nscopes(Relation rel);
-/* The members of the pairs of scope ord of the index for the scope key, as the snapshot sees them: an array of the member column's type (member_type); *n how many. key is a code of km,
- * the map the reader coded it with (NULL for an integer key): the codes of a key no store holds are the map's own */
-extern ArrayType *sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, SiftKeyMap *km, int64 key, Oid member_type, uint32 *n);
+/* The members of the pairs of scope ord of the index for the scope keys, as the snapshot sees them: values of the member column's type (member_type), with how many of the keys each has. keys
+ * (ascending, distinct) are codes of km, the map the reader coded them with (NULL for an integer key): the codes of a key no store holds are the map's own */
+extern void sift_f2s_key_members(Relation heap, Relation index, int ord, Snapshot snap, SiftKeyMap *km, const int64 *keys, uint32 nkeys, Oid member_type, struct SiftScopeMembers *out);
 extern bool sift_f2_scoped(Relation rel);
 
 /* Does a scope of the index read one of the leaves: a column delta that patches none of them leaves every summary as it is */

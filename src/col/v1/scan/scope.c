@@ -520,14 +520,30 @@ sift_scope_groups(Relation heap, Relation index, int ord, SiftKeyMap *km, Snapsh
 	return groups;
 }
 
-int64 *
-sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+static ScopePairs
+key_pairs(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys)
 {
 	uint32		nk;
 	int64	   *sorted = sorted_keys(keys, nkeys, &nk);
-	ScopePairs	pairs = scope_pairs(heap, index, scope_ordinal_named(index, key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
+
+	return scope_pairs(heap, index, scope_ordinal_named(index, key_name), km, NULL, snap, sorted, nk, NULL, 0, 0);
+}
+
+int64 *
+sift_scope_members(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+{
+	ScopePairs	pairs = key_pairs(heap, index, key_name, km, snap, keys, nkeys);
 
 	return pair_values(&pairs, false, n);
+}
+
+SiftScopePair *
+sift_scope_key_pairs(Relation heap, Relation index, const char *key_name, SiftKeyMap *km, Snapshot snap, const int64 *keys, int nkeys, uint32 *n)
+{
+	ScopePairs	pairs = key_pairs(heap, index, key_name, km, snap, keys, nkeys);
+
+	*n = pairs.n;
+	return pairs.p;
 }
 
 /* ---- what the segments of the index say ---- */

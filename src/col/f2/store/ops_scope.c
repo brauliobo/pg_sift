@@ -2,6 +2,7 @@
  * col/f2/store/ops_scope.c - SiftScopeOps of format major 2: what the summary of a scope of an index or a sift_table keeps (col/f2/scope/scope.h) for the scope planner (agg/scope/plan.c), the
  * executor of the plans that read it (col/f2/agg/scope/run.c), the members of a key, and the router that keeps a scan to the granules of one scope key (f2_scope_route.h).
  */
+/* check-memory: allow-allocs the codes of the keys of one statement */
 #include "postgres.h"
 
 #include "catalog/pg_class_d.h"
@@ -11,6 +12,7 @@
 #include "col/f2/scope/route.h"
 #include "col/f2/store/ops_int.h"
 #include "col/f2/agg/scope/int.h"
+#include "core/cmp.h"
 
 StaticAssertDecl(SIFT_SCOPE_MEAS_CAP == SIFT_SCOPE_LAYOUT_MEAS, "the layout of a scope holds the measures of the summary");
 
@@ -41,16 +43,33 @@ scope_key_codes(Oid key_type, Oid typid)
 	return sift_keymap_same_kind(key_type, typid) || (sift_scope_word_type(key_type) && typid == key_type);
 }
 
-/* The members of a key and the granules of the key that its summary names (NULL when it cannot route) */
-static ArrayType *
-scope_key_members(Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, Datum key, Oid member_type, MemoryContext cx, uint32 *n,
+/* The codes of the keys, ascending and each once: what the pairs and the summary hold of them */
+static int64 *
+key_codes_of(Oid key_type, SiftKeyMap *km, const Datum *keys, int nkeys, uint32 *n)
+{
+	int64	   *codes = palloc(Max(nkeys, 1) * sizeof(int64));
+
+	*n = 0;
+	for (int i = 0; i < nkeys; i++)
+		codes[i] = sift_scope_key_code(key_type, km, keys[i]);
+	qsort(codes, nkeys, sizeof(int64), sift_cmp_i64);
+	for (int i = 0; i < nkeys; i++)
+		if (*n == 0 || codes[i] != codes[*n - 1])
+			codes[(*n)++] = codes[i];
+	return codes;
+}
+
+/* The members of the keys and the granules of the keys that the summary names (NULL when it cannot route) */
+static void
+scope_key_members(Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, const Datum *keys, int nkeys, Oid member_type, MemoryContext cx, SiftScopeMembers *out,
 				  const struct SiftScopeRouter **router)
 {
 	SiftKeyMap *km = sift_keymap_type(key_type) ? sift_f2_scope_keymap(rel, ord) : NULL;
-	const int64 code = sift_scope_key_code(key_type, km, key);
+	uint32		n;
+	const int64 *codes = key_codes_of(key_type, km, keys, nkeys, &n);
 
-	*router = sift_f2_scope_build_router(rel, ord, snap, &code, 1, km, cx);
-	return sift_f2s_key_members(heap, rel, ord, snap, km, code, member_type, n);
+	*router = sift_f2_scope_build_router(rel, ord, snap, codes, n, km, cx);
+	sift_f2s_key_members(heap, rel, ord, snap, km, codes, n, member_type, out);
 }
 
 static void

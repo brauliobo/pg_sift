@@ -173,11 +173,19 @@ typedef struct SiftScopeLayout
  * scan to, and the router that keeps a scan to the granules of that key (build_router: NULL when the summary cannot route). The paths are those of the planner of agg/scope/, which asks the
  * format what the scopes of a relation it owns keep: whether they can be read (readable), their number, the leaves of each, whether the rows where a column is NULL can leave its cubes
  * (excl_ok), whether a column orders a ring of newest rows (ring_col), whether a value of typid reads as a key of a key column of key_type (key_codes); exec runs the plans that read the
- * summary. The scan of the facts of the members of a key is the engine's (agg/scope/scan.c), over zone.scan_run with the members key_members gives a key (a value of key_type) under snap as an array of member_type,
+ * summary. The scan of the facts of the members of keys is the engine's (agg/scope/scan.c), over zone.scan_run with the members key_members gives the keys (values of key_type) under snap,
  * and the router of the granules that hold their facts (NULL: the scan reads every granule). A format that keeps no cubes leaves exec, excl_ok, ring_col and topk_paths NULL: the planner offers
  * the scan of the facts of the members of a key only; one that does not route leaves one_key, build_router and router_counts NULL.
  */
 struct CustomScanMethods;
+
+/* The members that have a pair with one of the keys of a read, each once as a value of the member column, and how many of those keys each has a pair with */
+typedef struct SiftScopeMembers
+{
+	uint32		n;
+	Datum	   *member;
+	uint32	   *nkeys;
+} SiftScopeMembers;
 
 typedef struct SiftScopeOps
 {
@@ -188,8 +196,8 @@ typedef struct SiftScopeOps
 	bool		(*ring_col) (Relation rel, int col);
 	bool		(*key_codes) (Oid key_type, Oid typid);
 	const struct CustomScanMethods *exec;
-	ArrayType  *(*key_members) (Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, Datum key, Oid member_type, MemoryContext cx, uint32 *n,
-								 const struct SiftScopeRouter **router);
+	void		(*key_members) (Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, const Datum *keys, int nkeys, Oid member_type, MemoryContext cx,
+								SiftScopeMembers *out, const struct SiftScopeRouter **router);
 	void		(*upper_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 	void		(*topk_paths) (PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel);
 	bool		(*one_key) (PlannerInfo *root, RelOptInfo *fact, RelOptInfo *pairs, IndexOptInfo *ix, AttrNumber fact_att, AttrNumber pairs_att, int *ord, Expr **key);

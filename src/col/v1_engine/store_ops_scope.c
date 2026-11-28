@@ -3,10 +3,10 @@
  * no cubes of a scope (exec NULL), so a join of the facts with the pairs of a key is the scan of the facts of the members the pairs give the key under the snapshot (agg/scope/scan.c), the
  * members read by the pairs reader of the scope (col/v1/scan/scope.c). Its scans are not routed: the granules of the facts hold the rows of every key (one_key and build_router NULL).
  */
+/* check-memory: allow-allocs the codes of the keys of one statement and their members */
 #include "postgres.h"
 
 #include "catalog/pg_class_d.h"
-#include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -52,23 +52,31 @@ scope_key_codes(Oid key_type, Oid typid)
 	return sift_conn_integer_type(key_type) && sift_conn_integer_type(typid);
 }
 
-/* The members the pairs give the key under snap, as an array of member_type */
-static ArrayType *
-scope_key_members(Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, Datum key, Oid member_type, MemoryContext cx, uint32 *n,
+/* The members the pairs give the keys under snap, as values of member_type, each with how many of the keys it has a pair with */
+static void
+scope_key_members(Relation heap, Relation rel, int ord, Snapshot snap, Oid key_type, const Datum *keys, int nkeys, Oid member_type, MemoryContext cx, SiftScopeMembers *out,
 				  const struct SiftScopeRouter **router)
 {
-	const int64 code = sift_scope_key_code(key_type, NULL, key);
-	int64	   *members = sift_scope_members(heap, rel, sift_scope_specs(rel)->s[ord]->key_name, NULL, snap, &code, 1, n);
-	Datum	   *vals = palloc(Max(*n, 1) * sizeof(Datum));
-	int16		len;
-	bool		byval;
-	char		align;
+	int64	   *codes = palloc(Max(nkeys, 1) * sizeof(int64));
+	uint32		n;
+	SiftScopePair *pairs;
 
-	for (uint32 i = 0; i < *n; i++)
-		vals[i] = sift_scope_key_datum(member_type, NULL, members[i]);
+	for (int i = 0; i < nkeys; i++)
+		codes[i] = sift_scope_key_code(key_type, NULL, keys[i]);
+	pairs = sift_scope_key_pairs(heap, rel, sift_scope_specs(rel)->s[ord]->key_name, NULL, snap, codes, nkeys, &n);
+	out->member = palloc(Max(n, 1) * sizeof(Datum));
+	out->nkeys = palloc(Max(n, 1) * sizeof(uint32));
+	out->n = 0;
+	for (uint32 i = 0; i < n; i++)
+	{
+		if (i == 0 || pairs[i].member != pairs[i - 1].member)
+		{
+			out->member[out->n] = sift_scope_key_datum(member_type, NULL, pairs[i].member);
+			out->nkeys[out->n++] = 0;
+		}
+		out->nkeys[out->n - 1]++;
+	}
 	*router = NULL;
-	get_typlenbyvalalign(member_type, &len, &byval, &align);
-	return construct_array(vals, (int) *n, member_type, len, byval, align);
 }
 
 static void

@@ -110,35 +110,45 @@ run_keys(ScopeScanState *st, int *n)
 	return vals;
 }
 
-/* The members of the keys, as the snapshot sees the pairs: the array the scan takes as the list of the member column. A member of several keys is listed once for each, which the list of
- * the scan holds as one; the granules of a single key are the router's */
-static ArrayType *
-key_members(ScopeScanState *st, EState *estate, const Datum *keys, int nkeys, const struct SiftScopeRouter **router)
+/* The members of the keys as the snapshot sees the pairs, and the granules of the keys when the format routes the scan: what each pass of the scan reads */
+static void
+key_members(ScopeScanState *st, EState *estate, const Datum *keys, int nkeys, SiftScopeMembers *m, const struct SiftScopeRouter **router)
 {
 	const Form_pg_attribute att = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1);
-	ArrayBuildState *acc = initArrayResult(att->atttypid, CurrentMemoryContext, false);
-	Size		total = 0;
 
+	*m = (SiftScopeMembers) {0};
 	*router = NULL;
-	for (int k = 0; k < nkeys; k++)
-	{
-		const struct SiftScopeRouter *r;
-		uint32		n = 0;
-		ArrayType  *m = st->ops->scope->key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->key_type, keys[k], att->atttypid, st->gcx, &n, &r);
-		Datum	   *vals;
-		bool	   *nulls;
-		int			nv;
+	if (nkeys == 0)
+		return;
+	st->ops->scope->key_members(st->heap, st->rel, st->spec->ord, estate->es_snapshot, st->key_type, keys, nkeys, att->atttypid, st->gcx, m, router);
+	sift_budget_check(m->n * (sizeof(Datum) + sizeof(uint32)), work_mem, "the members of the scope keys", "work_mem", NULL);
+	for (uint32 i = 0; i < m->n; i++)
+		st->members += m->nkeys[i];
+}
 
-		total += n;
-		sift_budget_check(total * sizeof(Datum), work_mem, "the members of the scope keys", "work_mem", NULL);
-		if (nkeys == 1)
-			*router = r;
-		deconstruct_array(m, att->atttypid, att->attlen, att->attbyval, att->attalign, &vals, &nulls, &nv);
-		for (int i = 0; i < nv; i++)
-			accumArrayResult(acc, vals[i], nulls[i], att->atttypid, CurrentMemoryContext);
-	}
-	st->members += total;
-	return DatumGetArrayTypeP(makeArrayResult(acc, CurrentMemoryContext));
+/* The members that have a pair with at least `pass` of the keys, as the array the scan takes as the list of the member column */
+static ArrayType *
+pass_members(ScopeScanState *st, const SiftScopeMembers *m, uint32 pass)
+{
+	const Form_pg_attribute att = TupleDescAttr(RelationGetDescr(st->rel), st->spec->member_col - 1);
+	Datum	   *vals = palloc(Max(m->n, 1) * sizeof(Datum));
+	int			n = 0;
+
+	for (uint32 i = 0; i < m->n; i++)
+		if (m->nkeys[i] >= pass)
+			vals[n++] = m->member[i];
+	return construct_array(vals, n, att->atttypid, att->attlen, att->attbyval, att->attalign);
+}
+
+/* The passes of the scan: one when a fact counts once (a semi join), else as many as the most keys a member has a pair with, the pass p reading the facts of the members of at least p of them */
+static uint32
+scan_passes(const ScopeScanState *st, const SiftScopeMembers *m)
+{
+	uint32		passes = Min(m->n, 1);
+
+	for (uint32 i = 0; i < m->n && !st->spec->once; i++)
+		passes = Max(passes, m->nkeys[i]);
+	return passes;
 }
 
 /* The share of the granules a scan of the members of keys reads: those of the keys when the format routes it, else all of them */
@@ -162,8 +172,8 @@ scan_members(ScopeScanState *st, EState *estate, ScanKey keys, ArrayType *member
 }
 
 /*
- * The facts of the members of the keys folded into the groups: one scan for a key, or for a semi join that counts a fact once whichever keys its member has; a join counts a fact once for each
- * pair of its member with the keys, so the facts of each key are folded into the same groups. The scans cost the plan's price of the granules they read: the join runs when it costs less.
+ * The facts of the members of the keys folded into the groups: a semi join counts a fact once whichever keys its member has, a join once for each pair of its member with the keys, which is a fact
+ * folded into the same groups by each pass whose members its member is among. The passes cost the plan's price of the granules the keys route to: the join runs when it costs less.
  */
 static void
 scan_run(ScopeScanState *st, EState *estate)
@@ -171,11 +181,9 @@ scan_run(ScopeScanState *st, EState *estate)
 	MemoryContext old = MemoryContextSwitchTo(estate->es_query_cxt);
 	ScanKey		keys = palloc((st->nkeys + 1) * sizeof(ScanKeyData));
 	Datum	   *scope_keys;
-	int			n,
-				nscans;
-	ArrayType **members;
-	const struct SiftScopeRouter **routers;
-	double		share = 0;
+	int			n;
+	SiftScopeMembers m;
+	uint32		passes;
 
 	st->started = true;
 	sift_v6_source_enter(st->rel, false, estate->es_snapshot);
@@ -186,20 +194,15 @@ scan_run(ScopeScanState *st, EState *estate)
 	st->group = sift_v6_group_new(st->v6, st->gcx, st->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor);
 	scope_keys = run_keys(st, &n);
 	st->nscope_keys = n;
-	nscans = n <= 1 || st->spec->once ? 1 : n;
-	members = palloc(nscans * sizeof(ArrayType *));
-	routers = palloc(nscans * sizeof(*routers));
-	for (int i = 0; i < nscans; i++)
-	{
-		members[i] = key_members(st, estate, nscans == 1 ? scope_keys : &scope_keys[i], nscans == 1 ? n : 1, &routers[i]);
-		share += n == 0 ? 0.0 : routed_share(st, routers[i]);
-	}
-	st->router = n == 1 ? routers[0] : NULL;
-	if (st->open + share * st->body + st->out > ((Plan *) linitial(((CustomScan *) st->css.ss.ps.plan)->custom_plans))->total_cost)
+	MemoryContextSwitchTo(st->gcx);
+	key_members(st, estate, scope_keys, n, &m, &st->router);
+	passes = scan_passes(st, &m);
+	if (st->open + passes * routed_share(st, st->router) * st->body + st->out > ((Plan *) linitial(((CustomScan *) st->css.ss.ps.plan)->custom_plans))->total_cost)
 		st->fallback = psprintf("join is cheaper for %d key%s", n, n == 1 ? "" : "s");
 	else
-		for (int i = 0; i < nscans; i++)
-			scan_members(st, estate, keys, members[i], routers[i]);
+		for (uint32 p = 1; p <= passes; p++)
+			scan_members(st, estate, keys, pass_members(st, &m, p), st->router);
+	MemoryContextSwitchTo(estate->es_query_cxt);
 	sift_v6_group_finish(st->group);
 	MemoryContextSwitchTo(old);
 }
