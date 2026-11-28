@@ -62,6 +62,9 @@
 #include "core/catname.h"
 
 
+/* the virtual attribute of a column of the index that an expression of the query is (its indexprs entry, index_exprs_as_columns): SIFT_V6_IXPR_VATT + the column, below SIFT_V6_JLEAF_VATT */
+#define SIFT_V6_IXPR_VATT	(1 << 13)
+
 /* The attribute of the host a column of the table is: the column of the index, or the attribute of the table; 0: the host does not hold it */
 static int
 host_attno(const V6Plan *p, AttrNumber attno)
@@ -135,6 +138,16 @@ sift_v6_plan_index(V6Plan *p, Relation irel)
 #endif
 }
 
+/* column att of the index, an expression of the query of type typid: what the index stored of it */
+static bool
+index_column(const V6Plan *p, int att, Oid typid, SiftV6Col *out)
+{
+	if (typid == NUMERICOID || !host_holds(p, att, sift_v6_class(typid)))
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = typid};
+	return true;
+}
+
 static bool
 column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 {
@@ -147,6 +160,8 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 	typid = getBaseType(v->vartype);
 	if (typid == NUMERICOID && !numeric_ok)
 		return false;
+	if (v->varattno > SIFT_V6_IXPR_VATT && v->varattno <= SIFT_V6_IXPR_VATT + INDEX_MAX_KEYS)
+		return index_column(p, v->varattno - SIFT_V6_IXPR_VATT, typid, out);
 	if (sift_v6_vatt_is_member(v->varattno))
 	{
 		*out = sift_v6_member_col(&p->spec, v->varattno);
@@ -231,21 +246,31 @@ index_expr_of(const V6Plan *p, const Expr *e, SiftV6Col *out)
 	int			k = 0;
 	const Oid	typid = exprType((const Node *) e);
 
-	if (p->index == NULL || p->index->indexprs == NIL || typid == NUMERICOID || sift_v6_class(typid) == SV6C_NONE)
+	if (p->index == NULL || p->index->indexprs == NIL || sift_v6_class(typid) == SV6C_NONE)
 		return false;
 	for (int i = 0; i < p->index->ncolumns; i++)
-	{
-		if (p->index->indexkeys[i] != 0)
-			continue;
-		if (equal(e, list_nth(p->index->indexprs, k++)))
-		{
-			if (!host_holds(p, i + 1, sift_v6_class(typid)))
-				return false;
-			*out = (SiftV6Col) {.attno = i + 1,.typid = typid};
-			return true;
-		}
-	}
+		if (p->index->indexkeys[i] == 0 && equal(e, list_nth(p->index->indexprs, k++)))
+			return index_column(p, i + 1, typid, out);
 	return false;
+}
+
+/* the calls (functions and operators) of e the index holds as expression columns, as virtual columns of the relation: the expressions the scan computes read the stored values, not the document they call */
+static Node *
+index_exprs_mutator(Node *n, V6Plan *p)
+{
+	SiftV6Col	col;
+
+	if (n == NULL)
+		return NULL;
+	if ((IsA(n, FuncExpr) || IsA(n, OpExpr)) && index_expr_of(p, (const Expr *) n, &col))
+		return (Node *) makeVar(p->rel->relid, (AttrNumber) (SIFT_V6_IXPR_VATT + col.attno), exprType(n), exprTypmod(n), exprCollation(n), 0);
+	return expression_tree_mutator(n, index_exprs_mutator, p);
+}
+
+static Expr *
+index_exprs_as_columns(V6Plan *p, Expr *e)
+{
+	return p->index == NULL || p->index->indexprs == NIL ? e : (Expr *) index_exprs_mutator((Node *) e, p);
 }
 
 /* An expression of the query that is the generation expression of a stored generated column of the table: the scan reads the column, which holds what the expression gives */
@@ -437,6 +462,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	Oid			restype;
 	int			at;
 
+	e = index_exprs_as_columns(p, e);
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);

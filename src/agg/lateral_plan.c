@@ -100,7 +100,7 @@ lift_columns(Node *n, Lift *l)
 /* the equalities that tie the sub-select's table to the relations before it, and the conditions of the table alone */
 typedef struct Ties
 {
-	List	   *keys;			/* the Var of the table of each equality */
+	List	   *keys;			/* the Var of the table of each equality; a sub-select the gates alone tie to the outer rows has the one key 1 (gate_key) */
 	List	   *probes;			/* the expression of the outer relations it is equal to, in the terms of the planner of the node */
 	List	   *colls;			/* the collation each equality compares by */
 	List	   *rest;
@@ -183,12 +183,25 @@ one_row_table(const Query *q)
 		!agg_node_may_raise((Node *) q->targetList) && !agg_node_may_raise((Node *) q->jointree) ? rte : NULL;
 }
 
+/* a sub-select that names the outer rows in its gates alone gives each row that passes them the same first row: the dimension of one key, 1, which the gated probe 1 finds */
+static void
+gate_key(Ties *t)
+{
+	Const	   *one = makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(1), false, true);
+
+	t->keys = list_make1(one);
+	t->probes = list_make1(copyObject(one));
+	t->colls = list_make1_oid(InvalidOid);
+}
+
 static bool
 split_ties(const Query *q, Ties *t)
 {
 	foreach_ptr(Node, qual, make_ands_implicit((Expr *) q->jointree->quals))
 		if (!tie_clause(t, qual))
 			return false;
+	if (t->keys == NIL && t->gates != NIL)
+		gate_key(t);
 	return t->keys != NIL && list_length(t->keys) <= SIFT_STAR_MAX_KEYS;
 }
 
@@ -210,7 +223,11 @@ unique_key(const RangeTblEntry *rte, const Ties *t)
 	const int	nkeys = Min(list_length(t->keys), SIFT_STAR_MAX_KEYS);
 
 	for (int k = 0; k < nkeys; k++)
+	{
+		if (!IsA(list_nth(t->keys, k), Var))
+			return false;
 		atts[k] = ((const Var *) list_nth(t->keys, k))->varattno;
+	}
 	return sift_v6_unique_key(rte->relid, nkeys, 0, atts, NULL);
 }
 
@@ -305,8 +322,8 @@ native_order(const RelOptInfo *lateral, const Ties *t, bool *heap)
 	{
 		bool		tie = false;
 
-		foreach_node(Var, key, t->keys)
-			tie |= key->varattno == ix->indexkeys[c];
+		foreach_ptr(Node, key, t->keys)
+			tie |= IsA(key, Var) && ((const Var *) key)->varattno == ix->indexkeys[c];
 		if (ix->indexkeys[c] == 0 || ix->reverse_sort[c] || ix->nulls_first[c] || tie != (c < nkeys))
 			return NULL;
 	}
@@ -376,9 +393,9 @@ dimension_query(const RelOptInfo *lateral, const Query *sub, const Ties *t, bool
 	q->targetList = visible_outputs(lateral, q, &junk);
 	q->jointree->quals = t->rest == NIL ? NULL : (Node *) make_ands_explicit(copyObject(t->rest));
 	q->limitCount = NULL;
-	foreach_node(Var, key, t->keys)
+	foreach_ptr(Expr, key, t->keys)
 	{
-		TargetEntry *te = makeTargetEntry((Expr *) copyObject((Node *) key), 0, psprintf("sift_key%d", ++k), false);
+		TargetEntry *te = makeTargetEntry((Expr *) copyObject(key), 0, psprintf("sift_key%d", ++k), false);
 
 		q->targetList = lappend(q->targetList, te);
 		keys = lappend(keys, te);
@@ -496,9 +513,9 @@ dimension_rel(PlannerInfo *root, const RelOptInfo *lateral, Index relid, Planner
 		col->varnullingrels = NULL;
 		add_column_to_pathtarget(target, (Expr *) col, 0);
 	}
-	foreach_node(Var, key, t->keys)
+	foreach_ptr(Node, key, t->keys)
 	{
-		Var		   *col = makeVar(relid, nvisible - list_length(t->keys) + k + 1, key->vartype, key->vartypmod, key->varcollid, 0);
+		Var		   *col = makeVar(relid, nvisible - list_length(t->keys) + k + 1, exprType(key), exprTypmod(key), exprCollation(key), 0);
 
 		add_column_to_pathtarget(target, (Expr *) col, 0);
 		out->key[k] = col;

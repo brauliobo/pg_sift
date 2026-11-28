@@ -4,7 +4,8 @@
  *   LEFT JOIN LATERAL (SELECT cols FROM dim d WHERE d.k = o.c [AND tests of dim alone] [ORDER BY ..] LIMIT 1) s ON true
  *
  * returns, for a row of o, the first row of dim with k = o.c, as the left join of o to `SELECT k, cols FROM dim` (one row for each k) on k = o.c does. A condition of the sub-select over the
- * relations before it alone (a gate) gives the row that fails it no row of dim: its probe is then NULL, which matches none. PostgreSQL has no plan of the sub-select that
+ * relations before it alone (a gate) gives the row that fails it no row of dim: its probe is then NULL, which matches none. A sub-select that only its gates tie to the outer rows has the
+ * one key 1: every row that passes them finds the first row of dim. PostgreSQL has no plan of the sub-select that
  * takes no parameter, so the dimension is planned here as a query of its own: its keys are the columns the equalities name, the rows of a key that dim repeats are cut to the first one (DISTINCT ON,
  * in the order of the sub-select, then of the table), and the plan stands for the relation of the sub-select in the plan of the node.
  *
