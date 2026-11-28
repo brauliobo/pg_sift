@@ -761,7 +761,9 @@ sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_pa
 	Cost		serial_total,
 				passes_extra;
 	double		passes = 1;
-	const double groups = (p->spec.nkeys == 0 ? 1.0 : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) * Max(p->spec.nsets, 1);
+	const double floor_groups = sift_v6_unnest_floor_groups(p, input_rows),
+				groups = (p->spec.nkeys == 0 ? 1.0 : floor_groups > 0 ? floor_groups : sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, input_rows)) *
+		Max(p->spec.nsets, 1);
 	const char *lack = format_lacks(p);
 
 	if (lack != NULL)

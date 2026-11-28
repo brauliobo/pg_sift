@@ -195,7 +195,7 @@ extern Relids sift_v6_plan_base_relids(PlannerInfo *root, RelOptInfo *rel);
 extern void sift_v6_add_join_path(V6Plan *p, List *group_exprs, List *having, List *child_paths, Cost extra_startup, Cost extra_total, double input_rows);
 /*
  * The groups the path reports to the plan above. Where PostgreSQL's count of a lookup is a default guess (lift_rows), a plan above that takes one group for one nests loops on a
- * null-safe key and runs the aggregate under it again for each row: the groups are those of the lifted rows, up to the plan's own and a thousand, where more only multiplies in the join
+ * null-safe key and runs the aggregate under it again for each row: the groups are those of the lifted rows, at least the plan's own and at most a thousand more, where more only multiplies in the join
  * above. The price keeps the plan's own count: the choice of the scan does not move.
  */
 extern double sift_v6_reported_groups(const V6Plan *p, List *group_exprs, double groups);
@@ -232,6 +232,13 @@ extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
 extern List *sift_v6_tests_contains_quals(const V6Plan *p, const Expr *clause, Expr **rest);
 /* the rows of the join of the fact rows with their elements, from the lengths of the arrays the index holds (PostgreSQL's own when it has none) */
 extern double sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel);
+
+/*
+ * The groups of an unnest whose input PostgreSQL takes at the floor it gives a function over a lookup it has no statistics for (at most 100 rows, where the elements of the table are many): the
+ * tuples that reach the groups at the geometric mean of the floor and the elements the scan reads, and no more groups than the combinations of the distinct values of the keys' leaves; -1: the
+ * estimate of the keys stands (grouping sets, a key no leaf with distinct values gives, more input rows)
+ */
+extern double sift_v6_unnest_floor_groups(const V6Plan *p, double input_rows);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);
 extern void sift_v6_unnest_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 

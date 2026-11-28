@@ -8,6 +8,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/cost.h"
@@ -279,6 +281,9 @@ known_quals(const RelOptInfo *rel)
 	return known;
 }
 
+/* the rows PostgreSQL expects of an unnesting function over one row: the join of a lookup it has no statistics for is that many */
+#define UNNEST_FLOOR_ROWS	100.0
+
 /* the lengths leaf of the array the elements come from: the one the scan reads, or of a table whose rows it reads again by their address, the leaf of the declared list of the column */
 static int
 lengths_leaf(const V6Plan *p)
@@ -292,17 +297,58 @@ lengths_leaf(const V6Plan *p)
  * the rows the join of a row with its elements makes: PostgreSQL prices a set-returning function at a constant count of rows a call (100 for the jsonb ones), the lengths leaf of the
  * array in the index or the table says how many elements a row has (rows with no array have none)
  */
-double
-sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel)
+static double
+elems_per_row(const V6Plan *p)
 {
 	const SiftCardStatsView *v = sift_v6_rel_card_view(p->relid, p->is_table);
 	const int	gl = lengths_leaf(p);
 	const SiftColCardStats *cs = v != NULL && gl >= 0 && (uint32) gl < v->ncols ? &v->cols[gl] : NULL;
-	const double mean = cs != NULL && cs->total_rows > 0 ? sift_card_mean(cs) : -1;
 
-	if (mean < 0 || p->elem_rel->tuples <= 0)
+	return cs != NULL && cs->total_rows > 0 ? sift_card_mean(cs) * (1.0 - (double) cs->null_rows / cs->total_rows) : -1;
+}
+
+double
+sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel)
+{
+	const double per_row = elems_per_row(p);
+
+	if (per_row < 0 || p->elem_rel->tuples <= 0)
 		return input_rel->rows;
-	return clamp_row_est(input_rel->rows / p->elem_rel->tuples * mean * (1.0 - (double) cs->null_rows / cs->total_rows));
+	return clamp_row_est(input_rel->rows / p->elem_rel->tuples * per_row);
+}
+
+/* the leaf of the statistics a key reads: the leaf of a key of a document, the column of an element, the first leaf of an attribute of the index; -1: none */
+static int
+key_leaf(const V6Plan *p, const SiftV6Col *k)
+{
+	if (k->derive > 0 || k->jmember > 0 || k->jtype)
+		return -1;
+	if (k->jleaf > 0)
+		return k->jleaf - 1;
+	if (k->src == SV6SRC_ELEM)
+		return k->slot < p->xseed->elem.ncols ? p->xseed->elem.col_leaf[k->slot] : -1;
+	return k->src == SV6SRC_ATTR && p->index != NULL ? sift_v6_rel_card_leaf(p->index->indexoid, k->attno - 1) : -1;
+}
+
+double
+sift_v6_unnest_floor_groups(const V6Plan *p, double input_rows)
+{
+	const SiftCardStatsView *v = sift_v6_rel_card_view(p->relid, p->is_table);
+	const double per_row = p->xseed != NULL && p->elem_rel != NULL ? elems_per_row(p) : -1,
+				scan = p->rel->rows * per_row;
+	double		nd = 1;
+
+	if (v == NULL || per_row < 0 || p->spec.nsets > 0 || input_rows > UNNEST_FLOOR_ROWS || scan <= input_rows)
+		return -1;
+	for (int j = 0; j < p->spec.nkeys; j++)
+	{
+		const int	leaf = key_leaf(p, &p->spec.key[j]);
+
+		if (leaf < 0 || (uint32) leaf >= v->ncols || !(v->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
+			return -1;
+		nd *= Max(v->cols[leaf].ndv_est, 1.0);
+	}
+	return Max(Min(sqrt(input_rows * scan), nd), 1.0);
 }
 
 /* the tuples an element of a row read again costs beyond the one its function makes: read back and deformed, then its columns made the cells of the vectors of the pairs (measured: at 1,500 and

@@ -246,7 +246,7 @@ sift_v6_reported_groups(const V6Plan *p, List *group_exprs, double groups)
 {
 	if (p->lift_rows <= 0 || p->spec.nkeys == 0)
 		return groups;
-	return Min(sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, p->lift_rows) * Max(p->spec.nsets, 1), groups + SIFT_V6_LIFT_GROUPS);
+	return Max(groups, Min(sift_v6_card_group_estimate(p->root, p->rel, p->index, group_exprs, p->lift_rows) * Max(p->spec.nsets, 1), groups + SIFT_V6_LIFT_GROUPS));
 }
 
 double
