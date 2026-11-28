@@ -167,11 +167,18 @@ is_untyped(const SiftV6Col *col)
 	return c.jtype || (c.attno >= SIFT_V6_JLEAF_VATT && c.jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE;
 }
 
+/* a column of the table the scan reads as datums: the batches of an unnest hold the native classes only */
+static bool
+is_datum_read(const SiftV6Col *c)
+{
+	return c->src == SV6SRC_ATTR && !sift_v6_col_is_flag(c) && c->typid != JSONBOID && sift_v6_col_class(c) == SV6C_DATUM;
+}
+
 /* the store scans the elements of an array (SiftJsonbOps) and reads the columns of the table the statement names beside them */
 static bool
 store_reads_cols(const V6Plan *p)
 {
-	return p->ops->jsonb != NULL && (p->ops->jsonb->exact_values || !any_col(&p->spec, is_untyped));
+	return p->ops->jsonb != NULL && !any_col(&p->spec, is_datum_read) && (p->ops->jsonb->exact_values || !any_col(&p->spec, is_untyped));
 }
 
 /* every row of a table the scan reads again by its address: its arrays are read as the rows the leaves cannot hold */

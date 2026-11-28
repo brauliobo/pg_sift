@@ -102,6 +102,15 @@ INSERT INTO tj SELECT id + 10000, qty, doc FROM tj WHERE id <= 500;
 ROLLBACK;
 SELECT n, same(sql), pushed(sql) AS scan FROM q WHERE n IN (1, 3, 7, 11) ORDER BY n;
 
+-- a numeric beside an EXISTS over the elements: the batches of an unnest hold no numeric read as datums, so a group key computed from it keeps its values
+CREATE TABLE tn (id int, num numeric(12, 2), doc jsonb) USING sift_table;
+SELECT sift.table_set_paths('tn', 'doc', 'doc->items[]->score float8');
+INSERT INTO tn SELECT id, (id % 997) / 7.0, doc FROM tj WHERE id <= 3000;
+ANALYZE tn;
+SELECT same($$SELECT floor(t.num / 50) AS k, count(*) FROM tn t WHERE EXISTS (SELECT 1 FROM jsonb_array_elements(t.doc -> 'items') p WHERE (p ->> 'score')::float8 > 2) GROUP BY 1 ORDER BY 1$$)
+	AS numeric_key_beside_exists;
+DROP TABLE tn;
+
 -- at the default page costs the scan of a list the table declares costs less than the normal plan, and one that reads every row again by its address (a member no path declares) does not
 RESET seq_page_cost;
 RESET random_page_cost;
