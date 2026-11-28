@@ -309,6 +309,15 @@ dim_hash_bytes(const RelOptInfo *rel)
 	return rel->rows * (rel->reltarget->width + 48.0);
 }
 
+/* the table of a dimension can be read into the scan, whatever its size */
+bool
+sift_v6_dim_rel_readable(PlannerInfo *root, RelOptInfo *rel)
+{
+	bool		limited = false;
+
+	return dim_rel_readable(root, rel, &limited);
+}
+
 /* the table of one of ndims dimensions fits its share of half of work_mem (at least 4 kB) */
 bool
 sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, int ndims)

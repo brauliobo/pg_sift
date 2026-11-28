@@ -6,6 +6,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathnode.h"
 
 #include "agg/cost/card.h"
 #include "agg/join/shape.h"
@@ -196,4 +197,71 @@ sift_v6_join_elem_nest_ok(const SiftV6JoinShape *sh)
 		if (bms_overlap(ri->clause_relids, sh->elem_nest))
 			return false;
 	return true;
+}
+
+/* a plain inner dimension of one relation joined by its keys alone */
+static bool
+chainable_dim(const SiftV6JoinDim *d)
+{
+	return d->mode == SV6J_INNER_EQUI && bms_membership(d->rels) == BMS_SINGLETON && !d->lateral && d->on == NIL && d->nkeys > 0;
+}
+
+/* every key of dimension e is probed by a column a key of dimension d is probed by too: the join of the two on those keys is what the statement says of e */
+static bool
+keys_within(const SiftV6JoinDim *e, const SiftV6JoinDim *d)
+{
+	for (int i = 0; i < e->nkeys; i++)
+	{
+		bool		found = false;
+
+		for (int k = 0; k < d->nkeys && !found; k++)
+			found = e->kexpr[i] == NULL && d->kexpr[k] == NULL && equal(e->probe[i], d->probe[k]);
+		if (!found)
+			return false;
+	}
+	return true;
+}
+
+/* the plan of the join PostgreSQL made of dimensions e and d that reads less than their own plans (the keys of e drive an index of d); NULL for none */
+static Path *
+cheaper_join(PlannerInfo *root, const SiftV6JoinDim *e, const SiftV6JoinDim *d)
+{
+	RelOptInfo *rel = find_join_rel(root, bms_union(e->rels, d->rels));
+	Path	   *best = NULL;
+	Cost		cost = sift_v6_dim_cost(e->rel->cheapest_total_path) + sift_v6_dim_cost(d->rel->cheapest_total_path);
+
+	if (rel == NULL || rel->lateral_relids != NULL || !sift_v6_dim_rel_readable(root, rel))
+		return NULL;
+	foreach_ptr(Path, p, rel->pathlist)
+		if (p->param_info == NULL && sift_v6_dim_cost(p) < cost)
+		{
+			best = p;
+			cost = sift_v6_dim_cost(p);
+		}
+	return best;
+}
+
+void
+sift_v6_join_chain_dims(PlannerInfo *root, SiftV6JoinShape *sh)
+{
+	bool		joined[SIFT_STAR_MAX_DIMS] = {0};
+	int			n = 0;
+
+	for (int e = 0; e < sh->nd; e++)
+		for (int d = 0; d < sh->nd && !joined[e]; d++)
+		{
+			Path	   *path;
+
+			if (d == e || joined[d] || !chainable_dim(&sh->dim[e]) || !chainable_dim(&sh->dim[d]) || !keys_within(&sh->dim[e], &sh->dim[d]) ||
+				(path = cheaper_join(root, &sh->dim[e], &sh->dim[d])) == NULL)
+				continue;
+			sh->dim[d].rels = path->parent->relids;
+			sh->dim[d].rel = path->parent;
+			sh->dim[d].path = path;
+			joined[e] = true;
+		}
+	for (int i = 0; i < sh->nd; i++)
+		if (!joined[i])
+			sh->dim[n++] = sh->dim[i];
+	sh->nd = n;
 }

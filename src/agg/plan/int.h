@@ -211,6 +211,7 @@ extern const Var *sift_v6_plain_var(const Node *n);
 extern bool sift_v6_key_types_agree(Oid ftype, Oid dtype, Oid inputcollid);
 extern bool sift_v6_key_type_ok(Oid typid);
 extern bool sift_v6_in_target(const RelOptInfo *rel, const Var *v);
+extern bool sift_v6_dim_rel_readable(PlannerInfo *root, RelOptInfo *rel);
 extern bool sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, int ndims);
 extern void sift_v6_star_upper_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, GroupPathExtraData *extra, List *group_exprs, double *charge);
 extern void sift_v6_star_rows_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, uint32 k);

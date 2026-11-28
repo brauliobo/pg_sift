@@ -133,6 +133,8 @@ dim_key_of(const SiftV6JoinShape *sh, Node *e, const Var **key, const Node **kex
 	return d;
 }
 
+/* the share of work_mem the table of each dimension may take */
+/* the plan of each dimension is one the node reads (a lateral one is cut to a row and must fit already; the others fit once chained dimensions are joined, dims_fit) */
 static bool
 dim_rels_ok(PlannerInfo *root, SiftV6JoinShape *sh)
 {
@@ -150,11 +152,20 @@ dim_rels_ok(PlannerInfo *root, SiftV6JoinShape *sh)
 			if (!sift_v6_lateral_join_dim(root, root, NULL, rel, rel->relid, sh, i) || !sift_v6_dim_rel_ok(root, d->rel, sh->nd))
 				return false;
 		}
-		else if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, sh->nd))
+		else if (rel == NULL || !sift_v6_dim_rel_readable(root, rel))
 			return false;
 		else
 			d->rel = rel;
 	}
+	return true;
+}
+
+static bool
+dims_fit(PlannerInfo *root, const SiftV6JoinShape *sh)
+{
+	for (int i = 0; i < sh->nd; i++)
+		if (!sh->dim[i].lateral && !sift_v6_dim_rel_ok(root, sh->dim[i].rel, sh->nd))
+			return false;
 	return true;
 }
 
@@ -551,7 +562,7 @@ needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh, bool rows)
 	{
 		const SiftV6JoinDim *d = &sh->dim[i];
 
-		if (d->lateral || d->nkeys == 0 || d->on != NIL)
+		if (d->lateral || d->nkeys == 0 || d->on != NIL || (d->mode == SV6J_INNER_EQUI && bms_membership(d->rels) != BMS_SINGLETON))
 			return true;
 		if (d->mode == SV6J_SEMI_EQUI && (rows || sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || !sift_v6_push_small_side(root, d->rel)))
 			return true;
@@ -662,8 +673,10 @@ rows_shape_ok(PlannerInfo *root, const SiftV6JoinShape *sh)
 static bool
 shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh, bool rows)
 {
-	if (!sift_v6_join_make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
-		!sift_v6_exists_main_unique(root, sh))
+	if (!sift_v6_join_make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh))
+		return false;
+	sift_v6_join_chain_dims(root, sh);
+	if (!dims_fit(root, sh) || !join_clauses(root, base, sh) || !sift_v6_exists_main_unique(root, sh))
 		return false;
 	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh)) && sift_v6_join_elem_nest_ok(sh);
 }
@@ -849,7 +862,10 @@ plan_dims(PlannerInfo *root, SiftV6JoinShape *sh)
 
 			probe_attno[k] = v != NULL && v->varno == sh->fact->relid && jd->kexpr[k] == NULL ? v->varattno : 0;
 		}
-		jd->path = bms_membership(jd->rels) == BMS_SINGLETON && !jd->lateral ? sift_v6_dim_path(root, sh->fact, jd->rel, jd->mode, jd->nkeys, probe_attno, jd->key) : jd->rel->cheapest_total_path;
+		if (bms_membership(jd->rels) == BMS_SINGLETON && !jd->lateral)
+			jd->path = sift_v6_dim_path(root, sh->fact, jd->rel, jd->mode, jd->nkeys, probe_attno, jd->key);
+		else if (jd->path == NULL)
+			jd->path = jd->rel->cheapest_total_path;
 		for (int k = 0; k < jd->nkeys; k++)
 			if (jd->kexpr[k] != NULL)
 			{

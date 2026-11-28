@@ -110,12 +110,12 @@ DECLARE l text; r text := ''; BEGIN
 	RETURN r;
 END $$;
 
--- three keys of two thousand: the three rows (and the few rows of the other lookups), one index scan
+-- three keys of two thousand: the three rows, an index scan for each key
 SELECT loaded(request(1));
--- fourteen hundred keys, 70% of the rows of the table: by the index still (the two reads take the same, 2.6 to 3.9 ms against 2.8 to 4.4 for the table of a hundred pages read whole; the crossover with narrow rows is pinned by agg_lookup_keyed_crossover)
+-- fourteen hundred keys, 70% of the rows of the table: read whole, as cheap as the probes of its keys
 SELECT loaded(request(2));
 
--- three keys of twenty-five rows: seventy-five rows by probes; three hundred keys (seven thousand five hundred rows, the pages of the table): by the index too, a little faster than read whole (5.3 to 6.3 ms against 5.7 to 7.4)
+-- three keys of twenty-five rows: seventy-five rows by probes; three hundred keys (seven thousand five hundred rows): read whole, in the time the probes take (7.9 ms against 7.7)
 SELECT loaded(grequest(1));
 SELECT loaded(grequest(2));
 

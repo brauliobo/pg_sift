@@ -65,4 +65,11 @@ extern double sift_v6_join_guessed_keys(PlannerInfo *root, const SiftV6JoinShape
 /* The lookups inside the nullable side of the LEFT JOIN of the element match no row for a pair without one, and no condition but their keys joins them there */
 extern bool sift_v6_join_elem_nest_ok(const SiftV6JoinShape *sh);
 
+/*
+ * An inner dimension of one relation whose keys are all keys of another one (a list of ids joined to the table of their rows, both to the same column of the fact table) is joined to it in the
+ * plan of that one, when PostgreSQL's plan of the join of the two (the ids probing an index of the table) reads less than the two read whole: no fact row the join of the two drops would have
+ * met both, and a fact row meets the rows of the join as it met the rows of each
+ */
+extern void sift_v6_join_chain_dims(PlannerInfo *root, SiftV6JoinShape *sh);
+
 #endif							/* SIFT_AGG_V6_JOIN_SHAPE_H */

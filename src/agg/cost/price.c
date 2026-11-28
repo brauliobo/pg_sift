@@ -498,6 +498,23 @@ sift_v6_rel_read_cost(const RelOptInfo *rel)
 	return sift_agg_cold_share(rel->pages) * rel->pages * spc_seq + rel->baserestrictcost.startup + rel->tuples * (cpu_tuple_cost + rel->baserestrictcost.per_tuple);
 }
 
+/* a probe of an index of a relation the cache holds, for each loop of a nested loop: the entries and rows it finds and the operators of a descent, and its page reads for the share the cache does not hold */
+static Cost
+probe_cost(const Path *probe)
+{
+	const RelOptInfo *rel = probe->parent;
+	const Cost	cpu = Max(probe->rows, 1.0) * (cpu_index_tuple_cost + cpu_tuple_cost + rel->baserestrictcost.per_tuple) + ceil(log2(Max(rel->tuples, 2.0))) * cpu_operator_cost;
+
+	return Min(cpu + sift_agg_cold_share(rel->pages) * probe->total_cost, probe->total_cost);
+}
+
+/* the inner side of a nested loop that probes an index for each row of its outer side */
+static bool
+is_probe(const Path *p)
+{
+	return p->param_info != NULL && (IsA(p, IndexPath) || IsA(p, BitmapHeapPath));
+}
+
 Cost
 sift_v6_dim_cost(const Path *child)
 {
@@ -506,6 +523,12 @@ sift_v6_dim_cost(const Path *child)
 
 	if (IsA(child, ProjectionPath))
 		return sift_v6_dim_cost(((const ProjectionPath *) child)->subpath) + child->total_cost - ((const ProjectionPath *) child)->subpath->total_cost;
+	if (IsA(child, NestPath) && is_probe(((const JoinPath *) child)->innerjoinpath))
+	{
+		const JoinPath *jp = (const JoinPath *) child;
+
+		return sift_v6_dim_cost(jp->outerjoinpath) + jp->outerjoinpath->rows * probe_cost(jp->innerjoinpath) + child->rows * cpu_tuple_cost;
+	}
 
 	if (child->pathtype != T_SeqScan)
 		return child->total_cost;
