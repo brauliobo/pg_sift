@@ -142,10 +142,11 @@ sift_v6_plan_index(V6Plan *p, Relation irel)
 static bool
 index_column(const V6Plan *p, int att, Oid typid, SiftV6Col *out)
 {
-	if (typid == NUMERICOID || !host_holds(p, att, sift_v6_class(typid)))
-		return false;
-	*out = (SiftV6Col) {.attno = att,.typid = typid};
-	return true;
+	const bool	held = typid != NUMERICOID && host_holds(p, att, sift_v6_class(typid));
+
+	if (held)
+		*out = (SiftV6Col) {.attno = att,.typid = typid};
+	return held;
 }
 
 static bool

@@ -223,12 +223,8 @@ unique_key(const RangeTblEntry *rte, const Ties *t)
 	const int	nkeys = Min(list_length(t->keys), SIFT_STAR_MAX_KEYS);
 
 	for (int k = 0; k < nkeys; k++)
-	{
-		if (!IsA(list_nth(t->keys, k), Var))
-			return false;
-		atts[k] = ((const Var *) list_nth(t->keys, k))->varattno;
-	}
-	return sift_v6_unique_key(rte->relid, nkeys, 0, atts, NULL);
+		atts[k] = IsA(list_nth(t->keys, k), Var) ? ((const Var *) list_nth(t->keys, k))->varattno : InvalidAttrNumber;
+	return atts[0] != InvalidAttrNumber && sift_v6_unique_key(rte->relid, nkeys, 0, atts, NULL);
 }
 
 /* the column is read above the sub-select, or by a condition of its own relation (which the plan of the dimension applies to the rows of a key) */
