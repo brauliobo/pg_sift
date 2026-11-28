@@ -235,10 +235,9 @@ RESET client_min_messages;
 CREATE SCHEMA s5;
 GRANT USAGE ON SCHEMA s5 TO PUBLIC;
 SET search_path = s5, public;
--- ORDER BY k LIMIT n with a condition on another column is read from the order array of k, the heap row of each entry testing the condition, while the rows pass: the n
--- take n over the pass rate fetches, and the walk gives the rows to the units when they are more than four times n or a quarter of the heap's pages (gord_giveup). The planner
--- priced such a scan as the units it may fall back to (3 times a scan of the unfiltered order) however many rows passed; it prices the fetches of the statistics' pass rate: a
--- condition that most rows pass costs the order alone, one that 10% pass a hundred and fifty fetches, and the cost grows with the fetches the pass rate asks for.
+-- ORDER BY k LIMIT n with a condition on another column: the Top-N scan reads the units, tests the condition on the columns of the index and keeps the best n of the rows that
+-- pass, so a condition that most rows pass costs about the order alone, and a rarer one keeps fewer rows (forced scan: 0.76 ms for the order, 0.93 for half the rows, 0.63 for
+-- a tenth, 0.46 for a hundredth). The price follows: under twice the order, and falling with the rows that pass.
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE feed (id int, k int, q50 int, q10 int, q1 int, gone timestamptz, pad text) WITH (autovacuum_enabled = false);
@@ -251,11 +250,11 @@ CREATE FUNCTION page_cost(cond text) RETURNS float8 LANGUAGE sql AS
 $$ SELECT scan_cost FROM sift.explain_why('SELECT id, k FROM feed WHERE ' || cond || ' ORDER BY k LIMIT 20') $$;
 SELECT page_cost('q50 = 1') < 2 * page_cost('true') AS half_pass_costs_the_order,
 	page_cost('gone IS NULL') < 2 * page_cost('true') AS soft_delete_costs_the_order,
-	page_cost('q10 = 1') < page_cost('q1 = 1') AS cost_grows_with_the_fetches,
-	page_cost('q50 = 1') < page_cost('q10 = 1') AS cost_grows_from_half_to_tenth;
- half_pass_costs_the_order | soft_delete_costs_the_order | cost_grows_with_the_fetches | cost_grows_from_half_to_tenth 
----------------------------+-----------------------------+-----------------------------+-------------------------------
- t                         | t                           | t                           | t
+	page_cost('q1 = 1') < page_cost('q10 = 1') AS cost_falls_with_the_rows,
+	page_cost('q10 = 1') < page_cost('q50 = 1') AS cost_falls_from_half_to_tenth;
+ half_pass_costs_the_order | soft_delete_costs_the_order | cost_falls_with_the_rows | cost_falls_from_half_to_tenth 
+---------------------------+-----------------------------+--------------------------+-------------------------------
+ t                         | t                           | t                        | t
 (1 row)
 
 DROP FUNCTION page_cost(text);
@@ -270,9 +269,8 @@ CREATE SCHEMA s6;
 GRANT USAGE ON SCHEMA s6 TO PUBLIC;
 SET search_path = s6, public;
 -- The latest row of an entity out of thousands (ORDER BY ts DESC LIMIT 1 WHERE ent = n, alone or in a LATERAL per entity) is not read by walking the order array of ts: the heap row
--- of each entry would test ent, and the statistics' pass rate (one in the entities) asks for more fetches than the walk may make, so the planner prices the units. The executor
--- walked all the same until its budget (a quarter of the heap's pages) ran out and then read the units: now the plan tells it not to start (the fetches of the walk, per probe,
--- are what the Top-N Run line reports).
+-- of each entry would test ent, and the statistics' pass rate (one in the entities) asks for more fetches than a walk would make. The Top-N scan reads the units whose zones hold
+-- the entity and tests ent on the column of the index (Granules: scanned): it starts no walk.
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int, ent int, ts int, pad text) WITH (autovacuum_enabled = false);
@@ -281,20 +279,20 @@ INSERT INTO ev SELECT i, (i::bigint * 7919) % 2003, i, repeat('x', 200) FROM gen
 CREATE INDEX ev_i ON ev USING sift_col (id, ent, ts) WITH (order_array_columns = 'ts');
 CREATE TABLE ents AS SELECT g AS id FROM generate_series(1, 20) g;
 VACUUM (FREEZE, ANALYZE) ev, ents;
-CREATE FUNCTION walk_fetches(q text) RETURNS int LANGUAGE plpgsql AS $$
-DECLARE l text; n int := -1;
+CREATE FUNCTION reads_units(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text; units bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		IF l ~ 'Top-N Run:' THEN n := substring(l FROM '([0-9]+) heap fetches')::int; END IF;
+		units := units OR substring(l FROM 'Granules: scanned=([0-9]+)')::int > 0;
 	END LOOP;
-	RETURN n;
+	RETURN units;
 END $$;
 SET sift.agg_force = on;
-SELECT walk_fetches('SELECT ts FROM ev WHERE ent = 77 ORDER BY ts DESC LIMIT 1') AS one_entity,
-	walk_fetches('SELECT e.id, x.ts FROM ents e LEFT JOIN LATERAL (SELECT ts FROM ev WHERE ent = e.id ORDER BY ts DESC LIMIT 1) x ON true') AS per_entity;
+SELECT reads_units('SELECT ts FROM ev WHERE ent = 77 ORDER BY ts DESC LIMIT 1') AS one_entity,
+	reads_units('SELECT e.id, x.ts FROM ents e LEFT JOIN LATERAL (SELECT ts FROM ev WHERE ent = e.id ORDER BY ts DESC LIMIT 1) x ON true') AS per_entity;
  one_entity | per_entity 
 ------------+------------
-          0 |          0
+ t          | t
 (1 row)
 
 RESET sift.agg_force;
@@ -313,7 +311,7 @@ SELECT walk_rows(true) = walk_rows(false) AS same_rows;
  t
 (1 row)
 
-DROP FUNCTION walk_fetches(text), walk_rows(bool);
+DROP FUNCTION reads_units(text), walk_rows(bool);
 DROP TABLE ev, ents;
 RESET ALL;
 SET client_min_messages = warning;
