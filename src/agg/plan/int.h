@@ -173,8 +173,9 @@ extern bool sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause);
 /* An OR of the WHERE one of whose arms is a test of the elements of the row (p->tests): the OR of the flag of the test and the quals of the other arms, as a FILTER has them (NULL: none) */
 extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
 
-/* n with each placeholder as its expression, and NULL where the LEFT JOIN of the unnest of p gives a pair no element (CASE WHEN the element is there): false when one is nulled by another join */
-extern bool sift_v6_placeholder_values(const V6Plan *p, Node *n, Node **out);
+/* n with each placeholder as its expression nulled by the outer joins that null the placeholder: a strict one through its columns, any other NULL where a join keeps a row without its
+ * nullable side (CASE WHEN the element of the unnest, or a NOT NULL column of the fact table, is there): false when the scan cannot tell such a row */
+extern bool sift_v6_placeholder_values(V6Plan *p, Node *n, Node **out);
 /* CASE WHEN cond THEN e END */
 extern Node *sift_v6_case_when(Node *cond, Node *e);
 /* n reads a placeholder an outer join nulls (NULL where the join adds a row with no match, its expression elsewhere), other than of the LEFT JOIN of an unnest, whose pairs say it */

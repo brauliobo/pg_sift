@@ -6,7 +6,10 @@
 #include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/placeholder.h"
 #include "parser/parsetree.h"
+#include "rewrite/rewriteManip.h"
+#include "utils/lsyscache.h"
 
 #include "agg/ext.h"
 #include "agg/join/pairs.h"
@@ -67,35 +70,75 @@ elem_join(const V6Plan *p)
 
 typedef struct Contents
 {
-	const V6Plan *p;
+	V6Plan	   *p;
 	Index		oj;
 	bool		ok;
 } Contents;
+
+/* a column of the fact table that no row has NULL, as the outer join oj nulls it when it keeps a row of its other side alone; NULL when oj does not null the fact table or the scan reads none */
+static Expr *
+fact_present(V6Plan *p, Index oj)
+{
+	const RelOptInfo *rel = p->rel;
+	SiftV6Col	col;
+	int			att = 0;
+
+	foreach_node(SpecialJoinInfo, sj, p->root->join_info_list)
+		if (sj->ojrelid == oj && (bms_is_member(rel->relid, sj->min_righthand) || (sj->jointype == JOIN_FULL && bms_is_member(rel->relid, sj->min_lefthand))))
+			while ((att = bms_next_member(rel->notnullattnums, att)) > 0)
+			{
+				Var		   *v = makeVar(rel->relid, (AttrNumber) att, InvalidOid, -1, InvalidOid, 0);
+
+				get_atttypetypmodcoll(planner_rt_fetch(rel->relid, p->root)->relid, v->varattno, &v->vartype, &v->vartypmod, &v->varcollid);
+				v->varnullingrels = bms_make_singleton(oj);
+				if (sift_v6_read_of(p, (Expr *) v, true, &col))
+					return (Expr *) v;
+			}
+	return NULL;
+}
+
+/* true for a row the outer join oj kept with its nullable side: the element of the unnest is there, or the row of the fact table; NULL when the scan cannot tell */
+static Node *
+kept_by(Contents *c, Index oj)
+{
+	NullTest   *t = makeNode(NullTest);
+
+	t->arg = oj == c->oj ? (Expr *) makeVar(c->p->elem_rel->relid, SIFT_V6_ELEM_PRESENT, INT8OID, -1, InvalidOid, 0) : fact_present(c->p, oj);
+	t->nulltesttype = IS_NOT_NULL;
+	t->location = -1;
+	return t->arg != NULL ? (Node *) t : NULL;
+}
 
 static Node *
 contents_mutator(Node *n, Contents *c)
 {
 	const PlaceHolderVar *phv = (const PlaceHolderVar *) n;
+	Relids		ojs;
+	List	   *kept = NIL;
 	Node	   *e;
-	NullTest   *present;
+	int			oj = -1;
 
 	if (n == NULL)
 		return NULL;
 	if (!IsA(n, PlaceHolderVar))
 		return expression_tree_mutator(n, contents_mutator, c);
 	e = contents_mutator((Node *) phv->phexpr, c);
-	if (bms_is_empty(outer_nulling(c->p->root, phv)) || sift_v6_placeholder_is_expr(c->p->root, (PlaceHolderVar *) phv))
+	if (bms_is_empty(ojs = outer_nulling(c->p->root, phv)))
 		return e;
-	c->ok &= c->oj != 0 && bms_equal(outer_nulling(c->p->root, phv), bms_make_singleton(c->oj));
-	present = makeNode(NullTest);
-	present->arg = (Expr *) makeVar(c->p->elem_rel != NULL ? c->p->elem_rel->relid : 0, SIFT_V6_ELEM_PRESENT, INT8OID, -1, InvalidOid, 0);
-	present->nulltesttype = IS_NOT_NULL;
-	present->location = -1;
-	return sift_v6_case_when((Node *) present, e);
+	if (sift_v6_placeholder_is_expr(c->p->root, (PlaceHolderVar *) phv))
+		return add_nulling_relids(e, find_placeholder_info(c->p->root, (PlaceHolderVar *) phv)->ph_eval_at, ojs);
+	while ((oj = bms_next_member(ojs, oj)) >= 0)
+	{
+		Node	   *k = kept_by(c, (Index) oj);
+
+		c->ok &= k != NULL;
+		kept = lappend(kept, k);
+	}
+	return c->ok ? sift_v6_case_when((Node *) make_ands_explicit(kept), e) : e;
 }
 
 bool
-sift_v6_placeholder_values(const V6Plan *p, Node *n, Node **out)
+sift_v6_placeholder_values(V6Plan *p, Node *n, Node **out)
 {
 	Contents	c = {p, elem_join(p), true};
 

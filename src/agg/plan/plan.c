@@ -678,7 +678,7 @@ compile_on(V6Plan *p, GroupPathExtraData *extra, List *group_exprs)
 
 /* the expression the compile refused as the statement names it; NULL when it names none or reads another relation than the one planned (a sub-plan reads its own) */
 static char *
-refused_text(const V6Plan *p)
+refused_text(V6Plan *p)
 {
 	const Oid	relid = planner_rt_fetch(p->rel->relid, p->root)->relid;
 	Node	   *e;
