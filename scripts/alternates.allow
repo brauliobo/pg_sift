@@ -18,8 +18,9 @@ test/expected/agg/correlated/fanout_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80
 test/expected/agg/exists_elements_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
 test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
+test/expected/agg/explain_sift_1.out	47b2ac552883d037e7cd464575b7a3b55e94d5a9	17	sift_lines
 test/expected/agg/explain_sift_1.out	4d62704eb61a993f373809a6e0ed25d6a1926139	17	sift_lines
-test/expected/agg/explain_sift_1.out	5858fc754aa2c5d98dfed30f1bbb5c72402f6725	17	sift_lines
+test/expected/agg/explain_sift_1.out	5eab01a97690b4d4d1545b3edc8e56912dccc3e3	17	sift_lines
 test/expected/agg/explain_sift_1.out	9bf5416498207efe633c39b9c1b3379025ac99d3	17	sift_lines
 test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines

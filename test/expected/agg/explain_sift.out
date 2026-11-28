@@ -90,9 +90,9 @@ SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
 
 -- a refused candidate: the slug and the sentence, and the arm
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM o WHERE random() < 0.5 GROUP BY c');
-                                               sift_lines                                               
---------------------------------------------------------------------------------------------------------
- Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test (arm single)
+                                                                  sift_lines                                                                   
+-----------------------------------------------------------------------------------------------------------------------------------------------
+ Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test ((random() < '0.5'::double precision)) (arm single)
 (1 row)
 
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM plain GROUP BY c');
@@ -111,9 +111,9 @@ SELECT * FROM sift_lines('SELECT count(*) FROM (SELECT c, sum(v) FROM plain GROU
 -- the statement that is planned is the explained one: what it calls while it runs is not
 CREATE FUNCTION nested() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN (SELECT count(*) FROM (SELECT c, sum(v) FROM plain GROUP BY c) s); END $$;
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM o WHERE c < nested() GROUP BY c', ', ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF');
-                                               sift_lines                                               
---------------------------------------------------------------------------------------------------------
- Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test (arm single)
+                                                       sift_lines                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test ((c < nested())) (arm single)
 (1 row)
 
 -- the structured formats
