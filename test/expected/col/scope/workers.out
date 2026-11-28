@@ -111,7 +111,7 @@ $$;
 SELECT * FROM state('built');
  state | differing | scope_reads | scope_without_workers | join_without_workers | forms 
 -------+-----------+-------------+-----------------------+----------------------+-------
- built |         0 |           5 |                    10 |                   10 |    11
+ built |         0 |           5 |                     7 |                    7 |    11
 (1 row)
 
 -- what the reads are: the Scope Read of the node, and whether workers started
@@ -120,10 +120,10 @@ SELECT name, l.route, l.workers > 0 AS workers FROM forms, LATERAL launched(q) l
 ---------------------------------+--------------------------------------------+---------
  int EXISTS, a month             | summary                                    | f
  int IN, a list                  |                                            | t
- int IN, one key                 |                                            | f
+ int IN, one key                 |                                            | t
  int group by the key, every key | summary                                    | f
- int join, a row for each pair   |                                            | f
- text IN, a list                 |                                            | f
+ int join, a row for each pair   |                                            | t
+ text IN, a list                 |                                            | t
  text group by the key           | summary                                    | f
  two paths IN, a list            |                                            | f
  two paths IN, one key           |                                            | f
@@ -139,7 +139,7 @@ INSERT INTO u_events SELECT id, md5(account)::uuid, kind, v, pad FROM t_events W
 SELECT * FROM state('rows in the write buffers');
            state           | differing | scope_reads | scope_without_workers | join_without_workers | forms 
 ---------------------------+-----------+-------------+-----------------------+----------------------+-------
- rows in the write buffers |         0 |           5 |                    10 |                   10 |    11
+ rows in the write buffers |         0 |           5 |                     7 |                    7 |    11
 (1 row)
 
 -- pairs: inserted, deleted, moved, soft deleted, restored, a grant to a group, a membership
@@ -157,7 +157,7 @@ INSERT INTO memberships (group_id, dim_a_id) VALUES (5, 601), (3, 602);
 SELECT * FROM state('pairs changed');
      state     | differing | scope_reads | scope_without_workers | join_without_workers | forms 
 ---------------+-----------+-------------+-----------------------+----------------------+-------
- pairs changed |         0 |           5 |                     7 |                    7 |    11
+ pairs changed |         0 |           5 |                     4 |                    4 |    11
 (1 row)
 
 -- the facts move to another member and are deleted
@@ -167,7 +167,7 @@ UPDATE gevents SET dim_a_id = 1 + (dim_a_id + 17) % 640 WHERE id % 53 = 0;
 SELECT * FROM state('facts changed');
      state     | differing | scope_reads | scope_without_workers | join_without_workers | forms 
 ---------------+-----------+-------------+-----------------------+----------------------+-------
- facts changed |         0 |           5 |                     7 |                    7 |    11
+ facts changed |         0 |           5 |                     4 |                    4 |    11
 (1 row)
 
 -- a read of one key in a SERIALIZABLE transaction
@@ -195,7 +195,7 @@ SELECT sift.col_merge('events_col', true) >= 0 AND sift.col_merge('gevents_col',
 SELECT * FROM state('promoted and merged');
         state        | differing | scope_reads | scope_without_workers | join_without_workers | forms 
 ---------------------+-----------+-------------+-----------------------+----------------------+-------
- promoted and merged |         0 |           5 |                     9 |                    9 |    11
+ promoted and merged |         0 |           5 |                     6 |                    6 |    11
 (1 row)
 
 SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true), sift.col_verify('t_events_col', true), sift.col_verify('u_events_col', true);
@@ -204,8 +204,8 @@ SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true)
             |            |            | 
 (1 row)
 
--- a small read keeps one process
-RESET sift.test_agg_par_min_rows;
+-- a small read keeps one process: the launch of the workers costs more than it saves
+RESET sift.test_agg_par_min_rows; RESET parallel_setup_cost; RESET parallel_tuple_cost;
 SELECT (launched($q$SELECT kind, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$)).workers = 0 AS small_read_has_no_workers;
  small_read_has_no_workers 
 ---------------------------

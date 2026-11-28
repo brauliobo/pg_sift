@@ -156,8 +156,8 @@ SELECT sift.col_merge('events_col', true) >= 0 AND sift.col_merge('gevents_col',
 SELECT * FROM state('promoted and merged');
 SELECT sift.col_verify('events_col', true), sift.col_verify('gevents_col', true), sift.col_verify('t_events_col', true), sift.col_verify('u_events_col', true);
 
--- a small read keeps one process
-RESET sift.test_agg_par_min_rows;
+-- a small read keeps one process: the launch of the workers costs more than it saves
+RESET sift.test_agg_par_min_rows; RESET parallel_setup_cost; RESET parallel_tuple_cost;
 SELECT (launched($q$SELECT kind, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = 3) GROUP BY kind$q$)).workers = 0 AS small_read_has_no_workers;
 
 DROP FUNCTION state(text), run_form(text), launched(text), rows_md5(text);

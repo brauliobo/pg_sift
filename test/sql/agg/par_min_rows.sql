@@ -1,5 +1,5 @@
 -- sift.test_agg_par_min_rows: a parallel aggregate scan takes the workers the settings allow on a table far under the rows and granules a plan needs to launch them, and
--- its rows are those of the heap plan. Without the setting the same small scan is not a parallel SiftAggV6 node.
+-- its rows are those of the heap plan (sift.agg_force: the forced scan is priced, and the heap plan with workers is cheaper on so few rows). Without the setting the same small scan is not a parallel SiftAggV6 node.
 CREATE EXTENSION pg_sift;
 SET sift.test_create_format1 = off;
 SET client_min_messages = warning;
@@ -44,6 +44,7 @@ INSERT INTO par_cases VALUES
 
 SELECT name, workers_of(q) AS workers_default FROM par_cases ORDER BY name;
 SET sift.test_agg_par_min_rows = 0;
+SET sift.agg_force = on;
 SELECT name, workers_of(q) AS workers_forced, agrees(q) AS same_rows FROM par_cases ORDER BY name;
 SET max_parallel_workers_per_gather = 0;
 SELECT name, workers_of(q) AS workers_none FROM par_cases ORDER BY name;

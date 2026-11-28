@@ -79,8 +79,6 @@ typedef struct CostPick
 	uint32		topk;
 	bool		values;			/* a count(DISTINCT): every row sends its value */
 	int			nkeys;
-	Cost		startup;
-	Cost		total;
 } CostPick;
 
 /* what a row costs for the column c, which is read as text or as a number; a computed one (length, extract) is made from its source */
@@ -230,10 +228,16 @@ pick_workers(void *arg, int max_by_granules)
 	CostPick   *c = arg;
 	const double par = parallel_ms(c, max_by_granules);
 
-	if (par >= c->serial_ms * PAR_MIN_GAIN)
-		return 0;
-	c->startup = c->total = c->serial_total * par / Max(c->serial_ms, 1e-6);
-	return max_by_granules;
+	return par >= c->serial_ms * PAR_MIN_GAIN ? 0 : max_by_granules;
+}
+
+/* The cost of the parallel path: the serial cost scaled by the time of the workers; a forced one (sift.test_agg_par_min_rows = 0) stays below the serial path, not below the other plans */
+static Cost
+par_total(const CostPick *c, int nworkers, bool forced)
+{
+	const double share = parallel_ms(c, nworkers) / Max(c->serial_ms, 1e-6);
+
+	return c->serial_total * (forced ? Min(share, PAR_MIN_GAIN) : share);
 }
 
 /* The threads split the scan as the participants of a Gather do, with no launch; the waits for memory of a large table stay the backend's */
@@ -479,13 +483,13 @@ sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel,
 	cp->path.parallel_aware = true;
 	cp->path.parallel_safe = true;
 	cp->path.parallel_workers = nworkers;
-	cp->path.startup_cost = cp->path.total_cost = pick.total;
+	cp->path.startup_cost = cp->path.total_cost = par_total(&pick, nworkers, in.force);
 	cp->path.rows = clamp_row_est(total_groups / participants(nworkers));
 	cp->methods = methods;
 	cp->custom_paths = child_paths;
 	cp->custom_private = list_make3(sift_v6_spec_pack(&spec), scan_tlist, having);
 	gather = create_gather_path(root, output_rel, &cp->path, output_rel->reltarget, NULL, &total_groups);
-	gather->path.startup_cost = gather->path.total_cost = pick.total;
+	gather->path.startup_cost = gather->path.total_cost = cp->path.total_cost;
 	add_path(output_rel, (Path *) gather);
 	return NULL;
 }
