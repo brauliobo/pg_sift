@@ -333,7 +333,7 @@ SELECT name, regexp_replace(hy_shape(regexp_replace(q, 'WHERE ', 'WHERE random()
 SELECT hy_shape('SELECT region, count(*) FROM mm_docs c WHERE c.tenant < 100 AND EXISTS (SELECT 1 FROM mm_acl tl WHERE tl.tenant_id = 4 AND tl.item_id = c.id) GROUP BY region') AS no_text_query;
                  no_text_query                 
 -----------------------------------------------
- hybrid=f joined=t semi_join=t array_subplan=f
+ hybrid=f joined=t semi_join=f array_subplan=f
 (1 row)
 
 \echo -- rows that change: deletes, updates (HOT and not), and the own writes of a transaction
