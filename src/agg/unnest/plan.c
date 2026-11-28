@@ -24,6 +24,7 @@
 #include "agg/vexpr.h"
 #include "agg/expr/pg.h"
 #include "agg/ext.h"
+#include "agg/par/pg.h"
 #include "agg/pipe.h"
 #include "agg/safety.h"
 #include "agg/source_rel.h"
@@ -323,16 +324,17 @@ reread_cost(const V6Plan *p)
 	return rows * (sift_v6_fetch_cost(p->is_table) + fn->total_cost + p->elem_rel->rows * cpu_tuple_cost * REREAD_ELEM_TUPLES);
 }
 
-/* the pairs of the whole table: the scan skips only the granules the zones of the quals of the table rule out, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
+/* the pairs of the rows of the granules the zones of the quals of the table leave, which a column the rows are not ordered by does not narrow, so a selective statement costs what the table does */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {
-	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel), 0, JOIN_INNER, NULL), 1.0e-6);
+	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel), 0, JOIN_INNER, NULL), 1.0e-6),
+				read = Min(sift_v6_granule_rows(p->root, p->rel, &p->spec, 1.0) / Max(p->rel->tuples, 1.0), 1.0);
 	int			heavy = 0;
 
 	for (int j = 0; p->spec.nkeys > 0 && j < p->spec.naggs; j++)
 		heavy += sift_v6_kind_distinct(p->spec.agg[j].kind) || p->spec.agg[j].kind == SV6_PCT_CONT;
-	return input_rel->rows / sel * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy) + reread_cost(p);
+	return input_rel->rows / sel * read * cpu_operator_cost * (1 + HEAVY_AGG_PAIR_FACTOR * heavy) + reread_cost(p);
 }
 
 static void

@@ -56,6 +56,8 @@ extern const char *sift_v6_par_add_path(PlannerInfo *root, RelOptInfo *rel, RelO
 /* The rule that keeps a Top-N of the rows of rel in one process (NULL: the session allows no workers); joins: it reads the plans of lookup tables */
 extern const char *sift_v6_par_rows_serial_why(PlannerInfo *root, const RelOptInfo *rel, bool joins);
 /* Prices the serial path by the compute threads of the backend that run its scan, when the spec is one they take (agg/par/run.h, agg/par/pinrun.h) */
+/* the rows of the granules the scan of the spec reads: those the zone maps leave to its quals */
+extern double sift_v6_granule_rows(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups);
 extern void sift_v6_threads_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups, Path *path);
 
 #endif							/* SIFT_AGG_V6_PAR_PG_H */

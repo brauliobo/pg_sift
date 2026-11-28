@@ -136,8 +136,8 @@ spec_index(const RelOptInfo *rel, const SiftV6Spec *spec)
 
 /* the rows of the granules the scan reads: those the zone maps of an index leave to the quals (agg/cost/card.h), the share the quals leave of a table or of partitions, all of them for a
  * qual on a text column that is not a key (a LIKE keeps every granule of the zone maps and decodes it) */
-static double
-scan_rows(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups)
+double
+sift_v6_granule_rows(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double groups)
 {
 	const IndexOptInfo *ix = spec_index(rel, spec);
 
@@ -281,7 +281,7 @@ static SiftV6ParInput
 par_input(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *output_rel, const SiftV6Spec *spec, List *having, double groups, CostPick *pick)
 {
 	SiftV6ParInput in = {.parallel_scan = sift_parallel_scan,.max_workers = max_parallel_workers_per_gather,
-		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = scan_rows(root, rel, spec, groups) / GRANULE_ROWS + 1.0,
+		.exact_float = sift_agg_exact_float,.force = sift_agg_par_min_rows == 0,.nkeys = spec->nkeys,.nsets = spec->nsets,.naggs = spec->naggs,.est_rows = rel->rows,.g_eff = sift_v6_granule_rows(root, rel, spec, groups) / GRANULE_ROWS + 1.0,
 		.est_groups = groups,.hash_limit = (double) get_hash_memory_limit(),.cost_workers = pick_workers,.cost_arg = pick};
 	uint32		ndist = 0;
 	bool		slot_text = false;
