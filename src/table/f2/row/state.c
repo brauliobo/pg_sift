@@ -47,6 +47,7 @@ pending_state(Relation rel, const SiftPartitionEntry *entry, uint64 tid, SiftRow
 	}
 }
 
+/* A deletion vector entry without a deleter is a settled delete (sift_dv_settle dropped its xmax): the row is dead for every snapshot */
 static void
 vector_state(SiftF2GranuleBuf *gb, uint16 row, SiftRowState *rs)
 {
@@ -57,10 +58,14 @@ vector_state(SiftF2GranuleBuf *gb, uint16 row, SiftRowState *rs)
 	if (dvg == NULL)
 		return;
 	e = sift_dv_find(dvg, row, &dead);
-	if (dead && (e == NULL || newer_deleter(e->xmax)))
+	if (!dead)
+		return;
+	if (!TransactionIdIsValid(e->xmax))
+		rs->xmax = FrozenTransactionId;
+	else if (newer_deleter(e->xmax))
 	{
-		rs->xmax = e != NULL ? e->xmax : FrozenTransactionId;
-		rs->cmax = e != NULL ? e->cmax : 0;
+		rs->xmax = e->xmax;
+		rs->cmax = e->cmax;
 	}
 }
 

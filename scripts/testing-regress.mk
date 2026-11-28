@@ -766,6 +766,7 @@ TESTING_REGRESS += table/f2/ttl_drop_acid
 TESTING_REGRESS += table/f2/ttl_drop_not_null_constraint
 TESTING_REGRESS += table/f2/unified_parity
 TESTING_REGRESS += table/f2/update_indexed
+TESTING_REGRESS += table/f2/vacuum_full_settled
 TESTING_REGRESS += table/fast_paths
 TESTING_REGRESS += table/fetch_dict
 TESTING_REGRESS += table/filter
