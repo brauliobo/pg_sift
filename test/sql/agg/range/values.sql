@@ -1,10 +1,11 @@
 -- lower(r) and upper(r) of a range column, as an aggregate argument, a group key or a condition, are read from the first and last position of the range the index keeps for the
 -- containment operators (col/shape.c) as values of the subtype: NULL for a NULL range, an empty range and an infinite bound, the date infinity as written. A column with a bound
--- too large for a lane (an int8 near its limits, a timestamp infinity) is read from the image, as before: the scan is refused and the rows are PostgreSQL's. Each statement is run
--- with the scan on and off; `scan` says the aggregate is in the scan, `same` that the rows are those of sift off.
+-- too large for a lane (an int8 near its limits, a timestamp infinity) is read from the image: the scan evaluates the function on the stored range. Each statement is run
+-- with the scan on and off; `scan` says the aggregate is in the scan, `same` that the rows are those of sift off. The tables are too small for the scan to win on cost.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
 
 CREATE TABLE rg (id int PRIMARY KEY, i4 int4range, i8 int8range, d daterange, ts tsrange, tz tstzrange) WITH (autovacuum_enabled = false);
 INSERT INTO rg

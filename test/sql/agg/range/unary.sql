@@ -1,10 +1,11 @@
 -- isempty(r), lower_inf(r), upper_inf(r), lower_inc(r) and upper_inc(r) of a range column in a WHERE conjunct (as the function, its NOT, `IS TRUE` and `IS FALSE`) are tests on
 -- the first and last position of the range that the index keeps (col/shape.c) as the containment operators are: empty ranges, ranges with a bound that is no value, inclusive and exclusive
 -- bounds of the continuous subtypes, the canonical form of the discrete ones, NULL ranges, and a bound too large for a lane (the engine keeps those rows and PostgreSQL's function decides
--- them) give the rows PostgreSQL gives. Each statement is run with the scan on and off; `scan` says the aggregate is in the scan.
+-- them) give the rows PostgreSQL gives. Each statement is run with the scan on and off; `scan` says the aggregate is in the scan (forced: the table is too small to win on cost).
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
+SET sift.agg_force = on;
 
 CREATE TABLE rg (id int PRIMARY KEY, i4 int4range, i8 int8range, d daterange, ts tsrange, tz tstzrange) WITH (autovacuum_enabled = false);
 INSERT INTO rg
