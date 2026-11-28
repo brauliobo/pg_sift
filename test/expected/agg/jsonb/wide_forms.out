@@ -545,13 +545,13 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  458 | jd: short text leaf, case in key              | scan same
  459 | jd: short text leaf, case with filter         | scan same
  460 | jd: array element, where                      | scan same
- 461 | jd: array element, where not                  | plain same
- 462 | jd: array element, where is not true          | plain same
- 463 | jd: array element, where is false             | plain same
+ 461 | jd: array element, where not                  | scan same
+ 462 | jd: array element, where is not true          | scan same
+ 463 | jd: array element, where is false             | scan same
  464 | jd: array element, where or                   | scan same
- 465 | jd: array element, where not or               | plain same
- 466 | jd: array element, where is not true and      | plain same
- 467 | jd: array element, where is not true or       | plain same
+ 465 | jd: array element, where not or               | scan same
+ 466 | jd: array element, where is not true and      | scan same
+ 467 | jd: array element, where is not true or       | scan same
  468 | jd: array element, filter                     | scan same
  469 | jd: array element, filter not                 | scan same
  470 | jd: array element, filter is not true         | scan same

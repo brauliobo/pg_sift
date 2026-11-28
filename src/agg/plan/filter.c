@@ -103,13 +103,13 @@ truth_compare(Expr *c)
 
 static Expr *conjunct_qual(V6Plan *p, Expr *conjunct);
 
-/* an OR of conjuncts the scan decides: the OR of their quals */
+/* an AND or OR of conjuncts the scan decides: the AND or OR of their quals */
 static Expr *
-or_qual(V6Plan *p, const BoolExpr *or)
+bool_qual(V6Plan *p, const BoolExpr *b)
 {
 	List	   *arms = NIL;
 
-	foreach_ptr(Expr, arm, or->args)
+	foreach_ptr(Expr, arm, b->args)
 	{
 		Expr	   *q = conjunct_qual(p, arm);
 
@@ -117,7 +117,29 @@ or_qual(V6Plan *p, const BoolExpr *or)
 			return NULL;
 		arms = lappend(arms, q);
 	}
-	return makeBoolExpr(OR_EXPR, arms, -1);
+	return makeBoolExpr(b->boolop, arms, -1);
+}
+
+/* IS [NOT] TRUE or IS [NOT] FALSE of an AND or an OR: the AND or OR of the same test of each arm, IS NOT TRUE and IS FALSE swapping AND and OR (c: any other clause) */
+static Expr *
+truth_distribute(Expr *c)
+{
+	const BooleanTest *bt = IsA(c, BooleanTest) ? (const BooleanTest *) c : NULL;
+	const BoolExpr *b = bt != NULL && bt->booltesttype != IS_UNKNOWN && bt->booltesttype != IS_NOT_UNKNOWN && (is_andclause(bt->arg) || is_orclause(bt->arg)) ?
+		(const BoolExpr *) bt->arg : NULL;
+	const bool	swaps = bt != NULL && (bt->booltesttype == IS_NOT_TRUE || bt->booltesttype == IS_FALSE);
+	List	   *arms = NIL;
+
+	if (b == NULL)
+		return c;
+	foreach_ptr(Expr, arm, b->args)
+	{
+		BooleanTest *t = makeNode(BooleanTest);
+
+		*t = (BooleanTest) {.xpr.type = T_BooleanTest,.arg = arm,.booltesttype = bt->booltesttype,.location = -1};
+		arms = lappend(arms, truth_distribute((Expr *) t));
+	}
+	return makeBoolExpr((b->boolop == AND_EXPR) != swaps ? AND_EXPR : OR_EXPR, arms, -1);
 }
 
 /* a containment whose lists of strings the tests of the plan read: the quals of their flags and of the tests of the leaves of its other members (NULL: none, or one the scan does not decide) */
@@ -151,18 +173,19 @@ conjunct_qual(V6Plan *p, Expr *conjunct)
 
 	if (q != NULL || (q = members_qual(p, c)) != NULL)
 		return q;
-	return is_orclause(c) ? or_qual(p, (const BoolExpr *) c) : filter_qual(p, c);
+	return is_orclause(c) || is_andclause(c) ? bool_qual(p, (const BoolExpr *) c) : filter_qual(p, c);
 }
 
 Expr *
-sift_v6_tests_or_qual(V6Plan *p, Expr *clause)
+sift_v6_tests_bool_qual(V6Plan *p, Expr *clause)
 {
+	Expr	   *c = p->tests == NIL ? NULL : truth_distribute(clause);
 	Expr	   *q;
 
-	if (p->tests == NIL || !is_orclause(clause))
+	if (c == NULL || !(is_orclause(c) || is_andclause(c)))
 		return NULL;
 	p->in_filter = true;
-	q = or_qual(p, (const BoolExpr *) clause);
+	q = bool_qual(p, (const BoolExpr *) c);
 	p->in_filter = false;
 	return q;
 }

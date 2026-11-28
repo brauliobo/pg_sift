@@ -504,14 +504,14 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 	Expr	   *q = ri->pseudoconstant || p->ops == NULL || p->ops->zone == NULL ? NULL : sift_v6_index_qual(p, ri->clause);
 
 	if (q == NULL && !ri->pseudoconstant)
-		q = sift_v6_tests_or_qual(p, ri->clause);
+		q = sift_v6_tests_bool_qual(p, ri->clause);
 	List	   *jq = ri->pseudoconstant || q != NULL || heap_decides(p, ri->clause) || (p->is_table && !p->ops->zone->table_json) || sift_v6_plan_unnest_keys(p) ? NIL :
 		sift_v6_json_qual(rel, ri->clause);
 
 	if (q != NULL && key_column_qual(p, q))
 		p->key_quals = lappend(p->key_quals, ri);
 	if (q != NULL)
-		p->spec.indexqual = lappend(p->spec.indexqual, q);
+		p->spec.indexqual = list_concat(p->spec.indexqual, sift_v6_conjuncts(q));
 	else if (jq != NIL)
 		p->spec.jsonqual = lappend(p->spec.jsonqual, jq);
 	else if (qual_batch(p, ri))

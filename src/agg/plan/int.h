@@ -170,8 +170,9 @@ extern bool sift_v6_plan_read_column(V6Plan *p, const Expr *e, bool numeric_ok, 
 extern bool sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col);
 /* plan_filter.c: the FILTER clause of an aggregate, as the id (1 on) of a clause of the scan; false when the scan cannot decide it */
 extern bool sift_v6_compile_filter(V6Plan *p, Expr *filter, int *fclause);
-/* An OR of the WHERE one of whose arms is a test of the elements of the row (p->tests): the OR of the flag of the test and the quals of the other arms, as a FILTER has them (NULL: none) */
-extern Expr *sift_v6_tests_or_qual(V6Plan *p, Expr *clause);
+/* An OR of the WHERE one of whose arms is a test of the elements of the row (p->tests), or IS [NOT] TRUE or FALSE of an AND or OR of such: the AND or OR of the flag of the test and the quals
+ * of the other arms, as a FILTER has them (NULL: none) */
+extern Expr *sift_v6_tests_bool_qual(V6Plan *p, Expr *clause);
 
 /* n with each placeholder as its expression nulled by the outer joins that null the placeholder: a strict one through its columns, any other NULL where a join keeps a row without its
  * nullable side (CASE WHEN the element of the unnest, or a NOT NULL column of the fact table, is there): false when the scan cannot tell such a row */
