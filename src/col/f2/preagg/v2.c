@@ -10,7 +10,7 @@
 
 #include "col/api/leaf.h"
 #include "col/f2/part/format.h"
-#include "col/f2/preagg/v2.h"
+#include "col/f2/preagg/elem.h"
 #include "core/hash.h"
 #include "core/memtrack.h"
 #include "port/pg_bitutils.h"
@@ -21,7 +21,6 @@
 #define PAG_AUTO_CELL_BYTES		65536	/* ... and the most bytes of them: the budget of SIFT_PAG_BUDGET_PERCENT would leave the cube out of most granules otherwise */
 #define PAG_SPARSE_PERCENT		2		/* a column that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one, whatever the distinct values a part samples */
 #define PAG_EXPLICIT_GROUPS		4096
-#define PAG_MAP_GROUPS			256		/* the most keys a granule has in the cube of the elements of a map or an array */
 #define PAG_SAMPLE_ROWS			16384
 
 /* ---- which cubes ---- */
@@ -60,8 +59,8 @@ sample_nonnull(const SiftColIn *col, int n, uint32 *sampled)
 }
 
 /* The distinct values of a sample of the column, at most cap + 1 */
-static uint32
-sample_distinct(const SiftColIn *col, int n, uint32 cap)
+uint32
+sift_pag_sample_distinct(const SiftColIn *col, int n, uint32 cap)
 {
 	const uint32 size = pg_nextpower2_32(cap * 4);
 	const int	step = Max(1, n / PAG_SAMPLE_ROWS);
@@ -90,8 +89,8 @@ sample_distinct(const SiftColIn *col, int n, uint32 cap)
 	return nd;
 }
 
-static bool
-dict_codes_kept(const SiftColIn *c, const SiftDictEnc *d)
+bool
+sift_pag_dict_codes_kept(const SiftColIn *c, const SiftDictEnc *d)
 {
 	return d != NULL && (c->pdict != NULL || d->row_codes != NULL);
 }
@@ -107,7 +106,7 @@ col_info(const SiftRows *rows, const SiftDictEnc *const *dicts, int c, ColInfo *
 	if (col->kind == SIFT_CELL_INT && col->hint != SIFT_CHINT_NUM128)
 	{
 		const bool	num = col->hint == SIFT_CHINT_NUM64;
-		const uint32 nd = sample_distinct(col, rows->nrows, PAG_AUTO_DIST_MAX_CARD);
+		const uint32 nd = sift_pag_sample_distinct(col, rows->nrows, PAG_AUTO_DIST_MAX_CARD);
 		uint32		sampled;
 		const uint32 nonnull = sample_nonnull(col, rows->nrows, &sampled);
 		const bool	sparse = nonnull > 0 && (uint64) nonnull * 100 <= (uint64) sampled * PAG_SPARSE_PERCENT;
@@ -130,7 +129,7 @@ col_info(const SiftRows *rows, const SiftDictEnc *const *dicts, int c, ColInfo *
 		ci->numeric = true;
 		ci->mkind = SIFT_PMEAS_F8;
 	}
-	else if (col->kind == SIFT_CELL_STR && col->hint == SIFT_CHINT_AUTO && dicts != NULL && dict_codes_kept(col, dicts[c]))
+	else if (col->kind == SIFT_CELL_STR && col->hint == SIFT_CHINT_AUTO && dicts != NULL && sift_pag_dict_codes_kept(col, dicts[c]))
 	{
 		ci->card = dicts[c]->n;
 		ci->dkind = SIFT_PDIM_DICT32;
@@ -284,67 +283,6 @@ plan_declared(const SiftRows *rows, const SiftDictEnc *const *dicts, ColInfo *ci
 		add_cube(plan, ci, nc, dims, nd, NULL, 0, PAG_EXPLICIT_GROUPS);
 }
 
-/* The measure a value leaf of a map is: an integer or a float8 */
-static bool
-map_measure(const SiftColIn *c, SiftPreaggMeasKind *kind)
-{
-	if (c->key_leaf || c->astext || c->hint != SIFT_CHINT_AUTO || c->promo != NULL)
-		return false;
-	*kind = c->kind == SIFT_CELL_F8 ? SIFT_PMEAS_F8 : SIFT_PMEAS_INT64;
-	return c->kind == SIFT_CELL_F8 || c->kind == SIFT_CELL_INT;
-}
-
-/* The group of the arrays a leaf is an element of (its lengths, a column of the rows) is a map: one of its leaves is the `#key` leaf */
-static bool
-map_group(const SiftRows *rows, int group1)
-{
-	for (int c = 0; rows->map_key != NULL && c < rows->ncols; c++)
-		if (rows->map_key[c] && rows->cols[c].group1 == group1)
-			return true;
-	return false;
-}
-
-/* The flags of the cube of the elements a string leaf groups (the `#key` leaf of a map, or a leaf of an array of objects or of strings that is a column of the rows), 0: it groups none */
-static uint8
-elem_cube_flags(const SiftRows *rows, const SiftDictEnc *const *dicts, int c)
-{
-	const SiftColIn *key = &rows->cols[c];
-
-	if (key->kind != SIFT_CELL_STR || key->group1 == 0 || !dict_codes_kept(key, dicts != NULL ? dicts[c] : NULL))
-		return 0;
-	if (rows->map_key != NULL && rows->map_key[c])
-		return SIFT_PCUBE_ELEMENTS;
-	return rows->cols[key->group1 - 1].group1 == 0 && !map_group(rows, key->group1) ? SIFT_PCUBE_KIND : 0;
-}
-
-/* A cube of the elements of each map, array of objects or array of strings whose keys the part keeps a dictionary of, with the numeric leaves of the same elements as its measures */
-static void
-add_elem_cubes(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
-{
-	for (int c = 0; c < rows->ncols && plan->ncubes < SIFT_PREAGG_MAX_CUBES; c++)
-	{
-		const uint8 flags = elem_cube_flags(rows, dicts, c);
-		SiftPreaggCubeDesc *cd;
-
-		if (flags == 0)
-			continue;
-		cd = &plan->cube[plan->ncubes++];
-		*cd = (SiftPreaggCubeDesc) {.ndims = 1,.flags = flags,.max_groups_per_gran = PAG_MAP_GROUPS};
-		cd->dim_leaf[0] = (uint16) c;
-		cd->dim_kind[0] = SIFT_PDIM_DICT32;
-		for (int v = 0; v < rows->ncols && cd->nmeasures < SIFT_PREAGG_MAX_MEAS; v++)
-		{
-			SiftPreaggMeasKind kind;
-
-			if (v != c && rows->cols[v].group1 == rows->cols[c].group1 && map_measure(&rows->cols[v], &kind))
-			{
-				cd->meas_leaf[cd->nmeasures] = (uint16) v;
-				cd->meas_kind[cd->nmeasures++] = (uint8) kind;
-			}
-		}
-	}
-}
-
 static bool
 plan_rows(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan *plan)
 {
@@ -379,7 +317,7 @@ plan_rows(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan 
 		if (njoint > 1)
 			add_cube(plan, ci, nc, dims, njoint, dist, 0, groups);
 	}
-	add_elem_cubes(rows, dicts, plan);
+	sift_pag_add_elem_cubes(rows, dicts, plan);
 	pfree(ci);
 	pfree(dims);
 	pfree(dist);
@@ -395,7 +333,7 @@ leaf_holds(const SiftRows *rows, const SiftDictEnc *const *dicts, int leaf, bool
 	if (c == NULL)
 		return false;
 	if (str)
-		return c->kind == SIFT_CELL_STR && dicts != NULL && dict_codes_kept(c, dicts[leaf]);
+		return c->kind == SIFT_CELL_STR && dicts != NULL && sift_pag_dict_codes_kept(c, dicts[leaf]);
 	return c->kind == (flt ? SIFT_CELL_F8 : SIFT_CELL_INT);
 }
 

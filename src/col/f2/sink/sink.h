@@ -85,6 +85,7 @@ typedef struct SiftF2GranOffer
 	const struct SiftPendDelIndex *px;	/* the addresses the pending deletes and the deletes of the transaction take from the snapshot; NULL: none */
 	SiftF2GranVis vis;
 	const int16 *phys;			/* the column of the part that holds each leaf the scan names, -1: none that holds its cells as they are; NULL: the part has the leaves of the scan */
+	bool		rows_pass;		/* a pull (col/f2/sink/ext.h): the zones of the granule say that every row passes the predicates of the rows of the pull */
 } SiftF2GranOffer;
 
 typedef bool (*SiftF2GranSink) (void *arg, const SiftF2GranOffer *offer);

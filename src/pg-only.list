@@ -461,6 +461,8 @@ col/f2/point_dir_test.c
 col/f2/preagg/decl.c
 col/f2/preagg/delta.c
 col/f2/preagg/delta.h
+col/f2/preagg/elem.c
+col/f2/preagg/elem.h
 col/f2/preagg/test.c
 col/f2/preagg/v2.c
 col/f2/preagg/v2.h

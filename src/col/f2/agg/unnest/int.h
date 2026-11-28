@@ -133,6 +133,7 @@ typedef struct UnRun
 	SiftV6LateProbe *probe;		/* the expressions that read a member whose cast raised (SiftV6Ext.late_probe) */
 	SiftClause	where;
 	bool		has_where;
+	bool		where_preds;	/* every qual of the table is a predicate of the pull: a granule whose zones say every row passes them needs none */
 	SiftVec   **wvecs;
 	int		   *wcol;			/* the column of each vector the WHERE clause reads */
 	SiftV6ElemEval *eev;		/* the quals of the element of a lateral unnest */
@@ -214,7 +215,10 @@ extern void sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *
 /* the members of row r from the heap row the vet holds, once the quals of the table keep it */
 extern void sift_f2_unnest_member_heap_row(UnRun *u, uint32 r);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
-/* the quals of the table on columns of an index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
-extern void sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, ScanKey star, int nstar, SiftF2PullSpec *ps);
+/*
+ * the quals of the table on columns of an index, and the keys of the dimensions of a star join (star), as predicates of their leaves: the pull reads no granule whose zones they leave out (the
+ * batches are filtered by the quals again) (where.c); true when every qual is one of them
+ */
+extern bool sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, ScanKey star, int nstar, SiftF2PullSpec *ps);
 
 #endif							/* SIFT_COL_F2_V6_UNNEST_INT_H */

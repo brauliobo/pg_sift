@@ -57,6 +57,8 @@ extern void sift_f2_pull_prune_open(SiftF2PullPrune *pr, Relation index, const S
 extern bool sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullStats *st);
 /* The granules of the open part to read from here on are those of the key marks inside [lo, hi) */
 extern void sift_f2_pull_prune_range(SiftF2PullPrune *pr, uint32 lo, uint32 hi);
+/* Whether the zones of the leaves of the predicates of the rows say that every row of granule g of the open part passes them all */
+extern bool sift_f2_pull_prune_all(const SiftF2PullPrune *pr, uint32 g);
 /* Whether the zones of the element leaves say that no element of granule g, which has n_elems of them, passes the predicates of the elements */
 extern bool sift_f2_pull_prune_elems(const SiftF2PullPrune *pr, uint32 g, uint32 n_elems);
 

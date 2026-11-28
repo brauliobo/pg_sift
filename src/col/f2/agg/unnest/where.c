@@ -50,9 +50,9 @@ where_key(Relation index, const Node *q, ScanKeyData *k)
 
 /*
  * The quals of the table on columns of the index, and the keys of the dimensions of a star join (star), as predicates of their leaves: the pull reads no granule whose zones they leave out (the
- * batches are filtered by the quals, and the pairs by the join, again)
+ * batches are filtered by the quals, and the pairs by the join, again); true when every qual is one of them
  */
-void
+bool
 sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, ScanKey star, int nstar, SiftF2PullSpec *ps)
 {
 	ColKeys		ck = {.defs = r->schema->cols,.ndefs = r->schema->ncols,.first = r->first,.idesc = RelationGetDescr(u->host)};
@@ -66,7 +66,8 @@ sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, ScanKey star, int nstar,
 	foreach_ptr(Node, q, u->x->where)
 		n += where_key(u->host, q, &keys[n]);
 	if (n == 0 || !sift_col_key_preds(keys, n, &ck, preds))
-		return;
+		return u->x->where == NIL;
 	ps->npred = sift_col_preds_keep(preds, n);
 	ps->pred = preds;
+	return ps->npred == nstar + list_length(u->x->where);
 }

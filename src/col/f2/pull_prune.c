@@ -186,6 +186,16 @@ sift_f2_pull_prune_next(SiftF2PullPrune *pr, uint32 *g, SiftF2PullStats *st)
 }
 
 bool
+sift_f2_pull_prune_all(const SiftF2PullPrune *pr, uint32 g)
+{
+	for (int k = 0; k < pr->npred; k++)
+		if (pr->zones[k] == NULL || sift_f2_zone_verdict(&sift_col_rel(pr->index)->schema->cols[pr->pred[k].col], &pr->pred[k], &pr->zones[k][g], pr->dir[g].nrows,
+														 has_exception(pr, g, pr->pred[k].col)) != Z_ALL)
+			return false;
+	return true;
+}
+
+bool
 sift_f2_pull_prune_elems(const SiftF2PullPrune *pr, uint32 g, uint32 n_elems)
 {
 	return zones_rule_out(pr, pr->npred, pr->nelem, g, n_elems);

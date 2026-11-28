@@ -888,8 +888,7 @@ sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 	u->ps = pull_spec(u);
 	for (int i = 0; i < u->ncols; i++)
 		u->pcol[i] = i;
-	if (!u->table)
-		sift_f2_unnest_where_preds(u, &r, keys, nkeys, &u->ps);
+	u->where_preds = !u->table && sift_f2_unnest_where_preds(u, &r, keys, nkeys, &u->ps);
 }
 
 void
@@ -901,7 +900,7 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	const SiftF2ExtBatch *b;
 
 	sift_f2_unnest_open(u, spec, g, heap, index, keys, nkeys, snap, stats, star);
-	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
+	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats, u->where_preds);
 	u->ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	u->ps.gran_arg = map;
 	u->pull = sift_f2_pull_begin(u->host, snap, &u->ps);
