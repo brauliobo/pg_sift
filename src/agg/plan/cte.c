@@ -282,6 +282,18 @@ runs_agg_scan(const PlannedStmt *stmt)
 	return false;
 }
 
+/* a ranks before b as PostgreSQL ranks paths: fewer nodes an enable_ setting disabled, then the lower cost */
+static bool
+cheaper(const Plan *a, const Plan *b)
+{
+	double		ca,
+				cb;
+	const int	da = sift_plan_disabled(a, &ca),
+				db = sift_plan_disabled(b, &cb);
+
+	return da != db ? da < db : ca < cb;
+}
+
 static PlannedStmt *
 plan_query(SIFT_PLANNER_PARAMS)
 {
@@ -334,7 +346,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	rewritten = plan_query(SIFT_PLANNER_ARGS(alt));
 	MemoryContextSwitchTo(caller);
 	if (runs_agg_scan(rewritten) && (!scoped || sift_v6_scope_planned(rewritten)) &&
-		(!priced || sift_agg_force || rewritten->planTree->total_cost < plain->planTree->total_cost))
+		(!priced || sift_agg_force || cheaper(rewritten->planTree, plain->planTree)))
 		return rewritten;
 	MemoryContextDelete(cx);
 	return plain;
