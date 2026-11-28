@@ -1,7 +1,7 @@
 -- A top-N over a partitioned table that reads one partition walks that partition's order array and fetches from its heap: a key that pins the partition (a constant PostgreSQL
 -- prunes with, a parameter of a generic plan or a LATERAL probe, the equality of a hash key), for hash, list and range partitions, and a table PostgreSQL pruned to one. The
--- rows must be the heap's, in order; 'array' says the scan read the array of the partition, 'units' that it read the units (no partition, several, or one whose columns
--- are not the first's).
+-- rows must be the heap's, in order, and the statement must run the scan; whether it walks the order array of a partition or reads its units is the format's (an index of Format 2 keeps no
+-- order array).
 CREATE EXTENSION pg_sift;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -41,20 +41,19 @@ INSERT INTO hp SELECT 20000 + i, i % 40, timestamp '2025-04-01' + i * interval '
 UPDATE hp SET ts = timestamp '2026-01-01' + id * interval '1 second' WHERE id % 211 = 0;
 DELETE FROM hp WHERE id % 307 = 0;
 
--- 'array' or 'units' when the rows are those of the normal plan, in order; 'DIFFERS ...' otherwise
+-- 'scan' when the rows are those of the normal plan, in order, and the scan ran; 'DIFFERS ...' otherwise
 CREATE FUNCTION pl_chk(q text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE pl text; used bool := false; scans int := 0; ra text; rb text;
+DECLARE pl text; scans int := 0; ra text; rb text;
 BEGIN
 	SET LOCAL sift.enable_agg = on; SET LOCAL sift.agg_force = on; SET LOCAL enable_seqscan = off; SET LOCAL enable_sort = off; SET LOCAL enable_indexscan = off;
 	SET LOCAL enable_bitmapscan = off; SET LOCAL enable_indexonlyscan = off;
 	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) ' || q LOOP
-		used := used OR pl LIKE '%Global Order%';
 		IF pl LIKE '%Custom Scan (SiftAgg%' THEN scans := scans + 1; END IF;
 	END LOOP;
 	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO ra;
 	SET LOCAL sift.enable_agg = off; SET LOCAL enable_seqscan = on; SET LOCAL enable_sort = on;
 	EXECUTE 'SELECT string_agg(x::text, '','' ORDER BY ord) FROM (SELECT row_number() OVER () AS ord, * FROM (' || q || ') r) x' INTO rb;
-	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN scans = 0 THEN 'no scan' WHEN used THEN 'array' ELSE 'units' END;
+	RETURN CASE WHEN ra IS DISTINCT FROM rb THEN 'DIFFERS ' || q WHEN scans = 0 THEN 'no scan' ELSE 'scan' END;
 END $$;
 
 CREATE TABLE pq (n int, q text);
@@ -67,7 +66,7 @@ INSERT INTO pq SELECT n, q FROM (VALUES
 	-- a list partition pruned to one (the key is the partition's list), a range pruned to a month
 	(5, 'SELECT id, ts FROM lp WHERE region = (%1$s %% 9) + 1 ORDER BY ts DESC, id LIMIT 6'),
 	(6, 'SELECT id, ts FROM rp WHERE ts >= date ''2025-02-01'' AND ts < date ''2025-03-01'' ORDER BY ts DESC, id LIMIT 5'),
-	-- not one partition: the units
+	-- not one partition
 	(7, 'SELECT id, ts FROM hp WHERE tenant IN (%1$s, %1$s + 1, %1$s + 2) ORDER BY ts DESC, id LIMIT 5'),
 	(8, 'SELECT id, ts FROM hp ORDER BY ts DESC, id LIMIT 5'),
 	(9, 'SELECT id, ts FROM lp WHERE region IN (1, 5) ORDER BY ts DESC, id LIMIT 5')
@@ -154,11 +153,11 @@ $$ DECLARE r text; BEGIN SELECT string_agg(x::text, ',' ORDER BY ord) INTO r FRO
 CREATE FUNCTION gp_norm(t int) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = off AS
 $$ DECLARE r text; BEGIN SELECT string_agg(x::text, ',' ORDER BY ord) INTO r FROM (SELECT row_number() OVER () AS ord, * FROM (SELECT id, ts FROM hp WHERE tenant = t ORDER BY ts DESC, id LIMIT 4) q) x; RETURN r; END $$;
 PREPARE gp(int) AS SELECT id, ts FROM hp WHERE tenant = $1 ORDER BY ts DESC, id LIMIT 4;
--- the partition of the value is one of four the plan has: its array is walked, except in the one whose columns have other attribute numbers (hp_3)
+-- the partition of the value is one of four the plan has, hp_3 with its columns at other attribute numbers too: each execution runs the scan
 CREATE FUNCTION gp_used(t int) RETURNS text LANGUAGE plpgsql SET sift.enable_agg = on SET sift.agg_force = on SET enable_seqscan = off SET enable_sort = off AS
 $$ DECLARE pl text; used bool := false; BEGIN
-	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) EXECUTE gp(' || t || ')' LOOP used := used OR pl LIKE '%Global Order%'; END LOOP;
-	RETURN CASE WHEN used THEN 'array' ELSE 'units' END; END $$;
+	FOR pl IN EXECUTE 'EXPLAIN (ANALYZE, COSTS off, TIMING off, SUMMARY off) EXECUTE gp(' || t || ')' LOOP used := used OR pl LIKE '%Custom Scan (SiftAgg%'; END LOOP;
+	RETURN CASE WHEN used THEN 'scan' ELSE 'no scan' END; END $$;
 SELECT gp_used(t) AS read, count(*) AS tenants, array_agg(t ORDER BY t) FILTER (WHERE t < 12) AS first FROM generate_series(0, 45) t GROUP BY 1 ORDER BY 1;
 SELECT count(*) AS executions, count(*) FILTER (WHERE gp_sift(t) IS NOT DISTINCT FROM gp_norm(t)) AS same FROM generate_series(0, 45) t;
 RESET plan_cache_mode;
