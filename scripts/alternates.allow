@@ -11,6 +11,7 @@ removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
 test/expected/agg/append_children_1.out	5cd2ba5d2b7850383285de762257a1d653fdf733	17	f      | t        |           0
+test/expected/agg/correlated/fanout_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
 test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
 test/expected/agg/explain_sift_1.out	4d62704eb61a993f373809a6e0ed25d6a1926139	17	sift_lines
@@ -34,6 +35,7 @@ test/expected/agg/jsonb_each_map_1.out	3cf51b74cda4a831f78fd20499ded5cff0e0f5ae	
 test/expected/agg/jsonb_each_map_1.out	70159366e799ca42924bfd4908821e59712cb5b7	17	same node ok SELECT kv.key, avg(kv.value::float8), min(kv.value::float8), max(k
 test/expected/agg/jsonb_each_map_1.out	794c69912d46b4cb94c6fd2dba1cfff9e049aa61	17	QUERY PLAN
 test/expected/agg/jsonb_each_map_1.out	92e447d5a15c76e34d6ccb1ba9ab0a6cbbb4387a	17	same node ok SELECT kv.key, avg(kv.value::float8) FROM en o, jsonb_each(o.metri
+test/expected/agg/jsonb_each_map_1.out	9ec0ae18d407bba28c37d855cd24fb0551228e0a	17	same node ok SELECT kv.key, count(*) FROM em o, jsonb_each(o.metrics) kv WHERE
 test/expected/agg/jsonb_each_map_1.out	ae1a41d6631651937035510741fbbefd8224ba33	17	same node ok SELECT d.grp, count(*), sum(kv.value::float8) FROM em o CROSS JOIN
 test/expected/agg/jsonb_each_map_1.out	af1841420b9063f79d36166f091025f39c0e735d	17	same node ok SELECT kv.key, count(*), avg(kv.value::float8) FROM em o, jsonb_ea
 test/expected/agg/jsonb_each_map_1.out	c6b6503f68a596b55ef5cd81660a0d0aea2c7bbd	17	
