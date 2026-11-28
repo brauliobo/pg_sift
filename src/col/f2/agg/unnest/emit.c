@@ -216,9 +216,12 @@ emit_chunk(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep,
 	return sift_unnest_count_bits(keep, 0, nel);
 }
 
-/* the row of the heap at tid is read, and the quals of the table as the statement has them hold of it: the node prepared them for its virtual scan slot, so they read the row deformed */
+/*
+ * the row of the heap at tid is read, and the quals of the table as the statement has them hold of it: the node prepared them for its virtual scan slot, so they read the row
+ * deformed; then its members (row r of the batch) are read from it
+ */
 static bool
-heap_row_kept(UnRun *u, uint64 tid)
+heap_row_kept(UnRun *u, uint64 tid, uint32 row)
 {
 	const bool	found = sift_v6_vet_fetch(&u->vet, tid);
 
@@ -230,7 +233,10 @@ heap_row_kept(UnRun *u, uint64 tid)
 		u->econtext->ecxt_scantuple = u->vet.slot;
 		ResetExprContext(u->econtext);
 	}
-	return u->hqual == NULL || ExecQual(u->hqual, u->econtext);
+	if (u->hqual != NULL && !ExecQual(u->hqual, u->econtext))
+		return false;
+	sift_f2_unnest_member_heap_row(u, row);
+	return true;
 }
 
 /* the elements of an array of the row read from the heap as the function gives them, a chunk at a time (heap_next), NULL and empty arrays included, errors included */
@@ -318,7 +324,7 @@ sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 r
 {
 	MemoryContext old = MemoryContextSwitchTo(u->rmt.root_cx);
 
-	if (heap_row_kept(u, tid))
+	if (heap_row_kept(u, tid, row))
 		heap_pairs(u, fact, row);
 	MemoryContextSwitchTo(old);
 	MemoryContextResetOnly(u->rmt.root_cx);
@@ -410,7 +416,7 @@ sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
 	MemoryContext old = MemoryContextSwitchTo(u->rmt.root_cx);
 	bool		yes[SIFT_V6_XTESTS],
 				known[SIFT_V6_XTESTS];
-	bool		kept = heap_row_kept(u, tid);
+	bool		kept = heap_row_kept(u, tid, row);
 
 	if (kept)
 		heap_flags(u, yes, known);

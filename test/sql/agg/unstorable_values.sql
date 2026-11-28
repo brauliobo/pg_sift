@@ -39,9 +39,10 @@ CREATE FUNCTION eq(keep text, sel text DEFAULT 'avg(CAST(e.value AS float8))', g
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t JOIN LATERAL jsonb_each(t.payload) e ON true WHERE ' || keep || ' GROUP BY ' || grp
 $$;
 
--- a read of the leaf that the scan cannot make again keeps the normal plan
+-- a member whose leaf holds a string in some rows: the scan reads the string as the cast of the statement does, over the whole table too
 SELECT pushed('SELECT kind, sum((payload ->> $$catg_a$$)::float8) FROM events GROUP BY kind') AS plain_member_pushed;
 SELECT same('SELECT kind, sum((payload ->> $$catg_b$$)::float8) FROM events WHERE id < 90 GROUP BY kind') AS plain_member_same;
+SELECT same('SELECT kind, sum((payload ->> $$catg_a$$)::float8) FROM events GROUP BY kind') AS plain_member_dirty_same;
 -- a conjunct on the member of a key keeps the normal plan: the row read again would raise the error of the cast of the aggregate, not of the conjunct's own type
 SELECT pushed(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8')) AS key_filter_pushed;
 SELECT same(eq('CAST(jsonb_extract_path(t.payload, $$score$$) AS integer) = 8 AND id < 3000')) AS key_filter_cast;

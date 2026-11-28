@@ -35,16 +35,22 @@ VACUUM ANALYZE events;
 CREATE FUNCTION eq(keep text, sel text DEFAULT 'avg(CAST(e.value AS float8))', grp text DEFAULT 'e.key') RETURNS text LANGUAGE sql AS $$
 	SELECT 'SELECT ' || grp || ', ' || sel || ' FROM events t JOIN LATERAL jsonb_each(t.payload) e ON true WHERE ' || keep || ' GROUP BY ' || grp
 $$;
--- a read of the leaf that the scan cannot make again keeps the normal plan
+-- a member whose leaf holds a string in some rows: the scan reads the string as the cast of the statement does, over the whole table too
 SELECT pushed('SELECT kind, sum((payload ->> $$catg_a$$)::float8) FROM events GROUP BY kind') AS plain_member_pushed;
  plain_member_pushed 
 ---------------------
- f
+ t
 (1 row)
 
 SELECT same('SELECT kind, sum((payload ->> $$catg_b$$)::float8) FROM events WHERE id < 90 GROUP BY kind') AS plain_member_same;
  plain_member_same 
 -------------------
+ same
+(1 row)
+
+SELECT same('SELECT kind, sum((payload ->> $$catg_a$$)::float8) FROM events GROUP BY kind') AS plain_member_dirty_same;
+ plain_member_dirty_same 
+-------------------------
  same
 (1 row)
 

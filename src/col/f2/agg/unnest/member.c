@@ -75,23 +75,30 @@ put(UnRun *u, int i, uint32 r, bool number, double f, const char *pay, uint32 le
 	u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
 }
 
+/* the member of row r from the document of the heap row in the slot of the vet */
+static void
+slot_member(UnRun *u, int i, uint32 r)
+{
+	const UnCol *c = &u->cols[i];
+	MemoryContext old = MemoryContextSwitchTo(u->bcx);
+	bool		isnull;
+	const Datum doc = slot_getattr(u->vet.slot, c->heap_att, &isnull);
+	const char *pay;
+	uint32		len;
+
+	if (!isnull && sift_v6_json_payload_member((const char *) DatumGetJsonbP(doc), VARSIZE(DatumGetJsonbP(doc)), c->path, u->bcx, &pay, &len))
+		put(u, i, r, false, 0, pay, len);
+	MemoryContextSwitchTo(old);
+}
+
 /* the member of a row the pull cannot hold, from the document of its row of the heap */
 static void
 heap_member(UnRun *u, int i, uint64 tid, uint32 r)
 {
-	const UnCol *c = &u->cols[i];
-	MemoryContext old = MemoryContextSwitchTo(u->bcx);
 	const bool	found = sift_v6_vet_fetch(&u->vet, tid);
-	bool		isnull;
-	Datum		doc;
-	const char *pay;
-	uint32		len;
 
 	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its map is read");
-	doc = slot_getattr(u->vet.slot, c->heap_att, &isnull);
-	if (!isnull && sift_v6_json_payload_member((const char *) DatumGetJsonbP(doc), VARSIZE(DatumGetJsonbP(doc)), c->path, u->bcx, &pay, &len))
-		put(u, i, r, false, 0, pay, len);
-	MemoryContextSwitchTo(old);
+	slot_member(u, i, r);
 }
 
 /* the element of the member in the elements [lo, hi) of a row, SIFT_GATHER_NONE for none; false when a key is one the index could not keep */
@@ -131,7 +138,7 @@ sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const Sif
 
 	memset(u->jvalid[i], 0, SIFT_VEC_WORDS * sizeof(uint64));
 	for (int w = 0; w < (b->n + 63) / 64; w++)
-		for (uint64 bits = bs->mask[w]; bits != 0; bits &= bits - 1)
+		for (uint64 bits = bs->mask[w] & ~b->elem->poison[w]; bits != 0; bits &= bits - 1)
 		{
 			const uint32 r = w * 64 + (uint32) __builtin_ctzll(bits);
 
@@ -143,4 +150,12 @@ sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const Sif
 				heap_member(u, i, b->tid[r], r);
 		}
 	u->fv[i] = (SiftVec) {.data = u->jdata[i],.valid = u->jvalid[i],.len = b->n,.all_valid = false,.dense = true,.type = u->cols[i].typid == FLOAT8OID ? SVEC_F64 : SVEC_I64};
+}
+
+void
+sift_f2_unnest_member_heap_row(UnRun *u, uint32 r)
+{
+	for (int i = 0; i < u->ncols; i++)
+		if (u->cols[i].member)
+			slot_member(u, i, r);
 }

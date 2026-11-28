@@ -208,7 +208,10 @@ extern int	sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col
 extern void sift_f2_unnest_emit_heap_row(UnRun *u, const SiftVec *fact, uint64 tid, uint32 row);
 /* member.c: the column of the batch that is the member c reads by a path, and its values on the rows the statement keeps */
 extern int	sift_f2_unnest_member_col(UnRun *u, const UnLeaves *r, const SiftV6Col *c);
+/* the members of the rows of the batch the layout holds; a row whose array it cannot hold is the heap's, which the quals of the table decide before its members are cast */
 extern void sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs);
+/* the members of row r from the heap row the vet holds, once the quals of the table keep it */
+extern void sift_f2_unnest_member_heap_row(UnRun *u, uint32 r);
 extern void sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row);
 /* the quals of the table on columns of an index as predicates of their leaves: the pull reads no granule whose zones they leave out (the batches are filtered by the quals again) (where.c) */
 extern void sift_f2_unnest_where_preds(UnRun *u, const UnLeaves *r, SiftF2PullSpec *ps);
