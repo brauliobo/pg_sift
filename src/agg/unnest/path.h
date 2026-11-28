@@ -33,6 +33,8 @@ extern const Expr *sift_v6_unnest_path_array(const Node *e, bool table);
  * when none is left): the clause is true exactly when all of them are. NIL: the clause is no such containment, or no member is a list of strings
  */
 extern List *sift_v6_unnest_path_members(const Node *clause, Expr **rest);
+/* the document of the containment doc @> '{..}' (constant <@ doc); NULL: the clause is none */
+extern const Expr *sift_v6_unnest_path_doc(const Node *clause);
 /*
  * The parts of the test over the element columns of rte (which gains the members they read), each a list of quals some element passes: the test is true of a row whose document the leaves hold
  * exactly when the call is (every object of a containment's pattern is a part, one element passes the whole filter of a jsonpath); false: the leaves do not decide it

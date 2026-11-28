@@ -231,7 +231,7 @@ native_filter_quals(V6Plan *p, Expr *filter)
 			quals = NIL;
 			break;
 		}
-		quals = lappend(quals, q);
+		quals = list_concat(quals, sift_v6_conjuncts(q));
 	}
 	p->in_filter = false;
 	return quals;

@@ -146,7 +146,9 @@ collect_filters(Node *n, FilterWalk *w)
 	return expression_tree_walker(n, collect_filters, w);
 }
 
-/* the tests among the conjuncts of a FILTER and the arms of its ORs, added to cands (a clause equal to one already found is the same test) */
+static List *member_cands(PlannerInfo *root, Node *clause, bool table, List *cands);
+
+/* the tests among the conjuncts of a FILTER, the arms of its ORs and the members of its containments, added to cands (a clause equal to one already found is the same test) */
 static List *
 filter_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 {
@@ -158,6 +160,8 @@ filter_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 		if (is_orclause(conjunct))
 			foreach_ptr(Node, arm, ((const BoolExpr *) conjunct)->args)
 				cands = filter_cands(root, arm, table, cands);
+		else if (c == NULL)
+			cands = member_cands(root, conjunct, table, cands);
 		foreach_ptr(TestCand, o, cands)
 			seen |= c != NULL && o->where == NULL && o->bind == NULL && equal(o->node, c->node);
 		if (c != NULL && !seen)
@@ -180,6 +184,71 @@ where_or_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 			cands = lappend(cands, c);
 	}
 	return cands;
+}
+
+/* the three values of a boolean, and the bit of each in a set of them */
+typedef enum
+{
+	TV_TRUE,
+	TV_FALSE,
+	TV_NULL
+} TruthValue;
+
+#define TV_BIT(v)	(1 << (v))
+
+static bool
+boolean_test(BoolTestType t, TruthValue x)
+{
+	switch (t)
+	{
+		case IS_TRUE:
+			return x == TV_TRUE;
+		case IS_NOT_TRUE:
+			return x != TV_TRUE;
+		case IS_FALSE:
+			return x == TV_FALSE;
+		case IS_NOT_FALSE:
+			return x != TV_FALSE;
+		case IS_UNKNOWN:
+			return x == TV_NULL;
+		case IS_NOT_UNKNOWN:
+			return x != TV_NULL;
+	}
+	return false;
+}
+
+/* the clause under its NOTs and IS [NOT] TRUE, FALSE or UNKNOWN, and in v the value of the whole for each value of it */
+static const Node *
+truth_under(const Node *n, TruthValue v[3])
+{
+	const BooleanTest *bt = IsA(n, BooleanTest) ? (const BooleanTest *) n : NULL;
+	const Node *arg = bt != NULL ? (const Node *) bt->arg : is_notclause(n) ? (const Node *) get_notclausearg((const Expr *) n) : NULL;
+	const Node *c;
+
+	if (arg == NULL)
+	{
+		v[TV_TRUE] = TV_TRUE;
+		v[TV_FALSE] = TV_FALSE;
+		v[TV_NULL] = TV_NULL;
+		return n;
+	}
+	c = truth_under(arg, v);
+	for (int i = 0; i < 3; i++)
+		v[i] = bt != NULL ? (boolean_test(bt->booltesttype, v[i]) ? TV_TRUE : TV_FALSE) : v[i] == TV_NULL ? TV_NULL : v[i] == TV_TRUE ? TV_FALSE : TV_TRUE;
+	return c;
+}
+
+/* the clause under its NOTs and boolean tests, and the values of it for which the whole is true (TV_BIT set) */
+static const Node *
+truth_of(const Node *n, int *passes)
+{
+	TruthValue	v[3];
+	const Node *c = truth_under(n, v);
+
+	*passes = 0;
+	for (int i = 0; i < 3; i++)
+		*passes |= v[i] == TV_TRUE ? TV_BIT(i) : 0;
+	return c;
 }
 
 typedef struct MemberWalk
@@ -626,6 +695,24 @@ is_null(const Expr *doc)
 	return (Expr *) nt;
 }
 
+/* the quals of the flags of the lists of strings among the members of the containment c, and in rest the containment of the other members; NIL: none, or one the plan does not test */
+static List *
+member_flags(const V6Plan *p, const Node *c, Expr **rest)
+{
+	List	   *flags = NIL;
+
+	*rest = NULL;
+	foreach_ptr(Expr, member, p->tests == NIL ? NIL : sift_v6_unnest_path_members(c, rest))
+	{
+		Expr	   *q = sift_v6_unnest_test_qual(p, (const Node *) member);
+
+		if (q == NULL)
+			return NIL;
+		flags = lappend(flags, q);
+	}
+	return flags;
+}
+
 /*
  * A containment whose lists of strings the tests of the plan read, as the value it is: NULL exactly where its document is, else true where the flags of the tests and the containment of the
  * other members all are (where it is false the parts are false or NULL, a missing key)
@@ -634,7 +721,7 @@ static Node *
 split_mutator(Node *n, const V6Plan *p)
 {
 	Expr	   *rest;
-	List	   *parts = n != NULL ? sift_v6_tests_contains_quals(p, (const Expr *) n, &rest) : NIL;
+	List	   *parts = n != NULL ? member_flags(p, n, &rest) : NIL;
 	BooleanTest *holds;
 	CaseExpr   *value;
 	CaseWhen   *null_doc;
@@ -661,21 +748,72 @@ sift_v6_tests_split(const V6Plan *p, const Expr *e)
 	return p->tests == NIL ? (Expr *) e : (Expr *) split_mutator((Node *) e, p);
 }
 
-List *
-sift_v6_tests_contains_quals(const V6Plan *p, const Expr *clause, Expr **rest)
+static NullTest *
+null_test(Expr *arg, NullTestType type)
 {
-	List	   *flags = NIL;
+	NullTest   *nt = makeNode(NullTest);
 
-	*rest = NULL;
-	foreach_ptr(Expr, member, p->tests == NIL ? NIL : sift_v6_unnest_path_members((const Node *) clause, rest))
+	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = arg,.nulltesttype = type,.location = -1};
+	return nt;
+}
+
+/* IS [NOT] NULL of the document of the containment c, as a qual of the scan (inside an OR, as a FILTER reads it); NULL: none */
+static Expr *
+doc_null_qual(V6Plan *p, const Node *c, NullTestType type, bool in_or)
+{
+	const bool	was = p->in_filter;
+	Expr	   *q;
+
+	p->in_filter |= in_or;
+	q = sift_v6_index_qual(p, (Expr *) null_test(copyObject(unconstify(Expr *, sift_v6_unnest_path_doc(c))), type));
+	p->in_filter = was;
+	return q;
+}
+
+/*
+ * The quals of a test of the containment c that passes where it is false or NULL too (passes): where it is true, every flag is true (a NULL document has none); where it is false, one flag is
+ * not true (it is NULL for a document without the member's key, whose containment is false) and the document is not NULL. NIL: a test the flags do not decide
+ */
+static List *
+truth_quals(V6Plan *p, const Node *c, List *flags, int passes)
+{
+	const Expr *doc = sift_v6_unnest_path_doc(c);
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	const bool	nullable = !IsA(doc, Var) || !bms_is_member(((const Var *) doc)->varattno, rel.notnull);
+	List	   *arms = NIL;
+	Expr	   *q;
+
+	foreach_node(OpExpr, f, flags)
+		arms = lappend(arms, makeBoolExpr(OR_EXPR, list_make2(make_opclause(f->opno, BOOLOID, false, linitial(f->args), (Expr *) makeBoolConst(false, false), InvalidOid, InvalidOid),
+															  null_test(copyObject(linitial(f->args)), IS_NULL)), -1));
+	switch (passes)
 	{
-		Expr	   *q = sift_v6_unnest_test_qual(p, (const Node *) member);
-
-		if (q == NULL)
+		case TV_BIT(TV_FALSE) | TV_BIT(TV_NULL):
+			return list_make1(make_orclause(arms));
+		case TV_BIT(TV_FALSE):
+			return !nullable ? list_make1(make_orclause(arms)) : (q = doc_null_qual(p, c, IS_NOT_NULL, false)) != NULL ? list_make2(make_orclause(arms), q) : NIL;
+		case TV_BIT(TV_TRUE) | TV_BIT(TV_NULL):
+			return !nullable ? flags : (q = doc_null_qual(p, c, IS_NULL, true)) != NULL ? list_make1(make_orclause(list_make2(make_ands_explicit(flags), q))) : NIL;
+		default:
 			return NIL;
-		flags = lappend(flags, q);
 	}
-	return flags;
+}
+
+List *
+sift_v6_tests_contains_quals(V6Plan *p, const Expr *clause, Expr **rest)
+{
+	int			passes;
+	const Node *c = truth_of((const Node *) clause, &passes);
+	List	   *flags = member_flags(p, c, rest);
+
+	if (passes == TV_BIT(TV_TRUE) || flags == NIL)
+		return flags;
+	if (*rest != NULL)
+	{
+		*rest = NULL;
+		return NIL;
+	}
+	return truth_quals(p, c, flags, passes);
 }
 
 int

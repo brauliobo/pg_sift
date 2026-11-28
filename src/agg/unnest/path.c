@@ -195,6 +195,15 @@ object_pattern(const Node *clause, const Expr **doc, Oid *opno)
 	return JsonContainerIsObject(&jb->root) ? jb : NULL;
 }
 
+const Expr *
+sift_v6_unnest_path_doc(const Node *clause)
+{
+	const Expr *doc;
+	Oid			opno;
+
+	return object_pattern(clause, &doc, &opno) != NULL ? doc : NULL;
+}
+
 /* (doc -> 'key') @> 'array' */
 static Expr *
 member_contains(const Expr *doc, Oid opno, const JsonbValue *key, JsonbValue *array)
