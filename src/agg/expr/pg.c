@@ -274,6 +274,27 @@ sift_v6_pgexpr_sourceless(const SiftV6Spec *s, const SiftV6Derive *d)
 	return it.nin == 0;
 }
 
+/* A parameter only the leader holds: the output of an initplan, a PARAM_EXEC that no sub-plan of the expression sets for its own test (a sub-plan itself runs in each process) */
+static bool
+leader_param_walker(Node *n, List **own)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, SubPlan))
+		*own = list_concat(*own, ((const SubPlan *) n)->paramIds);
+	if (IsA(n, Param))
+		return ((const Param *) n)->paramkind == PARAM_EXEC && !list_member_int(*own, ((const Param *) n)->paramid);
+	return expression_tree_walker(n, leader_param_walker, own);
+}
+
+static bool
+leader_only(PlannerInfo *root, Node *e)
+{
+	List	   *own = NIL;
+
+	return leader_param_walker(e, &own) || !is_parallel_safe(root, e);
+}
+
 const char *
 sift_v6_spec_serial_why(PlannerInfo *root, const SiftV6Spec *s)
 {
@@ -286,11 +307,11 @@ sift_v6_spec_serial_why(PlannerInfo *root, const SiftV6Spec *s)
 		if (sift_v6_key_generic(s, &s->key[i]))
 			return "a group key of a type the scan does not group by its bytes is held by codes of the process that read it";
 	foreach_ptr(List, item, s->pgexpr)
-		if (sift_v6_pgexpr_exec(linitial(item)) || !is_parallel_safe(root, linitial(item)))
-			return "an expression it computes runs a sub-plan or a function that is not parallel safe";
+		if (leader_only(root, linitial(item)))
+			return "an expression it computes reads a value the leader sets or runs a function that is not parallel safe";
 	foreach_ptr(Node, clause, s->vqual)
-		if (sift_v6_pgexpr_exec(clause) || !is_parallel_safe(root, clause))
-			return "a condition it tests runs a sub-plan or a function that is not parallel safe";
+		if (leader_only(root, clause))
+			return "a condition it tests reads a value the leader sets or runs a function that is not parallel safe";
 	return NULL;
 }
 
