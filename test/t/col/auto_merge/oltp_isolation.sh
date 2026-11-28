@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 ((BASH_VERSINFO[0] >= 4)) || { echo 'needs bash 4+ (brew install bash)' >&2; exit 1; }
 # Spec 97 track 4: the auto-merge of a sift_col index, a sift_table and a sift BM25 index beside four OLTP writers and four SELECT readers. Per engine and per size (16384 and 32768 rows)
-# the p99 of the writers and of the readers with the merge on and a churn backlog is divided by their p99 with the merge off (R, the median of three windows), and the stall of the double size (R - 1, at least 0.5, the noise
+# the p99 of the writers and of the readers with the merge on and a churn backlog is divided by their p99 with the merge off (R, each p99 the median of three windows), and the stall of the double size (R - 1, at least 0.5, the noise
 # of a p99) by the stall of the single one (the growth factor): a lock or a buffer flood that costs the work of the table (O(N)) doubles it, a bounded one does not. R of the writers stays within 2.5, R of the readers within 2.0, the
 # growth factor within 1.25. The pacer (sift_internal.maint_pacer) must throttle the worker while they run, give the full speed back when they end, nothing fails, and sift.check finds no problem.
 . "${SIFT_REPO:?}/test/t/lib/common.bash"
@@ -25,7 +25,7 @@ node_start iso || bail "start failed"
 sql iso "CREATE EXTENSION pg_sift CASCADE" "CREATE EXTENSION pg_sift_test" >/dev/null || bail "extension setup failed"
 
 D=$(dir iso)
-QUIET_S=1 QUIET_RUNS=3 ACTIVE_S=1 CLIENTS=4
+QUIET_S=1 ACTIVE_S=1 RUNS=3 CLIENTS=4
 CONN=(-h "$(node_sock iso)" -p "$(port iso)" -U postgres)
 DB=$(node_db iso)
 
@@ -56,14 +56,30 @@ pair() {
 	R_P99=$(p99_us "$D/$tag.r.log.*")
 }
 
-# quiet TAG SCRIPT_W SCRIPT_R: the p99 with the merge off, the median of QUIET_RUNS windows (one window of a second on a fresh table is as often the cold cache or a busy host as the engine)
+# quiet TAG SCRIPT_W SCRIPT_R: the p99 with the merge off, the median of RUNS windows (one window of a second on a fresh table is as often the cold cache or a busy host as the engine)
 quiet() {
 	local i ws=() rs=() fails=0
-	for i in $(seq "$QUIET_RUNS"); do
+	for i in $(seq "$RUNS"); do
 		pair "$1.$i" off "$2" "$3" $QUIET_S
 		ws+=("$W_P99") rs+=("$R_P99") fails=$((fails + FAILS))
 	done
+	diag "$1 windows: write p99 ${ws[*]} us, select p99 ${rs[*]} us"
 	W_P99=$(median "${ws[@]}") R_P99=$(median "${rs[@]}") FAILS=$fails
+}
+
+# active ENG TBL ROWS: the p99 with the merge on, the median of RUNS windows, each over a churn backlog of its own that the worker merges; the pacer samples and the naps of all of them
+active() {
+	local eng=$1 tbl=$2 i ws=() rs=() fails=0 seen=0 throttled=0 naps=0 delay=0
+	for i in $(seq "$RUNS"); do
+		churn_$eng "$tbl" "$3" | sql iso >/dev/null || bail "$tbl churn failed"
+		enqueue_$eng "$tbl"
+		pair "$tbl.active.$i" on "$D/$tbl.w.sql" "$D/$tbl.r.sql" $ACTIVE_S
+		ws+=("$W_P99") rs+=("$R_P99") fails=$((fails + FAILS)) seen=$((seen + SEEN)) throttled=$((throttled + THROTTLED)) naps=$((naps + NAPS))
+		((MAX_DELAY > delay)) && delay=$MAX_DELAY
+		wait_for drained 10
+	done
+	diag "$tbl active windows: write p99 ${ws[*]} us, select p99 ${rs[*]} us"
+	W_P99=$(median "${ws[@]}") R_P99=$(median "${rs[@]}") FAILS=$fails SEEN=$seen THROTTLED=$throttled NAPS=$naps MAX_DELAY=$delay
 }
 median() { printf '%s\n' "$@" | sort -n | awk '{ a[NR] = $1 } END { print a[int((NR + 1) / 2)] }'; }
 
@@ -160,13 +176,10 @@ run_engine() {
 		quiet "$tbl.quiet" "$D/$tbl.w.sql" "$D/$tbl.r.sql"
 		local qw=$W_P99 qr=$R_P99
 		fails=$((fails + FAILS))
-		churn_$eng "$tbl" "$rows" | sql iso >/dev/null || bail "$tbl churn failed"
-		enqueue_$eng "$tbl"
-		pair "$tbl.active" on "$D/$tbl.w.sql" "$D/$tbl.r.sql" $ACTIVE_S
+		active "$eng" "$tbl" "$rows"
 		fails=$((fails + FAILS)) seen=$((seen + SEEN)) throttled=$((throttled + THROTTLED)) slept=$((slept + NAPS))
 		rw[$scale]=$(ratio "$W_P99" "$qw") rs[$scale]=$(ratio "$R_P99" "$qr")
 		diag "$eng ${scale}x: write p99 ${qw}us -> ${W_P99}us (R ${rw[$scale]}), select p99 ${qr}us -> ${R_P99}us (R ${rs[$scale]}), worker samples $SEEN, throttled samples $THROTTLED, worker naps $NAPS, longest pacer delay ${MAX_DELAY}ms"
-		wait_for drained 10
 		rel=$(check_$eng "$tbl")
 		check "$eng ${scale}x: sift.check($rel, true) finds no problem" test "$(sql iso "SELECT count(*) FROM sift.check('$rel', true)")" -eq 0
 	done
