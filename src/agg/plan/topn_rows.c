@@ -15,6 +15,7 @@
 #include "optimizer/tlist.h"
 #include "utils/selfuncs.h"
 #include "parser/parsetree.h"
+#include "utils/spccache.h"
 
 #include "agg/plan/int.h"
 #include "agg/engine.h"
@@ -144,6 +145,23 @@ rows_kept(const V6Plan *p, uint32 k)
 	return Min(p->rel->rows, k + p->rel->rows / estimate_num_groups(p->root, exprs, p->rel->rows, NULL, NULL));
 }
 
+/*
+ * the fetch of the rows the node gives by their address, when it gives a column of the heap row: from the heap, the pages PostgreSQL's own fetch of that many rows by TID reads (a page the
+ * cache keeps is read once); from a sift_table, its row fetch
+ */
+static Cost
+fetch_cost(const V6Plan *p, double rows)
+{
+	Cost		spc_random;
+
+	if (!sift_v6_spec_rows_fetch(&p->spec))
+		return 0;
+	if (p->is_table)
+		return rows * sift_v6_fetch_cost(true);
+	get_tablespace_page_costs(p->rel->reltablespace, &spc_random, NULL);
+	return index_pages_fetched(rows, p->rel->pages, 0, p->root) * spc_random;
+}
+
 /* the path of the best K rows the scan of cost scan keeps, the heap of the winners priced at the rows it holds */
 static Path *
 rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
@@ -156,7 +174,7 @@ rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost di
 	p->spec.topn_desc = sift_v6_topn_desc(root, p->spec.ntopk);
 	p->spec.serial_because = sift_v6_par_rows_serial_why(root, p->rel, dims != NIL);
 	scan += cpu_operator_cost * p->rel->rows * log2(kept + 1.0) + sort_exprs_cost(root, p->rel->rows);
-	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + dims_total};
+	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + fetch_cost(p, kept) + dims_total};
 	sift_v6_force_price(&price);
 	return rows_sorted(root, p->out, sift_v6_make_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, kept, order,
 														list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims));

@@ -350,6 +350,16 @@ sift_v6_spec_part_is_table(const SiftV6Spec *s, int k)
 	return s->nparts > 0 ? s->part_is_table[k] : s->is_table;
 }
 
+/* A column a row Top-N gives is one of the heap row of a winner: the winners are fetched by their address */
+static inline bool
+sift_v6_spec_rows_fetch(const SiftV6Spec *s)
+{
+	for (int i = 0; i < s->nout; i++)
+		if (s->out[i].from == SV6OUT_HEAP)
+			return true;
+	return false;
+}
+
 /*
  * The vectors of a batch: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second argument (sift.arg_max, sift.arg_min), and then the columns after the first of each
  * COUNT(DISTINCT (a, b, ..)), the ones of aggregate j from sift_v6_agg_xvec.

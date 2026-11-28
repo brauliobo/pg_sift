@@ -529,16 +529,6 @@ v6_totals(V6State *st)
 	SIFT_INVARIANT(sift_v6_group_next(st->group, st->totals, st->totals_null), "the aggregates of the whole set of a row Top-N have no row");
 }
 
-/* a column the node gives is one of the heap row of a winner: the winners are fetched */
-static bool
-rows_fetch(const SiftV6Spec *spec)
-{
-	for (int i = 0; i < spec->nout; i++)
-		if (spec->out[i].from == SV6OUT_HEAP)
-			return true;
-	return false;
-}
-
 static void
 v6_run_rows(V6State *st, EState *estate)
 {
@@ -553,7 +543,7 @@ v6_run_rows(V6State *st, EState *estate)
 
 		sift_v6_rows_source(st->rows, k);
 		v6_scan_rows(st, src, estate->es_snapshot);
-		if (!rows_fetch(st->spec))
+		if (!sift_v6_spec_rows_fetch(st->spec))
 			continue;
 		src->fetch = sift_table_index_fetch_begin(src->heap);
 		src->fetch_slot = table_slot_create(src->heap, NULL);
