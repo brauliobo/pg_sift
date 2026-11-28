@@ -70,7 +70,7 @@ sift_v6_join_expr_role(const SiftV6JoinShape *sh, const Node *e)
 
 	if (contain_agg_clause((Node *) e) || contain_window_function((Node *) e))
 		return ROLE_NONE;
-	vars = pull_var_clause((Node *) e, 0);
+	vars = pull_var_clause((Node *) e, PVC_RECURSE_PLACEHOLDERS);
 	if (vars == NIL)
 		return ROLE_NONE;
 	foreach_node(Var, v, vars)
@@ -125,7 +125,7 @@ dim_key_of(const SiftV6JoinShape *sh, Node *e, const Var **key, const Node **kex
 		return sift_v6_join_role(sh, *key);
 	if (d < 0 || !sift_v6_pgexpr_plan_ok(NULL, (const Expr *) e))
 		return ROLE_NONE;
-	foreach_node(Var, v, pull_var_clause(e, 0))
+	foreach_node(Var, v, pull_var_clause(e, PVC_RECURSE_PLACEHOLDERS))
 		if (sift_v6_join_role(sh, v) != d)
 			return ROLE_NONE;
 	*key = makeVar(bms_next_member(sh->dim[d].rels, -1), InvalidAttrNumber, exprType(e), exprTypmod(e), exprCollation(e), 0);
@@ -190,7 +190,7 @@ single_role(const SiftV6JoinShape *sh, Node *e)
 {
 	int			role = ROLE_NONE;
 
-	foreach_node(Var, v, pull_var_clause(e, 0))
+	foreach_node(Var, v, pull_var_clause(e, PVC_RECURSE_PLACEHOLDERS))
 	{
 		const int	r = v->varlevelsup == 0 ? sift_v6_join_role(sh, v) : ROLE_NONE;
 
@@ -947,6 +947,16 @@ try_fact(PlannerInfo *root, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo
 	sift_v6_fact_paths(root, fact, output_rel, join_compile, join_add, &js);
 }
 
+/* the pairs carry the expression of each placeholder (sift_v6_placeholder_is_expr) */
+static bool
+placeholders_ok(PlannerInfo *root)
+{
+	foreach_node(PlaceHolderInfo, phi, root->placeholder_list)
+		if (!sift_v6_placeholder_is_expr(root, phi->ph_var))
+			return false;
+	return true;
+}
+
 static void
 try_facts(PlannerInfo *root, RelOptInfo *output_rel, const JoinStmt *js)
 {
@@ -954,7 +964,7 @@ try_facts(PlannerInfo *root, RelOptInfo *output_rel, const JoinStmt *js)
 	const int	nrels = bms_num_members(base);
 	int			f = -1;
 
-	if (nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || root->placeholder_list != NIL)
+	if (nrels < 2 || nrels > 2 + SIFT_STAR_MAX_DIMS || !placeholders_ok(root))
 		return;
 	while ((f = bms_next_member(base, f)) >= 0)
 	{

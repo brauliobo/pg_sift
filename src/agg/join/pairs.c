@@ -5,7 +5,9 @@
 
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/placeholder.h"
 
 #include "agg/expr/pg.h"
 #include "agg/join/pairs.h"
@@ -87,6 +89,8 @@ pair_var(Node *n, PairCtx *c)
 	}
 	if (IsA(n, Param) && c->in_sub > 0)
 		return n;
+	if (IsA(n, PlaceHolderVar) && sift_v6_placeholder_is_expr(c->p->root, (PlaceHolderVar *) n))
+		return pair_var((Node *) ((PlaceHolderVar *) n)->phexpr, c);
 	if (IsA(n, PlaceHolderVar) || IsA(n, Param) || IsA(n, SubLink) || IsA(n, SubPlan) || IsA(n, Aggref) || IsA(n, WindowFunc))
 	{
 		c->ok = false;
@@ -98,6 +102,16 @@ pair_var(Node *n, PairCtx *c)
 		return expression_tree_mutator(n, pair_var, c);
 	c->ok = false;
 	return n;
+}
+
+bool
+sift_v6_placeholder_is_expr(PlannerInfo *root, PlaceHolderVar *phv)
+{
+	const Node *e = (const Node *) phv->phexpr;
+	const Relids vars = pull_varnos(root, (Node *) e);
+
+	return phv->phlevelsup == 0 && !bms_is_empty(vars) && bms_is_subset(vars, find_placeholder_info(root, phv)->ph_eval_at) && !contain_nonstrict_functions((Node *) e) &&
+		!contain_volatile_functions((Node *) e) && !contain_subplans((Node *) e);
 }
 
 Node *
