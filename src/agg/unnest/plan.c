@@ -200,11 +200,25 @@ sift_v6_unnest_where(V6Plan *p)
 	return true;
 }
 
+/* the batch quals of the table read their columns as the vectors of the batches of the unnest, which hold the native classes only (a whole array or document is no such vector) */
+static bool
+vquals_native(const V6Plan *p)
+{
+	foreach_node(Var, v, pull_var_clause((Node *) p->spec.vqual, PVC_RECURSE_PLACEHOLDERS))
+	{
+		const SiftV6Class cls = sift_v6_class(v->vartype);
+
+		if (!sift_v6_vatt_is_json(v->varattno) && (cls == SV6C_DATUM || cls == SV6C_NONE))
+			return false;
+	}
+	return true;
+}
+
 /* the compiled statement is one the scan of an unnest computes over the columns its source gives */
 static bool
 unnest_computes(const V6Plan *p)
 {
-	return (!p->is_table || table_rows_ok(&p->spec)) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && store_reads_cols(p);
+	return (!p->is_table || table_rows_ok(&p->spec)) && computes_only_months(&p->spec) && p->spec.jsonqual == NIL && store_reads_cols(p) && vquals_native(p);
 }
 
 /* the statement compiled on the index to what the scan of an unnest computes */

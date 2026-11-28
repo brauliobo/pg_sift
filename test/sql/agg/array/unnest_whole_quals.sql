@@ -1,0 +1,29 @@
+-- A condition on a whole array beside an unnest (array_length, cardinality, @> of an array column) reads the array itself, which the batches of the unnest
+-- do not hold: the statement keeps the normal plan, and its rows are the normal plan's; a condition on a plain column still runs in the scan.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+\ir test/common/sql/agg/base.sql
+
+CREATE TABLE arw (id int PRIMARY KEY, org int, ta text[], tb text[], na numeric[], ma int[]) WITH (autovacuum_enabled = false);
+INSERT INTO arw
+SELECT i, i % 12,
+       CASE WHEN i % 11 = 0 THEN NULL WHEN i % 7 = 0 THEN '{}' ELSE ARRAY(SELECT 't' || (i * k) % 30 FROM generate_series(1, 1 + i % 5) k) END,
+       CASE WHEN i % 3 = 0 THEN NULL ELSE ARRAY['u' || i % 4, NULL, 'u0'] END,
+       CASE WHEN i % 10 = 0 THEN NULL ELSE ARRAY[(i % 3)::numeric, 1.50] END,
+       CASE WHEN i % 4 = 0 THEN ARRAY[[1, 2], [3, 4]] WHEN i % 4 = 1 THEN NULL ELSE ARRAY[i % 9] END
+FROM generate_series(1, 3000) i;
+CREATE INDEX arw_col ON arw USING sift_col (id, org, ta, tb, na, ma) WITH (paths = '+ta[] text, +tb[] text');
+VACUUM (FREEZE, ANALYZE) arw;
+
+SELECT n, runs_in_scan(q) AS in_scan, outcome(q, false) = outcome(q, true) AS same
+FROM (VALUES
+	('length of the unnested array', 'SELECT count(*) FROM arw e, unnest(e.ta) u WHERE array_length(e.ta, 1) = 4'),
+	('length of another array', 'SELECT count(*) FROM arw e, unnest(e.tb) u WHERE array_length(e.ma, 2) IS NOT NULL'),
+	('cardinality and containment', 'SELECT min(u), count(DISTINCT e.id) FROM arw e, unnest(e.tb) u WHERE (cardinality(e.na) > 1 OR e.org = 9) AND e.ta @> ARRAY[''t3'']'),
+	('plain column', 'SELECT u, count(*) FROM arw e, unnest(e.ta) u WHERE e.org < 5 GROUP BY 1')) s(n, q)
+ORDER BY n;
+
+DROP TABLE arw;
+DROP FUNCTION outcome, runs_in_scan, runq, pushed;
+DROP EXTENSION pg_sift;
