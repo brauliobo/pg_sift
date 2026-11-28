@@ -67,6 +67,12 @@ sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col *c, bool m
 
 	if (c->jmember > 0)
 		return sift_f2_unnest_member_col(u, r, c);
+	if (sift_v6_vatt_is_member(c->attno))
+	{
+		const SiftV6Col m = sift_v6_member_col(u->spec, c->attno);
+
+		return sift_f2_unnest_member_col(u, r, &m);
+	}
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].leaf == leaf && !u->cols[i].member && u->cols[i].month == month && u->cols[i].jint == c->jint)
 			return i;
