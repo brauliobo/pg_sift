@@ -207,7 +207,7 @@ vquals_native(const V6Plan *p)
 {
 	foreach_node(Var, v, pull_var_clause((Node *) p->spec.vqual, PVC_RECURSE_PLACEHOLDERS))
 	{
-		const SiftV6Class cls = sift_v6_class(v->vartype);
+		const SiftV6Class cls = sift_v6_unnest_class(v->vartype);
 
 		if (!sift_v6_vatt_is_json(v->varattno) && (cls == SV6C_DATUM || cls == SV6C_NONE))
 			return false;

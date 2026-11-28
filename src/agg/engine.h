@@ -107,6 +107,13 @@ sift_v6_class(Oid typid)
 	}
 }
 
+/* the class of a column in the batches of an unnest: a char(n) is read as the strings of its dictionary */
+static inline SiftV6Class
+sift_v6_unnest_class(Oid typid)
+{
+	return typid == BPCHAROID ? SV6C_TEXT : sift_v6_class(typid);
+}
+
 /* SiftV6Col.scale of a column the scan reads as datums: a type the native vectors do not hold, or a numeric whose NaN, infinities and digit count are values of it instead of scaled integers */
 #define SIFT_V6_SCALE_DATUM	(-1)
 

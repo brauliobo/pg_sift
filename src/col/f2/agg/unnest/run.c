@@ -72,7 +72,7 @@ sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col *c, bool m
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
-	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = c->typid == BPCHAROID ? SV6C_TEXT : sift_v6_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.typid = c->typid,
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_unnest_class(c->typid),.month = month,.json = c->jleaf > 0 || sift_v6_vatt_is_json(c->attno),.typid = c->typid,
 		.jint = c->jint || sift_v6_vatt_is_int_cast(c->attno),.read = true};
 	if (r->key_leaf[leaf] && sift_f2_def_top_key(&r->schema->cols[leaf], &key, &keylen))
 	{
