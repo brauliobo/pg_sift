@@ -219,7 +219,8 @@ keep_parts(SiftV6Spec *s, Bitmapset *keep)
 {
 	int			n = 0;
 
-	if (bms_is_empty(keep))
+	s->parts_none = bms_is_empty(keep);
+	if (s->parts_none)
 		keep = bms_make_singleton(0);
 	for (int k = -1; (k = bms_next_member(keep, k)) >= 0; n++)
 	{

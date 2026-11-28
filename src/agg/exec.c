@@ -854,9 +854,9 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	sift_v6_explain_index(es, RelationGetRelid(st->sources[0].index == NULL ? st->sources[0].heap : st->sources[0].index), st->sources[0].index == NULL);
 	if (st->spec->nparts > 0)
 	{
-		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);
-		if (st->spec->parts_removed > 0)
-			ExplainPropertyInteger("Partitions Removed", NULL, st->spec->parts_removed, es);
+		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts - st->spec->parts_none, es);
+		if (st->spec->parts_removed + st->spec->parts_none > 0)
+			ExplainPropertyInteger("Partitions Removed", NULL, st->spec->parts_removed + st->spec->parts_none, es);
 	}
 	sift_v6_explain_reads(st->spec, st->sources[0].heap, st->sources[0].index, es);
 	if (st->spec->rows)

@@ -279,6 +279,7 @@ typedef struct SiftV6Spec
 	List	   *prune_rels;		/* the partitioned table of each PartitionedRelPruneInfo of prune, in order */
 	Expr	   *prune_array;	/* the array of `key = ANY (array)` whose elements the steps take one by one (agg/part_prune.c); NULL without one */
 	int			parts_removed;	/* the partitions the steps ruled out when the scan began */
+	bool		parts_none;		/* they ruled out every partition: the first one stands in as the source, and its quals pass no row */
 	int			nkeys;
 	SiftV6Col  *key;
 	int			naggs;

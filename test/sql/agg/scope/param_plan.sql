@@ -54,13 +54,11 @@ END $$;
 
 -- the partitions the scan reads when it runs, the rows against the literal statement planned without the scan
 CREATE FUNCTION same_exec(stmt text, ref text) RETURNS TABLE (partitions_read int, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
-DECLARE l text; listed int := 0; removed int := 0;
+DECLARE l text;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || stmt LOOP
-		IF l LIKE '%Partitions:%' THEN listed := array_length(string_to_array(l, ','), 1); END IF;
-		IF l ~ '(\d+) partitions removed' THEN removed := substring(l from '(\d+) partitions removed')::int; END IF;
+		IF l ~ 'Partitions: \d+$' THEN partitions_read := substring(l from 'Partitions: (\d+)$')::int; END IF;
 	END LOOP;
-	partitions_read := CASE WHEN listed > 0 THEN listed - removed END;
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', stmt);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', ref);
