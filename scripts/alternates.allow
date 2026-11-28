@@ -13,12 +13,11 @@ removed	test/expected/lang_config_1.out	17 18 18-arm64 19
 test/expected/agg/append_children_1.out	5cd2ba5d2b7850383285de762257a1d653fdf733	17	f      | t        |           0
 test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
-test/expected/agg/explain_sift_1.out	6828e0176c1ed616697ed217d1a40490b1f94e87	17	sift_lines
-test/expected/agg/explain_sift_1.out	7cd3fdcc53a76913cce007615af3b6d2a7b7063c	17	sift_lines
-test/expected/agg/explain_sift_1.out	aa14f7ed610b34ab40fb563979f325db1dc9d01b	17	sift_lines
+test/expected/agg/explain_sift_1.out	4d62704eb61a993f373809a6e0ed25d6a1926139	17	sift_lines
+test/expected/agg/explain_sift_1.out	5858fc754aa2c5d98dfed30f1bbb5c72402f6725	17	sift_lines
+test/expected/agg/explain_sift_1.out	9bf5416498207efe633c39b9c1b3379025ac99d3	17	sift_lines
 test/expected/agg/explain_sift_1.out	afcac95d97a4de5a02b27066325e95f6ffe42edd	17	sift_lines
 test/expected/agg/explain_sift_1.out	b2cca5de98d6c09b57bd58a4c85f10262d3a486e	17	sift_lines
-test/expected/agg/explain_sift_1.out	c2d54243cd3cd0a4d0dd3baddf8c9bb6c387db68	17	sift_lines
 test/expected/agg/explain_sift_1.out	fc30b8dae64f47cfa61b208eb95b51afae25696f	17	sift_lines
 test/expected/agg/jsonb_each_key_map_1.out	001be1fb5cfa2a44600fc4dfd9fc3a141466d133	17	5 | same | t    | t
 test/expected/agg/jsonb_each_key_map_1.out	24e5adfa6de17b3d77b06f72ae735c45c5ab8543	17	10 | same | t    | t

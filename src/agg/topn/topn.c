@@ -411,6 +411,8 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		return;
 	sift_v6_stage_target(root, stage, output_rel);
 	src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
+	if (nsrc == 0)
+		sift_agg_refuse("topn", AGG_REFUSE_NO_SOURCE, NULL, 0, -1);
 	for (int i = 0; i < nsrc; i++)
 	{
 		TopNPlan	p = {.root = root,.rel = input_rel,.out = output_rel,.src = &src[i],.index = src[i].ix,.spec = shape,.in = src[i].input};

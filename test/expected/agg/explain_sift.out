@@ -35,7 +35,7 @@ SET sift.agg_force = on;
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM o GROUP BY c');
                         sift_lines                        
 ----------------------------------------------------------
- Custom Scan (SiftAgg)
+ Custom Scan (SiftAggV6)
  Sift Index State: 1 segments, 0 buffered rows, 0.0% dead
 (2 rows)
 
@@ -49,12 +49,11 @@ SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
 (3 rows)
 
 SELECT * FROM sift_lines($$SELECT id FROM d WHERE body @@> 'word9' ORDER BY sift.score(ctid) DESC LIMIT 3$$);
-                                       sift_lines                                       
-----------------------------------------------------------------------------------------
+                        sift_lines                        
+----------------------------------------------------------
  ->  Custom Scan (SiftScan) on d
  Sift Index State: 1 segments, 0 buffered rows, 0.0% dead
- Sift: not used: no_source: no sift_col index or sift_table covers the table (arm topn)
-(3 rows)
+(2 rows)
 
 BEGIN;
 SET LOCAL sift.enable_scan = off;
@@ -91,9 +90,9 @@ SELECT * FROM sift_lines($$SELECT count(*) FROM d WHERE body @@> 'word3'$$);
 
 -- a refused candidate: the slug and the sentence, and the arm
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM o WHERE random() < 0.5 GROUP BY c');
-                                                                     sift_lines                                                                     
-----------------------------------------------------------------------------------------------------------------------------------------------------
- Sift: not used: volatile: the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (arm single)
+                                               sift_lines                                               
+--------------------------------------------------------------------------------------------------------
+ Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test (arm single)
 (1 row)
 
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM plain GROUP BY c');
@@ -104,17 +103,17 @@ SELECT * FROM sift_lines('SELECT c, sum(v) FROM plain GROUP BY c');
 
 -- an aggregate over an ordinary sub-select has no arms to be refused
 SELECT * FROM sift_lines('SELECT count(*) FROM (SELECT c, sum(v) FROM plain GROUP BY c) s');
-                                         sift_lines                                          
----------------------------------------------------------------------------------------------
- Sift: not used: no_source: no sift_col index or sift_table covers the table (arm L2:single)
+                                        sift_lines                                        
+------------------------------------------------------------------------------------------
+ Sift: not used: no_source: no sift_col index or sift_table covers the table (arm single)
 (1 row)
 
 -- the statement that is planned is the explained one: what it calls while it runs is not
 CREATE FUNCTION nested() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN (SELECT count(*) FROM (SELECT c, sum(v) FROM plain GROUP BY c) s); END $$;
 SELECT * FROM sift_lines('SELECT c, sum(v) FROM o WHERE c < nested() GROUP BY c', ', ANALYZE, TIMING OFF, SUMMARY OFF, BUFFERS OFF');
-                                                                     sift_lines                                                                     
-----------------------------------------------------------------------------------------------------------------------------------------------------
- Sift: not used: volatile: the query calls a volatile function, which PostgreSQL evaluates for every row and the scan cannot reproduce (arm single)
+                                               sift_lines                                               
+--------------------------------------------------------------------------------------------------------
+ Sift: not used: where: a condition of the WHERE or ON clause is not one the scan can test (arm single)
 (1 row)
 
 -- the structured formats

@@ -829,6 +829,8 @@ sift_v6_scan_paths(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_
 	int			nsrc;
 	SiftV6RelSource *src = sift_v6_rel_sources_alloc(root, input_rel, &nsrc);
 
+	if (nsrc == 0)
+		sift_agg_refuse("single", AGG_REFUSE_NO_SOURCE, NULL, 0, -1);
 	for (int i = 0; i < nsrc; i++)
 		sift_v6_source_group_path(root, input_rel, output_rel, &src[i], extra, group_exprs);
 }

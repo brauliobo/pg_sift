@@ -140,6 +140,13 @@ sift_agg_refuse(const char *arm, AggRefusal why, const char *detail, double scan
 	agg_report(arm, why, detail, false, scan, normal);
 }
 
+/* the arms of the statement being planned are kept: for sift.explain_why, or for the report of EXPLAIN (SIFT) */
+static bool
+noting_arms(void)
+{
+	return why_store != NULL || explaining;
+}
+
 static ArmPrice *
 arm_of(const char *name)
 {
@@ -149,7 +156,7 @@ arm_of(const char *name)
 	foreach_ptr(ArmPrice, x, arms)
 		if (strcmp(x->name, name) == 0)
 			return x;
-	old = MemoryContextSwitchTo(why_cx);
+	old = MemoryContextSwitchTo(why_store != NULL ? why_cx : explain_cx);
 	a = palloc(sizeof(ArmPrice));
 	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE, NULL};
 	arms = lappend(arms, a);
@@ -162,7 +169,7 @@ sift_agg_arm_priced(const char *arm, double scan, double normal)
 {
 	ArmPrice   *a;
 
-	if (why_store == NULL)
+	if (!noting_arms())
 		return;
 	a = arm_of(arm);
 	a->scan = Min(a->scan, scan);
@@ -173,7 +180,7 @@ sift_agg_arm_priced(const char *arm, double scan, double normal)
 void
 sift_agg_arm_used(const char *arm)
 {
-	if (why_store != NULL)
+	if (noting_arms())
 		arm_of(arm)->used = true;
 }
 
@@ -182,7 +189,7 @@ sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail)
 {
 	ArmPrice   *a;
 
-	if (why_store == NULL)
+	if (!noting_arms())
 		return;
 	a = arm_of(arm);
 	if (a->why != AGG_REFUSE_NONE)
@@ -201,7 +208,7 @@ sift_agg_arm_refused(const char *arm, AggRefusal why)
 bool
 sift_agg_arms_noted(void)
 {
-	return why_store != NULL;
+	return noting_arms();
 }
 
 static AggRefusal
@@ -264,12 +271,25 @@ agg_explain_begin(void)
 	set_explain_refusals();
 }
 
+void
+agg_explain_planned(void)
+{
+	if (!explaining)
+		return;
+	why_arms();
+	arms = NIL;
+	explaining = false;
+	set_explain_refusals();
+}
+
 /* the refusals of the plan for its report; the next statement starts with none */
 List *
 agg_explain_take(void)
 {
-	List	   *notes = explained;
+	List	   *notes;
 
+	agg_explain_planned();
+	notes = explained;
 	explained = NIL;
 	return notes;
 }

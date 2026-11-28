@@ -772,7 +772,7 @@ asof_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	V6Asof	   *st = (V6Asof *) node;
 	SiftAsofStats s = st->stats;
 
-	ExplainPropertyText(st->is_table ? "Table" : "Index", get_rel_name(st->indexoid), es);
+	sift_v6_explain_index(es, st->indexoid, st->is_table);
 	ExplainPropertyText("Direction", st->spec.dir == SIFT_ASOF_BACKWARD ? (st->spec.strict ? "Backward, strict" : "Backward") : (st->spec.strict ? "Forward, strict" : "Forward"), es);
 	if (st->merge.stream != NULL)
 	{

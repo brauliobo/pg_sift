@@ -837,7 +837,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	uint32		dim_hits,
 				dim_built;
 
-	ExplainPropertyText(st->sources[0].index == NULL ? "Table" : "Index", RelationGetRelationName(st->sources[0].index == NULL ? st->sources[0].heap : st->sources[0].index), es);
+	sift_v6_explain_index(es, RelationGetRelid(st->sources[0].index == NULL ? st->sources[0].heap : st->sources[0].index), st->sources[0].index == NULL);
 	if (st->spec->nparts > 0)
 	{
 		ExplainPropertyInteger("Partitions", NULL, st->spec->nparts, es);

@@ -17,6 +17,7 @@
 #include "agg/plan/cte_read.h"
 #include "agg/plan/flat_rewrite.h"
 #include "agg/plan/lineage.h"
+#include "agg/refuse.h"
 #include "agg/safety.h"
 #include "agg/scope/scope.h"
 #include "agg/settings.h"
@@ -428,6 +429,8 @@ agg_planner(SIFT_PLANNER_PARAMS)
 	PG_TRY();
 	{
 		stmt = plan_statement(SIFT_PLANNER_ARGS(parse));
+		if (col_plan)
+			agg_explain_planned();
 	}
 	PG_FINALLY();
 	{

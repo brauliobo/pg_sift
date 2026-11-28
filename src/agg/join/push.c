@@ -37,6 +37,7 @@
 #include "agg/join/push.h"
 #include "agg/qual/qual.h"
 #include "agg/source_rel.h"
+#include "agg/vexpr.h"
 #include "col/am.h"
 #include "col/col.h"
 #include "core/store/ops.h"
@@ -699,7 +700,7 @@ push_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	PushState  *st = (PushState *) node;
 
-	ExplainPropertyText(st->spec->is_table ? "Table" : "Index", RelationGetRelationName(st->spec->is_table ? st->heap : st->index), es);
+	sift_v6_explain_index(es, RelationGetRelid(st->spec->is_table ? st->heap : st->index), st->spec->is_table);
 	ExplainPropertyText("Join", "pushed into the scan as a key", es);
 	if (st->ran)
 		ExplainPropertyInteger("Join Keys Pushed", NULL, st->nvalues, es);

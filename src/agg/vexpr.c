@@ -27,6 +27,7 @@
 #include "executor/nodeSubplan.h"
 
 #include "agg/vexpr.h"
+#include "core/explain.h"
 #include "core/zoneoff.h"
 #include "core/memtrack.h"
 #include "core/store/ops.h"
@@ -828,6 +829,8 @@ void
 sift_v6_explain_index(ExplainState *es, Oid relid, bool is_table)
 {
 	ExplainPropertyText(is_table ? "Table" : "Index", get_rel_name(relid), es);
+	if (!is_table)
+		sift_explain_index(es, relid);
 }
 
 void

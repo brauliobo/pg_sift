@@ -63,6 +63,8 @@ extern void sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char 
 extern bool sift_agg_arms_noted(void);
 
 extern void agg_explain_begin(void);
+/* The statement EXPLAIN (SIFT) explains is planned (its outermost planning ended): the arms it priced join its refusals, and what it plans while it runs is not its own */
+extern void agg_explain_planned(void);
 extern List *agg_explain_take(void);
 extern bool sift_agg_refusal_row(int i, const char **slug, const char **text, const char **action, bool *limit);
 
