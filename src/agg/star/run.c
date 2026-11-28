@@ -459,7 +459,7 @@ chunk_dim(SiftV6StarRun *r, int d)
 {
 	const SiftV6JoinMode mode = r->x->dim[d].mode;
 
-	if (mode == SV6J_RANGE_SMALL || (joins_keys(mode) && r->x->on[d] != NIL))
+	if (mode == SV6J_RANGE_SMALL || mode == SV6J_RANGE_RIGHT || (joins_keys(mode) && r->x->on[d] != NIL))
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("a dimension of a star join does not fit work_mem and no chunks of it answer the join"),
 						errdetail("A range join, or an outer, semi or anti join with a condition on its pairs, is not read in chunks."), errhint("Increase work_mem.")));
 	r->keyed[d] = joins_keys(mode);
@@ -728,7 +728,7 @@ sift_v6_star_open(SiftV6StarRun *r, uint32 pass, uint32 scans)
 	for (int d = 0; d < r->x->ndims; d++)
 		preserves |= sift_star_preserves_dim(r->x->dim[d].mode);
 	for (int d = 0; d < r->x->ndims; d++)
-		if (r->found[d] == NULL && r->dim[d].nrows == 0 && ((r->x->dim[d].mode == SV6J_RIGHT_EQUI && !streams_nulls(r, d)) || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
+		if (r->found[d] == NULL && r->dim[d].nrows == 0 && ((r->x->dim[d].mode == SV6J_RIGHT_EQUI && !streams_nulls(r, d)) || r->x->dim[d].mode == SV6J_RANGE_RIGHT || (!preserves && (r->x->dim[d].mode == SV6J_INNER_EQUI || r->x->dim[d].mode == SV6J_SEMI_EQUI || r->x->dim[d].mode == SV6J_RANGE_SEMI))))
 			return SSO_EMPTY;
 	return SSO_SCAN;
 }

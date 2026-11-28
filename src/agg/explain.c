@@ -152,6 +152,7 @@ join_tag(SiftV6JoinMode mode)
 		case SV6J_RANGE_ANTI:
 			return " (anti)";
 		case SV6J_RIGHT_EQUI:
+		case SV6J_RANGE_RIGHT:
 			return " (preserved)";
 		case SV6J_FULL_EQUI:
 			return " (full)";

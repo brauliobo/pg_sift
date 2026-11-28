@@ -34,14 +34,15 @@ typedef enum SiftV6JoinMode
 	SV6J_RIGHT_EQUI,			/* the dimension is the preserved side: its rows no fact row matched come out once, with a NULL fact side */
 	SV6J_FULL_EQUI,				/* both sides are preserved */
 	SV6J_RANGE_SEMI,			/* a semi join of fact.col <@ dim.range: a fact row stays, once, when a period holds it */
-	SV6J_RANGE_ANTI				/* its anti join: a fact row stays when no period holds it */
+	SV6J_RANGE_ANTI,			/* its anti join: a fact row stays when no period holds it */
+	SV6J_RANGE_RIGHT			/* the periods are the preserved side of fact.col <@ dim.range: a period no fact row falls in comes out once, with a NULL fact side */
 } SiftV6JoinMode;
 
 /* The dimension is periods a point of the fact row is probed in (fact.col <@ dim.range) */
 static inline bool
 sift_star_period(SiftV6JoinMode mode)
 {
-	return mode == SV6J_RANGE_SMALL || mode == SV6J_RANGE_SEMI || mode == SV6J_RANGE_ANTI;
+	return mode == SV6J_RANGE_SMALL || mode == SV6J_RANGE_SEMI || mode == SV6J_RANGE_ANTI || mode == SV6J_RANGE_RIGHT;
 }
 
 /* The dimension only filters the fact rows by whether one of its rows matches: a semi or anti join */
@@ -61,7 +62,7 @@ sift_star_anti(SiftV6JoinMode mode)
 static inline bool
 sift_star_preserves_dim(SiftV6JoinMode mode)
 {
-	return mode == SV6J_RIGHT_EQUI || mode == SV6J_FULL_EQUI;
+	return mode == SV6J_RIGHT_EQUI || mode == SV6J_FULL_EQUI || mode == SV6J_RANGE_RIGHT;
 }
 
 /* The fact rows that match nothing stay, with a NULL dimension side */

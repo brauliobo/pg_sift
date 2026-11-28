@@ -337,7 +337,7 @@ period_types(Oid elem, Oid range)
 }
 
 /* fact.col <@ dim.range: the dimension is the periods, probed by the column; an inner join multiplies a row by the periods that hold it before its elements are taken apart (SV6J_RANGE_SMALL),
- * a semi or anti join keeps it by whether one does; a LEFT join of it is the normal plan's */
+ * a semi or anti join keeps it by whether one does, a join that preserves the periods adds those no row falls in; a LEFT join of it is the normal plan's */
 static bool
 place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 {
@@ -353,9 +353,9 @@ place_period(SiftV6JoinShape *sh, const RestrictInfo *ri)
 	if (col == NULL || range == NULL || sift_v6_join_role(sh, col) != ROLE_FACT || sift_v6_join_role(sh, range) < 0 || !period_types(col->vartype, range->vartype))
 		return false;
 	d = &sh->dim[sift_v6_join_role(sh, range)];
-	if ((d->mode != SV6J_INNER_EQUI && d->mode != SV6J_SEMI_EQUI && d->mode != SV6J_ANTI_EQUI) || d->nkeys != 0 || !clause_level_ok(ri, d->mode))
+	if ((d->mode != SV6J_INNER_EQUI && d->mode != SV6J_SEMI_EQUI && d->mode != SV6J_ANTI_EQUI && d->mode != SV6J_RIGHT_EQUI) || d->nkeys != 0 || !clause_level_ok(ri, d->mode))
 		return false;
-	d->mode = d->mode == SV6J_INNER_EQUI ? SV6J_RANGE_SMALL : d->mode == SV6J_SEMI_EQUI ? SV6J_RANGE_SEMI : SV6J_RANGE_ANTI;
+	d->mode = d->mode == SV6J_INNER_EQUI ? SV6J_RANGE_SMALL : d->mode == SV6J_SEMI_EQUI ? SV6J_RANGE_SEMI : d->mode == SV6J_RIGHT_EQUI ? SV6J_RANGE_RIGHT : SV6J_RANGE_ANTI;
 	d->probe[0] = (const Node *) col;
 	d->key[0] = range;
 	d->nkeys = 1;
@@ -686,8 +686,12 @@ static bool
 rel_outputs(const RelOptInfo *rel, const Var *v)
 {
 	foreach_ptr(Node, n, rel->reltarget->exprs)
-		if (IsA(n, Var) && ((Var *) n)->varattno == v->varattno && ((Var *) n)->varno == v->varno)
+	{
+		const Var  *out = sift_v6_plain_var(n);
+
+		if (out != NULL && out->varattno == v->varattno && out->varno == v->varno)
 			return true;
+	}
 	return false;
 }
 
@@ -714,7 +718,7 @@ seed_key_expr(V6Plan *p, const SiftV6JoinShape *sh, int dim, const Node *probe, 
 
 	if (e == NULL)
 		return false;
-	foreach_node(Var, v, pull_var_clause(e, 0))
+	foreach_node(Var, v, pull_var_clause(e, PVC_RECURSE_PLACEHOLDERS))
 	{
 		const SiftV6Col *col = &p->xseed->rcol[v->varattno - 1];
 

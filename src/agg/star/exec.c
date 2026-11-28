@@ -420,6 +420,8 @@ sift_star_dim_finish(SiftStarDim *d)
 {
 	uint32		inserted = 0;
 
+	if (sift_star_preserves_dim(d->shape.mode))
+		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
 	if (d->dense)
 	{
 		sift_star_dense_finish(d);
@@ -464,8 +466,6 @@ sift_star_dim_finish(SiftStarDim *d)
 		}
 	}
 	d->unique_keys = d->ndistinct == inserted;
-	if (sift_star_preserves_dim(d->shape.mode))
-		d->matched = palloc0(((size_t) d->nrows + 63) / 64 * sizeof(uint64));
 	if (d->shape.nkeys > 0 && d->shape.kcls[0] == SSC_INT && d->nrows <= SIFT_STAR_EXACT_MAX)
 	{
 		d->exact = palloc(Max(d->nrows, 1) * sizeof(int64));
