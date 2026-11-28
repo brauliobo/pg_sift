@@ -148,11 +148,11 @@ any_col(const SiftV6Spec *s, ColTest test)
 	return false;
 }
 
-/* the scan of an unnest reads the values of the leaves of its columns, not the type each row's chunk keeps of a key (jsonb_typeof(doc -> 'key')) */
+/* the scan of an unnest reads the values of the leaves of its columns and whether a document has a key, not the type each row's chunk keeps of a key (jsonb_typeof(doc -> 'key')) */
 static bool
 is_type_tag(const SiftV6Col *c)
 {
-	return c->jtype;
+	return c->jtype && c->typid != BOOLOID;
 }
 
 /* a column of the table that no typed leaf holds: a whole document, a numeric read as datums, a type no vector holds (the flag of a test of the elements is no column of the table) */

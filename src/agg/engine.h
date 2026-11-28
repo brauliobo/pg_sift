@@ -442,6 +442,8 @@ typedef int (*SiftV6MemberVatt) (void *arg, const Expr *e, Oid *typid);
  * read for its truth alone is the conjunction of the tests of its leaves (agg/qual/contains.h)
  */
 extern Expr *sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, bool truth, SiftV6MemberVatt member, void *arg);
+/* sift_v6_json_vars of the tests of the presence of keys alone (`doc ? 'k'`, jsonb_exists and their NOT), which the scan of an unnest reads (SiftJsonbOps.unnest_keys) */
+extern Expr *sift_v6_json_presence_vars(const SiftV6Rel *rel, const Expr *e, bool truth);
 extern bool sift_v6_json_type_col(const SiftV6Rel *rel, const Var *v, SiftV6Col *out);
 /* The statement reads the type and the value of one key apart from the scan keys: PostgreSQL's own plan decides which values it reads */
 extern bool sift_v6_json_type_clash(const SiftV6Spec *s);

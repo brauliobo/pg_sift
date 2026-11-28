@@ -240,12 +240,20 @@ index_docs_as_columns(V6Plan *p, const Expr *e)
 
 static int member_vatt(void *arg, const Expr *e, Oid *typid);
 
+bool
+sift_v6_plan_unnest_keys(const V6Plan *p)
+{
+	return p->xseed != NULL && p->xseed->unnest && p->ops != NULL && p->ops->jsonb != NULL && p->ops->jsonb->unnest_keys;
+}
+
 static Expr *
 json_vars(V6Plan *p, const Expr *e, bool values, bool truth)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 
-	return p->xseed != NULL && p->xseed->unnest ? (Expr *) e : sift_v6_json_vars(&rel, index_docs_as_columns(p, e), values, truth, member_vatt, p);
+	if (p->xseed != NULL && p->xseed->unnest)
+		return sift_v6_plan_unnest_keys(p) ? sift_v6_json_presence_vars(&rel, e, truth) : (Expr *) e;
+	return sift_v6_json_vars(&rel, index_docs_as_columns(p, e), values, truth, member_vatt, p);
 }
 
 Expr *
@@ -494,12 +502,10 @@ doc_attno(const V6Plan *p, const Var *doc)
 static bool
 undeclared_doc_walker(Node *n, const V6Plan *p)
 {
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
-	SiftV6Col	length;
 	List	   *path;
 	const Var  *doc;
 
-	if (n == NULL || array_length_of(p, &rel, (const Expr *) n, &length, &path))
+	if (n == NULL)
 		return false;
 	doc = sift_v6_doc_chain((const Expr *) n, &path);
 	if (doc == NULL || doc->varno != p->rel->relid || doc->varlevelsup != 0)
@@ -539,9 +545,11 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	int			at;
 
 	e = index_exprs_as_columns(p, e);
-	if (undeclared_doc_walker((Node *) e, p) || (SIFT_JSON_NULL_CAST_RAISES && casts_key_jsonb((Node *) e, NULL)))
+	if (SIFT_JSON_NULL_CAST_RAISES && casts_key_jsonb((Node *) e, NULL))
 		return false;
 	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);
+	if (undeclared_doc_walker((Node *) e, p))
+		return false;
 	if (!join_derive_ok(p, e))
 		return sift_v6_star_joined_col(p, e, key, col);
 	if (!sift_v6_pgexpr_derive_of(p->root, &rs, p->rel->relid, e, key || p->xseed != NULL, &d, &restype, &p->spec.pgexpr))

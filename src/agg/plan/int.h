@@ -181,6 +181,8 @@ extern Node *sift_v6_case_when(Node *cond, Node *e);
 extern bool sift_v6_nulled_placeholder(Node *n, PlannerInfo *root);
 /* e with the jsonb_typeof(doc -> 'key') of its shredded keys, and with values their `->>` text and its float8 cast, as virtual columns (agg/qual/jsonb.c), for a scan that reads them; e itself when this one cannot */
 extern Expr *sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values);
+/* the plan reads an unnest whose scan reads the presence of the keys of a document (SiftJsonbOps.unnest_keys): its JSON reads are those tests alone, no scan key */
+extern bool sift_v6_plan_unnest_keys(const V6Plan *p);
 /* the conjuncts of a clause, its nested ANDs flattened */
 extern List *sift_v6_conjuncts(Expr *clause);
 /* sift_v6_plan_json_vars of a WHERE or FILTER clause, read for its truth alone (sift_v6_json_vars) */

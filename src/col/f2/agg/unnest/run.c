@@ -58,6 +58,27 @@ source_col(UnRun *u, const UnLeaves *r, int leaf, Oid typid)
 	return i;
 }
 
+/* the vector a leaf of the given store decodes to */
+static SiftV6Class
+leaf_class(const SiftColDef *d)
+{
+	return d->store == SIFT_COLS_STR ? SV6C_TEXT : d->store == SIFT_COLS_F8 ? SV6C_F64 : SV6C_I64;
+}
+
+/* the column of the batch that is whether the document has the key of a leaf (jsonb_exists): a key-presence mask of the pull, beside which the pull decodes the leaf as it stores it */
+static int
+presence_col(UnRun *u, const UnLeaves *r, int leaf)
+{
+	for (int i = 0; i < u->ncols; i++)
+		if (u->cols[i].mask > 0 && u->cols[i].leaf == leaf)
+			return i;
+	if (u->ncols == SIFT_F2_PULL_MAX_COLS || u->nmasks == SIFT_F2_PULL_MAX_MASKS)
+		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns and %d keys of the table", SIFT_F2_PULL_MAX_COLS, SIFT_F2_PULL_MAX_MASKS),
+						errhint("Test fewer keys of the documents of the table that is unnested.")));
+	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = leaf_class(&r->schema->cols[leaf]),.typid = BOOLOID,.read = true,.mask = ++u->nmasks};
+	return u->ncols++;
+}
+
 int
 sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col *c, bool month)
 {
@@ -73,8 +94,10 @@ sift_f2_unnest_col_index(UnRun *u, const UnLeaves *r, const SiftV6Col *c, bool m
 
 		return sift_f2_unnest_member_col(u, r, &m);
 	}
+	if (sift_v6_vatt_is_presence(c->attno) || (c->jtype && c->typid == BOOLOID))
+		return presence_col(u, r, leaf);
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].leaf == leaf && !u->cols[i].member && u->cols[i].month == month && u->cols[i].jint == c->jint)
+		if (u->cols[i].leaf == leaf && !u->cols[i].member && u->cols[i].mask == 0 && u->cols[i].month == month && u->cols[i].jint == c->jint)
 			return i;
 	if (u->ncols == SIFT_F2_PULL_MAX_COLS)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
@@ -203,11 +226,15 @@ setup_cols(UnRun *u, const UnLeaves *r)
 static SiftF2PullSpec
 pull_spec(const UnRun *u)
 {
-	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = 0,.ngroups = u->nst};
+	SiftF2PullSpec ps = {.ncols = u->ncols,.nmasks = u->nmasks,.ngroups = u->nst};
 	const int	nst = ps.ngroups;
 
 	for (int i = 0; i < u->ncols; i++)
+	{
 		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = !u->cols[i].member ? vec_type(u->cols[i].cls) : u->cols[i].map > 0 || u->cols[i].length ? SVEC_I64 : SVEC_F64};
+		if (u->cols[i].mask > 0)
+			ps.mask[u->cols[i].mask - 1].leaf = u->cols[i].leaf;
+	}
 	for (int s = 0; s < ps.ngroups; s++)
 	{
 		const UnStream *st = &u->st[s];
@@ -247,7 +274,7 @@ setup_pipe(UnRun *u, const UnLeaves *r, SiftV6Group *g, const SiftV6StarRun *sta
 	const int	nslots = u->ncols + u->nel + spec->nderive + u->ntests + (u->x->elem.semi ? 1 : 0);
 
 	for (int i = 0; i < u->ncols; i++)
-		type[i] = vec_type(u->cols[i].cls);
+		type[i] = u->cols[i].mask > 0 ? SVEC_I64 : vec_type(u->cols[i].cls);
 	for (int c = 0; c < u->nel; c++)
 		type[u->ncols + c] = u->st[0].etype[c];
 	for (int k = 0; k < spec->nderive; k++)
@@ -368,6 +395,17 @@ json_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 	u->fv[i].all_valid = false;
 }
 
+/* whether the document of each row of the batch has the key: the mask of the pull, as the 1 or 0 of a column */
+static void
+presence_column(UnRun *u, int i, const SiftF2ExtBatch *b)
+{
+	const uint64 *bits = b->masks[u->cols[i].mask - 1].bits;
+
+	for (int r = 0; r < b->n; r++)
+		((int64 *) u->jdata[i])[r] = (bits[r >> 6] >> (r & 63)) & 1;
+	u->fv[i] = (SiftVec) {.data = u->jdata[i],.len = b->n,.all_valid = true,.dense = true,.type = SVEC_I64};
+}
+
 /* the columns of the rows of the batch the statement computes from them, for the rows it keeps */
 static void
 compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
@@ -377,7 +415,9 @@ compute_columns(UnRun *u, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		const SiftVec *src = &b->col[i];
 
 		u->fv[i] = *src;
-		if (u->cols[i].member)
+		if (u->cols[i].mask > 0)
+			presence_column(u, i, b);
+		else if (u->cols[i].member)
 			sift_f2_unnest_member_column(u, i, b, bs);
 		else if (u->cols[i].json && u->cols[i].read)
 			json_column(u, i, b, bs);
@@ -577,7 +617,7 @@ par_plain(const UnRun *u)
 		(u->eev != NULL && sift_v6_elem_eval_pg(u->eev)))
 		return false;
 	for (int i = 0; i < u->ncols; i++)
-		if (u->cols[i].month || u->cols[i].json)
+		if (u->cols[i].month || u->cols[i].json || u->cols[i].mask > 0)
 			return false;
 	return true;
 }
@@ -839,7 +879,7 @@ unrun_buffers(UnRun *u)
 			u->mdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 			u->mvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		}
-		if (u->cols[i].json)
+		if (u->cols[i].json || u->cols[i].mask > 0)
 		{
 			u->jdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(SiftStrView) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 			u->jvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));

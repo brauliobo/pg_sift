@@ -63,6 +63,7 @@ typedef struct UnCol
 	int			map;			/* member: 1 + the map among those of the pull whose member it is, the leaf of the column its lengths; 0: a path the index declares, the leaf of its values */
 	List	   *path;			/* member: the keys from the document of heap_att to the member, key the last */
 	bool		length;			/* member: jsonb_array_length of the list whose group is the leaf (path: the keys to the list) */
+	int			mask;			/* 1 + the key-presence mask of the pull (SiftF2PullMask) the column is: whether the document has the key of the leaf, 1 or 0; 0: a column of values */
 } UnCol;
 
 /* a map of a document whose members are columns of the rows: one more group of the pull, after the arrays of the streams */
@@ -117,6 +118,7 @@ typedef struct UnRun
 	SiftBatchSel obs;			/* the pairs of a call of emit_pairs */
 	int			ncols;
 	UnCol		cols[SIFT_F2_PULL_MAX_COLS];
+	int			nmasks;			/* the columns that are key-presence masks (UnCol.mask) */
 	UnArith		arith[SIFT_V6_MAX_DERIVE];
 	SiftV6PgExpr *pg[SIFT_V6_MAX_DERIVE];	/* an SVD_PG_EXPR derivation: its evaluator, the vector of the pairs each of its inputs is, and its result */
 	int			pgslot[SIFT_V6_MAX_DERIVE][SIFT_V6_MAX_COLS];

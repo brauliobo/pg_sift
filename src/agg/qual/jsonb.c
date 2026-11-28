@@ -374,6 +374,7 @@ typedef struct VarsCtx
 	bool		truth;			/* the expression is read for its truth alone: a NULL is as false */
 	SiftV6MemberVatt member;
 	void	   *arg;
+	bool		presence;		/* only the presence of keys: the scan of an unnest reads no other virtual column of a document */
 } VarsCtx;
 
 /* the column of whether the document doc has the key (SIFT_V6_JPRES_VATT + its leaf), of a format that reads it; InvalidAttrNumber: none */
@@ -649,12 +650,12 @@ vars_mutator(Node *n, VarsCtx *ctx)
 
 	if (n == NULL)
 		return NULL;
-	if ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber ||
-		(ctx->values && ctx->member != NULL && (vatt = ctx->member(ctx->arg, (const Expr *) n, &typid)) != InvalidAttrNumber))
+	if (!ctx->presence && ((vatt = read_vatt(ctx->rel, n, ctx->values, &typid)) != InvalidAttrNumber ||
+						   (ctx->values && ctx->member != NULL && (vatt = ctx->member(ctx->arg, (const Expr *) n, &typid)) != InvalidAttrNumber)))
 		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
 	if ((out = presence_test(ctx, n)) != NULL)
 		return out;
-	if (ctx->truth && (tests = sift_v6_contains_quals(ctx->rel, (const Expr *) n)) != NIL)
+	if (ctx->truth && !ctx->presence && (tests = sift_v6_contains_quals(ctx->rel, (const Expr *) n)) != NIL)
 		return (Node *) make_ands_explicit(tests);
 	if (IsA(n, CaseWhen))
 	{
@@ -679,6 +680,14 @@ Expr *
 sift_v6_json_vars(const SiftV6Rel *rel, const Expr *e, bool values, bool truth, SiftV6MemberVatt member, void *arg)
 {
 	VarsCtx		ctx = {rel, values, truth, member, arg};
+
+	return (Expr *) vars_mutator((Node *) e, &ctx);
+}
+
+Expr *
+sift_v6_json_presence_vars(const SiftV6Rel *rel, const Expr *e, bool truth)
+{
+	VarsCtx		ctx = {.rel = rel,.truth = truth,.presence = true};
 
 	return (Expr *) vars_mutator((Node *) e, &ctx);
 }
