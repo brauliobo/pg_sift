@@ -119,6 +119,7 @@ typedef struct SiftF2GranCounts
 	uint64		scanned;
 	uint64		pruned_zone;
 	uint64		pruned_skip;
+	uint64		point_rows;		/* the rows of the granules read that the point directory named for a predicate: the others were not looked at */
 } SiftF2GranCounts;
 /* The scan adds its granules to counts (which must outlive it); call it before the scan runs */
 extern void sift_f2_scan_count_granules(IndexScanDesc scan, SiftF2GranCounts *counts);

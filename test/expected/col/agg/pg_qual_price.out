@@ -1,4 +1,4 @@
--- A qual of the aggregate scan that PostgreSQL's executor evaluates row by row (an = ANY of the array a sub-select makes) costs the scan what PostgreSQL prices it at
+-- A qual of the aggregate scan that PostgreSQL's executor evaluates row by row (an expression = ANY of the array a sub-select makes; of a bare column it is a scan key) costs the scan what PostgreSQL prices it at
 -- for every row it decodes: priced as the decode of its column alone, the scan came out cheaper than the one that tests a constant array on its batches, and ran four times longer.
 CREATE EXTENSION pg_sift;
 SET max_parallel_workers_per_gather = 0;
@@ -22,8 +22,8 @@ SET enable_seqscan = off;
 SET enable_indexscan = off;
 SET enable_indexonlyscan = off;
 SET enable_bitmapscan = off;
-SELECT pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id = ANY (ARRAY (SELECT id FROM pqp_dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1') >
-	pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id = ANY (''{5,10,20,25,35,40,50,55}''::int[]) AND deleted_at IS NULL GROUP BY 1') AS executor_qual_priced;
+SELECT pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id + 0 = ANY (ARRAY (SELECT id FROM pqp_dims WHERE active AND id % 5 = 0)) AND deleted_at IS NULL GROUP BY 1') >
+	pqp_cost('SELECT kind, count(*) FROM pqp_events WHERE parent_id + 0 = ANY (''{5,10,20,25,35,40,50,55}''::int[]) AND deleted_at IS NULL GROUP BY 1') AS executor_qual_priced;
  executor_qual_priced 
 ----------------------
  t

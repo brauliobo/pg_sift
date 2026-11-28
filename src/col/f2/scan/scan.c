@@ -506,6 +506,8 @@ scan_granules(Relation rel, F2Scan *s, const SiftColSchema *schema, SiftF2PartPi
 			sift_lazy_granule_load(rel, &lg, &chunk, 1);
 			ncand = sift_point_cands_verify(s->cands, &v, cand, ncand);
 			decided[s->cands->pred_idx] = true;
+			if (s->grans != NULL)
+				s->grans->point_rows += ncand;
 		}
 		if (ncand >= 0)
 			for (int i = 0; i < ncand; i++)

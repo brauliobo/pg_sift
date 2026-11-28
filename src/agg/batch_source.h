@@ -75,6 +75,7 @@ typedef struct SiftV6GranCounts
 	uint64		rows;
 	uint64		vetted;
 	uint64		reread;			/* the rows whose value the leaves cannot hold, read again from the heap row */
+	uint64		point_rows;		/* the rows a point directory named for a key (SiftV6ScanStats.point_rows) */
 } SiftV6GranCounts;
 
 struct SiftV6Source

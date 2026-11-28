@@ -639,6 +639,7 @@ sift_f2_v6_flush_grans(V6Scan *s)
 	s->stats->grans += s->grans.scanned;
 	s->stats->grans_pruned_zone += s->grans.pruned_zone;
 	s->stats->grans_pruned_skip += s->grans.pruned_skip;
+	s->stats->point_rows += s->grans.point_rows;
 	s->grans = (SiftF2GranCounts) {0};
 }
 

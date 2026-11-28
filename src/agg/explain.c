@@ -528,6 +528,10 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 			ExplainPropertyUInteger("Filters In Source", NULL, st->src_filters, es);
 		else if (st->src_filters > 0)
 			xl_item(&l, "(" UINT64_FORMAT " filters in source)", st->src_filters);
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+			ExplainPropertyUInteger("Rows From Point Directory", NULL, st->point_rows, es);
+		else if (st->point_rows > 0)
+			xl_item(&l, "from point directory (" UINT64_FORMAT " rows)", st->point_rows);
 		xl_end(&l);
 	}
 	if (st->sip_probes > 0)

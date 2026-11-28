@@ -6,9 +6,9 @@ SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET sift.async_maintenance = off;
 
--- the heap in the order of a hash of id: no range of ids is a range of pages
-CREATE TABLE ia AS SELECT g::int AS id, (g % 1000)::int AS v, (g % 7)::int AS w FROM generate_series(1, 100000) g ORDER BY md5((g * 31 + 7)::text);
-CREATE INDEX ia_i ON ia USING sift_col (id, v, w) WITH (point_tid_columns = 'id');
+-- the heap in the order of a hash of id: no range of ids is a range of pages; pad makes the parts wide enough to carry a point directory
+CREATE TABLE ia AS SELECT g::int AS id, (g % 1000)::int AS v, (g % 7)::int AS w, md5(g::text) || md5((g * 7)::text) AS pad FROM generate_series(1, 100000) g ORDER BY md5((g * 31 + 7)::text);
+CREATE INDEX ia_i ON ia USING sift_col (id, v, w, pad) WITH (point_tid_columns = 'id');
 VACUUM (FREEZE, ANALYZE) ia;
 CREATE TABLE ia_plain AS TABLE ia;
 CREATE TABLE ik AS SELECT (g * 1999 % 100000 + 1)::int AS k FROM generate_series(1, 20) g;
