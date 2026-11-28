@@ -316,7 +316,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	priced = w.found > 0 || sift_agg_flat_decorrelate(parse, false);
 	scoped = !priced && sift_agg_scope && sift_v6_scope_rewrite(parse, false);
 	priced |= scoped;
-	rows = sift_agg_having_to_where(parse, false);
+	rows = sift_agg_having_to_where(parse, false) | sift_agg_inline_laterals(parse, false);
 	if (!priced && !rows)
 		return plan_query(SIFT_PLANNER_ARGS(parse));
 	alt = copyObject(parse);
@@ -324,6 +324,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	w.top = alt;
 	cte_walker((Node *) alt, &w);
 	sift_agg_having_to_where(alt, true);
+	sift_agg_inline_laterals(alt, true);
 	sift_agg_flat_decorrelate(alt, true);
 	if (sift_agg_scope)
 		sift_v6_scope_rewrite(alt, true);

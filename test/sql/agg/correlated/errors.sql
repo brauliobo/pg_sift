@@ -57,6 +57,13 @@ $q$);
 SELECT * FROM check_query($q$
  SELECT sum(c.n) FROM facts f LEFT JOIN LATERAL (SELECT f.code::int AS n LIMIT 1) c ON true WHERE f.dim_a_id <> 0
 $q$);
+-- A raising child read only by an aggregate with a FILTER: the normal plan evaluates it for every row, the FILTER skips it. A gate under a LEFT JOIN makes the column NULL.
+SELECT * FROM check_query($q$
+ SELECT sum(c.n) FILTER (WHERE f.id > 39990) FROM facts f CROSS JOIN LATERAL (SELECT 10 / f.dim_a_id AS n LIMIT 1) c
+$q$);
+SELECT * FROM check_query($q$
+ SELECT count(c.n), sum(c.n) FROM facts f LEFT JOIN LATERAL (SELECT f.dim_a_id * 2 AS n WHERE f.dim_a_id > 5 LIMIT 1) c ON true
+$q$);
 -- A sub-select of the child may return more than one row.
 SELECT * FROM check_query($q$
  SELECT sum(c.n) FROM facts f JOIN dims d ON d.id = f.dim_a_id AND d.ok
