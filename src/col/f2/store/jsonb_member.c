@@ -77,6 +77,12 @@ map_value_leaf(const SiftF2Store *st, int att, const List *path)
 }
 
 int
+sift_f2_jsonb_path_leaf(Oid relid, int att, const List *path)
+{
+	return leaf_at(sift_f2_store_from_oid(relid), att, path, "", true);
+}
+
+int
 sift_f2_jsonb_member_leaf(Oid relid, int att, const List *path)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);

@@ -301,12 +301,12 @@ typedef struct SiftStoreParOps
 	void		(*end) (struct SiftV6Scan *s);
 } SiftStoreParOps;
 
-/* 10. Shredded JSONB: the leaf that keeps whether a top-level key is present on a row of a document, and the scan of the elements of an array column (UNNEST) */
+/* 10. Shredded JSONB: the leaves of the declared paths of a document (a top-level key's keeps whether it is present on a row), and the scan of the elements of an array column (UNNEST) */
 typedef struct SiftJsonbOps
 {
-	int			(*key_leaf) (Oid indexoid, int att, const char *key, int len);
+	/* the shredded scalar leaf of the declared path (String keys) of the document attribute att of the index or the table, -1: none; the leaf of a path of one key keeps whether the key is on a row */
+	int			(*key_leaf) (Oid relid, bool is_table, int att, const List *path);
 	int			(*member_leaf) (Oid relid, int att, const List *path);	/* the leaf of the float8 values of the members of the map `path` (its last key is the member's), or of the float8 or integer values of the path declared, of the document attribute att of the index or the table, -1: none */
-	int			(*table_key_leaf) (Oid relid, int att, const char *key, int len);	/* the same for a sift_table: the leaf of the declared path of the key (NULL: a table has none) */
 	bool		key_exists;		/* the scan tests jsonb_exists(document, key) on the leaf of the key (SIFT_COLOP_KEY_EXISTS), the documents that are no object included */
 	bool		key_presence;	/* the scan reads whether a document has a key as a column of its batches (SIFT_V6_JPRES_VATT), the documents that are no object included */
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes;

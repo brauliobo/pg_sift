@@ -125,7 +125,7 @@ sift_v1_key_scan(Relation index, ScanKey keys, int nkeys)
 		else
 		{
 			name = TextDatumGetCString(k->sk_argument);
-			scan.types[scan.ntypes++] = (SiftV1TypeTest) {.leaf = v1_jsonb_ops.key_leaf(RelationGetRelid(index), k->sk_attno, name, strlen(name)),
+			scan.types[scan.ntypes++] = (SiftV1TypeTest) {.leaf = v1_jsonb_ops.key_leaf(RelationGetRelid(index), false, k->sk_attno, list_make1(makeString(name))),
 				.types = SIFT_SRC_JT_ALL & ~SIFT_SRC_JT_NONE,.key = true};
 		}
 	}

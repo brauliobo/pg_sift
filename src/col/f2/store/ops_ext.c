@@ -51,17 +51,17 @@ const SiftDictOps sift_f2_dict_ops = {
 };
 
 static int
-jsonb_key_leaf(Oid indexoid, int att, const char *key, int len)
+index_key_leaf(Oid indexoid, int att, const char *key)
 {
 	Relation	index = index_open(indexoid, AccessShareLock);
-	const int	leaf = sift_f2_key_leaf(sift_f2_rel(index), att, key, len);
+	const int	leaf = sift_f2_key_leaf(sift_f2_rel(index), att, key, strlen(key));
 
 	index_close(index, AccessShareLock);
 	return leaf;
 }
 
 static int
-jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
+table_key_leaf(Oid relid, int att, const char *key)
 {
 	const SiftF2Store *st = sift_f2_store_from_oid(relid);
 
@@ -72,16 +72,24 @@ jsonb_table_key_leaf(Oid relid, int att, const char *key, int len)
 		const char *k;
 		int			klen;
 
-		if (sift_f2_def_top_key(&st->path_def[c], &k, &klen) && klen == len && memcmp(k, key, len) == 0)
+		if (sift_f2_def_top_key(&st->path_def[c], &k, &klen) && klen == (int) strlen(key) && memcmp(k, key, klen) == 0)
 			return c;
 	}
 	return -1;
 }
 
+/* a top-level key is the leaf whose chunks keep its presence; a deeper path the scalar leaf the paths option declares at it */
+static int
+jsonb_key_leaf(Oid relid, bool is_table, int att, const List *path)
+{
+	if (list_length(path) > 1)
+		return sift_f2_jsonb_path_leaf(relid, att, path);
+	return is_table ? table_key_leaf(relid, att, strVal(linitial(path))) : index_key_leaf(relid, att, strVal(linitial(path)));
+}
+
 const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_leaf = jsonb_key_leaf,
 	.member_leaf = sift_f2_jsonb_member_leaf,
-	.table_key_leaf = jsonb_table_key_leaf,
 	.path_declared = sift_f2_jsonb_path_declared,
 	.key_exists = true,
 	.key_presence = true,

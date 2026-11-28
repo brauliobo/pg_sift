@@ -90,17 +90,20 @@ sift_v6_json_doc_att(const SiftV6Rel *rel, const Expr *e, int *att)
 	return doc_of(rel, e, att);
 }
 
-/* the leaf of the format of the index that keeps whether the key is on the rows of the document attribute att (-1: none keeps it) */
+/* the leaf of the format of the relation at the path of the document attribute att (-1: none) */
 static int
-key_leaf(const SiftV6Rel *rel, int att, const char *key)
+path_leaf(const SiftV6Rel *rel, int att, const List *path)
 {
 	const SiftJsonbOps *jsonb = rel->ops != NULL ? rel->ops->jsonb : NULL;
 
-	if (jsonb == NULL)
-		return -1;
-	if (rel->table != NULL)
-		return jsonb->table_key_leaf != NULL ? jsonb->table_key_leaf(rel->reloid, att, key, strlen(key)) : -1;
-	return jsonb->key_leaf(rel->index->indexoid, att, key, strlen(key));
+	return jsonb == NULL ? -1 : jsonb->key_leaf(rel->table != NULL ? rel->reloid : rel->index->indexoid, rel->table != NULL, att, path);
+}
+
+/* the leaf of the format of the relation that keeps whether the key is on the rows of the document attribute att (-1: none keeps it) */
+static int
+key_leaf(const SiftV6Rel *rel, int att, const char *key)
+{
+	return path_leaf(rel, att, list_make1(makeString(pstrdup(key))));
 }
 
 /* the format tests whether the key is on a document with the leaf of the key */
@@ -205,15 +208,22 @@ sift_v6_json_member(const Expr *e, bool as_text, const Var **doc, const char **k
 	return *doc != NULL && IsA(*doc, Var) && *key != NULL;
 }
 
-/* doc -> 'k' or doc['k'] (as_text false), doc ->> 'k' or its #>> '{}' (as_text true) of such a document, and the leaf of its key (-1: none keeps it) */
+/*
+ * doc -> 'k' or doc['k'] (as_text false), doc ->> 'k' or its #>> '{}' (as_text true) of such a document, and the leaf of its key (-1: none keeps it); as text, also
+ * doc -> 'k1' .. ->> 'kn' and the leaf of its path (*key is not set)
+ */
 static int
 field_leaf(const SiftV6Rel *rel, const Expr *e, bool as_text, int *att, const char **key)
 {
 	const Var  *doc;
+	List	   *path = NIL;
 
-	if (!sift_v6_json_member(e, as_text, &doc, key) || !doc_of(rel, (const Expr *) doc, att))
+	if (!sift_v6_json_member(e, as_text, &doc, key) &&
+		(!as_text || (doc = sift_v6_doc_chain(e, &path)) == NULL || list_length(path) < 2 || exprType((const Node *) e) != TEXTOID))
 		return -1;
-	return key_leaf(rel, *att, *key);
+	if (!doc_of(rel, (const Expr *) doc, att))
+		return -1;
+	return path != NIL ? path_leaf(rel, *att, path) : key_leaf(rel, *att, *key);
 }
 
 /* e is a link of a chain over a document (*link): `->` or `->>`, or jsonb_extract_path(doc, ..) and its text; the constant object key it reads (NULL: none) */
@@ -788,7 +798,7 @@ sift_v6_json_append_scankeys(List *jsonqual, Oid reloid, bool is_table, ScanKey 
 	{
 		const char *key = strVal(lthird(q));
 		const int	att = intVal(lsecond(q));
-		const int	leaf = (is_table ? ops->table_key_leaf : ops->key_leaf) (reloid, att, key, strlen(key));
+		const int	leaf = ops->key_leaf(reloid, is_table, att, list_make1(makeString(pstrdup(key))));
 
 		SIFT_INVARIANT(leaf >= 0, "the key of a jsonb qual of the aggregate scan is a leaf of the relation");
 		keys[(*nkeys)++] = intVal(linitial(q)) == JQ_EXISTS ?
