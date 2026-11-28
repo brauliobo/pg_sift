@@ -341,11 +341,10 @@ sift_v6_card_undecided(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *i
 	return keep;
 }
 
-/* the microseconds a date or timestamp leaf spans under the quals of the table on its column alone, its rows taken as spread over the span */
+/* the share of the rows of the table that the quals of the table on the column of v alone keep */
 static double
-leaf_span_us(PlannerInfo *root, RelOptInfo *rel, const Var *v, const SiftColCardStats *cs)
+own_quals_sel(PlannerInfo *root, RelOptInfo *rel, const Var *v)
 {
-	const double span = (double) cs->max_i64 - (double) cs->min_i64;
 	List	   *own = NIL;
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
@@ -355,7 +354,42 @@ leaf_span_us(PlannerInfo *root, RelOptInfo *rel, const Var *v, const SiftColCard
 		if (list_length(vars) == 1 && ((Var *) linitial(vars))->varattno == v->varattno)
 			own = lappend(own, ri);
 	}
-	return (v->vartype == DATEOID ? (span + 1) * USECS_PER_DAY : span) * clauselist_selectivity(root, own, 0, JOIN_INNER, NULL);
+	return clauselist_selectivity(root, own, 0, JOIN_INNER, NULL);
+}
+
+/* the microseconds a date or timestamp leaf spans under the quals of the table on its column alone, its rows taken as spread over the span */
+static double
+leaf_span_us(PlannerInfo *root, RelOptInfo *rel, const Var *v, const SiftColCardStats *cs)
+{
+	const double span = (double) cs->max_i64 - (double) cs->min_i64;
+
+	return (v->vartype == DATEOID ? (span + 1) * USECS_PER_DAY : span) * own_quals_sel(root, rel, v);
+}
+
+/* the distinct values of a leaf that the predicates on it leave: the constants of an equality or a list, the share of its range that a range keeps */
+static double
+leaf_values(const SiftCardQuery *q, const SiftColCardStats *cs, int leaf)
+{
+	const double span = (double) cs->max_i64 - (double) cs->min_i64 + 1.0;
+	double		nd = cs->ndv_est;
+
+	for (uint32 i = 0; i < q->npreds; i++)
+	{
+		const SiftCardPred *p = &q->preds[i];
+
+		if (p->col != leaf)
+			continue;
+		if ((p->kind == SCP_EQ || p->kind == SCP_IN) && !p->unknown_len)
+			nd = Min(nd, (double) p->nvals);
+		else if (p->kind == SCP_RANGE && (cs->flags & SIFT_CSTAT_HAS_RANGE))
+		{
+			const double lo = p->has_lo ? Max((double) p->lo, (double) cs->min_i64) : (double) cs->min_i64,
+						hi = p->has_hi ? Min((double) p->hi, (double) cs->max_i64) : (double) cs->max_i64;
+
+			nd *= Max(hi - lo + 1.0, 0.0) / span;
+		}
+	}
+	return nd;
 }
 
 /* the groups of a calendar key of one date or timestamp leaf (date_trunc, extract): the units its span holds, where PostgreSQL counts the column's values; -1: no such key */
@@ -373,15 +407,15 @@ calendar_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, cons
 	return cs->flags & SIFT_CSTAT_HAS_NDV ? Min(n, Max(cs->ndv_est, 1.0)) : n;
 }
 
-/* the groups of one key over rows: the distinct values of its leaf, or the units of a calendar key; -1: unknown */
+/* the groups of one key over rows: the distinct values of its leaf that the predicates q of the table leave, over the rows its quals keep, or the units of a calendar key; -1: unknown */
 static double
-key_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const Node *e, double rows)
+key_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, const SiftCardQuery *q, const Node *e, double rows)
 {
 	const int	leaf = leaf_of(ix, rel->relid, e);
 	double		cal;
 
 	if (leaf >= 0 && (uint32) leaf < view->ncols && (view->cols[leaf].flags & SIFT_CSTAT_HAS_NDV))
-		return sift_card_ndv(view->cols[leaf].ndv_est, Max((double) view->total_live_rows, 1.0), rows);
+		return sift_card_ndv(leaf_values(q, &view->cols[leaf], leaf), Max((double) view->total_live_rows * own_quals_sel(root, rel, (const Var *) e), 1.0), rows);
 	return leaf < 0 && (cal = calendar_groups(root, rel, ix, view, e)) > 0 ? Min(cal, rows) : -1;
 }
 
@@ -390,12 +424,14 @@ sift_v6_card_groups(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, 
 {
 	double		d[SIFT_CARD_MAX_PREDS];
 	int			n = 0;
+	SiftV6CardQuery cq;
 
 	if (view == NULL || may_leak(root, rel) || list_length(group_exprs) > SIFT_CARD_MAX_PREDS)
 		return -1;
+	sift_v6_card_query(rel->baserestrictinfo, rel->relid, ix, &cq);
 	foreach_ptr(Node, e, (List *) group_exprs)
 	{
-		const double g = key_groups(root, rel, ix, view, e, rows);
+		const double g = key_groups(root, rel, ix, view, &cq.q, e, rows);
 
 		if (g < 0)
 			return -1;
