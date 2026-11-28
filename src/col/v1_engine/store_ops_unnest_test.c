@@ -156,7 +156,7 @@ heap_flags(UnRun *u, bool *yes, bool *known)
 			continue;
 		}
 		if (!have)
-			nel = sift_v1_unnest_heap_elems(u, ev);
+			nel = sift_v1_unnest_heap_elems(u, ev, NULL);
 		have = true;
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[c] = heap_outer(u, k, c, &cell[c], &valid[c]);

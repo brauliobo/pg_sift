@@ -724,8 +724,8 @@ put_cell(MemoryContext cx, SiftVec *v, Oid type, uint32 k, Datum d, bool isnull)
 	}
 }
 
-void
-sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx)
+static void
+recfn_invoke(SiftV6RecFn *f, Datum doc, MemoryContext cx)
 {
 	LOCAL_FCINFO(fcinfo, 1);
 
@@ -735,6 +735,30 @@ sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx)
 	fcinfo->args[0].value = doc;
 	fcinfo->args[0].isnull = false;
 	FunctionCallInvoke(fcinfo);
+}
+
+void
+sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx, ErrorData **err)
+{
+	if (err == NULL)
+	{
+		recfn_invoke(f, doc, cx);
+		return;
+	}
+	PG_TRY();
+	{
+		recfn_invoke(f, doc, cx);
+	}
+	PG_CATCH();
+	{
+		if (ERRCODE_TO_CATEGORY(geterrcode()) != ERRCODE_DATA_EXCEPTION)
+			PG_RE_THROW();
+		MemoryContextSwitchTo(cx);
+		*err = CopyErrorData();
+		FlushErrorState();
+		f->rsinfo.setResult = NULL;
+	}
+	PG_END_TRY();
 }
 
 uint32
@@ -799,9 +823,9 @@ sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max)
 }
 
 uint32
-sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev)
+sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev, ErrorData **err)
 {
-	sift_v6_recfn_open(f, doc, cx);
+	sift_v6_recfn_open(f, doc, cx, err);
 	return sift_v6_recfn_next(f, cx, ev, f->rsinfo.setResult == NULL ? 0 : (uint32) tuplestore_tuple_count(f->rsinfo.setResult) + 1);
 }
 

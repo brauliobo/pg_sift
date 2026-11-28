@@ -160,8 +160,8 @@ extern void sift_v1_unnest_emit_row(UnRun *u, const SiftVec *fact, const SiftVec
 extern void sift_v1_unnest_run_pairs(UnRun *u, uint32 m);
 extern void sift_v1_unnest_heap_open(UnRun *u, Relation heap);
 extern void sift_v1_unnest_heap_close(UnRun *u);
-/* the elements of the array of the heap row loaded, as columns: how many */
-extern uint32 sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev);
+/* the elements of the array of the heap row loaded, as columns: how many; with err, the data exception of the function is left there (sift_v6_recfn_call) */
+extern uint32 sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev, ErrorData **err);
 /* the row at tag of the heap, as the virtual row the expressions of the run read (their columns are those registered with sift_v1_unnest_heap_expr, sift_v1_unnest_heap_qual
  * and sift_v1_unnest_heap_att); false when the clauses only the heap row decides rule it out */
 extern bool sift_v1_unnest_heap_load(UnRun *u, uint64 tag);

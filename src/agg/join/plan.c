@@ -574,13 +574,45 @@ last_preserved(const SiftV6JoinShape *sh, int i)
 	return i == sh->nd - 1;
 }
 
+/* a condition on the pairs reads the dimension: of an EXISTS, the pairs run it before they probe a RIGHT or FULL dimension (agg/pipe.h) */
+static bool
+resid_reads(PlannerInfo *root, const SiftV6JoinShape *sh, const SiftV6JoinDim *d)
+{
+	foreach_node(RestrictInfo, ri, sh->resid)
+	{
+		const Relids rels = pull_varnos(root, (Node *) ri->clause);
+
+		if (bms_overlap(rels, d->rels) || bms_is_member(d->ojrelid, rels))
+			return true;
+	}
+	return false;
+}
+
+/* of an EXISTS, each condition on the pairs is one of its sub-select (it reads the element or a relation of the sub-select): the error of the function of a row is raised before them, as
+ * PostgreSQL runs the EXISTS after the other conditions of the join (agg/pipe.h, late_row) */
+static bool
+semi_resid_ok(PlannerInfo *root, const SiftV6JoinShape *sh)
+{
+	foreach_node(RestrictInfo, ri, sh->resid)
+	{
+		const Relids rels = pull_varnos(root, (Node *) ri->clause);
+		bool		sub = bms_is_member(sh->elem->relid, rels);
+
+		for (int d = sh->nmain; d < sh->nd; d++)
+			sub |= bms_overlap(rels, sh->dim[d].rels);
+		if (!sub)
+			return false;
+	}
+	return true;
+}
+
 /* a RIGHT or FULL join keeps the rows of its dimension that no pair matched (a row, or a row and an element of its unnest), and nothing else of the statement may change what matches */
 static bool
-preserved_ok(const SiftV6JoinShape *sh)
+preserved_ok(PlannerInfo *root, const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
 		if (sift_star_preserves_dim(sh->dim[i].mode))
-			return sh->nd == 1 || (sh->dim[i].closing && last_preserved(sh, i));
+			return (sh->nd == 1 || (sh->dim[i].closing && last_preserved(sh, i))) && !(sh->semi && resid_reads(root, sh, &sh->dim[i]));
 	return true;
 }
 
@@ -633,7 +665,7 @@ shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh, bool rows)
 	if (!sift_v6_join_make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
 		!sift_v6_exists_main_unique(root, sh))
 		return false;
-	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(sh);
+	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh));
 }
 
 static bool

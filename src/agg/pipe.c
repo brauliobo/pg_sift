@@ -133,6 +133,7 @@ sift_v6_pipe_new(MemoryContext cx, const SiftV6Spec *spec, SiftV6Group *group, S
 			if (x->dim[d].kx[k] > 0)
 				p->kexpr[d][k] = sift_v6_key_expr_new(cx, NULL, x, list_nth(x->kexpr, x->dim[d].kx[k] - 1));
 	p->semi_slot = -1;
+	p->pass_dim = p->ndims;
 	p->match = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
 	p->fact_idx = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint16));
 	p->dim_row = MemoryContextAlloc(cx, SIFT_VEC_LEN * sizeof(uint32));
@@ -249,6 +250,8 @@ sift_v6_pipe_semi(SiftV6Pipe *p, int slot)
 {
 	p->semi_slot = slot;
 	p->semi_seen = MemoryContextAllocZero(p->cx, SIFT_VEC_WORDS * sizeof(uint64));
+	if (p->ndims > 0 && sift_star_preserves_dim(p->spec->ext->dim[p->ndims - 1].mode))
+		p->pass_dim = p->ndims - 1;
 }
 
 void
@@ -438,6 +441,28 @@ expand_on(SiftV6Pipe *p, int d, SiftV6PipeBatch *b, const SiftStarProbe *pr)
 	pfree(hit);
 }
 
+/* the conditions of the join no key says, and of the pairs of a row of an EXISTS the first that passed them: false when no pair is left */
+static bool
+pairs_pass(SiftV6Pipe *p, SiftV6PipeBatch *b)
+{
+	SiftBatchSel *bs = b->bs;
+
+	if (p->late_row != NULL)
+		ReThrowError(p->late_row);
+	if (sift_v6_resid_has(p->resid, SIFT_V6_RESID_JOIN))
+	{
+		const SiftVec *rv[SIFT_V6_RESID_COLS];
+
+		for (int i = 0; i < p->spec->ext->nrcol; i++)
+			rv[i] = &b->vec[p->rslot[i]];
+		sift_v6_resid_filter(p->resid, SIFT_V6_RESID_JOIN, rv, bs);
+		count_active(bs);
+	}
+	if (p->semi_seen != NULL && bs->n_active > 0)
+		semi_once(p, b);
+	return bs->n_active > 0;
+}
+
 static void
 stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 {
@@ -447,25 +472,10 @@ stage(SiftV6Pipe *p, int d, SiftV6PipeBatch *b)
 
 	if (bs->n_active == 0)
 		return;
+	if (d == p->pass_dim && !pairs_pass(p, b))
+		return;
 	if (d == p->ndims)
 	{
-		if (sift_v6_resid_has(p->resid, SIFT_V6_RESID_JOIN))
-		{
-			const SiftVec *rv[SIFT_V6_RESID_COLS];
-
-			for (int i = 0; i < p->spec->ext->nrcol; i++)
-				rv[i] = &b->vec[p->rslot[i]];
-			sift_v6_resid_filter(p->resid, SIFT_V6_RESID_JOIN, rv, bs);
-			count_active(bs);
-			if (bs->n_active == 0)
-				return;
-		}
-		if (p->semi_seen != NULL)
-		{
-			semi_once(p, b);
-			if (bs->n_active == 0)
-				return;
-		}
 		for (int j = 0; j < p->njoined; j++)
 			b->vec[p->pay_slot[SIFT_V6_JOINED_DIM] + j] = *key_expr_vec(p, p->joined[j], b);
 		update_groups(p, b);

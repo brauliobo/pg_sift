@@ -113,6 +113,19 @@ $q$);
  t      | t        |           0
 (1 row)
 
+-- A day whose rows all fail the test is a day of no match: the test runs before the calendar's day is matched.
+SELECT * FROM check_query($q$
+ SELECT d.day, count(DISTINCT f.id) AS n, count(f.kind) AS k FROM dates d
+ LEFT JOIN (SELECT f.id, f.day, e.kind FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+   WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+     WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END AND o.score > CASE WHEN f.day = '2026-01-03' THEN 100 ELSE 0 END)) f ON f.day = d.day
+ GROUP BY d.day
+$q$);
+ pushed | eligible | differences 
+--------+----------+-------------
+ t      | t        |           0
+(1 row)
+
 -- NOT EXISTS, and an EXISTS inside an aggregate's FILTER, stay with PostgreSQL.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
@@ -145,21 +158,22 @@ WHERE EXISTS (SELECT 1 FROM LATERAL (
     AND lm.derived_category IS NOT NULL AND NOT jsonb_exists(f.document, 'flag_a') LIMIT 1) m ON true
   WHERE o.score IS NOT NULL) x WHERE x.category IN ('catg_j', 'catg_b'))
 GROUP BY e.kind;
-                                                                                                                                    QUERY PLAN                                                                                                                                     
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- Custom Scan (SiftAgg)
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Custom Scan (SiftAggV6)
    Index: facts_col
-   Filters: EXISTS document.parts[] (lookup output, document.parts[].category, document.parts[].val, jsonb_exists(f.document, 'flag_a'::text): (CASE WHEN jsonb_exists(f.document, 'flag_a'::text) THEN o.category ELSE m.derived_category END = ANY ('{catg_j,catg_b}'::text[])))
-   Group Keys: dim_a_id: e.kind
    Pushed Aggregates: count(*)
-   Lookup Joins: dim_a, m (left, per element)
-   Name: m (left, per element)
-   ->  Limit
-         ->  Result
-               One-Time Filter: (NOT (InitPlan input).col4)
-               ->  Seq Scan on mappings lm
-                     Filter: ((derived_category IS NOT NULL) AND (kind = (InitPlan input).col1) AND (category = (InitPlan input).col2) AND (val = (InitPlan input).col3))
-(12 rows)
+   Star Dimensions: 2
+   Lookup Joins: dim_a, m (subquery) (left)
+   Unnest: lateral columnar
+   ->  Seq Scan on dim_a e
+   ->  Subquery Scan on m
+         ->  Unique
+               ->  Sort
+                     Sort Key: lm.kind, lm.category, lm.val, lm.ctid
+                     ->  Seq Scan on mappings lm
+                           Filter: (derived_category IS NOT NULL)
+(13 rows)
 
 -- Errors come from PostgreSQL's evaluation, for the rows and elements it reaches: an expression that may raise keeps the normal plan, and the
 -- row that raises is the same in both. The element that raises is after the one that passes in the rows below, which EXISTS never evaluates.

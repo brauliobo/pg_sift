@@ -133,10 +133,13 @@ typedef struct SiftV6RecFn
 } SiftV6RecFn;
 
 extern SiftV6RecFn *sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names);
-/* The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many */
-extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev);
+/*
+ * The elements of doc, as the vectors ev[0..ncols) (data, valid) allocated in cx, which also holds what the function leaves of the call; returns how many. With err, a data exception of the
+ * function is not raised but left in *err (in cx), with no element: the error of an EXISTS, which the row raises only when it reaches the test (agg/pipe.h, late_row)
+ */
+extern uint32 sift_v6_recfn_call(SiftV6RecFn *f, Datum doc, MemoryContext cx, SiftVec *ev, ErrorData **err);
 /* The same a chunk at a time: open calls the function on doc, its rows in a tuplestore of cx (spilled past work_mem); next gives the following max of them as ev in cx, fewer at the end */
-extern void sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx);
+extern void sift_v6_recfn_open(SiftV6RecFn *f, Datum doc, MemoryContext cx, ErrorData **err);
 extern uint32 sift_v6_recfn_next(SiftV6RecFn *f, MemoryContext cx, SiftVec *ev, uint32 max);
 /*
  * jsonb_each and jsonb_each_text: the value column of the n members of the last call or chunk, for the members of keep (NULL: all), which are those that reach the statement's expressions. The cast of a

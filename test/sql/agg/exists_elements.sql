@@ -82,6 +82,14 @@ SELECT * FROM check_query($q$
      WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)) f ON f.day = d.day
  GROUP BY d.day
 $q$);
+-- A day whose rows all fail the test is a day of no match: the test runs before the calendar's day is matched.
+SELECT * FROM check_query($q$
+ SELECT d.day, count(DISTINCT f.id) AS n, count(f.kind) AS k FROM dates d
+ LEFT JOIN (SELECT f.id, f.day, e.kind FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+   WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+     WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END AND o.score > CASE WHEN f.day = '2026-01-03' THEN 100 ELSE 0 END)) f ON f.day = d.day
+ GROUP BY d.day
+$q$);
 -- NOT EXISTS, and an EXISTS inside an aggregate's FILTER, stay with PostgreSQL.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id

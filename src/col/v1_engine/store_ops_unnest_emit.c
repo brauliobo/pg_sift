@@ -312,14 +312,25 @@ heap_array(UnRun *u, bool *isnull)
 }
 
 uint32
-sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev)
+sift_v1_unnest_heap_elems(UnRun *u, SiftVec *ev, ErrorData **err)
 {
 	bool		isnull;
 	const Datum d = heap_array(u, &isnull);
 
 	if (isnull)
 		return 0;
-	return u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev) : array_elems(u, d, ev);
+	return u->rec != NULL ? sift_v6_recfn_call(u->rec, d, u->bcx, ev, err) : array_elems(u, d, ev);
+}
+
+/* the row of an EXISTS whose function raised: one pair with no element, which raises the error when it reaches the test (agg/pipe.h) */
+static void
+emit_late_row(UnRun *u, const SiftVec *ev, uint32 row, ErrorData *err)
+{
+	u->pidx[0] = row;
+	u->eidx[0] = SIFT_GATHER_NONE;
+	u->pipe->late_row = err;
+	sift_v1_unnest_emit_pairs(u, u->fv, ev, 1);
+	u->pipe->late_row = NULL;
 }
 
 /* a row of the batch: the array of its heap row taken apart as the function does, NULL and empty arrays included, errors included */
@@ -330,6 +341,7 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	uint64	   *keep = NULL;
 	ErrorData **late = NULL;
+	ErrorData  *err = NULL;
 	uint32		nel;
 
 	for (int c = 0; c < u->nel; c++)
@@ -340,7 +352,13 @@ sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 row)
 		MemoryContextSwitchTo(old);
 		return;
 	}
-	nel = sift_v1_unnest_heap_elems(u, ev);
+	nel = sift_v1_unnest_heap_elems(u, ev, u->x->elem.semi ? &err : NULL);
+	if (err != NULL)
+	{
+		emit_late_row(u, ev, row, err);
+		MemoryContextSwitchTo(old);
+		return;
+	}
 	if (u->eev != NULL && nel > 0)
 	{
 		keep = palloc0(((nel + 63) / 64 + 1) * sizeof(uint64));

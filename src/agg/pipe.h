@@ -61,6 +61,8 @@ typedef struct SiftV6Pipe
 	uint32	   *dim_row;
 	int			semi_slot;		/* the slot of the number of the fact row of each pair: only the first pair of a row that goes through every dimension and condition goes on to the groups (-1: all do) */
 	uint64	   *semi_seen;		/* the rows of the batch whose pair has gone on */
+	ErrorData  *late_row;		/* the data exception of the function of an EXISTS of the row of the pair being run: raised when the pair reaches the conditions of the join */
+	int			pass_dim;		/* the level the conditions of the join and the semi run at: the dimensions (ndims), or the RIGHT or FULL one of an EXISTS, which the row that passed probes once */
 	SiftV6PipeBatch *lvl[SIFT_STAR_MAX_DIMS + 1];
 	MemoryContext cx;
 	uint64		rows_out;
@@ -76,7 +78,8 @@ extern SiftV6Pipe *sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, Sif
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
 /* The slot of the payload column of a dimension, or of an expression of the joined rows (SIFT_V6_JOINED_DIM) */
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
-/* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset */
+/* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset. A last dimension of a RIGHT or FULL join
+ * is probed by the row once its pair passed: the conditions of the join must not read it (the planner keeps them below it) */
 extern void sift_v6_pipe_semi(SiftV6Pipe *p, int slot);
 extern void sift_v6_pipe_semi_reset(SiftV6Pipe *p);
 /* One batch of the fact side: fact[i] is slot i; bs gives its rows. The vectors must live until the call returns */

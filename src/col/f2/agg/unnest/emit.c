@@ -248,7 +248,7 @@ typedef struct HeapElems
 } HeapElems;
 
 static void
-heap_open(UnRun *u, int s, HeapElems *h)
+heap_open(UnRun *u, int s, HeapElems *h, ErrorData **err)
 {
 	const UnStream *st = &u->st[s];
 	bool		isnull;
@@ -259,7 +259,7 @@ heap_open(UnRun *u, int s, HeapElems *h)
 	if (isnull)
 		return;
 	if (st->rec != NULL)
-		sift_v6_recfn_open(st->rec, d, u->rmt.root_cx);
+		sift_v6_recfn_open(st->rec, d, u->rmt.root_cx, err);
 	else
 		h->it = array_create_iterator(DatumGetArrayTypeP(d), 0, &meta);
 }
@@ -280,6 +280,17 @@ heap_next(UnRun *u, HeapElems *h, SiftVec *ev)
 	return n;
 }
 
+/* the row of an EXISTS whose function raised: one pair with no element, which raises the error when it reaches the test (agg/pipe.h) */
+static void
+emit_late_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, uint32 row, ErrorData *err)
+{
+	u->pidx[0] = row;
+	u->eidx[0] = SIFT_GATHER_NONE;
+	u->pipe->late_row = err;
+	sift_f2_unnest_emit_pairs(u, fact, ev, 1);
+	u->pipe->late_row = NULL;
+}
+
 /* the pairs of the heap row the quals of the table keep: the array of the pairs taken apart, a chunk at a time */
 static void
 heap_pairs(UnRun *u, const SiftVec *fact, uint32 row)
@@ -289,9 +300,16 @@ heap_pairs(UnRun *u, const SiftVec *fact, uint32 row)
 	uint32		kept = 0;
 	uint32		nel;
 
+	ErrorData  *err = NULL;
+
 	for (int c = 0; c < u->nel; c++)
 		ev[c].type = u->st[0].etype[c];
-	heap_open(u, 0, &h);
+	heap_open(u, 0, &h, u->x->elem.semi ? &err : NULL);
+	if (err != NULL)
+	{
+		emit_late_row(u, fact, ev, row, err);
+		return;
+	}
 	MemoryContextSwitchTo(u->ccx);
 	while ((nel = heap_next(u, &h, ev)) > 0)
 	{
@@ -363,7 +381,7 @@ heap_stream_flags(UnRun *u, int s, const bool *elems, SiftVec (*outer)[SIFT_V6_X
 	HeapElems	h;
 	uint32		nel;
 
-	heap_open(u, s, &h);
+	heap_open(u, s, &h, NULL);
 	while ((nel = heap_next(u, &h, ev)) > 0)
 		for (int k = 0; k < u->ntests; k++)
 			if (elems[k] && u->x->test[k].stream == s && !yes[k])

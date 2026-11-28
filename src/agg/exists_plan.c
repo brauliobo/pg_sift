@@ -15,7 +15,9 @@
 #include "agg/plan/int.h"
 #include "agg/exists_plan.h"
 #include "agg/lateral_plan.h"
+#include "agg/safety.h"
 #include "agg/unique_key.h"
+#include "agg/unnest/jsonb.h"
 
 typedef struct Exists
 {
@@ -47,30 +49,11 @@ plain_sub(const PlannerInfo *sub)
 	return !contain_volatile_functions((Node *) q);
 }
 
-/* the function scan of the sub-select over a column of the fact table, which the sub-plan passes it as its argument */
+/* the function scan of the sub-select over an array of the fact table, which the sub-plan passes it in its arguments */
 static bool
 elem_function(const Exists *x, const RelOptInfo *elem, const RelOptInfo *fact, SiftV6ElemRte *out)
 {
-	const RangeTblEntry *rte = planner_rt_fetch(elem->relid, x->sub);
-	const RangeTblFunction *rtf;
-	const FuncExpr *fe;
-	int			k = 0;
-
-	if (rte->rtekind != RTE_FUNCTION || rte->funcordinality || list_length(rte->functions) != 1 || elem->lateral_relids != NULL)
-		return false;
-	rtf = linitial(rte->functions);
-	fe = (const FuncExpr *) rtf->funcexpr;
-	if (!IsA(rtf->funcexpr, FuncExpr) || list_length(fe->args) != 1 || !IsA(linitial(fe->args), Param))
-		return false;
-	foreach_int(id, x->sp->parParam)
-	{
-		const Var  *v = list_nth(x->sp->args, k++);
-		const Param *pr = linitial(fe->args);
-
-		if (pr->paramkind == PARAM_EXEC && pr->paramid == id)
-			return IsA(v, Var) && v->varno == fact->relid && v->varlevelsup == 0 && sift_v6_unnest_rte_function(rtf, (const Expr *) v, out);
-	}
-	return false;
+	return elem->lateral_relids == NULL && sift_v6_unnest_exists_rte(planner_rt_fetch(elem->relid, x->sub), x->sp, out) && sift_v6_unnest_array_ok(x->root, fact, out->array);
 }
 
 /* the relations of the sub-select: its one function scan, and the lateral sub-selects each a lookup of one row (lateral, in the order of their numbers) */
@@ -190,13 +173,14 @@ to_root(Node *n, Exists *x)
 	return expression_tree_mutator(n, to_root, x);
 }
 
+/* a clause of the sub-select in the terms of the statement; NULL for one that may raise, which the scan would run on the elements past the first that passes, where EXISTS stops */
 static RestrictInfo *
 in_root(Exists *x, const RestrictInfo *ri)
 {
 	Node	   *clause = to_root((Node *) ri->clause, x);
 	RestrictInfo *c;
 
-	if (!x->ok || ri->has_clone || ri->is_clone)
+	if (!x->ok || ri->has_clone || ri->is_clone || agg_node_may_raise(clause))
 		return NULL;
 	c = makeNode(RestrictInfo);
 	*c = *ri;
@@ -300,7 +284,7 @@ sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh)
 
 		if (jd->lateral || sift_star_filters(jd->mode))
 			continue;
-		if ((jd->mode != SV6J_INNER_EQUI && jd->mode != SV6J_LEFT_EQUI) || bms_membership(jd->rels) != BMS_SINGLETON)
+		if ((jd->mode != SV6J_INNER_EQUI && jd->mode != SV6J_LEFT_EQUI && !sift_star_preserves_dim(jd->mode)) || bms_membership(jd->rels) != BMS_SINGLETON)
 			return false;
 		rte = planner_rt_fetch(bms_singleton_member(jd->rels), root);
 		for (int k = 0; k < jd->nkeys; k++)
