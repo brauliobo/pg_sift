@@ -508,7 +508,7 @@ sift_v6_derive_pack(List *ints, const SiftV6Spec *s)
 		ints = lappend_int(ints, s->fcol[i].derive);
 	ints = lappend_int(lappend_int(ints, s->affine), (int) s->aff_type);
 	ints = put64(put64(ints, s->aff_lo), s->aff_hi);
-	ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, s->rows), (int) s->groups_est), (int) s->topk), s->ntopk);
+	ints = list_concat(ints, list_make5_int(s->rows, (int) s->groups_est, (int) s->topk, s->topk_ties, s->ntopk));
 	for (int i = 0; i < s->ntopk; i++)
 		ints = list_concat(ints, list_make4_int(s->topk_item[i].pos, (int) s->topk_item[i].sortop, (int) s->topk_item[i].collid, s->topk_item[i].nulls_first));
 	ints = lappend_int(ints, s->nout);
@@ -559,8 +559,9 @@ sift_v6_derive_unpack(SiftV6Spec *s, const List *ints, int at)
 	s->rows = list_nth_int(ints, at);
 	s->groups_est = (uint32) list_nth_int(ints, at + 1);
 	s->topk = (uint32) list_nth_int(ints, at + 2);
-	s->ntopk = list_nth_int(ints, at + 3);
-	at += 4;
+	s->topk_ties = list_nth_int(ints, at + 3);
+	s->ntopk = list_nth_int(ints, at + 4);
+	at += 5;
 	for (int i = 0; i < s->ntopk; i++, at += 4)
 		s->topk_item[i] = (SiftV6TopKItem) {.pos = list_nth_int(ints, at),.sortop = (Oid) list_nth_int(ints, at + 1),.collid = (Oid) list_nth_int(ints, at + 2),.nulls_first = list_nth_int(ints, at + 3)};
 	s->nout = list_nth_int(ints, at++);

@@ -1,6 +1,7 @@
 /*
  * agg/group/topk.c - the heap of the best K groups (agg/group/topk.h): a binary heap whose top is the worst row held, so that a row is told from the K best by one compare. When the copies of the
- * rows held would pass work_mem, the rows move to a sort bounded by K, which writes runs to disk as a Sort does: from then on every row offered goes to it.
+ * rows held would pass work_mem, the rows move to a sort bounded by K, which writes runs to disk as a Sort does: from then on every row offered goes to it. A heap that keeps ties holds beside
+ * the K the rows that tie the worst of them, which go when a better row leaves another worst; its sort is not bounded, and takes the rows that tie or beat the worst held when it began.
  */
 #include "postgres.h"
 
@@ -36,17 +37,23 @@ struct SiftGTopK
 	TopRow	   *rows;
 	Size		vbytes;			/* the vcap of every slot: the copies of by-reference values, which take work_mem */
 	Tuplesortstate *sort;		/* the rows once their copies passed work_mem */
+	bool		ties;
+	TopRow	   *tie;			/* the rows past the K that tie the worst of the heap */
+	uint32		ntie;
+	uint32		tiecap;
+	TopRow		bar;			/* the worst row the heap of ties held when it moved to a sort (values NULL: it was not full) */
 	TupleTableSlot *slot;
 	uint64		sorted;
 };
 
 SiftGTopK *
-sift_gtopk_new(MemoryContext cx, uint32 k, TupleDesc desc, int nitems, const SiftV6TopKItem *items)
+sift_gtopk_new(MemoryContext cx, uint32 k, TupleDesc desc, int nitems, const SiftV6TopKItem *items, bool ties)
 {
 	SiftGTopK   *t = MemoryContextAllocZero(cx, sizeof(SiftGTopK));
 
 	t->cx = cx;
 	t->k = k;
+	t->ties = ties;
 	t->desc = desc;
 	t->nitems = nitems;
 	memcpy(t->items, items, nitems * sizeof(SiftV6TopKItem));
@@ -120,22 +127,31 @@ sift_down(SiftGTopK *t, uint32 i, uint32 n)
 	}
 }
 
-bool
-sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx)
+/* the row whose sort values value gives against the row w: below 0 when it sorts before */
+static int
+value_cmp(const SiftGTopK *t, SiftTopKValue value, void *ctx, const TopRow *w)
 {
-	if (t->sort != NULL || t->n < t->k)
-		return true;
 	for (int i = 0; i < t->nitems; i++)
 	{
 		bool		an;
 		const Datum a = value(ctx, i, &an);
 		const int	c = t->items[i].pos;
-		const int	r = item_cmp(t, i, a, an, t->rows[0].values[c], t->rows[0].isnull[c]);
+		const int	r = item_cmp(t, i, a, an, w->values[c], w->isnull[c]);
 
 		if (r != 0)
-			return r < 0;
+			return r;
 	}
-	return false;
+	return 0;
+}
+
+bool
+sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx)
+{
+	if (t->sort != NULL)
+		return !t->ties || t->bar.values == NULL || value_cmp(t, value, ctx, &t->bar) <= 0;
+	if (t->n < t->k)
+		return true;
+	return value_cmp(t, value, ctx, &t->rows[0]) < (t->ties ? 1 : 0);
 }
 
 /* The bytes the by-reference values of a row take packed */
@@ -201,6 +217,69 @@ fill_row(SiftGTopK *t, TopRow *r, const Datum *values, const bool *isnull, uint6
 }
 
 static void
+row_free(SiftGTopK *t, TopRow *r)
+{
+	t->vbytes -= r->vcap;
+	if (r->vbuf)
+		pfree(r->vbuf);
+	pfree(r->values);
+	pfree(r->isnull);
+}
+
+/* the bytes a row of the ties takes beside its copies: they count against work_mem as the copies do */
+static Size
+tie_bytes(const SiftGTopK *t)
+{
+	return sizeof(TopRow) + t->desc->natts * (sizeof(Datum) + sizeof(bool));
+}
+
+static void
+ties_clear(SiftGTopK *t)
+{
+	for (uint32 i = 0; i < t->ntie; i++)
+		row_free(t, &t->tie[i]);
+	t->vbytes -= t->ntie * tie_bytes(t);
+	t->ntie = 0;
+}
+
+static void
+tie_add(SiftGTopK *t, const TopRow *r)
+{
+	if (t->ntie == t->tiecap)
+	{
+		t->tiecap = Max(t->tiecap * 2, 64U);
+		/* check-memory: allow the rows that tie count against work_mem (tie_bytes), past which they go to a sort */
+		t->tie = t->tie != NULL ? repalloc(t->tie, t->tiecap * sizeof(TopRow)) : MemoryContextAlloc(t->cx, t->tiecap * sizeof(TopRow));
+	}
+	t->tie[t->ntie++] = *r;
+	t->vbytes += tie_bytes(t);
+}
+
+/* A row that beats or ties the worst of a full heap of ties: a tie joins the ties; a better row takes the place of the worst, which stays a tie when it ties the new worst, else goes with its ties */
+static void
+ties_put(SiftGTopK *t, const Datum *values, const bool *isnull, uint64 total)
+{
+	TopRow		fresh = {0},
+				old = t->rows[0];
+
+	fill_row(t, &fresh, values, isnull, total);
+	if (rows_cmp(t, &fresh, &old) == 0)
+	{
+		tie_add(t, &fresh);
+		return;
+	}
+	t->rows[0] = fresh;
+	sift_down(t, 0, t->n);
+	if (rows_cmp(t, &old, &t->rows[0]) == 0)
+		tie_add(t, &old);
+	else
+	{
+		ties_clear(t);
+		row_free(t, &old);
+	}
+}
+
+static void
 sort_put(SiftGTopK *t, const Datum *values, const bool *isnull)
 {
 	ExecClearTuple(t->slot);
@@ -228,16 +307,20 @@ spill(SiftGTopK *t)
 		coll[i] = t->items[i].collid;
 		nulls_first[i] = t->items[i].nulls_first;
 	}
-	t->sort = tuplesort_begin_heap(t->desc, t->nitems, att, op, coll, nulls_first, work_mem, NULL, TUPLESORT_ALLOWBOUNDED);
-	tuplesort_set_bound(t->sort, t->k);
+	t->sort = tuplesort_begin_heap(t->desc, t->nitems, att, op, coll, nulls_first, work_mem, NULL, t->ties ? TUPLESORT_NONE : TUPLESORT_ALLOWBOUNDED);
+	if (!t->ties)
+		tuplesort_set_bound(t->sort, t->k);
 	t->slot = MakeSingleTupleTableSlot(t->desc, &TTSOpsMinimalTuple);
+	for (uint32 i = 0; i < t->ntie; i++)
+		sort_put(t, t->tie[i].values, t->tie[i].isnull);
+	ties_clear(t);
 	for (uint32 i = 0; i < t->n; i++)
 	{
 		sort_put(t, t->rows[i].values, t->rows[i].isnull);
-		if (t->rows[i].vbuf)
-			pfree(t->rows[i].vbuf);
-		pfree(t->rows[i].values);
-		pfree(t->rows[i].isnull);
+		if (i == 0 && t->ties && t->n == t->k)
+			t->bar = t->rows[0];
+		else
+			row_free(t, &t->rows[i]);
 	}
 	pfree(t->rows);
 	t->rows = NULL;
@@ -250,7 +333,7 @@ void
 sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull)
 {
 	const uint64 total = row_bytes(t, values, isnull);
-	const uint32 vcap = t->sort == NULL && t->n == t->k ? t->rows[0].vcap : 0;
+	const uint32 vcap = t->sort == NULL && t->n == t->k && !t->ties ? t->rows[0].vcap : 0;
 
 	if (t->sort == NULL && total > vcap && (t->vbytes + slot_cap(total) - vcap) / 1024 > (Size) work_mem)
 		spill(t);
@@ -268,6 +351,11 @@ sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull)
 		t->rows[t->n] = (TopRow) {0};
 		fill_row(t, &t->rows[t->n], values, isnull, total);
 		sift_up(t, t->n++);
+		return;
+	}
+	if (t->ties)
+	{
+		ties_put(t, values, isnull, total);
 		return;
 	}
 	fill_row(t, &t->rows[0], values, isnull, total);
@@ -305,7 +393,9 @@ sift_gtopk_worst(const SiftGTopK *t, int item, Datum *value, bool *isnull)
 uint32
 sift_gtopk_count(const SiftGTopK *t)
 {
-	return t->sort != NULL ? (uint32) Min(t->sorted, (uint64) t->k) : t->n;
+	if (t->sort != NULL)
+		return (uint32) Min(t->sorted, t->ties ? (uint64) PG_UINT32_MAX : (uint64) t->k);
+	return t->n + t->ntie;
 }
 
 bool
@@ -316,8 +406,10 @@ sift_gtopk_next(SiftGTopK *t, const Datum **values, const bool **isnull)
 	t->at++;
 	if (t->sort == NULL)
 	{
-		*values = t->rows[t->at - 1].values;
-		*isnull = t->rows[t->at - 1].isnull;
+		const TopRow *r = t->at <= t->n ? &t->rows[t->at - 1] : &t->tie[t->at - 1 - t->n];
+
+		*values = r->values;
+		*isnull = r->isnull;
 		return true;
 	}
 	tuplesort_gettupleslot(t->sort, true, false, t->slot, NULL);

@@ -77,13 +77,13 @@ sort_key_text(PlannerInfo *root, Node *e)
 }
 
 char *
-sift_v6_topn_desc(PlannerInfo *root)
+sift_v6_topn_desc(PlannerInfo *root, int nkeys)
 {
 	const Query *q = root->parse;
 	StringInfoData buf;
 
 	initStringInfo(&buf);
-	foreach_node(SortGroupClause, sgc, q->sortClause)
+	foreach_node(SortGroupClause, sgc, list_copy_head(q->sortClause, nkeys))
 	{
 		bool		desc;
 
@@ -476,7 +476,7 @@ sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptI
 		p.spec.rti = input_rel->relid;
 		if (compile_keys(&p) && compile_outputs(&p) && compile_quals(&p))
 		{
-			p.spec.desc = sift_v6_topn_desc(root);
+			p.spec.desc = sift_v6_topn_desc(root, list_length(root->parse->sortClause));
 			p.spec.serial_because = sift_v6_par_rows_serial_why(root, input_rel, false);
 			topn_add_path(&p);
 			return;

@@ -75,8 +75,8 @@ extern PGDLLIMPORT const CustomScanMethods sift_agg_v6_topn_plan_methods;
 extern void sift_agg_v6_topn_upper_paths(PlannerInfo *root, UpperRelationKind stage, RelOptInfo *input_rel, RelOptInfo *output_rel, void *extra);
 extern Plan *sift_agg_v6_topn_plan_path(PlannerInfo *root, RelOptInfo *rel, CustomPath *best, List *tlist, List *clauses, List *custom_plans);
 
-/* EXPLAIN of a Top-N: the sort keys of the statement ("total DESC, id") and the rows the scan holds for its LIMIT and OFFSET */
-extern char *sift_v6_topn_desc(PlannerInfo *root);
+/* EXPLAIN of a Top-N: the first nkeys sort keys of the statement ("total DESC, id") and the rows the scan holds for its LIMIT and OFFSET */
+extern char *sift_v6_topn_desc(PlannerInfo *root, int nkeys);
 extern char *sift_v6_topn_limit_text(const Node *limit, const Node *offset);
 /* offset + limit as the planner costs them when a parameter gives them: its value is not known, a typical page of results is */
 #define SIFT_V6_PARAM_ROWS	100

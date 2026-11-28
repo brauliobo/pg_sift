@@ -37,7 +37,7 @@ static bool
 rows_shape(const SiftV6Spec *sp, const int *first, ParShape *sh)
 {
 	if (!sp->rows || sp->naggs != 0 || sp->nsets != 0 || sp->nbins != 0 || sp->nderive != 0 || sp->nfcols != 0 || sp->nfilters != 0 || sp->lock_k != 0 || sp->affine ||
-		sp->nkeys < 1 || sp->nkeys > SIFT_PAR_ROWS_MAX_KEYS || sp->ntopk != sp->nkeys || sp->topk < 1 || sp->topk > SIFT_PAR_ROWS_K_MAX)
+		sp->nkeys < 1 || sp->nkeys > SIFT_PAR_ROWS_MAX_KEYS || sp->ntopk != sp->nkeys || sp->topk_ties || sp->topk < 1 || sp->topk > SIFT_PAR_ROWS_K_MAX)
 		return false;
 	for (int i = 0; i < sp->nkeys; i++)
 		if (!sort_key(sp, i, sh, first))

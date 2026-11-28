@@ -322,6 +322,7 @@ typedef struct SiftV6Spec
 	Node	   *skip;			/* a row Top-N under a Limit that has no OFFSET: the OFFSET of the statement, whose rows the node passes over itself (NULL: none) */
 	int			ntopk;
 	SiftV6TopKItem topk_item[SIFT_V6_MAX_TOPK_ITEMS];
+	bool		topk_ties;		/* the best K and every row that ties the K-th on the sort items: the sort keys past them, which the node does not read, are sorted above it */
 	bool		having;			/* the node runs a HAVING qual on the groups: the K best are the best that pass it, not the best of all groups */
 	List	   *pgexpr;			/* the PostgreSQL expressions of the SVD_PG_EXPR derivations: their items (v6_pg_expr.h) */
 	bool		constant_groups;	/* GROUP BY of expressions that read no column: no group when no row is read (the single set of no keys has a row only once a row was folded) */

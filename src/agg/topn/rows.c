@@ -133,6 +133,13 @@ datum_value(void *ctx, int item, bool *isnull)
 	return c->values[pos];
 }
 
+/* the first sort column orders the rows alone: a row that ties the worst held loses to it */
+static bool
+one_key(const SiftV6Spec *spec)
+{
+	return spec->ntopk == 1 && !spec->topk_ties;
+}
+
 /* the row would stay: the heap is not full or the row beats its worst; a sort takes every row */
 static bool
 rows_wants(SiftV6Rows *r, SiftTopKValue value, void *ctx)
@@ -241,6 +248,7 @@ rows_sort_begin(SiftV6Rows *r, TupleDesc desc)
 	Oid			ops[SIFT_V6_MAX_TOPK_ITEMS];
 	Oid			colls[SIFT_V6_MAX_TOPK_ITEMS];
 	bool		nulls_first[SIFT_V6_MAX_TOPK_ITEMS];
+	bool		bounded;
 
 	for (int i = 0; i < spec->ntopk; i++)
 	{
@@ -249,9 +257,10 @@ rows_sort_begin(SiftV6Rows *r, TupleDesc desc)
 		colls[i] = spec->topk_item[i].collid;
 		nulls_first[i] = spec->topk_item[i].nulls_first;
 	}
+	bounded = spec->topk != SIFT_V6_ROWS_ALL && !spec->topk_ties;
 	r->sort = tuplesort_begin_heap(desc, spec->ntopk, cols, ops, colls, nulls_first, work_mem, NULL,
-								   spec->topk != SIFT_V6_ROWS_ALL ? TUPLESORT_ALLOWBOUNDED : TUPLESORT_NONE);
-	if (spec->topk != SIFT_V6_ROWS_ALL)
+								   bounded ? TUPLESORT_ALLOWBOUNDED : TUPLESORT_NONE);
+	if (bounded)
 		tuplesort_set_bound(r->sort, spec->topk);
 	r->in = MakeSingleTupleTableSlot(desc, &TTSOpsVirtual);
 	r->out = MakeSingleTupleTableSlot(desc, &TTSOpsMinimalTuple);
@@ -287,7 +296,7 @@ sift_v6_rows_new(MemoryContext cx, const SiftV6Spec *spec)
 
 		get_ordering_op_properties(spec->topk_item[0].sortop, &opfamily, &opcintype, &cmptype);
 		r->desc = cmptype == SIFT_CMP_GT;
-		r->bound = (SiftF2Bound) {.desc = r->desc,.nulls_first = spec->topk_item[0].nulls_first,.ties = spec->ntopk > 1};
+		r->bound = (SiftF2Bound) {.desc = r->desc,.nulls_first = spec->topk_item[0].nulls_first,.ties = !one_key(spec)};
 	}
 	r->tmp = sift_mem_allocset_create(cx, "sift agg v6 rows");
 	MemoryContextSwitchTo(old);
@@ -331,8 +340,8 @@ code_range(const SiftV6Rows *r, const SiftVec *k0, uint32 *lo, uint32 *hi)
 		return;
 	t = DatumGetTextPP(worst);
 	if (r->desc)
-		*lo = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), r->spec->ntopk == 1);
-	else if ((*hi = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), r->spec->ntopk > 1)) == 0)
+		*lo = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), one_key(r->spec));
+	else if ((*hi = dict_search(d, (const uint8 *) VARDATA_ANY(t), VARSIZE_ANY_EXHDR(t), !one_key(r->spec))) == 0)
 		*lo = 1;
 	else
 		(*hi)--;

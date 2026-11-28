@@ -49,7 +49,7 @@ sift_v6_topk_run_new(MemoryContext cx, const SiftV6Spec *spec, TupleDesc desc)
 		r->count_agg = spec->topk_item[0].pos - spec->nkeys;
 		r->count_desc = spec->topk_item[0].sortop == INT8_GT_OPERATOR;
 	}
-	r->heap = sift_gtopk_new(cx, spec->topk, desc, spec->ntopk, spec->topk_item);
+	r->heap = sift_gtopk_new(cx, spec->topk, desc, spec->ntopk, spec->topk_item, spec->topk_ties);
 	r->values = MemoryContextAlloc(cx, Max(n, 1) * sizeof(Datum));
 	r->isnull = MemoryContextAlloc(cx, Max(n, 1) * sizeof(bool));
 	return r;
@@ -217,7 +217,7 @@ count_bar(const SiftV6TopKRun *r, CountBar *bar)
 static inline bool
 count_loses_n(const SiftV6TopKRun *r, const CountBar *bar, int64 n)
 {
-	const bool	only = r->spec->ntopk == 1;
+	const bool	only = r->spec->ntopk == 1 && !r->spec->topk_ties;
 
 	if (r->count_desc)
 		return only ? n <= bar->worst : n < bar->worst;

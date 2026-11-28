@@ -16,9 +16,9 @@ typedef Datum (*SiftTopKValue) (void *ctx, int item, bool *isnull);
 
 typedef struct SiftGTopK SiftGTopK;
 
-/* desc: the columns of a row; items: its sort columns and their order */
-extern SiftGTopK *sift_gtopk_new(MemoryContext cx, uint32 k, TupleDesc desc, int nitems, const SiftV6TopKItem *items);
-/* whether a row with these sort values would stay: the heap is not full, or the row sorts before the worst row held */
+/* desc: the columns of a row; items: its sort columns and their order; ties: every row that ties the K-th stays too (after the K, in no order of their own) */
+extern SiftGTopK *sift_gtopk_new(MemoryContext cx, uint32 k, TupleDesc desc, int nitems, const SiftV6TopKItem *items, bool ties);
+/* whether a row with these sort values would stay: the heap is not full, or the row sorts before (with ties: or with) the worst row held */
 extern bool sift_gtopk_wants(SiftGTopK *t, SiftTopKValue value, void *ctx);
 /* the row (copied) in place of the worst row, or added; only after sift_gtopk_wants said true for it */
 extern void sift_gtopk_put(SiftGTopK *t, const Datum *values, const bool *isnull);

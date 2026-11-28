@@ -39,7 +39,8 @@ proj_sort_offered(const RelOptInfo *rel)
 	return false;
 }
 
-/* the sort expressions of the query as the keys of the spec: columns of the index and what PostgreSQL's own expression machinery computes from them */
+/* the sort expressions of the query as the keys of the spec: columns of the index and what PostgreSQL's own expression machinery computes from them. The keys past the first that the scan
+ * cannot read (a column of the heap the index does not hold) are sorted above the node, which keeps every row that ties its K-th on the keys before them */
 static bool
 rows_keys(V6Plan *p)
 {
@@ -54,7 +55,10 @@ rows_keys(V6Plan *p)
 		SiftV6Col  *k = &p->spec.key[p->spec.nkeys];
 
 		if (IsA(e, Const) || !sift_v6_compile_sort_key(p, e, k))
-			return false;
+		{
+			p->spec.topk_ties = p->spec.ntopk > 0;
+			return p->spec.topk_ties;
+		}
 		p->spec.topk_item[p->spec.ntopk++] = (SiftV6TopKItem) {.pos = p->spec.nkeys++,.sortop = sgc->sortop,.collid = exprCollation((const Node *) e),.nulls_first = sgc->nulls_first};
 	}
 	return true;
@@ -83,8 +87,10 @@ sort_exprs_cost(PlannerInfo *root, double rows)
 void
 sift_v6_rows_explain(ExplainState *es, const SiftV6Spec *spec)
 {
-	sift_v6_topn_explain(es, spec->topn_desc, spec->topk_count != NIL ? sift_v6_topn_limit_text(linitial(spec->topk_count), lsecond(spec->topk_count)) :
-						 spec->topk == SIFT_V6_ROWS_ALL ? "all" : psprintf("%u", spec->topk));
+	const char *limit = spec->topk_count != NIL ? sift_v6_topn_limit_text(linitial(spec->topk_count), lsecond(spec->topk_count)) :
+		spec->topk == SIFT_V6_ROWS_ALL ? "all" : psprintf("%u", spec->topk);
+
+	sift_v6_topn_explain(es, spec->topn_desc, spec->topk_ties ? psprintf("%s with ties", limit) : limit);
 	if (spec->agg_desc != NULL)
 		ExplainPropertyText("Pushed Aggregates", spec->agg_desc, es);
 }
@@ -111,21 +117,35 @@ sift_v6_rows_compile(V6Plan *p, uint32 k)
 	return p->ops != NULL && sift_v6_index_complete(p) && rows_keys(p) && sift_v6_rows_outputs(p) && sift_v6_compile_quals(p) && rows_served(p);
 }
 
+/* the rows of the node in the order of the statement: a node that keeps the rows tying on the keys it reads is sorted on the others above it */
+static Path *
+rows_sorted(PlannerInfo *root, RelOptInfo *out, Path *path)
+{
+	int			presorted;
+
+	if (pathkeys_count_contained_in(root->sort_pathkeys, path->pathkeys, &presorted))
+		return path;
+	if (presorted == 0)
+		return (Path *) create_sort_path(root, out, path, root->sort_pathkeys, root->limit_tuples);
+	return (Path *) create_incremental_sort_path(root, out, path, root->sort_pathkeys, presorted, root->limit_tuples);
+}
+
 /* the path of the best K rows the scan of cost scan keeps, the heap of the winners priced at the rows it holds */
 static Path *
 rows_path(V6Plan *p, uint32 k, Cost scan, List *dims, Cost dims_startup, Cost dims_total)
 {
 	PlannerInfo *root = p->root;
 	const double kept = Min((double) k, p->rel->rows);
+	List	   *order = p->spec.topk_ties ? make_pathkeys_for_sortclauses(root, list_copy_head(root->parse->sortClause, p->spec.ntopk), root->parse->targetList) : root->sort_pathkeys;
 	Path		price;
 
-	p->spec.topn_desc = sift_v6_topn_desc(root);
+	p->spec.topn_desc = sift_v6_topn_desc(root, p->spec.ntopk);
 	p->spec.serial_because = sift_v6_par_rows_serial_why(root, p->rel, dims != NIL);
 	scan += cpu_operator_cost * p->rel->rows * log2(kept + 1.0) + sort_exprs_cost(root, p->rel->rows);
 	price = (Path) {.startup_cost = scan + dims_startup,.total_cost = scan + cpu_tuple_cost * kept + dims_total};
 	sift_v6_force_price(&price);
-	return sift_v6_make_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, kept, root->sort_pathkeys,
-							 list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims);
+	return rows_sorted(root, p->out, sift_v6_make_path(p->out, sift_v6_group_path_methods(), price.startup_cost, price.total_cost, kept, order,
+														list_make3(sift_v6_spec_pack(&p->spec), p->scan_tlist, NIL), dims));
 }
 
 void

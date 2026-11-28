@@ -39,6 +39,7 @@
 #include "agg/expr/pg.h"
 #include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
+#include "agg/unique_key.h"
 
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
 static int
@@ -540,9 +541,9 @@ int_key(Oid typid)
 	return cls == SV6C_I32 || cls == SV6C_I64;
 }
 
-/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys into the scan (join/push.h) a semi join of a small table */
+/* the join needs the lookup of this node: the planner of the star join or of the unnest alone takes every other, and the push of the keys into the scan (join/push.h) the aggregates of a semi join of a small table */
 static bool
-needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh)
+needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh, bool rows)
 {
 	if (sh->elem != NULL || sh->resid != NIL)
 		return true;
@@ -552,7 +553,7 @@ needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh)
 
 		if (d->lateral || d->nkeys == 0 || d->on != NIL)
 			return true;
-		if (d->mode == SV6J_SEMI_EQUI && (sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || !sift_v6_push_small_side(root, d->rel)))
+		if (d->mode == SV6J_SEMI_EQUI && (rows || sh->nd > 1 || bms_membership(d->rels) != BMS_SINGLETON || !sift_v6_push_small_side(root, d->rel)))
 			return true;
 		if (d->mode != SV6J_INNER_EQUI && d->mode != SV6J_LEFT_EQUI && d->mode != SV6J_SEMI_EQUI)
 			return true;
@@ -597,23 +598,42 @@ pairs_ok(const SiftV6JoinShape *sh)
 	return true;
 }
 
-/* the best K rows of the join are fact rows the dimensions only filter (semi and anti joins, which the star join does not take), with no condition on the pairs */
+/* the table of the dimension has a unique index on columns of its keys: a fact row matches one of its rows at most (a key an expression computes is no such column) */
 static bool
-rows_shape_ok(const SiftV6JoinShape *sh)
+unique_on_keys(PlannerInfo *root, const SiftV6JoinDim *d)
+{
+	int			atts[SIFT_STAR_MAX_KEYS];
+
+	for (int k = 0; k < d->nkeys; k++)
+		atts[k] = d->kexpr[k] == NULL ? d->key[k]->varattno : InvalidAttrNumber;
+	return sift_v6_unique_key(planner_rt_fetch(d->rel->relid, root)->relid, d->nkeys, 0, atts, NULL);
+}
+
+/* a dimension of the best K rows keeps or drops a fact row and never repeats it: a semi or anti join, or an inner or left join of a table on a unique index */
+static bool
+rows_dim_ok(PlannerInfo *root, const SiftV6JoinDim *d)
+{
+	return sift_star_filters(d->mode) ||
+		((d->mode == SV6J_INNER_EQUI || d->mode == SV6J_LEFT_EQUI) && d->rel->reloptkind == RELOPT_BASEREL && d->on == NIL && unique_on_keys(root, d));
+}
+
+/* the best K rows of the join are fact rows its dimensions keep, each at most once, with no condition on the pairs */
+static bool
+rows_shape_ok(PlannerInfo *root, const SiftV6JoinShape *sh)
 {
 	for (int i = 0; i < sh->nd; i++)
-		if (!sift_star_filters(sh->dim[i].mode))
+		if (!rows_dim_ok(root, &sh->dim[i]))
 			return false;
 	return sh->resid == NIL;
 }
 
 static bool
-shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
+shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh, bool rows)
 {
 	if (!sift_v6_join_make_dims(root, base, sh) || !dim_rels_ok(root, sh) || !equivalence_keys(root, base, sh) || !join_clauses(root, base, sh) ||
 		!sift_v6_exists_main_unique(root, sh))
 		return false;
-	return pairs_ok(sh) && needs_lookup(root, sh) && preserved_ok(sh);
+	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(sh);
 }
 
 static bool
@@ -861,8 +881,8 @@ try_fact(PlannerInfo *root, RelOptInfo *output_rel, RelOptInfo *fact, RelOptInfo
 	const Relids base = sift_v6_plan_base_relids(root, js.input_rel);
 
 	js.sh = &sh;
-	if (!(elem != NULL ? sift_v6_plan_fact_ok(root, fact) && sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte) : sift_v6_join_fact_ok(root, fact)) || !shape_of(root, base, &sh) ||
-		(js.topk > 0 && !rows_shape_ok(&sh)))
+	if (!(elem != NULL ? sift_v6_plan_fact_ok(root, fact) && sift_v6_unnest_rte_joined(root, fact, elem, &sh.rte) : sift_v6_join_fact_ok(root, fact)) || !shape_of(root, base, &sh, js.topk > 0) ||
+		(js.topk > 0 && !rows_shape_ok(root, &sh)))
 		return;
 	plan_dims(root, &sh);
 	sift_v6_fact_paths(root, fact, output_rel, join_compile, join_add, &js);
