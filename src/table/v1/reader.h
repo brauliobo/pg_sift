@@ -56,6 +56,7 @@ typedef struct SiftV1Tbl
 	MemoryContext hcx;			/* the arrays of the last histogram, and its dictionary */
 	SiftSrcDict hdict;
 	SiftSrcDict *adict;			/* per leaf: the dictionary of its default in the segments that lack the column */
+	SiftSrcConst *absent;		/* per leaf: its value in the segments that lack the column (sift_v1_tbl_absent) */
 	SiftSrcLeafBuf *buf;		/* per leaf */
 	SiftSrcSel	sel;			/* the match set the units are restricted to */
 	bool	   *raw;			/* per leaf: an image leaf read as the codes of its stored dictionary */
@@ -71,6 +72,7 @@ extern Size sift_v1_tbl_view_size(void *impl);
 extern void sift_v1_tbl_view_export(void *impl, void *buf);
 
 extern SiftSrcLayout *sift_v1_tbl_layout(Relation rel);
+extern SiftSrcConst *sift_v1_tbl_absent(Relation rel, const SiftSrcLayout *lay);
 extern void sift_v1_tbl_stats(Relation rel, SiftSrcStats *st);
 extern void sift_v1_tbl_preagg(Relation rel, SiftSrcPreagg *pa);
 /* A leaf of a declared path of a jsonb column, not one of the table's own columns */

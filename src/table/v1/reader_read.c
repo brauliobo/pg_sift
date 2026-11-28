@@ -40,6 +40,49 @@ absent_dict(SiftV1Tbl *t, int leaf, Datum d, bool isnull)
 	return dict;
 }
 
+/* The integer key of the catalog's value d of an integer leaf (SCV_I32/SCV_I64): an enum is its OID */
+static int64
+absent_int(const SiftSrcLeaf *l, Datum d)
+{
+	switch (l->typid)
+	{
+		case INT2OID:
+			return DatumGetInt16(d);
+		case INT4OID:
+		case DATEOID:
+			return DatumGetInt32(d);
+		case BOOLOID:
+			return DatumGetBool(d);
+		case INT8OID:
+		case TIMESTAMPOID:
+		case TIMESTAMPTZOID:
+		case TIMEOID:
+		case CASHOID:
+			return DatumGetInt64(d);
+		case NUMERICOID:
+			return sift_col_numeric_key(l->scale, d, SIFT_COL_ROUND_NEAREST);
+		default:
+			return (int32) DatumGetObjectId(d);
+	}
+}
+
+/* Per leaf of the layout: the value a column the segment was written before holds (null, or the integer constant of ADD COLUMN .. DEFAULT), which reads and zone tests share */
+SiftSrcConst *
+sift_v1_tbl_absent(Relation rel, const SiftSrcLayout *lay)
+{
+	SiftSrcConst *c = palloc0(Max(lay->nleaves, 1) * sizeof(SiftSrcConst));
+
+	for (int i = 0; i < lay->nleaves; i++)
+	{
+		const SiftSrcLeaf *l = &lay->leaf[i];
+		Datum		d = getmissingattr(RelationGetDescr(rel), l->attno, &c[i].isnull);
+
+		if (!c[i].isnull && !l->wide && (l->vtype == SCV_I32 || l->vtype == SCV_I64))
+			c[i].v = absent_int(l, d);
+	}
+	return c;
+}
+
 /* A column the segment was written before has the value the catalog gives rows that lack it (null, or the constant of ADD COLUMN .. DEFAULT) */
 static void
 read_absent(SiftV1Tbl *t, int leaf, size_t n, SiftSrcVec *vec)
@@ -67,38 +110,14 @@ read_absent(SiftV1Tbl *t, int leaf, size_t n, SiftSrcVec *vec)
 		return;
 	}
 	for (size_t i = 0; i < n; i++)
-		switch (l->typid)
-		{
-			case INT2OID:
-				((int32 *) b->data)[i] = DatumGetInt16(d);
-				break;
-			case INT4OID:
-			case DATEOID:
-				((int32 *) b->data)[i] = DatumGetInt32(d);
-				break;
-			case BOOLOID:
-				((int32 *) b->data)[i] = DatumGetBool(d);
-				break;
-			case INT8OID:
-			case TIMESTAMPOID:
-			case TIMESTAMPTZOID:
-			case TIMEOID:
-			case CASHOID:
-				((int64 *) b->data)[i] = DatumGetInt64(d);
-				break;
-			case NUMERICOID:
-				((int64 *) b->data)[i] = sift_col_numeric_key(l->scale, d, SIFT_COL_ROUND_NEAREST);
-				break;
-			case FLOAT4OID:
-				((double *) b->data)[i] = DatumGetFloat4(d);
-				break;
-			case FLOAT8OID:
-				((double *) b->data)[i] = DatumGetFloat8(d);
-				break;
-			default:
-				if (l->vtype == SCV_I32)	/* an enum */
-					((int32 *) b->data)[i] = (int32) DatumGetObjectId(d);
-		}
+		if (l->vtype == SCV_I32)
+			((int32 *) b->data)[i] = (int32) t->absent[leaf].v;
+		else if (l->vtype == SCV_I64)
+			((int64 *) b->data)[i] = t->absent[leaf].v;
+		else if (l->typid == FLOAT4OID)
+			((double *) b->data)[i] = DatumGetFloat4(d);
+		else if (l->typid == FLOAT8OID)
+			((double *) b->data)[i] = DatumGetFloat8(d);
 	if (l->vtype == SCV_CODE)
 		vec->dict = absent_dict(t, leaf, d, false);
 }

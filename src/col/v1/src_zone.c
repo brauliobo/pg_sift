@@ -85,41 +85,107 @@ zone_tests(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrc
 	z->nzpred = n;
 }
 
-/* the zone tree of a junction of the prune entries (kept for the scans of the source: the entries are the executor's, the same at every begin); false when an entry is on a leaf the source lacks */
+/* does the value every row of the source holds on a leaf it lacks pass the entry z (no junction)? */
 static bool
-zone_tree(MemoryContext cxt, const int *col, const SiftSrcPrune *z, SiftColPrune *c)
+const_passes(const SiftSrcPrune *z, const SiftSrcConst *c)
 {
-	*c = (SiftColPrune) {.any = z->any,.nkids = z->nkids};
+	if (z->nulltest)
+		return c[z->leaf].isnull == (z->nulltest == SSN_ISNULL);
+	if (c[z->leaf].isnull || c[z->leaf].v < z->lo || c[z->leaf].v > z->hi)
+		return false;
+	for (int i = 0; i < z->nvals; i++)
+		if (z->vals[i] == c[z->leaf].v)
+			return true;
+	return z->nvals == 0;
+}
+
+typedef enum ZoneTree
+{
+	ZT_TEST,					/* the tree tests the zones of the units */
+	ZT_ALL,						/* every row of the source passes the entry: it prunes nothing */
+	ZT_NONE						/* no row of the source passes it: it prunes every unit */
+} ZoneTree;
+
+/*
+ * The zone tree of the entry z (made once for the scans of the source: the entries are the executor's, the same at every begin). An entry on a leaf the source lacks
+ * is decided by the value its rows hold there (absent), and decides its junction: a false kid of an AND or a true kid of an OR, else it is left out of it.
+ */
+static ZoneTree
+zone_tree(MemoryContext cxt, const int *col, const SiftSrcConst *absent, const SiftSrcPrune *z, SiftColPrune *c)
+{
+	SiftColPrune *kids;
+
+	*c = (SiftColPrune) {.any = z->any};
 	if (z->nkids == 0)
 	{
 		SiftColPred *preds = MemoryContextAlloc(cxt, 2 * sizeof(SiftColPred));
 		int			leaf = leaf_of(col, z->leaf);
 
 		if (leaf < 0)
-			return false;
+			return const_passes(z, absent) ? ZT_ALL : ZT_NONE;
 		c->npreds = zone_preds(cxt, z, leaf, MemoryContextAllocZero(cxt, 2 * sizeof(SiftColValue)), preds);
 		c->preds = preds;
-		return true;
+		return ZT_TEST;
 	}
-	c->kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));
+	kids = MemoryContextAlloc(cxt, z->nkids * sizeof(SiftColPrune));
 	for (int i = 0; i < z->nkids; i++)
-		if (!zone_tree(cxt, col, &z->kids[i], &((SiftColPrune *) c->kids)[i]))
-			return false;
-	return true;
+		switch (zone_tree(cxt, col, absent, &z->kids[i], &kids[c->nkids]))
+		{
+			case ZT_TEST:
+				c->nkids++;
+				break;
+			case ZT_ALL:
+				if (z->any)
+					return ZT_ALL;
+				break;
+			case ZT_NONE:
+				if (!z->any)
+					return ZT_NONE;
+				break;
+		}
+	c->kids = kids;
+	return c->nkids > 0 ? ZT_TEST : z->any ? ZT_NONE : ZT_ALL;
+}
+
+/* the trees of the junctions into z->zone; an entry no row of the source passes is an OR of no kid, which keeps no unit */
+static void
+zone_trees(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcConst *absent, const SiftSrcPrune *prune, int nprune)
+{
+	bool		none = false;
+
+	z->zfor = prune;
+	z->nzone = 0;
+	z->zone = MemoryContextAlloc(cxt, (nprune + 1) * sizeof(SiftColPrune));
+	for (int k = 0; k < nprune && !none; k++)
+	{
+		SiftColPrune c;
+
+		if (prune[k].nkids == 0 && leaf_of(col, prune[k].leaf) >= 0)
+			continue;
+		switch (zone_tree(cxt, col, absent, &prune[k], &c))
+		{
+			case ZT_TEST:
+				z->zone[z->nzone++] = c;
+				break;
+			case ZT_ALL:
+				break;
+			case ZT_NONE:
+				none = true;
+				break;
+		}
+	}
+	if (none)
+	{
+		z->zone[0] = (SiftColPrune) {.any = true};
+		z->nzone = 1;
+	}
 }
 
 int
-sift_srczone_preds(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune, SiftColPred *out)
+sift_srczone_preds(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcConst *absent, const SiftSrcPrune *prune, int nprune, SiftColPred *out)
 {
 	if (z->zfor != prune)
-	{
-		z->zfor = prune;
-		z->nzone = 0;
-		z->zone = MemoryContextAlloc(cxt, Max(nprune, 1) * sizeof(SiftColPrune));
-		for (int k = 0; k < nprune; k++)
-			if (prune[k].nkids > 0 && zone_tree(cxt, col, &prune[k], &z->zone[z->nzone]))
-				z->nzone++;
-	}
+		zone_trees(z, cxt, col, absent, prune, nprune);
 	zone_tests(z, cxt, col, prune, nprune);
 	memcpy(out, z->zpred, z->nzpred * sizeof(SiftColPred));
 	return z->nzpred;

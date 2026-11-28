@@ -177,6 +177,7 @@ sift_v1_tbl_init(SiftV1Tbl *t, Relation heap, Snapshot snapshot, MemoryContext m
 	t->lay = sift_v1_tbl_layout(heap);
 	t->dict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
 	t->adict = palloc0(sizeof(SiftSrcDict) * t->lay->nleaves);
+	t->absent = sift_v1_tbl_absent(heap, t->lay);
 	t->buf = palloc0(sizeof(SiftSrcLeafBuf) * t->lay->nleaves);
 	t->raw = palloc0(sizeof(bool) * t->lay->nleaves);
 	t->wcxt = palloc0(sizeof(MemoryContext) * t->lay->nleaves);
@@ -322,7 +323,7 @@ begin_window(SiftV1Tbl *t, uint32 sb_lo)
 		else
 		{
 			SiftColPred preds[SIFT_SRCZONE_MAX];
-			int			n = sift_srczone_preds(&p->zones, t->cxt, p->col, t->prune, t->nprune, preds);
+			int			n = sift_srczone_preds(&p->zones, t->cxt, p->col, t->absent, t->prune, t->nprune, preds);
 
 			sift_col_begin_zones(p->src, preds, n, p->zones.zone, p->zones.nzone, sb_lo, sb_hi);
 		}

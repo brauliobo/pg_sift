@@ -127,7 +127,7 @@ idx_begin(void *impl, uint32 sb_lo, uint32 sb_hi, const SiftSrcPrune *prune, int
 {
 	SiftV1Idx  *r = impl;
 	SiftColPred preds[SIFT_SRCZONE_MAX];
-	int			n = sift_srczone_preds(&r->zones, r->cxt, NULL, prune, nprune, preds);
+	int			n = sift_srczone_preds(&r->zones, r->cxt, NULL, NULL, prune, nprune, preds);
 
 	sift_col_begin_zones(r->cs, preds, n, r->zones.zone, r->zones.nzone, sb_lo, sb_hi);
 }

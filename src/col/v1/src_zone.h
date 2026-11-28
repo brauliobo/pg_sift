@@ -22,11 +22,19 @@ typedef struct SiftSrcZoneTests
 	const int64 *zvals[SIFT_SRCZONE_MAX];	/* the set of values zpred[i] was made from: the same array is the same values (the entries are made once), so a begin does not compare them */
 } SiftSrcZoneTests;
 
+/* The value every row of a source holds on a leaf it lacks, in the leaf's vector type: what the catalog gives rows written before ADD COLUMN */
+typedef struct SiftSrcConst
+{
+	bool		isnull;
+	int64		v;
+} SiftSrcConst;
+
 /*
  * The predicates of the entries that are no junction into out (SIFT_SRCZONE_MAX at most), and z->zone / z->nzone the trees of the junctions, for
- * sift_col_begin_zones. col: the leaf of the source that holds leaf i of the entries (NULL: the same numbers); an entry on a leaf the source lacks tests
- * nothing, and a junction with such an entry is left out whole (a unit of an older layout holds that column as NULLs the zone cannot tell).
+ * sift_col_begin_zones. col: the leaf of the source that holds leaf i of the entries (NULL: the same numbers); absent[i]: the value of leaf i in a source
+ * that lacks it (col[i] < 0), which decides the entries on it: a source none of whose rows pass an entry keeps no unit.
  */
-extern int	sift_srczone_preds(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcPrune *prune, int nprune, SiftColPred *out);
+extern int	sift_srczone_preds(SiftSrcZoneTests *z, MemoryContext cxt, const int *col, const SiftSrcConst *absent, const SiftSrcPrune *prune, int nprune,
+							   SiftColPred *out);
 
 #endif							/* SIFT_COL_V1_SRC_ZONE_H */
