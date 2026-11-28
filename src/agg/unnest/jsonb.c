@@ -533,7 +533,7 @@ is_value_text(const V6Plan *p, const Node *n)
 
 /*
  * how e reads the value of the member: the cast of its text to the type of the leaf, or of jsonb_each's jsonb as it is (not before 18, where the cast of a JSON null raises and the leaf
- * reads it as NULL); SV6V_NONE for anything else
+ * reads it as NULL), or the text of jsonb_each_text itself; SV6V_NONE for anything else
  */
 static SiftV6ValueRead
 value_read(const V6Plan *p, const Expr *e)
@@ -546,7 +546,7 @@ value_read(const V6Plan *p, const Expr *e)
 	if (IsA(e, CoerceViaIO) && (el->fn == SV6E_EACH ? is_value_text(p, (const Node *) ((const CoerceViaIO *) e)->arg) :
 								is_value_var(p, (const Node *) ((const CoerceViaIO *) e)->arg, TEXTOID)))
 		return SV6V_TEXT;
-	return SV6V_NONE;
+	return el->fn == SV6E_EACH_TEXT && is_value_var(p, (const Node *) e, TEXTOID) ? SV6V_RAW : SV6V_NONE;
 }
 
 /* the read of the value is read (of the type of the expression, or SV6V_INT* of a float8 leaf), the one the statement makes: the column of the leaf */
@@ -625,7 +625,7 @@ sift_v6_unnest_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 		return present_column(p, out);
 	if (el->fn == SV6E_MEMBERS)
 		return sift_v6_members_column(p, e, out);
-	if (el->fn >= SV6E_EACH && !IsA(e, Var))
+	if (el->fn >= SV6E_EACH && (!IsA(e, Var) || v->varattno == 2))
 		return value_column(p, e, out);
 	if (!IsA(e, Var) || v->varno != p->elem_rel->relid || v->varlevelsup != 0 || v->varattno < 1 || v->varattno > el->ncols || (el->fn >= SV6E_EACH && v->varattno != 1))
 		return false;
@@ -897,8 +897,8 @@ member_value(SiftV6RecFn *f, uint32 k, bool *isnull)
 	Datum		d = f->val[k];
 
 	*isnull = f->val_null[k];
-	if (*isnull)
-		return (Datum) 0;
+	if (*isnull || f->vread == SV6V_RAW)
+		return d;
 	if (f->vread >= SV6V_CAST)
 	{
 		InitFunctionCallInfoData(*fcinfo, &f->vfn, 1, InvalidOid, NULL, NULL);

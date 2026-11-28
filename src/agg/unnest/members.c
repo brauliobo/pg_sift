@@ -177,7 +177,7 @@ sift_v6_elem_col_vec(const SiftV6XElem *e, int c, SiftVecType type, const void *
 bool
 sift_v6_elem_late(const SiftV6XElem *e, int slot)
 {
-	return e->fn >= SV6E_EACH ? slot == 1 : e->fn == SV6E_MEMBERS && e->col_type[slot] != TEXTOID;
+	return e->fn >= SV6E_EACH ? slot == 1 && e->vread != SV6V_RAW : e->fn == SV6E_MEMBERS && e->col_type[slot] != TEXTOID;
 }
 
 Datum
