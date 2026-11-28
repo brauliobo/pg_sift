@@ -126,7 +126,7 @@ SELECT * FROM cc_check() ORDER BY idx, n;
  all       |  6 | hour: refused    | scan | t
  all       |  7 | range            | all  | t
  all       |  8 | range, no key    | all  | t
- all       |  9 | date, quarter    | scan | t
+ all       |  9 | date, quarter    | all  | t
  all       | 10 | date, test       | all  | t
  all       | 11 | tz at UTC        | all  | t
  all       | 12 | tz session: scan | scan | t
@@ -150,7 +150,7 @@ SELECT * FROM cc_check() ORDER BY idx, n;
  ts, d     |  6 | hour: refused    | scan | t
  ts, d     |  7 | range            | all  | t
  ts, d     |  8 | range, no key    | all  | t
- ts, d     |  9 | date, quarter    | scan | t
+ ts, d     |  9 | date, quarter    | all  | t
  ts, d     | 10 | date, test       | all  | t
  ts, d     | 11 | tz at UTC        | scan | t
  ts, d     | 12 | tz session: scan | scan | t
@@ -162,7 +162,7 @@ SELECT * FROM cc_check() ORDER BY idx, n;
  ts, d, tz |  6 | hour: refused    | scan | t
  ts, d, tz |  7 | range            | all  | t
  ts, d, tz |  8 | range, no key    | all  | t
- ts, d, tz |  9 | date, quarter    | scan | t
+ ts, d, tz |  9 | date, quarter    | all  | t
  ts, d, tz | 10 | date, test       | all  | t
  ts, d, tz | 11 | tz at UTC        | all  | t
  ts, d, tz | 12 | tz session: scan | scan | t

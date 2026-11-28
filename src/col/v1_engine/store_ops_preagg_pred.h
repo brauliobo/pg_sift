@@ -27,7 +27,8 @@ typedef enum SiftV1PredKind
 	SV1P_CMP,					/* leaf op val */
 	SV1P_ANY,					/* leaf = ANY (set) */
 	SV1P_AND,					/* the n tests of kid, all of the leaf */
-	SV1P_OR
+	SV1P_OR,
+	SV1P_CAL					/* a test of the leaf through calendar calls (extract(month FROM d) = 3), made on a group or a cell (col/v1_engine/store_ops_cal.h) */
 } SiftV1PredKind;
 
 typedef enum SiftV1CmpOp
@@ -51,6 +52,7 @@ typedef struct SiftV1Pred
 	text	  **str;			/* a test of a string leaf (a comparison with str[0], = ANY of the n of them): made on the strings of the dictionary of each group, never on the zone */
 	Oid			collid;			/* ... the collation of a comparison */
 	struct SiftV1Pred *kid;		/* SV1P_AND, SV1P_OR: n of them */
+	struct SiftV1CalTest *cal;	/* SV1P_CAL */
 } SiftV1Pred;
 
 /* A leaf a cube holds as it is stored: not wide, not lossy, not a numeric (whose integers carry a scale); and one of integers */

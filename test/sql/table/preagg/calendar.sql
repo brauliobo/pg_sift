@@ -2,9 +2,9 @@
 -- a unit stores the groups of its days, else of its months, else of its years (the finest that fits), and a group key that is a function of the cell
 -- (date_trunc, extract, ::date), a range on the column or a test of its calendar parts is answered from them. Every query runs three ways, which must give
 -- the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units
--- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
+-- the first one answered from metadata: all, some, none of those it reads (a unit its zones rule out is not read; 'scan': no SiftAggV6 node).
 -- Size, 16 s of CPU: tcy has 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27
--- and 46, and tcm has them so that the dirty states leave shapes 9, 12 and 20 'none' (60000 rows of either changes those answers); tcd has 60000, which is as many units as it needs.
+-- and 46, and tcm has them too; tcd has 60000, which is as many units as it needs.
 -- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones.
 -- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
@@ -21,8 +21,25 @@ CREATE TABLE tcy (LIKE tcd) USING sift_table;
 
 CREATE FUNCTION pm_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
 
-\ir test/common/sql/agg/preagg_units.sql
-CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE sql AS $$ SELECT units, pre FROM pa_units(q) $$;
+-- the granules the SiftAggV6 node reads (scanned or answered from the pre-aggregates, not those its zones rule out) and those it answered from the pre-aggregates (NULL: no SiftAggV6,
+-- or the query fails)
+CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'SiftAggV6' AND units IS NULL THEN
+			units := 0;
+			pre := 0;
+		ELSIF l ~ '^\s*Granules: ' THEN
+			pre := pre + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := units + coalesce(substring(l from 'scanned=(\d+)')::int, 0) + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+		END IF;
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL;
+	pre := NULL;
+END $$;
 
 -- the rows of a table in a window of days from a day: a timestamp, a date and a timestamptz of the same instants, NULLs in every column
 CREATE FUNCTION pm_fill(tbl regclass, base timestamp, span int, lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
@@ -192,7 +209,7 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP BY 1');
 
 DROP TABLE tcd, tcm, tcy, tci;
-DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pa_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
+DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
 DROP TABLE pm_q;

@@ -42,6 +42,9 @@ extern bool sift_v6_step_open(MemoryContext cx, const Node *e, Index relid, Sift
  */
 extern void sift_v6_step_runs(const SiftV6Step *st, const SiftVec *v, const SiftBatchSel *bs, SiftBatchSel *heads, uint16 *head_of);
 
+/* e is a constant zone name that PostgreSQL reads now as a zone of offset 0 at every instant: an abbreviation (from PostgreSQL 18 the session zone's first) of offset 0, else a zone of UTC */
+extern bool sift_v6_utc_zone(const Node *e);
+
 /* EXPLAIN: " (per day)", " (per hour)" .. " (per 900 seconds)" for a step */
 extern const char *sift_v6_step_text(int64 us);
 

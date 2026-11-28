@@ -107,9 +107,8 @@ bin_step(const FuncExpr *f)
 	return us;
 }
 
-/* a constant zone name that PostgreSQL reads now as a zone of offset 0 at every instant: an abbreviation (from PostgreSQL 18 the session zone's first) of offset 0, else a zone of UTC */
-static bool
-utc_zone(const Node *e)
+bool
+sift_v6_utc_zone(const Node *e)
 {
 	const Const *k = (const Const *) e;
 	char	   *name;
@@ -147,7 +146,7 @@ call_step(const Node *n, const Node **arg, bool *bin, bool *instant)
 		case F_DATE_TRUNC_TEXT_TIMESTAMPTZ_TEXT:
 			*arg = lsecond(f->args);
 			*instant = true;
-			return utc_zone(lthird(f->args)) ? unit_step(f, trunc_units) : 0;
+			return sift_v6_utc_zone(lthird(f->args)) ? unit_step(f, trunc_units) : 0;
 		case F_EXTRACT_TEXT_TIMESTAMP:
 		case F_EXTRACT_TEXT_TIMESTAMPTZ:
 		case F_DATE_PART_TEXT_TIMESTAMP:
@@ -173,7 +172,7 @@ column_of(const Node *n, Index relid, bool *instant)
 {
 	const FuncExpr *f = (const FuncExpr *) n;
 
-	*instant = IsA(n, FuncExpr) && f->funcid == F_TIMEZONE_TEXT_TIMESTAMPTZ && list_length(f->args) == 2 && utc_zone(linitial(f->args));
+	*instant = IsA(n, FuncExpr) && f->funcid == F_TIMEZONE_TEXT_TIMESTAMPTZ && list_length(f->args) == 2 && sift_v6_utc_zone(linitial(f->args));
 	if (*instant)
 		n = lsecond(f->args);
 	while (IsA(n, RelabelType))

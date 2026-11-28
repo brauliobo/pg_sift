@@ -24,5 +24,9 @@ extern bool sift_v6_linear_sum(const SiftV6Linear *lin, SiftI128 sum, int64 n, S
 /* No set, bin, derived value (but a line of a column a sum or an average reads), function, extension, text query, document, generated expression, constant group, lock or row output; keys that are columns of an integer, boolean or text class
  * (not numeric), aggregates of a column that count, sum, average, take the least or the greatest of an integer, a float or a text, or count the distinct values of one, under a FILTER or not; the format decides which FILTER and which quals no scan key says (vqual) its cubes test */
 extern bool sift_v6_spec_cubeable(const SiftV6Spec *spec);
+/* The same but for its keys, which a format may compute from what its cubes hold (the calendar cells of Format 1) */
+extern bool sift_v6_spec_cube_aggs(const SiftV6Spec *spec);
+/* Key i of spec is one a cube holds as it is: a column of an integer, boolean or text class (not numeric), not binned */
+extern bool sift_v6_key_cubeable(const SiftV6Spec *spec, int i);
 
 #endif							/* SIFT_AGG_V6_CUBE_H */

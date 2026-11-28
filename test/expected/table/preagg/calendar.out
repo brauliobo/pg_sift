@@ -2,9 +2,9 @@
 -- a unit stores the groups of its days, else of its months, else of its years (the finest that fits), and a group key that is a function of the cell
 -- (date_trunc, extract, ::date), a range on the column or a test of its calendar parts is answered from them. Every query runs three ways, which must give
 -- the same rows: from the pre-aggregates, scanning every unit (sift.agg_preagg off), and the plain plan (sift.enable_agg off). `pre` says how many units
--- the first one answered from metadata: all, some, none ('scan': the shape has no pre-aggregate to use).
+-- the first one answered from metadata: all, some, none of those it reads (a unit its zones rule out is not read; 'scan': no SiftAggV6 node).
 -- Size, 16 s of CPU: tcy has 150000 rows (8 units in more than one segment) so that a range that cuts a day leaves some units without rows in it, which is 'some' of shapes 24, 27
--- and 46, and tcm has them so that the dirty states leave shapes 9, 12 and 20 'none' (60000 rows of either changes those answers); tcd has 60000, which is as many units as it needs.
+-- and 46, and tcm has them too; tcd has 60000, which is as many units as it needs.
 -- The plain plan is 38 ms a shape on 150000 rows and runs once for each of about 420 checks: 48 shapes on 3 tables, 15 in each of 7 states of tcm, 47 twice on tci and 14 in each of 3 time zones.
 -- The states of the data below (write buffer, tombstones, a transaction's rows) re-check 15 of the 48 shapes.
 SET client_min_messages = warning;
@@ -18,9 +18,25 @@ CREATE TABLE tcd (id int, ts timestamp, d date, tz timestamptz, cat int, amt num
 CREATE TABLE tcm (LIKE tcd) USING sift_table;
 CREATE TABLE tcy (LIKE tcd) USING sift_table;
 CREATE FUNCTION pm_rows(q text, pre bool, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_preagg_and_pushdown(q, pre, push) $$;
-\ir test/common/sql/agg/preagg_units.sql
-\set ECHO none
-CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE sql AS $$ SELECT units, pre FROM pa_units(q) $$;
+-- the granules the SiftAggV6 node reads (scanned or answered from the pre-aggregates, not those its zones rule out) and those it answered from the pre-aggregates (NULL: no SiftAggV6,
+-- or the query fails)
+CREATE FUNCTION pm_units(q text, OUT units int, OUT pre int) LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
+		IF l ~ 'SiftAggV6' AND units IS NULL THEN
+			units := 0;
+			pre := 0;
+		ELSIF l ~ '^\s*Granules: ' THEN
+			pre := pre + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			units := units + coalesce(substring(l from 'scanned=(\d+)')::int, 0) + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+		END IF;
+	END LOOP;
+EXCEPTION WHEN OTHERS THEN
+	units := NULL;
+	pre := NULL;
+END $$;
 -- the rows of a table in a window of days from a day: a timestamp, a date and a timestamptz of the same instants, NULLs in every column
 CREATE FUNCTION pm_fill(tbl regclass, base timestamp, span int, lo int, hi int) RETURNS void LANGUAGE plpgsql AS $$
 BEGIN
@@ -156,6 +172,7 @@ UNION ALL SELECT 'tcy', years > days + months FROM sift._test_tbl_cal_grains('tc
  tcm | t
  tcy | f
 (3 rows)
+
 -- 1. cells of days
 SELECT * FROM pm_check('tcd');
  n  |        shape        | pre  | same 
@@ -180,7 +197,7 @@ SELECT * FROM pm_check('tcd');
  18 | extract quarter     | all  | t
  19 | extract decade      | all  | t
  20 | year of the week    | all  | t
- 21 | hour: refused       | scan | t
+ 21 | hour: refused       | none | t
  22 | zone on id          | all  | t
  23 | range of days       | all  | t
  24 | range cuts a day    | none | t
@@ -190,10 +207,10 @@ SELECT * FROM pm_check('tcd');
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: none           | none | t
- 31 | float: scan         | scan | t
+ 31 | float: scan         | none | t
  32 | having, limit       | all  | t
- 33 | two keys: scan      | scan | t
- 34 | filter: scan        | scan | t
+ 33 | two keys: scan      | none | t
+ 34 | filter: scan        | none | t
  35 | date, month         | all  | t
  36 | date, year          | all  | t
  37 | date, dow           | all  | t
@@ -203,58 +220,7 @@ SELECT * FROM pm_check('tcd');
  41 | date, test in       | all  | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
- 45 | tz, range           | all  | t
- 46 | tz, range at +03    | none | t
- 47 | tz at UTC, range    | all  | t
- 48 | tz 3-arg UTC        | all  | t
-(48 rows)
- n  |        shape        | pre  | same 
-----+---------------------+------+------
-  1 | month, date         | all  | t
-  2 | month, timestamp    | all  | t
-  3 | quarter             | all  | t
-  4 | year                | all  | t
-  5 | extract month       | all  | t
-  6 | extract year        | all  | t
-  7 | cut then month      | all  | t
-  8 | count of the key    | all  | t
-  9 | day                 | none | t
- 10 | cast to date        | none | t
- 11 | week                | none | t
- 12 | extract dow         | none | t
- 13 | extract isodow      | none | t
- 14 | extract doy         | none | t
- 15 | extract day         | none | t
- 16 | extract week        | none | t
- 17 | extract isoyear     | none | t
- 18 | extract quarter     | all  | t
- 19 | extract decade      | all  | t
- 20 | year of the week    | none | t
- 21 | hour: refused       | scan | t
- 22 | zone on id          | all  | t
- 23 | range of days       | all  | t
- 24 | range cuts a day    | none | t
- 25 | open range          | all  | t
- 26 | range, no key       | all  | t
- 27 | range cuts, no key  | none | t
- 28 | range, other key    | none | t
- 29 | test of a dim       | none | t
- 30 | min: none           | none | t
- 31 | float: scan         | scan | t
- 32 | having, limit       | all  | t
- 33 | two keys: scan      | scan | t
- 34 | filter: scan        | scan | t
- 35 | date, month         | none | t
- 36 | date, year          | all  | t
- 37 | date, dow           | none | t
- 38 | date, via timestamp | all  | t
- 39 | date, range         | all  | t
- 40 | date, test          | all  | t
- 41 | date, test in       | none | t
- 42 | tz at UTC, month    | all  | t
- 43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
@@ -285,7 +251,61 @@ SELECT * FROM pm_check('tcm');
  18 | extract quarter     | all  | t
  19 | extract decade      | all  | t
  20 | year of the week    | none | t
- 21 | hour: refused       | scan | t
+ 21 | hour: refused       | none | t
+ 22 | zone on id          | all  | t
+ 23 | range of days       | all  | t
+ 24 | range cuts a day    | none | t
+ 25 | open range          | all  | t
+ 26 | range, no key       | all  | t
+ 27 | range cuts, no key  | none | t
+ 28 | range, other key    | none | t
+ 29 | test of a dim       | none | t
+ 30 | min: none           | none | t
+ 31 | float: scan         | none | t
+ 32 | having, limit       | all  | t
+ 33 | two keys: scan      | none | t
+ 34 | filter: scan        | none | t
+ 35 | date, month         | all  | t
+ 36 | date, year          | all  | t
+ 37 | date, dow           | none | t
+ 38 | date, via timestamp | all  | t
+ 39 | date, range         | all  | t
+ 40 | date, test          | all  | t
+ 41 | date, test in       | none | t
+ 42 | tz at UTC, month    | all  | t
+ 43 | tz at UTC, year     | all  | t
+ 44 | tz session: scan    | none | t
+ 45 | tz, range           | all  | t
+ 46 | tz, range at +03    | none | t
+ 47 | tz at UTC, range    | all  | t
+ 48 | tz 3-arg UTC        | all  | t
+(48 rows)
+
+-- 3. cells of years
+SELECT * FROM pm_check('tcy');
+ n  |        shape        | pre  | same 
+----+---------------------+------+------
+  1 | month, date         | all  | t
+  2 | month, timestamp    | all  | t
+  3 | quarter             | all  | t
+  4 | year                | all  | t
+  5 | extract month       | all  | t
+  6 | extract year        | all  | t
+  7 | cut then month      | all  | t
+  8 | count of the key    | all  | t
+  9 | day                 | none | t
+ 10 | cast to date        | none | t
+ 11 | week                | none | t
+ 12 | extract dow         | none | t
+ 13 | extract isodow      | none | t
+ 14 | extract doy         | none | t
+ 15 | extract day         | none | t
+ 16 | extract week        | none | t
+ 17 | extract isoyear     | none | t
+ 18 | extract quarter     | all  | t
+ 19 | extract decade      | all  | t
+ 20 | year of the week    | none | t
+ 21 | hour: refused       | none | t
  22 | zone on id          | all  | t
  23 | range of days       | all  | t
  24 | range cuts a day    | some | t
@@ -295,23 +315,20 @@ SELECT * FROM pm_check('tcm');
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: none           | none | t
- 31 | float: scan         | scan | t
+ 31 | float: scan         | none | t
  32 | having, limit       | all  | t
- 33 | two keys: scan      | scan | t
- 34 | filter: scan        | scan | t
- 35 | date, month         | none | t
+ 33 | two keys: scan      | none | t
+ 34 | filter: scan        | none | t
+ 35 | date, month         | some | t
  36 | date, year          | all  | t
  37 | date, dow           | none | t
  38 | date, via timestamp | some | t
  39 | date, range         | some | t
  40 | date, test          | some | t
  41 | date, test in       | none | t
-
--- 3. cells of years
-SELECT * FROM pm_check('tcy');
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
  47 | tz at UTC, range    | all  | t
@@ -336,10 +353,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | some | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
- 35 | date, month      | none | t
+ 33 | two keys: scan   | none | t
+ 35 | date, month      | some | t
  42 | tz at UTC, month | some | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | some | t
 (15 rows)
 
@@ -358,10 +375,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | all  | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
- 35 | date, month      | none | t
+ 33 | two keys: scan   | none | t
+ 35 | date, month      | all  | t
  42 | tz at UTC, month | all  | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | all  | t
 (15 rows)
 
@@ -381,10 +398,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | some | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
- 35 | date, month      | none | t
+ 33 | two keys: scan   | none | t
+ 35 | date, month      | some | t
  42 | tz at UTC, month | some | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | some | t
 (15 rows)
 
@@ -403,10 +420,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | none | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
+ 33 | two keys: scan   | none | t
  35 | date, month      | none | t
  42 | tz at UTC, month | none | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | none | t
 (15 rows)
 
@@ -416,18 +433,18 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
 ----+------------------+------+------
   1 | month, date      | all  | t
   5 | extract month    | all  | t
-  9 | day              | none | t
- 12 | extract dow      | none | t
- 20 | year of the week | none | t
+  9 | day              | some | t
+ 12 | extract dow      | some | t
+ 20 | year of the week | some | t
  23 | range of days    | all  | t
  24 | range cuts a day | none | t
  26 | range, no key    | all  | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
- 35 | date, month      | none | t
+ 33 | two keys: scan   | none | t
+ 35 | date, month      | all  | t
  42 | tz at UTC, month | all  | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | all  | t
 (15 rows)
 
@@ -448,10 +465,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | none | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
+ 33 | two keys: scan   | none | t
  35 | date, month      | none | t
  42 | tz at UTC, month | none | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | none | t
 (15 rows)
 
@@ -469,10 +486,10 @@ SELECT * FROM pm_check('tcm', keep => pm_dirty());
  26 | range, no key    | none | t
  29 | test of a dim    | none | t
  30 | min: none        | none | t
- 33 | two keys: scan   | scan | t
+ 33 | two keys: scan   | none | t
  35 | date, month      | none | t
  42 | tz at UTC, month | none | t
- 44 | tz session: scan | scan | t
+ 44 | tz session: scan | none | t
  45 | tz, range        | none | t
 (15 rows)
 
@@ -513,7 +530,7 @@ SELECT * FROM pm_check('tci', 1, 100, '{6}');
  18 | extract quarter     | some | t
  19 | extract decade      | some | t
  20 | year of the week    | some | t
- 21 | hour: refused       | scan | t
+ 21 | hour: refused       | none | t
  22 | zone on id          | some | t
  23 | range of days       | none | t
  24 | range cuts a day    | none | t
@@ -523,20 +540,20 @@ SELECT * FROM pm_check('tci', 1, 100, '{6}');
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: none           | none | t
- 31 | float: scan         | scan | t
+ 31 | float: scan         | none | t
  32 | having, limit       | some | t
- 33 | two keys: scan      | scan | t
- 34 | filter: scan        | scan | t
- 35 | date, month         | scan | t
- 36 | date, year          | scan | t
- 37 | date, dow           | scan | t
- 38 | date, via timestamp | scan | t
- 39 | date, range         | scan | t
- 40 | date, test          | scan | t
- 41 | date, test in       | scan | t
+ 33 | two keys: scan      | none | t
+ 34 | filter: scan        | none | t
+ 35 | date, month         | all  | t
+ 36 | date, year          | all  | t
+ 37 | date, dow           | all  | t
+ 38 | date, via timestamp | all  | t
+ 39 | date, range         | all  | t
+ 40 | date, test          | all  | t
+ 41 | date, test in       | all  | t
  42 | tz at UTC, month    | some | t
  43 | tz at UTC, year     | some | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | none | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | some | t
@@ -569,7 +586,7 @@ SELECT * FROM pm_check('tci');
  18 | extract quarter     | all  | t
  19 | extract decade      | all  | t
  20 | year of the week    | all  | t
- 21 | hour: refused       | scan | t
+ 21 | hour: refused       | none | t
  22 | zone on id          | all  | t
  23 | range of days       | none | t
  24 | range cuts a day    | none | t
@@ -579,10 +596,10 @@ SELECT * FROM pm_check('tci');
  28 | range, other key    | none | t
  29 | test of a dim       | none | t
  30 | min: none           | none | t
- 31 | float: scan         | scan | t
+ 31 | float: scan         | none | t
  32 | having, limit       | all  | t
- 33 | two keys: scan      | scan | t
- 34 | filter: scan        | scan | t
+ 33 | two keys: scan      | none | t
+ 34 | filter: scan        | none | t
  35 | date, month         | all  | t
  36 | date, year          | all  | t
  37 | date, dow           | all  | t
@@ -592,7 +609,7 @@ SELECT * FROM pm_check('tci');
  41 | date, test in       | all  | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | none | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
@@ -605,7 +622,7 @@ SET TimeZone = 'Pacific/Kiritimati';
 SELECT * FROM pm_check('tcm', 35, 48);
  n  |        shape        | pre  | same 
 ----+---------------------+------+------
- 35 | date, month         | none | t
+ 35 | date, month         | all  | t
  36 | date, year          | all  | t
  37 | date, dow           | none | t
  38 | date, via timestamp | all  | t
@@ -614,7 +631,7 @@ SELECT * FROM pm_check('tcm', 35, 48);
  41 | date, test in       | none | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
@@ -634,7 +651,7 @@ SELECT * FROM pm_check('tcd', 35, 48);
  41 | date, test in       | all  | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | none | t
  47 | tz at UTC, range    | all  | t
@@ -645,7 +662,7 @@ SET TimeZone = 'America/Los_Angeles';
 SELECT * FROM pm_check('tcy', 35, 48);
  n  |        shape        | pre  | same 
 ----+---------------------+------+------
- 35 | date, month         | none | t
+ 35 | date, month         | some | t
  36 | date, year          | all  | t
  37 | date, dow           | none | t
  38 | date, via timestamp | some | t
@@ -654,7 +671,7 @@ SELECT * FROM pm_check('tcy', 35, 48);
  41 | date, test in       | none | t
  42 | tz at UTC, month    | all  | t
  43 | tz at UTC, year     | all  | t
- 44 | tz session: scan    | scan | t
+ 44 | tz session: scan    | none | t
  45 | tz, range           | all  | t
  46 | tz, range at +03    | some | t
  47 | tz at UTC, range    | all  | t
@@ -675,7 +692,7 @@ SELECT * FROM pm_units('SELECT date_trunc(''month'', ts)::date, sum(amt) FROM tc
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcm GROUP BY 1');
  units | pre 
 -------+-----
-    10 |   0
+    10 |   1
 (1 row)
 
 SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP BY 1');
@@ -685,7 +702,7 @@ SELECT * FROM pm_units('SELECT extract(isoyear FROM ts), sum(amt) FROM tcy GROUP
 (1 row)
 
 DROP TABLE tcd, tcm, tcy, tci;
-DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pa_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
+DROP FUNCTION pm_dirty(), pm_check(text, int, int, int[], int[]), pm_units(text), pm_rows(text, bool, bool), pm_fill(regclass, timestamp, int, int, int), pm_edges(regclass, timestamp, timestamp);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;
 DROP TABLE pm_q;

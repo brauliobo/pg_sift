@@ -139,21 +139,34 @@ agg_cubeable(const SiftV6Spec *spec, const SiftV6Agg *a)
 }
 
 bool
-sift_v6_spec_cubeable(const SiftV6Spec *spec)
+sift_v6_key_cubeable(const SiftV6Spec *spec, int i)
 {
-	if (spec->nsets != 0 || spec->nbins != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL ||
-		spec->genref != NIL || spec->constant_groups || spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
-		return false;
-	for (int i = 0; i < spec->nkeys; i++)
-	{
-		const SiftV6Col *k = &spec->key[i];
-		const SiftV6Class cls = sift_v6_class(k->typid);
+	const SiftV6Col *k = &spec->key[i];
+	const SiftV6Class cls = sift_v6_class(k->typid);
 
-		if (k->src != SV6SRC_ATTR || k->jleaf > 0 || k->derive > 0 || (cls != SV6C_I32 && cls != SV6C_I64 && cls != SV6C_BOOL && cls != SV6C_TEXT) || k->typid == NUMERICOID)
+	for (int b = 0; b < spec->nbins; b++)
+		if (spec->bin[b].key == i)
 			return false;
-	}
+	return k->src == SV6SRC_ATTR && k->jleaf == 0 && k->derive == 0 && (cls == SV6C_I32 || cls == SV6C_I64 || cls == SV6C_BOOL || cls == SV6C_TEXT) && k->typid != NUMERICOID;
+}
+
+bool
+sift_v6_spec_cube_aggs(const SiftV6Spec *spec)
+{
+	if (spec->nsets != 0 || spec->nfuncs != 0 || spec->ext != NULL || spec->text_queries != NIL || spec->jsonqual != NIL || spec->genref != NIL || spec->constant_groups ||
+		spec->lock_k != 0 || spec->rows || spec->affine || spec->naggs < 1)
+		return false;
 	for (int j = 0; j < spec->naggs; j++)
 		if (!agg_cubeable(spec, &spec->agg[j]))
 			return false;
 	return true;
+}
+
+bool
+sift_v6_spec_cubeable(const SiftV6Spec *spec)
+{
+	for (int i = 0; i < spec->nkeys; i++)
+		if (!sift_v6_key_cubeable(spec, i))
+			return false;
+	return sift_v6_spec_cube_aggs(spec);
 }

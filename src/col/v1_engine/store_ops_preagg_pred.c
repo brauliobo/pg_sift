@@ -15,8 +15,11 @@
 #include "utils/rel.h"
 #include "utils/varlena.h"
 
+#include "agg/expr/pg.h"
+
 #include "col/v1/preagg/preagg.h"
 #include "col/v1/store_ops.h"
+#include "col/v1_engine/store_ops_cal.h"
 #include "col/v1_engine/store_ops_preagg_pred.h"
 
 static bool
@@ -183,6 +186,21 @@ leaf_pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, SiftV1
 	return false;
 }
 
+/* A test of one date or timestamp leaf through calendar calls, which its groups and the cells of a grain it keeps its value over decide */
+static bool
+cal_pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, SiftV1Pred *p)
+{
+	List	   *vars;
+	const Var  *var;
+	const SiftSrcLeaf *l;
+
+	if (!sift_v6_pgexpr_vars((const Expr *) clause, 1, 0, &vars) || list_length(vars) != 1 || (var = heap_var(linitial(vars))) == NULL ||
+		(l = qual_leaf(host, lay, var->varattno)) == NULL || !sift_v1_leaf_int(l))
+		return false;
+	*p = (SiftV1Pred) {.kind = SV1P_CAL,.leaf = l->id,.cal = sift_v1_cal_test_of(clause, vars, l->typid)};
+	return p->cal != NULL;
+}
+
 /* ---- what the zone of a unit says of a test ---- */
 
 static bool
@@ -244,6 +262,8 @@ any_verdict(const SiftV1Pred *p, const SiftSrcUnitAgg *z)
 static SiftV1Verdict
 leaf_verdict(const SiftV1Pred *p, const SiftSrcUnitAgg *z)
 {
+	if (p->kind == SV1P_CAL)
+		return SV1V_SOME;
 	if (p->kind == SV1P_NULL)
 		return z->nnull == z->nvals ? SV1V_ALL : z->nnull == 0 ? SV1V_NONE : SV1V_SOME;
 	if (p->kind == SV1P_NOTNULL)
@@ -302,6 +322,8 @@ str_order(const SiftV1Pred *p, const SiftSrcHist *h, uint32 r)
 static bool
 leaf_passes(const SiftV1Pred *p, const SiftSrcHist *h, uint32 r)
 {
+	if (p->kind == SV1P_CAL)
+		return sift_v1_cal_test_passes(p->cal, h, r);
 	if (h->has_null && r == h->ngroups - 1)
 		return p->kind == SV1P_NULL;
 	if (p->kind == SV1P_NULL || p->kind == SV1P_NOTNULL)
@@ -341,7 +363,7 @@ sift_v1_pred_of(Relation host, const SiftSrcLayout *lay, const Node *clause, Sif
 	if (IsA(clause, RestrictInfo))
 		clause = (const Node *) ((const RestrictInfo *) clause)->clause;
 	if (!is_orclause(clause))
-		return leaf_pred_of(host, lay, clause, p);
+		return leaf_pred_of(host, lay, clause, p) || cal_pred_of(host, lay, clause, p);
 	args = ((const BoolExpr *) clause)->args;
 	*p = (SiftV1Pred) {.kind = SV1P_OR,.kid = palloc0(list_length(args) * sizeof(SiftV1Pred))};
 	foreach_ptr(Node, arg, args)
@@ -391,5 +413,7 @@ sift_v1_pred_cell(const SiftV1Pred *p, Oid typid, const SiftSrcHist *h, uint32 r
 	const int64 unit = typid == DATEOID ? 1 : USECS_PER_DAY;
 	const SiftSrcUnitAgg z = {.nvals = h->count[r],.has_minmax = true,.min = h->key[r] * unit,.max = next_cell(h->grain, h->key[r]) * unit - 1};
 
+	if (p->kind == SV1P_CAL)
+		return sift_v1_cal_test_cell(p->cal, h, r);
 	return sift_v1_pred_verdict(p, &z);
 }
