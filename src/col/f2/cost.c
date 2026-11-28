@@ -21,6 +21,7 @@
 
 #include "access/genam.h"
 #include "col/am.h"
+#include "col/am/preds.h"
 #include "col/f2/f2.h"
 #include "col/f2/cache.h"
 #include "col/f2/point_dir.h"
@@ -224,7 +225,7 @@ sift_f2_amcostestimate(PlannerInfo *root, IndexPath *path, double loop_count, Co
 {
 	IndexOptInfo *index = path->indexinfo;
 	List	   *quals = get_quals_from_indexclauses(path->indexclauses);
-	Selectivity sel = quals == NIL ? 1.0 : clauselist_selectivity(root, quals, index->rel->relid, JOIN_INNER, NULL);
+	const Selectivity sel = sift_col_handed_sel(root, path, true);
 	Relation	rel = index_open(index->indexoid, AccessShareLock);
 	const SiftPlanSnapshot *plan = sift_plan_cache_get(rel, CurrentMemoryContext);
 	const SiftColRel *r = sift_col_rel_private(rel, CurrentMemoryContext);

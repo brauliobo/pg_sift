@@ -6,6 +6,7 @@
 
 #include "access/relscan.h"
 #include "catalog/pg_type_d.h"
+#include "nodes/pathnodes.h"
 
 #include "col/col.h"
 
@@ -53,7 +54,16 @@ extern int	xtime_bound(Oid coltype, Oid argtype, Datum d, int *strat, int64 *v);
 #define SIFT_LIKE_INFIX_MIN	3
 /* The longest run of literal bytes between the wildcards of a LIKE pattern, into best: the string every match holds; 0 for a pattern that ends in a backslash */
 extern int	sift_like_longest_run(const char *pat, int len, char *best);
+/* The literal prefix of a LIKE pattern into buf: its bytes up to its first % or _ (a backslash escapes), how many, and in *rest where the first wildcard is (len: none); -1 for a pattern that ends in a
+ * backslash and for any pattern in an encoding where a wildcard byte can be part of a character */
+extern int	sift_like_prefix(const char *pat, int len, char *buf, int *rest);
 extern void like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool infix);
+
+/*
+ * The share of the rows of the table a scan of the index clauses of path hands over: a LIKE that its leaf tests by the literal prefix of the pattern alone, or by its longest literal run on an index that
+ * keeps the windows of the strings (infix), hands over every row of that part, which the heap scan tests against the pattern
+ */
+extern Selectivity sift_col_handed_sel(PlannerInfo *root, const IndexPath *path, bool infix);
 
 /* The predicates of the keys of a scan, one for each key, on the leaves of k; false: a key no leaf can decide and no recheck covers (the scan finds no row) */
 extern bool sift_col_key_preds(const ScanKeyData *keys, int nkeys, ColKeys *k, SiftColPred *preds);

@@ -199,6 +199,7 @@ col_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *in
 				rescan,
 				repeat,
 				row_cost,
+				handed,
 				scale = cpu_operator_cost / 0.0025 / SIFT_COST_COL_US_PER_UNIT;
 	Bitmapset  *cols = NULL,
 			   *slow = NULL,
@@ -237,6 +238,10 @@ col_costestimate(PlannerInfo *root, IndexPath *path, double loop_count, Cost *in
 			row_cost += COL_SCAN_ROW_VAR;
 
 	genericcostestimate(root, path, loop_count, &costs);
+	/* a pattern its leaf tests by a part of it hands over the rows of that part (sift_col_handed_sel), which the heap fetches and tests */
+	handed = sift_col_handed_sel(root, path, false);
+	costs.numIndexTuples *= costs.indexSelectivity > 0 ? handed / costs.indexSelectivity : 1.0;
+	costs.indexSelectivity = handed;
 	if (path->indexscandir != NoMovementScanDirection && path->path.pathkeys != NIL)
 	{
 		/* the order of the first column is walked from its start: every row of the index, at the price of the merge (ordpath.c); a compact order is sorted by the first row, so its work is the startup */

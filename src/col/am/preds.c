@@ -7,8 +7,12 @@
 #include "postgres.h"
 #include <math.h>
 #include "common/hashfn.h"
+#include "lib/stringinfo.h"
+#include "nodes/makefuncs.h"
 #include "nodes/miscnodes.h"
+#include "optimizer/optimizer.h"
 #include "port/pg_bitutils.h"
+#include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
@@ -261,42 +265,53 @@ sift_like_longest_run(const char *pat, int len, char *best)
 	return nbest;
 }
 
+int
+sift_like_prefix(const char *pat, int len, char *buf, int *rest)
+{
+	int			n = 0,
+				i = 0;
+
+	if (GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() > 1)
+		return -1;
+	while (i < len && pat[i] != '%' && pat[i] != '_')
+	{
+		if (pat[i] == '\\' && i + 1 >= len)
+			return -1;
+		i += pat[i] == '\\';
+		buf[n++] = pat[i++];
+	}
+	*rest = i;
+	return n;
+}
+
+/* the pattern is its literal prefix alone, or the prefix and one final %: the test of the prefix decides it */
+static bool
+like_prefix_exact(const char *pat, int len, int rest)
+{
+	return rest == len || (rest == len - 1 && pat[rest] == '%');
+}
+
 /*
- * LIKE and ^@ on a text leaf: the literal prefix of the pattern (up to its first % or _, a backslash escapes) is a byte prefix test of the leaf, which is exact for
- * 'prefix%', '=' for a pattern with no wildcard and a wider set for any other pattern (the heap scan applies the pattern then). A pattern with no prefix, one that ends in
- * a backslash (an error to LIKE) and, in an encoding where a wildcard byte can be part of a character, any pattern: IS NOT NULL and a recheck.
+ * LIKE and ^@ on a text leaf: the literal prefix of the pattern (sift_like_prefix) is a byte prefix test of the leaf, which is exact for 'prefix%', '=' for a pattern with no wildcard and a wider set
+ * for any other pattern (the heap scan applies the pattern then). A pattern with no prefix, one that ends in a backslash (an error to LIKE) and, in an encoding where a wildcard byte can be part of a
+ * character, any pattern: IS NOT NULL and a recheck.
  */
 void
 like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool infix)
 {
 	const char *pat = v->v.s;
-	int			len = v->len,
-				n = 0,
-				i = 0,
-				run;
+	const int	len = v->len;
 	char	   *buf = palloc(len + 1);
+	int			rest = len,
+				n = starts_with ? len : sift_like_prefix(pat, len, buf, &rest),
+				run;
 
-	if (!starts_with && GetDatabaseEncoding() != PG_UTF8 && pg_database_encoding_max_length() > 1)
+	if (starts_with)
+		memcpy(buf, pat, len);
+	if (n < 0)
 	{
 		key_any(p, k);
 		return;
-	}
-	while (i < len)
-	{
-		if (!starts_with && pat[i] == '\\')
-		{
-			if (i + 1 >= len)
-			{
-				key_any(p, k);
-				return;
-			}
-			buf[n++] = pat[i + 1];
-			i += 2;
-			continue;
-		}
-		if (!starts_with && (pat[i] == '%' || pat[i] == '_'))
-			break;
-		buf[n++] = pat[i++];
 	}
 	if (n == 0 && infix && (run = sift_like_longest_run(pat, len, buf)) >= SIFT_LIKE_INFIX_MIN)
 	{
@@ -317,11 +332,87 @@ like_pred(ColKeys *k, SiftColPred *p, SiftColValue *v, bool starts_with, bool in
 	}
 	v->v.s = buf;
 	v->len = n;
-	p->op = !starts_with && i == len ? SIFT_COLOP_EQ : SIFT_COLOP_PREFIX;
+	p->op = !starts_with && rest == len ? SIFT_COLOP_EQ : SIFT_COLOP_PREFIX;
 	p->nvals = 1;
 	p->vals = v;
-	if (!starts_with && i < len && !(pat[i] == '%' && i == len - 1))
+	if (!like_prefix_exact(pat, len, rest))
 		k->recheck = true;
+}
+
+/* the bytes of lit as the literal of a LIKE pattern: each wildcard and backslash escaped */
+static char *
+like_escaped(const char *lit, int len, const char *before, const char *after)
+{
+	StringInfoData out;
+
+	initStringInfo(&out);
+	appendStringInfoString(&out, before);
+	for (int i = 0; i < len; i++)
+	{
+		if (lit[i] == '%' || lit[i] == '_' || lit[i] == '\\')
+			appendStringInfoChar(&out, '\\');
+		appendStringInfoChar(&out, lit[i]);
+	}
+	appendStringInfoString(&out, after);
+	return out.data;
+}
+
+/* the clause of the rows a scan hands over for a LIKE of a text leaf that like_pred tests by a part of its pattern: that part as a pattern of its own, IS NOT NULL for none; NULL when the leaf decides the clause */
+static Expr *
+like_handed(const OpExpr *op, bool infix)
+{
+	const Const *c = lsecond(op->args);
+	const char *pat = TextDatumGetCString(c->constvalue);
+	const int	len = strlen(pat);
+	char	   *buf = palloc(len + 1);
+	int			rest = len,
+				n = sift_like_prefix(pat, len, buf, &rest),
+				run;
+	uint32		litlen;
+	const char *handed;
+
+	if (n > 0 && like_prefix_exact(pat, len, rest))
+		return NULL;
+	if (n > 0)
+		handed = like_escaped(buf, n, "", "%");
+	else if (n == 0 && infix && (run = sift_like_longest_run(pat, len, buf)) >= SIFT_LIKE_INFIX_MIN)
+	{
+		if (sift_like_parse((const uint8 *) pat, len, (uint8 *) palloc(len + 1), &litlen) == SIFT_LIKE_CONTAINS && litlen == (uint32) run)
+			return NULL;
+		handed = like_escaped(buf, run, "%", "%");
+	}
+	else
+	{
+		NullTest   *nt = makeNode(NullTest);
+
+		nt->arg = linitial(op->args);
+		nt->nulltesttype = IS_NOT_NULL;
+		nt->location = -1;
+		return (Expr *) nt;
+	}
+	return make_opclause(op->opno, op->opresulttype, false, linitial(op->args),
+						 (Expr *) makeConst(c->consttype, c->consttypmod, c->constcollid, -1, CStringGetTextDatum(handed), false, false), op->opcollid, op->inputcollid);
+}
+
+Selectivity
+sift_col_handed_sel(PlannerInfo *root, const IndexPath *path, bool infix)
+{
+	const IndexOptInfo *index = path->indexinfo;
+	List	   *quals = NIL;
+
+	foreach_node(IndexClause, ic, path->indexclauses)
+	{
+		foreach_node(RestrictInfo, ri, ic->indexquals)
+		{
+			const OpExpr *op = (const OpExpr *) ri->clause;
+			const bool	like = IsA(op, OpExpr) && list_length(op->args) == 2 && IsA(lsecond(op->args), Const) && !((const Const *) lsecond(op->args))->constisnull &&
+				get_op_opfamily_strategy(op->opno, index->opfamily[ic->indexcol]) == COL_STRAT_LIKE;
+			Expr	   *handed = like ? like_handed(op, infix) : NULL;
+
+			quals = lappend(quals, handed != NULL ? (Node *) handed : (Node *) ri);
+		}
+	}
+	return quals == NIL ? 1.0 : clauselist_selectivity(root, quals, index->rel->relid, JOIN_INNER, NULL);
 }
 
 /* NOT LIKE '%lit%' is the rows that do not hold lit, NOT LIKE 'lit' those that differ from it: the aggregate scan sends no other pattern (agg/qual/qual.c) */
