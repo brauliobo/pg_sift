@@ -504,7 +504,7 @@ why_params(ParseState *pstate, const PreparedStatement *entry, List *given, ESta
 
 /*
  * EXECUTE of a prepared SELECT: planned for the values it is given (a custom plan, so that the planner runs and the reasons are recorded, whatever plan_cache_mode says), the way the
- * statement runs on its next execution.
+ * statement runs on its next execution. A statement without parameters is given an empty list of them: PostgreSQL reuses its generic plan when it is given none.
  */
 static void
 why_execute(const ExecuteStmt *es, const char *sql)
@@ -513,7 +513,7 @@ why_execute(const ExecuteStmt *es, const char *sql)
 	CachedPlanSource *psrc = entry->plansource;
 	ParseState *pstate = make_parsestate(NULL);
 	EState	   *estate = CreateExecutorState();
-	ParamListInfo params = NULL;
+	ParamListInfo params = makeParamList(0);
 	CachedPlan *cplan;
 	int			nest;
 
