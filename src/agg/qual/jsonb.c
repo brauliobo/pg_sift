@@ -106,11 +106,11 @@ key_leaf(const SiftV6Rel *rel, int att, const char *key)
 	return path_leaf(rel, att, list_make1(makeString(pstrdup(key))));
 }
 
-/* the format tests whether the key is on a document with the leaf of the key */
+/* the format tests whether the key is on a document with the leaf of the key; the leaves of a sift_table keep no presence of their key (a document that is no object and holds it) */
 static bool
 exists_leaf(const SiftV6Rel *rel, int att, const char *key)
 {
-	return rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->key_exists && key_leaf(rel, att, key) >= 0;
+	return rel->table == NULL && rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->key_exists && key_leaf(rel, att, key) >= 0;
 }
 
 /* the empty path '{}' of a #>> */
@@ -379,7 +379,7 @@ presence_vatt(const SiftV6Rel *rel, const Expr *doc, const char *key)
 {
 	int			att;
 
-	if (rel->table != NULL || rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->key_presence || key == NULL || !doc_of(rel, doc, &att) || !exists_leaf(rel, att, key))
+	if (rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->key_presence || key == NULL || !doc_of(rel, doc, &att) || !exists_leaf(rel, att, key))
 		return InvalidAttrNumber;
 	return SIFT_V6_JPRES_VATT + key_leaf(rel, att, key);
 }
