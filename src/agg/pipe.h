@@ -15,6 +15,7 @@
 
 #include "nodes/execnodes.h"
 
+#include "agg/acc_type.h"
 #include "agg/engine.h"
 #include "agg/ext.h"
 #include "agg/join/lookup.h"
@@ -86,6 +87,8 @@ extern void sift_v6_pipe_semi(SiftV6Pipe *p, int slot);
 extern void sift_v6_pipe_semi_reset(SiftV6Pipe *p);
 /* One batch of the fact side: fact[i] is slot i; bs gives its rows. The vectors must live until the call returns */
 extern void sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs);
+/* The cells of a pre-aggregate bs keeps, a batch of the fact side with no dimension: fact[i] is slot i, acc[c * naggs + j] the state of aggregate j of cell c (sift_v6_group_update_cells) */
+extern void sift_v6_pipe_cells(SiftV6Pipe *p, SiftVec *const *fact, const SiftBatchSel *bs, const V6Acc *acc);
 /* The fact side has ended: the rows of the dimensions of a RIGHT or FULL join that no row matched go through the dimensions after them, with a NULL fact side */
 extern void sift_v6_pipe_finish(SiftV6Pipe *p);
 /* The rows of dim, a table of dimension d of a RIGHT or FULL join, that no row matched go through the dimensions after d, with a NULL fact side */

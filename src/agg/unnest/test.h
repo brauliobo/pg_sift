@@ -22,6 +22,8 @@ typedef struct SiftV6ElemEval SiftV6ElemEval;
 extern SiftV6ElemEval *sift_v6_elem_eval_open(MemoryContext cx, const List *quals);
 /* Some of the quals are PostgreSQL's to evaluate: the executor's own functions, which only the backend that runs the statement can call (no compute thread) */
 extern bool sift_v6_elem_eval_pg(const SiftV6ElemEval *ee);
+/* Bit c: the quals read element column c */
+extern uint64 sift_v6_elem_eval_cols(const SiftV6ElemEval *ee);
 /*
  * bit e of keep, for the elements [lo, hi), is whether element e passes the quals; ev: the element columns. Each qual PostgreSQL evaluates runs, as in the normal plan, only on the elements the quals
  * before it keep, of the rows of rows (its parent_mask, poison and doc_valid; the elements of rows read from the heap: NULL, all of them): an error it raises is one the normal plan raises

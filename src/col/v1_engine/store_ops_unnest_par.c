@@ -53,7 +53,6 @@ par_morsel(struct SiftV6Scan *scan, SiftV6Group *into, const SiftParPartRef *ref
 
 	p->u.pipe->group = into;
 	sift_v1_unnest_read(&p->u, p->heap, p->index, NULL, 0, p->snap, &range);
-	p->u.stats->grans += n;
 	MemoryContextSwitchTo(old);
 	MemoryContextReset(p->morsel_cx);
 }

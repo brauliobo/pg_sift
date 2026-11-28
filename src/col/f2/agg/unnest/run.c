@@ -887,6 +887,21 @@ unrun_buffers(UnRun *u)
 	}
 }
 
+static int64
+pruned_grans(const SiftF2PullStats *st)
+{
+	return st->granules_key_skipped + st->granules_zone_skipped + st->granules_elem_skipped;
+}
+
+void
+sift_f2_unnest_count_grans(const UnRun *u, const SiftF2PullStats *since)
+{
+	const SiftF2PullStats *now = sift_f2_pull_stats(u->pull);
+
+	u->stats->grans += (uint64) (now->granules_read - since->granules_read);
+	u->stats->grans_pruned_zone += (uint64) (pruned_grans(now) - pruned_grans(since));
+}
+
 void
 sift_f2_unnest_close(UnRun *u)
 {
@@ -946,13 +961,14 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	const SiftF2ExtBatch *b;
 
 	sift_f2_unnest_open(u, spec, g, heap, index, keys, nkeys, snap, stats, star);
-	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats, u->where_preds);
+	map = sift_v6_map_preagg_begin(u);
 	u->ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	u->ps.gran_arg = map;
 	u->pull = sift_f2_pull_begin(u->host, snap, &u->ps);
 	if (map != NULL || !unnest_par(u, g))
 		while ((b = sift_f2_pull_next(u->pull)) != NULL)
 			sift_f2_unnest_batch(u, b);
+	sift_f2_unnest_count_grans(u, &(SiftF2PullStats) {0});
 	sift_f2_pull_end(u->pull);
 	if (map != NULL)
 		sift_v6_map_preagg_end(map);

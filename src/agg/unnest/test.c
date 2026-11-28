@@ -96,6 +96,23 @@ sift_v6_elem_eval_pg(const SiftV6ElemEval *ee)
 	return ee->has_pg;
 }
 
+uint64
+sift_v6_elem_eval_cols(const SiftV6ElemEval *ee)
+{
+	uint64		cols = 0;
+
+	for (int k = 0; k < ee->nsteps; k++)
+	{
+		const ElemStep *st = &ee->step[k];
+
+		for (int v = 0; st->pg == NULL && v < st->nvec; v++)
+			cols |= UINT64CONST(1) << st->ecol[v];
+		for (int i = 0; st->pg != NULL && i < st->pg->nin; i++)
+			cols |= UINT64CONST(1) << st->pcol[i];
+	}
+	return cols;
+}
+
 /* chunk &= the elements of the cnt at at that the native clause of st keeps */
 static void
 eval_native(SiftV6ElemEval *ee, const ElemStep *st, const SiftVec *ev, uint32 at, uint32 cnt, uint64 *chunk)

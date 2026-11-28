@@ -529,6 +529,18 @@ sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 	u->cube = sift_v1_unnest_cube_begin(u);
 }
 
+/* the units the source read, and those its zones and skipping indexes ruled out unread; those the rollups answered are the cube's */
+static void
+count_units(const UnRun *u)
+{
+	SiftV6GranCounts grans = {0};
+
+	u->src->granules(u->src, &grans);
+	u->stats->grans += grans.read;
+	u->stats->grans_pruned_zone += grans.pruned_zone;
+	u->stats->grans_pruned_skip += grans.pruned_skip;
+}
+
 void
 sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range)
 {
@@ -539,6 +551,7 @@ sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int n
 	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, keys, nkeys, &u->in), &scan);
 	while (u->src->next(u->src, &b))
 		sift_v1_unnest_batch(u, &b, u->has_elems ? sift_v1_source_elems(u->src) : NULL);
+	count_units(u);
 	u->src->close(u->src);
 	u->src = NULL;
 }

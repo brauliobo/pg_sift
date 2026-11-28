@@ -12,6 +12,7 @@
 
 #include "agg/datum.h"
 #include "agg/gather.h"
+#include "agg/group/int.h"
 #include "agg/expr/pg.h"
 #include "agg/join/found.h"
 #include "agg/pg_exec.h"
@@ -541,6 +542,19 @@ sift_v6_pipe_run(SiftV6Pipe *p, SiftVec *const *fact, SiftBatchSel *bs)
 		b->vec[i] = *fact[i];
 	b->bs = bs;
 	stage(p, 0, b);
+}
+
+void
+sift_v6_pipe_cells(SiftV6Pipe *p, SiftVec *const *fact, const SiftBatchSel *bs, const V6Acc *acc)
+{
+	const SiftV6Spec *spec = p->spec;
+
+	SIFT_INVARIANT(p->ndims == 0 && p->njoined == 0 && p->sink == NULL && p->rows == NULL, "the cells of relation %u reached a pipe whose rows go elsewhere than to its groups", spec->relid);
+	for (int i = 0; i < spec->nkeys; i++)
+		p->keyvec[i] = fact[p->key_slot[i]];
+	for (int j = 0; j < sift_v6_spec_nvec(spec); j++)
+		p->argvec[j] = p->arg_slot[j] < 0 ? NULL : fact[p->arg_slot[j]];
+	sift_v6_group_update_cells(p->group, bs, p->keyvec, p->argvec, acc);
 }
 
 void

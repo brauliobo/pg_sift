@@ -86,6 +86,17 @@ row_numbers(UnRun *u, uint32 m)
 	u->outv[u->row_slot] = (SiftVec) {.data = rows,.valid = u->out_valid[u->row_slot],.len = (uint16) m,.all_valid = true,.dense = true,.type = SVEC_I64};
 }
 
+/* the derivations of the first m pairs, for those obs keeps */
+static void
+derive_pairs(UnRun *u, uint32 m)
+{
+	for (int k = 0; k < u->spec->nderive; k++)
+		if (u->spec->derive[k].kind == SVD_PG_EXPR)
+			pg_pairs(u, k);
+		else
+			arith_pairs(u, k, m);
+}
+
 /* the pairs the columns of the pairs hold, the first m of them, on to the groups */
 static void
 run_pairs(UnRun *u, uint32 m)
@@ -98,15 +109,30 @@ run_pairs(UnRun *u, uint32 m)
 	bs->n_raw = bs->n_active = (uint16) m;
 	bs->all_active = true;
 	bs->has_sel = false;
-	for (int k = 0; k < u->spec->nderive; k++)
-		if (u->spec->derive[k].kind == SVD_PG_EXPR)
-			pg_pairs(u, k);
-		else
-			arith_pairs(u, k, m);
+	derive_pairs(u, m);
 	if (u->row_slot >= 0)
 		row_numbers(u, m);
 	if (bs->n_active > 0)
 		sift_v6_pipe_run(u->pipe, u->out, bs);
+}
+
+void
+sift_f2_unnest_emit_cells(UnRun *u, const SiftVec *ev, const uint64 *keep, const V6Acc *acc, uint32 m)
+{
+	SiftBatchSel *bs = &u->obs;
+
+	for (uint32 i = 0; i < m; i++)
+		u->eidx[i] = i;
+	for (int c = 0; c < u->nel; c++)
+		if (u->eused[c])
+			sift_vec_gather(u->out[u->ncols + c], u->out_valid[u->ncols + c], u->out_data[u->ncols + c], &ev[c], u->eidx, m);
+	*bs = (SiftBatchSel) {.n_raw = (uint16) m};
+	for (uint32 w = 0; w < (m + 63) / 64; w++)
+		bs->n_active += (uint16) sift_pc64(bs->mask[w] = keep[w]);
+	bs->all_active = bs->n_active == m;
+	derive_pairs(u, m);
+	if (bs->n_active > 0)
+		sift_v6_pipe_cells(u->pipe, u->out, bs, acc);
 }
 
 /* the pairs of (row, element) into the vectors of the pairs, and on to the groups: pidx[i] names the row of fact and eidx[i] the element of elems of pair i (SIFT_GATHER_NONE: a NULL one) */

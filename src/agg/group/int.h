@@ -377,6 +377,8 @@ extern void v6g_table_only(SiftV6Group *g, V6Set *set);
 /* group_cells.c: n cells of a granule (keyvec[i] is key i, one row for each; acc[c * naggs + j] the partial state of aggregate j of cell c) folded into the groups */
 extern bool sift_v6_group_takes_cells(const SiftV6Group *g);
 extern void sift_v6_group_merge_cells(SiftV6Group *g, SiftVec *const *keyvec, const V6Acc *acc, uint16 n);
+/* The cells bs keeps, each a row of the batch: keyvec its keys, argvec the columns of the FILTER clauses, which the group evaluates on the cells as on the rows of a batch, and the sets of keys */
+extern void sift_v6_group_update_cells(SiftV6Group *g, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec, const V6Acc *acc);
 /* n rows of the keys with a value of the COUNT(DISTINCT) aggregate agg each */
 extern void sift_v6_group_merge_dist(SiftV6Group *g, int agg, SiftVec *const *keyvec, SiftVec *arg, uint16 n);
 

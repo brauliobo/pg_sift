@@ -31,7 +31,7 @@ par_begin(const SiftV6Spec *spec, Relation heap, Relation index, ScanKey keys, i
 	p->heap = heap;
 	p->index = index;
 	sift_f2_unnest_open(&p->u, spec, NULL, heap, index, NULL, 0, snap, stats, star);
-	p->map = sift_v6_map_preagg_begin(spec, NULL, &p->u.vet, stats, p->u.where_preds);
+	p->map = sift_v6_map_preagg_begin(&p->u);
 	p->u.ps.gran_sink = p->map != NULL ? sift_v6_map_preagg_try_granule : NULL;
 	p->u.ps.gran_arg = p->map;
 	MemoryContextSwitchTo(old);
@@ -64,16 +64,14 @@ static void
 par_morsel(struct SiftV6Scan *scan, SiftV6Group *into, const SiftParPartRef *ref, uint32 first, uint32 n)
 {
 	UnPar	   *p = (UnPar *) scan;
-	const int64 read = sift_f2_pull_stats(p->u.pull)->granules_read;
+	const SiftF2PullStats since = *sift_f2_pull_stats(p->u.pull);
 	const SiftF2ExtBatch *b;
 
 	p->u.pipe->group = into;
-	if (p->map != NULL)
-		sift_v6_map_preagg_set_group(p->map, into);
 	sift_f2_pull_unit(p->u.pull, ref, first, n);
 	while ((b = sift_f2_pull_next(p->u.pull)) != NULL)
 		sift_f2_unnest_batch(&p->u, b);
-	p->u.stats->grans += (uint64) (sift_f2_pull_stats(p->u.pull)->granules_read - read);
+	sift_f2_unnest_count_grans(&p->u, &since);
 }
 
 static void

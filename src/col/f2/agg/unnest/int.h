@@ -202,6 +202,10 @@ extern void sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g
 								const SiftV6StarRun *star);
 extern void sift_f2_unnest_batch(UnRun *u, const SiftF2ExtBatch *b);
 extern void sift_f2_unnest_close(UnRun *u);
+/* the granules the pull read since its counts were since, and those its zones ruled out unread; those the cubes answered are their reader's */
+/* the m cells of a cube of the elements as pairs of no row, the element columns of the dimensions in ev: those keep has go through the derivations, the FILTER clauses and the sets of keys, acc[c * naggs + j] the state of aggregate j of cell c */
+extern void sift_f2_unnest_emit_cells(UnRun *u, const SiftVec *ev, const uint64 *keep, const V6Acc *acc, uint32 m);
+extern void sift_f2_unnest_count_grans(const UnRun *u, const SiftF2PullStats *since);
 extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
 /* rows.c: the rows of the batch in the TID range whose heap row the snapshot sees; then those the batch quals keep (u->bq), on the columns as the statement reads them (u->fv) */
 extern uint16 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b);

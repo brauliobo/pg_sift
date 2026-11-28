@@ -164,6 +164,8 @@ extern void sift_v1_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftV
 extern void sift_v1_unnest_emit_row(UnRun *u, const SiftVec *fact, const SiftVec *ev, const uint64 *keep, uint32 nel, uint32 row, ErrorData *const *late);
 /* the pairs of m rows that are one pair each, the members of a map already gathered */
 extern void sift_v1_unnest_run_pairs(UnRun *u, uint32 m);
+/* the m tuples of a rollup of the elements as pairs of no row, the element columns of the dimensions in ev: those keep has go through the derivations, the FILTER clauses and the sets of keys, acc[t * naggs + j] the state of aggregate j of tuple t */
+extern void sift_v1_unnest_emit_cells(UnRun *u, const SiftVec *ev, const uint64 *keep, const V6Acc *acc, uint32 m);
 extern void sift_v1_unnest_heap_open(UnRun *u, Relation heap);
 extern void sift_v1_unnest_heap_close(UnRun *u);
 /* the elements of the array of the heap row loaded, as columns: how many; with err, the data exception of the function is left there (sift_v6_recfn_call) */
@@ -187,6 +189,6 @@ extern void sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1Ele
 extern void sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range);
 extern void sift_v1_unnest_close(UnRun *u);
 /* store_ops_unnest_cube.c: the sink that answers units of the open run from the rollup of their array, into the group of its pipe; NULL when the statement is not one the rollups hold */
-extern SiftV1UnitSink *sift_v1_unnest_cube_begin(const UnRun *u);
+extern SiftV1UnitSink *sift_v1_unnest_cube_begin(UnRun *u);
 
 #endif							/* SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H */
