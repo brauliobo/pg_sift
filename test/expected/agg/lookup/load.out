@@ -1,8 +1,7 @@
 -- The joined table of a lookup join of Custom Scan (SiftAgg) is loaded for the scan: the rows its own conditions (group_id = 3, country = 5) cannot match are
--- not read (a btree on the leading columns) or not kept (the filter runs while loading), sift.agg_lookup_pushdown (docs/SET-FILTERS.md). Every statement is
--- run with the pushdown, without it, and with sift.enable_agg = off (the normal plan): the rows must be the same.
+-- not read (PostgreSQL's plan of the table scans a btree on them) or not kept (the filter runs while loading). Every statement is run with the scan and with
+-- sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
-SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
@@ -28,93 +27,91 @@ CREATE INDEX dims_country ON dims (country);
 ANALYZE dim_b; ANALYZE members_bare; ANALYZE dims;
 -- whether the plan is the pushed one, and what the load of the lookup tables read, kept and used
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_lookup_counts(q) $$;
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_pushdown bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	plan := plan_of(q);
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	EXECUTE format('CREATE TEMP TABLE r_no ON COMMIT DROP AS %s', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT count(*) FROM r_on);
-	vs_no_pushdown := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_no) UNION ALL (TABLE r_no EXCEPT TABLE r_on)) d);
 	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
 	RETURN NEXT;
 END $$;
 -- a group of an indexed membership table: the btree gives its rows; the same group through a table without index is filtered while loading
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 7) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 7 AND deleted_at IS NULL) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,450 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,450 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 7 AND role = 1) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,167 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,167 rows read,167 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM members_bare WHERE group_id = 7 AND deleted_at IS NULL) GROUP BY kind');
-                 plan                  | result_rows | vs_no_pushdown | vs_normal_plan 
----------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,450 rows loaded |           4 |              0 |              0
+                  plan                   | result_rows | vs_normal_plan 
+-----------------------------------------+-------------+----------------
+ SiftAgg,20003 rows read,450 rows loaded |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 7) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n, sum(amount) AS s FROM ev WHERE NOT EXISTS (SELECT 1 FROM dim_b m WHERE m.dim_a_id = ev.dim_a_id AND m.group_id = 7) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,500 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 -- a group with a NULL key and a duplicate, two groups (a list on the leading column is an index scan too), a group with no rows
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 3) GROUP BY kind');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,503 rows read,502 rows loaded,1 index scans |           4 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,503 rows read,503 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id IN (3, 4)) GROUP BY kind');
-                         plan                          | result_rows | vs_no_pushdown | vs_normal_plan 
--------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,1003 rows read,1002 rows loaded,1 index scans |           4 |              0 |              0
+                         plan                          | result_rows | vs_normal_plan 
+-------------------------------------------------------+-------------+----------------
+ SiftAgg,1003 rows read,1003 rows loaded,1 index scans |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT kind, count(*) AS n FROM ev WHERE dim_a_id IN (SELECT dim_a_id FROM dim_b WHERE group_id = 999) GROUP BY kind');
-                      plan                       | result_rows | vs_no_pushdown | vs_normal_plan 
--------------------------------------------------+-------------+----------------+----------------
- SiftAgg,0 rows read,0 rows loaded,1 index scans |           0 |              0 |              0
+  plan  | result_rows | vs_normal_plan 
+--------+-------------+----------------
+ normal |           0 |              0
 (1 row)
 
 -- a value join on an attribute table
 SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = 5 GROUP BY d.tier ORDER BY 1');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,500 rows loaded,1 index scans |           1 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,500 rows loaded,1 index scans |           1 |              0
 (1 row)
 
 SELECT * FROM same('SELECT d.tier, count(*) AS n, sum(amount) AS s FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.country = 5 AND d.active GROUP BY d.tier ORDER BY 1');
-                        plan                         | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------------------+-------------+----------------+----------------
- SiftAgg,500 rows read,429 rows loaded,1 index scans |           1 |              0 |              0
+                        plan                         | result_rows | vs_normal_plan 
+-----------------------------------------------------+-------------+----------------
+ SiftAgg,500 rows read,429 rows loaded,1 index scans |           1 |              0
 (1 row)
 
 -- no index on the condition: the filter runs while the table loads, and the answer is the normal plan's
 SELECT * FROM same('SELECT d.country, count(*) AS n FROM ev JOIN dims d ON d.id = ev.dim_a_id WHERE d.tier = 2 GROUP BY d.country ORDER BY 1');
-                  plan                   | result_rows | vs_no_pushdown | vs_normal_plan 
------------------------------------------+-------------+----------------+----------------
- SiftAgg,6000 rows read,6000 rows loaded |          12 |              0 |              0
+                   plan                   | result_rows | vs_normal_plan 
+------------------------------------------+-------------+----------------
+ SiftAgg,30000 rows read,6000 rows loaded |          12 |              0
 (1 row)
 
 -- a table read whole (no condition of its own) is loaded to the rows the statistics give, its integer keys take the slots of the key dictionary by blocks of sixteen, and a
@@ -135,21 +132,21 @@ FROM generate_series(1, 60000) i;
 CREATE INDEX lk_fact_col ON lk_fact USING sift_col (k, amount);
 VACUUM (FREEZE, ANALYZE) lk_fact;
 SELECT * FROM same('SELECT d.label, d.tag, count(*) AS n, sum(amount) AS s FROM lk_fact f JOIN lk_dim d ON d.k = f.k GROUP BY d.label, d.tag ORDER BY 1, 2');
-                   plan                    | result_rows | vs_no_pushdown | vs_normal_plan 
--------------------------------------------+-------------+----------------+----------------
- SiftAgg,12800 rows read,12800 rows loaded |          31 |              0 |              0
+                   plan                    | result_rows | vs_normal_plan 
+-------------------------------------------+-------------+----------------
+ SiftAgg,12800 rows read,12800 rows loaded |          31 |              0
 (1 row)
 
 SELECT * FROM same('SELECT d.note, count(*) AS n, sum(amount) AS s FROM lk_fact f JOIN lk_dim d ON d.k = f.k GROUP BY d.note ORDER BY 1');
-                   plan                    | result_rows | vs_no_pushdown | vs_normal_plan 
--------------------------------------------+-------------+----------------+----------------
- SiftAgg,12800 rows read,12800 rows loaded |           4 |              0 |              0
+                   plan                    | result_rows | vs_normal_plan 
+-------------------------------------------+-------------+----------------
+ SiftAgg,12800 rows read,12800 rows loaded |           4 |              0
 (1 row)
 
 SELECT * FROM same('SELECT length(d.note) AS len, d.tag, count(*) AS n FROM lk_fact f LEFT JOIN lk_dim d ON d.k = f.k GROUP BY 1, 2 ORDER BY 1, 2');
-                   plan                    | result_rows | vs_no_pushdown | vs_normal_plan 
--------------------------------------------+-------------+----------------+----------------
- SiftAgg,12800 rows read,12800 rows loaded |           9 |              0 |              0
+                   plan                    | result_rows | vs_normal_plan 
+-------------------------------------------+-------------+----------------
+ SiftAgg,12800 rows read,12800 rows loaded |           9 |              0
 (1 row)
 
 DROP TABLE lk_dim, lk_fact;

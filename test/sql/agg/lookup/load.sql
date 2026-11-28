@@ -1,8 +1,7 @@
 -- The joined table of a lookup join of Custom Scan (SiftAgg) is loaded for the scan: the rows its own conditions (group_id = 3, country = 5) cannot match are
--- not read (a btree on the leading columns) or not kept (the filter runs while loading), sift.agg_lookup_pushdown (docs/SET-FILTERS.md). Every statement is
--- run with the pushdown, without it, and with sift.enable_agg = off (the normal plan): the rows must be the same.
+-- not read (PostgreSQL's plan of the table scans a btree on them) or not kept (the filter runs while loading). Every statement is run with the scan and with
+-- sift.enable_agg = off (the normal plan): the rows must be the same.
 CREATE EXTENSION pg_sift;
-SET enable_indexscan = off; SET enable_indexonlyscan = off; SET enable_bitmapscan = off;
 SET work_mem = '64MB';
 CREATE EXTENSION pg_sift_helpers;
 SET default_statistics_target = 10000;
@@ -32,16 +31,14 @@ ANALYZE dim_b; ANALYZE members_bare; ANALYZE dims;
 -- whether the plan is the pushed one, and what the load of the lookup tables read, kept and used
 CREATE FUNCTION plan_of(q text) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.plan_siftagg_with_lookup_counts(q) $$;
 
-CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_no_pushdown bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
+CREATE FUNCTION same(q text) RETURNS TABLE (plan text, result_rows bigint, vs_normal_plan bigint) LANGUAGE plpgsql AS $$
 BEGIN
 	plan := plan_of(q);
 	EXECUTE format('CREATE TEMP TABLE r_on ON COMMIT DROP AS %s', q);
-	EXECUTE format('CREATE TEMP TABLE r_no ON COMMIT DROP AS %s', q);
 	SET LOCAL sift.enable_agg = off;
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT count(*) FROM r_on);
-	vs_no_pushdown := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_no) UNION ALL (TABLE r_no EXCEPT TABLE r_on)) d);
 	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
 	RETURN NEXT;
 END $$;
