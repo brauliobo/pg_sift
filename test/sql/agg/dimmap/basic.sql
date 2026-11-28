@@ -2,6 +2,7 @@
 -- statement and shared by the next ones, kept in the backend under sift.backend_cache_kb. A write the statement's snapshot sees (the reader's own, or committed since the
 -- stamp) makes the next statement build it again, and a budget too small for it, or none, keeps nothing. dim2 has no journal: its table is never kept (shapes 6 and 7).
 -- Whatever happens to the tables, the answers are those of the normal plan, the rows of keys the table has no row for (orphans, NULL keys) included.
+-- Shape 8 reads the columns of dim that shape 3 reads (its FILTERs run over them after the join): it shares the table shape 3 built.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
