@@ -15,7 +15,8 @@ max_parallel_maintenance_workers = 7
 max_parallel_workers_per_gather = 8
 maintenance_work_mem = 1GB
 shared_buffers = 256MB
-max_wal_size = 1GB"
+max_wal_size = 1GB
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start pbv || bail "start failed"
 sql pbv "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 

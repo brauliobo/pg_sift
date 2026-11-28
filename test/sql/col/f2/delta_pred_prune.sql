@@ -3,6 +3,7 @@
 -- of it. Every query runs on a plain heap table with a sift_col index (the index scan and SiftAggV6), on a sift_table and on a partitioned heap table with the index on the parent, and
 -- the rows must be those of the heap twin the same UPDATEs ran on (no index, no sift settings).
 CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;

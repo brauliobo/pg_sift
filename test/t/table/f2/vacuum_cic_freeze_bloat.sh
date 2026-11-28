@@ -15,7 +15,8 @@ autovacuum = off
 sift.async_maintenance = off
 shared_buffers = 64MB
 max_wal_size = 1GB
-max_parallel_workers_per_gather = 0"
+max_parallel_workers_per_gather = 0
+${SIFT_TESTING:+sift.test_create_format1 = off}"
 node_start vc || bail "start failed"
 sql vc "CREATE EXTENSION pg_sift" >/dev/null || bail "extension failed"
 D=$(dir vc)

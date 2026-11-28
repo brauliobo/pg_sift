@@ -2,6 +2,7 @@
 -- range of the zone, and a sort value it moved past the zone of a granule must be decided on the new row, not on the zones of the part: the rows are those of the heap twin the same
 -- UPDATEs ran on: ? through the bitmap scan and SiftAggV6, a promoted leaf and the top-N of 40 tenants through SiftAggV6, and ?|, ?&, @>, @? as the heap decides them.
 CREATE EXTENSION pg_sift;
+SET sift.test_create_format1 = off;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
 SET max_parallel_workers_per_gather = 0;
