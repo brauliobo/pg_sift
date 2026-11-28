@@ -48,16 +48,24 @@ test/expected/agg/jsonb/int_cast_1.out	13ff0310cf3812baccceab28076b9f899189716e	
 test/expected/agg/jsonb/int_cast_1.out	246646463402127ff913ed470fcad86ee27ae58c	17	bigint | t    | t    | [{"count": 4446}]
 test/expected/agg/jsonb/int_cast_1.out	249395a7a0b8aa79ebc878b0ab78f9f030e18185	17	join  | t    | t    | [{"n": 1721, "ids": 1721, "kind": "b"}, {"n": 723, "ids":
 test/expected/agg/jsonb/int_cast_1.out	28dde070f3472932dae5c4197447f7cfdbe67564	17	out of range, bigint | t    | t    | [{"count": 1}]
+test/expected/agg/jsonb/int_cast_1.out	2c2adadbb8836956f885d52d39c78efe84f63040	17	tie, group key | t    | t    | [{"n": 1, "ids": 3003, "score": -3}, {"n": 300,
 test/expected/agg/jsonb/int_cast_1.out	41d482fdc26b54ec5c376d7ed8f707b5f86087df	17	filter -3 | t    | t    | [{"count": 2222}]
 test/expected/agg/jsonb/int_cast_1.out	42ec024e4723550519617d75708215635b424807	17	string member, join | t    | t    | 22023 cannot cast jsonb string to type inte
 test/expected/agg/jsonb/int_cast_1.out	4694f62bbac7e49f1ede0d55278c893c67bd92f6	17	string member, reached | t    | t    | 22023 cannot cast jsonb string to type i
+test/expected/agg/jsonb/int_cast_1.out	59048311e8c1e6ef3a3a608968135f1966cdb9c4	17	tie of a longer decimal | t    | t    | [{"sum": 452101, "count": 301}]
 test/expected/agg/jsonb/int_cast_1.out	6a9c5f29c0c982692bfc77ac88c512246aa31940	17	filter 3 | t    | t    | [{"count": 2666}]
 test/expected/agg/jsonb/int_cast_1.out	88af72ae0bb17848a5bd95b589b9a102a3092893	17	aggregate | t    | t    | [{"g": 0, "total": 9446}, {"g": 1, "total": 8346}, {"
 test/expected/agg/jsonb/int_cast_1.out	8a878042d934a95a96e8720e7d4b65011edc0364	17	out of range | t    | t    | 22003 integer out of range
 test/expected/agg/jsonb/int_cast_1.out	8d35616c26baf123b5190ecfc3e7eac9214e008c	17	group key | t    | t    | [{"n": 2222, "score": -3}, {"n": 2666, "score": 3}, {
 test/expected/agg/jsonb/int_cast_1.out	97750b0eef4c00c2d990a981c90e0455ebddc7b4	17	out of range, excluded | t    | t    | [{"count": 444}]
+test/expected/agg/jsonb/int_cast_1.out	9a536e3eed0cfe43060df459e49a671c1b2360bb	17	bigint past 2^52 | t    | t    | [{"low": -9223372036854775808, "total": -92143
 test/expected/agg/jsonb/int_cast_1.out	a36dda2358b21b3489f612a6424293edd1abcebc	17	string member | t    | t    | [{"count": 444}]
 test/expected/agg/jsonb/int_cast_1.out	d5a44605c7a86c70749b65dc0406f30b9bc44ed3	17	filter clause | t    | t    | [{"n": 20000, "threes": 2666}]
+test/expected/agg/jsonb/int_cast_f1_1.out	2c2adadbb8836956f885d52d39c78efe84f63040	17	tie, group key | t    | t    | [{"n": 1, "ids": 3003, "score": -3}, {"n": 300,
+test/expected/agg/jsonb/int_cast_f1_1.out	88af72ae0bb17848a5bd95b589b9a102a3092893	17	aggregate | t    | t    | [{"g": 0, "total": 9446}, {"g": 1, "total": 8346}, {"
+test/expected/agg/jsonb/int_cast_f1_1.out	8d35616c26baf123b5190ecfc3e7eac9214e008c	17	group key | t    | t    | [{"n": 2222, "score": -3}, {"n": 2666, "score": 3}, {
+test/expected/agg/jsonb/int_cast_f1_1.out	9a536e3eed0cfe43060df459e49a671c1b2360bb	17	bigint past 2^52 | t    | t    | [{"low": -9223372036854775808, "total": -92143
+test/expected/agg/jsonb/int_cast_f1_1.out	d5a44605c7a86c70749b65dc0406f30b9bc44ed3	17	filter clause | t    | t    | [{"n": 20000, "threes": 2666}]
 test/expected/agg/jsonb_map_keyread_1.out	037aa4c0ada0392d3e71dee50bfc856f3213981a	17	same node ok SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::f
 test/expected/agg/jsonb_map_keyread_1.out	28b3388e177383583944c1d378c6b3f4c4ddcf8c	17	same
 test/expected/agg/jsonb_map_keyread_1.out	6b8fd9e0475211bc048938b872bf09a7996a8843	17	Custom Scan (SiftAggV6)
