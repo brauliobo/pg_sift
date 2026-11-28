@@ -418,9 +418,12 @@ reads_lookup_column(const SiftV6Spec *spec)
 	return false;
 }
 
-/* The plans the leader reads the lookup tables with: of each dimension, its plan when it is parallel safe, else the cheapest one of its relation that is; NIL when a dimension has none */
+/*
+ * The plans the leader reads the lookup tables with: of each dimension, its plan when it is parallel safe, else the cheapest one of its relation that is, projected to the columns of the plan it
+ * replaces (the pipe reads the lookup rows by their position); NIL when a dimension has none
+ */
 static List *
-parallel_safe_children(List *child_paths)
+parallel_safe_children(PlannerInfo *root, List *child_paths)
 {
 	List	   *safe = NIL;
 
@@ -431,7 +434,9 @@ parallel_safe_children(List *child_paths)
 		foreach_ptr(Path, p, best == NULL ? child->parent->pathlist : NIL)
 			if (p->parallel_safe && p->param_info == NULL && (best == NULL || p->total_cost < best->total_cost))
 				best = p;
-		if (best == NULL)
+		if (best != NULL && best->pathtarget != child->pathtarget)
+			best = (Path *) create_projection_path(root, best->parent, best, child->pathtarget);
+		if (best == NULL || !best->parallel_safe)
 			return NIL;
 		safe = lappend(safe, best);
 	}
@@ -473,7 +478,7 @@ plan_serial_why(PlannerInfo *root, const RelOptInfo *rel, const SiftV6Spec *spec
 
 	if ((why = statement_serial_why(root, rel)) != NULL)
 		return why;
-	*child_paths = parallel_safe_children(*child_paths);
+	*child_paths = parallel_safe_children(root, *child_paths);
 	if (spec->ext != NULL && (spec->ext->unnest ? spec->is_table || spec->nparts > 0 || spec->ext->ndims > 0 : spec->ext->ndims == 0))
 		return "the rows it unnests are made by the process that runs the scan";
 	if (spec->ext != NULL && spec->ext->ndims > 0 && (why = lookup_serial_why(root, spec, *child_paths, passes)) != NULL)
