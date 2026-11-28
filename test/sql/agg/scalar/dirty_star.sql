@@ -1,12 +1,16 @@
 -- A typed path cast in the head of a star join, `sum((doc ->> 'v')::float8)`, over fact rows whose value is no number. PostgreSQL casts only the rows the join
--- keeps: an inner join that drops them raises nothing, a left join that keeps them raises. The scan converts every row it reads before the join, so a join
--- that can drop a row keeps the normal plan; a left join keeps the scan. Every query runs with and without the pushdown; the rows, or the error, must be the same.
+-- keeps: an inner join that drops them raises nothing, a left join that keeps them raises. The scan of format major 2 raises the error of a row only when the row
+-- reaches the groups through the join, so every join keeps the scan. Every query runs with and without the pushdown; the rows, or the error, must be the same.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET seq_page_cost = 1000;
 SET random_page_cost = 1000;
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 
 \ir test/common/sql/agg/base.sql
 
