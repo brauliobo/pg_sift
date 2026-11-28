@@ -131,7 +131,7 @@ NOTICE:  table "tp_b" does not exist, skipping
  limit_0     |       6 |      0 |    0
  limit_1     |       6 |      0 |    6
  limit_900   |       6 |      0 |    6
- limit_all   |       6 |      0 |    0
+ limit_all   |       6 |      0 |    6
  offset      |       6 |      0 |    6
  param_out   |       6 |      0 |    6
  param_sort  |       6 |      0 |    0
@@ -170,7 +170,7 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  limit_0     |       3 |      0 |    0
  limit_1     |       3 |      0 |    3
  limit_900   |       3 |      0 |    3
- limit_all   |       3 |      0 |    0
+ limit_all   |       3 |      0 |    3
  offset      |       3 |      0 |    3
  param_out   |       3 |      0 |    3
  param_sort  |       3 |      0 |    0
@@ -205,7 +205,7 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated', 'null']);
  limit_0     |       3 |      0 |    0
  limit_1     |       3 |      0 |    3
  limit_900   |       3 |      0 |    3
- limit_all   |       3 |      0 |    0
+ limit_all   |       3 |      0 |    3
  offset      |       3 |      0 |    3
  param_out   |       3 |      0 |    3
  param_sort  |       3 |      0 |    0
@@ -241,7 +241,7 @@ SELECT * FROM tp_stage(ARRAY['present', 'repeated']);
  limit_0     |       2 |      0 |    0
  limit_1     |       2 |      0 |    2
  limit_900   |       2 |      0 |    2
- limit_all   |       2 |      0 |    0
+ limit_all   |       2 |      0 |    2
  offset      |       2 |      0 |    2
  param_out   |       2 |      0 |    2
  param_sort  |       2 |      0 |    0
