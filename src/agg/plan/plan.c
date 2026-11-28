@@ -211,6 +211,12 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 		const bool	two = g.kind == SV6_ARG_MAX || g.kind == SV6_ARG_MIN;
 
 		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_json_vars(p, ((TargetEntry *) linitial(a->args))->expr, true) : NULL;
+		foreach_ptr(Var, y, g.kind == SV6_COUNT ? sift_v6_count_present_vars(p->root, &unfiltered) : NIL)
+		{
+			arg = (Expr *) y;
+			if (sift_v6_read_of(p, arg, true, &g.arg))
+				break;
+		}
 		const bool	score = !two && !sift_v6_kind_distinct(g.kind) && sift_v6_score_col(p, arg, &g.arg);
 		const bool	derived_ok = !two && !sift_v6_kind_valued(g.kind);
 

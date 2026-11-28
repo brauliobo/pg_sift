@@ -15,6 +15,7 @@
 
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+#include "parser/parsetree.h"
 
 #include "agg/expr/num.h"
 #include "agg/group/topk.h"
@@ -165,6 +166,30 @@ sift_v6_count_counts_rows(PlannerInfo *root, const Aggref *a)
 	if (a->aggdistinct != NIL)
 		return bms_is_member(x->varattno, rel->notnullattnums) && unique_key(root, rel, x);
 	return x->varattno == 0 || bms_is_member(x->varattno, rel->notnullattnums);
+}
+
+List *
+sift_v6_count_present_vars(PlannerInfo *root, const Aggref *a)
+{
+	Var		   *x = list_length(a->args) == 1 ? (Var *) ((const TargetEntry *) linitial(a->args))->expr : NULL;
+	const RelOptInfo *rel;
+	List	   *vars;
+	int			att = 0;
+
+	if (x == NULL || !IsA(x, Var) || x->varlevelsup != 0 || bms_is_empty(x->varnullingrels) || a->aggdistinct != NIL || a->aggorder != NIL ||
+		x->varno >= root->simple_rel_array_size || (rel = root->simple_rel_array[x->varno]) == NULL || rel->rtekind != RTE_RELATION ||
+		!bms_is_member(x->varattno, rel->notnullattnums))
+		return NIL;
+	vars = list_make1(copyObject(x));
+	while ((att = bms_next_member(rel->notnullattnums, att)) > 0)
+	{
+		Var		   *y = copyObject(x);
+
+		y->varattno = (AttrNumber) att;
+		get_atttypetypmodcoll(planner_rt_fetch(rel->relid, root)->relid, y->varattno, &y->vartype, &y->vartypmod, &y->varcollid);
+		vars = lappend(vars, y);
+	}
+	return vars;
 }
 
 /* ---- the first key plus a constant ---- */

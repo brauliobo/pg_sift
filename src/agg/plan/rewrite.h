@@ -41,6 +41,9 @@ extern Node *sift_v6_collapse_offset_sums(Node *expr);
 /* count(x) or count(DISTINCT x) of a is count(*): x a constant that is not NULL, a NOT NULL column or the whole row of a table no outer join nulls; DISTINCT x the unique
  * key of the one table of the statement */
 extern bool sift_v6_count_counts_rows(PlannerInfo *root, const Aggref *a);
+/* count(x) of a NOT NULL column x of a table an outer join nulls counts the rows of the table the join keeps, as count(y) of every NOT NULL column y of the table does:
+ * the Vars of those columns, x first; NIL for any other count */
+extern List *sift_v6_count_present_vars(PlannerInfo *root, const Aggref *a);
 
 /* e is the first key plus delta, a column of type *type (int4 or int8): the first key's Var (not copied) */
 extern const Var *sift_v6_affine_of(const Expr *e, int64 *delta, Oid *type);
