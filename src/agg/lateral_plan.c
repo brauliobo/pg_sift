@@ -300,6 +300,39 @@ native_path(const RelOptInfo *lateral)
 }
 
 /*
+ * PostgreSQL's plan of the sub-select scans an index backward: it meets equal entries in no order a lookup can follow (separate entries from the last row of the heap,
+ * those of a posting list from the first)
+ */
+static bool
+native_backward(const RelOptInfo *lateral)
+{
+	const Path *scan = scan_of(native_path(lateral));
+
+	return IsA(scan, IndexPath) && ((const IndexPath *) scan)->indexscandir == BackwardScanDirection;
+}
+
+/* the ORDER BY of the sub-select picks one row of a key: a unique index holds the keys and the order columns, which are NOT NULL */
+static bool
+total_order(const RangeTblEntry *rte, const Query *q, const Ties *t)
+{
+	int			atts[INDEX_MAX_KEYS];
+	const int	nkeys = list_length(t->keys);
+	int			nord = 0;
+
+	for (int k = 0; k < nkeys; k++)
+		atts[k] = ((const Var *) list_nth(t->keys, k))->varattno;
+	foreach_node(SortGroupClause, sgc, q->sortClause)
+	{
+		const Var  *v = (const Var *) get_sortgroupclause_expr(sgc, q->targetList);
+
+		if (!IsA(v, Var) || v->varno != 1 || v->varlevelsup != 0 || v->varattno <= 0 || nkeys + nord == INDEX_MAX_KEYS)
+			return false;
+		atts[nkeys + nord++] = v->varattno;
+	}
+	return sift_v6_unique_key(rte->relid, nkeys, nord, atts, NULL);
+}
+
+/*
  * The order in which PostgreSQL's plan of the sub-select meets the rows of a key: the heap's (a sequential scan: heap is set), or that of an ordered index, ascending on each
  * column, whose leading columns are the keys (an index scan meets the versions of a key in the order of their entries, which updates leave apart from the order of the heap).
  * NULL with heap unset for any other scan: a bitmap or an unordered index
@@ -550,6 +583,8 @@ sift_v6_lateral_dim(PlannerInfo *root, PlannerInfo *home, const Index *map, RelO
 	if (lateral->rtekind != RTE_SUBQUERY || lateral->lateral_relids == NULL || (rte = one_row_table(lrte->subquery)) == NULL || !split_ties(lrte->subquery, &t))
 		return false;
 	unique = unique_key(rte, &t);
+	if (!unique && lrte->subquery->sortClause != NIL && native_backward(lateral) && !total_order(rte, lrte->subquery, &t))
+		return false;
 	if (!unique && lrte->subquery->sortClause == NIL && reads_row_value(lateral, lrte->subquery))
 		ix = native_order(lateral, &t, &heap);
 	if (ix == NULL && !heap)

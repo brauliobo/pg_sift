@@ -1,6 +1,7 @@
 -- A correlated LIMIT 1 lookup of a table by a unique key is read by the scan as a lookup table (its rows hashed by key); the rows are those
--- of PostgreSQL's plan of it. A key the table can repeat is read the same way only where the rows of a key agree on the columns read, and the child runs
--- for the other keys (test agg_first_row_dup). An order in the child, a condition that is not a comparison with a constant or a key that is not an equality keep the child.
+-- of PostgreSQL's plan of it. A key the table can repeat is read the same way where PostgreSQL's plan of the child meets the rows of a key in an order the
+-- lookup can follow: ties of an order it reads by a backward index scan cannot be followed. Such ties, a condition that can raise or reads the outer row, or
+-- an OFFSET keep PostgreSQL's plan.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET work_mem = '256MB';
@@ -135,8 +136,8 @@ SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts NULLS LAST, x.id LIMIT 1) d ON true GROUP BY 1
 $q$);
--- the order is not total: a NULL order column under a unique index that takes NULLs for different, a version some keys repeat, no unique index
--- on the key and the order, a text or expression order, four order columns
+-- the order is not total: a NULL order column under a unique index that takes NULLs for different, a version some keys repeat (both read by a backward
+-- index scan: PostgreSQL's plan), no unique index on the key and the order, a text or expression order, four order columns
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM vers_null_key x WHERE x.a = f.a AND x.b = f.b ORDER BY x.ts DESC LIMIT 1) d ON true GROUP BY 1
@@ -210,8 +211,8 @@ SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score < 0 LIMIT 1) d ON true GROUP BY 1
 $q$);
--- a condition that can raise an error (the row with a = 250 divides by zero, the facts never ask for it) or that is not a comparison with a constant
--- (a list, the outer row) stays with the child
+-- a condition that can raise an error (the row with a = 250 divides by zero, the facts never ask for it) or reads the outer row keeps PostgreSQL's plan;
+-- a list is a condition of the table
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims_wide x WHERE x.a = f.a AND x.b = f.b AND x.score / (x.a - 250) < 1 LIMIT 1) d ON true GROUP BY 1
@@ -224,8 +225,8 @@ SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n
  FROM facts f LEFT JOIN LATERAL (SELECT score FROM dims WHERE dims.a = f.a AND dims.b = f.b AND dims.score > f.amount LIMIT 1) d ON true GROUP BY 1
 $q$);
--- a key some rows repeat, a unique index on other columns, an order, an offset, a column that is not the table's, a key that is an
--- expression of the outer row (the child compares a parameter): the child runs
+-- a key that is an expression of the outer row, a key some rows repeat, a unique index on other columns, an order under a unique key, an offset
+-- (PostgreSQL's plan), a column that is not the table's
 SELECT * FROM check_first($q$
  SELECT d.score % 10 AS g, count(*) AS n, sum(d.score) AS s
  FROM facts f LEFT JOIN LATERAL (SELECT label, score FROM dims WHERE dims.a = f.a AND dims.b = f.b + 1 LIMIT 1) d ON true GROUP BY 1
@@ -261,12 +262,12 @@ SET sift.enable_agg = off;
 CREATE TEMP TABLE plain_q AS EXECUTE first_q;
 RESET sift.enable_agg;
 SELECT count(*) AS differences FROM ((TABLE after_q EXCEPT ALL TABLE plain_q) UNION ALL (TABLE plain_q EXCEPT ALL TABLE after_q)) d;
--- EXPLAIN names the lookup, and the plan of the child that was not run (the share of all-visible pages is masked: PostgreSQL 19 sets pages all-visible as a read prunes them, so it is not a property of the fixture)
+-- EXPLAIN counts the lookup tables made of first rows
 CREATE FUNCTION explain_first(q text) RETURNS TABLE (shown text) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
   FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-    IF l LIKE '%first row tables%' OR l LIKE '%First Row Lookup%' OR l LIKE '%never executed%' OR l LIKE '%Limit%' THEN shown := regexp_replace(trim(l), '[0-9]+ % of', 'N % of'); RETURN NEXT; END IF;
+    IF l LIKE '%first row tables%' THEN shown := trim(l); RETURN NEXT; END IF;
   END LOOP;
 END $$;
 SELECT * FROM explain_first($q$
@@ -276,7 +277,7 @@ $q$);
 DROP FUNCTION explain_first(text);
 -- the inputs of the child are counted from the elements the index holds: the filter on the elements is one PostgreSQL has no statistics for (it expects
 -- a fraction of an element a document), the elements that pass are a thousand, each with a key of its own, and the child run for each costs more than
--- the table read once; the same statement over three documents keeps the child
+-- the table read once; the same statement over three documents
 CREATE TABLE fr_docs (id int PRIMARY KEY, kind text NOT NULL, parts jsonb NOT NULL);
 INSERT INTO fr_docs SELECT i, 'k' || (i % 3), (SELECT jsonb_agg(jsonb_build_object('cat', 'c' || ((i + j) % 8), 'sub', 's' || ((i * 7 + j * 13) % 3000), 'score', (i + j) % 5)) FROM generate_series(1, 4) j) FROM generate_series(1, 1500) i;
 CREATE INDEX fr_docs_col ON fr_docs USING sift_col (id, kind, parts) WITH (paths = 'parts[]{cat astext, sub astext, score float8}');

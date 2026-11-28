@@ -38,7 +38,7 @@ join/push.c: compile_fact dim_unique find_join join_vars pinned_to_const plain_t
 join/push.c: class_vars # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 jsonb_order.c: always_reads others_quiet short_circuits sift_v6_json_cast_order_ok # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 jsonpath.c: jsonb_lit jsonpath_lit # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
-lateral_plan.c: levels_walker needed_column reads_row_value sift_v6_lateral_dim sift_v6_lateral_join_dim split_ties tie_clause tie_sides # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
+lateral_plan.c: levels_walker needed_column reads_row_value sift_v6_lateral_dim sift_v6_lateral_join_dim split_ties tie_clause tie_sides total_order # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 open_scan.c: agg_ok sift_v6_open_scan_ok # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
 osa/mode.c: count_pair countable v6_mode_take # helpers and iterators of the v6 planner and executor (shape tests, walkers, next and batch functions): false is not this shape or the end of rows, and the path entry points name the refusal
 osa/osa.c: sift_v6_osa_eligible # shape and cost predicates and walkers of the planner: false is not this shape and the caller that gives the arm up names the refusal
