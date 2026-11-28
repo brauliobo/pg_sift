@@ -236,6 +236,7 @@ TESTING_REGRESS += col/alter_options
 TESTING_REGRESS += col/analyze_columns
 TESTING_REGRESS += col/approx
 TESTING_REGRESS += col/array/auto
+TESTING_REGRESS += col/array/elems
 TESTING_REGRESS += col/array/lengths
 TESTING_REGRESS += col/auto_merge/basic
 TESTING_REGRESS += col/auto_merge/partition
