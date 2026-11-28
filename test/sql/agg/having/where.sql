@@ -78,7 +78,7 @@ INSERT INTO hv_q (label, q) VALUES
   ('grouping sets, cube',      $q$SELECT kind_id, region, count(*) FROM hv_events GROUP BY CUBE (kind_id, region) HAVING region IN (SELECT 'r' || id FROM hv_kinds WHERE id < 4)$q$),
   ('grouping sets, a distinct key', $q$SELECT kind_id, count(DISTINCT qty) FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)$q$),
   ('a sub-query of the form',  $q$SELECT t.kind_id, t.c FROM (SELECT kind_id, count(*) c FROM hv_events GROUP BY 1 HAVING kind_id IN (SELECT id FROM hv_kinds WHERE enabled)) t WHERE t.c > 100$q$);
--- a HAVING sub-select moved to WHERE next to a WHERE that PostgreSQL cannot pull up (an OR over a correlated NOT EXISTS or EXISTS, which the scan decorrelates into a join of its own: the
+-- a HAVING sub-select moved to WHERE next to a WHERE that PostgreSQL cannot pull up (an OR over a correlated NOT EXISTS or EXISTS, which PostgreSQL makes a hashed ANY the scan probes for each row: the
 -- grouping entry is no longer the last of the range table), on a plain and on a partitioned table, the sub-selects correlated with the key or not
 INSERT INTO hv_q (label, q)
 SELECT t.name || ': ' || v.label, replace(v.q, '@T@', t.name)

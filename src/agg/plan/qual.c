@@ -328,10 +328,28 @@ add_implied_qual(V6Plan *p, Expr *clause)
 		p->spec.indexqual = lappend(p->spec.indexqual, q);
 }
 
+/*
+ * An AlternativeSubPlan of the clause as the sub-plan PostgreSQL's setrefs picks for the rows tested (a correlated EXISTS is also a hashed ANY): the scan keeps the clause in its own data, which
+ * setrefs does not visit, so neither sub-plan is marked an unused alternative and dropped
+ */
+static Node *
+chosen_alternatives(Node *n, double *rows)
+{
+	SubPlan    *best = NULL;
+
+	if (n == NULL || !IsA(n, AlternativeSubPlan))
+		return expression_tree_mutator(n, chosen_alternatives, rows);
+	foreach_node(SubPlan, sp, ((AlternativeSubPlan *) n)->subplans)
+		if (best == NULL || sp->startup_cost + *rows * sp->per_call_cost < best->startup_cost + *rows * best->per_call_cost)
+			best = sp;
+	return copyObject((Node *) best);
+}
+
 static bool
 batch_clause(V6Plan *p, Expr *where)
 {
 	SiftV6Input in = {.indexoid = p->relid,.is_table = p->is_table,.nkeys = p->is_table ? p->sch.natts : 0};
+	double		rows = Max(p->rel->tuples, 1.0);
 	Expr	   *clause;
 
 	if (!p->batch_ok || contain_volatile_functions((Node *) where))
@@ -339,7 +357,7 @@ batch_clause(V6Plan *p, Expr *where)
 	if (!p->is_table)
 		sift_v6_input_init_info(&in, p->index);
 	clause = sift_v6_plan_json_test(p, where, true);
-	clause = clause == where ? copyObject(clause) : clause;
+	clause = (Expr *) chosen_alternatives((Node *) clause, &rows);
 	ChangeVarNodes((Node *) clause, p->rel->relid, SIFT_V6_BQ_RELID, 0);
 	if (!sift_v6_bq_plan_ok(p->root, &in, clause))
 		return false;
