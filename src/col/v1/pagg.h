@@ -13,6 +13,14 @@
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar (col/v1/scan/unit.c) */
 extern bool sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u);
+/*
+ * Exceptions (docs/COL-PREAGG.md 11): with leaf, a unit whose exceptions are of that leaf answers its histograms for the rows where the leaf IS NULL, net of the exceptions: counts and sums,
+ * no minimum or maximum, false when a float sum would lose more than 6 bits to the subtraction or the unit lacks the dim; sift_col_unit_agg refuses the unit. false: the unit keeps no exceptions
+ * of the leaf. Leaf -1 (and true) returns it to its own rows.
+ */
+extern bool sift_col_unit_except(SiftColUnit *unit, int leaf);
+/* A group of units (sift_col_super): its segment and the index of its group there; false for any other unit */
+extern bool sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k);
 
 /*
  * A dirty unit net of its dead rows (col/v1/delta.c, docs/COL-PREAGG.md 12): when every page the unit has rows on is all-visible and no more than max_pct percent of its rows are dead, the

@@ -466,13 +466,15 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 {
 	SiftV1Tbl  *t = impl;
 	const TblPart *p = unit->priv;
+	const int	leaf = dim % SIFT_SRC_CAL,
+				col = p->col[leaf];
 
-	if (p->col[dim] < 0)
+	if (col < 0)
 		return false;
 	if (t->hcx == NULL)
 		t->hcx = sift_mem_allocset_create(t->cxt, "sift v1 table histogram");
 	MemoryContextReset(t->hcx);
-	return sift_v1_unit_hist(&p->unit, p->col[dim], &p->schema->cols[p->col[dim]], t->hcx, p->col, p->leaf_of_col, need, &t->hdict, h);
+	return sift_v1_unit_hist(&p->unit, dim - leaf + col, &p->schema->cols[col], t->hcx, p->col, p->leaf_of_col, need, &t->hdict, h);
 }
 
 const SiftV1ReaderOps sift_v1_tbl_reader = {

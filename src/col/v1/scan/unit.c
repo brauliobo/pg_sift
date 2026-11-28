@@ -650,6 +650,72 @@ sift_col_unit_seg_range(const SiftColUnit *unit, int col, const SiftColRange *r,
 	return ok;
 }
 
+/* ---------- groups of units (docs/COL-PREAGG.md section 10) ---------- */
+
+/* Every page the units [first, first + n) have rows on is all-visible: the page masks of their summary (the block ranges of key-cut units) against the snapshot, no unit record read */
+static bool
+units_allvisible(SiftColSource *src, SiftColSegment *seg, uint32 first, uint32 n)
+{
+	uint64		pm[SIFT_SUPER_MAX_FAN * SIFT_PAGEMASK_WORDS];
+
+	sift_cseg_unit_pagemasks(seg, first, n, pm);
+	for (uint32 i = 0; i < n; i++)
+	{
+		const uint64 *m = pm + i * SIFT_PAGEMASK_WORDS;
+
+		if (sift_cseg_keyed(&seg->entry) ? !col_range_allvisible(src, seg, (uint32) m[0], (uint32) (m[0] >> 32)) : !col_sb_covers(src, seg, sift_cseg_unit_sb(seg, first + i), NULL, m))
+			return false;
+	}
+	return true;
+}
+
+/*
+ * The group of units at the cursor as one unit (of the groups that start there, the largest that can). Every unit of the group must have passed the zone tests and be exact on its own: its
+ * pages that hold rows all-visible (the masks of the units are in the summary, so no unit record is read), the directory current, no dead row nor exception.
+ */
+bool
+col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu)
+{
+	SiftColSegment *seg = c->seg;
+	uint32		first,
+				n,
+				k,
+				rows = 0;
+
+	if (c->cur + SIFT_SUPER_MIN_FAN > c->end || c->cur < c->nosuper_to || sift_cseg_super_fan(seg) == 0 || !keep_all(c, c->cur, SIFT_SUPER_MIN_FAN))
+		return false;
+	for (uint32 skip = 0; sift_cseg_super_at(seg, c->cur, skip, &k); skip++)
+	{
+		sift_cseg_super_range(seg, k, &first, &n);
+		if (n < SIFT_SUPER_MIN_FAN || c->cur + n > c->end || !keep_all(c, c->cur, n) || !units_allvisible(src, seg, c->cur, n))
+			continue;
+		if (!segments_current(src))
+			return false;
+		SIFT_COL_JITTER();
+		if (sift_cseg_dirty_any(seg, c->cur, n))
+			continue;
+		for (uint32 i = 0; i < n; i++)
+			rows += seg->sbdir[c->cur + i].nrows;
+		cu->seg = seg;
+		cu->u = c->cur;
+		cu->nsu = n;
+		cu->sb = seg->sbdir[c->cur].id;
+		cu->v.nrows = rows;
+		c->cur += n;
+		return true;
+	}
+	return false;
+}
+
+bool
+sift_col_unit_super(const SiftColUnit *unit, SiftColSegment **seg, uint32 *k)
+{
+	const ColUnit *cu = unit->priv;
+
+	*seg = cu->seg;
+	return cu->nsu > 0 && sift_cseg_super_of(cu->seg, cu->u, cu->nsu, k);
+}
+
 /* ---------- pre-aggregates (col/v1/pagg.c, docs/COL-PREAGG.md) ---------- */
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */
@@ -658,7 +724,7 @@ sift_col_unit_stored(const SiftColUnit *unit, SiftColSegment **seg, uint32 *u)
 {
 	ColUnit    *cu = unit->priv;
 
-	if (cu->seg == NULL)
+	if (cu->seg == NULL || cu->nsu > 0)
 		return false;
 	*seg = cu->seg;
 	*u = cu->u;

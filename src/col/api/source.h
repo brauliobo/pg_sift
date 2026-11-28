@@ -179,7 +179,7 @@ typedef struct SiftColUnit
 	uint32		sb;
 	uint32		nrows;
 	bool		in_wbuf;		/* rows of a write buffer (chunks encoded in memory) */
-	uint32		nsu;
+	uint32		nsu;			/* a group of units (sift_col_super): the units it stands for, whose merged pre-aggregates are all it has; 0 for a unit */
 	int			except;			/* sift_col_unit_except: the leaf whose NULL rows the histograms and rollups of the unit answer for; -1: the unit's own rows */
 	void	   *priv;
 } SiftColUnit;
@@ -189,6 +189,14 @@ extern void sift_col_unit_lazy_dict(const SiftColUnit *unit, bool on);
 /* The codes of the dictionary of STR leaf col whose string passes op (EQ, PREFIX, SUFFIX, CONTAINS) against c, set in lut (cleared, a bit a code), searched where the segment keeps the dictionary (the trigram signatures
  * of its blocks spare the blocks without the literal) instead of reading every string; false when the unit holds the leaf inline or in a write buffer */
 extern bool sift_col_unit_dict_match(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *lut);
+
+/*
+ * Groups of units (docs/COL-PREAGG.md section 10). With sift_col_super(src, true), an index source whose next unit starts a group of units of a segment that holds a summary of the group
+ * hands over the group as one unit, when every unit of it passed the zone tests and is exact (clean, every page all-visible to the snapshot). It has pre-aggregates only (sift_col_unit_agg,
+ * sift_col_unit_hist): a consumer that cannot answer from them calls sift_col_unit_split, and the next calls give the units of the group one by one.
+ */
+extern void sift_col_super(SiftColSource *src, bool on);
+extern void sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit);
 
 /*
  * The keys of the key_cut that a conjunction of predicates confines a scan to, when it confines it: the leading cut leaves each equal to a value (or NULL) and the next one in a range or

@@ -324,7 +324,27 @@ idx_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 	if (r->hcx == NULL)
 		r->hcx = sift_mem_allocset_create(r->cxt, "sift v1 histogram");
 	MemoryContextReset(r->hcx);
-	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim), r->hcx, NULL, NULL, need, &r->hdict, h);
+	return sift_v1_unit_hist(&r->unit, dim, sift_col_def(r->cs, dim % SIFT_SRC_CAL), r->hcx, NULL, NULL, need, &r->hdict, h);
+}
+
+static void
+idx_super(void *impl, bool on)
+{
+	sift_col_super(((SiftV1Idx *) impl)->cs, on);
+}
+
+static void
+idx_split(void *impl, const SiftSrcUnit *unit)
+{
+	SiftV1Idx  *r = impl;
+
+	sift_col_unit_split(r->cs, &r->unit);
+}
+
+static bool
+idx_unit_except(void *impl, const SiftSrcUnit *unit, int leaf)
+{
+	return sift_col_unit_except(&((SiftV1Idx *) impl)->unit, leaf);
 }
 
 static const void *
@@ -379,5 +399,8 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.unit_hist = idx_unit_hist,
 	.unit_seg = idx_unit_seg,
 	.seg_count = idx_seg_count,
-	.seg_range_count = idx_seg_range_count
+	.seg_range_count = idx_seg_range_count,
+	.super = idx_super,
+	.split = idx_split,
+	.unit_except = idx_unit_except
 };

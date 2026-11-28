@@ -389,6 +389,8 @@ cursor_ahead(void *arg, uint64 *off, uint64 *len)
 	const SiftColSegment *seg = c->seg;
 	uint32		u = Max(c->ahead, c->cur);
 
+	if (c->src->super)
+		return false;
 	for (u = next_ahead_unit(c, u); u < seg->nsb; u = next_ahead_unit(c, u))
 	{
 		if (u >= c->ahead_end)
@@ -805,6 +807,8 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 		src->ocur++;
 		src->cnt.wbuf_rows += cu->v.nrows;
 	}
+	else if (src->super && !src->back && !src->sx_on && best->prow == NULL && best->ptidv == NULL && col_super_take(src, best, cu))
+		src->cnt.units += cu->nsu - 1;
 	else
 	{
 		load_stored(cu, best, u);
@@ -842,14 +846,17 @@ sift_col_next(SiftColSource *src, SiftColUnit *unit)
 	if (!mem)
 		src->hstale = true;
 	SIFT_COL_JITTER();
-	cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
-	src->cnt.rows_scanned += cu->v.nrows;
+	if (cu->nsu == 0)
+	{
+		cu->grp = src->schema->ngroups > 0 ? palloc0(src->schema->ncols * sizeof(ColGroup)) : NULL;
+		src->cnt.rows_scanned += cu->v.nrows;
+	}
 	src->cnt.units++;
 	unit->src = src;
 	unit->sb = bsb;
 	unit->nrows = cu->v.nrows;
 	unit->in_wbuf = mem;
-	unit->nsu = 0;
+	unit->nsu = cu->nsu;
 	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
@@ -879,6 +886,27 @@ sift_col_unit_batch(SiftColSource *src, SiftColBatch *b, SiftColUnit *unit)
 	unit->except = -1;
 	unit->priv = cu;
 	MemoryContextSwitchTo(old);
+}
+
+void
+sift_col_super(SiftColSource *src, bool on)
+{
+	src->super = on && !(src->flags & COLO_TABLE);
+}
+
+void
+sift_col_unit_split(SiftColSource *src, const SiftColUnit *unit)
+{
+	ColUnit    *cu = unit->priv;
+
+	for (int i = 0; i < src->nseg; i++)
+		if (src->seg[i].seg == cu->seg)
+		{
+			src->seg[i].cur = cu->u;
+			src->seg[i].nosuper_to = cu->u + cu->nsu;
+			COL_HEAD_RESET(src);
+		}
+	src->cnt.units -= cu->nsu;
 }
 
 void

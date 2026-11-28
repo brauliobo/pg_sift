@@ -64,6 +64,12 @@ typedef struct SiftV1ReaderOps
 	/* the stored segment the unit is of (NULL: a unit of memory, or a reader with no segments), and count(*) of the rows of that segment whose string of leaf passes op against c,
 	 * from the row counts of its dictionary, when every unit of it is exact; false: the segment is read */
 	const void *(*unit_seg) (void *impl, const SiftSrcUnit *unit);
+	/* optional (NULL: no unit stands for others): on, next may give a group of units (SiftSrcUnit.nsu) that unit_rows, unit_agg and unit_hist answer for as one; split gives its units one by one */
+	void		(*super) (void *impl, bool on);
+	void		(*split) (void *impl, const SiftSrcUnit *unit);
+	/* optional (NULL: no unit keeps exceptions): unit_hist answers for the rows of the unit where leaf IS NULL, net of the exceptions it keeps of it (docs/COL-PREAGG.md 11), until leaf -1;
+	 * false when it keeps none of leaf, or cannot answer net of them */
+	bool		(*unit_except) (void *impl, const SiftSrcUnit *unit, int leaf);
 	bool		(*seg_count) (void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *rows);
 	/* count(*) of the rows of that segment whose key of leaf lies in r, from the global order of the leaf: the entries of its exact units, and the superblocks of the others in *read (in cx),
 	 * which are read (sift_col_unit_seg_range); false: the segment is read */

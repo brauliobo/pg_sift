@@ -364,6 +364,11 @@ unit_next(SiftV1Src *s)
 			return false;
 		if (s->cube != NULL && s->cube->offer(s->cube->arg, s->rd, s->src, &s->unit))
 			continue;
+		if (s->unit.nsu > 0)
+		{
+			s->rd->split(s->src, &s->unit);
+			continue;
+		}
 		nw = (s->unit.nrow + 63) / 64;
 		s->bits = MemoryContextAllocZero(s->unit_cx, SIFT_COL_NWORDS(s->unit.nrow) * sizeof(uint64));
 		s->rd->live(s->src, &s->unit, s->bits);
@@ -927,6 +932,8 @@ sift_v1_source_open(MemoryContext parent, Snapshot snap, const SiftV6Input *in, 
 	if (quals != NULL)
 		s->quals = sift_v6_vexpr_dup(cx, quals);
 	s->src = open_reader(s, range);
+	if (s->cube != NULL && s->rd->super != NULL)
+		s->rd->super(s->src, true);
 	s->fslot = table_slot_create(s->rels.heap, NULL);
 	if (!in->is_table)
 		s->index_fetch = sift_table_index_fetch_begin(s->rels.heap);

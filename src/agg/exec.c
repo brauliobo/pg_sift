@@ -921,6 +921,9 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ex.grans_pruned_skip = st->stats.grans_pruned_skip;
 	ex.grans_preagg = st->stats.grans_preagg;
 	ex.grans_preagg_delta = st->stats.grans_preagg_delta;
+	ex.grans_preagg_super = st->stats.grans_preagg_super;
+	ex.grans_preagg_net = st->stats.grans_preagg_net;
+	ex.grans_except_read = st->stats.grans_except_read;
 	ex.dict_shared_hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - st->dict_shared0[0];
 	ex.dict_shared_misses = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES] - st->dict_shared0[1];
 	if (st->par != NULL)

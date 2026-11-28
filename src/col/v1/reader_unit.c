@@ -14,6 +14,8 @@ sift_v1_unit_rows(SiftColUnit *unit)
 	SiftColSegment *seg;
 	uint32		u;
 
+	if (unit->nsu > 0)
+		return (int) unit->nrows;
 	if (!sift_col_unit_stored(unit, &seg, &u))
 		return -1;
 	if (sift_col_unit_exact(unit))

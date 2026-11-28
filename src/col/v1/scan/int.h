@@ -40,6 +40,7 @@ typedef struct ColCursor
 	uint64		cseg_gen;
 	uint32		cur;
 	uint32		end;
+	uint32		nosuper_to;		/* the units below this one are read one by one: a consumer split the group of units that starts there (sift_col_unit_split) */
 	SiftColSource *src;			/* the owner, for cursor_ahead */
 	uint32		ahead;			/* the next unit cursor_ahead looks at */
 	uint32		ahead_end;		/* the units below this one are in the cluster cursor_ahead is on, which it reads ahead (ahead_skip false) or leaves to the kernel */
@@ -70,6 +71,16 @@ typedef struct ColCursor
 	uint64	   *pkept;
 	uint64	   *ppend;
 } ColCursor;
+
+/* Did every unit [first, first + n) pass the zone tests */
+static inline bool
+keep_all(const ColCursor *c, uint32 first, uint32 n)
+{
+	for (uint32 i = 0; i < n; i++)
+		if (!sift_col_bit_test(c->keep, first + i))
+			return false;
+	return true;
+}
 
 /* a cursor moved, or its kept units changed, other than by the unit sift_col_next read from it: the heap of heads is made again */
 #define COL_HEAD_RESET(src)	((src)->hvalid = false)
@@ -154,6 +165,7 @@ typedef struct ColUnit
 	SiftColSource *src;
 	SiftColSegment *seg;		/* NULL for an in-memory unit */
 	uint32		u;
+	uint32		nsu;			/* a group of units: the units [u, u + nsu) of seg; v.nrows is their rows and nothing else of the unit is loaded */
 	uint32		sb;
 	uint32		memid;
 	uint8	   *loaded;			/* [ncols] the chunk's bytes are in the unit buffer (a stored unit reads the chunks it needs) */
@@ -239,6 +251,7 @@ struct SiftColSource
 	struct ColDvOv *dvov;		/* the deletion records of the log that the segments of the scan read their liveness through (scan/dvec.c): NULL when the log has none */
 	int			hf;
 	bool		begun;			/* a begin ran: sift_col_rescan refuses */
+	bool		super;			/* sift_col_super */
 	MemoryContext gxcx;		/* the exactness of the units (sift_col_gorder_exact: their dead rows and all-visible pages), which sift_col_rescan keeps; made on first use */
 	MemoryContext gcx;			/* what sift_col_gorder_open and the reads of the global order make (the lists of dead rows, the orders of the write buffers and their holds), reset by sift_col_rescan; made on first use */
 	int64	   *sx;				/* a scope source (sift_col_scope_delta): the members whose stored entries the scan leaves out, ascending, in mcxt; no unit may answer from its pre-aggregates then, nor a segment from its summaries */
@@ -454,6 +467,8 @@ extern void	scan_load_mem(SiftColSource *src, const SiftColPred *preds, int npre
 /* A batch of memory as a unit of the scan; lane: its rows are those of a write buffer, stamped xstamp, which the heap check vets */
 extern void	scan_add_mem(SiftColSource *src, SiftColBatch *b, bool lane, TransactionId xstamp, bool roots);
 extern bool	segments_current(SiftColSource *src);
+/* unit.c: the group of units at the cursor as one unit in cu, when its summary can stand for them (docs/COL-PREAGG.md section 10); false: read the units one by one */
+extern bool col_super_take(SiftColSource *src, ColCursor *c, ColUnit *cu);
 extern void	segments_pin(SiftColSource *src, uint32 flags);
 extern bool scan_view_load(SiftColSource *src, Relation heap, const void *view, const SiftKeyRange *keys);
 extern MemoryContext gorder_cx(SiftColSource *src);

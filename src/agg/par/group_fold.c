@@ -313,6 +313,9 @@ par_scan_morsel(void *local, const SiftMorsel *m, SiftV6ParWorkerStats *st)
 	st->grans_pruned_skip += e->stats.grans_pruned_skip - e->seen.grans_pruned_skip;
 	st->grans_preagg += e->stats.grans_preagg - e->seen.grans_preagg;
 	st->grans_preagg_delta += e->stats.grans_preagg_delta - e->seen.grans_preagg_delta;
+	st->grans_preagg_super += e->stats.grans_preagg_super - e->seen.grans_preagg_super;
+	st->grans_preagg_net += e->stats.grans_preagg_net - e->seen.grans_preagg_net;
+	st->grans_except_read += e->stats.grans_except_read - e->seen.grans_except_read;
 	st->heap_vet_rows += e->stats.heap_vet_rows - e->seen.heap_vet_rows;
 	st->heap_rows_dead += e->stats.heap_rows_dead - e->seen.heap_rows_dead;
 	e->seen = e->stats;

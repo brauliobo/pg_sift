@@ -62,6 +62,8 @@ sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a)
 	SiftColSegment *seg;
 	uint32		u;
 
+	if (sift_col_unit_super(unit, &seg, &u))
+		return sift_cseg_super_agg(seg, col, u, a);
 	if (unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
@@ -106,6 +108,23 @@ x_cube(SiftColSegment *seg, uint32 u, int *leaf, uint32 *len)
 	*leaf = (int) v;
 	*len = n - i;
 	return b + i;
+}
+
+bool
+sift_col_unit_except(SiftColUnit *unit, int leaf)
+{
+	SiftColSegment *seg;
+	uint32		u,
+				len;
+	int			xl;
+
+	unit->except = -1;
+	if (leaf < 0)
+		return true;
+	if (!sift_col_unit_preagg_ok(unit) || !sift_col_unit_stored(unit, &seg, &u) || x_cube(seg, u, &xl, &len) == NULL || xl != leaf)
+		return false;
+	unit->except = leaf;
+	return true;
 }
 
 /*
@@ -286,17 +305,44 @@ seg_hist(SiftColSegment *seg, uint32 u, bool net, int dim, MemoryContext mcxt, c
 	return sift_cpagg_rollup_dim(seg->schema, &r, dim, mcxt, out);
 }
 
+/* The histogram of dim of a group of units: from its merged cube (the dims of lists and the calendar cells are not merged) */
+static bool
+super_hist(SiftColSegment *seg, uint32 k, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out)
+{
+	uint32		len;
+	const uint8 *blob;
+	int			found;
+
+	if (dim >= SIFT_PAGG_CAL || seg->schema->cols[dim].parent >= 0 || (blob = sift_cseg_super_cube(seg, k, &len)) == NULL)
+		return false;
+	if ((found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
+		corrupt_cube(seg, k);
+	if (found == 0 && (blob = sift_cseg_super_extra(seg, k, &len)) != NULL && (found = sift_cpagg_decode_dim(seg->schema, blob, len, mcxt, dim, need, out)) < 0)
+		corrupt_cube(seg, k);
+	return found > 0;
+}
+
+/* The histogram of dim of a stored unit, or of a group of units */
+static bool
+unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColSegment **seg)
+{
+	uint32		u;
+
+	if (sift_col_unit_super(unit, seg, &u))
+		return super_hist(*seg, u, dim, mcxt, need, out);
+	if (!sift_col_unit_preagg_ok(unit))
+		return false;
+	sift_col_unit_stored(unit, seg, &u);
+	return seg_hist(*seg, u, sift_col_unit_net(unit), dim, mcxt, need, out) && (unit->except < 0 || hist_except(*seg, u, dim, mcxt, need, out)) &&
+		(!sift_col_unit_dead_on(unit) || sift_col_unit_dead_hist(unit, out));
+}
+
 bool
 sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict)
 {
 	SiftColSegment *seg;
-	uint32		u;
 
-	if (!sift_col_unit_preagg_ok(unit))
-		return false;
-	sift_col_unit_stored(unit, &seg, &u);
-	if (!seg_hist(seg, u, sift_col_unit_net(unit), dim, mcxt, need, out) || (unit->except >= 0 && !hist_except(seg, u, dim, mcxt, need, out)) ||
-		(sift_col_unit_dead_on(unit) && !sift_col_unit_dead_hist(unit, out)))
+	if (!unit_hist(unit, dim, mcxt, need, out, &seg))
 		return false;
 	if (dict && dim < SIFT_PAGG_CAL && seg->schema->cols[dim].store == SIFT_COLS_STR)
 		sift_cdict_view(sift_cseg_dict(seg, dim), seg->entry.gen << 8 | dim, dict);

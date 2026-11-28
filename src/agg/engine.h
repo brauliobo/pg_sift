@@ -629,6 +629,9 @@ typedef struct SiftV6ScanStats
 	uint64		heap_rows_dead;
 	uint64		grans_preagg;	/* granules answered from their pre-aggregates (col/f2/agg/preagg.h) */
 	uint64		grans_preagg_delta;	/* ... of them, those corrected for dead rows */
+	uint64		grans_preagg_super;	/* the groups of them answered as one from the summary of the group */
+	uint64		grans_preagg_net;	/* ... those answered net of the rows the statement leaves out that their summaries keep apart (exceptions) */
+	uint64		grans_except_read;	/* the granules whose rows left out were kept apart but that were read all the same */
 	uint64		heap_reread_rows;	/* rows whose value the leaves cannot hold, read again: the document an unnest takes apart from the heap, the value of a JSON key from its payload or heap row */
 	uint64		chunks;			/* passes of a scan that takes the hits of a text query as bridges */
 	uint64		bridge_tids;
