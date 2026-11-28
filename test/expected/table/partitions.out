@@ -80,6 +80,22 @@ SELECT n, plan, result_rows, vs_normal_plan FROM pt_q, LATERAL same(q) ORDER BY 
 (9 rows)
 
 RESET max_parallel_workers_per_gather;
+-- a Top-N of rows over hash partitions at the default page costs is priced from the sift_table of a partition, not from the parent, which has no store
+RESET seq_page_cost; RESET random_page_cost;
+CREATE TABLE ph (k text PRIMARY KEY, g int NOT NULL, v int NOT NULL) PARTITION BY HASH (k);
+CREATE TABLE ph_0 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 0) USING sift_table;
+CREATE TABLE ph_1 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 1) USING sift_table;
+CREATE TABLE ph_2 PARTITION OF ph FOR VALUES WITH (MODULUS 3, REMAINDER 2) USING sift_table;
+INSERT INTO ph SELECT 'c' || i, i % 10, i FROM generate_series(1, 3000) i;
+ANALYZE ph;
+SELECT result_rows, vs_normal_plan FROM same('SELECT k, v FROM ph ORDER BY v DESC, k LIMIT 15');
+ result_rows | vs_normal_plan 
+-------------+----------------
+          15 |              0
+(1 row)
+
+DROP TABLE ph;
+SET seq_page_cost = 10000; SET random_page_cost = 10000;
 -- a partition of another storage, or with its columns in another order, keeps the normal plan
 CREATE TABLE pt_h (LIKE pt);
 ALTER TABLE pt DETACH PARTITION pt_rest;

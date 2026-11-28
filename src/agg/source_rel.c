@@ -74,11 +74,10 @@ qual_cols(RelOptInfo *rel, AttrNumber key)
 	return cols;
 }
 
-/* a sift_table decodes the columns cols over the granules the quals leave, as its aggregate scan does */
+/* the sift_table relid decodes the columns cols over the granules the quals of rel leave, as its aggregate scan does (rel: the table, or the parent of the partition relid) */
 static void
-table_scan_price(PlannerInfo *root, RelOptInfo *rel, const Bitmapset *cols, Cost *open, Cost *total)
+table_scan_price(PlannerInfo *root, RelOptInfo *rel, Oid relid, const Bitmapset *cols, Cost *open, Cost *total)
 {
-	const Oid	relid = planner_rt_fetch(rel->relid, root)->relid;
 	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_table_prune(root, rel->relid, rel->baserestrictinfo, sift_v6_table_lead(relid)),.groups = 1,
 	.row_frac = sift_v6_rel_row_frac(relid)};
 	Cost		startup;
@@ -95,7 +94,7 @@ sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSou
 
 	pull_varattnos((Node *) rel->reltarget->exprs, rel->relid, &cols);
 	if (s->is_table)
-		table_scan_price(root, rel, cols, open, total);
+		table_scan_price(root, rel, s->reloid, cols, open, total);
 	else
 		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
@@ -104,7 +103,7 @@ void
 sift_v6_source_filter_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total)
 {
 	if (s->is_table)
-		table_scan_price(root, rel, qual_cols(rel, key), open, total);
+		table_scan_price(root, rel, s->reloid, qual_cols(rel, key), open, total);
 	else
 		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
