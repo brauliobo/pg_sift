@@ -86,7 +86,7 @@ SELECT 'two workers' AS mode, q.name, having_workers(q.sql) AS workers, c.* FROM
  two workers | count distinct          |       2 | t      | sift    | f             | t                | t         | 7
  two workers | aggregates not selected |       2 | t      | sift    | f             | t                | t         | 5
  two workers | FILTER                  |       2 | t      | sift    | f             | t                | t         | 3
- two workers | percentile              |       2 | t      | sift    | f             | t                | t         | 5
+ two workers | percentile              |       0 | t      | sift    | f             | t                | t         | 5
  two workers | a key and an aggregate  |       2 | t      | sift    | t             | t                | t         | 3
  two workers | a WHERE and a HAVING    |       2 | t      | sift    | t             | t                | t         | 6
  two workers | a sub-select on the key |       2 | t      | sift    | f             | t                | t         | 5
@@ -138,7 +138,7 @@ SELECT 'after writes, two workers, rows' AS mode, q.name, having_workers(q.sql) 
  after writes, two workers, rows | count distinct          |       2 | t      | sift    | f             | t                | t         | 7
  after writes, two workers, rows | aggregates not selected |       2 | t      | sift    | f             | t                | t         | 5
  after writes, two workers, rows | FILTER                  |       2 | t      | sift    | f             | t                | t         | 3
- after writes, two workers, rows | percentile              |       2 | t      | sift    | f             | t                | t         | 5
+ after writes, two workers, rows | percentile              |       0 | t      | sift    | f             | t                | t         | 5
  after writes, two workers, rows | a key and an aggregate  |       2 | t      | sift    | t             | t                | t         | 3
  after writes, two workers, rows | a WHERE and a HAVING    |       2 | t      | sift    | t             | t                | t         | 6
  after writes, two workers, rows | a sub-select on the key |       2 | t      | sift    | f             | t                | t         | 5
