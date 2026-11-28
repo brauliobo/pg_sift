@@ -38,19 +38,27 @@
 
 /* ---- the leaves a scan decodes as they are stored ---- */
 
-/*
- * the leaf of attribute att when it is the only one (the lanes of a wide value, which have no type, are its head's): a scalar of the attribute itself, none for a document, a declared path or a
- * list, nor for what a statement reads of a key of a document (its type, its text, a cast: SIFT_V6_JVIRT_VATT and up), which no leaf holds as it is
- */
+/* the leaf of a key of a document that att names (SIFT_V6_JLEAF_VATT + the leaf); NULL for an attribute of the index or a virtual one of a key (its type, its text...) */
+static const SiftSrcLeaf *
+doc_leaf(const SiftSrcLayout *lay, int att)
+{
+	if (att < SIFT_V6_JLEAF_VATT || sift_v6_vatt_is_json(att))
+		return NULL;
+	SIFT_INVARIANT(att - SIFT_V6_JLEAF_VATT < lay->nleaves, "sift: attribute %d names leaf %d of a layout of %d leaves", att, att - SIFT_V6_JLEAF_VATT, lay->nleaves);
+	return &lay->leaf[att - SIFT_V6_JLEAF_VATT];
+}
+
+/* the leaf of attribute att when it is the only one (the lanes of a wide value, which have no type, are its head's): a scalar of the attribute itself, none for a document, a declared path or a list */
 const SiftSrcLeaf *
 sift_v1_att_leaf(const SiftSrcLayout *lay, int att)
 {
 	const SiftSrcLeaf *found = NULL;
 
-	if (sift_v6_vatt_is_json(att))
-		return NULL;
 	if (att >= SIFT_V6_JLEAF_VATT)
-		return lay->leaf[att - SIFT_V6_JLEAF_VATT].parent < 0 ? &lay->leaf[att - SIFT_V6_JLEAF_VATT] : NULL;
+	{
+		found = doc_leaf(lay, att);
+		return found != NULL && found->parent < 0 ? found : NULL;
+	}
 	for (int i = 0; i < lay->nleaves; i++)
 	{
 		const SiftSrcLeaf *l = &lay->leaf[i];
@@ -68,10 +76,10 @@ Oid
 sift_v1_att_typid(const SiftSrcLayout *lay, int att)
 {
 	const Node *e = att >= 1 && att <= list_length(lay->attexprs) ? list_nth(lay->attexprs, att - 1) : NULL;
+	const SiftSrcLeaf *l = doc_leaf(lay, att);
 
-	if (att >= SIFT_V6_JLEAF_VATT)
-		return lay->leaf[att - SIFT_V6_JLEAF_VATT].typid;
-
+	if (l != NULL)
+		return l->typid;
 	return e == NULL ? InvalidOid : getBaseType(exprType(e));
 }
 
