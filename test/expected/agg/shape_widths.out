@@ -3,6 +3,11 @@
 -- a shape the scan runs gives the rows of the normal plan, and one it keeps the normal plan for names the slug of sift.explain_why.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/shape_widths_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 -- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
 SET sift.agg_force = on;
 LOAD 'pg_sift';

@@ -3,6 +3,11 @@
 -- zero, a missing key and a JSON null are NULL and an out of range member raises PostgreSQL's error for the rows that reach it.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/jsonb/int_cast_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE facts (id int, dim_a_id int, day date, metrics jsonb);
 INSERT INTO facts
@@ -45,7 +50,7 @@ VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('out of range', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::int = 1');
 SELECT * FROM check_query('out of range, excluded', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1');
 SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WHERE (metrics -> ''m_total'')::bigint = 3000000000');
--- a member that is no number is a value the leaf cannot hold: the normal plan raises PostgreSQL's error
+-- a member that is no number is a value the leaf cannot hold: the scan reads it from the exception and raises PostgreSQL's error where the normal plan does
 INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"m_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
 SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1', false);

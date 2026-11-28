@@ -4,6 +4,11 @@
 CREATE EXTENSION pg_sift;
 SET default_statistics_target = 10000;
 SET client_min_messages = warning;
+-- Format 2 (with the test library the index is Format 2 on every run); agg/set_array_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 
 CREATE TABLE ev (id int PRIMARY KEY, dim_a_id int, small_id int2, big_id int8, kind text, amount numeric(10, 2), day date, ref int) WITH (autovacuum_enabled = false);

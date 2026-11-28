@@ -1,0 +1,128 @@
+-- The widths of the shapes the aggregate scan holds (UNION ALL arms, virtual leaves, lookup-joined tables, key and read columns of a join, value
+-- combinations, float8 operations, leaves of a generic aggregate argument, aggregates sharing a distinct set), at the width of the legacy engine and one past it:
+-- a shape the scan runs gives the rows of the normal plan, and one it keeps the normal plan for names the slug of sift.explain_why.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+-- Format 1: the statements of agg/shape_widths on a Format 1 index, whose answers are the same and whose pushdown differs.
+SET sift.test_create_format1 = on;
+-- the tuples through the arms are in the price of the scan: on these few rows the normal plan is the cheaper one, and the test asks about the scan
+SET sift.agg_force = on;
+LOAD 'pg_sift';
+SET max_parallel_workers_per_gather = 0;
+SET seq_page_cost = 10000;
+SET random_page_cost = 10000;
+CREATE TABLE events (id int PRIMARY KEY, parent_id int, kind text, ts date, a int, b int, c int, d int, doc jsonb) WITH (autovacuum_enabled = false);
+INSERT INTO events
+SELECT i, i % 50, 'k' || i % 5, date '2025-01-01' + i % 6, i % 7, i % 5, i % 3, i % 2,
+       jsonb_build_object('metrics', (SELECT jsonb_object_agg('m' || j, (i * j) % 10) FROM generate_series(1, 20) j),
+                          'parts', (SELECT jsonb_agg(jsonb_build_object('cat', 'cat_' || (i + j) % 6, 'score', (i * j) % 10)) FROM generate_series(1, 1 + i % 4) j))
+FROM generate_series(1, 3000) i;
+CREATE INDEX events_col ON events USING sift_col (id, parent_id, kind, ts, a, b, c, d, doc) WITH (paths = 'doc.metrics.* float8, doc.parts[]{cat text, score float8}');
+-- a dimension with four key columns and seventeen value columns
+CREATE TABLE dd (id int NOT NULL, a int NOT NULL, b int NOT NULL, c int NOT NULL, d int NOT NULL, v1 int NOT NULL, v2 int NOT NULL, v3 int NOT NULL, v4 int NOT NULL, v5 int NOT NULL, v6 int NOT NULL, v7 int NOT NULL, v8 int NOT NULL, v9 int NOT NULL, v10 int NOT NULL, v11 int NOT NULL, v12 int NOT NULL, v13 int NOT NULL, v14 int NOT NULL, v15 int NOT NULL, v16 int NOT NULL, v17 int NOT NULL) WITH (autovacuum_enabled = false);
+INSERT INTO dd SELECT i, i % 7, i % 5, i % 3, i % 2, i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15, i + 16 FROM generate_series(0, 49) i;
+-- the unique index on the key and the first ORDER BY column leaves no tie to a first-row lookup
+CREATE UNIQUE INDEX dd_first ON dd (a, b, v2);
+-- seventeen integer columns: 136 pairs of them, each a value combination of its own
+CREATE TABLE wide (kind text, c1 int, c2 int, c3 int, c4 int, c5 int, c6 int, c7 int, c8 int, c9 int, c10 int, c11 int, c12 int, c13 int, c14 int, c15 int, c16 int, c17 int) WITH (autovacuum_enabled = false);
+INSERT INTO wide SELECT 'k' || i % 5, i % 2, i % 3, i % 5, i % 7, i % 11, i % 13, i % 17, i % 19, i % 23, i % 29, i % 31, i % 37, i % 41, i % 43, i % 47, i % 53, i % 59 FROM generate_series(1, 3000) i;
+CREATE INDEX wide_col ON wide USING sift_col (kind, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17);
+VACUUM (FREEZE, ANALYZE) events, dd, wide;
+SET join_collapse_limit = 64;
+SET from_collapse_limit = 64;
+-- the rows of the scan and of the normal plan, the arm's answer and the reason
+CREATE FUNCTION same(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE a bigint; b bigint; n bigint;
+BEGIN
+	SET sift.enable_agg = on;
+	EXECUTE format('CREATE TEMP TABLE r_on AS %s', q);
+	SET sift.enable_agg = off;
+	EXECUTE format('CREATE TEMP TABLE r_off AS %s', q);
+	RESET sift.enable_agg;
+	SELECT count(*) INTO a FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d;
+	SELECT count(*) INTO n FROM r_off;
+	DROP TABLE r_on, r_off;
+	RETURN a = 0 AND n > 0;
+END $$;
+CREATE FUNCTION probe(q text) RETURNS TABLE (used bool, slug text) LANGUAGE sql AS $$
+	SELECT w.used, w.slug FROM sift.explain_why(q) w ORDER BY w.used DESC LIMIT 1
+$$;
+-- the shapes: n of something
+CREATE FUNCTION shape(kind text, n int) RETURNS text LANGUAGE sql AS $$
+	SELECT CASE kind
+	WHEN 'virtual_leaves' THEN
+		(SELECT format('SELECT kind, %s FROM events GROUP BY kind', string_agg(format('sum((doc->''metrics''->>''m%s'')::float8) AS s%s', j, j, j), ', ')) FROM generate_series(1, n) j)
+	WHEN 'arms' THEN
+		(SELECT format('SELECT category, sp.k, avg(score) AS value FROM generate_series(1, 20) sp(k) JOIN (%s) m ON m.parent_id = sp.k GROUP BY 1, 2',
+				string_agg(format($q$SELECT e.id, e.parent_id, o.cat AS category, avg(o.score) FILTER (WHERE o.score >= %s) AS score
+				           FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, o.cat$q$, j), ' UNION ALL '))
+		 FROM generate_series(1, n) j)
+	WHEN 'joins' THEN
+		(SELECT format('SELECT %s, count(*) FROM events e %s GROUP BY 1', 'd1.v1 % 3', string_agg(format('JOIN dd d%s ON d%s.id = e.parent_id', j, j), ' ') ) FROM generate_series(1, n) j)
+	WHEN 'combos' THEN
+		(SELECT format('SELECT kind, %s FROM wide GROUP BY kind', string_agg(format('sum(c%s * c%s) AS s%s_%s', i, j, i, j), ', ' ORDER BY i, j))
+		 FROM (SELECT i, j FROM generate_series(1, 17) i, generate_series(1, 17) j WHERE i < j ORDER BY i, j LIMIT n) p)
+	WHEN 'first_order_cols' THEN
+		(SELECT format('SELECT d.v1 %% 3, count(*) FROM events e LEFT JOIN LATERAL (SELECT x.v1 FROM dd x WHERE x.a = e.a AND x.b = e.b ORDER BY %s LIMIT 1) d ON true GROUP BY 1',
+				string_agg('x.' || k, ', ')) FROM unnest((ARRAY['v2', 'c', 'd', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9'])[1:n]) k)
+	WHEN 'join_keys' THEN
+		(SELECT format('SELECT d.v1 %% 3, count(*) FROM events e JOIN dd d ON %s GROUP BY 1', string_agg(format('d.%s = e.%s', k, k), ' AND ')) FROM unnest((ARRAY['a', 'b', 'c', 'd'])[1:n]) k)
+	WHEN 'join_cols' THEN
+		(SELECT format('SELECT e.kind, sum(%s) FROM events e JOIN dd d ON d.id = e.parent_id GROUP BY 1', string_agg(format('d.v%s', j), ' + ')) FROM generate_series(1, n) j)
+	WHEN 'float_ops' THEN
+		(SELECT format('SELECT kind, sum(%s) FROM events GROUP BY kind', 'a::float8' || string_agg(' + 1.5', '')) FROM generate_series(1, n - 1) j)
+	WHEN 'rows_shared' THEN
+		(SELECT format($q$SELECT sp.k, %s FROM generate_series(1, 20) sp(k)
+		                  LEFT JOIN (SELECT e.id, e.parent_id, e.a, o.cat, avg(o.score) AS s
+		                             FROM events e CROSS JOIN LATERAL jsonb_to_recordset(e.doc['parts']) o(cat text, score float8) GROUP BY e.id, e.parent_id, e.a, o.cat) m
+		                  ON m.parent_id = sp.k GROUP BY sp.k$q$,
+				string_agg(format('count(DISTINCT m.id) FILTER (WHERE m.a %% %s = 0) AS c%s', j + 1, j), ', ')) FROM generate_series(1, n) j)
+	END
+$$;
+-- width and the default of the legacy engine (combos: the 8 expressions SiftAggV6 computes, SIFT_V6_MAX_DERIVE); SiftAggV6 holds its own widths (src/agg/engine.h),
+-- so a row says what it does at and one past that default
+CREATE TABLE widths (kind text, dflt int);
+INSERT INTO widths VALUES
+	('virtual_leaves', 16), ('arms', 16), ('joins', 32), ('combos', 8), ('join_keys', 3), ('join_cols', 16), ('first_order_cols', 8), ('float_ops', 16), ('rows_shared', 32);
+-- every width at N and at N + 1: the rows are those of the normal plan, and a shape the scan does not run names its slug. The virtual leaves are refused by each
+-- format for its own reason: Format 2.0 does not compute the aggregate of a member of the map, Format 1 computes it but its batch does not hold the 16 leaves
+CREATE FUNCTION at_width() RETURNS TABLE (kind text, n int, used bool, slug text, rows_ok bool) LANGUAGE plpgsql AS $$
+DECLARE w record; q text; p record; i int;
+BEGIN
+	FOR w IN SELECT * FROM widths ORDER BY kind LOOP
+		FOREACH i IN ARRAY ARRAY[w.dflt, w.dflt + 1] LOOP
+			q := shape(w.kind, i);
+			SELECT * INTO p FROM probe(q);
+			kind := w.kind; n := i; used := p.used;
+			slug := CASE WHEN w.kind = 'virtual_leaves' AND p.slug IN ('aggregate', 'format') THEN 'aggregate or format' ELSE p.slug END;
+			rows_ok := same(q);
+			RETURN NEXT;
+		END LOOP;
+	END LOOP;
+END $$;
+SELECT * FROM at_width();
+       kind       | n  | used |        slug         | rows_ok 
+------------------+----+------+---------------------+---------
+ arms             | 16 | t    |                     | t
+ arms             | 17 | t    |                     | t
+ combos           |  8 | t    |                     | t
+ combos           |  9 | t    |                     | t
+ first_order_cols |  8 | t    |                     | t
+ first_order_cols |  9 | t    |                     | t
+ float_ops        | 16 | t    |                     | t
+ float_ops        | 17 | t    |                     | t
+ join_cols        | 16 | t    |                     | t
+ join_cols        | 17 | f    | aggregate           | t
+ join_keys        |  3 | t    |                     | t
+ join_keys        |  4 | t    |                     | t
+ joins            | 32 | f    | join                | t
+ joins            | 33 | f    | join                | t
+ rows_shared      | 32 | t    |                     | t
+ rows_shared      | 33 | t    |                     | t
+ virtual_leaves   | 16 | f    | aggregate or format | t
+ virtual_leaves   | 17 | f    | aggregate or format | t
+(18 rows)
+
+DROP FUNCTION at_width(), shape(text, int), probe(text), same(text);
+DROP TABLE widths, wide, dd, events;
+DROP EXTENSION pg_sift;
