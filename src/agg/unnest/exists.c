@@ -19,6 +19,7 @@
 #include "core/compat.h"
 #include "agg/plan/int.h"
 #include "agg/ext.h"
+#include "agg/exists_plan.h"
 #include "agg/safety.h"
 #include "agg/source_rel.h"
 #include "agg/unnest/exists.h"
@@ -37,6 +38,8 @@ typedef struct TestCand
 	const RestrictInfo *where;
 	const SubPlan *sp;
 	const PlannerInfo *sub;
+	const CaseExpr *bind;		/* of a split (SiftV6ExistsSplit): the CASE of the sub-select its constant stands for (NULL: none) */
+	const Const *value;
 } TestCand;
 
 /* a candidate made a test of the elements of the array of one index */
@@ -145,7 +148,7 @@ filter_cands(PlannerInfo *root, Node *clause, List *cands)
 			foreach_ptr(Node, arm, ((const BoolExpr *) conjunct)->args)
 				cands = filter_cands(root, arm, cands);
 		foreach_ptr(TestCand, o, cands)
-			seen |= c != NULL && o->where == NULL && equal(o->node, c->node);
+			seen |= c != NULL && o->where == NULL && o->bind == NULL && equal(o->node, c->node);
 		if (c != NULL && !seen)
 			cands = lappend(cands, c);
 	}
@@ -161,7 +164,7 @@ where_or_cands(PlannerInfo *root, Node *clause, List *cands)
 		bool		seen = c->sp != NULL;
 
 		foreach_ptr(TestCand, o, cands)
-			seen |= o->where == NULL && equal(o->node, c->node);
+			seen |= o->where == NULL && o->bind == NULL && equal(o->node, c->node);
 		if (!seen)
 			cands = lappend(cands, c);
 	}
@@ -178,9 +181,28 @@ member_cands(PlannerInfo *root, const Node *clause, List *cands)
 	return members == NIL ? cands : filter_cands(root, (Node *) make_ands_explicit(members), cands);
 }
 
-/* the tests the WHERE and the FILTERs of the statement have (a SELECT DISTINCT has no extra, and no FILTER): a WHERE that is a test, and the tests of the arms of an OR of the WHERE where the scan reads their flags (agg/plan/filter.c) */
+/* the tests of a split: its EXISTS with each constant of its CASE */
 static List *
-collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms)
+split_cands(PlannerInfo *root, const List *splits, List *cands)
+{
+	foreach_ptr(SiftV6ExistsSplit, sx, splits)
+		foreach_node(Const, value, sift_v6_exists_split_values(sx))
+		{
+			TestCand   *c = cand_of(root, (const Node *) sx->sp, NULL);
+
+			if (c == NULL)
+				return NIL;
+			c->bind = sx->inner;
+			c->value = value;
+			cands = lappend(cands, c);
+		}
+	return cands;
+}
+
+/* the tests the WHERE and the FILTERs of the statement have (a SELECT DISTINCT has no extra, and no FILTER): a WHERE that is a test, the tests of the arms of an OR of the WHERE where the scan reads their flags
+ * (agg/plan/filter.c), and those of the splits of its join */
+static List *
+collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms, const List *splits)
 {
 	List	   *cands = NIL;
 	FilterWalk	w = {0};
@@ -201,6 +223,8 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 		collect_filters(extra->havingQual, &w);
 	foreach_ptr(Expr, filter, w.filters)
 		cands = filter_cands(root, (Node *) filter, cands);
+	if (splits != NIL && (cands = split_cands(root, splits, cands)) == NIL)
+		return NIL;
 	return list_length(cands) <= SIFT_V6_XTESTS ? cands : NIL;
 }
 
@@ -315,23 +339,39 @@ add_or(V6Plan *p, TestBuilt *b, const BoolExpr *or)
 	return arms == NIL || elem_clause_ok(sift_v6_unnest_or_arms(arms));
 }
 
+static Node *
+bind_case(Node *n, const TestCand *c)
+{
+	if (n != NULL && equal(n, c->bind))
+		return (Node *) copyObject(c->value);
+	return expression_tree_mutator(n, bind_case, unconstify(TestCand *, c));
+}
+
+/* a clause of the sub-select of test b with the constant of its split for the CASE the split binds */
+static Node *
+bound_clause(const TestBuilt *b, Node *clause)
+{
+	return b->cand->bind == NULL ? clause : bind_case(clause, b->cand);
+}
+
 /* the quals of the sub-select of an EXISTS over the columns of the elements, and its comparisons with the columns of the row */
 static bool
 exists_quals(V6Plan *p, TestBuilt *b)
 {
 	foreach_node(RestrictInfo, ri, b->elem_rel->baserestrictinfo)
 	{
+		Node	   *clause = bound_clause(b, (Node *) ri->clause);
 		Expr	   *q;
 
 		if (ri->pseudoconstant)
 			return false;
-		if (agg_node_has_param((Node *) ri->clause))
+		if (agg_node_has_param(clause))
 		{
-			if (!(is_orclause(ri->clause) ? add_or(p, b, (const BoolExpr *) ri->clause) : add_cmp(p, b, (Node *) ri->clause, 0)))
+			if (!(is_orclause(clause) ? add_or(p, b, (const BoolExpr *) clause) : add_cmp(p, b, clause, 0)))
 				return false;
 			continue;
 		}
-		if ((q = sift_v6_unnest_elem_qual(p, (Node *) ri->clause)) == NULL)
+		if ((q = sift_v6_unnest_elem_qual(p, clause)) == NULL)
 			return false;
 		b->quals = lappend(b->quals, q);
 	}
@@ -420,7 +460,7 @@ build_tests(V6Plan *p, const List *cands, SiftV6TestStreams *st)
 
 		b->cand = c;
 		b->index = list_length(p->tests);
-		b->test = (SiftV6XTest) {.need = c->where == NULL ? 0 : c->negated ? 2 : 1,.doc_leaf = -1};
+		b->test = (SiftV6XTest) {.need = c->where == NULL ? 0 : c->negated ? 2 : 1,.joined = c->bind != NULL,.doc_leaf = -1};
 		if (!(c->sp != NULL ? build_exists(p, st, b) : build_path(p, st, b)))
 			return false;
 		p->tests = lappend(p->tests, b);
@@ -495,11 +535,11 @@ where_flags(const V6Plan *p)
 }
 
 void
-sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra)
+sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra, const List *splits)
 {
 	SiftV6TestStreams st = {.n = 1,.nfixed = 1,.rte = {*own}};
 	const bool	streams = source_streams(p);
-	const List *cands = collect_cands(p->root, p->rel, out, extra, where_flags(p));
+	const List *cands = collect_cands(p->root, p->rel, out, extra, where_flags(p), splits);
 	SiftV6Ext  *x = p->xseed;
 
 	if (cands == NIL || (streams && build_tests(p, cands, &st) && seed_streams(p, &st) && build_exists_quals(p) && store_tests(p)))
@@ -544,6 +584,15 @@ sift_v6_tests_contains_quals(const V6Plan *p, const Expr *clause, Expr **rest)
 	return flags;
 }
 
+int
+sift_v6_unnest_split_flag(const V6Plan *p, const SubPlan *sp, const Const *value)
+{
+	foreach_ptr(TestBuilt, b, p->tests)
+		if (b->cand->sp == sp && b->cand->bind != NULL && equal(b->cand->value, value))
+			return b->index;
+	return -1;
+}
+
 bool
 sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri)
 {
@@ -562,10 +611,10 @@ sift_v6_unnest_exists_cost(const RelOptInfo *rel)
 }
 
 bool
-sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra)
+sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra, const List *splits)
 {
 	SiftV6TestStreams st = {0};
-	const List *cands = collect_cands(p->root, p->rel, p->out, extra, where_flags(p));
+	const List *cands = collect_cands(p->root, p->rel, p->out, extra, where_flags(p), splits);
 
 	if (cands == NIL)
 		return true;
@@ -579,7 +628,7 @@ bool
 sift_v6_unnest_exists_seed(V6Plan *p, GroupPathExtraData *extra)
 {
 	const bool	batch_ok = p->batch_ok;
-	const bool	seeded = sift_v6_unnest_tests_seed(p, extra) && p->xseed != NULL;
+	const bool	seeded = sift_v6_unnest_tests_seed(p, extra, NIL) && p->xseed != NULL;
 
 	if (!seeded)
 	{
@@ -613,7 +662,7 @@ sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out,
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!sift_v6_plan_fact_ok(root, rel) || collect_cands(root, rel, out, extra, true) == NIL)
+	if (!sift_v6_plan_fact_ok(root, rel) || collect_cands(root, rel, out, extra, true, NIL) == NIL)
 		return;
 	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)

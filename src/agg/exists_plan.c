@@ -298,3 +298,98 @@ sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh)
 	}
 	return true;
 }
+
+typedef struct SplitWalk
+{
+	PlannerInfo *root;
+	const SiftV6JoinShape *sh;
+	const SubPlan *sp;
+	const CaseExpr *inner;		/* the CASE found, as the sub-select has it */
+	bool		ok;
+} SplitWalk;
+
+/* the expression of the sub-select in the terms of the statement: each parameter the argument the sub-plan passes for it */
+static Node *
+outer_of(Node *n, const SubPlan *sp)
+{
+	if (n != NULL && IsA(n, Param) && ((const Param *) n)->paramkind == PARAM_EXEC)
+	{
+		int			k = 0;
+
+		foreach_int(id, sp->parParam)
+		{
+			if (id == ((const Param *) n)->paramid)
+				return copyObject(list_nth(sp->args, k));
+			k++;
+		}
+	}
+	return expression_tree_mutator(n, outer_of, unconstify(SubPlan *, sp));
+}
+
+/* a CASE of the sub-select whose results are constants and which reads a joined relation: the one the walk takes, the parameters outside it columns of the fact table */
+static bool
+split_walk(Node *n, SplitWalk *w)
+{
+	if (n == NULL)
+		return false;
+	if (IsA(n, CaseExpr))
+	{
+		const CaseExpr *cx = (const CaseExpr *) n;
+		Node	   *e = outer_of(n, w->sp);
+		bool		consts = cx->defresult == NULL || IsA(cx->defresult, Const);
+
+		foreach_node(CaseWhen, cw, cx->args)
+			consts &= IsA(cw->result, Const);
+		if (consts && !bms_is_subset(pull_varnos(w->root, e), w->sh->fact->relids))
+		{
+			w->ok &= (w->inner == NULL || equal(w->inner, cx)) && !contain_volatile_functions(e) && !contain_subplans(e) && !agg_node_may_raise(e);
+			w->inner = cx;
+			return false;
+		}
+	}
+	if (IsA(n, Param))
+		w->ok &= bms_is_subset(pull_varnos(w->root, outer_of(n, w->sp)), w->sh->fact->relids);
+	return expression_tree_walker(n, split_walk, w);
+}
+
+bool
+sift_v6_exists_split(PlannerInfo *root, SiftV6JoinShape *sh, const RestrictInfo *ri)
+{
+	const SubPlan *sp = (const SubPlan *) ri->clause;
+	SplitWalk	w = {.root = root,.sh = sh,.sp = sp,.ok = true};
+	const PlannerInfo *sub;
+	SiftV6ExistsSplit *sx;
+
+	if (sh->semi || sp->useHashTable || sp->testexpr != NULL || list_length(sp->args) != list_length(sp->parParam) || sp->plan_id < 1)
+		return false;
+	for (int d = 0; d < sh->nd; d++)
+		if (sift_star_preserves_dim(sh->dim[d].mode))
+			return false;
+	sub = list_nth(root->glob->subroots, sp->plan_id - 1);
+	for (int r = 1; r < sub->simple_rel_array_size; r++)
+		if (sub->simple_rel_array[r] != NULL)
+			foreach_node(RestrictInfo, q, sub->simple_rel_array[r]->baserestrictinfo)
+				(void) split_walk((Node *) q->clause, &w);
+	if (!w.ok || w.inner == NULL)
+		return false;
+	sx = palloc(sizeof(SiftV6ExistsSplit));
+	*sx = (SiftV6ExistsSplit) {.sp = sp,.inner = w.inner,.cx = (const CaseExpr *) outer_of((Node *) w.inner, sp)};
+	sh->splits = lappend(sh->splits, sx);
+	return true;
+}
+
+List *
+sift_v6_exists_split_values(const SiftV6ExistsSplit *sx)
+{
+	List	   *out = NIL;
+
+	foreach_node(CaseWhen, w, sx->cx->args)
+		out = list_append_unique(out, w->result);
+	return list_append_unique(out, unconstify(Const *, sift_v6_exists_split_else(sx)));
+}
+
+const Const *
+sift_v6_exists_split_else(const SiftV6ExistsSplit *sx)
+{
+	return sx->cx->defresult != NULL ? (const Const *) sx->cx->defresult : makeNullConst(sx->cx->casetype, -1, sx->cx->casecollid);
+}

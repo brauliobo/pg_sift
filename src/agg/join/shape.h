@@ -46,7 +46,9 @@ typedef struct SiftV6JoinShape
 	SiftV6JoinDim dim[SIFT_STAR_MAX_DIMS];
 	List	   *resid;			/* the RestrictInfo of each condition no key says */
 	const RestrictInfo *sub_qual;	/* the EXISTS of the fact table's own conditions that semi stands for */
+	List	   *splits;			/* the EXISTS split by the constants of their CASE (SiftV6ExistsSplit, agg/exists_plan.h) */
 } SiftV6JoinShape;
+
 
 /* the part a relation has in the join: the fact table, the element, the index of its dimension, or none */
 extern int	sift_v6_join_role(const SiftV6JoinShape *sh, const Var *v);

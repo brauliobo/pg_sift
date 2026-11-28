@@ -282,7 +282,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	{
 		const SiftV6XTest *xt = &x->test[t];
 
-		ints = list_concat(ints, list_make5_int(xt->need, xt->nullable, xt->stream, xt->doc_leaf, xt->ncmps));
+		ints = lappend_int(list_concat(ints, list_make5_int(xt->need, xt->nullable, xt->stream, xt->doc_leaf, xt->ncmps)), xt->joined);
 		for (int c = 0; c < xt->ncmps; c++)
 			ints = list_concat(ints, list_make5_int(xt->cmp[c].op, xt->cmp[c].elem, xt->cmp[c].outer, (int) xt->cmp[c].outer_type, xt->cmp[c].group));
 	}
@@ -381,8 +381,8 @@ sift_v6_ext_unpack(const List *l)
 		SiftV6XTest *xt = &x->test[t];
 
 		*xt = (SiftV6XTest) {.need = list_nth_int(ints, at),.nullable = list_nth_int(ints, at + 1) != 0,.stream = list_nth_int(ints, at + 2),.doc_leaf = list_nth_int(ints, at + 3),
-		.ncmps = list_nth_int(ints, at + 4)};
-		at += 5;
+		.ncmps = list_nth_int(ints, at + 4),.joined = list_nth_int(ints, at + 5) != 0};
+		at += 6;
 		for (int c = 0; c < xt->ncmps; c++, at += 5)
 			xt->cmp[c] = (SiftV6XCmp) {.op = list_nth_int(ints, at),.elem = list_nth_int(ints, at + 1),.outer = list_nth_int(ints, at + 2),.outer_type = (Oid) list_nth_int(ints, at + 3),
 			.group = list_nth_int(ints, at + 4)};

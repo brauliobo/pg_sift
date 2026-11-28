@@ -162,6 +162,41 @@ SELECT * FROM check_error($q$
  WHERE r.id % 1000 <> 0 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(r.document -> 'parts') AS o(category text, val text)
    WHERE o.val::int > 100 AND o.category <> e.kind) GROUP BY e.kind
 $q$);
-DROP FUNCTION check_query(text), check_error(text);
-DROP TABLE facts, raising, dim_a, mappings, dates, days_dup;
+-- A CASE of constants over the joined table beside an unnest of the row: a test of the row for each constant, the CASE over their answers a condition of the
+-- pairs; with no ELSE the NULL of no branch passes no element, and a searched CASE may read the row too.
+SELECT * FROM check_query($q$
+ SELECT r.key, count(*) AS n, count(DISTINCT f.id) AS items, avg(r.value::float8) AS mean FROM facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ WHERE f.id > 100 AND EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+   WHERE o.score IS NOT NULL AND o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)
+ GROUP BY r.key
+$q$);
+SELECT * FROM check_query($q$
+ SELECT e.kind, r.key, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+   WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' END)
+ GROUP BY 1, 2
+$q$);
+SELECT * FROM check_query($q$
+ SELECT e.kind, r.key, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
+ WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+   WHERE o.dir_a = CASE WHEN e.kind IS NULL THEN 'flat' WHEN e.kind = 'a' AND f.id > 15000 THEN 'up' ELSE 'down' END)
+ GROUP BY 1, 2
+$q$);
+-- the same over rows whose list is no array: a row the join drops raises nothing, a row it keeps raises, with or without pairs of its unnest
+CREATE TABLE dirty_facts AS SELECT id, dim_a_id, document, metrics FROM facts WHERE id <= 2000;
+INSERT INTO dirty_facts VALUES (90001, 50, '{"parts": "x"}', '{"m_total": 1}');
+CREATE INDEX dirty_facts_col ON dirty_facts USING sift_col (id, dim_a_id, document, metrics) WITH (paths = 'document.parts[]{category text,val text,score float8,dir_a text}, metrics.* float8');
+VACUUM (FREEZE, ANALYZE) dirty_facts;
+CREATE FUNCTION dq() RETURNS text LANGUAGE sql AS $f$
+ SELECT 'SELECT r.key, count(*) AS n FROM dirty_facts f JOIN dim_a e ON e.id = f.dim_a_id CROSS JOIN LATERAL jsonb_each(f.metrics) r
+  WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> $$parts$$) AS o(category text, val text, score float8, dir_a text)
+   WHERE o.category = CASE e.kind WHEN $$a$$ THEN $$catg_l$$ ELSE $$catg_a$$ END) GROUP BY r.key'
+$f$;
+SELECT 'dropped by the join' AS dirty_row, * FROM check_error(dq());
+INSERT INTO dirty_facts VALUES (90002, 4, '{"parts": "x"}', '{}');
+SELECT 'kept, no pair' AS dirty_row, * FROM check_error(dq());
+UPDATE dirty_facts SET metrics = '{"m_total": 1}' WHERE id = 90002;
+SELECT 'kept' AS dirty_row, * FROM check_error(dq());
+DROP FUNCTION check_query(text), check_error(text), dq();
+DROP TABLE facts, raising, dirty_facts, dim_a, mappings, dates, days_dup;
 DROP EXTENSION pg_sift;

@@ -26,13 +26,15 @@ typedef struct SiftV6TestStreams
 } SiftV6TestStreams;
 
 /*
- * The tests among the quals of the table and the FILTERs of a statement whose lateral relation p seeded (own, its stream 0): each reads a stream of its own after it, its flags the columns of
- * the pairs of its row. When one of them is no test the scan decides, there are none: such a clause stays the table's, which the compile of the statement takes or refuses
+ * The tests among the quals of the table, the FILTERs of a statement whose lateral relation p seeded (own, its stream 0) and the splits of its join (SiftV6ExistsSplit): each reads a stream of
+ * its own after it, its flags the columns of the pairs of its row. When one of them is no test the scan decides, there are none: such a clause stays the table's, which the compile of the statement takes or refuses
  */
-extern void sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra);
+extern void sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out, GroupPathExtraData *extra, const List *splits);
 /* The tests of the quals of the table and of the FILTERs of the statement p is bound to, seeded as the streams of an unnest of the rows (SiftV6Ext.row_tests): p->xseed stays NULL when
  * the statement has none; false when one is not a test the scan decides */
-extern bool sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra);
+extern bool sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra, const List *splits);
+/* The flag of the test of the split EXISTS sp with the constant value (the virtual attribute SIFT_V6_XFLAG_VATT + it); -1: the plan has none */
+extern int	sift_v6_unnest_split_flag(const V6Plan *p, const SubPlan *sp, const Const *value);
 /* The tests of sift_v6_unnest_tests_seed when the statement has some the scan decides; false, with no Ext, otherwise. A plan so seeded compiles with sift_v6_unnest_exists_compile, and
  * its scan costs sift_v6_unnest_exists_cost more */
 extern bool sift_v6_unnest_exists_seed(V6Plan *p, GroupPathExtraData *extra);

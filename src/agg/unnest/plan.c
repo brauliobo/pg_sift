@@ -401,7 +401,7 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *output_rel, RelOp
 
 		if (sift_v6_plan_bind(&p, &src[i], rel) && sift_v6_unnest_seed(&p, elem_rel, &rte, left))
 		{
-			sift_v6_unnest_tests_beside(&p, &rte, output_rel, extra);
+			sift_v6_unnest_tests_beside(&p, &rte, output_rel, extra, NIL);
 			if (sift_v6_compile_on(&p, extra, group_exprs) && sift_v6_unnest_ready(&p))
 				sift_v6_add_join_path(&p, group_exprs, (List *) extra->havingQual, NIL, 0, sift_v6_unnest_pairs_cost(&p, input_rel), sift_v6_unnest_rows(&p, input_rel));
 		}

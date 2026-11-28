@@ -526,7 +526,7 @@ join_clauses(PlannerInfo *root, Relids base, SiftV6JoinShape *sh)
 			if (list_member_ptr(seen, ri))
 				continue;
 			seen = lappend(seen, ri);
-			if (sift_v6_exists_clause(ri) ? !sift_v6_exists_join(root, sh, ri) : !place_clause(sh, ri))
+			if (sift_v6_exists_clause(ri) ? !sift_v6_exists_join(root, sh, ri) && !sift_v6_exists_split(root, sh, ri) : !place_clause(sh, ri))
 				return false;
 		}
 	}
@@ -556,7 +556,7 @@ int_key(Oid typid)
 static bool
 needs_lookup(PlannerInfo *root, const SiftV6JoinShape *sh, bool rows)
 {
-	if (sh->elem != NULL || sh->resid != NIL)
+	if (sh->elem != NULL || sh->resid != NIL || sh->splits != NIL)
 		return true;
 	for (int i = 0; i < sh->nd; i++)
 	{
@@ -678,7 +678,8 @@ shape_of(PlannerInfo *root, Relids base, SiftV6JoinShape *sh, bool rows)
 	sift_v6_join_chain_dims(root, sh);
 	if (!dims_fit(root, sh) || !join_clauses(root, base, sh) || !sift_v6_exists_main_unique(root, sh))
 		return false;
-	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh)) && sift_v6_join_elem_nest_ok(sh);
+	return pairs_ok(sh) && needs_lookup(root, sh, rows) && preserved_ok(root, sh) && (!sh->semi || semi_resid_ok(root, sh)) && sift_v6_join_elem_nest_ok(sh) &&
+		(sh->splits == NIL || sh->resid == NIL);
 }
 
 static bool
@@ -737,11 +738,11 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 		if (!sift_v6_unnest_seed(p, sh->elem, &sh->rte, sh->elem_left))
 			return false;
 		if (extra != NULL)
-			sift_v6_unnest_tests_beside(p, &sh->rte, p->out, extra);
+			sift_v6_unnest_tests_beside(p, &sh->rte, p->out, extra, sh->splits);
 		x = p->xseed;
 		x->elem.semi = sh->semi;
 	}
-	else if (extra != NULL && !sift_v6_unnest_tests_seed(p, extra))
+	else if (extra != NULL && !sift_v6_unnest_tests_seed(p, extra, sh->splits))
 		return false;
 	else if ((x = p->xseed) == NULL)
 		p->xseed = x = sift_v6_ext_new();
@@ -800,11 +801,41 @@ seed_conditions(V6Plan *p, const List *quals, List **out)
 	return true;
 }
 
+/* the result of the CASE of a split as the flag of its test; NULL when the plan has no test of it */
+static Node *
+split_result(const V6Plan *p, const SiftV6ExistsSplit *sx, const Const *value)
+{
+	const int	flag = sift_v6_unnest_split_flag(p, sx->sp, value);
+
+	return flag < 0 ? NULL : (Node *) makeVar(INDEX_VAR, SIFT_V6_XFLAG_VATT + flag, BOOLOID, -1, InvalidOid, 0);
+}
+
+/* the condition of the pairs a split is: its CASE over the flags of its tests */
+static bool
+seed_split(V6Plan *p, const SiftV6ExistsSplit *sx)
+{
+	CaseExpr   *cx = copyObject(unconstify(CaseExpr *, sx->cx));
+	Node	   *e;
+
+	cx->casetype = BOOLOID;
+	cx->casecollid = InvalidOid;
+	foreach_node(CaseWhen, w, cx->args)
+		if ((w->result = (Expr *) split_result(p, sx, (const Const *) w->result)) == NULL)
+			return false;
+	if ((cx->defresult = (Expr *) split_result(p, sx, sift_v6_exists_split_else(sx))) == NULL || (e = sift_v6_pair_expr(p, (Node *) cx)) == NULL)
+		return false;
+	p->xseed->resid = lappend(p->xseed->resid, e);
+	return true;
+}
+
 static bool
 seed_resid(V6Plan *p, const SiftV6JoinShape *sh)
 {
 	if (!seed_conditions(p, sh->resid, &p->xseed->resid))
 		return false;
+	foreach_ptr(SiftV6ExistsSplit, sx, sh->splits)
+		if (!seed_split(p, sx))
+			return false;
 	for (int d = 0; d < sh->nd; d++)
 		if (!seed_conditions(p, sh->dim[d].on, &p->xseed->on[d]))
 			return false;
@@ -825,7 +856,7 @@ lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startu
 		total += read + sh->dim[d].path->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
 		if (sh->dim[d].nkeys == 0)
 			total += sh->fact->rows * sh->dim[d].path->rows * cpu_operator_cost * 2.0;
-		if (sh->dim[d].on != NIL || sh->resid != NIL)
+		if (sh->dim[d].on != NIL || sh->resid != NIL || sh->splits != NIL)
 			total += (sh->dim[d].nkeys == 0 ? sh->fact->rows * sh->dim[d].path->rows : input_rel->rows) * cpu_operator_cost * 4.0;
 	}
 	return total;

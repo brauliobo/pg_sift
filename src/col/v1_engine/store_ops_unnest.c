@@ -107,7 +107,7 @@ setup_cols(UnRun *u)
 				sift_v1_unnest_col_index(u, &key, false);
 			}
 	for (int i = 0; i < u->x->nrcol; i++)
-		if (u->x->rcol[i].src == SV6SRC_ATTR)
+		if (reads_batch(&u->x->rcol[i]))
 			sift_v1_unnest_col_index(u, &u->x->rcol[i], false);
 	for (int k = 0; k < spec->nderive; k++)
 	{

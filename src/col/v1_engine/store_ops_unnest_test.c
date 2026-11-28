@@ -130,9 +130,9 @@ heap_outer(UnRun *u, int k, int c, HeapCell *cell, uint64 *valid)
 	return (SiftVec) {.data = cell,.valid = valid,.len = 1,.all_valid = false,.dense = true,.type = type == FLOAT8OID ? SVEC_F64 : SVEC_I64};
 }
 
-/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements the function gives */
+/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements the function gives; *err: the error of a function the join's conditions alone read */
 static void
-heap_flags(UnRun *u, bool *yes, bool *known)
+heap_flags(UnRun *u, bool *yes, bool *known, ErrorData **err)
 {
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	uint32		nel = 0;
@@ -156,8 +156,10 @@ heap_flags(UnRun *u, bool *yes, bool *known)
 			continue;
 		}
 		if (!have)
-			nel = sift_v1_unnest_heap_elems(u, ev, NULL);
+			nel = sift_v1_unnest_heap_elems(u, ev, sift_v6_stream_joined(u->x, 0) ? err : NULL);
 		have = true;
+		if (*err != NULL)
+			return;
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[c] = heap_outer(u, k, c, &cell[c], &valid[c]);
 		yes[k] = nel > 0 && sift_v6_row_test_one(u->tests, k, ev, nel, outer);
@@ -178,9 +180,19 @@ tests_from_heap(UnRun *u, uint64 tag, uint32 row)
 	bool		yes[SIFT_V6_XTESTS],
 				known[SIFT_V6_XTESTS];
 	bool		kept = sift_v1_unnest_heap_load(u, tag);
+	ErrorData  *err = NULL;
 
 	if (kept)
-		heap_flags(u, yes, known);
+		heap_flags(u, yes, known, &err);
+	if (err != NULL)
+	{
+		u->pidx[0] = row;
+		u->eidx[0] = SIFT_GATHER_NONE;
+		u->pipe->late_row = err;
+		sift_v1_unnest_emit_pairs(u, u->fv, NULL, 1);
+		u->pipe->late_row = NULL;
+		kept = false;
+	}
 	for (int k = 0; kept && k < u->ntests; k++)
 		kept = need_met(&u->x->test[k], yes[k], known[k]);
 	for (int k = 0; kept && k < u->ntests; k++)

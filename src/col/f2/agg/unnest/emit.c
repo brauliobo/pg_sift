@@ -363,24 +363,24 @@ heap_outer(UnRun *u, int k, int c, HeapCell *cell, uint64 *valid)
 	return (SiftVec) {.data = cell,.valid = valid,.len = 1,.all_valid = false,.dense = true,.type = type == FLOAT8OID ? SVEC_F64 : SVEC_I64};
 }
 
-/* the tests of stream s of the heap row that its elements decide (an EXISTS): the elements the function gives, a chunk at a time */
+/* the tests of stream s of the heap row that its elements decide (an EXISTS): the elements the function gives, a chunk at a time; the error of a function the join's conditions alone read is *err */
 static void
-heap_stream_flags(UnRun *u, int s, const bool *elems, SiftVec (*outer)[SIFT_V6_XCMPS], bool *yes)
+heap_stream_flags(UnRun *u, int s, const bool *elems, SiftVec (*outer)[SIFT_V6_XCMPS], bool *yes, ErrorData **err)
 {
 	SiftVec		ev[SIFT_V6_XELEM_COLS] = {0};
 	HeapElems	h;
 	uint32		nel;
 
-	heap_open(u, s, &h, NULL);
-	while ((nel = heap_next(u, &h, ev)) > 0)
+	heap_open(u, s, &h, sift_v6_stream_joined(u->x, s) ? err : NULL);
+	while (*err == NULL && (nel = heap_next(u, &h, ev)) > 0)
 		for (int k = 0; k < u->ntests; k++)
 			if (elems[k] && u->x->test[k].stream == s && !yes[k])
 				yes[k] = sift_v6_row_test_one(u->tests, k, ev, nel, outer[k]);
 }
 
-/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements of its stream */
+/* every test of the heap row: a jsonpath is the call itself, an EXISTS the test of the elements of its stream; *err as heap_stream_flags gives it */
 static void
-heap_flags(UnRun *u, bool *yes, bool *known)
+heap_flags(UnRun *u, bool *yes, bool *known, ErrorData **err)
 {
 	SiftVec		outer[SIFT_V6_XTESTS][SIFT_V6_XCMPS];
 	HeapCell	cell[SIFT_V6_XTESTS][SIFT_V6_XCMPS];
@@ -406,9 +406,9 @@ heap_flags(UnRun *u, bool *yes, bool *known)
 		for (int c = 0; c < u->x->test[k].ncmps; c++)
 			outer[k][c] = heap_outer(u, k, c, &cell[k][c], &valid[k][c]);
 	}
-	for (int s = 0; s < u->nst; s++)
+	for (int s = 0; *err == NULL && s < u->nst; s++)
 		if (streams[s])
-			heap_stream_flags(u, s, elems, outer, yes);
+			heap_stream_flags(u, s, elems, outer, yes, err);
 }
 
 static bool
@@ -425,9 +425,18 @@ sift_f2_unnest_emit_test_heap_row(UnRun *u, uint64 tid, uint32 row)
 	bool		yes[SIFT_V6_XTESTS],
 				known[SIFT_V6_XTESTS];
 	bool		kept = heap_row_kept(u, tid, row);
+	ErrorData  *err = NULL;
+	SiftVec		none[SIFT_V6_XELEM_COLS] = {0};
 
 	if (kept)
-		heap_flags(u, yes, known);
+		heap_flags(u, yes, known, &err);
+	if (err != NULL)
+	{
+		for (int c = 0; c < u->nel; c++)
+			none[c].type = u->st[0].etype[c];
+		emit_late_row(u, u->fv, none, row, err);
+		kept = false;
+	}
 	for (int k = 0; kept && k < u->ntests; k++)
 		kept = need_met(&u->x->test[k], yes[k], known[k]);
 	for (int k = 0; kept && k < u->ntests; k++)

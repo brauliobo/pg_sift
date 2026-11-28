@@ -115,12 +115,14 @@ typedef struct SiftV6XCmp
  * element columns, v6_unnest_jsonb.h) and the comparisons with the columns of the row.
  * A row whose document the leaves cannot hold is decided from the heap. need: the rows the statement keeps (0 all: a FILTER reads the flag as the virtual attribute SIFT_V6_XFLAG_VATT + the test;
  * 1 those where it is true; 2 those where it is false). nullable: a jsonpath is NULL for a row with no document, an EXISTS is false; doc_leaf: the presence leaf of the document whose key the array
- * of a jsonpath is, which says the rows with no document (a document without the key has no array either; -1: a NULL array is a NULL document).
+ * of a jsonpath is, which says the rows with no document (a document without the key has no array either; -1: a NULL array is a NULL document). joined: the conditions of the join read
+ * the flag (a split EXISTS, agg/exists_plan.h), and the function of a row read from the heap that raises raises when the row has gone through the dimensions (agg/pipe.h, late_row).
  */
 typedef struct SiftV6XTest
 {
 	int			need;
 	bool		nullable;
+	bool		joined;
 	int			stream;			/* the array whose elements the test reads (sift_v6_ext_stream) */
 	int			doc_leaf;
 	int			ncmps;
@@ -162,6 +164,22 @@ typedef struct SiftV6Ext
 } SiftV6Ext;
 
 extern SiftV6Ext *sift_v6_ext_new(void);
+
+/* Every test that reads stream s is one the conditions of the join read (SiftV6XTest.joined), and some test reads it */
+static inline bool
+sift_v6_stream_joined(const SiftV6Ext *x, int s)
+{
+	bool		any = false;
+
+	for (int k = 0; k < x->ntests; k++)
+		if (x->test[k].stream == s)
+		{
+			if (!x->test[k].joined)
+				return false;
+			any = true;
+		}
+	return any;
+}
 
 /* The array s of the elements the scan reads, with the names of its recordset columns and, when it is no column of the table itself, its expression (NULL: the column of attno) */
 static inline const SiftV6XElem *

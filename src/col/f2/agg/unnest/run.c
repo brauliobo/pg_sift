@@ -138,7 +138,7 @@ attr_cols(const SiftV6Spec *spec, UnColFn fn, void *arg)
 				fn(arg, &key, false);
 			}
 	for (int i = 0; i < x->nrcol; i++)
-		if (x->rcol[i].src == SV6SRC_ATTR)
+		if (x->rcol[i].src == SV6SRC_ATTR && !sift_v6_col_is_flag(&x->rcol[i]))
 			fn(arg, &x->rcol[i], false);
 	for (int k = 0; k < spec->nderive; k++)
 	{

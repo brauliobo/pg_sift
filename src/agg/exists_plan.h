@@ -15,11 +15,28 @@
 
 #include "agg/join/shape.h"
 
+/*
+ * An EXISTS whose sub-select compares an element with a CASE of constants over the joined relations (`i.category = CASE s.kind WHEN 'a' THEN 'x' ELSE 'y' END`): a test of the row for each
+ * constant, and the condition of the pairs the same CASE with the flag of each test as its result
+ */
+typedef struct SiftV6ExistsSplit
+{
+	const SubPlan *sp;
+	const CaseExpr *inner;		/* the CASE as the sub-select has it, over the parameters of sp */
+	const CaseExpr *cx;			/* the same in the terms of the statement */
+} SiftV6ExistsSplit;
+
 /* the clause is an EXISTS sub-plan */
 extern bool sift_v6_exists_clause(const RestrictInfo *ri);
 
 /* The EXISTS clause ri of the join of sh as the elements, dimensions and conditions it adds to it; false when the sub-select is not of the shape above */
 extern bool sift_v6_exists_join(PlannerInfo *root, SiftV6JoinShape *sh, RestrictInfo *ri);
+
+/* The EXISTS clause ri of the join of sh, which reads a joined relation by a CASE of constants only, as a split of sh (SiftV6ExistsSplit); false when it is not one */
+extern bool sift_v6_exists_split(PlannerInfo *root, SiftV6JoinShape *sh, const RestrictInfo *ri);
+/* The results of the CASE of a split, each once, and the one of no branch (its ELSE, or NULL) */
+extern List *sift_v6_exists_split_values(const SiftV6ExistsSplit *sx);
+extern const Const *sift_v6_exists_split_else(const SiftV6ExistsSplit *sx);
 
 /* The rows of the statement's own join come once for each row of the fact table, which the count of a row once needs: each dimension keeps one row for a key. A RIGHT or FULL dimension
  * is probed by the row once it passed (agg/pipe.h): it may repeat a key */
