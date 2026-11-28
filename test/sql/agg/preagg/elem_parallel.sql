@@ -2,10 +2,11 @@
 -- over a partial Custom Scan (SiftAgg) with two workers, answer the exact units from their cubes and scan the units that are not, and give the rows of the
 -- normal plan (sift.enable_agg off) and of the scan of every unit (sift.agg_preagg off).
 -- mode: parallel (Gather over SiftAgg), serial (SiftAgg alone), none (the normal plan). pre: granules answered from the cubes (the preagg count of the Granules line).
--- A table whose units are all exact is serial on purpose (starting workers costs more than the answer), so the units that are not come from updates
--- after the VACUUM; `dirty` is a table with no VACUUM at all: every unit is scanned.
+-- The units that are not exact come from updates after the VACUUM; `dirty` is a table with no VACUUM at all: every unit is scanned. The workers a plan gets follow
+-- the granules it reads (two each), so the indexes are built by one process: the rows a parallel build hands its participants make other granules and zones each run.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
+SET max_parallel_maintenance_workers = 0;
 -- these tests are about the rollup path: it answers whatever the cost of its tuples (agg_rollup_cost has its own test)
 
 CREATE FUNCTION mk_items(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
@@ -18,7 +19,7 @@ CREATE FUNCTION mk_tags(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
 	SELECT CASE WHEN g % 19 = 0 THEN NULL ELSE coalesce((SELECT jsonb_agg(CASE WHEN (g + e) % 8 = 0 THEN NULL ELSE 't' || (g + e) % 6 END) FROM generate_series(1, g % 4) e), '[]') END $$;
 
 CREATE TABLE p_t (id int, grp int, items jsonb, tags jsonb) WITH (fillfactor = 10, autovacuum_enabled = false);
-INSERT INTO p_t SELECT g, g % 7, mk_items(g), mk_tags(g) FROM generate_series(1, 12000) g;
+INSERT INTO p_t SELECT g, g % 7, mk_items(g), mk_tags(g) FROM generate_series(1, 16000) g;
 CREATE TABLE p_d (LIKE p_t) WITH (fillfactor = 10, autovacuum_enabled = false);
 INSERT INTO p_d SELECT * FROM p_t;
 CREATE INDEX p_col ON p_t USING sift_col (id, grp, items, tags)
@@ -66,7 +67,7 @@ INSERT INTO p_q (q) VALUES
 	('SELECT e.n, count(*), round(sum(e.score)::numeric, 6) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) GROUP BY 1'),
 	('SELECT count(*), sum(e.n) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind = ''k1'''),
 	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE e.kind IN (''k1'', ''k2'', ''k9'') GROUP BY 1'),
-	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 9000 GROUP BY 1'),
+	('SELECT e.kind, count(*) FROM %s d CROSS JOIN LATERAL jsonb_to_recordset(d.items) e(kind text, n int, score float8) WHERE d.id < 13000 GROUP BY 1'),
 	('SELECT e.v->>''kind'' AS kind, count(*), sum((e.v->>''n'')::int) FROM %s d CROSS JOIN LATERAL jsonb_array_elements(d.items) e(v) GROUP BY 1'),
 	('SELECT t, count(*) FROM %s d CROSS JOIN LATERAL jsonb_array_elements_text(d.tags) t GROUP BY 1'),
 	-- two keys and min, max are rollup shapes; the filter on a row leaf is the scan of the units, in parallel too
@@ -93,7 +94,7 @@ SELECT * FROM p_compare('p_t');
 -- every unit scanned
 SELECT * FROM p_compare('p_d');
 
--- the same after the units that changed are merged away (every unit exact again: one process answers, no workers)
+-- the same after the units that changed are merged away: every unit is exact again
 RESET seq_page_cost;
 SELECT sift.col_merge('p_col', true) >= 0 AS merged;
 VACUUM (freeze, index_cleanup on, disable_page_skipping) p_t;
