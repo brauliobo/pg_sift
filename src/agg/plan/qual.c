@@ -398,6 +398,20 @@ lowered_tests(V6Plan *p, const SiftV6Rel *rel, Expr *clause)
 	return tests != NIL ? tests : (tests = sift_v6_conjuncts(sift_v6_plan_json_test(p, clause, true))) != NIL && list_length(tests) > 1 ? tests : NIL;
 }
 
+/* the tests of the leaves of a clause, or of a containment whose lists of strings the tests of the plan read: the quals of their flags and the tests of the other members */
+static bool
+compile_tests(V6Plan *p, const SiftV6Rel *rel, Expr *clause)
+{
+	Expr	   *rest;
+	List	   *flags = sift_v6_tests_contains_quals(p, clause, &rest);
+	List	   *tests = flags == NIL ? lowered_tests(p, rel, clause) : rest != NULL ? lowered_tests(p, rel, rest) : NIL;
+
+	if (tests == NIL && (flags == NIL || rest != NULL))
+		return false;
+	p->spec.indexqual = list_concat(p->spec.indexqual, flags);
+	return compile_lowered(p, tests);
+}
+
 List *
 sift_v6_conjuncts(Expr *clause)
 {
@@ -427,7 +441,6 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 	if (q == NULL && !ri->pseudoconstant)
 		q = sift_v6_tests_or_qual(p, ri->clause);
 	List	   *jq = ri->pseudoconstant || q != NULL || heap_decides(p, ri->clause) || (p->is_table && !p->ops->zone->table_json) ? NIL : sift_v6_json_qual(rel, ri->clause);
-	List	   *tests;
 
 	if (q != NULL)
 		p->spec.indexqual = lappend(p->spec.indexqual, q);
@@ -438,7 +451,7 @@ compile_clause(V6Plan *p, const SiftV6Rel *rel, RestrictInfo *ri)
 	else if (heap_decides(p, ri->clause))
 		p->heap_rows = true;
 	else
-		return !ri->pseudoconstant && (tests = lowered_tests(p, rel, ri->clause)) != NIL && compile_lowered(p, tests);
+		return !ri->pseudoconstant && compile_tests(p, rel, ri->clause);
 	return true;
 }
 

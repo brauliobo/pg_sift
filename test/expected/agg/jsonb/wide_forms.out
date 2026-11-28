@@ -544,7 +544,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  457 | jd: short text leaf, case pivot by group      | plain same
  458 | jd: short text leaf, case in key              | plain same
  459 | jd: short text leaf, case with filter         | plain same
- 460 | jd: array element, where                      | plain same
+ 460 | jd: array element, where                      | scan same
  461 | jd: array element, where not                  | plain same
  462 | jd: array element, where is not true          | plain same
  463 | jd: array element, where is false             | plain same

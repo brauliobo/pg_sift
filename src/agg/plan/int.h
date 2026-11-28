@@ -210,6 +210,11 @@ extern bool sift_v6_unnest_where(V6Plan *p);
 extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);
 /* the WHERE clause is a test of the plan, which the scan decides: it is not compiled as a qual of the table */
 extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
+/*
+ * A WHERE containment doc @> '{..}' whose members include lists of strings the tests of the plan read (agg/unnest/path.h sift_v6_unnest_path_members): the quals of their flags, and in rest the
+ * containment of the other members (NULL: none). NIL: no such clause, or a test the plan does not read
+ */
+extern List *sift_v6_tests_contains_quals(const V6Plan *p, const Expr *clause, Expr **rest);
 /* the rows of the join of the fact rows with their elements, from the lengths of the arrays the index holds (PostgreSQL's own when it has none) */
 extern double sift_v6_unnest_rows(const V6Plan *p, const RelOptInfo *input_rel);
 extern Cost sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel);

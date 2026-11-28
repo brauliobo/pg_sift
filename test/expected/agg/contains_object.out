@@ -107,10 +107,10 @@ FROM (VALUES ('co_clean'), ('co_dirty')) t(name), patterns p ORDER BY 1, p.name;
  co_clean | two dim_b                    | t    | t
  co_clean | unknown key                  | f    | t
  co_dirty | JSON null                    | t    | t
- co_dirty | array                        | f    | t
- co_dirty | array and member             | f    | t
+ co_dirty | array                        | t    | t
+ co_dirty | array and member             | t    | t
  co_dirty | array of objects             | f    | t
- co_dirty | array two                    | f    | t
+ co_dirty | array two                    | t    | t
  co_dirty | bool                         | t    | t
  co_dirty | bool false                   | t    | t
  co_dirty | empty                        | f    | t
@@ -150,7 +150,7 @@ SELECT q, (scan_same(q)).* FROM (VALUES
  SELECT count(*) FROM co_clean WHERE NOT doc @> '{"k": 3}'                     | t    | t
  SELECT count(*) FROM co_clean WHERE doc @> '{"k": 3}' IS NOT TRUE             | t    | t
  SELECT count(*) FROM co_clean WHERE doc -> 'o' @> '{"a": 1}'                  | t    | t
- SELECT count(*) FROM co_dirty WHERE doc @> '{"k": 3}' OR doc @> '{"s": "x1"}' | f    | t
+ SELECT count(*) FROM co_dirty WHERE doc @> '{"k": 3}' OR doc @> '{"s": "x1"}' | t    | t
  SELECT count(*) FROM co_clean WHERE '{"k": 3}' <@ doc                         | t    | t
 (7 rows)
 

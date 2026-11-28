@@ -54,14 +54,6 @@ contains_call(Oid fid)
 	return fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED;
 }
 
-bool
-sift_v6_unnest_path_call(const Node *e)
-{
-	const Oid	fid = call_func(e);
-
-	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || contains_call(fid) || exists_call(fid);
-}
-
 /* the constant array of a containment, NULL for another pattern */
 static JsonbContainer *
 pattern_array(const Node *e)
@@ -74,6 +66,14 @@ pattern_array(const Node *e)
 		return NULL;
 	pat = DatumGetJsonbP(((const Const *) rhs)->constvalue);
 	return JsonContainerIsArray(&pat->root) && !JsonContainerIsScalar(&pat->root) && JsonContainerSize(&pat->root) > 0 ? &pat->root : NULL;
+}
+
+bool
+sift_v6_unnest_path_call(const Node *e)
+{
+	const Oid	fid = call_func(e);
+
+	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || (contains_call(fid) && pattern_array(e) != NULL) || exists_call(fid);
 }
 
 /* the strings of a containment pattern that is a list of strings, NIL for another pattern */
@@ -145,6 +145,17 @@ sift_v6_unnest_path_keyed(const Node *e)
 	return jp != NULL && path_head(jp, &any, &key) && key != NULL;
 }
 
+/* doc -> 'key' */
+static Expr *
+json_field(const Expr *doc, text *key)
+{
+	OpExpr	   *field = (OpExpr *) make_opclause(OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("->")), JSONBOID, TEXTOID), JSONBOID, false, copyObject(unconstify(Expr *, doc)),
+												 (Expr *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, PointerGetDatum(key), false, false), InvalidOid, DEFAULT_COLLATION_OID);
+
+	set_opfuncid(field);
+	return (Expr *) field;
+}
+
 const Expr *
 sift_v6_unnest_path_array(const Node *e)
 {
@@ -152,7 +163,6 @@ sift_v6_unnest_path_array(const Node *e)
 	const JsonPath *jp;
 	JsonPathItem any;
 	char	   *key;
-	OpExpr	   *field;
 
 	if (!sift_v6_unnest_path_call(e))
 		return NULL;
@@ -161,13 +171,79 @@ sift_v6_unnest_path_array(const Node *e)
 		return (const Expr *) strip_relabel(call_func(e) == F_JSONB_CONTAINED ? lsecond(args) : linitial(args));
 	if ((jp = call_path(e)) == NULL || !path_head(jp, &any, &key))
 		return NULL;
-	if (key == NULL)
-		return (const Expr *) strip_relabel(linitial(args));
-	field = (OpExpr *) make_opclause(OpernameGetOprid(list_make2(makeString("pg_catalog"), makeString("->")), JSONBOID, TEXTOID), JSONBOID, false,
-									 copyObject((Expr *) strip_relabel(linitial(args))), (Expr *) makeConst(TEXTOID, -1, DEFAULT_COLLATION_OID, -1, CStringGetTextDatum(key), false, false),
-									 InvalidOid, DEFAULT_COLLATION_OID);
-	set_opfuncid(field);
-	return (const Expr *) field;
+	return key == NULL ? (const Expr *) strip_relabel(linitial(args)) : json_field((const Expr *) strip_relabel(linitial(args)), cstring_to_text(key));
+}
+
+/* the containment clause doc @> '{..}' (constant <@ doc): its document side, the @> operator and its object pattern; NULL: no such clause */
+static const Jsonb *
+object_pattern(const Node *clause, const Expr **doc, Oid *opno)
+{
+	const Oid	fid = call_func(clause);
+	List	   *args;
+	const Node *pat;
+	const Jsonb *jb;
+
+	if (!IsA(clause, OpExpr) || !contains_call(fid))
+		return NULL;
+	args = ((const OpExpr *) clause)->args;
+	*doc = (const Expr *) strip_relabel(fid == F_JSONB_CONTAINS ? linitial(args) : lsecond(args));
+	*opno = fid == F_JSONB_CONTAINS ? ((const OpExpr *) clause)->opno : get_commutator(((const OpExpr *) clause)->opno);
+	pat = strip_relabel(fid == F_JSONB_CONTAINS ? lsecond(args) : linitial(args));
+	if (!IsA(pat, Const) || ((const Const *) pat)->constisnull)
+		return NULL;
+	jb = DatumGetJsonbP(((const Const *) pat)->constvalue);
+	return JsonContainerIsObject(&jb->root) ? jb : NULL;
+}
+
+/* (doc -> 'key') @> 'array' */
+static Expr *
+member_contains(const Expr *doc, Oid opno, const JsonbValue *key, JsonbValue *array)
+{
+	OpExpr	   *test = (OpExpr *) make_opclause(opno, BOOLOID, false, json_field(doc, cstring_to_text_with_len(key->val.string.val, key->val.string.len)),
+												(Expr *) makeConst(JSONBOID, -1, InvalidOid, -1, JsonbPGetDatum(JsonbValueToJsonb(array)), false, false), InvalidOid, InvalidOid);
+
+	set_opfuncid(test);
+	return (Expr *) test;
+}
+
+List *
+sift_v6_unnest_path_members(const Node *clause, Expr **rest)
+{
+	const Expr *doc;
+	Oid			opno;
+	const Jsonb *pat = object_pattern(clause, &doc, &opno);
+	JsonbParseState *st = NULL;
+	JsonbIterator *it;
+	JsonbValue	k,
+				v,
+			   *obj;
+	List	   *tests = NIL;
+
+	if (pat == NULL)
+		return NIL;
+	it = JsonbIteratorInit(unconstify(JsonbContainer *, &pat->root));
+	(void) pushJsonbValue(&st, JsonbIteratorNext(&it, &k, true), NULL);
+	while (JsonbIteratorNext(&it, &k, true) == WJB_KEY)
+	{
+		Expr	   *test;
+
+		(void) JsonbIteratorNext(&it, &v, true);
+		test = v.type == jbvBinary && JsonContainerIsArray(v.val.binary.data) ? member_contains(doc, opno, &k, &v) : NULL;
+		if (test != NULL && pattern_strings((const Node *) test) != NIL)
+			tests = lappend(tests, test);
+		else
+		{
+			(void) pushJsonbValue(&st, WJB_KEY, &k);
+			(void) pushJsonbValue(&st, WJB_VALUE, &v);
+		}
+	}
+	obj = pushJsonbValue(&st, WJB_END_OBJECT, NULL);
+	*rest = tests == NIL || obj->val.object.nPairs == 0 ? NULL :
+		make_opclause(opno, BOOLOID, false, copyObject(unconstify(Expr *, doc)), (Expr *) makeConst(JSONBOID, -1, InvalidOid, -1, JsonbPGetDatum(JsonbValueToJsonb(obj)), false, false),
+					  InvalidOid, InvalidOid);
+	if (*rest != NULL)
+		set_opfuncid((OpExpr *) *rest);
+	return tests;
 }
 
 /* ---- one comparison of a member with a literal, as the kinds and values of the member it holds ---- */

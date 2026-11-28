@@ -168,6 +168,16 @@ where_or_cands(PlannerInfo *root, Node *clause, List *cands)
 	return cands;
 }
 
+/* the tests of the lists of strings among the members of the pattern of a containment of the WHERE, whose flags the clause reads (sift_v6_tests_contains_quals) */
+static List *
+member_cands(PlannerInfo *root, const Node *clause, List *cands)
+{
+	Expr	   *rest;
+	List	   *members = sift_v6_unnest_path_members(clause, &rest);
+
+	return members == NIL ? cands : filter_cands(root, (Node *) make_ands_explicit(members), cands);
+}
+
 /* the tests the WHERE and the FILTERs of the statement have (a SELECT DISTINCT has no extra, and no FILTER): a WHERE that is a test, and the tests of the arms of an OR of the WHERE where the scan reads their flags (agg/plan/filter.c) */
 static List *
 collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms)
@@ -183,6 +193,8 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 			cands = lappend(cands, c);
 		else if (or_arms && !ri->pseudoconstant && is_orclause(ri->clause))
 			cands = where_or_cands(root, (Node *) ri->clause, cands);
+		else if (or_arms && !ri->pseudoconstant)
+			cands = member_cands(root, (Node *) ri->clause, cands);
 	}
 	collect_filters((Node *) out->reltarget->exprs, &w);
 	if (extra != NULL)
@@ -513,6 +525,23 @@ sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct)
 			return make_opclause(BooleanEqualOperator, BOOLOID, false, (Expr *) flag, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
 		}
 	return NULL;
+}
+
+List *
+sift_v6_tests_contains_quals(const V6Plan *p, const Expr *clause, Expr **rest)
+{
+	List	   *flags = NIL;
+
+	*rest = NULL;
+	foreach_ptr(Expr, member, p->tests == NIL ? NIL : sift_v6_unnest_path_members((const Node *) clause, rest))
+	{
+		Expr	   *q = sift_v6_unnest_test_qual(p, (const Node *) member);
+
+		if (q == NULL)
+			return NIL;
+		flags = lappend(flags, q);
+	}
+	return flags;
 }
 
 bool

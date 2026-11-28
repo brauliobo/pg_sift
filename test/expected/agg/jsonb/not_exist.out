@@ -500,7 +500,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  406 | jd: contained by, filter not        | plain same
  407 | jd: contained by, is false          | plain same
  408 | jd: contained by, case else 0       | plain same
- 409 | jd: array element, where            | plain same
+ 409 | jd: array element, where            | scan same
  410 | jd: array element, not              | plain same
  411 | jd: array element, not and          | plain same
  412 | jd: array element, filter not       | plain same

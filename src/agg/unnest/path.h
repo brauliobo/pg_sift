@@ -26,6 +26,11 @@ extern bool sift_v6_unnest_path_keyed(const Node *e);
 /* the array the call tests, doc or doc -> 'key'; NULL when e is no such call */
 extern const Expr *sift_v6_unnest_path_array(const Node *e);
 /*
+ * The members of the object pattern of doc @> '{..}' (constant <@ doc) that are lists of strings, each as the call (doc -> 'key') @> '[..]', and in rest the containment of the other members (NULL
+ * when none is left): the clause is true exactly when all of them are. NIL: the clause is no such containment, or no member is a list of strings
+ */
+extern List *sift_v6_unnest_path_members(const Node *clause, Expr **rest);
+/*
  * The parts of the test over the element columns of rte (which gains the members they read), each a list of quals some element passes: the test is true of a row whose document the leaves hold
  * exactly when the call is (every object of a containment's pattern is a part, one element passes the whole filter of a jsonpath); false: the leaves do not decide it
  */
