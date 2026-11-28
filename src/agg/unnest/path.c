@@ -42,18 +42,66 @@ call_func(const Node *e)
 	return IsA(e, OpExpr) ? get_opcode(((const OpExpr *) e)->opno) : InvalidOid;
 }
 
+static bool
+exists_call(Oid fid)
+{
+	return fid == F_JSONB_EXISTS || fid == F_JSONB_EXISTS_ANY || fid == F_JSONB_EXISTS_ALL;
+}
+
+static bool
+contains_call(Oid fid)
+{
+	return fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED;
+}
+
 bool
 sift_v6_unnest_path_call(const Node *e)
 {
 	const Oid	fid = call_func(e);
 
-	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED || fid == F_JSONB_EXISTS;
+	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || contains_call(fid) || exists_call(fid);
+}
+
+/* the constant array of a containment, NULL for another pattern */
+static JsonbContainer *
+pattern_array(const Node *e)
+{
+	List	   *args = func_args(unconstify(Node *, e));
+	const Node *rhs = strip_relabel(call_func(e) == F_JSONB_CONTAINED ? linitial(args) : lsecond(args));
+	Jsonb	   *pat;
+
+	if (!IsA(rhs, Const) || ((const Const *) rhs)->constisnull)
+		return NULL;
+	pat = DatumGetJsonbP(((const Const *) rhs)->constvalue);
+	return JsonContainerIsArray(&pat->root) && !JsonContainerIsScalar(&pat->root) && JsonContainerSize(&pat->root) > 0 ? &pat->root : NULL;
+}
+
+/* the strings of a containment pattern that is a list of strings, NIL for another pattern */
+static List *
+pattern_strings(const Node *e)
+{
+	JsonbContainer *arr = contains_call(call_func(e)) ? pattern_array(e) : NULL;
+	JsonbIterator *it;
+	JsonbValue	v;
+	List	   *out = NIL;
+
+	if (arr == NULL)
+		return NIL;
+	it = JsonbIteratorInit(arr);
+	(void) JsonbIteratorNext(&it, &v, true);
+	while (JsonbIteratorNext(&it, &v, true) == WJB_ELEM)
+	{
+		if (v.type != jbvString)
+			return NIL;
+		out = lappend(out, cstring_to_text_with_len(v.val.string.val, v.val.string.len));
+	}
+	return out;
 }
 
 SiftV6ElemFn
 sift_v6_unnest_path_fn(const Node *e)
 {
-	return call_func(e) == F_JSONB_EXISTS ? SV6E_ELEMS_TEXT : SV6E_PATH;
+	return exists_call(call_func(e)) || pattern_strings(e) != NIL ? SV6E_ELEMS_TEXT : SV6E_PATH;
 }
 
 /* the array whose elements the filter of a jsonpath tests: $[*] of the document, or $.key[*] of doc -> 'key', which is the array on a document that is an object (the call decides any other row) */
@@ -109,7 +157,7 @@ sift_v6_unnest_path_array(const Node *e)
 	if (!sift_v6_unnest_path_call(e))
 		return NULL;
 	args = func_args(unconstify(Node *, e));
-	if (call_func(e) == F_JSONB_CONTAINS || call_func(e) == F_JSONB_CONTAINED || call_func(e) == F_JSONB_EXISTS)
+	if (contains_call(call_func(e)) || exists_call(call_func(e)))
 		return (const Expr *) strip_relabel(call_func(e) == F_JSONB_CONTAINED ? lsecond(args) : linitial(args));
 	if ((jp = call_path(e)) == NULL || !path_head(jp, &any, &key))
 		return NULL;
@@ -390,17 +438,15 @@ object_clauses(PathCtx *c, JsonbContainer *obj)
 static List *
 contains_parts(PathCtx *c, const Node *e)
 {
-	List	   *args = func_args(unconstify(Node *, e));
-	const Node *rhs = strip_relabel(call_func(e) == F_JSONB_CONTAINED ? linitial(args) : lsecond(args));
+	JsonbContainer *arr = pattern_array(e);
 	JsonbIterator *it;
 	JsonbValue	v;
 	List	   *parts = NIL;
 
-	if (!IsA(rhs, Const) || ((const Const *) rhs)->constisnull)
+	if (arr == NULL || JsonContainerSize(arr) > SIFT_V6_XPARTS)
 		return NIL;
-	it = JsonbIteratorInit(&DatumGetJsonbP(((const Const *) rhs)->constvalue)->root);
-	if (JsonbIteratorNext(&it, &v, true) != WJB_BEGIN_ARRAY || v.val.array.rawScalar || v.val.array.nElems == 0 || v.val.array.nElems > SIFT_V6_XPARTS)
-		return NIL;
+	it = JsonbIteratorInit(arr);
+	(void) JsonbIteratorNext(&it, &v, true);
 	while (JsonbIteratorNext(&it, &v, true) == WJB_ELEM)
 	{
 		List	   *part = v.type == jbvBinary ? object_clauses(c, v.val.binary.data) : NIL;
@@ -423,16 +469,50 @@ part_quals(const List *clauses)
 	return quals;
 }
 
-/* doc ? 'key' of a list of strings: an element is the string (the leaf holds the strings alone, not the text of other scalars as an astext leaf does) */
+/* the keys of doc ? 'key', doc ?| keys and doc ?& keys: NIL for no constant, no key or a NULL among them */
 static List *
-exists_clauses(PathCtx *c, const Node *e)
+exists_keys(const Node *e)
 {
-	const Node *key = strip_relabel(lsecond(func_args(unconstify(Node *, e))));
-	bool		astext = false;
+	const Const *k = (const Const *) strip_relabel(lsecond(func_args(unconstify(Node *, e))));
+	List	   *keys = NIL;
+	Datum	   *el;
+	bool	   *nl;
+	int			n;
 
-	if (!IsA(key, Const) || ((const Const *) key)->constisnull || sift_v6_unnest_member_type(c->p, c->rte, NULL, &astext) != TEXTOID || astext)
+	if (!IsA(k, Const) || k->constisnull)
 		return NIL;
-	return list_make1(list_make1(cmp_pred(0, TEXTOID, SCMP_EQ, ((const Const *) key)->constvalue)));
+	if (call_func(e) == F_JSONB_EXISTS)
+		return list_make1(DatumGetPointer(k->constvalue));
+	deconstruct_array_builtin(DatumGetArrayTypeP(k->constvalue), TEXTOID, &el, &nl, &n);
+	for (int i = 0; i < n; i++)
+	{
+		if (nl[i])
+			return NIL;
+		keys = lappend(keys, DatumGetPointer(el[i]));
+	}
+	return keys;
+}
+
+/*
+ * doc ? 'key', doc ?| keys, doc ?& keys and doc @> '["s", ..]' of a list of strings: an element is the string (the leaf holds the strings alone, not the text of other scalars as an astext leaf
+ * does). Some element is one of the keys of ?|, the one part; every other string is a part of its own
+ */
+static List *
+string_parts(PathCtx *c, const List *strings, bool any)
+{
+	bool		astext = false;
+	List	   *preds = NIL;
+	List	   *parts = NIL;
+
+	if (strings == NIL || list_length(strings) > SIFT_V6_XPARTS || sift_v6_unnest_member_type(c->p, c->rte, NULL, &astext) != TEXTOID || astext)
+		return NIL;
+	foreach_ptr(void, s, strings)
+		preds = lappend(preds, cmp_pred(0, TEXTOID, SCMP_EQ, PointerGetDatum(s)));
+	if (any)
+		return list_make1(list_make1(preds));
+	foreach_ptr(Expr, pred, preds)
+		parts = lappend(parts, list_make1(list_make1(pred)));
+	return parts;
 }
 
 bool
@@ -440,7 +520,8 @@ sift_v6_unnest_path_quals(const V6Plan *p, SiftV6ElemRte *rte, const Node *e, Li
 {
 	PathCtx		c = {.p = p,.rte = rte,.ok = true};
 	const Oid	fid = call_func(e);
-	List	   *clauses = fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED ? contains_parts(&c, e) : list_make1(fid == F_JSONB_EXISTS ? exists_clauses(&c, e) : path_clauses(&c, e));
+	List	   *clauses = exists_call(fid) ? string_parts(&c, exists_keys(e), fid == F_JSONB_EXISTS_ANY) :
+		pattern_strings(e) != NIL ? string_parts(&c, pattern_strings(e), false) : contains_call(fid) ? contains_parts(&c, e) : list_make1(path_clauses(&c, e));
 
 	if (!c.ok || clauses == NIL || list_member(clauses, NIL))
 		return false;

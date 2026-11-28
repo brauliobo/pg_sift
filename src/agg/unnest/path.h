@@ -17,9 +17,9 @@
 #include "agg/plan/int.h"
 #include "agg/unnest/jsonb.h"
 
-/* e is a call this file plans: jsonb_path_exists(doc, path[, vars[, silent]]), doc @? path, doc @> constant, constant <@ doc or doc ? 'key' */
+/* e is a call this file plans: jsonb_path_exists(doc, path[, vars[, silent]]), doc @? path, doc @> constant, constant <@ doc, doc ? 'key', doc ?| keys or doc ?& keys */
 extern bool sift_v6_unnest_path_call(const Node *e);
-/* the kind of stream the elements the call tests are: the objects of a jsonpath or a containment, the strings of doc ? 'key' */
+/* the kind of stream the elements the call tests are: the objects of a jsonpath or a containment, the strings of a key test or of a containment of strings */
 extern SiftV6ElemFn sift_v6_unnest_path_fn(const Node *e);
 /* the call is a jsonpath whose array is $.key[*] of its document: a document without the key is false, a NULL one NULL (any other call is NULL where its array is) */
 extern bool sift_v6_unnest_path_keyed(const Node *e);

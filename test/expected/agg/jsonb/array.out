@@ -83,7 +83,7 @@ SELECT query, same, pushed FROM j_compare();
  SELECT t.v, d.grp, count(*) FROM j_t d, jsonb_array_elements_text(d.attrs->'tags') AS t(v) WHERE t.v <> 't1' GROUP BY 1, 2                                      | t    | t
  SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3'                                                                                                         | t    | t
  SELECT d.grp, count(*) FROM j_t d WHERE d.attrs->'tags' ? 't3' GROUP BY 1                                                                                       | t    | t
- SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->'tags' ? 't3') GROUP BY 1                                                                                 | t    | f
+ SELECT d.grp, count(*) FROM j_t d WHERE NOT (d.attrs->'tags' ? 't3') GROUP BY 1                                                                                 | t    | t
  SELECT d.grp, count(*) FILTER (WHERE d.attrs->'tags' ? 't3'), count(*) FROM j_t d GROUP BY 1                                                                    | t    | t
  SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ? ''                                                                                                           | t    | t
  SELECT count(*) FROM j_t d WHERE d.attrs->'tags' ?| ARRAY['t3', 't4']                                                                                           | t    | t
