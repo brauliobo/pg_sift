@@ -440,10 +440,10 @@ scope_union_param	-	n/a(prepared)
 scope_refused_nested_in	SiftAggV6	single:t
 scope_refused_not_in	SiftAggV6	single:t
 scope_refused_two_in	-	single:f:cost
-scope_array_any	-	single:f:cost
-scope_array_any_keys	-	single:f:cost
-scope_array_any_union	-	single:f:cost
-scope_array_limit	-	single:f:cost
+scope_array_any	SiftAggV6	scope:f:scope,single:t
+scope_array_any_keys	SiftAggV6	scope:f:scope,single:t
+scope_array_any_union	SiftAggV6	scope:f:scope,single:t
+scope_array_limit	SiftAggV6	scope:f:scope,single:t
 scope_array_or	SiftAggV6	single:t
 sip_materialize_nl	SiftAggV6	single:t
 sip_materialize_twice	SiftAggV6	single:t
