@@ -1,6 +1,6 @@
 /*
  * col/f2/agg/unnest/arms.c - the arms of a cohort that unnest the same index over one pull (agg/fuse/fuse.h): each arm sets up its run as it would alone, the pull reads the union of the
- * leaves they read, and every batch goes to every arm as a batch of its own columns. An arm whose leaves do not fit the pull beside the others reads its own pull after the shared one.
+ * leaves (and key masks) they read, and every batch goes to every arm as a batch of its own columns. An arm whose leaves do not fit the pull beside the others reads its own pull after the shared one.
  */
 /* check-memory: allow-allocs every array here follows the arms of one cohort, not the rows of the table */
 #include "postgres.h"
@@ -12,10 +12,12 @@
 /* Where the leaves of an arm are in the shared pull */
 typedef struct ArmMap
 {
+	int			mask[SIFT_F2_PULL_MAX_MASKS];
 	int			ngroups;
 	int			group[SIFT_F2_PULL_MAX_GROUPS];
 	int			child[SIFT_F2_PULL_MAX_GROUPS][SIFT_F2_PULL_MAX_CHILD];
 	SiftVec		col[SIFT_F2_PULL_MAX_COLS];
+	SiftVexprMaskIn masks[SIFT_F2_PULL_MAX_MASKS];
 	SiftF2ElemStream elem[SIFT_F2_PULL_MAX_GROUPS];
 } ArmMap;
 
@@ -36,6 +38,19 @@ union_col(SiftF2PullCol *cols, int *n, int cap, const SiftF2PullCol *c)
 		return -1;
 	cols[*n] = *c;
 	return (*n)++;
+}
+
+/* the place of the mask of leaf among those of the pull, added when new; -1 when there is no room */
+static int
+union_mask(SiftF2PullSpec *ps, int leaf)
+{
+	for (int i = 0; i < ps->nmasks; i++)
+		if (ps->mask[i].leaf == leaf)
+			return i;
+	if (ps->nmasks == SIFT_F2_PULL_MAX_MASKS)
+		return -1;
+	ps->mask[ps->nmasks].leaf = leaf;
+	return ps->nmasks++;
 }
 
 /* the group g of the arm in the pull, with its element columns; false when they do not fit */
@@ -70,6 +85,9 @@ union_arm(SiftF2PullSpec *ps, UnRun *u, ArmMap *m)
 	for (int i = 0; i < u->ps.ncols; i++)
 		if ((pcol[i] = union_col(next.col, &next.ncols, SIFT_F2_PULL_MAX_COLS, &u->ps.col[i])) < 0)
 			return false;
+	for (int k = 0; k < u->ps.nmasks; k++)
+		if ((m->mask[k] = union_mask(&next, u->ps.mask[k].leaf)) < 0)
+			return false;
 	m->ngroups = u->ps.ngroups;
 	for (int g = 0; g < u->ps.ngroups; g++)
 		if (!union_group(&next, &u->ps.group[g], &m->group[g], m->child[g]))
@@ -88,6 +106,8 @@ arm_batch(const UnRun *u, ArmMap *m, const SiftF2ExtBatch *b, SiftF2ExtBatch *ou
 	*out = *b;
 	for (int i = 0; i < u->ps.ncols; i++)
 		m->col[i] = b->col[u->pcol[i]];
+	for (int k = 0; k < u->ps.nmasks; k++)
+		m->masks[k] = b->masks[m->mask[k]];
 	for (int g = 0; g < m->ngroups; g++)
 	{
 		const SiftF2ElemStream *src = &b->elem[m->group[g]];
@@ -102,6 +122,7 @@ arm_batch(const UnRun *u, ArmMap *m, const SiftF2ExtBatch *b, SiftF2ExtBatch *ou
 		}
 	}
 	out->col = m->col;
+	out->masks = m->masks;
 	out->elem = m->ngroups > 0 ? m->elem : NULL;
 	return out;
 }
