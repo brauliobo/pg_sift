@@ -44,6 +44,7 @@ sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *col, bool month)
 	const SiftV6Col *c = col;
 	SiftV6Col	json;
 	SiftV6Class cls;
+	bool		presence;
 	int			attno;
 
 	if (sift_v6_vatt_is_json(c->attno))
@@ -52,8 +53,9 @@ sift_v1_unnest_col_index(UnRun *u, const SiftV6Col *col, bool month)
 		c = &json;
 	}
 	cls = sift_v6_class(c->typid);
-	attno = c->jleaf > 0 ? SIFT_V6_JLEAF_VATT + c->jleaf - 1 : c->attno;
-	if (c->jtype || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE || (c->typid == NUMERICOID && c->scale == SIFT_V6_SCALE_DATUM))
+	presence = c->jtype && c->typid == BOOLOID;
+	attno = presence ? sift_v6_col_input_attno(c) : c->jleaf > 0 ? SIFT_V6_JLEAF_VATT + c->jleaf - 1 : c->attno;
+	if ((c->jtype && !presence) || (c->attno >= SIFT_V6_JLEAF_VATT && c->jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE || (c->typid == NUMERICOID && c->scale == SIFT_V6_SCALE_DATUM))
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED), errmsg("the aggregate scan of an unnest over Format 1 reads no column of type %u", c->typid),
 						errhint("Group by and aggregate integer, numeric, date, timestamp, float8 or text columns of the table that is unnested.")));
 	for (int i = 0; i < u->ncols; i++)

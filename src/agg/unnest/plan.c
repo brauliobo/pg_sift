@@ -155,7 +155,7 @@ is_type_tag(const SiftV6Col *c)
 	return c->jtype && c->typid != BOOLOID;
 }
 
-/* a column of the table that no typed leaf holds: a whole document, a numeric read as datums, a type no vector holds (the flag of a test of the elements is no column of the table) */
+/* a column of the table that no typed leaf holds: a whole document, a numeric read as datums, a type no vector holds, the JSON type of a key (the flag of a test of the elements is no column of the table) */
 static bool
 is_untyped(const SiftV6Col *col)
 {
@@ -164,7 +164,7 @@ is_untyped(const SiftV6Col *col)
 
 	if (col->src != SV6SRC_ATTR || sift_v6_col_is_flag(col))
 		return false;
-	return c.jtype || (c.attno >= SIFT_V6_JLEAF_VATT && c.jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE;
+	return is_type_tag(&c) || (c.attno >= SIFT_V6_JLEAF_VATT && c.jleaf == 0) || cls == SV6C_DATUM || cls == SV6C_NONE;
 }
 
 /* a column of the table the scan reads as datums: the batches of an unnest hold the native classes only */

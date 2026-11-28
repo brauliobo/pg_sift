@@ -170,6 +170,7 @@ const SiftJsonbOps v1_jsonb_ops = {
 	.member_leaf = jsonb_member_leaf,
 	.key_exists = true,
 	.key_presence = true,
+	.unnest_keys = true,
 	.path_declared = jsonb_path_declared,
 	.row_quals = true,
 	.table_elems = true,
