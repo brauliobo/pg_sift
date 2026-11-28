@@ -73,7 +73,7 @@ check "the index has two segments to merge" test "$(sql va "SELECT segments FROM
 q4="SELECT cat, count(*), sum(n) FROM agg4 GROUP BY cat"
 x4="EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) $q4"
 race "$x4" 1 "SELECT 1" >/dev/null
-check "no merge under the scan: the granules answer from their pre-aggregates" test "$(grep -c -E 'Granules: .* preagg=[1-9][0-9]*$' "$D/got")" == 1
+check "no merge under the scan: the granules answer from their pre-aggregates" test "$(grep -c -E 'Granules: .* preagg=[1-9][0-9]*( |$)' "$D/got")" == 1
 race "$x4" 1 "SELECT sift.col_merge('agg4_col', true)" >/dev/null
 check "a merge under the scan: none of the granules answers from its pre-aggregates" test "$(grep -E 'Granules: scanned=[1-9]' "$D/got" | grep -c -v 'preagg=')" == 1
 check "the indexes verify" test "$(sql va "SELECT sift.verify('agg_idx', true)" "SELECT sift.verify('agg3_idx', true)" 2>&1 | grep -c -E "ERROR|corrupt")" == 0
