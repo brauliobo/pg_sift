@@ -85,6 +85,8 @@ struct SiftSrcFold
 	const uint64 *tag;			/* the heap addresses of the rows of the batch being folded */
 	SiftVec		tidvec;			/* the tags as the last slot of the pipe, which the pairs of a join carry to the best rows (a.rows) */
 	SiftV6Source *src;			/* the source of the run: it raises the errors of the rows of its raises */
+	bool		raising;		/* a row raises: raise_tag names the first in the order of the heap */
+	uint64		raise_tag;
 	bool		count_only;
 };
 
@@ -457,27 +459,25 @@ derive_columns(SiftSrcFold *f)
 }
 
 /*
- * PostgreSQL's error for the first row the quals keep whose value of a column the cast raises for (SiftV6Batch.raises): the rows before it are derived first, as PostgreSQL computes the
- * arguments of the aggregates of each row in turn, and the first of them that raises is the error
+ * The rows of the batch whose value of a column the cast raises for (SiftV6Batch.raises): PostgreSQL's scan of the heap meets the one of the least address first, and its error is the statement's.
+ * The batches of a source are not in the order of the heap, so the fold raises it once every batch is read; until then the rows leave the batch
  */
 static void
-raise_first(SiftSrcFold *f, const uint64 *raises)
+note_raises(SiftSrcFold *f, const uint64 *raises)
 {
 	SiftBatchSel *bs = &f->bs;
-	const int	words = (bs->n_raw + 63) / 64;
-	int			row = -1;
 
-	for (int w = 0; row < 0 && w < words; w++)
-		row = (bs->mask[w] & raises[w]) != 0 ? w * 64 + pg_rightmost_one_pos64(bs->mask[w] & raises[w]) : -1;
-	if (row < 0)
-		return;
-	bs->n_active = 0;
-	for (int w = 0; w < words; w++)
-		bs->n_active += pg_popcount64(bs->mask[w] &= w < row / 64 ? ~UINT64CONST(0) : w == row / 64 ? (UINT64CONST(1) << (row & 63)) - 1 : 0);
-	bs->all_active = false;
-	if (bs->n_active > 0)
-		derive_columns(f);
-	f->src->raise(f->src, row);
+	for (int w = 0; w < (bs->n_raw + 63) / 64; w++)
+		for (uint64 bits = bs->mask[w] & raises[w]; bits != 0; bits &= bits - 1)
+		{
+			const uint64 tag = f->tag[w * 64 + pg_rightmost_one_pos64(bits)];
+
+			f->raise_tag = f->raising ? Min(f->raise_tag, tag) : tag;
+			f->raising = true;
+			bs->mask[w] &= ~(bits & -bits);
+			bs->n_active--;
+			bs->all_active = false;
+		}
 }
 
 static void
@@ -523,12 +523,12 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 		v->sel = NULL;
 		refuse_nan(&f->col[i], v, bs);
 	}
+	if (b->raises != NULL)
+		note_raises(f, b->raises);
 	if (f->bq != NULL)
 		sift_v6_bq_filter(f->bq, bs);
 	if (f->a.gate != NULL && bs->n_active > 0)
 		take_gate(f);
-	if (b->raises != NULL)
-		raise_first(f, b->raises);
 	if (bs->n_active == 0)
 		return;
 	derive_columns(f);
@@ -568,6 +568,8 @@ sift_srcfold_run(SiftSrcFold *f, SiftSrcOpen open, void *open_arg)
 	sift_errctx_push(&ctx, RelationGetRelid(f->a.host));
 	while (src->next(src, &b))
 		sift_srcfold_batch(f, &b);
+	if (f->raising)
+		src->raise(src, f->raise_tag);
 	sift_errctx_pop(&ctx);
 	if (src->granules != NULL)
 		src->granules(src, &grans);

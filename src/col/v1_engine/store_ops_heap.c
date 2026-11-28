@@ -179,13 +179,13 @@ fill_docs(SiftV1Src *s, const SiftV6Batch *b)
 	}
 }
 
-/* the key of the document of the heap row of row r of the batch, whose value the leaf of column i could not hold (NULL: the row has no such key) */
+/* the key of the document of column i of the heap row of the tag (NULL: the row has no such key) */
 static const Jsonb *
-exception_member(SiftV1Src *s, int i, uint32 r)
+exception_member(SiftV1Src *s, int i, uint64 tag)
 {
 	Datum		doc;
 	bool		isnull;
-	const bool	found = sift_v1_src_fetch(&s->base, s->tag[r], &s->jatt[i], 1, &doc, &isnull);
+	const bool	found = sift_v1_src_fetch(&s->base, tag, &s->jatt[i], 1, &doc, &isnull);
 
 	SIFT_INVARIANT(found, "a row the aggregate scan keeps is there when its document is read");
 	return isnull ? NULL : sift_v1_json_member(doc, strVal(linitial(s->col_leaf[i]->path)));
@@ -198,15 +198,13 @@ exception_type(const SiftV1Src *s, int i)
 	return s->in.col[i].type == SVEC_F64 ? FLOAT8OID : TEXTOID;
 }
 
-/* its value as `->>` reads it (and its float8 cast, or the float8 cast of the jsonb of a jsonb_cast column); a value whose cast raises raises at once, or is one of the raises of the batch when the operator raises them (raise_late) */
+/* its value as `->>` reads it (and its float8 cast, or the float8 cast of the jsonb of a jsonb_cast column); a value whose cast raises is one of the raises of the batch, the operator's to raise */
 static void
 put_exception(SiftV1Src *s, int i, uint32 r, const Jsonb *m)
 {
 	SiftV6JsonValue v;
 	const SiftV6JsonExc x = sift_v6_json_exception_read(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v);
 
-	if (x == SV6JX_RAISES && !s->in.raise_late)
-		sift_v6_json_exception_raise(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
 	s->raises[r >> 6] |= (uint64) (x == SV6JX_RAISES) << (r & 63);
 	s->has_raises |= x == SV6JX_RAISES;
 	if (x != SV6JX_VALUE)
@@ -234,7 +232,7 @@ fill_exceptions(SiftV1Src *s, SiftV6Batch *b)
 			if (!sift_src_bit(s->jexc[i], r) || (b->mask != NULL && !sift_src_bit(b->mask, r)))
 				continue;
 			s->reread[r >> 6] |= UINT64CONST(1) << (r & 63);
-			if ((m = exception_member(s, i, r)) != NULL)
+			if ((m = exception_member(s, i, s->tag[r])) != NULL)
 				put_exception(s, i, r, m);
 		}
 	b->raises = s->has_raises ? s->raises : NULL;
@@ -242,19 +240,19 @@ fill_exceptions(SiftV1Src *s, SiftV6Batch *b)
 }
 
 void
-sift_v1_src_raise(SiftV6Source *base, int row)
+sift_v1_src_raise(SiftV6Source *base, uint64 tag)
 {
 	SiftV1Src	   *s = (SiftV1Src *) base;
 	SiftV6JsonValue v;
 
 	for (int i = 0; i < s->in.ncols; i++)
 	{
-		const Jsonb *m = s->has_jexc[i] && sift_src_bit(s->jexc[i], row) ? exception_member(s, i, row) : NULL;
+		const Jsonb *m = s->jkind[i] == SIFT_V1_JSON_VALUE ? exception_member(s, i, tag) : NULL;
 
 		if (m != NULL && sift_v6_json_exception_read(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx, &v) == SV6JX_RAISES)
 			sift_v6_json_exception_raise(exception_type(s, i), s->in.col[i].jsonb_cast, (const char *) m, VARSIZE(m), s->batch_cx);
 	}
-	SIFT_INVARIANT(false, "row %d of a batch of relation %u has a value whose cast raises", row, s->in.indexoid);
+	SIFT_INVARIANT(false, "row " UINT64_FORMAT " of relation %u has a value whose cast raises", tag, s->in.indexoid);
 }
 
 /* the members of the rows the batch keeps whose leaves cannot hold them: as PostgreSQL reads them from the document of the heap row the snapshot sees */
