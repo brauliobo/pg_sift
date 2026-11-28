@@ -1,5 +1,5 @@
 -- Arms of a UNION ALL that differ only in the reason their scan has no workers (EXPLAIN VERBOSE: Serial Because) are still one pass: the reason is text for
--- EXPLAIN, not part of the shape the arms must share. The two coarsest arms are answered by the pre-aggregates of the index, the wider ones are not.
+-- EXPLAIN, not part of the shape the arms must share. The widest arm keeps its percentile in one process, the others have too few granules for workers.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -19,7 +19,7 @@ INSERT INTO arms VALUES
 	(2, 'SELECT zone_id, qty, NULL, NULL, NULL, count(*) FROM ev GROUP BY zone_id, qty'),
 	(3, 'SELECT zone_id, qty, id % 7, NULL, NULL, count(*) FROM ev GROUP BY zone_id, qty, id % 7'),
 	(4, 'SELECT zone_id, qty, id % 7, kind, NULL, count(*) FROM ev GROUP BY zone_id, qty, id % 7, kind'),
-	(5, 'SELECT zone_id, qty, id % 7, kind, day, count(*) FROM ev GROUP BY zone_id, qty, id % 7, kind, day');
+	(5, 'SELECT zone_id, qty, id % 7, kind, day, percentile_cont(0.5) WITHIN GROUP (ORDER BY qty)::bigint FROM ev GROUP BY zone_id, qty, id % 7, kind, day');
 
 CREATE FUNCTION reason(q text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE l text; r text := 'no scan';
