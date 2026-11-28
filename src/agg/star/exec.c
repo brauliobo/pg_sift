@@ -405,10 +405,12 @@ sift_star_dim_add_key(SiftStarDim *d, const SiftStarRow *row)
 	SiftStarRow keys = *row;
 	bool		added;
 
+	if (d->dense && !row->key_null[0] && sift_star_dense_row(d, row->key_i[0]) != 0)
+		return true;
 	for (int c = 0; c < d->shape.npay; c++)
 		keys.pay_null[c] = true;
 	added = sift_star_dim_add(d, &keys);
-	if (added)
+	if (added && !d->dense)
 		keep_new_key(d, arena_used);
 	return added;
 }
