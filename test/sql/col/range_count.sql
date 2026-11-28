@@ -1,7 +1,10 @@
 -- count(*) of a range of an integer, date or timestamp leaf with a global order: a segment whose units are all exact (every page
--- all-visible, no dead row) is counted from the entries between the bounds of the range, with no unit read ("Rows Scanned: 0"); the others are read. The counts must be the heap's
+-- all-visible, no dead row) is counted from the entries between the bounds of the range, with no row decoded; the others are read. The counts must be the heap's
 -- through DML, VACUUM, the write buffer, promotion and a merge, for every type, and a second test, another aggregate or an OR must not be taken for a range.
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
+-- Format 1: order_array_columns, the segments and their units are Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -16,15 +19,8 @@ CREATE INDEX rc_i ON rc USING sift_col (a sift.col_int2_ops, b sift.col_int4_ops
 	WITH (write_buffer_limit = 256, order_array_columns = 'a, b, c, d, e, f');
 VACUUM (ANALYZE) rc;
 
--- the rows a statement read: 0 when the segments counted
-CREATE FUNCTION rc_scanned(q text) RETURNS int LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET enable_seqscan = off AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Rows: (\d+) scanned' THEN RETURN substring(l from 'Rows: (\d+) scanned')::int; END IF;
-	END LOOP;
-	RETURN -1;
-END $$;
+-- the rows a statement decoded: 0 when the segments counted
+CREATE FUNCTION rc_scanned(q text) RETURNS bigint LANGUAGE sql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET enable_seqscan = off AS $$ SELECT sift_helpers.rows_decoded(q) $$;
 CREATE FUNCTION rc_agg(w text) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off SET enable_seqscan = off AS $$
 DECLARE r bigint;
 BEGIN EXECUTE 'SELECT count(*) FROM rc WHERE ' || w INTO r; RETURN r; END $$;
@@ -72,4 +68,4 @@ SELECT rc_scanned('SELECT count(*) FROM rc WHERE b BETWEEN 1000 AND 1200') > 0 A
 
 DROP FUNCTION rc_scanned(text), rc_agg(text), rc_heap(text);
 DROP TABLE rc_w, rc;
-DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP EXTENSION pg_sift_helpers, pg_sift_test, pg_sift CASCADE;

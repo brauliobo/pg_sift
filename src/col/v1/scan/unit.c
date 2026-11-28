@@ -565,6 +565,91 @@ sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const Si
 	return segments_current(src) && !sift_cseg_dirty_any(seg, 0, seg->nsb) && sift_cseg_dict_count(seg, col, op, c, rows);
 }
 
+typedef struct ExactEntries
+{
+	SiftColSegment *seg;
+	const bool *exact;
+	uint64		n;
+} ExactEntries;
+
+static void
+exact_entry(void *arg, SiftKey tid)
+{
+	ExactEntries *e = arg;
+	const uint32 u = sift_cseg_unit_of_sb(e->seg, sift_block_sb(sift_key_block(tid)));
+
+	e->n += u < e->seg->nsb && e->exact[u];
+}
+
+/* The units of the segment that are exact, in the order of the checks of sift_col_unit_seg_count: the page masks, the directory, then the liveness; false when the directory is not current */
+static bool
+seg_exact_units(SiftColSource *src, SiftColSegment *seg, bool *exact, uint32 *nread)
+{
+	const bool	keyed = sift_cseg_keyed(&seg->entry);
+	uint64		pm[SIFT_PAGEMASK_WORDS];
+
+	for (uint32 u = 0; u < seg->nsb; u++)
+		exact[u] = sift_cseg_unit_pagemask(seg, u, pm) && (keyed ? col_range_allvisible(src, seg, (uint32) pm[0], (uint32) (pm[0] >> 32)) :
+														   col_sb_covers(src, seg, sift_cseg_unit_sb(seg, u), NULL, pm));
+	if (!segments_current(src))
+		return false;
+	*nread = 0;
+	for (uint32 u = 0; u < seg->nsb; u++)
+	{
+		exact[u] = exact[u] && !sift_cseg_dirty(seg, u);
+		*nread += !exact[u];
+	}
+	return true;
+}
+
+/* ... and the entries of the range in them, the superblocks of the others in *read */
+static bool
+seg_range_rows(SiftColSegment *seg, int col, bool str, int64 lo, int64 hi, const bool *exact, uint32 nread, MemoryContext cx, uint64 *rows, Bitmapset **read)
+{
+	ExactEntries e = {seg, exact, 0};
+	MemoryContext old;
+
+	if (nread == 0)
+	{
+		const uint32 m = sift_cseg_gorder_count(seg, col, str, false, lo, hi);
+
+		*rows = m;
+		return m != UINT32_MAX;
+	}
+	if (sift_cseg_keyed(&seg->entry) || (uint64) nread * 4 > seg->nsb || !sift_cseg_gorder_each(seg, col, str, false, lo, hi, PG_UINT32_MAX, exact_entry, &e))
+		return false;
+	old = MemoryContextSwitchTo(cx);
+	for (uint32 u = 0; u < seg->nsb; u++)
+		if (!exact[u])
+			*read = bms_add_member(*read, (int) sift_cseg_unit_sb(seg, u));
+	MemoryContextSwitchTo(old);
+	*rows = e.n;
+	return true;
+}
+
+bool
+sift_col_unit_seg_range(const SiftColUnit *unit, int col, const SiftColRange *r, MemoryContext cx, uint64 *rows, Bitmapset **read)
+{
+	ColUnit    *cu = unit->priv;
+	SiftColSegment *seg = cu->seg;
+	uint32		entries,
+				values,
+				nread;
+	int64		lo = r->lo,
+				hi = r->hi;
+	bool	   *exact;
+	bool		ok;
+
+	*read = NULL;
+	if (seg == NULL || cu->src->sx_on || (cu->src->flags & COLO_TABLE) || !sift_cseg_gorder(seg, col, &entries, &values) || sift_cseg_gorder_group(seg, col) >= 0 ||
+		(r->str && !sift_cseg_gorder_strkeys(seg, col, r->collid, r->slo, r->slolen, r->slo_excl, r->shi, r->shilen, r->shi_excl, &lo, &hi)))
+		return false;
+	exact = palloc(Max(seg->nsb, 1) * sizeof(bool));
+	ok = seg_exact_units(cu->src, seg, exact, &nread) && seg_range_rows(seg, col, r->str, lo, hi, exact, nread, cx, rows, read);
+	pfree(exact);
+	return ok;
+}
+
 /* ---------- pre-aggregates (col/v1/pagg.c, docs/COL-PREAGG.md) ---------- */
 
 /* The stored unit behind a source unit; false for an in-memory one (write buffer, delta batch), which has no sidecar */

@@ -79,7 +79,8 @@ fold_run(const SiftSrcFoldArgs *a, Snapshot snap, const SiftV1Scan *keys, bool (
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 zone scan");
 	SiftV1Scan	scan = sift_v1_spec_scan(keys, a->spec);
-	V1Open		o = {.cx = cx,.snap = snap,.scan = &scan,.cube = next_chunk == NULL ? sift_v1_dict_count_begin(a, &scan, cx, sift_v1_cube_begin(a, &scan, cx)) : NULL};
+	V1Open		o = {.cx = cx,.snap = snap,.scan = &scan,.cube = next_chunk == NULL ?
+		sift_v1_range_count_begin(a, &scan, cx, sift_v1_dict_count_begin(a, &scan, cx, sift_v1_cube_begin(a, &scan, cx))) : NULL};
 	SiftSrcFold *f = sift_srcfold_new(a, sift_mem_allocset_create(cx, "sift v1 zone fold"));
 	const struct SiftTidBridge *bridge = NULL;
 

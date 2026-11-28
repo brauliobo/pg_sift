@@ -4,6 +4,9 @@
 -- A text leaf is counted the same way, from the ranks of its strings between the bounds of its comparisons (ties, the empty string, NULLs, bounds that no string equals or that lie
 -- outside the strings, an empty range).
 CREATE EXTENSION pg_sift_test CASCADE;
+CREATE EXTENSION pg_sift_helpers;
+-- Format 1: order_array_columns, the segments and their units are Format 1
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET sift.async_maintenance = off;
 SET max_parallel_maintenance_workers = 0;
@@ -19,15 +22,8 @@ CREATE INDEX d_i ON d USING sift_col (b sift.col_int4_ops, t sift.col_int4_ops, 
 	WITH (write_buffer_limit = 256, order_array_columns = 'b, t, c, s');
 VACUUM (ANALYZE) d;
 
--- the rows a statement read: 0 when the segments counted
-CREATE FUNCTION d_scanned(q text) RETURNS int LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off AS $$
-DECLARE l text;
-BEGIN
-	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
-		IF l ~ 'Rows: (\d+) scanned' THEN RETURN substring(l from 'Rows: (\d+) scanned')::int; END IF;
-	END LOOP;
-	RETURN -1;
-END $$;
+-- the rows a statement decoded: 0 when the segments counted
+CREATE FUNCTION d_scanned(q text) RETURNS bigint LANGUAGE sql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off AS $$ SELECT sift_helpers.rows_decoded(q) $$;
 CREATE FUNCTION d_agg(w text) RETURNS bigint LANGUAGE plpgsql SET sift.enable_agg = on SET max_parallel_workers_per_gather = 0 SET enable_indexscan = off SET enable_indexonlyscan = off SET enable_bitmapscan = off AS $$
 DECLARE r bigint;
 BEGIN EXECUTE 'SELECT count(*) FROM d WHERE ' || w INTO r; RETURN r; END $$;
@@ -85,4 +81,4 @@ SELECT n, d_agg(w) = d_heap(w) AS agree FROM d_w ORDER BY n;
 
 DROP TABLE d, d_w;
 DROP FUNCTION d_scanned(text), d_agg(text), d_heap(text);
-DROP EXTENSION pg_sift_test, pg_sift CASCADE;
+DROP EXTENSION pg_sift_helpers, pg_sift_test, pg_sift CASCADE;

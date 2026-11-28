@@ -17,6 +17,7 @@
 
 #include "agg/batch_source.h"
 #include "col/pg.h"
+#include "col/v1/pagg.h"
 #include "col/v1/preagg/preagg.h"
 #include "col/v1/src_exec.h"
 #include "core/filter.h"
@@ -64,6 +65,9 @@ typedef struct SiftV1ReaderOps
 	 * from the row counts of its dictionary, when every unit of it is exact; false: the segment is read */
 	const void *(*unit_seg) (void *impl, const SiftSrcUnit *unit);
 	bool		(*seg_count) (void *impl, const SiftSrcUnit *unit, int leaf, SiftColOp op, const SiftColValue *c, uint64 *rows);
+	/* count(*) of the rows of that segment whose key of leaf lies in r, from the global order of the leaf: the entries of its exact units, and the superblocks of the others in *read (in cx),
+	 * which are read (sift_col_unit_seg_range); false: the segment is read */
+	bool		(*seg_range_count) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftColRange *r, MemoryContext cx, uint64 *rows, Bitmapset **read);
 } SiftV1ReaderOps;
 
 extern const SiftV1ReaderOps sift_v1_idx_reader;

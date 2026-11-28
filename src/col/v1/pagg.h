@@ -5,6 +5,8 @@
 #ifndef SIFT_COL_PAGG_H
 #define SIFT_COL_PAGG_H
 
+#include "nodes/bitmapset.h"
+
 #include "col/col.h"
 #include "col/v1/preagg/preagg.h"
 #include "col/v1/seg/seg.h"
@@ -32,6 +34,28 @@ extern bool sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *nd
 
 /* count(*) of a test of a string leaf over the stored segment of the unit, from the row counts of its dictionary, when every unit of the segment is exact (col/v1/scan/unit.c) */
 extern bool sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows);
+
+/* A range of the keys of a leaf: [lo, hi] of an integer leaf, or for a text leaf the strings from slo to shi (NULL: no bound; excl: the bound itself is out) under the collation collid */
+typedef struct SiftColRange
+{
+	bool		str;
+	int64		lo;
+	int64		hi;
+	const char *slo;
+	const char *shi;
+	uint32		slolen;
+	uint32		shilen;
+	bool		slo_excl;
+	bool		shi_excl;
+	Oid			collid;
+} SiftColRange;
+
+/*
+ * count(*) of the rows of the stored segment of the unit whose key of leaf col lies in the range, from the global order of the leaf (order_array_columns): the entries of the units of
+ * the segment that are exact (every page all-visible, the directory current, no dead row). *read (in cx) is the superblocks of the units that are not, which the scan reads instead; with
+ * any, the segment must not be cut by key and at most a quarter of its units are read. false: the whole segment is read (col/v1/scan/unit.c).
+ */
+extern bool sift_col_unit_seg_range(const SiftColUnit *unit, int col, const SiftColRange *r, MemoryContext cx, uint64 *rows, Bitmapset **read);
 
 /* The aggregate of a leaf (zone + exact sums). false when the unit may not answer or the leaf overflowed in it (SIFT_COLZ_OVERFLOW) */
 extern bool sift_col_unit_agg(const SiftColUnit *unit, int col, SiftCAgg *a);

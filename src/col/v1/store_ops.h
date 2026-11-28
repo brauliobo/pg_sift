@@ -170,6 +170,12 @@ extern void sift_v1_cube_set_group(SiftV1UnitSink *sink, struct SiftV6Group *g);
 /* count(*) of one test of a string leaf answered from the row counts of the dictionaries of the segments (col/v1_engine/store_ops_dict_count.c), next the sink of the units it does not
  * answer (NULL: they are read); next when the statement is no such count. Not for a participant of a parallel scan, whose morsels split the units of a segment */
 extern SiftV1UnitSink *sift_v1_dict_count_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx, SiftV1UnitSink *next);
+/* count(*) of a range of one integer, date, timestamp or text leaf answered from the global orders of the segments (col/v1_engine/store_ops_range_count.c), next as above */
+extern SiftV1UnitSink *sift_v1_range_count_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx, SiftV1UnitSink *next);
+/* The statement is count(*) alone over an index, with no test the source alone makes (the kept rows of a match set, a bridge, JSON types, a ctid range): a sink of counts may answer it */
+extern bool sift_v1_count_only(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan);
+/* The leaf of the index attribute over heap column att; NULL when the index has none or several leaves hold it */
+extern const SiftSrcLeaf *sift_v1_heap_att_leaf(Relation index, const SiftSrcLayout *lay, int att);
 
 /* The JSON type tests of the scan keys of an index scan (the other keys are the quals sift_srcfold_scankey_quals gives) */
 extern SiftV1Scan sift_v1_key_scan(Relation index, ScanKey keys, int nkeys);

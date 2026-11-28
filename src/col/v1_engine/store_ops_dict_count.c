@@ -98,9 +98,8 @@ text_var(const Node *n)
 	return n != NULL && IsA(n, Var) && v->varno == 1 && v->varlevelsup == 0 && v->varattno > 0 && v->vartype == TEXTOID ? v : NULL;
 }
 
-/* The leaf of the index attribute over heap column att; NULL when the index has none or several leaves hold it */
-static const SiftSrcLeaf *
-index_leaf(Relation index, const SiftSrcLayout *lay, int att)
+const SiftSrcLeaf *
+sift_v1_heap_att_leaf(Relation index, const SiftSrcLayout *lay, int att)
 {
 	for (int i = 0; i < index->rd_index->indnatts; i++)
 		if (index->rd_index->indkey.values[i] == att)
@@ -125,7 +124,7 @@ bind_test(DictCount *d, Relation host, const SiftSrcLayout *lay, const Node *cla
 	k = lsecond(op->args);
 	if (!IsA(k, Const) || k->constisnull || k->consttype != TEXTOID || !OidIsValid(op->inputcollid) || !get_collation_isdeterministic(op->inputcollid))
 		return false;
-	l = index_leaf(host, lay, var->varattno);
+	l = sift_v1_heap_att_leaf(host, lay, var->varattno);
 	if (l == NULL || l->wide || l->lossy || l->astext || l->vtype != SCV_CODE)
 		return false;
 	d->leaf = l->id;
@@ -180,6 +179,16 @@ implied(const DictCount *d, Relation host, const SiftSrcLayout *lay, const Node 
 	return o.op == d->op && o.val.len == d->val.len && memcmp(o.val.v.s, d->val.v.s, o.val.len) == 0;
 }
 
+bool
+sift_v1_count_only(const SiftSrcFoldArgs *a, const SiftV1Scan *scan)
+{
+	const SiftV6Spec *spec = a->spec;
+
+	return a->host->rd_index != NULL && a->emit == NULL && a->star == NULL && a->gate == NULL && a->stats != NULL && sift_v6_spec_cubeable(spec) && spec->nkeys == 0 &&
+		spec->naggs == 1 && spec->agg[0].kind == SV6_COUNT_STAR && spec->agg[0].fclause == 0 &&
+		(scan == NULL || (scan->keep == NULL && scan->bridge == NULL && scan->ntypes == 0 && !scan->tid_range));
+}
+
 SiftV1UnitSink *
 sift_v1_dict_count_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx, SiftV1UnitSink *next)
 {
@@ -191,9 +200,7 @@ sift_v1_dict_count_begin(const SiftSrcFoldArgs *a, const SiftV1Scan *scan, Memor
 	MemoryContext old;
 	bool		bound = tests != NIL;
 
-	if (a->host->rd_index == NULL || rd->seg_count == NULL || a->emit != NULL || a->star != NULL || a->gate != NULL || a->stats == NULL || !sift_v6_spec_cubeable(spec) || spec->nkeys != 0 ||
-		spec->naggs != 1 || spec->agg[0].kind != SV6_COUNT_STAR || spec->agg[0].fclause != 0 ||
-		(scan != NULL && (scan->keep != NULL || scan->bridge != NULL || scan->ntypes > 0 || scan->tid_range)))
+	if (rd->seg_count == NULL || !sift_v1_count_only(a, scan))
 		return next;
 	d = MemoryContextAllocZero(cx, sizeof(DictCount));
 	old = MemoryContextSwitchTo(cx);
