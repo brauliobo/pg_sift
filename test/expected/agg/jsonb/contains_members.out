@@ -238,7 +238,7 @@ SELECT n, cv_check(q) AS outcome FROM (VALUES
 ---+---------------
  1 | scan same why
  2 | scan same why
- 3 | plain same
+ 3 | scan same why
 (3 rows)
 
 DROP TABLE shapes, cv, cv_nn, cv_f1, cvu;

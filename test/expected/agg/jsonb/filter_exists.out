@@ -1,6 +1,6 @@
 -- An aggregate FILTER (WHERE doc ? 'k') over a key whose leaf an index of format major 2 keeps: SiftAggV6 reads the presence of the key from the tags of its leaf (a document that is no
 -- object has the key when it holds it as a string, as jsonb_exists finds it), and a value of that key beside it is converted for the rows that have it only. A SQL NULL document has not the
--- key where `?` is NULL: the same to a FILTER, not to NOT, which keeps the normal plan. Format 1 reads the presence from its leaf too. Each statement runs with the scan and without it: `scan` or `plain`, then
+-- key where `?` is NULL: the same to a FILTER, and NOT of it tells the NULL document by its presence leaf. Format 1 reads the presence from its leaf too. Each statement runs with the scan and without it: `scan` or `plain`, then
 -- whether the rows (or the error) are the same; `why` says whether sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -77,7 +77,7 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke      |  7 | is not true            | scan same why
  ke      |  8 | with a where           | scan same why
  ke      |  9 | undeclared key         | plain same
- ke      | 10 | not                    | plain same
+ ke      | 10 | not                    | scan same why
  ke      | 11 | or                     | scan same why
  ke      | 12 | read of another key    | plain same
  ke      | 13 | read under is not true | plain same
@@ -90,7 +90,7 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke_text |  7 | is not true            | scan same why
  ke_text |  8 | with a where           | error: invalid input syntax for type double precision: "abc" why
  ke_text |  9 | undeclared key         | plain same
- ke_text | 10 | not                    | plain same
+ ke_text | 10 | not                    | scan same why
  ke_text | 11 | or                     | scan same why
  ke_text | 12 | read of another key    | plain same
  ke_text | 13 | read under is not true | plain same
@@ -103,7 +103,7 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke_obj  |  7 | is not true            | scan same why
  ke_obj  |  8 | with a where           | error: invalid input syntax for type double precision: "{"z": 1}" why
  ke_obj  |  9 | undeclared key         | plain same
- ke_obj  | 10 | not                    | plain same
+ ke_obj  | 10 | not                    | scan same why
  ke_obj  | 11 | or                     | scan same why
  ke_obj  | 12 | read of another key    | plain same
  ke_obj  | 13 | read under is not true | plain same

@@ -202,27 +202,39 @@ qual_in_list(V6Plan *p, ScalarArrayOpExpr *sa)
 	return (Expr *) q;
 }
 
-/* the leaf "<doc>#present" of the column att of the index, which a scan key IS [NOT] NULL of the document reads (col/am/preds.c) */
-static bool
-has_present_leaf(const V6Plan *p, int att)
+/* the leaf "<doc>#present" of the column att of the index, true where the document is not SQL NULL, which a scan key IS [NOT] NULL of the document reads (col/am/preds.c); -1: none */
+static int
+present_leaf(const V6Plan *p, int att)
 {
 	const SiftColSchema *sch = p->colrel->schema;
 
 	for (int c = 0; c < sch->ncols; c++)
 		if (sch->cols[c].attno == att && sift_col_def_is_present(&sch->cols[c]))
-			return true;
-	return false;
+			return c;
+	return -1;
 }
 
-/* the column of the index a shredded document of a WHERE clause is, whose presence leaf says which rows are SQL NULL to a format that reads the documents as the heap does (0: none) */
-static int
-doc_null_column(const V6Plan *p, const Expr *arg)
+/*
+ * IS [NOT] NULL of a shredded document, to a format that reads the documents as the heap does: of a WHERE, a scan key of the column of the index, which its presence leaf decides; of a FILTER, the
+ * test of the value the presence leaf holds, which the scan reads as a column. NULL: the index has no such leaf
+ */
+static Expr *
+doc_null_test(V6Plan *p, NullTest *nt)
 {
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
-	int			att;
+	NullTest   *q = copyObject(nt);
+	SiftV6Col	col;
+	Var		   *present;
+	int			att,
+				leaf;
 
-	return !p->in_filter && !p->is_table && p->colrel != NULL && p->ops->jsonb != NULL && p->ops->jsonb->exact_values && sift_v6_json_doc_att(&rel, arg, &att) && has_present_leaf(p, att) ?
-		att : 0;
+	if (p->is_table || p->colrel == NULL || p->ops->jsonb == NULL || !p->ops->jsonb->exact_values || !sift_v6_json_doc_att(&rel, nt->arg, &att) || (leaf = present_leaf(p, att)) < 0)
+		return NULL;
+	present = makeVar(p->rel->relid, SIFT_V6_JHELD_VATT + leaf, INT8OID, -1, InvalidOid, 0);
+	if (p->in_filter && !key_column(p, (Expr *) present, false, &col))
+		return NULL;
+	q->arg = index_var(p->in_filter ? (Expr *) present : nt->arg, att - 1);
+	return (Expr *) q;
 }
 
 static Expr *
@@ -230,17 +242,14 @@ qual_null_test(V6Plan *p, NullTest *nt)
 {
 	NullTest   *q = copyObject(nt);
 	SiftV6Col	col;
-	int			att;
 
 	if (nt->argisrow)
 		return NULL;
 	if (IsA(nt->arg, Var) && ((const Var *) nt->arg)->vartype == JSONBOID)
-		att = doc_null_column(p, nt->arg);
-	else
-		att = key_column(p, nt->arg, true, &col) ? col.attno : 0;
-	if (att == 0)
+		return doc_null_test(p, nt);
+	if (!key_column(p, nt->arg, true, &col))
 		return NULL;
-	q->arg = index_var(nt->arg, att - 1);
+	q->arg = index_var(nt->arg, col.attno - 1);
 	return (Expr *) q;
 }
 
