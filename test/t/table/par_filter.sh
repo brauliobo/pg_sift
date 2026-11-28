@@ -19,7 +19,7 @@ sql pf "SET sift.test_create_format1 = off" \
 	"INSERT INTO ph SELECT * FROM pf" "VACUUM (FREEZE, ANALYZE) pf" "ANALYZE ph" >/dev/null || bail "load failed"
 
 QD="SELECT g, count(DISTINCT v) FROM pf WHERE v >= 3000 AND h = 0 AND n IS NOT NULL AND d >= '2024-01-05' GROUP BY g ORDER BY g"
-QN="SELECT count(DISTINCT v) FROM pf WHERE n IS NULL AND g IN (1, 3, 5)"
+QN="SELECT count(DISTINCT v) FROM pf WHERE n IS NOT NULL AND g IN (1, 3, 5)"
 QALL="SELECT count(DISTINCT v) FROM pf"
 DML=("DELETE FROM TT WHERE id % 13 = 0" "UPDATE TT SET v = v + 1, n = 3 WHERE id % 17 = 0"
 	"INSERT INTO TT SELECT i, 2, 0, i * 3, 2, date '2024-02-01' FROM generate_series(310001, 311000) i")
