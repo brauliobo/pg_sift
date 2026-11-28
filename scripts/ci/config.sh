@@ -17,7 +17,7 @@ CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 [[ $(pg_config --version 2>/dev/null) =~ ^PostgreSQL\ ([0-9]+) ]] && PG_MAJOR=${BASH_REMATCH[1]} || PG_MAJOR=0
 PG_MAJOR=${SIFT_CI_PG_MAJOR:-$PG_MAJOR}
 [[ -n ${FLAVOUR:-} ]] || if [[ $(uname -m) == @(aarch64|arm64) ]]; then FLAVOUR=arm; else FLAVOUR=$PG_MAJOR; fi   # the column of the weights this runner is cut by
-LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}
+export SIFT_LANES=${SIFT_LANES:-$(( CORES < 8 ? CORES : 8 ))}; LANES=$SIFT_LANES
 # BUDGET_MB, the scratch the running jobs may need together (estimates below): 1800, CI_BUDGET_MB. The cap, CI_MAX_MB, stops the run (and fails the shard) when the
 # directory really exceeds it: 3072, the budget of a shard (scripts/budgets.tsv); the estimates (EST_MB) and the 400 MB that the install, the templates and the clusters of the lanes
 # hold keep it under. A hosted shard (.github/workflows/ci-pg.yml, ci.yml cassert) says 3600 and 5120: at 1800 its regression batches (650 MB each) ran two at a time on 4 cores, and its

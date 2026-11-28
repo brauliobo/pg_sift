@@ -186,7 +186,7 @@ class Ctx:
         self.testing = db.val("SELECT count(*) FROM pg_settings WHERE name = 'sift.test_create_format1'") == '1'
         self.fmt = 1 if self.testing and db.val('SHOW sift.test_create_format1') == 'on' else 2
         self.assert_build = db.val('SHOW debug_assertions') == 'on'
-        self.cores = os.cpu_count() or 1
+        self.cores = max(1, (os.cpu_count() or 1) // int(os.environ.get('SIFT_LANES', '1')))
         self.no_rss = a.no_rss or self.assert_build or not os.path.exists(f'/proc/{db.pid}/smaps_rollup')
         self.cache_kb = int(db.val("SELECT setting FROM pg_settings WHERE name = 'sift.backend_cache_kb'"))
 
@@ -386,7 +386,7 @@ def reconnect(ctx: Ctx) -> Psql:
 
 
 def effective(case: LoadCase, ctx: Ctx | None) -> Ceilings:
-    """the scale floor holds only where it can be met: 4 cores or more and no assertions; it is then at most half the writers"""
+    """the scale floor holds only where it can be met: 4 cores or more of the share of the host (the cores over the lanes of scripts/ci.sh, SIFT_LANES) and no assertions; it is then at most half the writers"""
     lim = case.limits
     if lim.scale_ratio is None or ctx is None:
         return lim
