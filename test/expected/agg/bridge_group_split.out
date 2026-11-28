@@ -112,8 +112,8 @@ SELECT f.name, c.pushed, c.rows, c.differences FROM forms f, LATERAL sift_helper
  set_empty                   | t      |    0 |           0
 (19 rows)
 
--- the forms that keep the normal plan, with the reason: a scalar sub-select in the lateral (it raises an error for an entity with two links, which the set of the
--- query leaves out) and an ARRAY of links are no join condition the scan can look up
+-- the lateral forms: a scalar sub-select (it raises an error for an entity with two links, which the set of the query leaves out) and an ARRAY of links,
+-- which the scan answers with the rows of the normal plan
 CREATE TABLE refused (name text PRIMARY KEY, q text);
 INSERT INTO refused VALUES
  ('lateral_scalar_sublink', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id =
@@ -123,10 +123,10 @@ INSERT INTO refused VALUES
                            (ARRAY(SELECT x.group_id FROM group_dim_a x WHERE x.deleted_at IS NULL AND x.dim_a_id = e.dim_a_id))) g ON true
                            WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_access WHERE tenant_id = 3 AND deleted_at IS NULL) GROUP BY g.id$q$);
 SELECT r.name, c.pushed, c.differences, w.slug FROM refused r, LATERAL sift_helpers.agg_pushed_and_differences(r.q) c, LATERAL sift.explain_why(r.q) w ORDER BY r.name;
-          name          | pushed | differences |      slug      
-------------------------+--------+-------------+----------------
- lateral_array_of_links | f      |           0 | join_condition
- lateral_scalar_sublink | f      |           0 | join_condition
+          name          | pushed | differences | slug 
+------------------------+--------+-------------+------
+ lateral_array_of_links | t      |           0 | 
+ lateral_scalar_sublink | t      |           0 | 
 (2 rows)
 
 DROP TABLE forms, refused, events, entity_keys, tenant_access, group_dim_a, groups, dim_a;

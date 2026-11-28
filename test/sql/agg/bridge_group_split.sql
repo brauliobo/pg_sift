@@ -93,8 +93,8 @@ INSERT INTO forms VALUES
 -- whether the scan answers each, and the rows it differs by from the plan without it (none)
 SELECT f.name, c.pushed, c.rows, c.differences FROM forms f, LATERAL sift_helpers.agg_pushed_and_differences(f.q) c ORDER BY f.name;
 
--- the forms that keep the normal plan, with the reason: a scalar sub-select in the lateral (it raises an error for an entity with two links, which the set of the
--- query leaves out) and an ARRAY of links are no join condition the scan can look up
+-- the lateral forms: a scalar sub-select (it raises an error for an entity with two links, which the set of the query leaves out) and an ARRAY of links,
+-- which the scan answers with the rows of the normal plan
 CREATE TABLE refused (name text PRIMARY KEY, q text);
 INSERT INTO refused VALUES
  ('lateral_scalar_sublink', $q$SELECT g.id, count(*) AS n FROM events e LEFT JOIN LATERAL (SELECT groups.* FROM groups WHERE groups.id =
