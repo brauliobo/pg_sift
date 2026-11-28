@@ -18,13 +18,14 @@
 
 typedef struct SiftSrcFold SiftSrcFold;
 
-/* What a fold needs of the scan: spec, and where its rows go: group, else emit (a participant of a parallel run), else the pipe of star */
+/* What a fold needs of the scan: spec, and where its rows go: group, else emit (a participant of a parallel run), else the pipe of star (into rows for a row Top-N) */
 typedef struct SiftSrcFoldArgs
 {
 	const struct SiftV6Spec *spec;
 	struct SiftV6Group *group;
 	struct SiftV6ScanStats *stats;
 	struct SiftV6StarRun *star;
+	struct SiftV6Rows *rows;	/* the best rows of a row Top-N the pipe of star joins: the heap addresses of the rows ride its last slot */
 	const struct SiftClause *gate;	/* an arm of a pass over the union of the keys of its arms: the rows it takes (NULL: all) */
 	void		(*emit) (void *arg, const SiftBatchSel *bs, SiftVec *const *keyvec, SiftVec *const *argvec);
 	void	   *emit_arg;

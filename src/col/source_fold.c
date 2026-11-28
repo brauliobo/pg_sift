@@ -83,6 +83,7 @@ struct SiftSrcFold
 	SiftV6Pipe *pipe;
 	SiftBatchSel bs;
 	const uint64 *tag;			/* the heap addresses of the rows of the batch being folded */
+	SiftVec		tidvec;			/* the tags as the last slot of the pipe, which the pairs of a join carry to the best rows (a.rows) */
 	SiftV6Source *src;			/* the source of the run: it raises the errors of the rows of its raises */
 	bool		count_only;
 };
@@ -137,7 +138,7 @@ setup_pipe(SiftSrcFold *f)
 	const SiftV6Spec *spec = f->a.spec;
 	const SiftV6Ext *x = spec->ext;
 	const int	nbin = f->in.ncols + f->nderived;
-	const int	nfact = nbin + f->nbins;
+	const int	nfact = nbin + f->nbins + (f->a.rows != NULL);
 	SiftVecType *type = palloc(Max(nfact, 1) * sizeof(SiftVecType));
 	SiftV6Col	flag;
 
@@ -147,7 +148,13 @@ setup_pipe(SiftSrcFold *f)
 		type[f->in.ncols + k] = sift_v6_derive_vec_type(spec, f->derived[k].d);
 	for (int b = 0; b < f->nbins; b++)
 		type[nbin + b] = SVEC_I64;
-	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, NULL, nfact, type);
+	if (f->a.rows != NULL)
+	{
+		type[nfact - 1] = SVEC_I64;
+		f->tidvec = (SiftVec) {.type = SVEC_I64,.all_valid = true,.dense = true,
+			.data = MemoryContextAllocAligned(f->cx, SIFT_VEC_LEN * sizeof(uint64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0)};
+	}
+	f->pipe = sift_v6_pipe_new(f->cx, spec, f->a.group, f->a.rows, nfact, type);
 	sift_v6_star_attach(f->a.star, f->pipe);
 	for (int d = 0; d < x->ndims; d++)
 		for (int k = 0; k < x->dim[d].nkeys; k++)
@@ -174,6 +181,16 @@ setup_pipe(SiftSrcFold *f)
 		f->fact[f->in.ncols + k] = &f->derived[k].out.vec;
 	for (int b = 0; b < f->nbins; b++)
 		f->fact[nbin + b] = &f->bins[b].vec;
+	if (f->a.rows != NULL)
+		f->fact[nfact - 1] = &f->tidvec;
+}
+
+/* the heap addresses of the n rows of the batch, as the slot of the pipe the pairs of a join carry to the best rows */
+static void
+fill_tids(SiftSrcFold *f, uint16 n)
+{
+	memcpy(f->tidvec.data, f->tag, n * sizeof(uint64));
+	f->tidvec.len = n;
 }
 
 static void
@@ -518,7 +535,11 @@ sift_srcfold_batch(SiftSrcFold *f, const SiftV6Batch *b)
 	if (f->a.emit != NULL)
 		f->a.emit(f->a.emit_arg, bs, f->keyvec, f->argvec);
 	else if (f->pipe != NULL)
+	{
+		if (f->a.rows != NULL)
+			fill_tids(f, b->n);
 		sift_v6_pipe_run(f->pipe, f->fact, bs);
+	}
 	else
 		sift_v6_group_update(f->a.group, bs, f->keyvec, f->argvec);
 }

@@ -97,20 +97,31 @@ rows_open(void *arg, const SiftV6Input *in, const SiftV6Vexpr *quals, const stru
 }
 
 static void
-rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relation heap, Relation index, ScanKey keys, int nkeys, const struct SiftStoreQuals *quals, Snapshot snap,
-		  SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
+rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys,
+		  const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
 	MemoryContext cx = sift_mem_allocset_create(CurrentMemoryContext, "sift v1 rows");
 	const bool	is_table = index == NULL;
 	RowsOpen	o = {.cx = cx,.snap = snap,.scan = is_table ? (SiftV1Scan) {0} : sift_v1_key_scan(index, keys, nkeys)};
 	RowsFold	emit = {.rows = rows,.totals = totals};
-	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.emit = rows_emit,.emit_arg = &emit,.host = is_table ? heap : index,.is_table = is_table,
+	SiftSrcFoldArgs a = {.spec = spec,.stats = stats,.host = is_table ? heap : index,.is_table = is_table,
 		.quals = is_table ? quals->clauses : sift_srcfold_scankey_quals(index, keys, nkeys),.estate = is_table ? quals->estate : NULL};
-	SiftSrcFold *f = sift_srcfold_new(&a, sift_mem_allocset_create(cx, "sift v1 rows fold"));
+	SiftSrcFold *f;
 	const struct SiftTidBridge *bridge;
 
-	emit.fold = f;
-	if (!is_table && totals == NULL && spec->key[spec->topk_item[0].pos].jleaf == 0)
+	if (star != NULL)
+	{
+		a.group = totals;
+		a.rows = rows;
+		a.star = star;
+	}
+	else
+	{
+		a.emit = rows_emit;
+		a.emit_arg = &emit;
+	}
+	emit.fold = f = sift_srcfold_new(&a, sift_mem_allocset_create(cx, "sift v1 rows fold"));
+	if (!is_table && totals == NULL && star == NULL && spec->key[spec->topk_item[0].pos].jleaf == 0)
 	{
 		o.scan.bound = sift_v6_rows_bound(rows);
 		o.scan.bound_att = spec->key[spec->topk_item[0].pos].attno;
@@ -123,6 +134,7 @@ rows_fold(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, Relatio
 		o.scan.bridge = bridge;
 		sift_srcfold_run(f, rows_open, &o);
 	}
+	sift_srcfold_finish(f);
 	MemoryContextDelete(cx);
 }
 
@@ -479,16 +491,15 @@ static void
 order_scan_rows(const SiftV6Spec *spec, SiftV6Rows *rows, SiftV6Group *totals, struct SiftV6StarRun *star, Relation heap, Relation index, ScanKey keys, int nkeys,
 				const struct SiftStoreQuals *quals, Snapshot snap, SiftV6ScanStats *stats, SiftV6ChunkFn next_chunk, void *chunk_arg)
 {
-	SIFT_INVARIANT(star == NULL, "the row Top-N of a Format 1 relation %u reads no dimensions of a join", spec->relid);
-	if (totals == NULL && next_chunk == NULL && spec->nderive == 0 && gorder_rows(spec, rows, heap, index, keys, nkeys, snap, stats))
+	if (totals == NULL && star == NULL && next_chunk == NULL && spec->nderive == 0 && gorder_rows(spec, rows, heap, index, keys, nkeys, snap, stats))
 		return;
-	rows_fold(spec, rows, totals, heap, index, keys, nkeys, quals, snap, stats, next_chunk, chunk_arg);
+	rows_fold(spec, rows, totals, star, heap, index, keys, nkeys, quals, snap, stats, next_chunk, chunk_arg);
 }
 
 const SiftOrderOps v1_order_ops = {
 	.sorted_by = order_sorted_by,
 	.lead_att = order_lead_att,
 	.scan_rows = order_scan_rows,
-	.rows_serves = SIFT_ROWS_TOTALS | SIFT_ROWS_DERIVED | SIFT_ROWS_TEXT,
+	.rows_serves = SIFT_ROWS_ALL,
 	.topn_open = order_topn_open
 };
