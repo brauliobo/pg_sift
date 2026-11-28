@@ -186,17 +186,17 @@ int_key_type(Oid typid)
 	return typid == INT2OID || typid == INT4OID || typid == INT8OID || typid == DATEOID || typid == TIMESTAMPOID || typid == TIMESTAMPTZOID;
 }
 
-/* a clause the heap row alone decides: its columns are attributes of the table, it takes no parameter and no subquery */
+/* a node of a clause the heap row alone does not decide: a column that is not an attribute of the table, a parameter or a subquery */
 static bool
-heap_row_clause(Node *n, void *natts)
+beyond_heap_row(Node *n, void *natts)
 {
 	if (n == NULL)
-		return true;
-	if (IsA(n, Var))
-		return ((Var *) n)->varno == 1 && ((Var *) n)->varlevelsup == 0 && ((Var *) n)->varattno > 0 && ((Var *) n)->varattno <= *(int *) natts;
-	if (IsA(n, Param) || IsA(n, SubLink) || IsA(n, SubPlan))
 		return false;
-	return expression_tree_walker(n, heap_row_clause, natts);
+	if (IsA(n, Var))
+		return ((Var *) n)->varno != 1 || ((Var *) n)->varlevelsup != 0 || ((Var *) n)->varattno <= 0 || ((Var *) n)->varattno > *(int *) natts;
+	if (IsA(n, Param) || IsA(n, SubLink) || IsA(n, SubPlan))
+		return true;
+	return expression_tree_walker(n, beyond_heap_row, natts);
 }
 
 static bool
@@ -216,7 +216,7 @@ gorder_quals(MemoryContext cx, const SiftV6Spec *spec, Relation heap, Relation i
 			return false;
 	clauses = list_concat(sift_srcfold_scankey_quals(index, keys, nkeys), list_copy(spec->vqual));
 	foreach_ptr(Node, q, clauses)
-		if (!heap_row_clause(q, &natts))
+		if (beyond_heap_row(q, &natts))
 			return false;
 	if (clauses != NIL)
 	{

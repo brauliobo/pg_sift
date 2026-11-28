@@ -1,0 +1,44 @@
+-- ORDER BY .. LIMIT on a Format 1 index reads the head of its global order only when the heap row alone decides every qual: a NOT IN of a sub-query (a hashed
+-- SubPlan) or a parameter of the outer row sends the Top-N to the units. The rows equal those of the normal plan, also under a lateral join.
+CREATE EXTENSION pg_sift;
+SET client_min_messages = warning;
+SET sift.test_create_format1 = on;
+SET max_parallel_workers_per_gather = 0;
+CREATE TABLE os_items (id int PRIMARY KEY, grp int) WITH (autovacuum_enabled = off);
+INSERT INTO os_items SELECT g, g % 9 FROM generate_series(0, 599) g;
+CREATE TABLE os_events (id int PRIMARY KEY, parent_id int, big int8, ts date, amount int) WITH (autovacuum_enabled = off);
+INSERT INTO os_events SELECT g, CASE WHEN g % 31 = 0 THEN NULL ELSE g * 7 % 600 END, g % 40, date '2025-01-01' + g % 400, g % 1000 FROM generate_series(1, 4000) g;
+CREATE INDEX os_events_col ON os_events USING sift_col (id, parent_id, big, ts, amount);
+VACUUM (FREEZE, ANALYZE) os_items, os_events;
+SET sift.agg_force = on;
+
+CREATE FUNCTION os_rows(q text, scan bool) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', CASE WHEN scan THEN 'on' ELSE 'off' END, true);
+	EXECUTE format('SELECT string_agg(t::text, E''\n'' ORDER BY t::text) FROM (%s) t', q) INTO r;
+	RETURN r;
+END $$;
+
+CREATE FUNCTION os_scan(q text) RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+	PERFORM set_config('sift.enable_agg', 'on', true);
+	FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+		IF l ~ 'Custom Scan \(SiftAgg' THEN RETURN true; END IF;
+	END LOOP;
+	RETURN false;
+END $$;
+
+CREATE TABLE os_queries (n int, q text);
+INSERT INTO os_queries VALUES
+ (1, 'SELECT f.id, f.amount FROM os_events f WHERE f.parent_id NOT IN (SELECT id FROM os_items WHERE grp < 5) OR f.ts > date ''2025-12-19'' ORDER BY f.parent_id, f.id LIMIT 12'),
+ (2, 'SELECT f.id FROM os_events f WHERE f.parent_id IN (SELECT id FROM os_items WHERE grp = 3) OR f.amount < 10 ORDER BY f.parent_id DESC, f.id LIMIT 7 OFFSET 2'),
+ (3, 'SELECT f.id, f.amount FROM os_events f WHERE f.amount > 100 ORDER BY f.parent_id, f.id LIMIT 12'),
+ (4, 'SELECT e.id, x.id AS xid FROM os_events e JOIN LATERAL (SELECT f.id FROM os_events f WHERE (f.parent_id NOT IN (SELECT id FROM os_items WHERE grp < 5) OR f.ts > date ''2025-12-19'') ORDER BY f.parent_id, f.id LIMIT 12) x ON true WHERE e.id % 401 = 0'),
+ (5, 'SELECT e.id, x.id AS xid FROM os_events e JOIN LATERAL (SELECT f.id FROM os_events f WHERE f.big = e.big ORDER BY f.parent_id, f.id LIMIT 3) x ON true WHERE e.id % 401 = 0');
+SELECT n, os_scan(q) AS scan, os_rows(q, true) = os_rows(q, false) AS same_rows FROM os_queries ORDER BY n;
+
+DROP FUNCTION os_rows, os_scan;
+DROP TABLE os_queries, os_events, os_items;
+DROP EXTENSION pg_sift;

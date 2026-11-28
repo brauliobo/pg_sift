@@ -182,6 +182,7 @@ TESTING_REGRESS += agg/tid_range_f1
 TESTING_REGRESS += agg/topn/cost_plan_suite
 TESTING_REGRESS += agg/topn/offset_bulk
 TESTING_REGRESS += agg/topn/offset_ties_suite
+TESTING_REGRESS += agg/topn/order_subplan_qual_f1
 TESTING_REGRESS += agg/topn_card_vexpr
 TESTING_REGRESS += agg/topn_search_rows
 TESTING_REGRESS += agg/topn_window_limits
