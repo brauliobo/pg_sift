@@ -89,7 +89,7 @@ sift_v1_rollup_read(SiftV1Rollup *ru, const SiftV1ReaderOps *rd, void *src, cons
 {
 	const SiftSrcRollup *r = &ru->r;
 
-	if (!rd->unit_rollup(src, unit, &ru->need, &ru->r))
+	if (!rd->unit_rollup(src, unit, -1, &ru->need, &ru->r))
 		return false;
 	for (int k = 0; k < ru->nkeys; k++)
 		if ((ru->kdim[k] = dim_of(r, ru->key[k])) < 0 || (ru->key_text[k] && r->dict[ru->kdim[k]] == NULL))

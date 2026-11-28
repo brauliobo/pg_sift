@@ -117,14 +117,15 @@ sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, Memor
 }
 
 bool
-sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict, SiftSrcRollup *r)
+sift_v1_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict, SiftSrcRollup *r)
 {
 	SiftCRollup c;
 	SiftColDict dict[SIFT_PAGG_MAX_RDIMS];
 	SiftCRollupNeed cn;
 
-	cube_need(need, col_of_leaf, true, &cn);
-	if (!sift_col_unit_rollup(unit, mcxt, &cn, &c, dict))
+	if (need != NULL)
+		cube_need(need, col_of_leaf, true, &cn);
+	if (!sift_col_unit_rollup(unit, list, mcxt, need != NULL ? &cn : NULL, &c, dict))
 		return false;
 	*r = (SiftSrcRollup) {.ntuples = c.ntuples,.ndims = c.ndims,.count = c.count,.nmeas = c.nmeas};
 	for (int j = 0; j < c.ndims; j++)

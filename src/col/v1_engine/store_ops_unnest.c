@@ -522,13 +522,14 @@ sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation h
 			u->mvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		}
 	source_input(u, heap, index);
+	u->cube = sift_v1_unnest_cube_begin(u);
 }
 
 void
 sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range)
 {
 	SiftV6Batch b;
-	SiftV1Scan	scan = {.range = range,.elem = u->has_elems ? &u->espec : NULL};
+	SiftV1Scan	scan = {.range = range,.elem = u->has_elems ? &u->espec : NULL,.cube = u->cube};
 
 	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, u->spec->is_table ? heap : index, keys, nkeys, &u->in), &scan);
 	while (u->src->next(u->src, &b))

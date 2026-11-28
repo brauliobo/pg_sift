@@ -141,32 +141,6 @@ unit_verdict(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcU
 
 /* ---- cells to states ---- */
 
-static void
-acc_sum(const CubeAgg *g, int64 n, SiftSrcI128 isum, double fsum, V6Acc *out)
-{
-	out->n = n;
-	if (n == 0)
-		return;
-	if (g->is_float)
-		*out = v6g_acc_of_f64_sum(fsum, 0, n);
-	else
-		v6acc_set_i128(out, (SiftI128) {(uint64) isum, (int64) (isum >> 64)});
-}
-
-static void
-acc_extreme(const CubeAgg *g, int64 n, int64 imin, int64 imax, double fmin, double fmax, V6Acc *out)
-{
-	const bool	min = g->a->kind == SV6_MIN;
-
-	out->n = n;
-	if (n == 0)
-		return;
-	if (g->is_float)
-		v6acc_set_f64(out, min ? fmin : fmax);
-	else
-		out->v0 = (uint64) (min ? imin : imax);
-}
-
 /* The state of the unit's whole rows for aggregate g from the zone of its leaf; false when the unit has no such zone */
 static bool
 global_acc(const SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit, const CubeAgg *g, V6Acc *out)
@@ -196,12 +170,12 @@ global_acc(const SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const Sift
 		case SV6_AVG:
 			if (n > 0 && !g->is_float && !z.has_sums)
 				return false;
-			acc_sum(g, n, z.sum, z.sum_f, out);
+			sift_v1_sum_acc(g->is_float, n, z.sum, z.sum_f, out);
 			return true;
 		default:
 			if (n > 0 && !z.has_minmax)
 				return false;
-			acc_extreme(g, n, z.min, z.max, z.min_f, z.max_f, out);
+			sift_v1_extreme_acc(g->is_float, g->a->kind == SV6_MIN, n, z.min, z.max, z.min_f, z.max_f, out);
 			return true;
 	}
 }
@@ -340,9 +314,9 @@ group_acc(const SiftV1Cube *c, const SiftSrcHist *h, uint32 r, V6Acc *out)
 		else if (g->a->kind == SV6_COUNT)
 			out[j].n = h->nn[m][r];
 		else if (g->a->kind == SV6_MIN || g->a->kind == SV6_MAX)
-			acc_extreme(g, h->nn[m][r], h->min[m][r], h->max[m][r], 0, 0, &out[j]);
+			sift_v1_extreme_acc(g->is_float, g->a->kind == SV6_MIN, h->nn[m][r], h->min[m][r], h->max[m][r], 0, 0, &out[j]);
 		else
-			acc_sum(g, h->nn[m][r], g->is_float ? 0 : h->sum[m][r], g->is_float ? h->sumf[m][r] : 0, &out[j]);
+			sift_v1_sum_acc(g->is_float, h->nn[m][r], g->is_float ? 0 : h->sum[m][r], g->is_float ? h->sumf[m][r] : 0, &out[j]);
 	}
 	return true;
 }

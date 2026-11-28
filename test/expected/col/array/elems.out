@@ -1155,7 +1155,7 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built unnest distinct    | scan same
  built unnest like        | scan same
  built unnest null        | scan same
- built unnest filtered    | plain same
+ built unnest filtered    | scan same
  built unnest contains    | plain same
  built unnest top         | scan same
  built unnest lateral     | scan same
@@ -1208,7 +1208,7 @@ SELECT * FROM shapes('built', 'ae') UNION ALL SELECT * FROM shapes('built', 'ad'
  built unnest distinct    | scan same
  built unnest like        | scan same
  built unnest null        | scan same
- built unnest filtered    | plain same
+ built unnest filtered    | scan same
  built unnest contains    | plain same
  built unnest top         | scan same
  built unnest lateral     | scan same
@@ -1271,7 +1271,7 @@ SELECT * FROM shapes('not null', 'an');
  not null unnest distinct    | scan same
  not null unnest like        | scan same
  not null unnest null        | scan same
- not null unnest filtered    | plain same
+ not null unnest filtered    | scan same
  not null unnest contains    | plain same
  not null unnest top         | scan same
  not null unnest lateral     | scan same
@@ -1332,7 +1332,7 @@ SELECT * FROM shapes('insert', 'ae');
  insert unnest distinct    | scan same
  insert unnest like        | scan same
  insert unnest null        | scan same
- insert unnest filtered    | plain same
+ insert unnest filtered    | scan same
  insert unnest contains    | plain same
  insert unnest top         | scan same
  insert unnest lateral     | scan same
@@ -1392,7 +1392,7 @@ SELECT * FROM shapes('update', 'ae');
  update unnest distinct    | scan same
  update unnest like        | scan same
  update unnest null        | scan same
- update unnest filtered    | plain same
+ update unnest filtered    | scan same
  update unnest contains    | plain same
  update unnest top         | scan same
  update unnest lateral     | scan same
@@ -1461,7 +1461,7 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders unnest distinct    | scan same
  orders unnest like        | scan same
  orders unnest null        | scan same
- orders unnest filtered    | plain same
+ orders unnest filtered    | scan same
  orders unnest contains    | plain same
  orders unnest top         | scan same
  orders unnest lateral     | scan same
@@ -1514,7 +1514,7 @@ SELECT * FROM shapes('orders', 'ae') UNION ALL SELECT * FROM shapes('orders', 'a
  orders unnest distinct    | scan same
  orders unnest like        | scan same
  orders unnest null        | scan same
- orders unnest filtered    | plain same
+ orders unnest filtered    | scan same
  orders unnest contains    | plain same
  orders unnest top         | scan same
  orders unnest lateral     | scan same
@@ -1574,7 +1574,7 @@ SELECT * FROM shapes('delete', 'ae');
  delete unnest distinct    | scan same
  delete unnest like        | scan same
  delete unnest null        | scan same
- delete unnest filtered    | plain same
+ delete unnest filtered    | scan same
  delete unnest contains    | plain same
  delete unnest top         | scan same
  delete unnest lateral     | scan same
@@ -1640,7 +1640,7 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum unnest distinct    | scan same
  vacuum unnest like        | scan same
  vacuum unnest null        | scan same
- vacuum unnest filtered    | plain same
+ vacuum unnest filtered    | scan same
  vacuum unnest contains    | plain same
  vacuum unnest top         | scan same
  vacuum unnest lateral     | scan same
@@ -1693,7 +1693,7 @@ SELECT * FROM shapes('vacuum', 'ae') UNION ALL SELECT * FROM shapes('vacuum', 'a
  vacuum unnest distinct    | scan same
  vacuum unnest like        | scan same
  vacuum unnest null        | scan same
- vacuum unnest filtered    | plain same
+ vacuum unnest filtered    | scan same
  vacuum unnest contains    | plain same
  vacuum unnest top         | scan same
  vacuum unnest lateral     | scan same
@@ -1757,7 +1757,7 @@ SELECT * FROM shapes('merge', 'ae');
  merge unnest distinct    | scan same
  merge unnest like        | scan same
  merge unnest null        | scan same
- merge unnest filtered    | plain same
+ merge unnest filtered    | scan same
  merge unnest contains    | plain same
  merge unnest top         | scan same
  merge unnest lateral     | scan same
@@ -1823,7 +1823,7 @@ SELECT * FROM shapes('merge2', 'ae');
  merge2 unnest distinct    | scan same
  merge2 unnest like        | scan same
  merge2 unnest null        | scan same
- merge2 unnest filtered    | plain same
+ merge2 unnest filtered    | scan same
  merge2 unnest contains    | plain same
  merge2 unnest top         | scan same
  merge2 unnest lateral     | scan same
@@ -1889,7 +1889,7 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex unnest distinct    | scan same
  reindex unnest like        | scan same
  reindex unnest null        | scan same
- reindex unnest filtered    | plain same
+ reindex unnest filtered    | scan same
  reindex unnest contains    | plain same
  reindex unnest top         | scan same
  reindex unnest lateral     | scan same
@@ -1942,7 +1942,7 @@ SELECT * FROM shapes('reindex', 'ae') UNION ALL SELECT * FROM shapes('reindex', 
  reindex unnest distinct    | scan same
  reindex unnest like        | scan same
  reindex unnest null        | scan same
- reindex unnest filtered    | plain same
+ reindex unnest filtered    | scan same
  reindex unnest contains    | plain same
  reindex unnest top         | scan same
  reindex unnest lateral     | scan same

@@ -1,6 +1,6 @@
 /*
- * col/v1_engine/store_ops_preagg_ext.c - the sum of a line of a measure and the distinct values of a histogram dimension or of a key presence of a Format 1 unit
- * (col/v1_engine/store_ops_preagg_ext.h).
+ * col/v1_engine/store_ops_preagg_ext.c - the sum of a line of a measure, the states of sums and extremes, and the distinct values of a histogram dimension or of a key presence of a
+ * Format 1 unit (col/v1_engine/store_ops_preagg_ext.h).
  */
 #include "postgres.h"
 
@@ -21,6 +21,30 @@ sift_v1_line_acc(const SiftV6Linear *lin, int64 n, SiftSrcI128 sum, int64 lo, in
 		return false;
 	v6acc_set_i128(out, s);
 	return true;
+}
+
+void
+sift_v1_sum_acc(bool is_float, int64 n, SiftSrcI128 isum, double fsum, V6Acc *out)
+{
+	out->n = n;
+	if (n == 0)
+		return;
+	if (is_float)
+		*out = v6g_acc_of_f64_sum(fsum, 0, n);
+	else
+		v6acc_set_i128(out, (SiftI128) {(uint64) isum, (int64) (isum >> 64)});
+}
+
+void
+sift_v1_extreme_acc(bool is_float, bool min, int64 n, int64 imin, int64 imax, double fmin, double fmax, V6Acc *out)
+{
+	out->n = n;
+	if (n == 0)
+		return;
+	if (is_float)
+		v6acc_set_f64(out, min ? fmin : fmax);
+	else
+		out->v0 = (uint64) (min ? imin : imax);
 }
 
 static void

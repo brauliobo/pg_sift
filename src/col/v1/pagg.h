@@ -81,10 +81,11 @@ extern bool sift_col_unit_presence(const SiftColUnit *unit, int col, SiftCPresen
 extern bool sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCHistDim *out, SiftColDict *dict);
 
 /*
- * The rollup of the rows of the unit (rollup_columns, docs/COL-PREAGG.md): its tuples of the dims it holds, the dims and measures need names. Arrays palloc'd in mcxt; dict[j] is the
- * dictionary of a STR dim j (zeroed for the other dims). false when the unit may not answer, is a group of units, answers for its exceptions or has no rollup of its rows.
+ * The rollup of list in the unit (rollup_columns and the lists of the elements of an array, docs/COL-PREAGG.md; -1: of its rows): its tuples of the dims it holds, the dims
+ * and measures need names (NULL: all). Arrays palloc'd in mcxt; dict[j] is the dictionary of a STR dim j (zeroed for the other dims). false when the unit may not answer, is a group of units,
+ * answers for its exceptions or has no rollup of list.
  */
-extern bool sift_col_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict);
+extern bool sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict);
 
 /* Per leaf of the index definition: the dims and measures a default or configured spec asks for (planner side, docs/COL-PREAGG.md section 3) */
 struct RelationData;

@@ -11,6 +11,7 @@
 #include "nodes/nodes.h"
 #include "utils/relcache.h"
 
+#include "col/v1/reader.h"
 #include "col/v1/src_exec.h"
 
 typedef enum SiftV1Verdict
@@ -79,5 +80,11 @@ extern bool sift_v1_pred_passes(const SiftV1Pred *p, const SiftSrcHist *h, uint3
 
 /* What the test of a date or timestamp leaf of type typid says of the rows of the calendar cell r of h (SiftSrcHist.grain), not its NULL group */
 extern SiftV1Verdict sift_v1_pred_cell(const SiftV1Pred *p, Oid typid, const SiftSrcHist *h, uint32 r);
+
+/* The tests of quals (clauses over the columns of the table of host) the zones of a unit decide: NULL when one is not such a test; whether the zones of a unit unit_rows answers for say
+ * that every row passes them all */
+typedef struct SiftV1ZoneTests SiftV1ZoneTests;
+extern SiftV1ZoneTests *sift_v1_zone_tests(Relation host, const SiftSrcLayout *lay, const List *quals);
+extern bool sift_v1_zone_tests_all(const SiftV1ZoneTests *t, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit);
 
 #endif							/* SIFT_V1_STORE_OPS_PREAGG_PRED_H */

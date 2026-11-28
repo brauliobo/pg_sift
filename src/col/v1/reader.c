@@ -335,11 +335,11 @@ idx_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 }
 
 static bool
-idx_unit_rollup(void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *need, SiftSrcRollup *out)
+idx_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *out)
 {
 	SiftV1Idx  *r = impl;
 
-	return sift_v1_unit_rollup(&r->unit, unit_cx(r), NULL, NULL, need, r->rdict, out);
+	return sift_v1_unit_rollup(&r->unit, list, unit_cx(r), NULL, NULL, need, r->rdict, out);
 }
 
 static void

@@ -362,7 +362,7 @@ sift_col_unit_hist(const SiftColUnit *unit, int dim, MemoryContext mcxt, const S
 }
 
 bool
-sift_col_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
+sift_col_unit_rollup(const SiftColUnit *unit, int list, MemoryContext mcxt, const SiftCRollupNeed *need, SiftCRollup *r, SiftColDict *dict)
 {
 	SiftColSegment *seg;
 	uint32		u,
@@ -373,13 +373,13 @@ sift_col_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const SiftCRol
 	if (sift_col_unit_super(unit, &seg, &u) || unit->except >= 0 || !sift_col_unit_preagg_ok(unit))
 		return false;
 	sift_col_unit_stored(unit, &seg, &u);
-	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, -1, &len) : sift_cseg_rollup(seg, u, -1, &len)) == NULL)
+	if ((blob = sift_col_unit_net(unit) ? sift_cseg_net_rollup(seg, u, list, &len) : sift_cseg_rollup(seg, u, list, &len)) == NULL)
 		return false;
-	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != -1)
+	if (!sift_cpagg_rollup_decode_need(seg->schema, blob, len, mcxt, sift_col_unit_dead_on(unit) ? NULL : need, r) || r->list != list)
 		corrupt_cube(seg, u);
 	for (uint32 t = 0; t < r->ntuples; t++)
 		rows += r->count[t];
-	if (rows != unit->nrows - sift_col_unit_net_dead(unit))
+	if (list < 0 && rows != unit->nrows - sift_col_unit_net_dead(unit))
 		corrupt_cube(seg, u);
 	if (sift_col_unit_dead_on(unit) && !sift_col_unit_dead_rollup(unit, r))
 		return false;

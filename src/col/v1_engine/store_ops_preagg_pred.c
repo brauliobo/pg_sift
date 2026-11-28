@@ -417,3 +417,34 @@ sift_v1_pred_cell(const SiftV1Pred *p, Oid typid, const SiftSrcHist *h, uint32 r
 		return sift_v1_cal_test_cell(p->cal, h, r);
 	return sift_v1_pred_verdict(p, &z);
 }
+
+struct SiftV1ZoneTests
+{
+	int			n;
+	SiftV1Pred *pred;
+};
+
+SiftV1ZoneTests *
+sift_v1_zone_tests(Relation host, const SiftSrcLayout *lay, const List *quals)
+{
+	SiftV1ZoneTests *t = palloc(sizeof(SiftV1ZoneTests));
+
+	*t = (SiftV1ZoneTests) {.pred = palloc0(Max(list_length(quals), 1) * sizeof(SiftV1Pred))};
+	foreach_ptr(Node, q, quals)
+		if (!sift_v1_pred_of(host, lay, q, &t->pred[t->n++]))
+			return NULL;
+	return t;
+}
+
+bool
+sift_v1_zone_tests_all(const SiftV1ZoneTests *t, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
+{
+	for (int i = 0; i < t->n; i++)
+	{
+		SiftSrcUnitAgg z;
+
+		if (!rd->unit_agg(src, unit, t->pred[i].leaf, &z) || z.nvals != unit->nrow || sift_v1_pred_verdict(&t->pred[i], &z) != SV1V_ALL)
+			return false;
+	}
+	return true;
+}

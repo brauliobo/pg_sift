@@ -7,10 +7,15 @@
 
 #include "agg/cube.h"
 #include "agg/group/int.h"
+#include "col/v1/reader.h"
 #include "col/v1/src_exec.h"
 
 /* The state of the sum of lin over n values of [lo, hi] whose sum is sum; false when the line may leave its type on one of them, or its sum 128 bits */
 extern bool sift_v1_line_acc(const SiftV6Linear *lin, int64 n, SiftSrcI128 sum, int64 lo, int64 hi, V6Acc *out);
+
+/* The state of a sum or average of n values whose sum is isum (an integer) or fsum (a float), and of the least (min) or the greatest of n values */
+extern void sift_v1_sum_acc(bool is_float, int64 n, SiftSrcI128 isum, double fsum, V6Acc *out);
+extern void sift_v1_extreme_acc(bool is_float, bool min, int64 n, int64 imin, int64 imax, double fmin, double fmax, V6Acc *out);
 
 /* Whether group r of h is one the tests of the statement keep */
 typedef bool (*SiftV1HistKeep) (const void *arg, const SiftSrcHist *h, uint32 r);

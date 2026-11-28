@@ -484,12 +484,12 @@ tbl_unit_hist(void *impl, const SiftSrcUnit *unit, int dim, const SiftSrcRollupN
 }
 
 static bool
-tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
+tbl_unit_rollup(void *impl, const SiftSrcUnit *unit, int list, const SiftSrcRollupNeed *need, SiftSrcRollup *r)
 {
 	SiftV1Tbl  *t = impl;
 	const TblPart *p = unit->priv;
 
-	return sift_v1_unit_rollup(&p->unit, unit_cx(t), p->col, p->leaf_of_col, need, t->rdict, r);
+	return sift_v1_unit_rollup(&p->unit, list, unit_cx(t), p->col, p->leaf_of_col, need, t->rdict, r);
 }
 
 static bool

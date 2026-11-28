@@ -84,6 +84,7 @@ typedef struct UnRun
 	AttrNumber	heap_att;		/* the array column of the table */
 	bool		has_elems;		/* the leaves of the index hold the elements of the array: the rows they cannot hold are read from the heap */
 	SiftV1ElemSpec espec;
+	SiftV1UnitSink *cube;		/* answers the units whose rollup of the array holds the statement (store_ops_unnest_cube.c), NULL: every unit is read */
 	SiftV6Input in;				/* the columns of the table the run reads, as its source gives them */
 	int16		typlen;
 	bool		typbyval;
@@ -185,5 +186,7 @@ extern void sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1Ele
 /* the rows of the superblocks of range (NULL: every row) into the groups of the open run; keys: those of the dimensions of a star join, which prune the units it reads */
 extern void sift_v1_unnest_read(UnRun *u, Relation heap, Relation index, ScanKey keys, int nkeys, Snapshot snap, const SiftV1Range *range);
 extern void sift_v1_unnest_close(UnRun *u);
+/* store_ops_unnest_cube.c: the sink that answers units of the open run from the rollup of their array, into the group of its pipe; NULL when the statement is not one the rollups hold */
+extern SiftV1UnitSink *sift_v1_unnest_cube_begin(const UnRun *u);
 
 #endif							/* SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H */
