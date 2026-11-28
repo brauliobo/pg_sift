@@ -70,7 +70,7 @@ col/unique_shm	2.7
 col/unique_subxact_race	0.1
 col/v1_cic_concurrent_dml	3.7
 col/wbuf/batch	0.1
-col/wbuf/order	0.2
+col/wbuf/order	0.2	quiet
 col/wbuf/version	0.5	quiet
 quarantine/scan	0.3
 quarantine/vacuum	0.2
@@ -108,7 +108,7 @@ table/preagg	3.3
 table/preagg_calendar	6.1
 table/scan_private	2.6
 table/ssi_pk_skew	0.2
-table/sysattr	0.0
+table/sysattr	0.0	quiet
 table/sysattr_groups	1.3	quiet
 table/tomb_follow	0.3
 table/topn	4.3
