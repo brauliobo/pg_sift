@@ -114,7 +114,7 @@ setup_cols(UnRun *u)
 		const SiftV6Derive *d = &spec->derive[k];
 
 		for (int c = 0; c <= d->ncond; c++)
-			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
+			if (reads_batch(c == 0 ? &d->src : &d->cond[c - 1]))
 				sift_v1_unnest_col_index(u, c == 0 ? &d->src : &d->cond[c - 1], false);
 		if (d->kind == SVD_PG_EXPR)
 		{

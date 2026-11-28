@@ -174,7 +174,7 @@ attr_cols(const SiftV6Spec *spec, UnColFn fn, void *arg)
 		const SiftV6Derive *d = &spec->derive[k];
 
 		for (int c = 0; c <= d->ncond; c++)
-			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR)
+			if ((c == 0 ? d->src : d->cond[c - 1]).src == SV6SRC_ATTR && !sift_v6_col_is_flag(c == 0 ? &d->src : &d->cond[c - 1]))
 				fn(arg, c == 0 ? &d->src : &d->cond[c - 1], false);
 		if (d->kind == SVD_PG_EXPR)
 		{
@@ -182,7 +182,7 @@ attr_cols(const SiftV6Spec *spec, UnColFn fn, void *arg)
 
 			sift_v6_pgexpr_item(spec, d, &it);
 			for (int c = 0; c < it.nin; c++)
-				if (it.col[c].src == SV6SRC_ATTR)
+				if (it.col[c].src == SV6SRC_ATTR && !sift_v6_col_is_flag(&it.col[c]))
 					fn(arg, &it.col[c], false);
 		}
 	}

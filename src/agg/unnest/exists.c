@@ -121,6 +121,16 @@ typedef struct FilterWalk
 	List	   *filters;
 } FilterWalk;
 
+/* the conditions of the CASE of an argument of an aggregate, which the plan makes FILTERs of (an aggregate of CASE WHEN c THEN x ELSE y END is a FILTER on c and one on c IS NOT TRUE) */
+static bool
+case_conds(Node *n, FilterWalk *w)
+{
+	if (n != NULL && IsA(n, CaseExpr))
+		foreach_node(CaseWhen, when, ((CaseExpr *) n)->args)
+			w->filters = lappend(w->filters, when->expr);
+	return n != NULL && expression_tree_walker(n, case_conds, w);
+}
+
 static bool
 collect_filters(Node *n, FilterWalk *w)
 {
@@ -130,6 +140,7 @@ collect_filters(Node *n, FilterWalk *w)
 	{
 		if (((Aggref *) n)->aggfilter != NULL)
 			w->filters = lappend(w->filters, ((Aggref *) n)->aggfilter);
+		(void) case_conds((Node *) ((Aggref *) n)->args, w);
 		return false;
 	}
 	return expression_tree_walker(n, collect_filters, w);
@@ -171,14 +182,32 @@ where_or_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 	return cands;
 }
 
-/* the tests of the lists of strings among the members of the pattern of a containment of the WHERE, whose flags the clause reads (sift_v6_tests_contains_quals) */
-static List *
-member_cands(PlannerInfo *root, const Node *clause, bool table, List *cands)
+typedef struct MemberWalk
+{
+	PlannerInfo *root;
+	bool		table;
+	List	   *cands;
+} MemberWalk;
+
+/* the tests of the lists of strings among the members of the pattern of a containment anywhere in a clause, whose flags the clause reads (sift_v6_tests_split) */
+static bool
+member_walker(Node *n, MemberWalk *w)
 {
 	Expr	   *rest;
-	List	   *members = sift_v6_unnest_path_members(clause, &rest);
+	List	   *members = n != NULL ? sift_v6_unnest_path_members(n, &rest) : NIL;
 
-	return members == NIL ? cands : filter_cands(root, (Node *) make_ands_explicit(members), table, cands);
+	if (members != NIL)
+		w->cands = filter_cands(w->root, (Node *) make_ands_explicit(members), w->table, w->cands);
+	return n != NULL && members == NIL && expression_tree_walker(n, member_walker, w);
+}
+
+static List *
+member_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
+{
+	MemberWalk	w = {root, table, cands};
+
+	(void) member_walker(clause, &w);
+	return w.cands;
 }
 
 /* the tests of a split: its EXISTS with each constant of its CASE */
@@ -214,7 +243,7 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 		if (c != NULL)
 			cands = lappend(cands, c);
 		else if (or_arms && !ri->pseudoconstant && is_orclause(ri->clause))
-			cands = where_or_cands(root, (Node *) ri->clause, table, cands);
+			cands = member_cands(root, (Node *) ri->clause, table, where_or_cands(root, (Node *) ri->clause, table, cands));
 		else if (or_arms && !ri->pseudoconstant)
 			cands = member_cands(root, (Node *) ri->clause, table, cands);
 	}
@@ -222,7 +251,7 @@ collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtr
 	if (extra != NULL)
 		collect_filters(extra->havingQual, &w);
 	foreach_ptr(Expr, filter, w.filters)
-		cands = filter_cands(root, (Node *) filter, table, cands);
+		cands = member_cands(root, (Node *) filter, table, filter_cands(root, (Node *) filter, table, cands));
 	if (splits != NIL && (cands = split_cands(root, splits, table, cands)) == NIL)
 		return NIL;
 	return list_length(cands) <= SIFT_V6_XTESTS ? cands : NIL;
@@ -549,22 +578,87 @@ sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out
 	x->stream_names = x->stream_arrays = x->test_quals = NIL;
 }
 
+/* the test of the plan whose flag a FILTER reads that the node is, -1: none */
+static int
+test_flag(const V6Plan *p, const Node *node)
+{
+	foreach_ptr(TestBuilt, b, p->tests)
+		if (b->cand->where == NULL && equal(b->cand->node, node))
+			return b->index;
+	return -1;
+}
+
 Expr *
 sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct)
 {
 	bool		negated;
 	const Node *node = test_node(conjunct, p->is_table, &negated);
-	Var		   *flag;
+	const int	k = node != NULL ? test_flag(p, node) : -1;
+	Var		   *flag = makeVar(INDEX_VAR, SIFT_V6_XFLAG_VATT + k, BOOLOID, -1, InvalidOid, 0);
 
-	if (node == NULL)
-		return NULL;
-	foreach_ptr(TestBuilt, b, p->tests)
-		if (b->cand->where == NULL && equal(b->cand->node, node))
-		{
-			flag = makeVar(INDEX_VAR, SIFT_V6_XFLAG_VATT + b->index, BOOLOID, -1, InvalidOid, 0);
-			return make_opclause(BooleanEqualOperator, BOOLOID, false, (Expr *) flag, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
-		}
-	return NULL;
+	return k < 0 ? NULL : make_opclause(BooleanEqualOperator, BOOLOID, false, (Expr *) flag, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
+}
+
+int
+sift_v6_unnest_test_vatt(const V6Plan *p, const Expr *e)
+{
+	bool		negated;
+	const Node *node = test_node((const Node *) e, p->is_table, &negated);
+	const int	k = node != NULL && !negated && node == (const Node *) e ? test_flag(p, node) : -1;
+
+	return k < 0 ? InvalidAttrNumber : SIFT_V6_XFLAG_VATT + k;
+}
+
+/* the document side of a member test (doc -> 'key') @> '[..]' (sift_v6_unnest_path_members) */
+static Expr *
+member_doc(const Expr *member)
+{
+	return linitial(((const OpExpr *) linitial(((const OpExpr *) member)->args))->args);
+}
+
+/* doc IS NULL */
+static Expr *
+is_null(const Expr *doc)
+{
+	NullTest   *nt = makeNode(NullTest);
+
+	*nt = (NullTest) {.xpr.type = T_NullTest,.arg = copyObject(unconstify(Expr *, doc)),.nulltesttype = IS_NULL,.location = -1};
+	return (Expr *) nt;
+}
+
+/*
+ * A containment whose lists of strings the tests of the plan read, as the value it is: NULL exactly where its document is, else true where the flags of the tests and the containment of the
+ * other members all are (where it is false the parts are false or NULL, a missing key)
+ */
+static Node *
+split_mutator(Node *n, const V6Plan *p)
+{
+	Expr	   *rest;
+	List	   *parts = n != NULL ? sift_v6_tests_contains_quals(p, (const Expr *) n, &rest) : NIL;
+	BooleanTest *holds;
+	CaseExpr   *value;
+	CaseWhen   *null_doc;
+	Expr	   *doc;
+
+	if (parts == NIL)
+		return expression_tree_mutator(n, split_mutator, (void *) p);
+	parts = sift_v6_unnest_path_members(n, &rest);
+	doc = member_doc(linitial(parts));
+	holds = makeNode(BooleanTest);
+	*holds = (BooleanTest) {.xpr.type = T_BooleanTest,.arg = make_ands_explicit(rest != NULL ? lappend(parts, rest) : parts),.booltesttype = IS_TRUE,.location = -1};
+	if (IsA(doc, Var) && bms_is_member(((const Var *) doc)->varattno, sift_v6_plan_rel(p).notnull))
+		return (Node *) holds;
+	null_doc = makeNode(CaseWhen);
+	*null_doc = (CaseWhen) {.xpr.type = T_CaseWhen,.expr = is_null(doc),.result = (Expr *) makeNullConst(BOOLOID, -1, InvalidOid),.location = -1};
+	value = makeNode(CaseExpr);
+	*value = (CaseExpr) {.xpr.type = T_CaseExpr,.casetype = BOOLOID,.args = list_make1(null_doc),.defresult = (Expr *) holds,.location = -1};
+	return (Node *) value;
+}
+
+Expr *
+sift_v6_tests_split(const V6Plan *p, const Expr *e)
+{
+	return p->tests == NIL ? (Expr *) e : (Expr *) split_mutator((Node *) e, p);
 }
 
 List *

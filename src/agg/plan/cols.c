@@ -163,6 +163,11 @@ column_of(V6Plan *p, const Expr *e, bool numeric_ok, SiftV6Col *out)
 		return false;
 	if (v->varattno > SIFT_V6_IXPR_VATT && v->varattno <= SIFT_V6_IXPR_VATT + INDEX_MAX_KEYS)
 		return index_column(p, v->varattno - SIFT_V6_IXPR_VATT, typid, out);
+	if (v->varattno >= SIFT_V6_XFLAG_VATT && v->varattno < SIFT_V6_XFLAG_VATT + SIFT_V6_XTESTS)
+	{
+		*out = (SiftV6Col) {.attno = v->varattno,.typid = BOOLOID};
+		return true;
+	}
 	if (sift_v6_vatt_is_member(v->varattno))
 	{
 		*out = sift_v6_member_col(&p->spec, v->varattno);
@@ -387,6 +392,13 @@ member_vatt(void *arg, const Expr *e, Oid *typid)
 	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	SiftV6Col	col;
 
+	const int	flag = sift_v6_unnest_test_vatt(p, e);
+
+	if (flag != InvalidAttrNumber)
+	{
+		*typid = BOOLOID;
+		return flag;
+	}
 	if (!member_of(p, &rel, e, &col))
 		return InvalidAttrNumber;
 	*typid = col.typid;
@@ -532,6 +544,23 @@ casts_key_jsonb(Node *n, void *context)
 	return expression_tree_walker(n, casts_key_jsonb, context);
 }
 
+/* IS [NOT] NULL of a shredded document as the test of the value of its presence leaf, which the scan reads as a column, where the document is read no other way */
+static Node *
+doc_nulls_mutator(Node *n, const V6Plan *p)
+{
+	int			att;
+	Var		   *present;
+
+	if (n != NULL && IsA(n, NullTest) && !((const NullTest *) n)->argisrow && (present = sift_v6_doc_present_var(p, ((const NullTest *) n)->arg, &att)) != NULL)
+	{
+		NullTest   *nt = copyObject((NullTest *) n);
+
+		nt->arg = (Expr *) present;
+		return (Node *) nt;
+	}
+	return expression_tree_mutator(n, doc_nulls_mutator, (void *) p);
+}
+
 /* e is a key or argument PostgreSQL's executor computes from columns of the scan (v6_pg_expr.h): col is its column, typed as e; an argument has a native vector or holds datums an exact distinct
  * set takes (sift_dkey_datum_type), a key may be of any type that can be grouped */
 bool
@@ -547,7 +576,7 @@ sift_v6_pg_derived_col(V6Plan *p, Expr *e, bool key, SiftV6Col *col)
 	e = index_exprs_as_columns(p, e);
 	if (SIFT_JSON_NULL_CAST_RAISES && casts_key_jsonb((Node *) e, NULL))
 		return false;
-	e = sift_v6_json_vars(&rel, e, true, false, member_vatt, p);
+	e = (Expr *) doc_nulls_mutator((Node *) sift_v6_json_vars(&rel, sift_v6_tests_split(p, e), true, false, member_vatt, p), p);
 	if (undeclared_doc_walker((Node *) e, p))
 		return false;
 	if (!join_derive_ok(p, e))

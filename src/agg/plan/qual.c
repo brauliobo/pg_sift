@@ -214,6 +214,17 @@ present_leaf(const V6Plan *p, int att)
 	return -1;
 }
 
+Var *
+sift_v6_doc_present_var(const V6Plan *p, const Expr *doc, int *att)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	int			leaf;
+
+	if (p->is_table || p->colrel == NULL || p->ops->jsonb == NULL || !p->ops->jsonb->exact_values || !sift_v6_json_doc_att(&rel, doc, att) || (leaf = present_leaf(p, *att)) < 0)
+		return NULL;
+	return makeVar(p->rel->relid, SIFT_V6_JHELD_VATT + leaf, INT8OID, -1, InvalidOid, 0);
+}
+
 /*
  * IS [NOT] NULL of a shredded document, to a format that reads the documents as the heap does: of a WHERE, a scan key of the column of the index, which its presence leaf decides; of a FILTER, the
  * test of the value the presence leaf holds, which the scan reads as a column. NULL: the index has no such leaf
@@ -221,16 +232,13 @@ present_leaf(const V6Plan *p, int att)
 static Expr *
 doc_null_test(V6Plan *p, NullTest *nt)
 {
-	const SiftV6Rel rel = sift_v6_plan_rel(p);
 	NullTest   *q = copyObject(nt);
 	SiftV6Col	col;
-	Var		   *present;
-	int			att,
-				leaf;
+	int			att;
+	Var		   *present = sift_v6_doc_present_var(p, nt->arg, &att);
 
-	if (p->is_table || p->colrel == NULL || p->ops->jsonb == NULL || !p->ops->jsonb->exact_values || !sift_v6_json_doc_att(&rel, nt->arg, &att) || (leaf = present_leaf(p, att)) < 0)
+	if (present == NULL)
 		return NULL;
-	present = makeVar(p->rel->relid, SIFT_V6_JHELD_VATT + leaf, INT8OID, -1, InvalidOid, 0);
 	if (p->in_filter && !key_column(p, (Expr *) present, false, &col))
 		return NULL;
 	q->arg = index_var(p->in_filter ? (Expr *) present : nt->arg, att - 1);

@@ -228,17 +228,27 @@ lower_positive(Lower *l, const Expr *clause)
 	}
 }
 
-/* NOT (doc @> c): doc IS NOT NULL and the tests not all true (a test of a missing key is NULL) */
-static bool
-lower_negated(Lower *l, const OpExpr *op)
+/* the clause of NOT (clause) or (clause) IS FALSE, NULL for another expression */
+static const Expr *
+negated_arg(const Expr *e)
 {
-	const Oid	fid = get_opcode(op->opno);
-	const Expr *lhs = strip(fid == F_JSONB_CONTAINED ? lsecond(op->args) : linitial(op->args));
+	if (is_notclause(e))
+		return get_notclausearg(e);
+	return IsA(e, BooleanTest) && ((const BooleanTest *) e)->booltesttype == IS_FALSE ? ((const BooleanTest *) e)->arg : NULL;
+}
+
+/* NOT (doc @> c), and (doc @> c) IS FALSE: doc IS NOT NULL and the tests not all true (a test of a missing key is NULL) */
+static bool
+lower_negated(Lower *l, const Expr *arg)
+{
+	const OpExpr *op = (const OpExpr *) arg;
+	const Oid	fid = IsA(arg, OpExpr) && list_length(op->args) == 2 ? get_opcode(op->opno) : InvalidOid;
+	const Expr *lhs = fid == InvalidOid ? NULL : strip(fid == F_JSONB_CONTAINED ? lsecond(op->args) : linitial(op->args));
 	const Var  *doc = (fid == F_JSONB_CONTAINS || fid == F_JSONB_CONTAINED) && IsA(lhs, Var) ? (const Var *) lhs : NULL;
 	BooleanTest *none = makeNode(BooleanTest);
 	NullTest   *nt;
 
-	if (doc == NULL || !lower_positive(l, (const Expr *) op))
+	if (doc == NULL || !lower_positive(l, arg))
 		return false;
 	*none = (BooleanTest) {.xpr.type = T_BooleanTest,.arg = make_ands_explicit(l->tests),.booltesttype = IS_NOT_TRUE,.location = -1};
 	l->tests = list_make1(none);
@@ -254,16 +264,11 @@ List *
 sift_v6_contains_quals(const SiftV6Rel *rel, const Expr *clause)
 {
 	Lower		l = {.rel = rel};
-	const BoolExpr *b = (const BoolExpr *) strip(clause);
-	bool		ok;
+	const Expr *negated = negated_arg(strip(clause));
 
 	if (sift_v6_rel_leaves(rel) == NULL || !sift_v6_values_exact(rel) || !rel->ops->jsonb->exact_values)
 		return NIL;
-	if (IsA(b, BoolExpr) && b->boolop == NOT_EXPR)
-		ok = IsA(linitial(b->args), OpExpr) && list_length(((const OpExpr *) linitial(b->args))->args) == 2 && lower_negated(&l, linitial(b->args));
-	else
-		ok = lower_positive(&l, clause);
-	return ok ? l.tests : NIL;
+	return (negated != NULL ? lower_negated(&l, negated) : lower_positive(&l, clause)) ? l.tests : NIL;
 }
 
 bool

@@ -12,6 +12,7 @@
 
 #include "agg/plan/int.h"
 #include "agg/filter/pg.h"
+#include "agg/qual/contains.h"
 #include "agg/qual/qual.h"
 #include "agg/unnest/jsonb.h"
 
@@ -118,6 +119,28 @@ or_qual(V6Plan *p, const BoolExpr *or)
 	return makeBoolExpr(OR_EXPR, arms, -1);
 }
 
+/* a containment whose lists of strings the tests of the plan read: the quals of their flags and of the tests of the leaves of its other members (NULL: none, or one the scan does not decide) */
+static Expr *
+members_qual(V6Plan *p, Expr *c)
+{
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	Expr	   *rest;
+	List	   *quals = sift_v6_tests_contains_quals(p, c, &rest);
+	List	   *tests = quals != NIL && rest != NULL ? sift_v6_contains_quals(&rel, rest) : NIL;
+
+	if (quals == NIL || (rest != NULL && tests == NIL))
+		return NULL;
+	foreach_ptr(Expr, t, tests)
+	{
+		Expr	   *q = filter_qual(p, t);
+
+		if (q == NULL)
+			return NULL;
+		quals = lappend(quals, q);
+	}
+	return make_ands_explicit(quals);
+}
+
 /* a conjunct of a FILTER as a qual the scan decides on the stored values: a test of the elements of the row, a qual of its columns, or an OR of those (NULL: none) */
 static Expr *
 conjunct_qual(V6Plan *p, Expr *conjunct)
@@ -125,7 +148,7 @@ conjunct_qual(V6Plan *p, Expr *conjunct)
 	Expr	   *c = truth_compare(bool_compare(conjunct));
 	Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
 
-	if (q != NULL)
+	if (q != NULL || (q = members_qual(p, c)) != NULL)
 		return q;
 	return is_orclause(c) ? or_qual(p, (const BoolExpr *) c) : filter_qual(p, c);
 }

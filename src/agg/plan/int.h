@@ -183,6 +183,8 @@ extern bool sift_v6_nulled_placeholder(Node *n, PlannerInfo *root);
 extern Expr *sift_v6_plan_json_vars(V6Plan *p, const Expr *e, bool values);
 /* the plan reads an unnest whose scan reads the presence of the keys of a document (SiftJsonbOps.unnest_keys): its JSON reads are those tests alone, no scan key */
 extern bool sift_v6_plan_unnest_keys(const V6Plan *p);
+/* the value of the presence leaf of the shredded document doc (agg/plan/qual.c), NULL exactly where the document is SQL NULL, and the column of the index the document is; NULL: no such leaf */
+extern Var *sift_v6_doc_present_var(const V6Plan *p, const Expr *doc, int *att);
 /* the conjuncts of a clause, its nested ANDs flattened */
 extern List *sift_v6_conjuncts(Expr *clause);
 /* sift_v6_plan_json_vars of a WHERE or FILTER clause, read for its truth alone (sift_v6_json_vars) */
@@ -227,6 +229,10 @@ extern List *sift_v6_quals_in_order(PlannerInfo *root, List *infos);
 extern bool sift_v6_unnest_where(V6Plan *p);
 /* v6_unnest_exists.c: the qual of the flag of the test a conjunct of a FILTER is (the virtual attribute SIFT_V6_XFLAG_VATT + the test against true or false); NULL when it is none of the tests of the plan */
 extern Expr *sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct);
+/* the virtual attribute of the flag of the test of the plan e is (SIFT_V6_XFLAG_VATT + the test), a column an expression of the scan reads; InvalidAttrNumber: none */
+extern int	sift_v6_unnest_test_vatt(const V6Plan *p, const Expr *e);
+/* e with each containment whose lists of strings the tests of the plan read as the flags of those tests and the containment of its other members, NULL where its document is */
+extern Expr *sift_v6_tests_split(const V6Plan *p, const Expr *e);
 /* the WHERE clause is a test of the plan, which the scan decides: it is not compiled as a qual of the table */
 extern bool sift_v6_unnest_test_ri(const V6Plan *p, const RestrictInfo *ri);
 /*

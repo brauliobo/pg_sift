@@ -128,12 +128,12 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
   34 | jx: array element, filter not       | scan same
   35 | jx: array element, is false         | scan same
   36 | jx: array element, case else 0      | scan same
-  37 | jx: key exists, where               | plain same
-  38 | jx: key exists, not                 | plain same
-  39 | jx: key exists, not and             | plain same
-  40 | jx: key exists, filter not          | plain same
-  41 | jx: key exists, is false            | plain same
-  42 | jx: key exists, case else 0         | plain same
+  37 | jx: key exists, where               | scan same
+  38 | jx: key exists, not                 | scan same
+  39 | jx: key exists, not and             | scan same
+  40 | jx: key exists, filter not          | scan same
+  41 | jx: key exists, is false            | scan same
+  42 | jx: key exists, case else 0         | scan same
   43 | jx: path exists, where              | plain same
   44 | jx: path exists, not                | plain same
   45 | jx: path exists, not and            | plain same
@@ -194,18 +194,18 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  100 | jx: containment and g, filter not   | scan same
  101 | jx: containment and g, is false     | scan same
  102 | jx: containment and g, case else 0  | scan same
- 103 | jx: key or containment, where       | plain same
- 104 | jx: key or containment, not         | plain same
- 105 | jx: key or containment, not and     | plain same
- 106 | jx: key or containment, filter not  | plain same
+ 103 | jx: key or containment, where       | scan same
+ 104 | jx: key or containment, not         | scan same
+ 105 | jx: key or containment, not and     | scan same
+ 106 | jx: key or containment, filter not  | scan same
  107 | jx: key or containment, is false    | plain same
- 108 | jx: key or containment, case else 0 | plain same
- 109 | jx: array and key, where            | plain same
- 110 | jx: array and key, not              | plain same
- 111 | jx: array and key, not and          | plain same
- 112 | jx: array and key, filter not       | plain same
- 113 | jx: array and key, is false         | plain same
- 114 | jx: array and key, case else 0      | plain same
+ 108 | jx: key or containment, case else 0 | scan same
+ 109 | jx: array and key, where            | scan same
+ 110 | jx: array and key, not              | scan same
+ 111 | jx: array and key, not and          | scan same
+ 112 | jx: array and key, filter not       | scan same
+ 113 | jx: array and key, is false         | scan same
+ 114 | jx: array and key, case else 0      | scan same
  115 | jx: document is null, where         | scan same
  116 | jx: document is null, not           | scan same
  117 | jx: document is null, not and       | scan same
@@ -254,12 +254,12 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  160 | jy: array element, filter not       | scan same
  161 | jy: array element, is false         | scan same
  162 | jy: array element, case else 0      | scan same
- 163 | jy: key exists, where               | plain same
- 164 | jy: key exists, not                 | plain same
- 165 | jy: key exists, not and             | plain same
- 166 | jy: key exists, filter not          | plain same
- 167 | jy: key exists, is false            | plain same
- 168 | jy: key exists, case else 0         | plain same
+ 163 | jy: key exists, where               | scan same
+ 164 | jy: key exists, not                 | scan same
+ 165 | jy: key exists, not and             | scan same
+ 166 | jy: key exists, filter not          | scan same
+ 167 | jy: key exists, is false            | scan same
+ 168 | jy: key exists, case else 0         | scan same
  169 | jy: path exists, where              | plain same
  170 | jy: path exists, not                | plain same
  171 | jy: path exists, not and            | plain same
@@ -320,18 +320,18 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  226 | jy: containment and g, filter not   | scan same
  227 | jy: containment and g, is false     | scan same
  228 | jy: containment and g, case else 0  | scan same
- 229 | jy: key or containment, where       | plain same
- 230 | jy: key or containment, not         | plain same
- 231 | jy: key or containment, not and     | plain same
- 232 | jy: key or containment, filter not  | plain same
+ 229 | jy: key or containment, where       | scan same
+ 230 | jy: key or containment, not         | scan same
+ 231 | jy: key or containment, not and     | scan same
+ 232 | jy: key or containment, filter not  | scan same
  233 | jy: key or containment, is false    | plain same
- 234 | jy: key or containment, case else 0 | plain same
- 235 | jy: array and key, where            | plain same
+ 234 | jy: key or containment, case else 0 | scan same
+ 235 | jy: array and key, where            | scan same
  236 | jy: array and key, not              | plain same
  237 | jy: array and key, not and          | plain same
- 238 | jy: array and key, filter not       | plain same
+ 238 | jy: array and key, filter not       | scan same
  239 | jy: array and key, is false         | plain same
- 240 | jy: array and key, case else 0      | plain same
+ 240 | jy: array and key, case else 0      | scan same
  241 | jy: document is null, where         | scan same
  242 | jy: document is null, not           | scan same
  243 | jy: document is null, not and       | scan same
@@ -380,7 +380,7 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  286 | jo: array element, filter not       | plain same
  287 | jo: array element, is false         | plain same
  288 | jo: array element, case else 0      | plain same
- 289 | jo: key exists, where               | plain same
+ 289 | jo: key exists, where               | scan same
  290 | jo: key exists, not                 | plain same
  291 | jo: key exists, not and             | plain same
  292 | jo: key exists, filter not          | plain same
@@ -446,13 +446,13 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  352 | jo: containment and g, filter not   | plain same
  353 | jo: containment and g, is false     | plain same
  354 | jo: containment and g, case else 0  | plain same
- 355 | jo: key or containment, where       | plain same
+ 355 | jo: key or containment, where       | scan same
  356 | jo: key or containment, not         | plain same
  357 | jo: key or containment, not and     | plain same
  358 | jo: key or containment, filter not  | plain same
  359 | jo: key or containment, is false    | plain same
  360 | jo: key or containment, case else 0 | plain same
- 361 | jo: array and key, where            | plain same
+ 361 | jo: array and key, where            | scan same
  362 | jo: array and key, not              | plain same
  363 | jo: array and key, not and          | plain same
  364 | jo: array and key, filter not       | plain same
@@ -473,45 +473,45 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  379 | jd: text leaf, where                | scan same
  380 | jd: text leaf, not                  | scan same
  381 | jd: text leaf, not and              | scan same
- 382 | jd: text leaf, filter not           | plain same
- 383 | jd: text leaf, is false             | plain same
- 384 | jd: text leaf, case else 0          | plain same
+ 382 | jd: text leaf, filter not           | scan same
+ 383 | jd: text leaf, is false             | scan same
+ 384 | jd: text leaf, case else 0          | scan same
  385 | jd: integer leaf, where             | scan same
  386 | jd: integer leaf, not               | scan same
  387 | jd: integer leaf, not and           | scan same
- 388 | jd: integer leaf, filter not        | plain same
- 389 | jd: integer leaf, is false          | plain same
- 390 | jd: integer leaf, case else 0       | plain same
+ 388 | jd: integer leaf, filter not        | scan same
+ 389 | jd: integer leaf, is false          | scan same
+ 390 | jd: integer leaf, case else 0       | scan same
  391 | jd: nested text leaf, where         | scan same
  392 | jd: nested text leaf, not           | scan same
  393 | jd: nested text leaf, not and       | scan same
- 394 | jd: nested text leaf, filter not    | plain same
- 395 | jd: nested text leaf, is false      | plain same
- 396 | jd: nested text leaf, case else 0   | plain same
+ 394 | jd: nested text leaf, filter not    | scan same
+ 395 | jd: nested text leaf, is false      | scan same
+ 396 | jd: nested text leaf, case else 0   | scan same
  397 | jd: two keys, where                 | scan same
  398 | jd: two keys, not                   | scan same
  399 | jd: two keys, not and               | scan same
- 400 | jd: two keys, filter not            | plain same
- 401 | jd: two keys, is false              | plain same
- 402 | jd: two keys, case else 0           | plain same
+ 400 | jd: two keys, filter not            | scan same
+ 401 | jd: two keys, is false              | scan same
+ 402 | jd: two keys, case else 0           | scan same
  403 | jd: contained by, where             | scan same
  404 | jd: contained by, not               | scan same
  405 | jd: contained by, not and           | scan same
- 406 | jd: contained by, filter not        | plain same
- 407 | jd: contained by, is false          | plain same
- 408 | jd: contained by, case else 0       | plain same
+ 406 | jd: contained by, filter not        | scan same
+ 407 | jd: contained by, is false          | scan same
+ 408 | jd: contained by, case else 0       | scan same
  409 | jd: array element, where            | scan same
  410 | jd: array element, not              | plain same
  411 | jd: array element, not and          | plain same
- 412 | jd: array element, filter not       | plain same
+ 412 | jd: array element, filter not       | scan same
  413 | jd: array element, is false         | plain same
- 414 | jd: array element, case else 0      | plain same
- 415 | jd: key exists, where               | plain same
- 416 | jd: key exists, not                 | plain same
- 417 | jd: key exists, not and             | plain same
- 418 | jd: key exists, filter not          | plain same
- 419 | jd: key exists, is false            | plain same
- 420 | jd: key exists, case else 0         | plain same
+ 414 | jd: array element, case else 0      | scan same
+ 415 | jd: key exists, where               | scan same
+ 416 | jd: key exists, not                 | scan same
+ 417 | jd: key exists, not and             | scan same
+ 418 | jd: key exists, filter not          | scan same
+ 419 | jd: key exists, is false            | scan same
+ 420 | jd: key exists, case else 0         | scan same
  421 | jd: path exists, where              | plain same
  422 | jd: path exists, not                | plain same
  423 | jd: path exists, not and            | plain same
@@ -551,39 +551,39 @@ SELECT n, label, sift_helpers.agg_check_outcome(q) FROM qs ORDER BY n;
  457 | jd: both containments, where        | scan same
  458 | jd: both containments, not          | plain same
  459 | jd: both containments, not and      | plain same
- 460 | jd: both containments, filter not   | plain same
+ 460 | jd: both containments, filter not   | scan same
  461 | jd: both containments, is false     | plain same
- 462 | jd: both containments, case else 0  | plain same
- 463 | jd: either containment, where       | plain same
+ 462 | jd: both containments, case else 0  | scan same
+ 463 | jd: either containment, where       | scan same
  464 | jd: either containment, not         | scan same
  465 | jd: either containment, not and     | scan same
- 466 | jd: either containment, filter not  | plain same
+ 466 | jd: either containment, filter not  | scan same
  467 | jd: either containment, is false    | plain same
- 468 | jd: either containment, case else 0 | plain same
- 469 | jd: containment or g, where         | plain same
+ 468 | jd: either containment, case else 0 | scan same
+ 469 | jd: containment or g, where         | scan same
  470 | jd: containment or g, not           | scan same
  471 | jd: containment or g, not and       | scan same
- 472 | jd: containment or g, filter not    | plain same
+ 472 | jd: containment or g, filter not    | scan same
  473 | jd: containment or g, is false      | plain same
- 474 | jd: containment or g, case else 0   | plain same
+ 474 | jd: containment or g, case else 0   | scan same
  475 | jd: containment and g, where        | scan same
  476 | jd: containment and g, not          | plain same
  477 | jd: containment and g, not and      | plain same
- 478 | jd: containment and g, filter not   | plain same
+ 478 | jd: containment and g, filter not   | scan same
  479 | jd: containment and g, is false     | plain same
- 480 | jd: containment and g, case else 0  | plain same
- 481 | jd: key or containment, where       | plain same
- 482 | jd: key or containment, not         | plain same
- 483 | jd: key or containment, not and     | plain same
- 484 | jd: key or containment, filter not  | plain same
+ 480 | jd: containment and g, case else 0  | scan same
+ 481 | jd: key or containment, where       | scan same
+ 482 | jd: key or containment, not         | scan same
+ 483 | jd: key or containment, not and     | scan same
+ 484 | jd: key or containment, filter not  | scan same
  485 | jd: key or containment, is false    | plain same
- 486 | jd: key or containment, case else 0 | plain same
- 487 | jd: array and key, where            | plain same
+ 486 | jd: key or containment, case else 0 | scan same
+ 487 | jd: array and key, where            | scan same
  488 | jd: array and key, not              | plain same
  489 | jd: array and key, not and          | plain same
- 490 | jd: array and key, filter not       | plain same
+ 490 | jd: array and key, filter not       | scan same
  491 | jd: array and key, is false         | plain same
- 492 | jd: array and key, case else 0      | plain same
+ 492 | jd: array and key, case else 0      | scan same
  493 | jd: document is null, where         | scan same
  494 | jd: document is null, not           | scan same
  495 | jd: document is null, not and       | scan same
