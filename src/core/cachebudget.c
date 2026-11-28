@@ -31,6 +31,8 @@ static int	nkinds;
 static uint64 clock_now;
 static Size reclaimed;
 static uint64 xact_floor;
+static MemoryContext charged;
+static MemoryContextCallback charged_cb;
 
 MemoryContext
 sift_cache_root_context(void)
@@ -60,10 +62,25 @@ sift_cache_adopt(MemoryContext cx)
 	MemoryContextSetParent(cx, sift_cache_root_context());
 }
 
+static void
+uncharge(void *arg)
+{
+	charged = NULL;
+}
+
+void
+sift_cache_charge(MemoryContext cx)
+{
+	SIFT_INVARIANT(charged == NULL, "sift: a second context charged to the cache budget");
+	charged = cx;
+	charged_cb.func = uncharge;
+	MemoryContextRegisterResetCallback(cx, &charged_cb);
+}
+
 Size
 sift_cache_total_bytes(void)
 {
-	return cache_root ? MemoryContextMemAllocated(cache_root, true) : 0;
+	return (cache_root ? MemoryContextMemAllocated(cache_root, true) : 0) + (charged ? MemoryContextMemAllocated(charged, true) : 0);
 }
 
 Size

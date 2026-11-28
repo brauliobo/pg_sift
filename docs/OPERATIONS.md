@@ -12,7 +12,7 @@ Every allocation in `pg_sift` 6.0 belongs to one of three strictly enforced budg
 |---|---|---:|---|
 | Query execution | `work_mem`, `hash_mem_multiplier` | PG defaults | `SiftAgg` hash tables, radix spills, lookup joins, Top-N heaps, set filters |
 | Maintenance & builds | `maintenance_work_mem` | PG default | `CREATE INDEX`, `REINDEX`, `VACUUM`, compaction, `sift.check(..., true)` |
-| Backend cache | `sift.backend_cache_kb` | `32768` (32 MB) | Per-backend LRU across BM25 prefixes, manifests, decoded granules, dicts |
+| Backend cache | `sift.backend_cache_kb` | `32768` (32 MB) | Per-backend LRU across BM25 prefixes, manifests, decoded granules, dicts; the rows a transaction locks one by one count in it |
 | Shared cache | `sift.shared_cache_kb` | `131072` (128 MB) | Server-wide DSM cap across manifests, parsed dictionaries, leaf stats |
 
 ### Connection Pooling Math

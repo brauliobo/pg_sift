@@ -53,6 +53,13 @@ extern bool sift_cache_commit(void);
 /* drops every entry nobody pins, from every cache, and gives the freed memory back to the system: what DISCARD ALL asks of a backend that goes to another client */
 extern void sift_cache_discard_all(void);
 
+/*
+ * A context of the transaction whose bytes the backend keeps beside its statements and no eviction can drop (the rows a transaction locks one by one, table/f2/lock/touched.c):
+ * they count in the budget until the context is reset or deleted, and the caches give up the room they take
+ */
+extern void sift_cache_charge(MemoryContext cx);
+
+/* the bytes of the caches and of the charged context */
 extern Size sift_cache_total_bytes(void);
 
 /* The most a backend keeps of the state of a scan for the next statement: what a statement of the session may hold (work_mem), and never more than the caches together */

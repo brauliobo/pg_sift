@@ -250,8 +250,11 @@ MemoryContext
 sift_rowlock_txn_cx(void)
 {
 	if (txn_cx == NULL)
-		/* MEM[MEM-TBL-09]: TopTransactionContext xact row-lock tracker (freed at xact end, 0 B idle) */
+	{
+		/* MEM[MEM-TBL-09]: TopTransactionContext xact row-lock tracker (freed at xact end, 0 B idle; charged to sift.backend_cache_kb) */
 		txn_cx = sift_mem_allocset_create(TopTransactionContext, "sift f2 row locks of the transaction");
+		sift_cache_charge(txn_cx);
+	}
 	return txn_cx;
 }
 

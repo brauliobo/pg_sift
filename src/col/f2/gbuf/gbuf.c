@@ -682,11 +682,24 @@ sift_f2_gbuf_row_next(SiftF2GranuleBuf *gb, uint64 tid, int after)
 	return -1;
 }
 
+/* The bytes of the arrays a decoded column takes in its granule, its strings aside */
+static Size
+column_bytes(const SiftF2GranuleBuf *gb, SiftCellKind kind, bool wide)
+{
+	Size		value = kind == SIFT_CELL_INT ? sizeof(int64) : kind == SIFT_CELL_F8 ? sizeof(double) : sizeof(SiftStrCell);
+
+	return (Size) gb->nrows * (sizeof(bool) + value + (wide ? 1 : 0));
+}
+
+/* A granule of a cache asks the budget for the room of the column before it decodes it, so that the cache drops the granules nobody holds first */
 static void
 decode_column(SiftF2GranuleBuf *gb, int phys, SiftCellKind kind, bool wide, MemoryContext cx)
 {
-	MemoryContext old = MemoryContextSwitchTo(cx);
+	MemoryContext old;
 
+	if (gb->cached)
+		(void) sift_cache_room(column_bytes(gb, kind, wide));
+	old = MemoryContextSwitchTo(cx);
 	gb->col_isnull[phys] = palloc(sizeof(bool) * gb->nrows);
 	if (kind == SIFT_CELL_INT)
 	{

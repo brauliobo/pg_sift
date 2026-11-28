@@ -10,6 +10,7 @@
 #include "common/int.h"
 #include "utils/memutils.h"
 
+#include "core/cachebudget.h"
 #include "core/host.h"
 #include "table/f2/lock/int.h"
 
@@ -136,6 +137,7 @@ reserve_row(void)
 		chunks = chunks == NULL ? MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(Row *) * cap) : repalloc(chunks, sizeof(Row *) * cap);
 		capchunks = cap;
 	}
+	(void) sift_cache_room(sizeof(Row) * TOUCHED_CHUNK);
 	/* check-memory: allow a chunk of the rows of a transaction in tier 1, which rel_row_cap() of esc.c bounds for each relation */
 	chunks[nchunks++] = MemoryContextAlloc(sift_rowlock_txn_cx(), sizeof(Row) * TOUCHED_CHUNK);
 }
@@ -193,7 +195,10 @@ static void
 reindex(uint32 n)
 {
 	uint32		cap = pg_nextpower2_32(Max(n * 2, 128));
-	uint32	   *ix = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * cap);
+	uint32	   *ix;
+
+	(void) sift_cache_room(sizeof(uint32) * cap);
+	ix = MemoryContextAllocZero(sift_rowlock_txn_cx(), sizeof(uint32) * cap);
 
 	if (touched_ix != NULL)
 		pfree(touched_ix);
