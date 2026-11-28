@@ -238,8 +238,9 @@ GRANT USAGE ON SCHEMA s6 TO PUBLIC;
 SET search_path = s6, public;
 -- The latest row of an entity out of thousands (ORDER BY ts DESC LIMIT 1 WHERE ent = n, alone or in a LATERAL per entity) is not read by walking the order array of ts: the heap row
 -- of each entry would test ent, and the statistics' pass rate (one in the entities) asks for more fetches than a walk would make. The Top-N scan reads the units whose zones hold
--- the entity and tests ent on the column of the index (Granules: scanned): it starts no walk.
+-- the entity and tests ent on the column of the index (Granules: scanned, the unit counter of Format 2.0): it starts no walk.
 SET client_min_messages = warning;
+DO $$ BEGIN IF current_setting('sift.test_create_format1', true) IS NOT NULL THEN PERFORM set_config('sift.test_create_format1', 'off', false); END IF; END $$;
 SET max_parallel_workers_per_gather = 0;
 CREATE TABLE ev (id int, ent int, ts int, pad text) WITH (autovacuum_enabled = false);
 ALTER TABLE ev ALTER pad SET STORAGE PLAIN;
@@ -252,7 +253,7 @@ CREATE FUNCTION reads_units(q text) RETURNS bool LANGUAGE plpgsql AS $$
 DECLARE l text; units bool := false;
 BEGIN
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ' || q LOOP
-		units := units OR substring(l FROM 'Granules: scanned=([0-9]+)')::int > 0;
+		units := units OR coalesce(substring(l FROM 'Granules: scanned=([0-9]+)')::int > 0, false);
 	END LOOP;
 	RETURN units;
 END $$;
