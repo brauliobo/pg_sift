@@ -798,9 +798,11 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 	return true;
 }
 
+/* the lookups probe each row of the fact table the join keeps once, before its elements join it: the rows of the join over PostgreSQL's constant count of rows a call of the element function */
 static Cost
 lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startup)
 {
+	const double probes = sh->elem != NULL ? input_rel->rows / Max(sh->elem->tuples, 1.0) : input_rel->rows;
 	Cost		total = 0;
 
 	*startup = 0;
@@ -809,11 +811,11 @@ lookup_cost(const SiftV6JoinShape *sh, const RelOptInfo *input_rel, Cost *startu
 		const Cost	read = sift_v6_dim_cost(sh->dim[d].path);
 
 		*startup += read;
-		total += read + sh->dim[d].path->rows * cpu_operator_cost * 2.0 + input_rel->rows * cpu_operator_cost;
+		total += read + sh->dim[d].path->rows * cpu_operator_cost * 2.0 + probes * cpu_operator_cost;
 		if (sh->dim[d].nkeys == 0)
 			total += sh->fact->rows * sh->dim[d].path->rows * cpu_operator_cost * 2.0;
 		if (sh->dim[d].on != NIL || sh->resid != NIL || sh->splits != NIL)
-			total += (sh->dim[d].nkeys == 0 ? sh->fact->rows * sh->dim[d].path->rows : input_rel->rows) * cpu_operator_cost * 4.0;
+			total += (sh->dim[d].nkeys == 0 ? sh->fact->rows * sh->dim[d].path->rows : probes) * cpu_operator_cost * 4.0;
 	}
 	return total;
 }
