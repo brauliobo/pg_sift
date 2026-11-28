@@ -1,7 +1,7 @@
 -- `sum((doc ->> 'score')::float8)` beside a batch qual of another key (`doc ->> 'flag' = 'ok'`): PostgreSQL casts the score of a row the WHERE keeps only, so a text that is no number raises for
 -- such a row alone. The scan of an index of format major 2 reads the value of the exception of every row its scan keys keep, and raises the error of the cast for the rows its batch quals keep
--- too: the statement runs in SiftAggV6 with PostgreSQL's rows and error. A statement whose expression decides which rows reach the cast (a CASE, a FILTER) keeps the normal plan, and so does
--- Format 1, which casts before its batch quals. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows (or the error) are the same; `why` says whether
+-- too: the statement runs in SiftAggV6 with PostgreSQL's rows and error. A statement whose expression decides which rows reach the cast (a CASE, a FILTER) raises for the rows it keeps (Format 2.0),
+-- or keeps the normal plan, and so does Format 1, which casts before its batch quals. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows (or the error) are the same; `why` says whether
 -- sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 NOTICE:  installing required extension "pg_sift"
@@ -60,8 +60,8 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co     |  5 | or of the flag         | scan same why
  co     |  6 | key of the read        | scan same why
  co     |  7 | cast in the where      | scan same why
- co     |  8 | case guard             | plain same
- co     |  9 | filter guard           | plain same
+ co     |  8 | case guard             | scan same why
+ co     |  9 | filter guard           | scan same why
  co     | 10 | no qual                | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  1 | sum beside a text qual | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  2 | grouped                | error: invalid input syntax for type double precision: "bad" why
@@ -70,8 +70,8 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co_ok  |  5 | or of the flag         | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  6 | key of the read        | error: invalid input syntax for type double precision: "bad" why
  co_ok  |  7 | cast in the where      | error: invalid input syntax for type double precision: "bad" why
- co_ok  |  8 | case guard             | error: invalid input syntax for type double precision: "bad"
- co_ok  |  9 | filter guard           | plain same
+ co_ok  |  8 | case guard             | error: invalid input syntax for type double precision: "bad" why
+ co_ok  |  9 | filter guard           | scan same why
  co_ok  | 10 | no qual                | error: invalid input syntax for type double precision: "bad" why
  co_num |  1 | sum beside a text qual | scan same why
  co_num |  2 | grouped                | scan same why
@@ -80,8 +80,8 @@ FROM (VALUES (1, 'co'), (2, 'co_ok'), (3, 'co_num'), (4, 'co_f1')) t(ord, tbl), 
  co_num |  5 | or of the flag         | scan same why
  co_num |  6 | key of the read        | scan same why
  co_num |  7 | cast in the where      | scan same why
- co_num |  8 | case guard             | plain same
- co_num |  9 | filter guard           | plain same
+ co_num |  8 | case guard             | scan same why
+ co_num |  9 | filter guard           | scan same why
  co_num | 10 | no qual                | error: invalid input syntax for type double precision: "[1, 2]" why
  co_f1  |  1 | sum beside a text qual | plain same
  co_f1  |  2 | grouped                | plain same
@@ -142,7 +142,7 @@ SELECT n, co_check(q) AS outcome FROM (VALUES
  1 | plain same
  2 | plain same
  3 | plain same
- 4 | plain same
+ 4 | scan same why
  5 | error: cannot cast jsonb string to type double precision why
  6 | scan same why
  7 | scan same why

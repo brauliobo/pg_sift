@@ -314,6 +314,7 @@ typedef struct SiftJsonbOps
 								 * its unnest reads any column of the table beside the elements (without it, the typed leaves only: no whole document, no numeric read as datums) */
 	bool		row_quals;		/* its unnest narrows the rows of the table by the quals no scan key says (SiftV6Spec.vqual, agg/qual/bqual.h) */
 	bool		raise_after_quals;	/* the scan raises the error of the cast of a value of an exception (to float8, to bool) only for the rows its batch quals keep, as PostgreSQL's WHERE does */
+	bool		raise_after_filter;	/* the scan raises the error of a column that only aggregates with a FILTER take only for the rows one of those FILTERs keeps, as PostgreSQL casts their arguments */
 	bool		raise_in_groups;	/* the scan of a star join raises the error of a read of a fact row (not of its quals) when the row reaches the groups: a row the join drops raises nothing */
 	bool		streams;		/* its unnest reads the elements of several arrays of a row (SiftV6Ext.nstreams), and the clauses of the table read the flags of the tests */
 	bool		table_elems;	/* its unnest of a sift_table reads the elements of the declared paths of its store; a row they cannot hold, and every row of a statement a qual of which only the row decides, is read again by its address */

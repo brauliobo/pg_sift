@@ -76,6 +76,8 @@ extern void sift_v6_pipe_take_emit(SiftV6Pipe *p, SiftV6BatchFn *emit, void **em
 extern SiftV6Pipe *sift_v6_pipe_clone(MemoryContext cx, const SiftV6Pipe *p, SiftV6BatchFn sink, void *sink_arg);
 /* The column the vector v of a batch is: argvec[j] is the argument of aggregate j, argvec[naggs + j] its second, then the columns of the COUNT(DISTINCT ..) rows and those of the FILTER clauses; NULL for none */
 extern const SiftV6Col *sift_v6_vec_col(const SiftV6Spec *spec, int v);
+/* The FILTER clause (SiftV6Agg.fclause) of the aggregate that takes the vector v: PostgreSQL computes its column for the rows the clause keeps only; 0 for none, or for a column of a FILTER clause */
+extern int	sift_v6_vec_fclause(const SiftV6Spec *spec, int v);
 /* The slot of the payload column of a dimension, or of an expression of the joined rows (SIFT_V6_JOINED_DIM) */
 extern int	sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay);
 /* An EXISTS over the elements: slot is the number of the fact row of each pair, and each batch of rows starts with sift_v6_pipe_semi_reset. A last dimension of a RIGHT or FULL join

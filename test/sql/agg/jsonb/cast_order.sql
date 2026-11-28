@@ -1,7 +1,7 @@
 -- `sum((doc ->> 'score')::float8)` beside a batch qual of another key (`doc ->> 'flag' = 'ok'`): PostgreSQL casts the score of a row the WHERE keeps only, so a text that is no number raises for
 -- such a row alone. The scan of an index of format major 2 reads the value of the exception of every row its scan keys keep, and raises the error of the cast for the rows its batch quals keep
--- too: the statement runs in SiftAggV6 with PostgreSQL's rows and error. A statement whose expression decides which rows reach the cast (a CASE, a FILTER) keeps the normal plan, and so does
--- Format 1, which casts before its batch quals. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows (or the error) are the same; `why` says whether
+-- too: the statement runs in SiftAggV6 with PostgreSQL's rows and error. A statement whose expression decides which rows reach the cast (a CASE, a FILTER) raises for the rows it keeps (Format 2.0),
+-- or keeps the normal plan, and so does Format 1, which casts before its batch quals. Each statement runs with the scan and without it: `scan` or `plain`, then whether the rows (or the error) are the same; `why` says whether
 -- sift.explain_why reports an arm the plan uses.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;

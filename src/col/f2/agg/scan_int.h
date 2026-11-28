@@ -61,7 +61,17 @@ typedef struct V6Col
 	bool		lane;			/* a leaf the datum of the column before it is made of: it is decoded with that one, and has no vector of its own */
 	int			jmember;		/* SiftV6Col.jmember: the column reads a member of a document by a path (f2_v6_member.c) */
 	const V6Member *member;		/* jmember: the member of a map; NULL for a path the index declares, whose leaf is the column's */
+	uint64		gates;			/* bit f - 1: an aggregate with FILTER clause f takes the column (SiftV6Agg.fclause) */
+	bool		ungated;		/* something else reads the column on every row the batch quals keep: a key, an aggregate with no FILTER, a clause, a derivation */
 } V6Col;
+
+static inline V6Col *
+col_gate(V6Col *c, int gate)
+{
+	c->gates |= gate > 0 ? UINT64CONST(1) << (gate - 1) : 0;
+	c->ungated |= gate == 0;
+	return c;
+}
 
 /* a key that is date_bin() of a column, or its date_trunc('month'): the batch of the column binned into out, as the vector of the key */
 typedef struct V6Bin
@@ -136,6 +146,7 @@ struct SiftV6Scan
 	void	   *recheck_arg;
 	int			nstore;			/* a fold: the columns that are a column of the index; the others (the score) are the caller's */
 	SiftV6FoldCol *pub;
+	SiftClause *gate_clause;	/* the FILTER clauses of the statement when a column that can raise is read under them only: a row raises when one of its gates keeps it (NULL: none) */
 	struct SiftV6ParScan *par;	/* the granules of the scan that the compute threads of the backend fold (agg/par/run.h) */
 	struct SiftV6PinRun *pin;	/* the same for the statements of par/pinrun.h */
 	SiftF2GranCounts grans;		/* the granules of the index scan, added to stats after each pass and morsel */
@@ -179,6 +190,8 @@ extern SiftStrView sift_f2_v6_text_view(const ColView *cv, int row, bool table);
 extern void sift_f2_v6_fill_col(V6Col *c, const ColView *cv, int off, int n, uint64 part_gen, const uint64 *mask);
 extern uint64 **sift_f2_v6_fill_cols(V6Scan *s, const ColView *views, const uint64 *tid, const float4 *score, uint64 part_gen, int off, int n);
 extern void sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64 *const *raises, int off, int n);
+/* The vectors of the columns of the scan, and the FILTER clauses that gate a column that can raise when nothing else reads it (V6Scan.gate_clause) */
+extern void sift_f2_v6_cols_setup(V6Scan *s);
 /* The rows of the n rows of a batch PostgreSQL meets an error in, before the batch quals run; and its first error in row i of the batch from off */
 extern void sift_f2_v6_raises(V6Scan *s, uint64 *const *cols, int n, V6Raises *r);
 extern void sift_f2_v6_raise_at(V6Scan *s, const ColView *views, const uint64 *tid, const V6Raises *r, int off, int i);

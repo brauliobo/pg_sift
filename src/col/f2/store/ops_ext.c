@@ -96,6 +96,7 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.exact_values = true,
 	.row_quals = true,
 	.raise_after_quals = true,
+	.raise_after_filter = true,
 	.raise_in_groups = true,
 	.streams = true,
 	.table_elems = true,

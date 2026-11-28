@@ -121,8 +121,8 @@ SELECT same(q) FROM unnest(ARRAY[
  same node SELECT grp, sum((doc->>'k')::float8 * 2 + 1) FROM @T WHERE grp IN (0, 1, 5, 7, 8, 9, 10, 11) GROUP BY 1
  same node SELECT grp, sum((doc->>'k')::float8) FROM @T GROUP BY grp => error: invalid input syntax for type double precision: "abc"
  same node SELECT sum((doc->>'k')::float8) FROM @T WHERE grp = 3 => error: invalid input syntax for type double precision: "{"x": 1}"
- same normal SELECT grp, sum((doc->>'k')::float8) FILTER (WHERE id > 50) FROM @T WHERE grp IN (0, 1) GROUP BY grp
- same normal SELECT count(*) FILTER (WHERE grp IN (0, 1, 5)), sum((doc->>'k')::float8) FILTER (WHERE grp IN (0, 1, 5)) FROM @T
+ same node SELECT grp, sum((doc->>'k')::float8) FILTER (WHERE id > 50) FROM @T WHERE grp IN (0, 1) GROUP BY grp
+ same node SELECT count(*) FILTER (WHERE grp IN (0, 1, 5)), sum((doc->>'k')::float8) FILTER (WHERE grp IN (0, 1, 5)) FROM @T
  same normal SELECT sum((doc->>'k')::float8) FROM @T WHERE (doc->>'k')::float8 > 1 AND grp IN (0, 1, 5, 7, 8, 9, 10, 11) => error: invalid input syntax for type double precision: "abc"
  same node SELECT sum((doc->>'s')::float8) FROM @T WHERE grp IN (0, 1, 5, 7, 8, 9, 10, 11) => error: invalid input syntax for type double precision: "v1"
 (10 rows)

@@ -151,24 +151,96 @@ filter_leaves(const SiftV6Spec *s, bool *filtered)
 	return leaves;
 }
 
+/* the read that raises of an input of an SiftV6Spec.pgexpr item (attno, c), -1: none */
+static int
+input_read(int attno, const SiftV6Col *c)
+{
+	return sift_v6_vatt_is_member(attno) ? member_read(attno) : raising_attno(attno) ? sift_v6_vatt_leaf(attno) : raising_read(c);
+}
+
+/* the reads that raise of a column an aggregate takes: its own, or of a derived one those of what the derivation computes it from */
+static void
+note_arg(const SiftV6Spec *s, Bitmapset **own, Bitmapset **derived, const SiftV6Col *c)
+{
+	const SiftV6Derive *d = c->derive > 0 ? &s->derive[c->derive - 1] : NULL;
+	SiftV6PgItem it;
+
+	if (d == NULL)
+		note_col(s, own, c);
+	else if (d->kind != SVD_PG_EXPR)
+	{
+		note_col(s, derived, &d->src);
+		for (int i = 0; i < d->ncond; i++)
+			note_col(s, derived, &d->cond[i]);
+	}
+	else
+	{
+		sift_v6_pgexpr_item(s, d, &it);
+		for (int i = 0; i < it.nin; i++)
+			if (input_read(it.col[i].attno, &it.col[i]) >= 0)
+				*derived = bms_add_member(*derived, input_read(it.col[i].attno, &it.col[i]));
+	}
+}
+
+/* the reads that raise the first conjunct of FILTER clause f makes on every row: PostgreSQL meets their error there before the aggregate casts anything */
+static Bitmapset *
+filter_always(const SiftV6Spec *s, int f)
+{
+	const List *quals = list_nth(s->filter, f - 1);
+	Reads		always = {s};
+
+	if (quals != NIL)
+		(void) always_reads(linitial(quals), &always);
+	return always.leaves;
+}
+
+/* FILTER clause f raises no error of its own: neither the clause nor an expression the scan computes for it (SiftV6Spec.pgexpr) applies a function that may raise */
+static bool
+filter_quiet(const SiftV6Spec *s, int f)
+{
+	if (contain_leaked_vars(list_nth(s->filter, f - 1)))
+		return false;
+	foreach_ptr(List, item, s->pgexpr)
+		if (contain_leaked_vars(linitial(item)))
+			return false;
+	return true;
+}
+
+/*
+ * The FILTER of aggregate a decides for each row whether PostgreSQL casts its argument, and the scan casts it for every row: it raises where PostgreSQL does not unless the FILTER raises the same
+ * error first or keeps only the rows that hold the key, or the format raises the error of a column only for the rows the FILTER of an aggregate that reads it keeps (SiftJsonbOps.raise_after_filter)
+ * and the FILTER raises nothing of its own, which the scan would meet before the cast of an earlier row. A derivation computes its value from the column for every row
+ */
+static bool
+filter_misses_raise(const V6Plan *p, const SiftV6Agg *a, const Bitmapset *own, const Bitmapset *derived)
+{
+	const Bitmapset *always = filter_always(&p->spec, a->fclause);
+
+	if (bms_is_subset(own, always) && bms_is_subset(derived, always))
+		return false;
+	return derived != NULL || !(filter_is_presence(&p->spec, a->fclause, own) || (p->ops->jsonb->raise_after_filter && p->xseed == NULL && filter_quiet(&p->spec, a->fclause)));
+}
+
 /* the leaves the scan converts outside its quals, for the rows it keeps: the keys, the arguments and what is computed from them */
 static Bitmapset *
-read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
+read_leaves(const V6Plan *p, bool *filtered, bool *computed)
 {
+	const SiftV6Spec *s = &p->spec;
 	Bitmapset  *leaves = filter_leaves(s, filtered);
 
 	for (int i = 0; i < s->nkeys; i++)
 		note_col(s, &leaves, &s->key[i]);
 	for (int a = 0; a < s->naggs; a++)
 	{
-		Bitmapset  *own = NULL;
+		Bitmapset  *own = NULL,
+				   *derived = NULL;
 
-		note_col(s, &own, &s->agg[a].arg);
-		note_col(s, &own, &s->agg[a].arg2);
+		note_arg(s, &own, &derived, &s->agg[a].arg);
+		note_arg(s, &own, &derived, &s->agg[a].arg2);
 		for (int c = 0; c < s->agg[a].nxcols; c++)
-			note_col(s, &own, &s->agg[a].xcol[c]);
-		*filtered |= own != NULL && s->agg[a].fclause != 0 && !filter_is_presence(s, s->agg[a].fclause, own);
-		leaves = bms_union(leaves, own);
+			note_arg(s, &own, &derived, &s->agg[a].xcol[c]);
+		*filtered |= (own != NULL || derived != NULL) && s->agg[a].fclause != 0 && filter_misses_raise(p, &s->agg[a], own, derived);
+		leaves = bms_union(leaves, bms_union(own, derived));
 	}
 	for (int d = 0; d < s->nderive; d++)
 		note_col(s, &leaves, &s->derive[d].src);
@@ -181,8 +253,7 @@ read_leaves(const SiftV6Spec *s, bool *filtered, bool *computed)
 		{
 			const List *ints = lsecond(item);
 			const SiftV6Col in = {.typid = (Oid) list_nth_int(ints, i + 1),.src = (SiftV6Src) list_nth_int(ints, i + 3),.slot = list_nth_int(ints, i + 4)};
-			const int	attno = list_nth_int(ints, i);
-			const int	read = sift_v6_vatt_is_member(attno) ? member_read(attno) : raising_attno(attno) ? sift_v6_vatt_leaf(attno) : raising_read(&in);
+			const int	read = input_read(list_nth_int(ints, i), &in);
 
 			if (read < 0)
 				continue;
@@ -283,7 +354,7 @@ sift_v6_json_cast_order_ok(V6Plan *p)
 	const SiftV6Spec *s = &p->spec;
 	bool		filtered = false,
 				computed = false;
-	Bitmapset  *other = read_leaves(s, &filtered, &computed);
+	Bitmapset  *other = read_leaves(p, &filtered, &computed);
 	const RestrictInfo *cast = NULL;
 	Bitmapset  *cast_leaves = NULL;
 

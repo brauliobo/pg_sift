@@ -9,6 +9,8 @@
 #include "utils/memutils.h"
 
 #include "agg/engine.h"
+#include "agg/filter/eval.h"
+#include "agg/filter/pg.h"
 #include "agg/win/datebin_pg.h"
 #include "agg/expr/str.h"
 #include "agg/qual/bqual.h"
@@ -319,6 +321,76 @@ sift_f2_v6_raise_at(V6Scan *s, const ColView *views, const uint64 *tid, const V6
 		}
 }
 
+/* a column that can raise and that only the aggregates of some FILTER clauses take */
+static bool
+only_gated(const V6Col *c)
+{
+	return c->gates != 0 && !c->ungated && (c->jmember > 0 || (c->json && !c->jtype));
+}
+
+void
+sift_f2_v6_cols_setup(V6Scan *s)
+{
+	const SiftV6Spec *spec = s->spec;
+	bool		any = false;
+
+	for (int k = 0; k < s->ncols; k++)
+	{
+		V6Col	   *c = &s->cols[k];
+
+		c->vec.type = c->cls == SV6C_F64 ? SVEC_F64 : c->cls == SV6C_TEXT ? SVEC_STRVIEW : c->cls == SV6C_DATUM ? SVEC_DATUM : SVEC_I64;
+		c->vec.typid = c->cls == SV6C_DATUM ? c->typid : InvalidOid;
+		c->vec.typlen = c->typlen;
+		c->vec.typbyval = c->typbyval;
+		any |= only_gated(c);
+	}
+	if (!any)
+		return;
+	s->gate_clause = palloc(sizeof(SiftClause) * spec->nfilters);
+	for (int f = 0; f < spec->nfilters; f++)
+		if (!sift_v6_clause_bind(CurrentMemoryContext, list_nth(spec->filter, f), spec, &s->gate_clause[f]))
+			SIFT_INVARIANT(false, "the FILTER clause %d of the aggregate scan of relation %u is not compiled", f, spec->relid);
+}
+
+/* the rows of the batch the quals keep that one of the gates keeps, in out */
+static void
+gate_rows(V6Scan *s, uint64 gates, uint64 *out)
+{
+	uint64		bits[SIFT_VEC_WORDS];
+
+	memset(out, 0, sizeof(uint64) * SIFT_VEC_WORDS);
+	for (; gates != 0; gates &= gates - 1)
+	{
+		memset(bits, 0, sizeof(bits));
+		sift_clause_eval(&s->gate_clause[__builtin_ctzll(gates)], s->argvec + sift_v6_spec_fvec(s->spec), s->bs.n_raw, bits);
+		for (int w = 0; w < SIFT_VEC_WORDS; w++)
+			out[w] |= bits[w] & s->bs.mask[w];
+	}
+}
+
+/*
+ * PostgreSQL casts a column that only aggregates with a FILTER take for the rows one of their clauses keeps: those of the rows the quals keep are the rows of the column that raise. The clauses read
+ * the derived columns of the rows the quals keep
+ */
+static void
+gate_raises(V6Scan *s, uint64 *const *raises)
+{
+	const SiftBatchSel all = s->bs;
+	uint64		keep[SIFT_VEC_WORDS];
+
+	if (s->bq != NULL)
+		sift_v6_bq_filter(s->bq, &s->bs);
+	sift_f2_v6_derive_columns(s);
+	for (int k = 0; k < s->ncols; k++)
+		if (raises[k] != NULL && only_gated(&s->cols[k]))
+		{
+			gate_rows(s, s->cols[k].gates, keep);
+			for (int w = 0; w < SIFT_VEC_WORDS; w++)
+				raises[k][w] &= keep[w];
+		}
+	s->bs = all;
+}
+
 /*
  * PostgreSQL's error for the first row whose cast raises that PostgreSQL casts (one the batch quals keep, or any row of a column they read themselves): in the row, the error PostgreSQL meets first.
  * When sift_f2_v6_raise_kept returns, no row of the batch raises
@@ -328,6 +400,8 @@ sift_f2_v6_raise_kept(V6Scan *s, const ColView *views, const uint64 *tid, uint64
 {
 	V6Raises	r;
 
+	if (raises != NULL && s->gate_clause != NULL)
+		gate_raises(s, raises);
 	sift_f2_v6_raises(s, raises, n, &r);
 	for (int w = 0; w < (n + 63) / 64; w++)
 		if (r.rows[w] != 0)

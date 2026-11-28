@@ -79,8 +79,8 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke      |  9 | undeclared key         | plain same
  ke      | 10 | not                    | scan same why
  ke      | 11 | or                     | scan same why
- ke      | 12 | read of another key    | plain same
- ke      | 13 | read under is not true | plain same
+ ke      | 12 | read of another key    | scan same why
+ ke      | 13 | read under is not true | scan same why
  ke_text |  1 | headline               | error: invalid input syntax for type double precision: "abc" why
  ke_text |  2 | count                  | scan same why
  ke_text |  3 | grouped                | error: invalid input syntax for type double precision: "abc" why
@@ -92,8 +92,8 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke_text |  9 | undeclared key         | plain same
  ke_text | 10 | not                    | scan same why
  ke_text | 11 | or                     | scan same why
- ke_text | 12 | read of another key    | plain same
- ke_text | 13 | read under is not true | plain same
+ ke_text | 12 | read of another key    | scan same why
+ ke_text | 13 | read under is not true | scan same why
  ke_obj  |  1 | headline               | error: invalid input syntax for type double precision: "{"z": 1}" why
  ke_obj  |  2 | count                  | scan same why
  ke_obj  |  3 | grouped                | error: invalid input syntax for type double precision: "{"z": 1}" why
@@ -105,8 +105,8 @@ FROM (VALUES (1, 'ke'), (2, 'ke_text'), (3, 'ke_obj'), (4, 'ke_f1')) t(ord, tbl)
  ke_obj  |  9 | undeclared key         | plain same
  ke_obj  | 10 | not                    | scan same why
  ke_obj  | 11 | or                     | scan same why
- ke_obj  | 12 | read of another key    | plain same
- ke_obj  | 13 | read under is not true | plain same
+ ke_obj  | 12 | read of another key    | scan same why
+ ke_obj  | 13 | read under is not true | scan same why
  ke_f1   |  1 | headline               | scan same why
  ke_f1   |  2 | count                  | scan same why
  ke_f1   |  3 | grouped                | scan same why

@@ -157,6 +157,19 @@ sift_v6_vec_col(const SiftV6Spec *spec, int v)
 }
 
 int
+sift_v6_vec_fclause(const SiftV6Spec *spec, int v)
+{
+	if (v >= sift_v6_spec_fvec(spec))
+		return 0;
+	if (v < 2 * spec->naggs)
+		return spec->agg[v % spec->naggs].fclause;
+	for (int j = 0; j < spec->naggs; j++)
+		if (v >= sift_v6_agg_xvec(spec, j) && v < sift_v6_agg_xvec(spec, j) + spec->agg[j].nxcols)
+			return spec->agg[j].fclause;
+	return 0;
+}
+
+int
 sift_v6_pipe_dim_slot(const SiftV6Pipe *p, int dim, int pay)
 {
 	return p->pay_slot[dim] + pay;

@@ -513,30 +513,30 @@ has_decimals(const Expr *e)
 
 typedef struct CaseAgg
 {
-	Expr	   *cond;
+	Expr	   *cond;			/* the FILTER of the aggregate, if any, AND the condition of the CASE: PostgreSQL tests them in that order */
 	Expr	   *val;
 	bool		else_zero;
 	Oid			type;
 } CaseAgg;
 
-/* sum(CASE WHEN cond THEN val [ELSE 0 | NULL] END) and count(CASE WHEN cond THEN val [ELSE NULL] END) */
+/* sum(CASE WHEN cond THEN val [ELSE 0 | NULL] END) and count(CASE WHEN cond THEN val [ELSE NULL] END), with no FILTER or one and no ELSE */
 static bool
 case_agg_of(const Aggref *a, CaseAgg *ca)
 {
 	const CaseExpr *ce;
 	const CaseWhen *w;
 
-	if (a->aggfilter != NULL || a->aggdistinct != NIL || a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL || a->aggvariadic || a->aggstar || list_length(a->args) != 1 ||
+	if (a->aggdistinct != NIL || a->aggorder != NIL || a->aggkind != AGGKIND_NORMAL || a->aggvariadic || a->aggstar || list_length(a->args) != 1 ||
 		!(func_is(a->aggfnoid, "sum") || func_is(a->aggfnoid, "count")))
 		return false;
 	ce = (const CaseExpr *) linitial_node(TargetEntry, a->args)->expr;
 	if (!IsA(ce, CaseExpr) || ce->arg != NULL || list_length(ce->args) != 1)
 		return false;
 	w = linitial_node(CaseWhen, ce->args);
-	*ca = (CaseAgg) {.cond = w->expr,.val = w->result,.type = ce->casetype};
+	*ca = (CaseAgg) {.cond = a->aggfilter != NULL ? make_andclause(list_make2(a->aggfilter, w->expr)) : w->expr,.val = w->result,.type = ce->casetype};
 	if (ce->defresult == NULL || (IsA(ce->defresult, Const) && ((Const *) ce->defresult)->constisnull))
 		return true;
-	ca->else_zero = const_is(ce->defresult, 0) && !has_decimals(ce->defresult);
+	ca->else_zero = a->aggfilter == NULL && const_is(ce->defresult, 0) && !has_decimals(ce->defresult);
 	return ca->else_zero;
 }
 
