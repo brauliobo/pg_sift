@@ -57,11 +57,13 @@ filter_qual(V6Plan *p, Expr *c)
 
 /* a boolean column, or NOT of one, as its comparison with true or false: the forms the quals of a scan take (a NULL passes neither) */
 static Expr *
-bool_compare(Expr *c)
+bool_compare(V6Plan *p, Expr *c)
 {
 	const bool	negated = is_notclause(c);
 	Expr	   *arg = negated ? get_notclausearg(c) : c;
 
+	if (exprType((Node *) arg) == BOOLOID && !IsA(arg, Var))
+		arg = sift_v6_plan_json_vars(p, arg, true);
 	if (!IsA(arg, Var) || ((const Var *) arg)->vartype != BOOLOID)
 		return c;
 	return make_opclause(BooleanEqualOperator, BOOLOID, false, arg, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
@@ -168,7 +170,7 @@ members_qual(V6Plan *p, Expr *c)
 static Expr *
 conjunct_qual(V6Plan *p, Expr *conjunct)
 {
-	Expr	   *c = truth_compare(bool_compare(conjunct));
+	Expr	   *c = truth_compare(bool_compare(p, conjunct));
 	Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
 
 	if (q != NULL || (q = members_qual(p, c)) != NULL)
