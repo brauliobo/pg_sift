@@ -113,7 +113,7 @@ void
 sift_v1_unnest_run_arms(SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone)
 {
 	const int	n = cohort->narms;
-	UnRun	   *u = palloc(n * sizeof(UnRun));
+	UnRun	   *u = sift_palloc0_aligned(UnRun, n);
 	ArmMap	   *m = palloc0(n * sizeof(ArmMap));
 	SiftV6Input in;
 	SiftV1ElemSpec es = {0};
