@@ -119,18 +119,30 @@ sift_v6_unnest_elem_qual(const V6Plan *p, Node *clause)
  * a clause over the columns of the element that no comparison of the scan says (a regex, a function, another operator): a step PostgreSQL's evaluator runs on the elements the steps before it keep,
  * as (the clause over the inputs of SIFT_V6_PGX_RELID, the slot and the type of each input); NULL when it reads anything but columns the element has before its quals, or needs the node to run
  */
+/* each column of the element in n (a member `e ->> 'k'` too) as a column of the lateral relation numbered by its virtual attribute, the input of the step it is */
+static Node *
+elem_cols_mutator(Node *n, const V6Plan *p)
+{
+	const Var  *e = n == NULL || IsA(n, Var) ? NULL : (const Var *) elem_var(p, n, false);
+
+	if (e != NULL)
+		return (Node *) makeVar(p->elem_rel->relid, e->varattno, e->vartype, e->vartypmod, e->varcollid, 0);
+	return expression_tree_mutator(n, elem_cols_mutator, (void *) p);
+}
+
 static Node *
 elem_pg_step(const V6Plan *p, Expr *clause)
 {
 	List	   *vars,
 			   *ints = NIL;
 
+	clause = (Expr *) elem_cols_mutator((Node *) clause, p);
 	if (!sift_v6_pgexpr_plan_ok(p->root, clause) || sift_v6_pgexpr_exec((const Node *) clause) ||
 		!sift_v6_pgexpr_vars(clause, p->elem_rel->relid, 0, &vars) || vars == NIL)
 		return NULL;
 	foreach_node(Var, v, vars)
 	{
-		const Var  *e = (const Var *) elem_var(p, (const Node *) v, false);
+		const Var  *e = v->varattno >= SIFT_V6_ELEM_VATT ? v : (const Var *) elem_var(p, (const Node *) v, false);
 
 		if (e == NULL || !sift_v6_type_native(v->vartype))
 			return NULL;
