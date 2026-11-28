@@ -39,11 +39,17 @@ sift_f2_v6_member_new(const V6Scan *s, const SiftV6Col *c)
 {
 	const SiftColSchema *sch = s->is_table ? sift_f2_store_open(s->host)->schema : sift_col_rel(s->host)->schema;
 	List	   *path = sift_v6_member_path(s->spec, c->jmember);
-	const char *name = strVal(llast(path));
+	const AttrNumber doc_att = s->is_table ? c->attno : s->host->rd_index->indkey.values[c->attno - 1];
+	const char *name;
 	V6Member   *m = palloc(sizeof(V6Member));
 
-	*m = (V6Member) {.group = sch->cols[c->jleaf - 1].parent,.key = -1,.name = name,.len = strlen(name),.path = path,
-	.doc_att = s->is_table ? c->attno : s->host->rd_index->indkey.values[c->attno - 1]};
+	if (sch->cols[c->jleaf - 1].kind == SIFT_COLK_GROUP)
+	{
+		*m = (V6Member) {.group = c->jleaf - 1,.key = -1,.path = path,.doc_att = doc_att,.length = true};
+		return m;
+	}
+	name = strVal(llast(path));
+	*m = (V6Member) {.group = sch->cols[c->jleaf - 1].parent,.key = -1,.name = name,.len = strlen(name),.path = path,.doc_att = doc_att};
 	for (int l = 0; l < sch->ncols; l++)
 		if (sch->cols[l].parent == m->group && strstr(sch->cols[l].path, "#key") != NULL)
 			m->key = l;
@@ -119,6 +125,30 @@ leaf_cell(const V6Scan *s, const ColView *v, uint32 i)
 	return v->xpay != NULL && v->xpay[i] != NULL ? (Cell) {.kind = MC_JSONB,.pay = v->xpay[i],.plen = v->xplen[i]} : (Cell) {.kind = MC_NULL};
 }
 
+/* a JSON value of the type of the tag that is no array: jsonb_array_length of it raises PostgreSQL's error for an object or for a scalar */
+static Cell
+not_array_cell(V6Scan *s, uint8 tag)
+{
+	MemoryContext old = MemoryContextSwitchTo(s->batch_cx);
+	Jsonb	   *jb = DatumGetJsonbP(DirectFunctionCall1(jsonb_in, CStringGetDatum(tag == SIFT_COLTAG_OBJECT ? "{}" : "null")));
+
+	MemoryContextSwitchTo(old);
+	return (Cell) {.kind = MC_JSONB,.pay = (const char *) jb,.plen = VARSIZE(jb)};
+}
+
+/* the list of row r: the number of its elements the group holds, the whole list of one the index cut (its payload, or the row read again), a value that is no array, or none (no value, a SQL NULL) */
+static Cell
+length_cell(V6Scan *s, const V6Col *c, const ColView *g, int r, uint64 tid)
+{
+	const uint8 tag = g->tag != NULL ? g->tag[r] : SIFT_COLTAG_UNKNOWN;
+
+	if (!g->isnull[r])
+		return (Cell) {.kind = MC_INT,.i = g->i[r]};
+	if (tag == SIFT_COLTAG_ARRAY)
+		return g->xpay != NULL && g->xpay[r] != NULL ? (Cell) {.kind = MC_JSONB,.pay = g->xpay[r],.plen = g->xplen[r]} : row_cell(s, c, tid);
+	return (tag >= SIFT_COLTAG_STRING && tag <= SIFT_COLTAG_OBJECT) || tag == SIFT_COLTAG_JNULL ? not_array_cell(s, tag) : (Cell) {.kind = MC_NULL};
+}
+
 /* the member of row r, whose elements are [first, first + n) of the leaves of the keys and the values of its map; of a path the index declares, its leaf */
 static Cell
 member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first, uint32 n, uint64 tid)
@@ -130,6 +160,8 @@ member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first
 
 	if (c->member == NULL)
 		return leaf_cell(s, v, (uint32) r);
+	if (c->member->length)
+		return length_cell(s, c, v, r, tid);
 	g = &views[c->member->group];
 	k = &views[c->member->key];
 	if (g->isnull[r])
@@ -145,12 +177,22 @@ member_cell(V6Scan *s, const V6Col *c, const ColView *views, int r, uint32 first
 	return lost ? row_cell(s, c, tid) : (Cell) {.kind = MC_NULL};
 }
 
-/* the cell as the value of the column at i: false when its cast raises */
+/* the cell as the value of the column at i: false when its cast raises, or the list is no array */
 static bool
 put_cell(V6Scan *s, V6Col *c, int i, const Cell *m)
 {
 	SiftV6JsonValue val = {0};
 	SiftV6JsonExc res = SV6JX_NULL;
+	int64		n = m->i;
+
+	if (c->member != NULL && c->member->length && m->kind != MC_NULL)
+	{
+		if (m->kind == MC_JSONB && !sift_v6_json_array_length(m->pay, m->plen, s->batch_cx, &n))
+			return false;
+		((int64 *) c->vec.data)[i] = n;
+		c->valid[i >> 6] |= UINT64CONST(1) << (i & 63);
+		return true;
+	}
 
 	if (m->kind == MC_FLOAT && c->typid == FLOAT8OID)
 	{
@@ -221,6 +263,8 @@ sift_f2_v6_member_raise(V6Scan *s, const V6Col *c, const ColView *views, const u
 {
 	const Cell	m = member_cell(s, c, views, r, members_before(c, views, r), row_members(c, views, r), tid != NULL ? tid[r] : 0);
 
+	if (c->member != NULL && c->member->length)
+		sift_v6_json_array_length_raise(m.pay, m.plen, s->batch_cx);
 	if (m.kind == MC_FLOAT)
 		sift_v6_json_float_int_raise(c->typid, m.f);
 	sift_v6_json_exception_raise(c->typid, c->jsonb_cast, m.pay, m.plen, s->batch_cx);

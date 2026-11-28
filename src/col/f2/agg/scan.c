@@ -90,6 +90,8 @@ member_cols(V6Scan *s, V6Col *n, const SiftV6Col *c)
 
 	n->member = m;
 	s->members = true;
+	if (m->length)
+		return;
 	col_init(s, m->group, &(SiftV6Col) {.attno = c->attno,.typid = INT8OID}, false, false);
 	s->cols[s->ncols - 1].lane = true;
 	col_init(s, m->key, &(SiftV6Col) {.attno = c->attno,.typid = TEXTOID}, false, false);
@@ -126,7 +128,7 @@ col_for(V6Scan *s, const int *first, SiftV6Col c, bool key, bool takes_nan, int 
 	col_init(s, leaf, &c, key, takes_nan);
 	n = col_gate(&s->cols[s->ncols - 1], gate);
 	n->jmember = c.jmember;
-	if (c.jmember > 0 && s->defs[leaf].parent >= 0)
+	if (c.jmember > 0 && (s->defs[leaf].parent >= 0 || s->defs[leaf].kind == SIFT_COLK_GROUP))
 		member_cols(s, n, &c);
 	else if (n->cls == SV6C_DATUM)
 	{

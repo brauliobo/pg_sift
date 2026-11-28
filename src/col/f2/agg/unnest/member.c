@@ -36,10 +36,11 @@ map_of(UnRun *u, const UnLeaves *r, int value)
 int
 sift_f2_unnest_member_col(UnRun *u, const UnLeaves *r, const SiftV6Col *c)
 {
-	const int	map = r->schema->cols[c->jleaf - 1].parent >= 0 ? 1 + map_of(u, r, c->jleaf - 1) : 0;
+	const bool	length = r->schema->cols[c->jleaf - 1].kind == SIFT_COLK_GROUP;
+	const int	map = !length && r->schema->cols[c->jleaf - 1].parent >= 0 ? 1 + map_of(u, r, c->jleaf - 1) : 0;
 	const int	leaf = map > 0 ? u->map[map - 1].group : c->jleaf - 1;
 	List	   *path = sift_v6_member_path(u->spec, c->jmember);
-	const char *key = strVal(llast(path));
+	const char *key = length ? "" : strVal(llast(path));
 
 	for (int i = 0; i < u->ncols; i++)
 		if (u->cols[i].member && u->cols[i].leaf == leaf && u->cols[i].jsonb_cast == c->jsonb_cast && u->cols[i].typid == c->typid && strcmp(u->cols[i].key, key) == 0)
@@ -48,7 +49,7 @@ sift_f2_unnest_member_col(UnRun *u, const UnLeaves *r, const SiftV6Col *c)
 		ereport(ERROR, (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED), errmsg("the aggregate scan of an unnest reads at most %d columns of the table", SIFT_F2_PULL_MAX_COLS),
 						errhint("Aggregate fewer columns of the table that is unnested.")));
 	u->cols[u->ncols] = (UnCol) {.leaf = leaf,.cls = sift_v6_class(c->typid),.json = true,.typid = c->typid,.read = true,.jsonb_cast = c->jsonb_cast,
-		.heap_att = heap_attno(u, c->attno),.key = key,.keylen = strlen(key),.member = true,.map = map,.path = path};
+		.heap_att = heap_attno(u, c->attno),.key = key,.keylen = strlen(key),.member = true,.map = map,.path = path,.length = length};
 	return u->ncols++;
 }
 
@@ -75,6 +76,18 @@ put(UnRun *u, int i, uint32 r, bool number, double f, const char *pay, uint32 le
 	u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
 }
 
+/* the number of elements of the list of a row of the heap, whose value that is no array raises as jsonb_array_length does */
+static void
+put_length(UnRun *u, int i, uint32 r, const char *pay, uint32 len)
+{
+	int64		n;
+
+	if (!sift_v6_json_array_length(pay, len, u->bcx, &n))
+		sift_v6_json_array_length_raise(pay, len, u->bcx);
+	((int64 *) u->jdata[i])[r] = n;
+	u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+}
+
 /* the member of row r from the document of the heap row in the slot of the vet */
 static void
 slot_member(UnRun *u, int i, uint32 r)
@@ -87,7 +100,7 @@ slot_member(UnRun *u, int i, uint32 r)
 	uint32		len;
 
 	if (!isnull && sift_v6_json_payload_member((const char *) DatumGetJsonbP(doc), VARSIZE(DatumGetJsonbP(doc)), c->path, u->bcx, &pay, &len))
-		put(u, i, r, false, 0, pay, len);
+		c->length ? put_length(u, i, r, pay, len) : put(u, i, r, false, 0, pay, len);
 	MemoryContextSwitchTo(old);
 }
 
@@ -144,6 +157,11 @@ sift_f2_unnest_member_column(UnRun *u, int i, const SiftF2ExtBatch *b, const Sif
 
 			if (u->cols[i].map > 0)
 				map_member(u, i, b, r);
+			else if (u->cols[i].length && (leaf->all_valid || ((leaf->valid[r >> 6] >> (r & 63)) & 1)))
+			{
+				((int64 *) u->jdata[i])[r] = ((const int64 *) leaf->data)[r];
+				u->jvalid[i][r >> 6] |= UINT64CONST(1) << (r & 63);
+			}
 			else if (leaf->all_valid || ((leaf->valid[r >> 6] >> (r & 63)) & 1))
 				put(u, i, r, true, ((const double *) leaf->data)[r], NULL, 0);
 			else

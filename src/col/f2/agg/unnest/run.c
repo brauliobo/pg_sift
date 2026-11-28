@@ -207,7 +207,7 @@ pull_spec(const UnRun *u)
 	const int	nst = ps.ngroups;
 
 	for (int i = 0; i < u->ncols; i++)
-		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = !u->cols[i].member ? vec_type(u->cols[i].cls) : u->cols[i].map > 0 ? SVEC_I64 : SVEC_F64};
+		ps.col[i] = (SiftF2PullCol) {.leaf = u->cols[i].leaf,.type = !u->cols[i].member ? vec_type(u->cols[i].cls) : u->cols[i].map > 0 || u->cols[i].length ? SVEC_I64 : SVEC_F64};
 	for (int s = 0; s < ps.ngroups; s++)
 	{
 		const UnStream *st = &u->st[s];

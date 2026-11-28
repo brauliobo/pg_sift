@@ -62,6 +62,7 @@ typedef struct UnCol
 	bool		member;			/* a member of a document read by a path (SiftV6Col.jmember), converted as the statement does */
 	int			map;			/* member: 1 + the map among those of the pull whose member it is, the leaf of the column its lengths; 0: a path the index declares, the leaf of its values */
 	List	   *path;			/* member: the keys from the document of heap_att to the member, key the last */
+	bool		length;			/* member: jsonb_array_length of the list whose group is the leaf (path: the keys to the list) */
 } UnCol;
 
 /* a map of a document whose members are columns of the rows: one more group of the pull, after the arrays of the streams */

@@ -94,6 +94,7 @@ const SiftJsonbOps sift_f2_jsonb_ops = {
 	.key_exists = true,
 	.key_presence = true,
 	.exact_values = true,
+	.array_length = true,
 	.row_quals = true,
 	.raise_after_quals = true,
 	.raise_after_filter = true,

@@ -1,6 +1,6 @@
 -- trap: an object where an array leaf is declared raises the error of jsonb_array_length, not a NULL
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- error: yes

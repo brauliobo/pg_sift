@@ -31,6 +31,7 @@ typedef struct V6Member
 	uint32		len;
 	List	   *path;			/* the keys from the document to the member, name the last */
 	AttrNumber	doc_att;		/* the attribute of the row read again (V6Scan.reread) that holds the document */
+	bool		length;			/* the column is jsonb_array_length of the list whose group is the column's own leaf (no key leaf) */
 } V6Member;
 
 typedef struct V6Col

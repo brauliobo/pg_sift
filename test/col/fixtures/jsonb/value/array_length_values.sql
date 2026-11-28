@@ -1,6 +1,6 @@
--- trap: the length of an array leaf whose rows hold arrays (the index flags the values its float8 leaves cannot store, so the scan keeps the normal plan)
+-- trap: the length of an array leaf whose rows hold arrays: the scan reads the group leaf of the list and counts a value its leaves could not hold from the row
 -- shape: trap
--- expect: plain
+-- expect: agg
 -- guc: seq_page_cost = 10000
 -- guc: random_page_cost = 10000
 -- key: 1

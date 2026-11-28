@@ -320,6 +320,7 @@ typedef struct SiftJsonbOps
 	bool		key_presence;	/* the scan reads whether a document has a key as a column of its batches (SIFT_V6_JPRES_VATT), the documents that are no object included */
 	bool		exact_values;	/* the scan of the store gives what a document gives the heap: the value of a key that its leaf cannot hold, read from the exception of its row, and the array an index expression computes;
 								 * its unnest reads any column of the table beside the elements (without it, the typed leaves only: no whole document, no numeric read as datums) */
+	bool		array_length;	/* the scan reads jsonb_array_length of a list the paths option declares as a member whose leaf is the group of the list (SiftV6Col.jmember), and raises PostgreSQL's error for a value that is no array */
 	bool		row_quals;		/* its unnest narrows the rows of the table by the quals no scan key says (SiftV6Spec.vqual, agg/qual/bqual.h) */
 	bool		raise_after_quals;	/* the scan raises the error of the cast of a value of an exception (to float8, to bool) only for the rows its batch quals keep, as PostgreSQL's WHERE does */
 	bool		raise_after_filter;	/* the scan raises the error of a column that only aggregates with a FILTER take only for the rows one of those FILTERs keeps, as PostgreSQL casts their arguments */

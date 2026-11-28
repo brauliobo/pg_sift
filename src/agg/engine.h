@@ -543,6 +543,9 @@ extern bool sift_v6_json_float_int(Oid typid, double f, Datum *out);
 extern void sift_v6_json_float_int_raise(Oid typid, double f);
 /* The member the keys lead to from the jsonb of the payload (a jsonb datum of len bytes), as the payload of one, made in cx; false: none (a key is missing, or a value on the way is no object) */
 extern bool sift_v6_json_payload_member(const char *payload, uint32 len, const List *keys, MemoryContext cx, const char **out, uint32 *outlen);
+/* the number of elements of the jsonb of the payload, a value of a list jsonb_array_length reads (SiftJsonbOps.array_length): false when it is no array, whose error sift_v6_json_array_length_raise raises */
+extern bool sift_v6_json_array_length(const char *payload, uint32 len, MemoryContext cx, int64 *n);
+extern void sift_v6_json_array_length_raise(const char *payload, uint32 len, MemoryContext cx);
 /* `doc ? 'k'` of a key whose leaf the scan reads the presence of: the virtual attribute of the presence (InvalidAttrNumber: none) */
 extern int	sift_v6_json_presence(const SiftV6Rel *rel, const Expr *clause);
 

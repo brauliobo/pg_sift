@@ -25,6 +25,7 @@
 #include "parser/parsetree.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/relcache.h"
 #include "utils/selfuncs.h"
@@ -324,17 +325,35 @@ sift_v6_plan_expr_column(V6Plan *p, const Expr *e, SiftV6Col *out)
 	return index_expr_of(p, e, out) || generated_expr_of(p, e, out);
 }
 
-/* a member of a document read as a number by a path: the column, the member in the spec (sift_v6_member_col); the text of a path the index declares is its leaf alone */
+/* jsonb_array_length(doc) or of doc -> 'key', of a list the paths option declares: the member whose leaf is the group of the list, which holds the number of its elements */
+static bool
+array_length_of(const V6Plan *p, const SiftV6Rel *rel, const Expr *e, SiftV6Col *out, List **path)
+{
+	const FuncExpr *f = (const FuncExpr *) e;
+	const Var  *doc;
+	int			att,
+				group;
+
+	if (!IsA(e, FuncExpr) || f->funcid != F_JSONB_ARRAY_LENGTH || rel->ops == NULL || rel->ops->jsonb == NULL || !rel->ops->jsonb->array_length ||
+		(doc = sift_v6_doc_chain(linitial(f->args), path)) == NULL || list_length(*path) > 1 || !sift_v6_json_doc_att(rel, (const Expr *) doc, &att) ||
+		(group = sift_v6_unnest_group_of(&p->leaves, att, *path != NIL ? strVal(linitial(*path)) : NULL)) < 0)
+		return false;
+	*out = (SiftV6Col) {.attno = att,.typid = INT4OID,.jleaf = group + 1};
+	return true;
+}
+
+/* a member of a document read by a path, or the length of a list: the column, the member in the spec (sift_v6_member_col); the value of a path the index declares is its leaf alone */
 static bool
 member_of(V6Plan *p, const SiftV6Rel *rel, const Expr *e, SiftV6Col *out)
 {
 	List	   *path;
 	List	   *member;
 	int			at = 0;
+	const bool	length = array_length_of(p, rel, e, out, &path);
 
-	if (!(p->members || (rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values)) || !sift_v6_json_map_member(rel, e, out, &path))
+	if (!length && (!(p->members || (rel->ops != NULL && rel->ops->jsonb != NULL && rel->ops->jsonb->exact_values)) || !sift_v6_json_map_member(rel, e, out, &path)))
 		return false;
-	if (path == NIL)
+	if (path == NIL && !length)
 		return true;
 	member = list_concat(list_make3(makeInteger(out->attno), makeInteger(out->jleaf - 1), makeInteger((int) out->typid)), path);
 	foreach_ptr(List, known, p->spec.jmembers)
@@ -475,10 +494,12 @@ doc_attno(const V6Plan *p, const Var *doc)
 static bool
 undeclared_doc_walker(Node *n, const V6Plan *p)
 {
+	const SiftV6Rel rel = sift_v6_plan_rel(p);
+	SiftV6Col	length;
 	List	   *path;
 	const Var  *doc;
 
-	if (n == NULL)
+	if (n == NULL || array_length_of(p, &rel, (const Expr *) n, &length, &path))
 		return false;
 	doc = sift_v6_doc_chain((const Expr *) n, &path);
 	if (doc == NULL || doc->varno != p->rel->relid || doc->varlevelsup != 0)

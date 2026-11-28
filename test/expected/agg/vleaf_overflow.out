@@ -141,7 +141,7 @@ SELECT k.id, k.kind, same(q[1]) AS length_sum, same(q[2]) AS length_filter FROM 
 SELECT pushed((l_q(1))[1]) AS dirty_length_pushed, same('SELECT grp, sum(jsonb_array_length(doc -> $$l$$)) FROM l_t GROUP BY grp') AS dirty_length_same;
  dirty_length_pushed | dirty_length_same 
 ---------------------+-------------------
- f                   | same
+ t                   | same
 (1 row)
 
 -- a scalar leaf: the same casts of a path declared float8; the scan takes the query and reads the rows that hold such a value from the heap
