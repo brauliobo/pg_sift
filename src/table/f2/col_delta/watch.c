@@ -28,6 +28,17 @@ sift_col_delta_watch_reset(SiftColDeltaWatch *w)
 	w->npages = 0;
 }
 
+void
+sift_col_delta_watch_copy(SiftColDeltaWatch *w, const SiftColDeltaWatch *from)
+{
+	if (w->blks != NULL)
+		pfree(w->blks);
+	w->blks = MemoryContextAlloc(w->cx, sizeof(BlockNumber) * Max(from->npages, 1));
+	memcpy(w->blks, from->blks, sizeof(BlockNumber) * from->npages);
+	w->npages = from->npages;
+	w->head = from->head;
+}
+
 /* The checksum of the first used bytes of the records of a page */
 static uint32
 records_sum(const char *page, uint32 used)

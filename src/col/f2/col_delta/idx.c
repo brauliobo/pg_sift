@@ -421,23 +421,26 @@ put_cell(ColView *v, const SiftColDeltaPatch *p)
 void
 sift_cdi_remap_tids(const SiftColDeltaGranMap *gm, uint64 *tids, int n)
 {
-	for (uint32 k = 0; k < gm->npatches; k++)
-		if (gm->patches[k].attnum == SIFT_CD_ATT_TID_REMAP)
-		{
-			Assert(gm->patches[k].row_ordinal < n);
-			tids[gm->patches[k].row_ordinal] = (uint64) gm->patches[k].val.i;
-		}
+	SiftColDeltaPatchIter it;
+
+	sift_col_delta_patches_of(&it, gm, SIFT_CD_ATT_TID_REMAP);
+	for (const SiftColDeltaPatch *p; (p = sift_col_delta_patch_next(&it)) != NULL;)
+	{
+		Assert(p->row_ordinal < n);
+		tids[p->row_ordinal] = (uint64) p->val.i;
+	}
 }
 
 void
 sift_cdi_patch_granule(const SiftColDeltaGranMap *gm, int ncols, ColView *views, uint64 *tids, int n, MemoryContext cx)
 {
 	bool	   *copied = MemoryContextAllocZero(cx, Max(ncols, 1));
+	SiftColDeltaPatchIter it;
 
 	sift_cdi_remap_tids(gm, tids, n);
-	for (uint32 k = 0; k < gm->npatches; k++)
+	sift_col_delta_patches_all(&it, gm);
+	for (const SiftColDeltaPatch *p; (p = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		const SiftColDeltaPatch *p = &gm->patches[k];
 		int			leaf = p->attnum - 1;
 
 		Assert(p->row_ordinal < n);
@@ -451,20 +454,24 @@ sift_cdi_patch_granule(const SiftColDeltaGranMap *gm, int ncols, ColView *views,
 	}
 }
 
-/* The leaf of a patch of a granule that the scan prunes by and no patch of the granule before it names: the first of each, as the patches are ascending by leaf */
-static bool
-first_of_pruned_leaf(const SiftColDeltaGranMap *gm, uint32 k, const bool *pruned_leaf, int ncols)
+/* The leaves of the granule's patches that the scan prunes by, each once and ascending, as the patches are ascending by leaf: their exceptions; returns how many (at most ncols) */
+static int
+pruned_leaf_excs(const SiftColDeltaGranMap *gm, const bool *pruned_leaf, int ncols, SiftVariantExcSummary *out)
 {
-	int			leaf = gm->patches[k].attnum - 1;
+	SiftColDeltaPatchIter it;
+	int			n = 0,
+				last = -1;
 
-	return leaf >= 0 && leaf < ncols && pruned_leaf[leaf] && (k == 0 || gm->patches[k - 1].attnum != gm->patches[k].attnum);
-}
+	sift_col_delta_patches_all(&it, gm);
+	for (const SiftColDeltaPatch *p; (p = sift_col_delta_patch_next(&it)) != NULL;)
+	{
+		int			leaf = p->attnum - 1;
 
-/* The exception of the k-th patch of a granule, whose leaf a predicate reads */
-static SiftVariantExcSummary
-patch_exc(const SiftColDeltaGranMap *gm, uint32 k)
-{
-	return (SiftVariantExcSummary) {.granule = gm->granule_id,.col = (uint16) (gm->patches[k].attnum - 1)};
+		if (leaf >= 0 && leaf < ncols && pruned_leaf[leaf] && leaf != last)
+			out[n++] = (SiftVariantExcSummary) {.granule = gm->granule_id,.col = (uint16) leaf};
+		last = leaf;
+	}
+	return n;
 }
 
 static int
@@ -477,7 +484,8 @@ exc_cmp(const SiftVariantExcSummary *a, const SiftVariantExcSummary *b)
 const SiftVariantExcSummary *
 sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary *exc, int nexc, const bool *pruned_leaf, int ncols, int *nout)
 {
-	SiftVariantExcSummary *out;
+	SiftVariantExcSummary *out,
+			   *cds;
 	int			extra = 0,
 				n = 0,
 				i = 0;
@@ -485,28 +493,31 @@ sift_cdi_exceptions(const SiftColDeltaPartMap *map, const SiftVariantExcSummary 
 	*nout = nexc;
 	if (map == NULL)
 		return exc;
+	cds = palloc(Max(ncols, 1) * sizeof(SiftVariantExcSummary));
 	for (uint32 gi = 0; gi < map->ndirty_granules; gi++)
-		for (uint32 k = 0; k < map->grans[gi].npatches; k++)
-			extra += first_of_pruned_leaf(&map->grans[gi], k, pruned_leaf, ncols);
+		extra += pruned_leaf_excs(&map->grans[gi], pruned_leaf, ncols, cds);
 	if (extra == 0)
+	{
+		pfree(cds);
 		return exc;
+	}
 	out = palloc((nexc + extra) * sizeof(SiftVariantExcSummary));
 	for (uint32 gi = 0; gi < map->ndirty_granules; gi++)
-		for (uint32 k = 0; k < map->grans[gi].npatches; k++)
+	{
+		int			ncd = pruned_leaf_excs(&map->grans[gi], pruned_leaf, ncols, cds);
+
+		for (int k = 0; k < ncd; k++)
 		{
-			SiftVariantExcSummary cd;
 			int			c = 1;
 
-			if (!first_of_pruned_leaf(&map->grans[gi], k, pruned_leaf, ncols))
-				continue;
-			cd = patch_exc(&map->grans[gi], k);
-			while (i < nexc && (c = exc_cmp(&exc[i], &cd)) < 0)
+			while (i < nexc && (c = exc_cmp(&exc[i], &cds[k])) < 0)
 				out[n++] = exc[i++];
 			if (i < nexc && c == 0)
-				out[n++] = exc[i++];
-			else
-				out[n++] = cd;
+				i++;
+			out[n++] = cds[k];
 		}
+	}
+	pfree(cds);
 	while (i < nexc)
 		out[n++] = exc[i++];
 	*nout = n;

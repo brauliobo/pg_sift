@@ -80,14 +80,12 @@ sift_col_delta_patch_widen(SiftColDeltaPatch *p, uint8 scale)
 void
 sift_col_delta_patch_widened(const SiftF2GranuleBuf *gb, int16 attnum, uint8 scale, bool *isnull, const char **s, uint32 *slen)
 {
-	const SiftColDeltaGranMap *gm = gb->patch != NULL ? gb->patch_arg : NULL;
-	uint32		lo,
-				hi;
+	SiftColDeltaPatchIter it;
 
-	sift_col_delta_patch_slice(gm, attnum, &lo, &hi);
-	for (uint32 k = lo; k < hi; k++)
+	sift_col_delta_patches_of(&it, gb->patch != NULL ? gb->patch_arg : NULL, attnum);
+	for (const SiftColDeltaPatch *at; (at = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		SiftColDeltaPatch p = gm->patches[k];
+		SiftColDeltaPatch p = *at;
 		uint16		r = p.row_ordinal;
 
 		sift_col_delta_patch_widen(&p, scale);

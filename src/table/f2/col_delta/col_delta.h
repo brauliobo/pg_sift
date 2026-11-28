@@ -384,9 +384,10 @@ typedef struct SiftColDeltaOps
 typedef struct SiftColDeltaGranMap
 {
 	uint32		granule_id;
-	uint32		npatches;
-	uint64		attnum_bloom;
+	uint32		npatches;		/* of patches: the granule's own */
+	uint64		attnum_bloom;	/* of its own patches and of those of under */
 	SiftColDeltaPatch *patches;	/* ascending by (attnum, row_ordinal), one for each */
+	const struct SiftColDeltaGranMap *under;	/* the granule in the map this one lies over: its patches of the cells patches does not name show through; NULL: none */
 } SiftColDeltaGranMap;
 
 typedef struct SiftColDeltaPartMap
@@ -398,10 +399,14 @@ typedef struct SiftColDeltaPartMap
 	uint32		ndirty_granules;
 	uint64	   *granule_dirty_bits;
 	SiftColDeltaGranMap *grans;	/* ascending by granule_id */
-	SiftColDeltaPatch *patch_pool;	/* the patches of every granule, which the maps of the granules point into */
+	SiftColDeltaPatch *patch_pool;	/* the own patches of every granule, which the maps of the granules point into */
+	uint32		npatches;		/* of patch_pool */
 	char	   *strpool;		/* the bytes of the strings of the patches */
 	MemoryContext cx;			/* of a shared map: the context that holds all of it, under the cache of core/cachebudget.h; NULL for a map one owner frees */
 	uint32		refcnt;			/* of a shared map: its holders */
+	struct SiftColDeltaPartMap *under;	/* the shared map this one lies over and holds, its granules the under of grans; NULL: the map holds every patch itself */
+	int			nlayers;		/* 1 + those of under */
+	Size		bytes;			/* of a shared map: what its context and those of the maps beneath it hold, which a shared map never changes */
 } SiftColDeltaPartMap;
 
 /* The patches of part_gen the snapshot sees; frees the chain. NULL when it sees none; why is set when a record names a granule past the part */
@@ -416,7 +421,9 @@ extern bool sift_col_delta_collect_page(SiftColDeltaCollector *c, const char *pa
 /* The byte of the page's data where the first record of part_gen from byte from_used on (a batch whole) starts whose writer keep refuses; the page's used bytes when keep takes them all */
 extern uint32 sift_col_delta_page_cut(const char *page, uint32 from_used, uint64 part_gen, bool (*keep) (void *ctx, TransactionId xmin), void *ctx);
 extern int	sift_col_delta_collected(const SiftColDeltaCollector *c);
-extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
+/* The map of the shared map old (NULL: none) with the collected patches over it: their layer lies over old, and takes in the layers of old it is no smaller than and that the merge frees (old_goes: the
+ * caller gives up its reference to old once it has the map, and nothing else holds them), or that would pass SIFT_COL_DELTA_MAP_LAYERS */
+extern SiftColDeltaPartMap *sift_col_delta_part_map_merge(SiftColDeltaPartMap *old, bool old_goes, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules);
 /*
  * The map of the collector's patches alone, built over the collector's own array, which the map keeps (the collector is left empty): a long chain's patches are never held twice. The collector's
  * patches were collected in the context the map is made in.
@@ -457,8 +464,49 @@ sift_col_delta_part_touches(const SiftColDeltaPartMap *map, uint64 query_attnum_
 	return map != NULL && (map->dirty_attnum_bloom & query_attnum_bloom) != 0;
 }
 
-/* The patches of one column of the granule: [*lo, *hi) of gm->patches, empty when the granule does not patch it */
-extern void sift_col_delta_patch_slice(const SiftColDeltaGranMap *gm, int16 attnum, uint32 *lo, uint32 *hi);
+/* The layers a map is at most: its own patches over those of the maps beneath it */
+#define SIFT_COL_DELTA_MAP_LAYERS	4
+
+/* The patches of a granule in the order of (attnum, row_ordinal), each cell once: of the layers that patch it, the newest */
+typedef struct SiftColDeltaPatchIter
+{
+	int			n;
+	const SiftColDeltaPatch *at[SIFT_COL_DELTA_MAP_LAYERS];	/* the newest layer first */
+	const SiftColDeltaPatch *end[SIFT_COL_DELTA_MAP_LAYERS];
+} SiftColDeltaPatchIter;
+
+/* The patches of one column of the granule (gm NULL: none) */
+extern void sift_col_delta_patches_of(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm, int16 attnum);
+/* Every patch of the granule (gm NULL: none) */
+extern void sift_col_delta_patches_all(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm);
+/* The same, of its newest nlayers layers */
+extern void sift_col_delta_patches_top(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm, int nlayers);
+
+static inline int
+sift_col_delta_cell_cmp(const SiftColDeltaPatch *a, const SiftColDeltaPatch *b)
+{
+	if (a->attnum != b->attnum)
+		return a->attnum < b->attnum ? -1 : 1;
+	return a->row_ordinal < b->row_ordinal ? -1 : a->row_ordinal > b->row_ordinal;
+}
+
+/* The next patch of the iteration, NULL past the last: the first layer at the lowest cell wins it, and every layer at that cell moves past it */
+static inline const SiftColDeltaPatch *
+sift_col_delta_patch_next(SiftColDeltaPatchIter *it)
+{
+	const SiftColDeltaPatch *p = NULL;
+
+	if (it->n == 1)
+		return it->at[0] == it->end[0] ? NULL : it->at[0]++;
+	for (int i = 0; i < it->n; i++)
+		if (it->at[i] != it->end[i] && (p == NULL || sift_col_delta_cell_cmp(it->at[i], p) < 0))
+			p = it->at[i];
+	for (int i = 0; p != NULL && i < it->n; i++)
+		if (it->at[i] != it->end[i] && sift_col_delta_cell_cmp(it->at[i], p) == 0)
+			it->at[i]++;
+	return p;
+}
+
 extern const SiftColDeltaPatch *sift_col_delta_find_row(const SiftColDeltaGranMap *gm, int16 attnum, uint16 row);
 
 /* The decoded cells of one column of one granule as the scan holds them (SiftF2GranuleBuf col_*[phys]); str: copied into cx so that they live as long as the granule */
@@ -900,6 +948,8 @@ typedef bool (*SiftColDeltaPageVisit) (void *arg, const char *page, uint32 from_
 extern SiftColDeltaHeadSeen sift_col_delta_head_seen(const char *page);
 extern void sift_col_delta_watch_init(SiftColDeltaWatch *w, MemoryContext cx);
 extern void sift_col_delta_watch_reset(SiftColDeltaWatch *w);
+/* The watch made what from is, its blocks in the watch's own context */
+extern void sift_col_delta_watch_copy(SiftColDeltaWatch *w, const SiftColDeltaWatch *from);
 extern bool sift_col_delta_watch_read(Relation rel, const SiftPartitionEntry *entry, const SiftColDeltaAnchor *a, const SiftColDeltaWatch *w, const SiftColDeltaPrune *prune, SiftColDeltaPageVisit visit, void *arg,
 									  SiftColDeltaWatchRead *r);
 extern void sift_col_delta_watch_set(SiftColDeltaWatch *w, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead *r);

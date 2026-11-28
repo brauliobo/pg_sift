@@ -10,8 +10,7 @@
  * made of such records alone is the map of the next statement too, and a statement that appended records to the chain only adds them: pages are only ever added at the newest end of a
  * chain, and the page that grows is compared by what it held. The records the map covers and the pages it was read from are what the slot remembers; a chain that was folded or rewritten is made
  * of pages of other generations, and the slot goes. The slot covers the chain up to the first record whose writer the snapshot cannot settle yet (it is running, or newer than the snapshot):
- * that record and every one after it are the tail, read again by each statement as its snapshot sees them and laid over the slot's map in a map of the statement's own. A tail that runs past
- * the page of the cut (a long transaction, or many rows of the statement itself) is not answered while its first writer is unsettled: its statement builds the map of its own, as it did before the cache.
+ * that record and every one after it are the tail, read again by each statement as its snapshot sees them and laid over the slot's map in a map of the statement's own, which holds only the tail.
  *
  * check-memory: allow-allocs a slot holds the block list of one chain and its last page, and the budget of core/cachebudget.h bounds the slots and the maps they keep
  */
@@ -268,6 +267,46 @@ slot_open(Relation rel, uint64 part_id, uint64 part_gen, bool mvcc, uint64 want)
 	return s;
 }
 
+/* Whether the slot answers the snapshot on the chain of the anchor: it covers no page the chain lacks, and its records are settled for the snapshot */
+static bool
+slot_answers(const MapSlot *s, const SiftTblVis *vis, const SiftColDeltaAnchor *a)
+{
+	return s->watch.npages <= a->npages && slot_settled_for(s, vis);
+}
+
+/* Whether the watch of from covers the chain past that of s: the pages of s, and more pages or more records of the newest page of s */
+static bool
+watch_ahead(const SiftColDeltaWatch *from, const SiftColDeltaWatch *s)
+{
+	if (from->npages < s->npages || from->npages == 0 || (s->npages > 0 && memcmp(from->blks, s->blks, sizeof(BlockNumber) * s->npages) != 0))
+		return false;
+	return from->npages > s->npages || (from->head.gen == s->head.gen && from->head.used > s->head.used);
+}
+
+/*
+ * A slot takes the place in the chain of the part's slot of the other kind of snapshot when that one covers more of it and answers this snapshot for the attributes both ask: the records an MVCC
+ * snapshot settles are settled for one that takes any row, and the other way round while none is of the backend's transaction. The two share the map, and each lays what it gains over it
+ */
+static void
+slot_catch_up(MapSlot *s, const MapSlot *from, const SiftTblVis *vis, const SiftColDeltaAnchor *a, uint64 want)
+{
+	if (from == NULL || from == s || (from->own && s->mvcc) || ((s->built_bloom | want) & ~from->built_bloom) != 0 || (want & from->skipped_bloom) != 0 || !watch_ahead(&from->watch, &s->watch) ||
+		!slot_answers(from, vis, a))
+		return;
+	sift_col_delta_part_map_unref(s->map);
+	s->map = sift_col_delta_part_map_ref(from->map);
+	sift_col_delta_watch_copy(&s->watch, &from->watch);
+	s->anchor = from->anchor;
+	s->built_bloom = from->built_bloom;
+	s->skipped_bloom = from->skipped_bloom;
+	s->max_xmin = from->max_xmin;
+	s->has_xmin = from->has_xmin;
+	s->own = from->own;
+	s->cut = from->cut;
+	s->cut_xmin = from->cut_xmin;
+	s->counted = false;
+}
+
 /* The slot made over for the attributes of both its first ask and this one: no map, no page seen */
 static void
 slot_widen(MapSlot *s, uint64 want)
@@ -286,13 +325,6 @@ slot_widen(MapSlot *s, uint64 want)
 
 /* ---- the chain the slot covers, and what it gained ---- */
 
-typedef enum Advance
-{
-	ADVANCED,
-	LONG_TAIL,					/* the slot covers the chain to its cut, and the tail runs past the page of the cut: no map for the statement */
-	STALE						/* the chain is not the slot's with pages added */
-} Advance;
-
 /* What a read of the chain gained: the settled records before the cut, which the slot takes, and the tail from the cut on, which only the statement does */
 typedef struct News
 {
@@ -303,16 +335,9 @@ typedef struct News
 	SiftColDeltaOps tail_ops;
 	uint64		part_gen;
 	uint32		ngranules;
-	int			npages;			/* of the chain */
 	char	   *cut_page;		/* a copy of the page the cut is on; NULL: every record is settled */
 	uint32		cut_used;
 } News;
-
-static bool
-long_tail(const News *n)
-{
-	return n->cut_page != NULL && sift_col_delta_page_hdr(n->cut_page)->chain_pages < n->npages;
-}
 
 static bool
 collect_news(void *arg, const char *page, uint32 from_used)
@@ -333,8 +358,6 @@ collect_news(void *arg, const char *page, uint32 from_used)
 		memcpy(n->cut_page, page, BLCKSZ);
 		n->cut_used = from_used = cut;
 	}
-	if (long_tail(n))
-		return true;
 	return sift_col_delta_collect_page(n->tail, page, from_used, used, n->part_gen, n->ngranules, &n->tail_ops, &why);
 }
 
@@ -357,9 +380,9 @@ slot_cover(MapSlot *s, const SiftColDeltaAnchor *a, const SiftColDeltaWatchRead 
 	s->cut_xmin = n->st.refused;
 }
 
-/* The map with the collected records over it, in a context of its own that the cache adopts; the map itself when there are none */
+/* The map with the collected records over it, in a context of its own that the cache adopts; the map itself when there are none. base_goes: the caller gives base up for it */
 static SiftColDeltaPartMap *
-map_with(SiftColDeltaPartMap *base, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
+map_with(SiftColDeltaPartMap *base, bool base_goes, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
 {
 	MemoryContext map_cx;
 	MemoryContext old;
@@ -369,35 +392,35 @@ map_with(SiftColDeltaPartMap *base, SiftColDeltaCollector *c, uint64 part_gen, u
 		return sift_col_delta_part_map_ref(base);
 	map_cx = sift_col_delta_part_map_context(CurrentMemoryContext);
 	old = MemoryContextSwitchTo(map_cx);
-	map = sift_col_delta_part_map_merge(base, c, part_gen, ngranules);
+	map = sift_col_delta_part_map_merge(base, base_goes, c, part_gen, ngranules);
 	MemoryContextSwitchTo(old);
 	return sift_col_delta_part_map_share(map_cx, map);
 }
 
-/* The slot made to cover the chain of the anchor up to its cut, its map the old one with the settled records over it; *map, when ADVANCED: what the snapshot sees, the tail over the slot's */
-static Advance
+/* The slot made to cover the chain of the anchor up to its cut, its map the old one with the settled records over it; *map: what the snapshot sees, the tail over the slot's. False: the chain is not the
+ * slot's with pages added */
+static bool
 slot_advance(Relation rel, const SiftPartitionEntry *entry, MapSlot *s, uint32 ngranules, const SiftColDeltaAnchor *a, SiftTblVis *vis, SiftColDeltaPartMap **map)
 {
-	News		n = {.st = {.vis = vis},.c = sift_col_delta_collector_new(),.tail = sift_col_delta_collector_new(),.part_gen = s->part_gen,.ngranules = ngranules,.npages = a->npages};
+	News		n = {.st = {.vis = vis},.c = sift_col_delta_collector_new(),.tail = sift_col_delta_collector_new(),.part_gen = s->part_gen,.ngranules = ngranules};
 	SiftColDeltaPrune prune = {.part_gen = s->part_gen,.attnum_bloom = s->built_bloom == ALL_ATTRS ? 0 : s->built_bloom | sift_cd_att_bit(SIFT_CD_ATT_TID_REMAP)};
 	SiftColDeltaWatchRead r;
-	Advance		adv = STALE;
+	bool		advanced;
 
 	sift_col_delta_ops_make(&n.ops, &n.st, settled_visible);
 	sift_col_delta_ops_init(&n.tail_ops, vis);
-	if (sift_col_delta_watch_read(rel, entry, a, &s->watch, &prune, collect_news, &n, &r))
+	advanced = sift_col_delta_watch_read(rel, entry, a, &s->watch, &prune, collect_news, &n, &r);
+	if (advanced)
 	{
-		slot_cover(s, a, &r, map_with(s->map, n.c, s->part_gen, ngranules), &n);
-		adv = long_tail(&n) ? LONG_TAIL : ADVANCED;
-		if (adv == ADVANCED)
-			*map = map_with(s->map, n.tail, s->part_gen, ngranules);
+		slot_cover(s, a, &r, map_with(s->map, true, n.c, s->part_gen, ngranules), &n);
+		*map = map_with(s->map, false, n.tail, s->part_gen, ngranules);
 		sift_col_delta_watch_release(&r);
 	}
 	if (n.cut_page != NULL)
 		pfree(n.cut_page);
 	sift_col_delta_collector_free(n.c);
 	sift_col_delta_collector_free(n.tail);
-	return adv;
+	return advanced;
 }
 
 /* ---- the ask ---- */
@@ -489,7 +512,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	bool		mvcc = vis->snap->snapshot_type == SNAPSHOT_MVCC;
 	uint64		appends;
 	bool		hit;
-	Advance		r = ADVANCED;
+	bool		advanced = true;
 
 	if ((entry->flags & SIFT_PARTENTRY_HAS_COL_DELTA) == 0 || RecoveryInProgress() || !snapshot_supported(vis))
 		return false;
@@ -500,31 +523,31 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	if (mapcache_cx == NULL)
 		mapcache_init();
 	s = slot_find(rel, entry->part_id, part_gen, mvcc);
-	if (s != NULL && (s->watch.npages > a.npages || !slot_settled_for(s, vis)))
+	if (s != NULL && s->watch.npages > a.npages)
 	{
-		if (s->watch.npages > a.npages)
-			slot_drop(s);
+		slot_drop(s);
 		return false;
 	}
-	if (s != NULL && s->cut && s->watch.npages < a.npages && !settled_xid(vis, s->cut_xmin))
+	if (s != NULL && !slot_settled_for(s, vis))
 		return false;
 	if (s != NULL && (want & s->skipped_bloom) != 0)
 		slot_widen(s, want);
 	if (s == NULL)
 		s = slot_open(rel, entry->part_id, part_gen, mvcc, want);
+	slot_catch_up(s, slot_find(rel, entry->part_id, part_gen, !mvcc), vis, &a, want);
 	hit = chain_unchanged(rel, entry, s, &a, vis, looks, appends);
 	if (hit)
 		*map = sift_col_delta_part_map_ref(s->map);
 	else
-		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
-	if (r == STALE && s->watch.npages > 0)
+		advanced = slot_advance(rel, entry, s, ngranules, &a, vis, map);
+	if (!advanced && s->watch.npages > 0)
 	{
 		want = s->built_bloom;
 		slot_drop(s);
 		s = slot_open(rel, entry->part_id, part_gen, mvcc, want);
-		r = slot_advance(rel, entry, s, ngranules, &a, vis, map);
+		advanced = slot_advance(rel, entry, s, ngranules, &a, vis, map);
 	}
-	if (r == STALE)
+	if (!advanced)
 	{
 		slot_drop(s);
 		return false;
@@ -536,7 +559,7 @@ sift_col_delta_mapcache_get(Relation rel, const SiftPartitionEntry *entry, uint6
 	}
 	s->tick = sift_cache_tick();
 	*settled = !s->cut;
-	if ((s->map != NULL && MemoryContextMemAllocated(s->map->cx, true) > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())
+	if ((s->map != NULL && s->map->bytes > (Size) sift_backend_cache_kb * 1024 / 2) || !sift_cache_commit())
 		slot_drop(s);
-	return r == ADVANCED;
+	return true;
 }

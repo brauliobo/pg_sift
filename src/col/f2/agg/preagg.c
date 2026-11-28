@@ -855,16 +855,13 @@ patch_answerable(const SiftV6Preagg *pa, const PartBind *pb, const SiftF2GranOff
 static bool
 measure_patches(const SiftF2GranOffer *o, int16 attno, const uint16 *dead, int ndead, uint16 *rows, int64 *values, bool *isnull, uint16 *n)
 {
-	uint32		lo,
-				hi;
+	SiftColDeltaPatchIter it;
 	int			d = 0;
 
-	sift_col_delta_patch_slice(o->patch, attno, &lo, &hi);
+	sift_col_delta_patches_of(&it, o->patch, attno);
 	*n = 0;
-	for (uint32 i = lo; i < hi; i++)
+	for (const SiftColDeltaPatch *p; (p = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		const SiftColDeltaPatch *p = &o->patch->patches[i];
-
 		while (d < ndead && dead[d] < p->row_ordinal)
 			d++;
 		if (d < ndead && dead[d] == p->row_ordinal)

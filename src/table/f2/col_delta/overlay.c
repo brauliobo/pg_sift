@@ -24,24 +24,27 @@ typedef struct Collected
 } Collected;
 
 static int
+cell_cmp(uint32 granule_a, const SiftColDeltaPatch *a, uint32 granule_b, const SiftColDeltaPatch *b)
+{
+	if (granule_a != granule_b)
+		return granule_a < granule_b ? -1 : 1;
+	return sift_col_delta_cell_cmp(a, b);
+}
+
+static int
 collected_cmp(const void *a, const void *b)
 {
 	const Collected *x = a,
 			   *y = b;
+	int			c = cell_cmp(x->granule, &x->p, y->granule, &y->p);
 
-	if (x->granule != y->granule)
-		return x->granule < y->granule ? -1 : 1;
-	if (x->p.attnum != y->p.attnum)
-		return x->p.attnum < y->p.attnum ? -1 : 1;
-	if (x->p.row_ordinal != y->p.row_ordinal)
-		return x->p.row_ordinal < y->p.row_ordinal ? -1 : 1;
-	return x->seq < y->seq ? -1 : x->seq > y->seq;
+	return c != 0 ? c : x->seq < y->seq ? -1 : x->seq > y->seq;
 }
 
 static bool
 same_cell(const Collected *a, const Collected *b)
 {
-	return a->granule == b->granule && a->p.attnum == b->p.attnum && a->p.row_ordinal == b->p.row_ordinal;
+	return cell_cmp(a->granule, &a->p, b->granule, &b->p) == 0;
 }
 
 #define COLLECT_STR_CHUNK	65536
@@ -250,17 +253,17 @@ latest_only(Collected *v, int n)
 
 /* The strings of the patches copied where the map holds them: what they pointed into (the pages of a chain, the pool of another map) can go */
 static void
-own_strings(SiftColDeltaPartMap *m, int n)
+own_strings(SiftColDeltaPartMap *m)
 {
 	Size		total = 0,
 				at = 0;
 
-	for (int i = 0; i < n; i++)
+	for (uint32 i = 0; i < m->npatches; i++)
 		total += is_string(&m->patch_pool[i]) ? m->patch_pool[i].vlen : 0;
 	if (total == 0)
 		return;
 	m->strpool = palloc(total);
-	for (int i = 0; i < n; i++)
+	for (uint32 i = 0; i < m->npatches; i++)
 	{
 		SiftColDeltaPatch *p = &m->patch_pool[i];
 
@@ -272,117 +275,186 @@ own_strings(SiftColDeltaPartMap *m, int n)
 	}
 }
 
-/* The pool of the map cut to its n patches, the granules pointed at their place in it (they follow one another in it) */
+/* The pool of the map cut to its patches, the granules pointed at their place in it (they follow one another in it) */
 static void
-shrink_pool(SiftColDeltaPartMap *m, int n)
+shrink_pool(SiftColDeltaPartMap *m)
 {
 	uint32		at = 0;
 
-	m->patch_pool = repalloc(m->patch_pool, sizeof(SiftColDeltaPatch) * n);
+	m->patch_pool = repalloc(m->patch_pool, sizeof(SiftColDeltaPatch) * m->npatches);
 	for (uint32 g = 0; g < m->ndirty_granules; at += m->grans[g++].npatches)
 		m->grans[g].patches = m->patch_pool + at;
 }
 
 /* Where the patches of a map under construction go, in the order of (granule, attribute, row) */
 static void
-map_put(SiftColDeltaPartMap *m, int *n, uint32 granule, const SiftColDeltaPatch *p)
+map_put(SiftColDeltaPartMap *m, uint32 granule, const SiftColDeltaPatch *p)
 {
 	SiftColDeltaGranMap *g;
 
 	if (m->ndirty_granules == 0 || m->grans[m->ndirty_granules - 1].granule_id != granule)
 	{
 		g = &m->grans[m->ndirty_granules++];
-		*g = (SiftColDeltaGranMap) {.granule_id = granule,.patches = &m->patch_pool[*n]};
+		*g = (SiftColDeltaGranMap) {.granule_id = granule,.patches = &m->patch_pool[m->npatches]};
 		m->granule_dirty_bits[granule / 64] |= UINT64CONST(1) << (granule % 64);
 	}
 	g = &m->grans[m->ndirty_granules - 1];
-	m->patch_pool[(*n)++] = *p;
+	m->patch_pool[m->npatches++] = *p;
 	g->npatches++;
 	g->attnum_bloom |= sift_cd_att_bit(p->attnum);
 	m->dirty_attnum_bloom |= sift_cd_att_bit(p->attnum);
 }
 
-static int
-cell_cmp(uint32 granule_a, const SiftColDeltaPatch *a, uint32 granule_b, const SiftColDeltaPatch *b)
+/* The patches of the newest layers of a map, granule by granule, that a merge takes in */
+typedef struct OldCells
 {
-	if (granule_a != granule_b)
-		return granule_a < granule_b ? -1 : 1;
-	if (a->attnum != b->attnum)
-		return a->attnum < b->attnum ? -1 : 1;
-	return a->row_ordinal < b->row_ordinal ? -1 : a->row_ordinal > b->row_ordinal;
+	const SiftColDeltaPartMap *m;
+	int			nlayers;
+	uint32		g;
+	SiftColDeltaPatchIter it;
+	const SiftColDeltaPatch *p;	/* the next, of granule m->grans[g]; NULL: none left */
+} OldCells;
+
+static void
+old_next(OldCells *o)
+{
+	while ((o->p = sift_col_delta_patch_next(&o->it)) == NULL && ++o->g < o->m->ndirty_granules)
+		sift_col_delta_patches_top(&o->it, &o->m->grans[o->g], o->nlayers);
+}
+
+static void
+old_begin(OldCells *o, const SiftColDeltaPartMap *m, int nlayers)
+{
+	*o = (OldCells) {.m = m,.nlayers = nlayers};
+	if (m == NULL || nlayers == 0 || m->ndirty_granules == 0)
+		return;
+	sift_col_delta_patches_top(&o->it, &m->grans[0], nlayers);
+	old_next(o);
+}
+
+/* The own patches of the newest nlayers layers of the map */
+static uint32
+top_patches(const SiftColDeltaPartMap *m, int nlayers)
+{
+	uint32		n = 0;
+
+	for (; m != NULL && nlayers-- > 0; m = m->under)
+		n += m->npatches;
+	return n;
 }
 
 /*
- * The map of the patches of old and of v (sorted, each cell once), the patches of v the newer; old may be NULL. in_place (no old): the patches are packed over v itself, front to back (a patch
- * is no longer than the Collected it is read from), and the map keeps that array, cut to them
+ * The map of the patches the newest nlayers layers of old show and of v (sorted, each cell once), the patches of v the newer; old may be NULL. in_place (no old): the patches are packed over v
+ * itself, front to back (a patch is no longer than the Collected it is read from), and the map keeps that array, cut to them
  */
 static SiftColDeltaPartMap *
-map_of(const SiftColDeltaPartMap *old, Collected *v, int nv, uint64 part_gen, uint32 ngranules, uint64 tid_bloom, bool in_place)
+map_of(const SiftColDeltaPartMap *old, int nlayers, Collected *v, int nv, uint64 part_gen, uint32 ngranules, uint64 tid_bloom, bool in_place)
 {
 	SiftColDeltaPartMap *m = palloc0(sizeof(SiftColDeltaPartMap));
-	uint32		og = 0,
-				ok = 0;
+	OldCells	o;
+	uint32		nold = top_patches(old, nlayers);
 	int			ni = 0,
-				n = 0,
-				nold = 0,
 				ngran_max = nv > 0;
 
 	for (int i = 1; i < nv; i++)
 		ngran_max += v[i].granule != v[i - 1].granule;
-	if (old != NULL)
-	{
+	if (nold > 0)
 		ngran_max += old->ndirty_granules;
-		for (uint32 g = 0; g < old->ndirty_granules; g++)
-			nold += old->grans[g].npatches;
-	}
+	m->nlayers = 1;
 	m->part_gen = part_gen;
 	m->ngranules = ngranules;
 	m->dirty_tid_bloom = tid_bloom | (old != NULL ? old->dirty_tid_bloom : 0);
 	m->granule_dirty_bits = palloc0(sizeof(uint64) * ((ngranules + 63) / 64));
 	m->patch_pool = in_place ? (SiftColDeltaPatch *) v : palloc(sizeof(SiftColDeltaPatch) * Max(nold + nv, 1));
 	m->grans = palloc(sizeof(SiftColDeltaGranMap) * Max(ngran_max, 1));
-	for (;;)
+	for (old_begin(&o, old, nlayers); o.p != NULL || ni < nv;)
 	{
-		const SiftColDeltaGranMap *g = old != NULL && og < old->ndirty_granules ? &old->grans[og] : NULL;
-		int			c;
+		int			c = o.p == NULL ? 1 : ni >= nv ? -1 : cell_cmp(old->grans[o.g].granule_id, o.p, v[ni].granule, &v[ni].p);
 
-		if (g == NULL && ni >= nv)
-			break;
-		c = ni >= nv ? -1 : g == NULL ? 1 : cell_cmp(g->granule_id, &g->patches[ok], v[ni].granule, &v[ni].p);
 		if (c < 0)
-			map_put(m, &n, g->granule_id, &g->patches[ok]);
+			map_put(m, old->grans[o.g].granule_id, o.p);
 		else
 		{
 			SiftColDeltaPatch p = v[ni].p;
 
-			map_put(m, &n, v[ni].granule, &p);
+			map_put(m, v[ni].granule, &p);
 			ni++;
 		}
-		if (g != NULL && c <= 0 && ++ok == g->npatches)
-		{
-			og++;
-			ok = 0;
-		}
+		if (c <= 0)
+			old_next(&o);
 	}
 	if (in_place)
-		shrink_pool(m, n);
-	own_strings(m, n);
+		shrink_pool(m);
+	own_strings(m);
 	return m;
 }
 
+/* The map laid over under, a shared map: its granules are those of both, each over the one of under it names, and under is held until the map goes */
+static void
+lay_over(SiftColDeltaPartMap *m, SiftColDeltaPartMap *under)
+{
+	SiftColDeltaGranMap *g = palloc(sizeof(SiftColDeltaGranMap) * Max(m->ndirty_granules + under->ndirty_granules, 1));
+	uint32		i = 0,
+				j = 0,
+				n = 0;
+
+	while (i < m->ndirty_granules || j < under->ndirty_granules)
+	{
+		const SiftColDeltaGranMap *u = j < under->ndirty_granules ? &under->grans[j] : NULL;
+		bool		own = i < m->ndirty_granules && (u == NULL || m->grans[i].granule_id <= u->granule_id);
+
+		g[n] = own ? m->grans[i++] : (SiftColDeltaGranMap) {.granule_id = u->granule_id};
+		if (u != NULL && g[n].granule_id == u->granule_id)
+		{
+			g[n].under = u;
+			g[n].attnum_bloom |= u->attnum_bloom;
+			j++;
+		}
+		n++;
+	}
+	pfree(m->grans);
+	m->grans = g;
+	m->ndirty_granules = n;
+	for (uint32 w = 0; w < (m->ngranules + 63) / 64; w++)
+		m->granule_dirty_bits[w] |= under->granule_dirty_bits[w];
+	m->dirty_attnum_bloom |= under->dirty_attnum_bloom;
+	m->dirty_tid_bloom |= under->dirty_tid_bloom;
+	m->under = sift_col_delta_part_map_ref(under);
+	m->nlayers = under->nlayers + 1;
+}
+
+/*
+ * The new layer takes in the newest layers of old while its patches are no fewer than those of the next one and the merge frees that one (nothing else holds it), or while the layers would pass the
+ * bound: the layers grow from the newest to the oldest, so that a patch is copied into a new layer a number of times that grows as the log of the patches, and a layer another holder keeps is copied
+ * only when the bound leaves no room
+ */
 SiftColDeltaPartMap *
-sift_col_delta_part_map_merge(const SiftColDeltaPartMap *old, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
+sift_col_delta_part_map_merge(SiftColDeltaPartMap *old, bool old_goes, SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
 {
 	int			n = latest_only(c->v, c->n);
+	SiftColDeltaPartMap *under = old;
+	uint32		size = n;
+	int			taken = 0;
+	SiftColDeltaPartMap *m;
 
-	return map_of(old, c->v, n, part_gen, ngranules, c->tid_bloom, false);
+	for (bool frees = old_goes; under != NULL; under = under->under, taken++)
+	{
+		frees = frees && under->refcnt == 1;
+		if (!(frees && size >= under->npatches) && under->nlayers < SIFT_COL_DELTA_MAP_LAYERS)
+			break;
+		size += under->npatches;
+	}
+	m = map_of(old, taken, c->v, n, part_gen, ngranules, c->tid_bloom, false);
+	if (under != NULL)
+		lay_over(m, under);
+	return m;
 }
 
 SiftColDeltaPartMap *
 sift_col_delta_part_map_take(SiftColDeltaCollector *c, uint64 part_gen, uint32 ngranules)
 {
 	int			n = latest_only(c->v, c->n);
-	SiftColDeltaPartMap *m = map_of(NULL, c->v, n, part_gen, ngranules, c->tid_bloom, true);
+	SiftColDeltaPartMap *m = map_of(NULL, 0, c->v, n, part_gen, ngranules, c->tid_bloom, true);
 
 	c->v = NULL;
 	c->n = c->cap = 0;
@@ -411,6 +483,7 @@ sift_col_delta_part_map_free(SiftColDeltaPartMap *m)
 {
 	if (m == NULL)
 		return;
+	SIFT_INVARIANT(m->under == NULL, "a column delta part map that lies over a shared one was freed as one owner's");
 	if (m->strpool != NULL)
 		pfree(m->strpool);
 	pfree(m->granule_dirty_bits);
@@ -441,6 +514,7 @@ sift_col_delta_part_map_share(MemoryContext map_cx, SiftColDeltaPartMap *map)
 	MemoryContextSetParent(map_cx, pm_root);
 	map->cx = map_cx;
 	map->refcnt = 1;
+	map->bytes = MemoryContextMemAllocated(map_cx, true) + (map->under != NULL ? map->under->bytes : 0);
 	return map;
 }
 
@@ -451,7 +525,12 @@ sift_col_delta_part_map_unref(SiftColDeltaPartMap *map)
 		return;
 	SIFT_INVARIANT(map->cx != NULL && map->refcnt > 0, "a column delta part map was given back more often than it was held");
 	if (--map->refcnt == 0)
+	{
+		SiftColDeltaPartMap *under = map->under;
+
 		MemoryContextDelete(map->cx);
+		sift_col_delta_part_map_unref(under);
+	}
 }
 
 static void
@@ -492,44 +571,82 @@ sift_col_delta_gran_map(const SiftColDeltaPartMap *m, uint32 granule_id)
 
 /* ---- the patches of a column ---- */
 
-static uint32
-first_not_before(const SiftColDeltaGranMap *gm, int16 attnum, int32 row)
+/* The first of the n patches at or after (attnum, row) */
+static const SiftColDeltaPatch *
+first_not_before(const SiftColDeltaPatch *v, uint32 n, int16 attnum, int32 row)
 {
 	uint32		lo = 0,
-				hi = gm->npatches;
+				hi = n;
 
 	while (lo < hi)
 	{
 		uint32		mid = lo + (hi - lo) / 2;
-		const SiftColDeltaPatch *p = &gm->patches[mid];
+		const SiftColDeltaPatch *p = &v[mid];
 
 		if (p->attnum < attnum || (p->attnum == attnum && p->row_ordinal < row))
 			lo = mid + 1;
 		else
 			hi = mid;
 	}
-	return lo;
+	return v + lo;
+}
+
+/* The layers of the granule from the newest, at most nlayers, each the patches [lo(layer), hi(layer)) it has of the range */
+static void
+iter_init(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm, int nlayers, int16 attnum, bool all)
+{
+	it->n = 0;
+	if (gm != NULL && !all && (gm->attnum_bloom & sift_cd_att_bit(attnum)) == 0)
+		return;
+	for (const SiftColDeltaGranMap *g = gm; g != NULL && nlayers-- > 0; g = g->under)
+	{
+		const SiftColDeltaPatch *lo = all ? g->patches : first_not_before(g->patches, g->npatches, attnum, 0);
+		const SiftColDeltaPatch *hi = all ? g->patches + g->npatches : first_not_before(g->patches, g->npatches, attnum + 1, 0);
+
+		if (lo == hi)
+			continue;
+		it->at[it->n] = lo;
+		it->end[it->n++] = hi;
+	}
 }
 
 void
-sift_col_delta_patch_slice(const SiftColDeltaGranMap *gm, int16 attnum, uint32 *lo, uint32 *hi)
+sift_col_delta_patches_all(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm)
 {
-	*lo = *hi = 0;
-	if (gm == NULL || (gm->attnum_bloom & sift_cd_att_bit(attnum)) == 0)
-		return;
-	*lo = first_not_before(gm, attnum, 0);
-	*hi = first_not_before(gm, attnum + 1, 0);
+	iter_init(it, gm, SIFT_COL_DELTA_MAP_LAYERS, 0, true);
+}
+
+void
+sift_col_delta_patches_top(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm, int nlayers)
+{
+	iter_init(it, gm, nlayers, 0, true);
+}
+
+void
+sift_col_delta_patches_of(SiftColDeltaPatchIter *it, const SiftColDeltaGranMap *gm, int16 attnum)
+{
+	iter_init(it, gm, SIFT_COL_DELTA_MAP_LAYERS, attnum, false);
+}
+
+/* The patch of the cell among the n, NULL when none */
+static const SiftColDeltaPatch *
+patch_of_row(const SiftColDeltaPatch *v, uint32 n, int16 attnum, uint16 row)
+{
+	const SiftColDeltaPatch *at = first_not_before(v, n, attnum, row);
+
+	return at < v + n && at->attnum == attnum && at->row_ordinal == row ? at : NULL;
 }
 
 const SiftColDeltaPatch *
 sift_col_delta_find_row(const SiftColDeltaGranMap *gm, int16 attnum, uint16 row)
 {
-	uint32		at;
+	const SiftColDeltaPatch *p;
 
 	if (gm == NULL || (gm->attnum_bloom & sift_cd_att_bit(attnum)) == 0)
 		return NULL;
-	at = first_not_before(gm, attnum, row);
-	return at < gm->npatches && gm->patches[at].attnum == attnum && gm->patches[at].row_ordinal == row ? &gm->patches[at] : NULL;
+	for (p = NULL; p == NULL && gm != NULL; gm = gm->under)
+		p = patch_of_row(gm->patches, gm->npatches, attnum, row);
+	return p;
 }
 
 static bool
@@ -541,13 +658,12 @@ patch_is_null(const SiftColDeltaPatch *p)
 int
 sift_col_delta_apply_cells(SiftColDeltaCells *cells, const SiftColDeltaGranMap *gm, int16 attnum)
 {
-	uint32		lo,
-				hi;
+	SiftColDeltaPatchIter it;
+	int			n = 0;
 
-	sift_col_delta_patch_slice(gm, attnum, &lo, &hi);
-	for (uint32 k = lo; k < hi; k++)
+	sift_col_delta_patches_of(&it, gm, attnum);
+	for (const SiftColDeltaPatch *p; (p = sift_col_delta_patch_next(&it)) != NULL; n++)
 	{
-		const SiftColDeltaPatch *p = &gm->patches[k];
 		uint16		r = p->row_ordinal;
 
 		SIFT_INVARIANT(SIFT_CDCOL_KIND(p->flags) == cells->kind, "a column delta of attribute %d is of another kind than its column", attnum);
@@ -571,7 +687,7 @@ sift_col_delta_apply_cells(SiftColDeltaCells *cells, const SiftColDeltaGranMap *
 			cells->s[r] = (SiftStrCell) {.p = copy,.len = patch_is_null(p) ? 0 : p->vlen,.isnull = patch_is_null(p)};
 		}
 	}
-	return (int) (hi - lo);
+	return n;
 }
 
 /* ---- one row ---- */

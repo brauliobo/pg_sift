@@ -351,16 +351,11 @@ static void
 patch_col(SiftF2Pull *p, int i, uint16 off, uint16 cnt)
 {
 	SiftVec    *v = &p->vec[i];
-	uint32		lo = 0,
-				hi = 0;
+	SiftColDeltaPatchIter it;
 
-	if (p->gm == NULL)
-		return;
-	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.col[i].leaf + 1), &lo, &hi);
-	for (uint32 k = lo; k < hi; k++)
+	sift_col_delta_patches_of(&it, p->gm, (int16) (p->spec.col[i].leaf + 1));
+	for (const SiftColDeltaPatch *pt; (pt = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		const SiftColDeltaPatch *pt = &p->gm->patches[k];
-
 		if (pt->row_ordinal < off || pt->row_ordinal >= off + cnt)
 			continue;
 		if (v->all_valid || v->valid != p->valid[i])
@@ -819,15 +814,11 @@ fill_granule_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
 static void
 patch_mask(SiftF2Pull *p, int m, uint16 off, uint16 cnt)
 {
-	uint32		lo = 0,
-				hi = 0;
+	SiftColDeltaPatchIter it;
 
-	if (p->gm == NULL)
-		return;
-	sift_col_delta_patch_slice(p->gm, (int16) (p->spec.mask[m].leaf + 1), &lo, &hi);
-	for (uint32 k = lo; k < hi; k++)
+	sift_col_delta_patches_of(&it, p->gm, (int16) (p->spec.mask[m].leaf + 1));
+	for (const SiftColDeltaPatch *pt; (pt = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		const SiftColDeltaPatch *pt = &p->gm->patches[k];
 		uint16		j;
 		uint64		bit;
 

@@ -312,10 +312,13 @@ gen_cmp(const void *a, const void *b)
 static void
 note_leaves(Fold *f, const SiftColDeltaPartMap *m)
 {
+	SiftColDeltaPatchIter it;
+	const SiftColDeltaPatch *p;
+
 	for (uint32 g = 0; g < m->ndirty_granules; g++)
-		for (uint32 k = 0; k < m->grans[g].npatches; k++)
+		for (sift_col_delta_patches_all(&it, &m->grans[g]); (p = sift_col_delta_patch_next(&it)) != NULL;)
 		{
-			int			leaf = patch_leaf(f->store, m->grans[g].patches[k].attnum);
+			int			leaf = patch_leaf(f->store, p->attnum);
 
 			if (leaf >= 0)
 				f->folded_leaf[leaf] = true;
@@ -442,14 +445,14 @@ static void
 fold_apply(void *fold, uint64 part_gen, uint32 granule_id, uint32 row0, SiftRowBuf *rows, SiftExtent **release, int *nrelease)
 {
 	Fold	   *f = fold;
-	const SiftColDeltaGranMap *gm;
+	SiftColDeltaPatchIter it;
 
 	if (!fold_folds_part(f, part_gen))
 		return;
-	gm = sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id);
-	for (uint32 k = 0; gm != NULL && k < gm->npatches; k++)
+	sift_col_delta_patches_all(&it, sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id));
+	for (const SiftColDeltaPatch *at; (at = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		SiftColDeltaPatch pt = gm->patches[k];
+		SiftColDeltaPatch pt = *at;
 		int			leaf = patch_leaf(f->store, pt.attnum);
 		const char *old;
 		uint32		oldlen;
@@ -468,15 +471,13 @@ static void
 fold_row_tids(void *fold, uint64 part_gen, uint32 granule_id, uint64 *tids, uint32 n)
 {
 	Fold	   *f = fold;
-	const SiftColDeltaGranMap *gm;
+	SiftColDeltaPatchIter it;
 
 	if (!fold_folds_part(f, part_gen))
 		return;
-	gm = sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id);
-	for (uint32 k = 0; gm != NULL && k < gm->npatches; k++)
+	sift_col_delta_patches_all(&it, sift_col_delta_gran_map(sift_col_delta_fold_idx_part(f->idx, gen_at(f->gens, f->ngens, part_gen)), granule_id));
+	for (const SiftColDeltaPatch *pt; (pt = sift_col_delta_patch_next(&it)) != NULL;)
 	{
-		const SiftColDeltaPatch *pt = &gm->patches[k];
-
 		if (pt->attnum == SIFT_CD_ATT_TID_REMAP && pt->row_ordinal < n)
 			tids[pt->row_ordinal] = (uint64) pt->val.i;
 	}
