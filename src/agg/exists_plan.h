@@ -21,7 +21,8 @@ extern bool sift_v6_exists_clause(const RestrictInfo *ri);
 /* The EXISTS clause ri of the join of sh as the elements, dimensions and conditions it adds to it; false when the sub-select is not of the shape above */
 extern bool sift_v6_exists_join(PlannerInfo *root, SiftV6JoinShape *sh, RestrictInfo *ri);
 
-/* The rows of the statement's own join come once for each row of the fact table, which the count of a row once needs: each dimension keeps one row for a key */
+/* The rows of the statement's own join come once for each row of the fact table, which the count of a row once needs: each dimension keeps one row for a key. A RIGHT or FULL dimension
+ * is probed by the row once it passed (agg/pipe.h): it may repeat a key */
 extern bool sift_v6_exists_main_unique(PlannerInfo *root, const SiftV6JoinShape *sh);
 
 #endif							/* SIFT_AGG_V6_EXISTS_PLAN_H */

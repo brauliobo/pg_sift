@@ -90,6 +90,16 @@ SELECT * FROM check_query($q$
      WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END AND o.score > CASE WHEN f.day = '2026-01-03' THEN 100 ELSE 0 END)) f ON f.day = d.day
  GROUP BY d.day
 $q$);
+-- A calendar without a unique day: a row that passed the test matches each of its copies.
+CREATE TABLE days_dup AS SELECT day FROM dates UNION ALL SELECT day FROM dates WHERE day < '2026-01-04';
+ANALYZE days_dup;
+SELECT * FROM check_query($q$
+ SELECT d.day, count(f.id) AS n, sum(f.id) AS total FROM days_dup d
+ LEFT JOIN (SELECT f.id, f.day FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
+   WHERE EXISTS (SELECT 1 FROM jsonb_to_recordset(f.document -> 'parts') AS o(category text, val text, score float8, dir_a text)
+     WHERE o.category = CASE e.kind WHEN 'a' THEN 'catg_l' ELSE 'catg_a' END)) f ON f.day = d.day
+ GROUP BY d.day
+$q$);
 -- NOT EXISTS, and an EXISTS inside an aggregate's FILTER, stay with PostgreSQL.
 SELECT * FROM check_query($q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id
@@ -153,5 +163,5 @@ SELECT * FROM check_error($q$
    WHERE o.val::int > 100 AND o.category <> e.kind) GROUP BY e.kind
 $q$);
 DROP FUNCTION check_query(text), check_error(text);
-DROP TABLE facts, raising, dim_a, mappings, dates;
+DROP TABLE facts, raising, dim_a, mappings, dates, days_dup;
 DROP EXTENSION pg_sift;
