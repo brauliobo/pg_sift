@@ -986,24 +986,3 @@ sift_v6_json_float_int_raise(Oid typid, double f)
 	(void) DirectFunctionCall1(typid == INT2OID ? numeric_int2 : typid == INT4OID ? numeric_int4 : numeric_int8, num);
 	SIFT_INVARIANT(false, "the integer cast of a number out of the range of its type raises");
 }
-
-bool
-sift_v6_json_payload_member(const char *payload, uint32 len, const List *keys, MemoryContext cx, const char **out, uint32 *outlen)
-{
-	MemoryContext old = MemoryContextSwitchTo(cx);
-	Jsonb	   *jb = memcpy(palloc(len), payload, len);
-
-	foreach_node(String, k, keys)
-	{
-		JsonbValue	key = {.type = jbvString,.val.string = {.val = strVal(k),.len = strlen(strVal(k))}};
-		JsonbValue *v = JB_ROOT_IS_OBJECT(jb) ? findJsonbValueFromContainer(&jb->root, JB_FOBJECT, &key) : NULL;
-
-		jb = v != NULL ? JsonbValueToJsonb(v) : NULL;
-		if (jb == NULL)
-			break;
-	}
-	MemoryContextSwitchTo(old);
-	*out = (const char *) jb;
-	*outlen = jb != NULL ? VARSIZE(jb) : 0;
-	return jb != NULL;
-}

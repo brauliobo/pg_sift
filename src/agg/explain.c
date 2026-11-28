@@ -666,8 +666,8 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 	ExplainCloseGroup("Sift", "Sift", true, es);
 }
 
-void
-sift_v6_explain_members(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es)
+static void
+explain_members(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es)
 {
 	StringInfoData b;
 
@@ -684,4 +684,16 @@ sift_v6_explain_members(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es
 		appendStringInfo(&b, " %s", format_type_be(c.typid));
 	}
 	ExplainPropertyText("Map Keys", b.data, es);
+}
+
+void
+sift_v6_explain_doc_reads(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es)
+{
+	const SiftV6Ext *ext = spec->ext;
+
+	if (ext != NULL && ext->unnest)
+		ExplainPropertyText("Unnest", ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
+	explain_members(spec, desc, es);
+	if (ext != NULL && ext->unnest && ext->elem.vread != SV6V_NONE)
+		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(desc, ext->elem.attno - 1)->attname)), es);
 }

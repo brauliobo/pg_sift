@@ -29,8 +29,11 @@ extern char *sift_v6_deparse_planning(PlannerInfo *root, Node *e, bool prefix);
 /* Top-N: the sort keys and the limit of the groups (the spec of the aggregate scan, when it gives the best groups in order) */
 extern void sift_v6_explain_topn_groups(const SiftV6Spec *spec, ExplainState *es);
 
-/* Map Keys: the members of documents the scan reads by a path (SiftV6Spec.jmembers), as `attname['key'] type, ..` (desc: the attributes of the host) */
-extern void sift_v6_explain_members(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es);
+/*
+ * Unnest, Map Keys and Unnest Value: the lateral columnar unnest of the scan, the members of documents it reads by a path (SiftV6Spec.jmembers) as
+ * `attname['key'] type, ..`, and the array whose values it reads (desc: the attributes of the host)
+ */
+extern void sift_v6_explain_doc_reads(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es);
 
 /*
  * The counters of a run of the Format 2.0 engine for EXPLAIN (ANALYZE): every worker counts in a struct of its own, with no atomic in a loop, and the leader merges
