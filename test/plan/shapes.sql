@@ -61,13 +61,11 @@ SELECT extract(isodow FROM ts)::int AS weekday, kind, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1, 2 ORDER BY 1, 2;
 
 -- name: float_metric
--- gap: S113-15
 -- area: jsonb smoke
 SELECT kind, round(avg((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 3) AS mean, round(sum((doc -> 'metrics' ->> 'm_a')::float8)::numeric, 2) AS total FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: float_sum_unrounded
--- gap: S113-15
 -- area: jsonb
 SELECT kind, sum((doc -> 'metrics' ->> 'm_a')::float8) AS total, avg((doc -> 'metrics' ->> 'm_a')::float8) AS mean FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -372,7 +370,6 @@ SELECT DISTINCT parent_id, kind FROM events WHERE deleted_at IS NULL AND ts >= d
 SELECT d.tier, count(DISTINCT e.parent_id) AS parents, count(*) AS n FROM events e JOIN dims d ON d.id = e.parent_id WHERE e.deleted_at IS NULL GROUP BY 1 ORDER BY 1;
 
 -- name: arms_union
--- gap: S113-15
 -- area: jsonb
 SELECT 'catg_a' AS arm, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS mean, count(*) AS n FROM events WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01'
 UNION ALL
@@ -387,7 +384,6 @@ SELECT parent_id, avg(amount) FILTER (WHERE kind = 'cat_a') AS mean_a, avg(amoun
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
 
 -- name: arms_per_parent_metrics
--- gap: S113-15
 -- area: jsonb
 SELECT parent_id, round(avg((doc -> 'metrics' ->> 'catg_a')::float8)::numeric, 3) AS catg_a, round(avg((doc -> 'metrics' ->> 'catg_b')::float8)::numeric, 3) AS catg_b, count(*) AS n FROM events
 WHERE deleted_at IS NULL AND ts >= date '2024-03-01' AND ts < date '2025-03-01' GROUP BY 1 ORDER BY 1;
@@ -755,7 +751,6 @@ WHERE ts >= date '2024-04-01' AND ts < date '2025-10-01' AND deleted_at IS NULL 
 
 -- name: bench_each_map
 -- area: bench jsonb
--- gap: S113-04
 -- node: ^SiftAggV6
 -- forbid: Seq Scan on events
 SELECT e.kind, count(*) AS n, count(CAST(r.value AS float)) AS dim_b, avg(CAST(r.value AS float)) AS avg_value FROM events e
