@@ -17,14 +17,17 @@
 #include "agg/plan/int.h"
 #include "agg/unnest/jsonb.h"
 
-/* e is a call this file plans: jsonb_path_exists(doc, path[, vars[, silent]]), doc @? path, doc @> constant, constant <@ doc, doc ? 'key', doc ?| keys or doc ?& keys */
-extern bool sift_v6_unnest_path_call(const Node *e);
+/*
+ * e is a call this file plans: jsonb_path_exists(doc, path[, vars[, silent]]), doc @? path, doc @> constant array, constant array <@ doc, doc ? 'key', doc ?| keys or doc ?& keys; on a
+ * sift_table (table), which reads the row again for the call to decide, a containment of any pattern
+ */
+extern bool sift_v6_unnest_path_call(const Node *e, bool table);
 /* the kind of stream the elements the call tests are: the objects of a jsonpath or a containment, the strings of a key test or of a containment of strings */
 extern SiftV6ElemFn sift_v6_unnest_path_fn(const Node *e);
 /* the call is a jsonpath whose array is $.key[*] of its document: a document without the key is false, a NULL one NULL (any other call is NULL where its array is) */
 extern bool sift_v6_unnest_path_keyed(const Node *e);
 /* the array the call tests, doc or doc -> 'key'; NULL when e is no such call */
-extern const Expr *sift_v6_unnest_path_array(const Node *e);
+extern const Expr *sift_v6_unnest_path_array(const Node *e, bool table);
 /*
  * The members of the object pattern of doc @> '{..}' (constant <@ doc) that are lists of strings, each as the call (doc -> 'key') @> '[..]', and in rest the containment of the other members (NULL
  * when none is left): the clause is true exactly when all of them are. NIL: the clause is no such containment, or no member is a list of strings

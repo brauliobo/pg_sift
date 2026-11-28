@@ -92,24 +92,24 @@ exists_subplan(const PlannerInfo *root, const Node *n, const PlannerInfo **sub)
 	return sp;
 }
 
-/* the sub-plan or call c is, under at most one NOT, the whole under an IS TRUE, which keeps the rows a WHERE or a FILTER keeps */
+/* the sub-plan or call c is, under at most one NOT, the whole under an IS TRUE, which keeps the rows a WHERE or a FILTER keeps (table: of a sift_table, agg/unnest/path.h) */
 static const Node *
-test_node(const Node *c, bool *negated)
+test_node(const Node *c, bool table, bool *negated)
 {
 	if (IsA(c, BooleanTest) && ((const BooleanTest *) c)->booltesttype == IS_TRUE)
 		c = (const Node *) ((const BooleanTest *) c)->arg;
 	*negated = IsA(c, BoolExpr) && ((const BoolExpr *) c)->boolop == NOT_EXPR;
 	if (*negated)
 		c = linitial(((const BoolExpr *) c)->args);
-	return IsA(c, SubPlan) || sift_v6_unnest_path_call(c) ? c : NULL;
+	return IsA(c, SubPlan) || sift_v6_unnest_path_call(c, table) ? c : NULL;
 }
 
 static TestCand *
-cand_of(const PlannerInfo *root, const Node *clause, const RestrictInfo *where)
+cand_of(const PlannerInfo *root, const Node *clause, bool table, const RestrictInfo *where)
 {
 	TestCand   *c = palloc0(sizeof(TestCand));
 
-	c->node = test_node(clause, &c->negated);
+	c->node = test_node(clause, table, &c->negated);
 	c->where = where;
 	if (c->node == NULL || (IsA(c->node, SubPlan) && (c->sp = exists_subplan(root, c->node, &c->sub)) == NULL))
 		return NULL;
@@ -137,16 +137,16 @@ collect_filters(Node *n, FilterWalk *w)
 
 /* the tests among the conjuncts of a FILTER and the arms of its ORs, added to cands (a clause equal to one already found is the same test) */
 static List *
-filter_cands(PlannerInfo *root, Node *clause, List *cands)
+filter_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 {
 	foreach_ptr(Node, conjunct, make_ands_implicit((Expr *) clause))
 	{
-		TestCand   *c = is_orclause(conjunct) ? NULL : cand_of(root, conjunct, NULL);
+		TestCand   *c = is_orclause(conjunct) ? NULL : cand_of(root, conjunct, table, NULL);
 		bool		seen = false;
 
 		if (is_orclause(conjunct))
 			foreach_ptr(Node, arm, ((const BoolExpr *) conjunct)->args)
-				cands = filter_cands(root, arm, cands);
+				cands = filter_cands(root, arm, table, cands);
 		foreach_ptr(TestCand, o, cands)
 			seen |= c != NULL && o->where == NULL && o->bind == NULL && equal(o->node, c->node);
 		if (c != NULL && !seen)
@@ -157,9 +157,9 @@ filter_cands(PlannerInfo *root, Node *clause, List *cands)
 
 /* the tests of the arms of an OR of the WHERE: the calls alone, which a row read from the heap evaluates with the whole clause (a sub-plan has no parent plan there) */
 static List *
-where_or_cands(PlannerInfo *root, Node *clause, List *cands)
+where_or_cands(PlannerInfo *root, Node *clause, bool table, List *cands)
 {
-	foreach_ptr(TestCand, c, filter_cands(root, clause, NIL))
+	foreach_ptr(TestCand, c, filter_cands(root, clause, table, NIL))
 	{
 		bool		seen = c->sp != NULL;
 
@@ -173,22 +173,22 @@ where_or_cands(PlannerInfo *root, Node *clause, List *cands)
 
 /* the tests of the lists of strings among the members of the pattern of a containment of the WHERE, whose flags the clause reads (sift_v6_tests_contains_quals) */
 static List *
-member_cands(PlannerInfo *root, const Node *clause, List *cands)
+member_cands(PlannerInfo *root, const Node *clause, bool table, List *cands)
 {
 	Expr	   *rest;
 	List	   *members = sift_v6_unnest_path_members(clause, &rest);
 
-	return members == NIL ? cands : filter_cands(root, (Node *) make_ands_explicit(members), cands);
+	return members == NIL ? cands : filter_cands(root, (Node *) make_ands_explicit(members), table, cands);
 }
 
 /* the tests of a split: its EXISTS with each constant of its CASE */
 static List *
-split_cands(PlannerInfo *root, const List *splits, List *cands)
+split_cands(PlannerInfo *root, const List *splits, bool table, List *cands)
 {
 	foreach_ptr(SiftV6ExistsSplit, sx, splits)
 		foreach_node(Const, value, sift_v6_exists_split_values(sx))
 		{
-			TestCand   *c = cand_of(root, (const Node *) sx->sp, NULL);
+			TestCand   *c = cand_of(root, (const Node *) sx->sp, table, NULL);
 
 			if (c == NULL)
 				return NIL;
@@ -202,28 +202,28 @@ split_cands(PlannerInfo *root, const List *splits, List *cands)
 /* the tests the WHERE and the FILTERs of the statement have (a SELECT DISTINCT has no extra, and no FILTER): a WHERE that is a test, the tests of the arms of an OR of the WHERE where the scan reads their flags
  * (agg/plan/filter.c), and those of the splits of its join */
 static List *
-collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms, const List *splits)
+collect_cands(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out, GroupPathExtraData *extra, bool or_arms, bool table, const List *splits)
 {
 	List	   *cands = NIL;
 	FilterWalk	w = {0};
 
 	foreach_node(RestrictInfo, ri, rel->baserestrictinfo)
 	{
-		TestCand   *c = ri->pseudoconstant ? NULL : cand_of(root, (Node *) ri->clause, ri);
+		TestCand   *c = ri->pseudoconstant ? NULL : cand_of(root, (Node *) ri->clause, table, ri);
 
 		if (c != NULL)
 			cands = lappend(cands, c);
 		else if (or_arms && !ri->pseudoconstant && is_orclause(ri->clause))
-			cands = where_or_cands(root, (Node *) ri->clause, cands);
+			cands = where_or_cands(root, (Node *) ri->clause, table, cands);
 		else if (or_arms && !ri->pseudoconstant)
-			cands = member_cands(root, (Node *) ri->clause, cands);
+			cands = member_cands(root, (Node *) ri->clause, table, cands);
 	}
 	collect_filters((Node *) out->reltarget->exprs, &w);
 	if (extra != NULL)
 		collect_filters(extra->havingQual, &w);
 	foreach_ptr(Expr, filter, w.filters)
-		cands = filter_cands(root, (Node *) filter, cands);
-	if (splits != NIL && (cands = split_cands(root, splits, cands)) == NIL)
+		cands = filter_cands(root, (Node *) filter, table, cands);
+	if (splits != NIL && (cands = split_cands(root, splits, table, cands)) == NIL)
 		return NIL;
 	return list_length(cands) <= SIFT_V6_XTESTS ? cands : NIL;
 }
@@ -434,7 +434,7 @@ static bool
 build_path(V6Plan *p, SiftV6TestStreams *st, TestBuilt *b)
 {
 	const Node *e = b->cand->node;
-	const Expr *array = sift_v6_unnest_path_array(e);
+	const Expr *array = sift_v6_unnest_path_array(e, p->is_table);
 	SiftV6ElemRte *rte;
 
 	if (array == NULL || !sift_v6_unnest_array_ok(p->root, p->rel, array) || (rte = stream_of(p, st, array, sift_v6_unnest_path_fn(e), &b->test.stream)) == NULL)
@@ -539,7 +539,7 @@ sift_v6_unnest_tests_beside(V6Plan *p, const SiftV6ElemRte *own, RelOptInfo *out
 {
 	SiftV6TestStreams st = {.n = 1,.nfixed = 1,.rte = {*own}};
 	const bool	streams = source_streams(p);
-	const List *cands = collect_cands(p->root, p->rel, out, extra, where_flags(p), splits);
+	const List *cands = collect_cands(p->root, p->rel, out, extra, where_flags(p), p->is_table, splits);
 	SiftV6Ext  *x = p->xseed;
 
 	if (cands == NIL || (streams && build_tests(p, cands, &st) && seed_streams(p, &st) && build_exists_quals(p) && store_tests(p)))
@@ -553,7 +553,7 @@ Expr *
 sift_v6_unnest_test_qual(const V6Plan *p, const Node *conjunct)
 {
 	bool		negated;
-	const Node *node = test_node(conjunct, &negated);
+	const Node *node = test_node(conjunct, p->is_table, &negated);
 	Var		   *flag;
 
 	if (node == NULL)
@@ -614,7 +614,7 @@ bool
 sift_v6_unnest_tests_seed(V6Plan *p, GroupPathExtraData *extra, const List *splits)
 {
 	SiftV6TestStreams st = {0};
-	const List *cands = collect_cands(p->root, p->rel, p->out, extra, where_flags(p), splits);
+	const List *cands = collect_cands(p->root, p->rel, p->out, extra, where_flags(p), p->is_table, splits);
 
 	if (cands == NIL)
 		return true;
@@ -662,9 +662,10 @@ sift_v6_unnest_exists_paths(PlannerInfo *root, RelOptInfo *rel, RelOptInfo *out,
 	SiftV6RelSource *src;
 	int			nsrc;
 
-	if (!sift_v6_plan_fact_ok(root, rel) || collect_cands(root, rel, out, extra, true, NIL) == NIL)
+	if (!sift_v6_plan_fact_ok(root, rel))
 		return;
 	src = sift_v6_rel_sources_alloc(root, rel, &nsrc);
 	for (int i = 0; i < nsrc; i++)
-		try_source(root, rel, out, extra, group_exprs, &src[i]);
+		if (collect_cands(root, rel, out, extra, true, src[i].is_table, NIL) != NIL)
+			try_source(root, rel, out, extra, group_exprs, &src[i]);
 }

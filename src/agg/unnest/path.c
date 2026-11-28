@@ -69,11 +69,11 @@ pattern_array(const Node *e)
 }
 
 bool
-sift_v6_unnest_path_call(const Node *e)
+sift_v6_unnest_path_call(const Node *e, bool table)
 {
 	const Oid	fid = call_func(e);
 
-	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || (contains_call(fid) && pattern_array(e) != NULL) || exists_call(fid);
+	return fid == F_JSONB_PATH_EXISTS || fid == F_JSONB_PATH_EXISTS_OPR || (contains_call(fid) && (table || pattern_array(e) != NULL)) || exists_call(fid);
 }
 
 /* the strings of a containment pattern that is a list of strings, NIL for another pattern */
@@ -157,14 +157,14 @@ json_field(const Expr *doc, text *key)
 }
 
 const Expr *
-sift_v6_unnest_path_array(const Node *e)
+sift_v6_unnest_path_array(const Node *e, bool table)
 {
 	List	   *args;
 	const JsonPath *jp;
 	JsonPathItem any;
 	char	   *key;
 
-	if (!sift_v6_unnest_path_call(e))
+	if (!sift_v6_unnest_path_call(e, table))
 		return NULL;
 	args = func_args(unconstify(Node *, e));
 	if (contains_call(call_func(e)) || exists_call(call_func(e)))
