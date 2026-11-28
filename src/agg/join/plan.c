@@ -133,8 +133,6 @@ dim_key_of(const SiftV6JoinShape *sh, Node *e, const Var **key, const Node **kex
 static bool
 dim_rels_ok(PlannerInfo *root, SiftV6JoinShape *sh)
 {
-	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / sh->nd, 4096);
-
 	for (int i = 0; i < sh->nd; i++)
 	{
 		SiftV6JoinDim *d = &sh->dim[i];
@@ -146,10 +144,10 @@ dim_rels_ok(PlannerInfo *root, SiftV6JoinShape *sh)
 			rel = find_join_rel(root, d->rels);
 		if (rel != NULL && rel->lateral_relids != NULL)
 		{
-			if (!sift_v6_lateral_join_dim(root, root, NULL, rel, rel->relid, sh, i) || !sift_v6_dim_rel_ok(root, d->rel, budget))
+			if (!sift_v6_lateral_join_dim(root, root, NULL, rel, rel->relid, sh, i) || !sift_v6_dim_rel_ok(root, d->rel, sh->nd))
 				return false;
 		}
-		else if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, budget))
+		else if (rel == NULL || !sift_v6_dim_rel_ok(root, rel, sh->nd))
 			return false;
 		else
 			d->rel = rel;

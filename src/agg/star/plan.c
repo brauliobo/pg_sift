@@ -308,9 +308,11 @@ dim_hash_bytes(const RelOptInfo *rel)
 	return rel->rows * (rel->reltarget->width + 48.0);
 }
 
+/* the table of one of ndims dimensions fits its share of half of work_mem (at least 4 kB) */
 bool
-sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, uint64 budget)
+sift_v6_dim_rel_ok(PlannerInfo *root, RelOptInfo *rel, int ndims)
 {
+	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / ndims, 4096);
 	bool		limited = false;
 
 	return dim_rel_readable(root, rel, &limited) && dim_hash_bytes(rel) * (limited ? 2 : 1) <= (double) budget;

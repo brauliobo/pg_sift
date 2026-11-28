@@ -240,14 +240,14 @@ quals_of(Exists *x, SiftV6JoinShape *sh, const RelOptInfo *elem, List *lateral)
 static bool
 add_dims(Exists *x, SiftV6JoinShape *sh, List *lateral, const bool *left)
 {
-	const uint64 budget = Max((uint64) work_mem * 1024 / 2 / (sh->nd + list_length(lateral)), 4096);
+	const int	ndims = sh->nd + list_length(lateral);
 
 	foreach_ptr(RelOptInfo, rel, lateral)
 	{
 		const Index relid = x->map[rel->relid];
 
 		if (!sift_v6_join_add_dim(sh, bms_make_singleton(relid), left[rel->relid] ? SV6J_LEFT_EQUI : SV6J_INNER_EQUI) ||
-			!sift_v6_lateral_join_dim(x->root, x->sub, x->map, rel, relid, sh, sh->nd - 1) || !sift_v6_dim_rel_ok(x->root, sh->dim[sh->nd - 1].rel, budget))
+			!sift_v6_lateral_join_dim(x->root, x->sub, x->map, rel, relid, sh, sh->nd - 1) || !sift_v6_dim_rel_ok(x->root, sh->dim[sh->nd - 1].rel, ndims))
 			return false;
 	}
 	return true;
