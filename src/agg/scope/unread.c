@@ -274,16 +274,15 @@ sift_v6_scope_placed(const PlannedStmt *ps)
 		if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION)
 			continue;
 		heap = relation_open(sift_rel_must_exist(rte->relid), AccessShareLock);
-		foreach_oid(ixoid, RelationGetIndexList(heap))
-			if (get_rel_relam(ixoid) == col_am)
-			{
-				Relation	index = index_open(ixoid, AccessShareLock);
-				const int	before = list_length(pl.rels);
+		foreach_oid(ixoid, sift_scope_read_indexes(heap))
+		{
+			Relation	index = index_open(ixoid, AccessShareLock);
+			const int	before = list_length(pl.rels);
 
-				scope_rels_of(&pl, index);
-				partition |= list_length(pl.rels) > before && heap->rd_rel->relispartition;
-				index_close(index, AccessShareLock);
-			}
+			scope_rels_of(&pl, index);
+			partition |= list_length(pl.rels) > before && heap->rd_rel->relispartition;
+			index_close(index, AccessShareLock);
+		}
 		relation_close(heap, AccessShareLock);
 	}
 	if (pl.rels == NIL)
@@ -327,11 +326,11 @@ sift_v6_scope_unread(const PlannedStmt *ps)
 		if (rte->rtekind != RTE_RELATION || rte->relkind != RELKIND_RELATION)
 			continue;
 		heap = relation_open(sift_rel_must_exist(rte->relid), AccessShareLock);
-		foreach_oid(ixoid, RelationGetIndexList(heap))
+		foreach_oid(ixoid, sift_scope_read_indexes(heap))
 		{
 			Relation	index;
 
-			if (why != NULL || get_rel_relam(ixoid) != col_am)
+			if (why != NULL)
 				continue;
 			index = index_open(ixoid, AccessShareLock);
 			if (holds_scope_relation(ps, index, rte->relid))

@@ -120,6 +120,7 @@ extern bool sift_v6_scope_one_key(const SiftScopeOps *scope, PlannerInfo *root, 
 
 /* rewrite.c: the statement with ARRAY(SELECT ..) over a scope relation as IN and a table of keys as an array of them; false when it has neither (apply: make the rewrites in place) */
 extern bool sift_v6_scope_rewrite(Query *q, bool apply);
+extern List *sift_scope_read_indexes(Relation heap);
 
 /* show.c: the EXPLAIN lines of a node of the scope aggregate: its relation and spec, the expression of its keys (NULL: none named), the keys of its run (-1: not run), why it ran the join (NULL: it did not) */
 typedef struct ScopeShow

@@ -54,20 +54,31 @@ add_scopes(ScopeRels *s, Relation index)
 	}
 }
 
+/* The sift_col indexes of heap a plan may read: a build in progress (CREATE INDEX CONCURRENTLY, REINDEX CONCURRENTLY) has not recorded the relations of its scopes yet */
+List *
+sift_scope_read_indexes(Relation heap)
+{
+	const Oid	col_am = sift_catalog()->col_am;
+	List	   *ixs = NIL;
+
+	foreach_oid(ix, RelationGetIndexList(heap))
+		if (get_rel_relam(ix) == col_am && get_index_isvalid(ix))
+			ixs = lappend_oid(ixs, ix);
+	return ixs;
+}
+
 static void
 add_table(ScopeRels *s, Oid relid)
 {
-	const Oid	col_am = sift_catalog()->col_am;
 	Relation	heap = relation_open(relid, AccessShareLock);
 
-	foreach_oid(ix, RelationGetIndexList(heap))
-		if (get_rel_relam(ix) == col_am)
-		{
-			Relation	index = index_open(ix, AccessShareLock);
+	foreach_oid(ix, sift_scope_read_indexes(heap))
+	{
+		Relation	index = index_open(ix, AccessShareLock);
 
-			add_scopes(s, index);
-			index_close(index, AccessShareLock);
-		}
+		add_scopes(s, index);
+		index_close(index, AccessShareLock);
+	}
 	relation_close(heap, AccessShareLock);
 }
 
