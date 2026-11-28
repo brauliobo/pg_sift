@@ -25,6 +25,7 @@
 #include "agg/engine.h"
 #include "agg/qual/bqual.h"
 #include "agg/cost/card.h"
+#include "agg/expr/pg.h"
 #include "agg/join/join.h"
 #include "agg/sip_scan.h"
 #include "agg/unnest/jsonb.h"
@@ -711,6 +712,31 @@ sift_v6_in_lists_cost(const IndexOptInfo *ix, const List *clauses)
 	return in_lists_cost(index_view(ix), ix, false, clauses);
 }
 
+/*
+ * per row that passes the quals, what the derivations PostgreSQL evaluates cost (agg/expr/pg.h): the operators of the expression, as PostgreSQL prices it in its own plan, and one for each input the
+ * row puts in the slot of the expression; the columns of the index they read are added to cols
+ */
+static Cost
+pg_derive_cost(PlannerInfo *root, const SiftV6Spec *spec, Bitmapset **cols)
+{
+	Cost		per_row = 0;
+
+	for (int i = 0; i < spec->nderive; i++)
+		if (spec->derive[i].kind == SVD_PG_EXPR)
+		{
+			SiftV6PgItem it;
+			QualCost	qc;
+
+			sift_v6_pgexpr_item(spec, &spec->derive[i], &it);
+			cost_qual_eval_node(&qc, (Node *) it.expr, root);
+			per_row += qc.per_tuple + it.nin * cpu_operator_cost;
+			for (int k = 0; k < it.nin; k++)
+				if (it.col[k].src == SV6SRC_ATTR && it.col[k].attno > 0)
+					*cols = bms_add_member(*cols, it.col[k].attno - FirstLowInvalidHeapAttributeNumber);
+		}
+	return per_row;
+}
+
 SiftV6AggPrice
 sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftV6Spec *spec, double groups)
 {
@@ -720,10 +746,12 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 			   *measure_leaves = NULL,
 			   *filter = spec_cols(spec, ix, true, &filter_leaves),
 			   *read = spec_cols(spec, ix, false, &measure_leaves),
-			   *measure = bms_difference(read, filter),
+			   *measure,
 			   *keys = spec_keys(spec);
+	const Cost	derive_row = pg_derive_cost(root, spec, &read);
 	const double *keep;
 
+	measure = bms_difference(read, filter);
 	scan_bytes(root, rel, ix, lead_heap_att(ix), &b);
 	keep = sift_v6_card_undecided(root, rel, ix, b.view);
 	b.surv = Min(Max(clauselist_selectivity(root, rel->baserestrictinfo, rel->relid, JOIN_INNER, NULL) * b.table_rows, 1.0), b.table_rows);
@@ -736,6 +764,7 @@ sift_v6_agg_price(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, co
 	price.in.qual_row = pg_qual_cost(root, ix, spec->vqual) + in_lists_cost(b.view, ix, true, spec->indexqual) +
 		arrays_intern_ops(root, rel, ix, bms_union(filter, measure), true) * cpu_operator_cost;
 	price.selectivity = Min(b.surv / (price.in.g_eff * SIFT_GRANULE_ROWS), 1.0);
+	price.in.qual_row += derive_row * price.selectivity;
 	price.open = open_cost(scan_parts(&b));
 	price.granule_rows = b.table_rows / b.granules;
 	return price;

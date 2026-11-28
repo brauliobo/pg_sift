@@ -74,7 +74,7 @@ SELECT * FROM matrix();
       1 | count_by_kind             | same scope, scan of the facts (the members of the key)
       1 | count_by_score            | same aggregate scan
       1 | date_range_count          | same scope, summary
-      1 | distinct_members_by_month | same aggregate scan
+      1 | distinct_members_by_month | same scope, scan of the facts (the members of the key)
       1 | filtered_count            | same scope, scan of the facts (the members of the key)
       1 | latest_20_rows            | same scope, ring
       1 | sum_by_month              | same scope, summary
@@ -142,7 +142,7 @@ SELECT * FROM matrix();
       1 | count_by_kind             | same scope, scan of the facts (the members of the key)
       1 | count_by_score            | same aggregate scan
       1 | date_range_count          | same scope, summary
-      1 | distinct_members_by_month | same aggregate scan
+      1 | distinct_members_by_month | same scope, scan of the facts (the members of the key)
       1 | filtered_count            | same scope, scan of the facts (the members of the key)
       1 | latest_20_rows            | same scope, ring
       1 | sum_by_month              | same scope, join (the summary is not exact for the snapshot)
@@ -187,7 +187,7 @@ SELECT * FROM matrix();
       1 | count_by_kind             | same scope, scan of the facts (the members of the key)
       1 | count_by_score            | same aggregate scan
       1 | date_range_count          | same scope, summary
-      1 | distinct_members_by_month | same aggregate scan
+      1 | distinct_members_by_month | same scope, scan of the facts (the members of the key)
       1 | filtered_count            | same scope, scan of the facts (the members of the key)
       1 | latest_20_rows            | same scope, ring
       1 | sum_by_month              | same scope, join (the summary is not exact for the snapshot)
@@ -229,7 +229,7 @@ SELECT * FROM matrix();
       1 | count_by_kind             | same scope, scan of the facts (the members of the key)
       1 | count_by_score            | same aggregate scan
       1 | date_range_count          | same scope, summary
-      1 | distinct_members_by_month | same aggregate scan
+      1 | distinct_members_by_month | same scope, scan of the facts (the members of the key)
       1 | filtered_count            | same scope, scan of the facts (the members of the key)
       1 | latest_20_rows            | same scope, ring
       1 | sum_by_month              | same scope, summary
