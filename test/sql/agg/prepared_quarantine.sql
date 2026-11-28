@@ -1,9 +1,10 @@
--- A statement planned while an index was in service keeps its plan, which names the index, when the index leaves service without the plan being invalidated (the plan was made, and a
--- backend or a worker recorded the damage before the plan runs; here sift.on_corruption = error plans with the index of a quarantined one, and quarantine is set back before the plan
--- runs). The node of SiftAggV6 that opens the index is refused with SQLSTATE 40001, the one a client retries, and the plans that name the index are dropped, so the retry is planned without
--- it and gives the rows of PostgreSQL's plan. A node must not read the index under the plan of before. Each node has a table of its own: the refusal drops every plan of a table.
+-- A statement planned while an index was in service keeps its plan, which names the index, when the index leaves service without the plan being invalidated (another backend
+-- recorded the damage while this transaction holds the locks of the plan, so it takes no invalidation before it runs the plan again). The node of SiftAggV6 that opens the index is
+-- refused with SQLSTATE 40001, the one a client retries, and the plans that name the index are dropped, so the retry is planned without it and gives the rows of PostgreSQL's plan. A
+-- node must not read the index under the plan of before. Each node has a table of its own: the refusal drops every plan of a table. Needs dblink and pg_sift_test.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+CREATE EXTENSION IF NOT EXISTS dblink;
 SET max_parallel_workers_per_gather = 0;
 SET jit = off;
 SET sift.agg_force = on;
@@ -45,23 +46,22 @@ CREATE INDEX ev_top_col ON ev_top USING sift_col (id, k, v);
 CREATE INDEX ev_win_col ON ev_win USING sift_col (id, k, v);
 VACUUM (FREEZE, ANALYZE) ev_agg, ev_top, ev_win;
 
-SET sift.on_corruption = quarantine;
-SELECT sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_agg_col', 'index', false)$$, ': ') AS agg_damage,
-	sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_top_col', 'index', false)$$, ': ') AS top_n_damage,
-	sift_helpers.statement_outcome($$SELECT sift._test_raise_extending('ev_win_col', 'index', false)$$, ': ') AS window_damage;
-SELECT index FROM sift.quarantine ORDER BY 1;
-
-SET sift.on_corruption = error;
 PREPARE agg(int) AS SELECT v, count(*), sum(k) FROM ev_agg WHERE k < $1 GROUP BY v;
 PREPARE top_n(int) AS SELECT id FROM ev_top ORDER BY k DESC, id LIMIT $1;
 PREPARE win(int) AS SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY v ORDER BY k, id) rn FROM ev_win WHERE k < 3000) s WHERE rn <= $1;
 SELECT engine($$EXECUTE agg(1000)$$) AS agg_plan, engine($$EXECUTE top_n(5)$$) AS top_n_plan, engine($$EXECUTE win(3)$$) AS window_plan;
-SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg, sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n, sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window;
 
-SET sift.on_corruption = quarantine;
+BEGIN;
+SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg, sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n, sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window;
+SELECT dblink_connect('damage', format('dbname=%s user=%s', current_database(), current_user));
+SELECT r AS damage FROM unnest(ARRAY['ev_agg_col', 'ev_top_col', 'ev_win_col']) i,
+	LATERAL dblink('damage', format($q$SELECT sift_helpers.statement_outcome($$SELECT sift._test_raise_extending(%L, 'index', false)$$, ': ')$q$, i)) t(r text) ORDER BY i;
+SELECT dblink_disconnect('damage');
 SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg_prepared;
 SELECT sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n_prepared;
 SELECT sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window_prepared;
+COMMIT;
+SELECT index FROM sift.quarantine ORDER BY 1;
 SELECT sift_helpers.statement_outcome($$EXECUTE agg(1000)$$, ': ') AS agg_planned_again, sift_helpers.statement_outcome($$EXECUTE top_n(5)$$, ': ') AS top_n_planned_again, sift_helpers.statement_outcome($$EXECUTE win(3)$$, ': ') AS window_planned_again;
 SELECT engine($$EXECUTE agg(1000)$$) AS agg_plan, engine($$EXECUTE top_n(5)$$) AS top_n_plan, engine($$EXECUTE win(3)$$) AS window_plan;
 SELECT answer($$EXECUTE agg(1000)$$, true) = answer($$EXECUTE agg(1000)$$, false) AS same_agg,
@@ -72,5 +72,6 @@ DEALLOCATE ALL;
 DROP TABLE ev_agg, ev_top, ev_win;
 DROP FUNCTION engine(text), answer(text, bool);
 DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION dblink;
 DROP EXTENSION pg_sift_test;
 DROP EXTENSION pg_sift;
