@@ -770,6 +770,7 @@ TESTING_REGRESS += table/limits_lowered
 TESTING_REGRESS += table/maintain
 TESTING_REGRESS += table/options
 TESTING_REGRESS += table/page_corrupt
+TESTING_REGRESS += table/paths_f1
 TESTING_REGRESS += table/paths_notice
 TESTING_REGRESS += table/preagg/basic
 TESTING_REGRESS += table/preagg/calendar

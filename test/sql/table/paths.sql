@@ -2,6 +2,11 @@
 -- reads a path runs as SiftAgg once every segment has them, with the rows of the plan without it.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
+-- Format 2 (with the test library the table is Format 2 on every run); table/paths_f1 runs the same statements on Format 1.
+SELECT current_setting('sift.test_create_format1', true) IS NOT NULL AS testing \gset
+\if :testing
+SET sift.test_create_format1 = off;
+\endif
 SET max_parallel_workers_per_gather = 0;
 SET cpu_tuple_cost = 0.5;
 
@@ -66,7 +71,7 @@ SELECT * FROM pt_compare();
 VACUUM pt;
 SELECT * FROM pt_compare();
 
--- a value of another type than its leaf's is one the leaf cannot hold: the queries that read the leaf keep the normal plan, the others do not
+-- a value of another type than its leaf's is kept beside the leaf as an exception of its granule: the queries that read the leaf keep SiftAgg and the rows of the plan without it
 INSERT INTO pt VALUES (20001, '{"ch": 5, "w": "12", "items": [{"k": "7", "p": 1}]}', 0);
 SELECT * FROM pt_compare();
 VACUUM pt;
