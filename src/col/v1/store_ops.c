@@ -24,6 +24,7 @@
 #include "agg/batch_source.h"
 #include "col/am.h"
 #include "col/col.h"
+#include "col/pg.h"
 #include "col/source_fold.h"
 #include "col/v1/reader.h"
 #include "col/v1/store_ops.h"
@@ -231,16 +232,20 @@ static SiftColDef
 leaf_def(const SiftSrcLeaf *l)
 {
 	return (SiftColDef) {.id = l->id,.parent = l->parent,.kind = l->kind == SCL_SCALAR ? SIFT_COLK_SCALAR : SIFT_COLK_GROUP,.store = leaf_store(l),
-		.flags = l->lossy || l->astext ? SIFT_COLD_LOSSY : 0,.attno = l->attno,.path = l->path != NIL || l->arrhead ? "path" : "",.scale = l->scale};
+		.type = OidIsValid(l->typid) ? sift_col_type_of_oid(l->typid) : SIFT_COLT_OTHER,.flags = l->lossy || l->astext ? SIFT_COLD_LOSSY : 0,.attno = l->attno,
+		.path = l->colpath != NULL ? l->colpath : l->arrhead ? "path" : "",.scale = l->scale};
 }
 
-/* The leaves of the layout as the leaf map the planner reads the columns by: an attribute is held by the leaves that name it, and a scan decodes it when it is the one plain leaf (leaf_class_ok) */
+/*
+ * The leaves of the layout as the leaf map the planner reads the columns by: an attribute is held by the leaves that name it, in the span from its first leaf to its last (a table keeps the leaves
+ * of its declared paths after all its columns), and a scan decodes it when it is the one plain leaf (leaf_class_ok)
+ */
 static void
 leaf_map(const SiftSrcLayout *lay, SiftStoreSchema *out)
 {
 	SiftColSchema *sc = palloc0(sizeof(SiftColSchema));
 	int		   *first = palloc((out->natts + 1) * sizeof(int));
-	int		   *count = palloc0((out->natts + 1) * sizeof(int));
+	int		   *span = palloc0((out->natts + 1) * sizeof(int));
 	Oid		   *family = palloc0((out->natts + 1) * sizeof(Oid));
 	SiftCellKind *kinds = palloc(Max(lay->nleaves, 1) * sizeof(SiftCellKind));
 
@@ -256,13 +261,13 @@ leaf_map(const SiftSrcLayout *lay, SiftStoreSchema *out)
 		if (l->attno < 1 || l->attno > out->natts || l->scope)
 			continue;
 		first[l->attno] = first[l->attno] < 0 ? i : first[l->attno];
-		count[l->attno]++;
+		span[l->attno] = i - first[l->attno] + 1;
 	}
 	for (int a = 1; a <= out->natts; a++)
 		family[a] = att_opfamily(out->atts[a - 1].typid);
 	out->leaves = sc;
 	out->att_first = first;
-	out->att_nleaves = count;
+	out->att_nleaves = span;
 	out->att_opfamily = family;
 	out->leaf_kinds = kinds;
 	out->leaf_hints = palloc0(Max(lay->nleaves, 1));

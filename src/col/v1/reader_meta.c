@@ -135,6 +135,7 @@ sift_src_def_leaf(const SiftColDef *cols, int i, TupleDesc desc, SiftSrcLeaf *l)
 			l->path = list_make1(makeString(pstrdup(def->path)));	/* "<key_name>#scope": no jsonb key of the member's column is read by it */
 		child_name(def->path, is_map, strstr(def->path, "#key") != NULL, l->name);
 	}
+	l->colpath = l->kind != SCL_SCALAR || l->path != NIL || l->parent >= 0 ? pstrdup(def->path) : NULL;
 }
 
 SiftSrcLayout *

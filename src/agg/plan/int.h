@@ -18,7 +18,7 @@
 struct SiftV6RelSource;
 
 /* The leaves an unnest reads the arrays of a relation by: those of a sift_col index, or of the store of a sift_table whose format reads its elements (SiftJsonbOps.table_elems); schema NULL: none.
- * Attribute att (of the index or the table) is held by nleaves[att] leaves from first[att]; json[att]: it is a jsonb document */
+ * Attribute att (of the index or the table) is held by the leaves that name it among the nleaves[att] from first[att] (SiftStoreSchema); json[att]: it is a jsonb document */
 typedef struct SiftV6Leaves
 {
 	const SiftColSchema *schema;
@@ -26,6 +26,11 @@ typedef struct SiftV6Leaves
 	const int  *nleaves;
 	const bool *json;
 } SiftV6Leaves;
+
+/* i over the leaves of attribute att of r */
+#define foreach_att_leaf(i, r, att) \
+	for (int i = (r)->first[att]; i < (r)->first[att] + (r)->nleaves[att]; i++) \
+		if ((r)->schema->cols[i].attno == (att))
 
 typedef struct V6Plan
 {

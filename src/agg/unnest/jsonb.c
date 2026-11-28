@@ -241,7 +241,7 @@ sift_v6_unnest_group_of(const SiftV6Leaves *r, int att, const char *key)
 	const size_t len = key != NULL ? strlen(key) : 0;
 	int			group = -1;
 
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 		const char *dot = d->kind == SIFT_COLK_GROUP && d->path != NULL ? strchr(d->path, '.') : NULL;
@@ -255,7 +255,7 @@ sift_v6_unnest_group_of(const SiftV6Leaves *r, int att, const char *key)
 int
 sift_v6_unnest_member_leaf(const SiftV6Leaves *r, int att, int group, const char *name)
 {
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 		const char *dot = d->path != NULL ? strrchr(d->path, '.') : NULL;
@@ -274,7 +274,7 @@ seed_recordset(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, const char *
 
 	if (!r->json[att] || (e->group_leaf = sift_v6_unnest_group_of(r, att, key)) < 0)
 		return false;
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 		if (r->schema->cols[i].parent == e->group_leaf && r->schema->cols[i].path != NULL && strstr(r->schema->cols[i].path, "#key") != NULL)
 			return false;
 	foreach_node(String, n, rte->names)
@@ -311,7 +311,7 @@ map_group_of(const SiftV6Leaves *r, int att, const char *key)
 {
 	const size_t len = key != NULL ? strlen(key) : 0;
 
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 		const char *dot = d->kind == SIFT_COLK_GROUP && d->path != NULL ? strchr(d->path, '.') : NULL;
@@ -329,7 +329,7 @@ map_leaves_of(const SiftV6Leaves *r, int att, const char *mkey, int *group, int 
 	*key = *value = -1;
 	if (!r->json[att] || (*group = map_group_of(r, att, mkey)) < 0)
 		return false;
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 
@@ -370,10 +370,11 @@ seed_unnest_array(V6Plan *p, SiftV6XElem *e, const SiftV6ElemRte *rte, int att)
 	const SiftV6Class cls = sift_v6_class(rte->elem);
 
 	e->group_leaf = e->col_leaf[0] = -1;
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 		if (r->schema->cols[i].kind == SIFT_COLK_GROUP)
 			e->group_leaf = i;
-	for (int i = r->first[att]; e->group_leaf >= 0 && i < r->first[att] + r->nleaves[att]; i++)
+	if (e->group_leaf >= 0)
+		foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 
@@ -439,8 +440,9 @@ sift_v6_unnest_doc_leaf(const V6Plan *p, const SiftV6ElemRte *rte, int *leaf)
 	const int	att = rte->key != NULL ? rte_column(p, rte, &key) + 1 : 0;
 
 	*leaf = -1;
-	for (int c = key != NULL ? p->leaves.first[att] : 0; key != NULL && c < p->leaves.first[att] + p->leaves.nleaves[att]; c++)
-		if (sift_col_def_is_present(&p->leaves.schema->cols[c]))
+	if (key != NULL)
+		foreach_att_leaf(c, &p->leaves, att)
+			if (sift_col_def_is_present(&p->leaves.schema->cols[c]))
 			*leaf = c;
 	return rte->key == NULL || *leaf >= 0;
 }

@@ -26,7 +26,7 @@ sift_v6_elems_leaf(const SiftV6Leaves *r, int att, int group)
 {
 	const SiftColDef *g = &r->schema->cols[group];
 
-	for (int i = r->first[att]; i < r->first[att] + r->nleaves[att]; i++)
+	foreach_att_leaf(i, r, att)
 	{
 		const SiftColDef *d = &r->schema->cols[i];
 

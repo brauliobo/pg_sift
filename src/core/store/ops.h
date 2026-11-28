@@ -68,7 +68,8 @@ typedef struct SiftStoreAtt
 
 /*
  * Relation schema summary returned by SiftStoreOps.schema. The leaf map is the one the planner of the aggregate reads the columns by, for an index (its attributes are its columns) and for a
- * table (its attributes are its columns) alike: attribute att (1-based) is held by att_nleaves[att] leaves from leaf att_first[att] of the leaves schema (att_first[att] < 0: none); att_opfamily[att]
+ * table (its attributes are its columns) alike: attribute att (1-based) is held by the leaves that name it (attno) among the att_nleaves[att] from leaf att_first[att] of the leaves schema
+ * (att_first[att] < 0: none; a format whose leaves of declared paths follow all its columns spans the columns between them); att_opfamily[att]
  * is the operator family of the column. The arrays and the SiftStoreAtt descriptors live as long as the relation is open (or the cache of the format that owns them).
  */
 typedef struct SiftStoreSchema

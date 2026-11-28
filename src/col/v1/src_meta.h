@@ -69,6 +69,7 @@ typedef struct SiftSrcLeaf
 	List	   *path;			/* jsonb path below the attribute, a list of String nodes; NIL for a plain attribute.
 								 * Array/object leaf: the path of the array; child: NIL and name set */
 	char		name[NAMEDATALEN];	/* child leaf of a group: the object field name ("key"/"value" for SCL_OBJECT) */
+	const char *colpath;		/* a leaf of a declared path: its path in the column schema (col/jsonb.c), which the planner seeds the elements of an unnest by; else NULL */
 } SiftSrcLeaf;
 
 typedef struct SiftSrcLayout
