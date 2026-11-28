@@ -151,6 +151,9 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM f_q ORDER BY n;
 SET sift.enable_agg = on;
 SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FILTER (WHERE grp > 1 AND (doc ->> 'v')::float8 > 3) AS c FROM f_t GROUP BY grp;
+psql:test/sql/agg/scalar/dirty_filter.sql:108: NOTICE:  SiftAgg not used: json_order: a cast of a JSON value that can raise would run for a row the normal plan tests first and drops
+DETAIL:  arm: single
+HINT:  Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to.
          QUERY PLAN          
 -----------------------------
  GroupAggregate

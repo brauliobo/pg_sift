@@ -184,6 +184,9 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM w_q ORDER BY n;
 SET sift.enable_agg = on;
 SET sift.explain_refusals = on;
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 AND 100 / (grp + 1) > 3 GROUP BY grp;
+psql:test/sql/agg/scalar/dirty_where.sql:132: NOTICE:  SiftAgg not used: json_order: a cast of a JSON value that can raise would run for a row the normal plan tests first and drops
+DETAIL:  arm: single
+HINT:  Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to.
                                                       QUERY PLAN                                                       
 -----------------------------------------------------------------------------------------------------------------------
  GroupAggregate
@@ -195,6 +198,9 @@ EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 AND (doc ->> 'n')::int4 > 1 GROUP BY grp;
+psql:test/sql/agg/scalar/dirty_where.sql:133: NOTICE:  SiftAgg not used: where: a condition of the WHERE or ON clause is not one the scan can test ((((doc ->> 'n'::text))::integer > 1))
+DETAIL:  arm: single
+HINT:  Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index.
                                                              QUERY PLAN                                                             
 ------------------------------------------------------------------------------------------------------------------------------------
  GroupAggregate
@@ -206,6 +212,9 @@ EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 3 OR grp = 1 GROUP BY grp;
+psql:test/sql/agg/scalar/dirty_where.sql:134: NOTICE:  SiftAgg not used: json_order: a cast of a JSON value that can raise would run for a row the normal plan tests first and drops
+DETAIL:  arm: single
+HINT:  Guard the cast with a type test of the same key (jsonb_typeof(doc -> 'k') = 'number'), or declare the path with the type it is cast to.
                                                QUERY PLAN                                               
 --------------------------------------------------------------------------------------------------------
  GroupAggregate
@@ -217,6 +226,9 @@ EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'v')::float8 > 
 (6 rows)
 
 EXPLAIN (COSTS OFF) SELECT grp, count(*) FROM w_t WHERE (doc ->> 'ok')::bool GROUP BY grp;
+psql:test/sql/agg/scalar/dirty_where.sql:135: NOTICE:  SiftAgg not used: where: a condition of the WHERE or ON clause is not one the scan can test (((doc ->> 'ok'::text))::boolean)
+DETAIL:  arm: single
+HINT:  Test a column of the index with a comparison, IN, BETWEEN, LIKE or IS NULL, or add the column or expression the condition reads to the sift_col index.
                       QUERY PLAN                       
 -------------------------------------------------------
  GroupAggregate
