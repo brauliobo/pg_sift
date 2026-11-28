@@ -342,5 +342,5 @@ SELECT * FROM probe_cols();
 (3 rows)
 
 DROP TABLE shapes, states, shapes_cols, events_cols, events, tenant_scope;
-DROP FUNCTION probe(), probe_cols(), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
+DROP FUNCTION probe(), probe_cols(), scope_read(text), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
 DROP EXTENSION pg_sift;

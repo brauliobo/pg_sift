@@ -92,5 +92,5 @@ INSERT INTO events_cols SELECT 40000 + i, 3 + 10 * (i % 30), timestamptz '2027-0
 SELECT * FROM probe_cols();
 
 DROP TABLE shapes, states, shapes_cols, events_cols, events, tenant_scope;
-DROP FUNCTION probe(), probe_cols(), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
+DROP FUNCTION probe(), probe_cols(), scope_read(text), scope_run(text, text), scope_group_run(text), scope_reason_ok(text);
 DROP EXTENSION pg_sift;
