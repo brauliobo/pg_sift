@@ -119,6 +119,65 @@ num_test(SiftColSource *src, const SiftColDef *def, const SiftColPred *preds, in
 	*t = *src->sigtest[i];
 }
 
+/* Can a key test of an integer leaf be applied to one value (sift_ctest_key): the null tests and the network chains cannot */
+static bool
+key_test(const SiftCTest *t)
+{
+	return !t->chain && (t->kind == SIFT_CT_NONE || t->kind == SIFT_CT_NONNULL || t->kind == SIFT_CT_RANGE || t->kind == SIFT_CT_NRANGE ||
+						 t->kind == SIFT_CT_SET || t->kind == SIFT_CT_NSET);
+}
+
+/*
+ * The values of an IN list of an integer leaf that every other test of the leaf admits (k IN (10, 2900) AND k IN (SELECT ..) AND k > 1000): a unit is kept
+ * only when its zone holds one of them, where each test alone keeps a unit that holds a value of the list and another of the set.
+ */
+static void
+prune_set_meets(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr, bool sig)
+{
+	for (int i = 0; i < npreds && !scan_window_empty(keep, pr); i++)
+	{
+		const SiftColDef *def = &seg->schema->cols[preds[i].col];
+		SiftCTest	t,
+					u;
+		int64	   *vals;
+		uint32		n;
+
+		if (def->store != SIFT_COLS_INT || sift_colw_is_wide_pred(def, &preds[i]))
+			continue;
+		num_test(src, def, preds, i, sig, &t);
+		if (t.kind != SIFT_CT_SET || t.chain)
+			continue;
+		vals = palloc(t.nset * sizeof(int64));
+		memcpy(vals, t.set, t.nset * sizeof(int64));
+		n = t.nset;
+		for (int j = 0; j < npreds && n > 0; j++)
+		{
+			uint32		m = 0;
+
+			if (j == i || preds[j].col != preds[i].col || sift_colw_is_wide_pred(def, &preds[j]))
+				continue;
+			num_test(src, def, preds, j, sig, &u);
+			if (!key_test(&u))
+				continue;
+			for (uint32 k = 0; k < n; k++)
+				if (sift_ctest_key(&u, vals[k]))
+					vals[m++] = vals[k];
+			n = m;
+		}
+		if (n < t.nset)
+		{
+			t.kind = n > 0 ? SIFT_CT_SET : SIFT_CT_NONE;
+			t.set = vals;
+			t.nset = n;
+			t.lo = n > 0 ? vals[0] : t.lo;
+			t.hi = n > 0 ? vals[n - 1] : t.hi;
+			t.fold_valid = false;
+			sift_cseg_prune(seg, preds[i].col, &t, keep, pr->ulo, pr->uhi, pr->setcut, true);
+		}
+		pfree(vals);
+	}
+}
+
 static void
 prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, int npreds, uint64 *keep, const PruneRange *pr, bool sig)
 {
@@ -245,6 +304,7 @@ prune_preds(SiftColSource *src, SiftColSegment *seg, const SiftColPred *preds, i
 		if (pr->top != NULL && !gdone[i])
 			scan_prune_range_tids(src, pr->top, i, preds[i].col, t.lo, t.hi, keep);
 	}
+	prune_set_meets(src, seg, preds, npreds, keep, pr, sig);
 	for (int i = 0; i < npreds && pr->top != NULL; i++)
 	{
 		if (set[i] == NULL)

@@ -455,79 +455,127 @@ constant_hash(const SiftColDef *def, const SiftColValue *v)
 	return (uint32) (sift_fib64((uint64) v->v.i) >> 32);
 }
 
-/* The constants of few that wide holds too, in the order of few: a table of the constants of few, probed with each of wide; false when no constant is common. Small lists are compared in a nested loop */
+/* cut keeps the constants that by holds too, in its order: a table of the constants of cut, probed with each of by; false when no constant is common. Small lists are compared in a nested loop */
 static bool
-common_constants(const SiftColDef *def, const SiftColPred *few, SiftColPred *wide)
+common_constants(const SiftColDef *def, SiftColPred *cut, const SiftColPred *by)
 {
 	SiftColValue *kept;
 	int m = 0;
 
 	/* check-memory: allow the constants of one predicate, bounded by the query */
-	kept = palloc(few->nvals * sizeof(SiftColValue));
-	if ((int64) few->nvals * wide->nvals <= 256)
+	kept = palloc(cut->nvals * sizeof(SiftColValue));
+	if ((int64) cut->nvals * by->nvals <= 256)
 	{
-		for (int a = 0; a < few->nvals; a++)
-			for (int b = 0; b < wide->nvals; b++)
-				if (same_constant(def, &few->vals[a], &wide->vals[b]))
+		for (int a = 0; a < cut->nvals; a++)
+			for (int b = 0; b < by->nvals; b++)
+				if (same_constant(def, &cut->vals[a], &by->vals[b]))
 				{
-					kept[m++] = few->vals[a];
+					kept[m++] = cut->vals[a];
 					break;
 				}
 	}
 	else
 	{
-		uint32 cap = pg_nextpower2_32(Max(32, (uint32) few->nvals * 2));
+		uint32 cap = pg_nextpower2_32(Max(32, (uint32) cut->nvals * 2));
 		/* check-memory: allow the constants of one predicate, bounded by the query */
 		uint32 *ht = palloc0(cap * sizeof(uint32));
-		bool *emitted = palloc0((size_t) few->nvals);
+		bool *emitted = palloc0((size_t) cut->nvals);
 
-		for (int a = 0; a < few->nvals; a++)
+		for (int a = 0; a < cut->nvals; a++)
 		{
-			uint32 at = constant_hash(def, &few->vals[a]) & (cap - 1);
+			uint32 at = constant_hash(def, &cut->vals[a]) & (cap - 1);
 
 			while (ht[at] != 0)
 				at = (at + 1) & (cap - 1);
 			ht[at] = a + 1;
 		}
-		for (int b = 0; b < wide->nvals; b++)
-			for (uint32 at = constant_hash(def, &wide->vals[b]) & (cap - 1); ht[at] != 0; at = (at + 1) & (cap - 1))
-				emitted[ht[at] - 1] |= same_constant(def, &few->vals[ht[at] - 1], &wide->vals[b]);
-		for (int a = 0; a < few->nvals; a++)
+		for (int b = 0; b < by->nvals; b++)
+			for (uint32 at = constant_hash(def, &by->vals[b]) & (cap - 1); ht[at] != 0; at = (at + 1) & (cap - 1))
+				emitted[ht[at] - 1] |= same_constant(def, &cut->vals[ht[at] - 1], &by->vals[b]);
+		for (int a = 0; a < cut->nvals; a++)
 			if (emitted[a])
-				kept[m++] = few->vals[a];
+				kept[m++] = cut->vals[a];
 		pfree(ht);
 		pfree(emitted);
 	}
-	if (m == 0)
+	if (m == 0 || m == cut->nvals)
 	{
 		pfree(kept);
-		return false;
+		return m > 0;
 	}
-	wide->nvals = m;
-	wide->vals = kept;
+	cut->nvals = m;
+	cut->vals = kept;
+	return true;
+}
+
+/* Does the integer key of a constant pass a bound (<, <=, >, >=) of its leaf? */
+static bool
+within_bound(const SiftColPred *bound, int64 v)
+{
+	const int64 c = bound->vals[0].v.i;
+
+	switch (bound->op)
+	{
+		case SIFT_COLOP_LT:
+			return v < c;
+		case SIFT_COLOP_LE:
+			return v <= c;
+		case SIFT_COLOP_GT:
+			return v > c;
+		default:
+			return v >= c;
+	}
+}
+
+/* list keeps the constants a bound of its leaf admits; false when none is left */
+static bool
+bounded_constants(SiftColPred *list, const SiftColPred *bound)
+{
+	/* check-memory: allow the constants of one predicate, bounded by the query */
+	SiftColValue *kept = palloc(list->nvals * sizeof(SiftColValue));
+	int			m = 0;
+
+	for (int a = 0; a < list->nvals; a++)
+		if (within_bound(bound, list->vals[a].v.i))
+			kept[m++] = list->vals[a];
+	if (m == 0 || m == list->nvals)
+	{
+		pfree(kept);
+		return m > 0;
+	}
+	list->nvals = m;
+	list->vals = kept;
 	return true;
 }
 
 /*
- * An IN list of the keys of a scope and an equality on the same leaf (the planner keeps both) are one test of the constants both hold: the list is cut to them, so that a
- * unit and a buffered row are tested against one constant and not against thousands (6 ms a scan against 0.8, 4,650 keys and one). False when none is common: the keys
- * cannot be satisfied. Only the leaves whose constants the write buffer's lookup compares exactly (sift_col_wbuf_lookup_ok).
+ * The IN lists and equalities of one leaf (the keys of a scope or a lookup and a list of the query: the planner keeps them all) are one test of the constants they all hold, inside
+ * the bounds of the leaf: each list is cut to them, so that a unit and a buffered row are tested against one constant and not against thousands (6 ms a scan against 0.8, 4,650
+ * keys and one), and a zone or a summary that holds a constant of one list and another of the next is ruled out. False when none is left: the keys cannot be satisfied. Only the
+ * leaves whose constants the write buffer's lookup compares exactly (sift_col_wbuf_lookup_ok); the bounds only on those compared as integers.
  */
 static bool
 narrow_lists(int nkeys, ColKeys *k, SiftColPred *preds)
 {
 	for (int i = 0; i < nkeys; i++)
+	{
+		SiftColPred *list = &preds[i];
+		const SiftColDef *def = list->col >= 0 ? &k->defs[list->col] : NULL;
+
+		if (def == NULL || !sift_col_wbuf_lookup_ok(def, list))
+			continue;
 		for (int j = 0; j < nkeys; j++)
 		{
-			SiftColPred *wide = &preds[i];
-			const SiftColPred *few = &preds[j];
-			const SiftColDef *def = &k->defs[wide->col];
+			const SiftColPred *other = &preds[j];
 
-			if (i == j || wide->col != few->col || wide->nvals <= few->nvals || !sift_col_wbuf_lookup_ok(def, wide) || !sift_col_wbuf_lookup_ok(def, few))
+			if (i == j || other->col != list->col)
 				continue;
-			if (!common_constants(def, few, wide))
+			if (sift_col_wbuf_lookup_ok(def, other) && !common_constants(def, list, other))
+				return false;
+			if (sift_col_pred_is_bound(other) && other->nvals == 1 && def->type != SIFT_COLT_TEXT && def->type != SIFT_COLT_UUID && !bounded_constants(list, other))
 				return false;
 		}
+	}
 	return true;
 }
 
