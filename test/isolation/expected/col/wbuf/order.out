@@ -63,7 +63,7 @@ step s2q: SELECT n, agree, ordered FROM iso_wo_q(0);
 step s2x: SELECT sift.col_verify('iso_wo_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wo_idx')) AS index_rows, (SELECT count(*) FROM iso_wo) AS heap_rows;
 verified|index_rows|heap_rows
 --------+----------+---------
-t       |       260|      230
+t       |       230|      230
 (1 row)
 
 
