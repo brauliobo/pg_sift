@@ -11,8 +11,10 @@
 #include "optimizer/placeholder.h"
 #include "utils/fmgroids.h"
 
+#include "agg/exists_plan.h"
 #include "agg/expr/pg.h"
 #include "agg/join/pairs.h"
+#include "agg/unnest/exists.h"
 #include "agg/unnest/jsonb.h"
 
 typedef struct PairCtx
@@ -188,4 +190,59 @@ sift_v6_join_placeholder_in_quals(PlannerInfo *root, Relids base)
 			if (ec->ec_sources != NIL && opaque_placeholder((Node *) em->em_expr, root))
 				return true;
 	return false;
+}
+
+static bool
+seed_conditions(V6Plan *p, const List *quals, List **out)
+{
+	foreach_node(RestrictInfo, ri, quals)
+	{
+		Node	   *e;
+
+		if (contain_volatile_functions((Node *) ri->clause) || (e = sift_v6_pair_expr(p, (Node *) ri->clause)) == NULL)
+			return false;
+		*out = lappend(*out, e);
+	}
+	return true;
+}
+
+/* the result of the CASE of a split as the flag of its test; NULL when the plan has no test of it */
+static Node *
+split_result(const V6Plan *p, const SiftV6ExistsSplit *sx, const Const *value)
+{
+	const int	flag = sift_v6_unnest_split_flag(p, sx->sp, value);
+
+	return flag < 0 ? NULL : (Node *) makeVar(INDEX_VAR, SIFT_V6_XFLAG_VATT + flag, BOOLOID, -1, InvalidOid, 0);
+}
+
+/* the condition of the pairs a split is: its CASE over the flags of its tests */
+static bool
+seed_split(V6Plan *p, const SiftV6ExistsSplit *sx)
+{
+	CaseExpr   *cx = copyObject(unconstify(CaseExpr *, sx->cx));
+	Node	   *e;
+
+	cx->casetype = BOOLOID;
+	cx->casecollid = InvalidOid;
+	foreach_node(CaseWhen, w, cx->args)
+		if ((w->result = (Expr *) split_result(p, sx, (const Const *) w->result)) == NULL)
+			return false;
+	if ((cx->defresult = (Expr *) split_result(p, sx, sift_v6_exists_split_else(sx))) == NULL || (e = sift_v6_pair_expr(p, (Node *) cx)) == NULL)
+		return false;
+	p->xseed->resid = lappend(p->xseed->resid, e);
+	return true;
+}
+
+bool
+sift_v6_join_seed_resid(V6Plan *p, const SiftV6JoinShape *sh)
+{
+	if (!seed_conditions(p, sh->resid, &p->xseed->resid))
+		return false;
+	foreach_ptr(SiftV6ExistsSplit, sx, sh->splits)
+		if (!seed_split(p, sx))
+			return false;
+	for (int d = 0; d < sh->nd; d++)
+		if (!seed_conditions(p, sh->dim[d].on, &p->xseed->on[d]))
+			return false;
+	return true;
 }
