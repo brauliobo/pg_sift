@@ -51,8 +51,8 @@ v6g_group_bytes(const SiftV6Group *g)
 }
 
 /* The keys of a slot as v6g_slot_of takes them (what sift_v6_group_fold_rec is given): the integer or code of each, the strings of the text keys, and bit i of nulls for the i-th key of the set */
-static void
-slot_keys(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, int64 *key, SiftV6StrIn *str, uint64 *nulls)
+void
+v6g_slot_keys(const SiftV6Group *g, const V6Set *set, const SiftSaltedHT *ht, const SiftAggSlot64 *s, int64 *key, SiftV6StrIn *str, uint64 *nulls)
 {
 	*nulls = 0;
 	for (int i = 0; i < set->nk; i++)
@@ -256,7 +256,7 @@ own_flush(const SiftRadixShape *sh, const SiftSaltedHT *ht, SiftRecBuf *buf, Sif
 		int			keys_end;
 
 		CHECK_FOR_INTERRUPTS();
-		slot_keys(g, set, ht, s, key, str, &nulls);
+		v6g_slot_keys(g, set, ht, s, key, str, &nulls);
 		resetStringInfo(&out);
 		enlargeStringInfo(&out, OWN_HDR + g->stride);
 		out.len = OWN_HDR;
@@ -521,6 +521,7 @@ v6g_spill_own(SiftV6Group *g)
 void
 v6g_spill_sets(SiftV6Group *g)
 {
+	v6g_sets_settle(g);
 	for (int s = 0; s < g->nsets; s++)
 	{
 		V6Set	   *set = &g->set[s];

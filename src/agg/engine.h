@@ -597,6 +597,8 @@ typedef void (*SiftV6DeriveFn) (void *arg, int k, const SiftBatchSel *rows);
 extern void sift_v6_derive_batch(SiftV6Group *g, int nderive, const SiftBatchSel *bs, SiftVec *const *argvec, SiftV6DeriveFn derive, void *arg);
 /* Rows that no key or filter tells apart, for a statement of count(*) alone (sift_v6_spec_count_only) */
 extern bool sift_v6_spec_count_only(const SiftV6Spec *spec);
+/* The grouping set every other lies inside, when the states of every aggregate add exactly: the scan updates it alone and sums the others from it (agg/group/sets.c); -1 for none */
+extern int	sift_v6_spec_fold_set(const SiftV6Spec *spec);
 extern void sift_v6_group_add_rows(SiftV6Group *g, uint64 n);
 extern void sift_v6_group_finish(SiftV6Group *g);
 /* The next group as the Datums of the keys then the aggregates; false after the last */

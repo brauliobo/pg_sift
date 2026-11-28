@@ -3,7 +3,8 @@
  *
  * A set of keys with none: one set of accumulators folded by the vector kernels. A key of one column of 64 bits or less is the key of a slot of agg/ht/ht.h; any other key is
  * the bytes of its columns (8 for a number, 4 and the string for a text) in the arena of a wide table. The state of an aggregate is a V6Acc in the state block of the
- * slot, zero until its first value (n == 0). A plain GROUP BY is one set of every key; GROUPING SETS, ROLLUP and CUBE are one set each, all folded from the same batches.
+ * slot, zero until its first value (n == 0). A plain GROUP BY is one set of every key; GROUPING SETS, ROLLUP and CUBE are one set each, all folded from the same batches, or all
+ * summed from the one the others lie inside (agg/group/sets.c).
  */
 #include "postgres.h"
 
@@ -574,6 +575,11 @@ v6g_update_set(SiftV6Group *g, int only, const SiftBatchSel *bs, SiftVec *const 
 	v6g_filter_eval(g, bs, argvec);
 	if (g->gkeys != NULL)
 		keyvec = sift_v6_genkeys_apply(g->gkeys, bs, keyvec);
+	if (only < 0 && g->fold >= 0 && !g->fold_off)
+	{
+		only = g->fold;
+		g->fold_owed = true;
+	}
 	for (int s = 0; s < g->nsets; s++)
 		if (only >= 0 && s != only)
 			continue;
@@ -713,6 +719,7 @@ void
 sift_v6_group_recycle(SiftV6Group *g)
 {
 	SIFT_INVARIANT(!g->spilled, "a state whose tables went to the spill was recycled");
+	SIFT_INVARIANT(!g->fold_owed, "a state was recycled before its grouping sets were summed");
 	plain_pcts(g, false);
 	for (int s = 0; s < g->nsets; s++)
 	{
@@ -725,6 +732,7 @@ sift_v6_group_recycle(SiftV6Group *g)
 		set->plain_row = false;
 		set->emitted = false;
 	}
+	g->fold_off = false;
 	v6g_dist_recycle(g);
 	v6g_bulk_free(g);
 	if (g->gen != NULL)
@@ -763,6 +771,7 @@ sift_v6_group_new(const SiftV6Spec *spec, MemoryContext cx, TupleDesc desc)
 	g->stride = Max(spec->naggs, 1) * sizeof(V6Acc);
 	g->nsets = Max(spec->nsets, 1);
 	g->set = palloc0(g->nsets * sizeof(V6Set));
+	g->fold = sift_v6_spec_fold_set(spec);
 	initStringInfo(&g->kbuf);
 	for (int s = 0; s < g->nsets; s++)
 		set_init(g, &g->set[s], spec->nsets == 0 ? all : spec->set_mask[s]);
@@ -796,6 +805,7 @@ sift_v6_group_finish(SiftV6Group *g)
 	plain_pcts(g, true);
 	for (int s = 0; s < g->nsets && g->spec->topk == 0; s++)
 		v6g_compact_flush(g, &g->set[s]);
+	v6g_sets_settle(g);
 	v6g_spill_if_over(g);
 	v6g_mem_check(g, true);
 	if (g->gen != NULL)

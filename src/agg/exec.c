@@ -859,6 +859,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	if (!st->spec->rows)
 	{
 		sift_v6_explain_group_keys(node, ancestors, st->spec, es);
+		sift_v6_explain_sets(st->spec, es);
 		if (st->spec->topk > 0)
 			sift_v6_explain_topn_groups(st->spec, es);
 		sift_v6_explain_pushed_aggs(node, ancestors, es);

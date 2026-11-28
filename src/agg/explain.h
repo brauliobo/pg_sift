@@ -16,6 +16,8 @@
 extern void sift_v6_explain_reads(const SiftV6Spec *spec, Relation heap, Relation index, ExplainState *es);
 /* Group Keys: the columns the groups are of, when the statement names them as they are, and the keys the scan computes from a column as `column: expression`, with the calendar step a key keeps its value over */
 extern void sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, const SiftV6Spec *spec, ExplainState *es);
+/* EXPLAIN ANALYZE: the grouping sets summed from the one the scan updates (agg/group/sets.c) */
+extern void sift_v6_explain_sets(const SiftV6Spec *spec, ExplainState *es);
 /* the same for the keys of the stream aggregate (ints: the oid of its source, the range table index of the relation and whether the source is a sift_table): columns, and the bins it computes */
 extern void sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es);
 /* Pushed Aggregates: the aggregates the scan runs (a CASE of an aggregate as its FILTER), as the statement names their columns */

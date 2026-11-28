@@ -450,6 +450,7 @@ par_local_export(void *local, const SiftV6RecSink *sink)
 {
 	ParLocal   *l = local;
 
+	v6g_sets_settle(l->g);
 	if (l->scanning && l->env->lean)
 		sift_v6_par_dist_export(l->dist_out, sink->put, sink->arg);
 	else if (l->scanning)

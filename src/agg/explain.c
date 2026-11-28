@@ -297,6 +297,13 @@ sift_v6_explain_group_keys(CustomScanState *css, List *ancestors, const SiftV6Sp
 }
 
 void
+sift_v6_explain_sets(const SiftV6Spec *spec, ExplainState *es)
+{
+	if (es->analyze && sift_v6_spec_fold_set(spec) >= 0)
+		ExplainPropertyInteger("Sets Summed From One", NULL, spec->nsets - 1, es);
+}
+
+void
 sift_v6_explain_stream_keys(const List *ints, const List *keys, ExplainState *es)
 {
 	const Oid	relid = (Oid) linitial_int(ints);

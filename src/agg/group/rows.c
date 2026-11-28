@@ -331,6 +331,8 @@ v6g_rows_cheaper(const SiftV6Group *g)
 void
 v6g_freeze(SiftV6Group *g)
 {
+	v6g_sets_settle(g);
+	g->fold_off = true;
 	rows_of(g);
 	for (int s = 0; s < g->nsets; s++)
 		if (g->set[s].nk > 0)
