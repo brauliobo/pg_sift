@@ -52,12 +52,12 @@ END $$;
 SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
  n |             shape              | pushed | nrows | differences 
 ---+--------------------------------+--------+-------+-------------
- 1 | lookup join, text key          | f      |   301 |           0
- 2 | lookup join on a lookup        | f      |    41 |           0
+ 1 | lookup join, text key          | t      |   301 |           0
+ 2 | lookup join on a lookup        | t      |    41 |           0
  3 | inner lookup join              | t      |   300 |           0
  4 | expression, two leaves         | t      |   450 |           0
  5 | expression, one wide leaf      | t      |    97 |           0
- 6 | expression in a filter         | f      |     9 |           0
+ 6 | expression in a filter         | t      |     9 |           0
  7 | expression, text and wide leaf | t      |   674 |           0
  8 | filter on a text leaf          | t      |     1 |           0
 (8 rows)
@@ -68,12 +68,12 @@ SET sift.shared_cache_kb = 0;
 SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
  n |             shape              | pushed | nrows | differences 
 ---+--------------------------------+--------+-------+-------------
- 1 | lookup join, text key          | f      |   301 |           0
- 2 | lookup join on a lookup        | f      |    41 |           0
+ 1 | lookup join, text key          | t      |   301 |           0
+ 2 | lookup join on a lookup        | t      |    41 |           0
  3 | inner lookup join              | t      |   300 |           0
  4 | expression, two leaves         | t      |   450 |           0
  5 | expression, one wide leaf      | t      |    97 |           0
- 6 | expression in a filter         | f      |     9 |           0
+ 6 | expression in a filter         | t      |     9 |           0
  7 | expression, text and wide leaf | t      |   674 |           0
  8 | filter on a text leaf          | t      |     1 |           0
 (8 rows)
@@ -98,12 +98,12 @@ SET max_parallel_workers_per_gather = 2; SET parallel_setup_cost = 0; SET parall
 SELECT n, shape, c.pushed, c.nrows, c.differences FROM cases, LATERAL check_case(q) c ORDER BY n;
  n |             shape              | pushed | nrows | differences 
 ---+--------------------------------+--------+-------+-------------
- 1 | lookup join, text key          | f      |   301 |           0
- 2 | lookup join on a lookup        | f      |    41 |           0
+ 1 | lookup join, text key          | t      |   301 |           0
+ 2 | lookup join on a lookup        | t      |    41 |           0
  3 | inner lookup join              | t      |   300 |           0
  4 | expression, two leaves         | t      |   450 |           0
  5 | expression, one wide leaf      | t      |    97 |           0
- 6 | expression in a filter         | f      |     9 |           0
+ 6 | expression in a filter         | t      |     9 |           0
  7 | expression, text and wide leaf | t      |   674 |           0
  8 | filter on a text leaf          | t      |     1 |           0
 (8 rows)
