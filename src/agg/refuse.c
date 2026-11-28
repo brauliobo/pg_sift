@@ -63,6 +63,7 @@ typedef struct ArmPrice
 	bool		used;
 	AggRefusal	why;
 	const char *detail;			/* what the arm refused: an expression of the statement, a capability; NULL: none named */
+	bool		of_shape;		/* why is about the shape of one form of the statement: the reason a planning of another form names replaces it */
 } ArmPrice;
 
 static List *arms;
@@ -158,7 +159,7 @@ arm_of(const char *name)
 			return x;
 	old = MemoryContextSwitchTo(why_store != NULL ? why_cx : explain_cx);
 	a = palloc(sizeof(ArmPrice));
-	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE, NULL};
+	*a = (ArmPrice) {name, get_float8_infinity(), -1, false, AGG_REFUSE_NONE, NULL, false};
 	arms = lappend(arms, a);
 	MemoryContextSwitchTo(old);
 	return a;
@@ -184,18 +185,31 @@ sift_agg_arm_used(const char *arm)
 		arm_of(arm)->used = true;
 }
 
-void
-sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail)
+static void
+arm_refused(const char *arm, AggRefusal why, const char *detail, bool of_shape)
 {
 	ArmPrice   *a;
 
 	if (!noting_arms())
 		return;
 	a = arm_of(arm);
-	if (a->why != AGG_REFUSE_NONE)
+	if (a->why != AGG_REFUSE_NONE && (of_shape || !a->of_shape))
 		return;
 	a->why = why;
 	a->detail = detail != NULL ? MemoryContextStrdup(why_cx, detail) : NULL;
+	a->of_shape = of_shape;
+}
+
+void
+sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail)
+{
+	arm_refused(arm, why, detail, false);
+}
+
+void
+sift_agg_arm_refused_by_shape(const char *arm, AggRefusal why, const char *detail)
+{
+	arm_refused(arm, why, detail, true);
 }
 
 void
@@ -219,13 +233,20 @@ arm_why(const ArmPrice *a)
 	return isinf(a->scan) ? a->why : AGG_REFUSE_COST;
 }
 
-/* the plan reads the scope relation where no site of the planner sees it: that is why the statement reads no scope summary, whatever the planner named */
+/*
+ * the plan reads the scope relation where no site of the planner sees it: that is why the statement reads no scope summary, whatever the planner named. A plan that reads a scope summary
+ * uses the arm: what a planning of another form of the statement (agg/plan/cte.c) refused is not about it
+ */
 static void
 why_scope_placed(const PlannedStmt *ps)
 {
 	const char *why = sift_v6_scope_placed(ps);
 	ArmPrice   *a;
 
+	if (sift_v6_scope_planned(ps))
+		foreach_ptr(ArmPrice, x, arms)
+			if (strcmp(x->name, "scope") == 0)
+				x->used = true;
 	if (why == NULL)
 		return;
 	a = arm_of("scope");

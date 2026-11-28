@@ -334,12 +334,19 @@ base_relids(const PlannerInfo *root, const RelOptInfo *rel)
 }
 
 static bool
-shape_ok(PlannerInfo *root, RelOptInfo *input_rel)
+shape_ok(PlannerInfo *root)
 {
 	Query	   *parse = root->parse;
 
 	return sift_enable_agg && parse->hasAggs && !parse->hasRowSecurity && root->qual_security_level == 0 && !parse->hasDistinctOn && !parse->hasTargetSRFs && !parse->hasWindowFuncs &&
-		parse->groupingSets == NIL && list_length(root->join_info_list) <= 1 && bms_num_members(base_relids(root, input_rel)) == 2;
+		parse->groupingSets == NIL;
+}
+
+/* The facts and the pairs, joined once */
+static bool
+two_relations(PlannerInfo *root, RelOptInfo *input_rel)
+{
+	return list_length(root->join_info_list) <= 1 && bms_num_members(base_relids(root, input_rel)) == 2;
 }
 
 static Relation
@@ -755,6 +762,7 @@ add_scope_path(ScopePlan *p, RelOptInfo *input_rel, RelOptInfo *out, GroupPathEx
 	else
 		cp->custom_private = list_make4(sift_v6_scope_spec_pack(&p->spec), p->scan_tlist, extra->havingQual, scope_exprs(p));
 	sift_v6_force_price(&cp->path);
+	sift_agg_arm_priced("scope", cp->path.total_cost, -1);
 	add_path(out, &cp->path);
 }
 
@@ -789,6 +797,15 @@ fact_ok(PlannerInfo *root, RelOptInfo *rel)
 	return rel != NULL && rel->reloptkind == RELOPT_BASEREL && sift_v6_plain_table(planner_rt_fetch(rel->relid, root)) && rel->lateral_relids == NULL;
 }
 
+static void
+scope_refuse(const char *why, bool of_shape)
+{
+	if (why != NULL && sift_agg_arms_noted())
+		(of_shape ? sift_agg_arm_refused_by_shape : sift_agg_arm_refused_by) ("scope", AGG_REFUSE_SCOPE, why);
+	else if (why != NULL)
+		sift_agg_refuse("scope", AGG_REFUSE_SCOPE, why, 0, -1);
+}
+
 void
 sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptInfo *input_rel, RelOptInfo *out, void *extra)
 {
@@ -796,8 +813,10 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 				b;
 	const char *why = NULL;
 
-	if (!sift_agg_scope || !shape_ok(root, input_rel) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
+	if (!sift_agg_scope || !shape_ok(root) || out->reltarget == NULL || input_rel->cheapest_total_path == NULL)
 		return;
+	if (!two_relations(root, input_rel))
+		return scope_refuse(sift_v6_scope_shape_why(root, base_relids(root, input_rel)), true);
 	a = bms_next_member(base_relids(root, input_rel), -1);
 	b = bms_next_member(base_relids(root, input_rel), a);
 	for (int swap = 0; swap < 2; swap++)
@@ -822,10 +841,7 @@ sift_v6_scope_upper_paths(const SiftScopeOps *scope, PlannerInfo *root, RelOptIn
 		}
 		why = why != NULL ? why : p.why;
 	}
-	if (why != NULL && sift_agg_arms_noted())
-		sift_agg_arm_refused_by("scope", AGG_REFUSE_SCOPE, why);
-	else if (why != NULL)
-		sift_agg_refuse("scope", AGG_REFUSE_SCOPE, why, 0, -1);
+	scope_refuse(why, false);
 }
 
 static Plan *

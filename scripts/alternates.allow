@@ -65,14 +65,15 @@ test/expected/agg/scalar/dirty_1.out	5a24ace01cfb970250772c8f393f79e96350b82c	17
 test/expected/agg/scalar/dirty_1.out	7c2028eb91978e157ec048eecae9ee12f14fa725	17	only the deleted    | t      | same rows
 test/expected/agg/scalar/dirty_1.out	e0c7a3f0b74c4b0ea4502180aa0f1b95df605633	17	dropped, cast         | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg/scalar/dirty_where_1.out	85deccbce3c6f678aba7e333ab055b2dcb254183	17	sub-select         | normal | same ERR 22P02 invalid input syntax for type doub
-test/expected/agg/scope/param_keys_1.out	028afff94b99f0328aa857452b59e269a6ec0e66	19	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg/scope/param_keys_1.out	1a7fee691f493a6d20207897c398bd9120aad8fe	19	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg/scope/param_keys_1.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	19	IN, $1                                                  | force_custom_plan  |
-test/expected/agg/scope/param_keys_1.out	539b968e7a4145b3b6a4dac0c69d72f5778fbc0f	19	IN, a text $1 cast                                      | force_custom_plan  |
-test/expected/agg/scope/param_keys_2.out	028afff94b99f0328aa857452b59e269a6ec0e66	17 18 18-arm64	latest 5, $1                                            | force_custom_plan  |
-test/expected/agg/scope/param_keys_2.out	1a7fee691f493a6d20207897c398bd9120aad8fe	17 18 18-arm64	CTE, $1                                                 | force_custom_plan  |
-test/expected/agg/scope/param_keys_2.out	32de2e7459e082847a1656818a6bf9ad5f8acf66	17 18 18-arm64	IN, $1                                                  | force_custom_plan  |
-test/expected/agg/scope/param_keys_2.out	a6e8bbef9af2f5a86f7534a7c48540e52b2f438b	17 18 18-arm64	IN, a text $1 cast                                      | force_custom_plan  |
+test/expected/agg/scope/param_keys_1.out	5dcebe8252f920f53940cb977671cc38de1841f4	19	join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_1.out	769769bb287bc21f532300fce7765e2a1d84c3da	19	CTE, $1                                           | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_1.out	824c74dbafc3a34ec89f7cc517a1c3892ad23f4b	19	latest 5, $1                                      | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_1.out	c0282027dc66f6c42fa6f1ee319bd6ba36a24e6a	19	IN, $1                                            | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_1.out	db5cfb831c4b3d6887b0355eeb23edd8872c9d86	19	IN, a text $1 cast                                | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_2.out	54063162a5c065525868f91244bb6d7263ad3b3c	17 18 18-arm64	IN, a text $1 cast                                | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_2.out	769769bb287bc21f532300fce7765e2a1d84c3da	17 18 18-arm64	CTE, $1                                           | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_2.out	824c74dbafc3a34ec89f7cc517a1c3892ad23f4b	17 18 18-arm64	latest 5, $1                                      | force_custom_plan  | scope
+test/expected/agg/scope/param_keys_2.out	c0282027dc66f6c42fa6f1ee319bd6ba36a24e6a	17 18 18-arm64	IN, $1                                            | force_custom_plan  | scope
 test/expected/agg/scope/refusals_1.out	bf058ddb00d60ee3be7efa7d189946e8d611bef2	17 18 18-arm64 19	CTE used twice                                          | join, a sub-select ov
 test/expected/agg/semi_same_table_1.out	acd646fad5b5064d8b12e1fac7cc927ed7357775	17 19	0 | f
 test/expected/agg/spill_context_1.out	b5baa3c8ff9473ed7d1774d9f629ee41e3d38c5f	17	spill_over_the_li

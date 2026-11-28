@@ -149,6 +149,16 @@ pairs_predicate_ok(ScopePlan *p, List *rest, bool inner)
 	return true;
 }
 
+/* Does a condition on the pairs read a column of them other than the scope key: it is another condition, not a binding of the key */
+static bool
+reads_other_column(const ScopePlan *p, Node *c, bool inner)
+{
+	foreach_node(Var, v, pull_var_clause(c, PVC_RECURSE_PLACEHOLDERS))
+		if ((inner ? v->varattno : sift_v6_scope_pairs_attno(p, v)) != p->leg.key)
+			return true;
+	return false;
+}
+
 /* A read of the keys the statement names: a scan of their members, the ring of one key, a semi join */
 bool
 sift_v6_scope_key_bound(ScopePlan *p)
@@ -169,18 +179,25 @@ sift_v6_scope_key_filter(ScopePlan *p)
 			   *rest_inner = NIL;
 	Expr	   *rhs = NULL;
 	int			nkeys = 0;
+	bool		other = false;
 
 	foreach_node(RestrictInfo, ri, outer)
 		if (key_clause(p, (Node *) ri->clause, false, &rhs))
 			nkeys++;
 		else
+		{
 			rest_outer = lappend(rest_outer, ri->clause);
+			other |= reads_other_column(p, (Node *) ri->clause, false);
+		}
 	foreach_ptr(Node, q, inner)
 		if (key_clause(p, q, true, &rhs))
 			nkeys++;
 		else
+		{
 			rest_inner = lappend(rest_inner, q);
-	if (rhs == NULL && !p->spec.by_key)
+			other |= reads_other_column(p, q, true);
+		}
+	if (rhs == NULL && !p->spec.by_key && !other)
 		refuse(p, "the scope key is not bound by an equality or an IN list of constants or parameters");
 	if (nkeys > 1)
 	{

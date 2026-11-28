@@ -61,6 +61,8 @@ extern void sift_agg_arm_priced(const char *arm, double scan, double normal);
 extern void sift_agg_arm_used(const char *arm);
 extern void sift_agg_arm_refused(const char *arm, AggRefusal why);
 extern void sift_agg_arm_refused_by(const char *arm, AggRefusal why, const char *detail);
+/* the same, for a reason about the shape of the form of the statement being planned: one that a planning of another form of it names (agg/plan/cte.c) replaces */
+extern void sift_agg_arm_refused_by_shape(const char *arm, AggRefusal why, const char *detail);
 extern bool sift_agg_arms_noted(void);
 
 extern void agg_explain_begin(void);

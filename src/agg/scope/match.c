@@ -604,7 +604,8 @@ static void
 refuse_form(ScopePlan *p, const SiftScopeLeg *legs, int nlegs)
 {
 	Oid			rel = legs[0].rel;
-	const RangeTblEntry *only = p->pairs_raw != NULL && list_length(p->pairs_raw->rtable) == 1 ? linitial(p->pairs_raw->rtable) : NULL;
+	const Query *written = planner_rt_fetch(p->pairs->relid, p->root)->subquery;
+	const RangeTblEntry *only = p->pairs_raw != NULL && written != NULL && list_length(written->rtable) == 1 ? linitial(written->rtable) : NULL;
 
 	if (p->why != NULL)
 		return;
@@ -616,8 +617,7 @@ refuse_form(ScopePlan *p, const SiftScopeLeg *legs, int nlegs)
 			 ((SetOperationStmt *) p->pairs_raw->setOperations)->all)
 		p->why = "a join to a UNION ALL of the two paths of the scope counts a member that both paths reach twice: the pairs are the distinct rows of a UNION";
 	else if (p->pairs_raw != NULL && reads_rel_walker((Node *) p->pairs_raw, &rel))
-		p->why = "a sub-select reads the scope relation and is no select of it alone: the relation, a view or a sub-select that projects its columns, and the union of the two paths of a "
-			"scope, are read from the units";
+		p->why = sift_v6_scope_why_subselect;
 }
 
 static Oid

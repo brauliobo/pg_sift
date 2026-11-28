@@ -142,6 +142,10 @@ extern const char *sift_v6_scope_placed(const PlannedStmt *ps);
 /* unread.c: does the plan read a scope summary (a node of the scope aggregate) */
 extern bool sift_v6_scope_planned(const PlannedStmt *ps);
 
+/* shape.c: why a join of more than two relations that holds a scope relation reads no scope (NULL: no reason about the scope); the reason a sub-select of the scope relation gives */
+extern const char *sift_v6_scope_shape_why(PlannerInfo *root, Relids rels);
+extern const char *const sift_v6_scope_why_subselect;
+
 /* scan.c: the executor of the plans that scan the facts of the members of a key (ScopeSpec.scan), for every format */
 extern PGDLLIMPORT const CustomScanMethods sift_v6_scope_scan_methods;
 

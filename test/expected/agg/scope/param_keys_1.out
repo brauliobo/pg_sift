@@ -56,9 +56,9 @@ INSERT INTO pforms VALUES
  ('IN, scalar sub-select', NULL, $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = (SELECT max(tenant_id) FROM user_tenants WHERE user_id = 1)) GROUP BY kind$q$, NULL),
  ('IN, table of keys as ARRAY(SELECT ..)', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1))) GROUP BY kind$q$, '1'),
  ('groups, ANY ($1)', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM facts f WHERE f.dim_a_id IN (SELECT dim_a_id FROM membership WHERE group_id = ANY ($1)) GROUP BY kind$q$, $a$'{1,2,3}'$a$),
+ ('join, ANY (ARRAY(SELECT ..)), a row for each pair', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1)) GROUP BY kind$q$, '2'),
  -- near misses: each keeps the join
  ('join, ANY ($1), a row for each pair', 'int[]', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY ($1) GROUP BY kind$q$, $a$'{2,5,9}'$a$),
- ('miss: join, ANY (ARRAY(SELECT ..)), a row for each pair', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id = ANY (ARRAY(SELECT tenant_id FROM user_tenants WHERE user_id = $1)) GROUP BY kind$q$, '2'),
  ('join, IN ($1, $2), a row for each pair', 'int, int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e JOIN tenant_scope s ON s.dim_a_id = e.dim_a_id WHERE s.tenant_id IN ($1, $2) GROUP BY kind$q$, '2, 5'),
  ('miss: numeric $1', 'numeric', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1) GROUP BY kind$q$, '3'),
  ('miss: $1 and a column', 'int', $q$SELECT kind, sum(amount) AS total, count(*) AS n FROM events e WHERE e.dim_a_id IN (SELECT dim_a_id FROM tenant_scope WHERE tenant_id = $1 + dim_a_id % 2) GROUP BY kind$q$, '3'),
@@ -79,7 +79,7 @@ BEGIN
 		keys := substring(plan from 'Scope Keys: ([^\n]*)');
 		RETURN 'scope read, ' || CASE WHEN keys ~ '^\d+$' THEN keys || ' keys' ELSE 'keys ' || keys END || ', ' || substring(plan from 'Scope Semantics: ([^\n]*)');
 	END IF;
-	RETURN CASE WHEN plan ~ 'Lookup Joins' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
+	RETURN CASE WHEN plan ~ 'Lookup Joins|Join: pushed' THEN 'join' WHEN plan ~ 'SiftAgg' THEN 'SiftAgg' ELSE 'normal plan' END;
 END $$;
 -- what the run did: the keys it had, how it read them, and why it fell back to the join
 CREATE FUNCTION run_of(q text) RETURNS text LANGUAGE plpgsql AS $$
@@ -131,58 +131,58 @@ END $$;
 -- every form, with the generic plan and with the custom plan (which has the constants of the call)
 SELECT f.name, m.mode, plan_of(f, m.mode) AS plan, same_rows(f, m.mode) AS same_rows
 FROM pforms f, (VALUES ('force_generic_plan'), ('force_custom_plan')) m(mode) ORDER BY f.name COLLATE "C", m.mode;
-                          name                           |        mode        |                                    plan                                     | same_rows 
----------------------------------------------------------+--------------------+-----------------------------------------------------------------------------+-----------
- CTE, $1                                                 | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- CTE, $1                                                 | force_generic_plan | scope read, keys $1, per pair                                               | t
- EXISTS, $1                                              | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- EXISTS, $1                                              | force_generic_plan | scope read, keys $1, per pair                                               | t
- EXISTS, ANY ($1)                                        | force_custom_plan  | scope read, 3 keys, once                                                    | t
- EXISTS, ANY ($1)                                        | force_generic_plan | scope read, keys $1, once                                                   | t
- IN, $1                                                  | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- IN, $1                                                  | force_generic_plan | scope read, keys $1, per pair                                               | t
- IN, ($1, $2)                                            | force_custom_plan  | scope read, 2 keys, once                                                    | t
- IN, ($1, $2)                                            | force_generic_plan | scope read, keys ARRAY[$1, $2], once                                        | t
- IN, ANY ($1)                                            | force_custom_plan  | scope read, 3 keys, once                                                    | t
- IN, ANY ($1)                                            | force_generic_plan | scope read, keys $1, once                                                   | t
- IN, ANY ($1) of bigint                                  | force_custom_plan  | scope read, 3 keys, once                                                    | t
- IN, ANY ($1) of bigint                                  | force_generic_plan | scope read, keys $1, once                                                   | t
- IN, a text $1 cast                                      | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- IN, a text $1 cast                                      | force_generic_plan | scope read, keys ($1)::integer, per pair                                    | t
- IN, scalar sub-select                                   | force_custom_plan  | scope read, keys (InitPlan expr_1).col1, per pair                           | t
- IN, scalar sub-select                                   | force_generic_plan | scope read, keys (InitPlan expr_1).col1, per pair                           | t
- IN, table of keys as ARRAY(SELECT ..)                   | force_custom_plan  | scope read, keys (InitPlan array_1).col1, once                              | t
- IN, table of keys as ARRAY(SELECT ..)                   | force_generic_plan | scope read, keys (InitPlan array_1).col1, once                              | t
- groups, ANY ($1)                                        | force_custom_plan  | scope read, 3 keys, once                                                    | t
- groups, ANY ($1)                                        | force_generic_plan | scope read, keys $1, once                                                   | t
- join, $1                                                | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- join, $1                                                | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, $1 in the first position                          | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- join, $1 in the first position                          | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, ANY ($1), a row for each pair                     | force_custom_plan  | scope read, 3 keys, per pair                                                | t
- join, ANY ($1), a row for each pair                     | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, IN ($1, $2), a row for each pair                  | force_custom_plan  | scope read, 2 keys, per pair                                                | t
- join, IN ($1, $2), a row for each pair                  | force_generic_plan | scope read, keys ARRAY[$1, $2], per pair                                    | t
- join, bigint $1                                         | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- join, bigint $1                                         | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, other conditions                                  | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- join, other conditions                                  | force_generic_plan | scope read, keys $1, per pair                                               | t
- join, stable function                                   | force_custom_plan  | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
- join, stable function                                   | force_generic_plan | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
- latest 5, $1                                            | force_custom_plan  | scope read, 1 keys, per pair                                                | t
- latest 5, $1                                            | force_generic_plan | scope read, keys $1, per pair                                               | t
- miss: $1 and a column                                   | force_custom_plan  | join                                                                        | t
- miss: $1 and a column                                   | force_generic_plan | join                                                                        | t
- miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | join                                                                        | t
- miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | force_generic_plan | join                                                                        | t
- miss: keys by a join to the table of keys               | force_custom_plan  | join                                                                        | t
- miss: keys by a join to the table of keys               | force_generic_plan | join                                                                        | t
- miss: numeric $1                                        | force_custom_plan  | join                                                                        | t
- miss: numeric $1                                        | force_generic_plan | join                                                                        | t
- miss: range on the key                                  | force_custom_plan  | join                                                                        | t
- miss: range on the key                                  | force_generic_plan | join                                                                        | t
- top 5 ids, ANY ($1)                                     | force_custom_plan  | scope read, 3 keys, once                                                    | t
- top 5 ids, ANY ($1)                                     | force_generic_plan | scope read, keys $1, once                                                   | t
+                       name                        |        mode        |                                    plan                                     | same_rows 
+---------------------------------------------------+--------------------+-----------------------------------------------------------------------------+-----------
+ CTE, $1                                           | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ CTE, $1                                           | force_generic_plan | scope read, keys $1, per pair                                               | t
+ EXISTS, $1                                        | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ EXISTS, $1                                        | force_generic_plan | scope read, keys $1, per pair                                               | t
+ EXISTS, ANY ($1)                                  | force_custom_plan  | scope read, 3 keys, once                                                    | t
+ EXISTS, ANY ($1)                                  | force_generic_plan | scope read, keys $1, once                                                   | t
+ IN, $1                                            | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ IN, $1                                            | force_generic_plan | scope read, keys $1, per pair                                               | t
+ IN, ($1, $2)                                      | force_custom_plan  | scope read, 2 keys, once                                                    | t
+ IN, ($1, $2)                                      | force_generic_plan | scope read, keys ARRAY[$1, $2], once                                        | t
+ IN, ANY ($1)                                      | force_custom_plan  | scope read, 3 keys, once                                                    | t
+ IN, ANY ($1)                                      | force_generic_plan | scope read, keys $1, once                                                   | t
+ IN, ANY ($1) of bigint                            | force_custom_plan  | scope read, 3 keys, once                                                    | t
+ IN, ANY ($1) of bigint                            | force_generic_plan | scope read, keys $1, once                                                   | t
+ IN, a text $1 cast                                | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ IN, a text $1 cast                                | force_generic_plan | scope read, keys ($1)::integer, per pair                                    | t
+ IN, scalar sub-select                             | force_custom_plan  | scope read, keys (InitPlan expr_1).col1, per pair                           | t
+ IN, scalar sub-select                             | force_generic_plan | scope read, keys (InitPlan expr_1).col1, per pair                           | t
+ IN, table of keys as ARRAY(SELECT ..)             | force_custom_plan  | scope read, keys (InitPlan array_1).col1, once                              | t
+ IN, table of keys as ARRAY(SELECT ..)             | force_generic_plan | scope read, keys (InitPlan array_1).col1, once                              | t
+ groups, ANY ($1)                                  | force_custom_plan  | scope read, 3 keys, once                                                    | t
+ groups, ANY ($1)                                  | force_generic_plan | scope read, keys $1, once                                                   | t
+ join, $1                                          | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ join, $1                                          | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, $1 in the first position                    | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ join, $1 in the first position                    | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, ANY ($1), a row for each pair               | force_custom_plan  | scope read, 3 keys, per pair                                                | t
+ join, ANY ($1), a row for each pair               | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, ANY (ARRAY(SELECT ..)), a row for each pair | force_custom_plan  | scope read, keys (InitPlan array_1).col1, per pair                          | t
+ join, ANY (ARRAY(SELECT ..)), a row for each pair | force_generic_plan | scope read, keys (InitPlan array_1).col1, per pair                          | t
+ join, IN ($1, $2), a row for each pair            | force_custom_plan  | scope read, 2 keys, per pair                                                | t
+ join, IN ($1, $2), a row for each pair            | force_generic_plan | scope read, keys ARRAY[$1, $2], per pair                                    | t
+ join, bigint $1                                   | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ join, bigint $1                                   | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, other conditions                            | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ join, other conditions                            | force_generic_plan | scope read, keys $1, per pair                                               | t
+ join, stable function                             | force_custom_plan  | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
+ join, stable function                             | force_generic_plan | scope read, keys (current_setting('scope.tenant'::text))::integer, per pair | t
+ latest 5, $1                                      | force_custom_plan  | scope read, 1 keys, per pair                                                | t
+ latest 5, $1                                      | force_generic_plan | scope read, keys $1, per pair                                               | t
+ miss: $1 and a column                             | force_custom_plan  | join                                                                        | t
+ miss: $1 and a column                             | force_generic_plan | join                                                                        | t
+ miss: keys by a join to the table of keys         | force_custom_plan  | join                                                                        | t
+ miss: keys by a join to the table of keys         | force_generic_plan | join                                                                        | t
+ miss: numeric $1                                  | force_custom_plan  | join                                                                        | t
+ miss: numeric $1                                  | force_generic_plan | join                                                                        | t
+ miss: range on the key                            | force_custom_plan  | join                                                                        | t
+ miss: range on the key                            | force_generic_plan | join                                                                        | t
+ top 5 ids, ANY ($1)                               | force_custom_plan  | scope read, 3 keys, once                                                    | t
+ top 5 ids, ANY ($1)                               | force_generic_plan | scope read, keys $1, once                                                   | t
 (50 rows)
 
 RESET plan_cache_mode;
@@ -198,36 +198,34 @@ SELECT name, miss_run(f) AS plan FROM pforms f WHERE name LIKE 'miss:%' ORDER BY
 NOTICE:  miss: $1 and a column
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope relation has another condition: (tenant_scope.tenant_id = ($1 + (tenant_scope.dim_a_id % 2))))
 DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
-NOTICE:  miss: join, ANY (ARRAY(SELECT ..)), a row for each pair
-NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (several keys or every key, or the key as a group key, and a row counts once for each pair: where the units cannot answer the node runs the join, which the first pass does not have)
-DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
+HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.
 NOTICE:  miss: keys by a join to the table of keys
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the table of keys may hold a key more than once, and the join counts a row for each of them)
 DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
+HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.
+NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the table of keys may hold a key more than once, and the join counts a row for each of them)
+DETAIL:  arm: scope
+HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.
 NOTICE:  miss: numeric $1
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope key is not bound by an equality or an IN list of constants or parameters)
 DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
+HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.
 NOTICE:  miss: range on the key
 NOTICE:  SiftAgg not used: scope: a join to the scope relation of a scope index is not one the scope read proves equal to the join: the join runs as written (the scope key is not bound by an equality or an IN list of constants or parameters)
 DETAIL:  arm: scope
-HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants, and read no other column of it; the detail names what differs.
-                          name                           | plan 
----------------------------------------------------------+------
- miss: $1 and a column                                   | join
- miss: join, ANY (ARRAY(SELECT ..)), a row for each pair | join
- miss: keys by a join to the table of keys               | join
- miss: numeric $1                                        | join
- miss: range on the key                                  | join
-(5 rows)
+HINT:  Join the scope relation by its declared member column to the declared column of the table, bind its scope key with an equality or an IN list of constants or parameters, and read no other column of it; the detail names what differs.
+                   name                    | plan 
+-------------------------------------------+------
+ miss: $1 and a column                     | join
+ miss: keys by a join to the table of keys | join
+ miss: numeric $1                          | join
+ miss: range on the key                    | join
+(4 rows)
 
 RESET sift.explain_refusals;
 SET client_min_messages = warning;
 DROP FUNCTION miss_run(pforms);
--- a statement run with the arguments given: the keys of the run and the reader's refusal
+-- a statement run with the arguments given: the keys of the run and how it read them
 CREATE FUNCTION arg_run(f pforms, extra text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text;
 BEGIN
