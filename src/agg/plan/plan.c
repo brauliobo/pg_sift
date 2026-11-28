@@ -192,7 +192,7 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 	Oid			coll;
 
 	unfiltered.aggfilter = NULL;
-	if (!agg_kind_of(p, &unfiltered, &g))
+	if (!sift_v6_placeholder_values(p, (Node *) a->args, (Node **) &unfiltered.args) || !agg_kind_of(p, &unfiltered, &g))
 		return false;
 	if (a->aggfilter != NULL && !sift_v6_compile_filter(p, a->aggfilter, &g.fclause))
 	{
@@ -200,16 +200,16 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 
 		return folded != NULL && sift_v6_compile_agg_native(p, folded);
 	}
-	if (g.kind == SV6_COUNT_DISTINCT && list_length(a->args) == 1 && IsA(((TargetEntry *) linitial(a->args))->expr, RowExpr))
+	if (g.kind == SV6_COUNT_DISTINCT && list_length(unfiltered.args) == 1 && IsA(((TargetEntry *) linitial(unfiltered.args))->expr, RowExpr))
 	{
-		if (!compile_distinct_row(p, (const RowExpr *) ((TargetEntry *) linitial(a->args))->expr, &g))
+		if (!compile_distinct_row(p, (const RowExpr *) ((TargetEntry *) linitial(unfiltered.args))->expr, &g))
 			return false;
 	}
 	else if (g.kind != SV6_COUNT_STAR)
 	{
 		const bool	two = g.kind == SV6_ARG_MAX || g.kind == SV6_ARG_MIN;
 
-		Expr	   *arg = list_length(a->args) > 0 ? sift_v6_plan_json_vars(p, ((TargetEntry *) linitial(a->args))->expr, true) : NULL;
+		Expr	   *arg = list_length(unfiltered.args) > 0 ? sift_v6_plan_json_vars(p, ((TargetEntry *) linitial(unfiltered.args))->expr, true) : NULL;
 		foreach_ptr(Var, y, g.kind == SV6_COUNT ? sift_v6_count_present_vars(p->root, &unfiltered) : NIL)
 		{
 			arg = (Expr *) y;
@@ -219,7 +219,7 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 		const bool	score = !two && !sift_v6_kind_distinct(g.kind) && sift_v6_score_col(p, arg, &g.arg);
 		const bool	derived_ok = !two && !sift_v6_kind_valued(g.kind);
 
-		if (list_length(a->args) != (two ? 2 : 1) ||
+		if (list_length(unfiltered.args) != (two ? 2 : 1) ||
 			!(score || ((sift_v6_read_of(p, arg, !two, &g.arg) || (derived_ok && (sift_v6_derived_col(p, arg, false, &g.arg) || sift_v6_pg_derived_col(p, arg, false, &g.arg)))) && sift_v6_kind_takes(g.kind, g.arg.typid))) ||
 			sift_v6_col_class(&g.arg) == SV6C_DATUM)
 			return false;
@@ -227,10 +227,10 @@ sift_v6_compile_agg_native(V6Plan *p, Aggref *agg)
 			return false;
 		if (g.arg.derive > 0 && p->spec.derive[g.arg.derive - 1].kind == SVD_NUM_EXPR && g.kind != SV6_SUM && g.kind != SV6_AVG && g.kind != SV6_COUNT)
 			return false;
-		if (two && (!sift_v6_plan_column(p, ((TargetEntry *) lsecond(a->args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
+		if (two && (!sift_v6_plan_column(p, ((TargetEntry *) lsecond(unfiltered.args))->expr, false, &g.arg2) || sift_v6_class(g.arg2.typid) == SV6C_BOOL || sift_v6_class(g.arg2.typid) == SV6C_TEXT))
 			return false;
 		cls = sift_v6_class(g.arg.typid);
-		coll = exprCollation((Node *) ((TargetEntry *) linitial(a->args))->expr);
+		coll = exprCollation((Node *) ((TargetEntry *) linitial(unfiltered.args))->expr);
 		if (cls == SV6C_TEXT && !((g.kind == SV6_MIN || g.kind == SV6_MAX) ? sift_collate_is_c(coll) : sift_text_bytes_equal(coll)))
 			return false;
 	}
