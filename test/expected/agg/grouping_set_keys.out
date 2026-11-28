@@ -107,6 +107,18 @@ SELECT n, (check_query(q)).*, same_order(q) AS same_order FROM gs_sub ORDER BY n
 CREATE TABLE gs_dims (id int PRIMARY KEY, region text NOT NULL);
 INSERT INTO gs_dims SELECT i, 'r' || i % 3 FROM generate_series(0, 6) i;
 ANALYZE gs_dims;
+-- The keys of a sub-select over a join to the dimension: the star computes a placeholder of an expression as it computes the expression
+DELETE FROM gs_sub;
+INSERT INTO gs_sub VALUES
+	(8, 'SELECT p.region, p.k, count(*) AS n FROM (SELECT d.region, upper(f.kind) AS k FROM gs_facts f JOIN gs_dims d ON d.id = f.dim_a_id) p GROUP BY ROLLUP (p.region, p.k) ORDER BY 1 NULLS FIRST, 2 NULLS FIRST, 3'),
+	(9, 'SELECT p.k, count(*) AS n, sum(p.v) AS total FROM (SELECT coalesce(f.kind, ''none'') || d.region AS k, f.id AS v FROM gs_facts f JOIN gs_dims d ON d.id = f.dim_a_id) p GROUP BY CUBE (p.k) ORDER BY 1 NULLS FIRST');
+SELECT n, (check_query(q)).*, same_order(q) AS same_order FROM gs_sub ORDER BY n;
+ n | pushed | differences | same_order 
+---+--------+-------------+------------
+ 8 | t      |           0 | t
+ 9 | t      |           0 | t
+(2 rows)
+
 -- a condition on the placeholders of both tables is planned, and gives the rows of the normal plan
 SELECT differences FROM check_query($q$
  SELECT p.k, count(*) AS n FROM (SELECT upper(f.kind) AS k, d.region FROM gs_facts f JOIN gs_dims d ON d.id = f.dim_a_id) p WHERE p.k <> 'B' AND p.region = 'r1' GROUP BY ROLLUP (p.k)

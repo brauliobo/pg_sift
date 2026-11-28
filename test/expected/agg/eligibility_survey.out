@@ -277,8 +277,8 @@ INSERT INTO survey_q (slug, family, q) VALUES
 	('rows_only_columns', 'rows', $q$SELECT status, category_id FROM events WHERE tenant_id = 3 LIMIT 5$q$),
 	('rows_only_keyword', 'rows', $q$SELECT status, count(*) FROM ONLY events GROUP BY 1$q$);
 SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
-                 slug                 |   family    | pushed | differences | order_differs |           why           
---------------------------------------+-------------+--------+-------------+---------------+-------------------------
+                 slug                 |   family    | pushed | differences | order_differs |    why    
+--------------------------------------+-------------+--------+-------------+---------------+-----------
  key_ordinal                          | group-key   | t      |           0 | f             | 
  key_alias                            | group-key   | t      |           0 | f             | 
  key_alias_expr                       | group-key   | t      |           0 | f             | 
@@ -297,7 +297,7 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  key_text_fn                          | group-key   | t      |           0 | f             | 
  key_bool                             | group-key   | t      |           0 | f             | 
  key_float                            | group-key   | t      |           0 | f             | 
- key_jsonb_member                     | group-key   | f      |           0 | f             | group_key
+ key_jsonb_member                     | group-key   | f      |           0 | f             | key
  key_const_plus_col                   | group-key   | t      |           0 | f             | 
  key_func_of_join_col                 | group-key   | t      |           0 | f             | 
  sets_grouping_sets_cols              | sets        | t      |           0 | f             | 
@@ -308,7 +308,7 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  sets_rollup_expr_subselect           | sets        | t      |           0 | f             | 
  sets_having                          | sets        | t      |           0 | f             | 
  sets_cte                             | sets        | t      |           0 | f             | 
- sets_cte_materialized                | sets        | f      |           0 | f             | from_shape
+ sets_cte_materialized                | sets        | t      |           0 | f             | 
  sets_join_dim_key                    | sets        | t      |           0 | f             | 
  sets_lateral_each_key                | sets        | t      |           0 | f             | 
  agg_count_star                       | aggregate   | t      |           0 | f             | 
@@ -393,9 +393,9 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  where_func_col                       | filter      | t      |           0 | f             | 
  where_extract                        | filter      | t      |           0 | f             | 
  where_date_trunc_eq                  | filter      | t      |           0 | f             | 
- where_jsonb_exists                   | filter      | f      |           0 | f             | jsonb_path_not_declared
+ where_jsonb_exists                   | filter      | f      |           0 | f             | where
  where_jsonb_member_cmp               | filter      | t      |           0 | f             | 
- where_jsonb_contains                 | filter      | f      |           0 | f             | jsonb_path_not_declared
+ where_jsonb_contains                 | filter      | f      |           0 | f             | where
  where_bool_col                       | filter      | t      |           0 | f             | 
  where_not_bool_col                   | filter      | t      |           0 | f             | 
  where_coalesce                       | filter      | t      |           0 | f             | 
@@ -418,7 +418,7 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  lateral_subselect_limit1             | lateral     | t      |           0 | f             | 
  lateral_generate_series              | lateral     | t      |           0 | f             | 
  cte_plain                            | cte         | t      |           0 | f             | 
- cte_materialized                     | cte         | f      |           0 | f             | from_shape
+ cte_materialized                     | cte         | t      |           0 | f             | 
  cte_two_refs                         | cte         | t      |           0 | f             | 
  cte_agg_then_agg                     | cte         | t      |           0 | f             | 
  union_all_aggs                       | union       | t      |           0 | f             | 
@@ -427,7 +427,7 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  rows_select_where_limit              | rows        | t      |           0 | f             | 
  rows_point_lookup                    | rows        | f      |           0 | f             | where
  rows_count_where                     | rows        | t      |           0 | f             | 
- rows_exists_scalar                   | rows        | f      |           0 | f             | 
+ rows_exists_scalar                   | rows        | f      |           0 | f             | cost
  two_level_per_entity                 | two-level   | t      |           0 | f             | 
  key_at_time_zone                     | group-key   | t      |           0 | f             | 
  key_ts_cast_date                     | group-key   | t      |           0 | f             | 
@@ -439,10 +439,10 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  key_nullif                           | group-key   | t      |           0 | f             | 
  key_greatest                         | group-key   | t      |           0 | f             | 
  key_subquery_scalar                  | group-key   | t      |           0 | f             | 
- key_jsonb_member_text                | group-key   | f      |           0 | f             | group_key
+ key_jsonb_member_text                | group-key   | f      |           0 | f             | key
  key_jsonb_member_float               | group-key   | t      |           0 | f             | 
- key_jsonb_has_key                    | group-key   | f      |           0 | f             | group_key
- key_jsonb_typeof                     | group-key   | f      |           0 | f             | group_key
+ key_jsonb_has_key                    | group-key   | f      |           0 | f             | key
+ key_jsonb_typeof                     | group-key   | f      |           0 | f             | key
  sets_grouping_sets_empty_only        | sets        | t      |           0 | f             | 
  sets_rollup_date_parts               | sets        | t      |           0 | f             | 
  sets_cube_expr_filter                | sets        | t      |           0 | f             | 
@@ -475,7 +475,7 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  rows_order_limit_offset              | order-limit | t      |           0 | f             | 
  rows_order_limit_join                | order-limit | t      |           0 | f             | 
  rows_in_list_order_limit             | order-limit | t      |           0 | f             | 
- window_count_over_partition          | window      | f      |           0 | f             | from_shape
+ window_count_over_partition          | window      | f      |           0 | f             | cost
  window_rank_in_group                 | window      | t      |           0 | f             | 
  window_pct_of_total                  | window      | t      |           0 | f             | 
  subselect_correlated_select_list     | subquery    | t      |           0 | f             | 
@@ -498,8 +498,8 @@ SELECT slug, family, (survey(q)).* FROM survey_q ORDER BY n;
  cte_filter_then_group                | cte         | t      |           0 | f             | 
  cte_chain                            | cte         | t      |           0 | f             | 
  union_all_agg_arms_same_key          | union       | t      |           0 | f             | 
- union_distinct_arms                  | union       | f      |           0 | f             | cost
- intersect_arms                       | union       | f      |           0 | f             | 
+ union_distinct_arms                  | union       | f      |           0 | f             | other
+ intersect_arms                       | union       | f      |           0 | f             | cost
  rows_only_columns                    | rows        | f      |           0 | f             | cost
  rows_only_keyword                    | rows        | t      |           0 | f             | 
 (223 rows)

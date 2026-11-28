@@ -590,13 +590,25 @@ try_fact(PlannerInfo *root, RelOptInfo *input_rel, Relids base, RelOptInfo *outp
 	sift_v6_fact_paths(root, fact, output_rel, star_compile_fn, star_add_fn, &stmt);
 }
 
-/* a placeholder the join can null, or of an expression, is evaluated where the star does not read it; one of a bare column no join nulls (an output of a sub-select pulled up under grouping sets)
- * is that column */
+/* an outer join of the statement may null the rows of rels */
+static bool
+outer_nullable(const PlannerInfo *root, Relids rels)
+{
+	foreach_node(SpecialJoinInfo, sj, root->join_info_list)
+		if ((sj->jointype != JOIN_SEMI && bms_overlap(rels, sj->syn_righthand)) || (sj->jointype == JOIN_FULL && bms_overlap(rels, sj->syn_lefthand)))
+			return true;
+	return false;
+}
+
+/*
+ * the placeholders of a sub-select pulled up under grouping sets the star reads: one of a bare column no join nulls is that column wherever it is read, one of an expression no outer join can
+ * null is the expression the star computes for its key or argument; one the join can null is evaluated where the star does not read it
+ */
 static bool
 placeholders_ok(const PlannerInfo *root)
 {
 	foreach_node(PlaceHolderInfo, phi, root->placeholder_list)
-		if (sift_v6_plain_var((const Node *) phi->ph_var) == NULL)
+		if (sift_v6_plain_var((const Node *) phi->ph_var) == NULL && outer_nullable(root, phi->ph_eval_at))
 			return false;
 	return true;
 }
