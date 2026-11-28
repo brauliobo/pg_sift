@@ -929,10 +929,7 @@ sift_v6_star_scan_keys(SiftV6StarRun *r, Relation index, ScanKey keys, int nkeys
 	memcpy(out, keys, nkeys * sizeof(ScanKeyData));
 	*n = nkeys;
 	r->key_filters = 0;
-	for (int d = 0; d < r->x->ndims; d++)
-		if (sift_star_preserves_dim(r->x->dim[d].mode))
-			return out;
-	for (int d = 0; d < r->x->ndims; d++)
+	for (int d = 0; d < r->x->ndims && !sift_star_preserves_dim(r->x->dim[d].mode); d++)
 	{
 		const SiftV6XDim *xd = &r->x->dim[d];
 		const SiftStarPush push = r->found[d] != NULL ? (SiftStarPush) {.kind = SSP_NONE} : sift_star_push(&r->dim[d]);
