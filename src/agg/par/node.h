@@ -52,6 +52,10 @@ extern void sift_v6_par_node_end(SiftV6ParNode *pn);
 extern void sift_v6_par_node_summary(const SiftV6ParNode *pn, SiftV6ParSummary *out);
 /* The rows of the lookup tables the leader shared with the workers through the block */
 extern uint64 sift_v6_par_node_lookup_rows(const SiftV6ParNode *pn);
+
+/* What the participants of the scan counted, added to the counters of EXPLAIN (ANALYZE) */
+struct SiftExplainStatsV6;
+extern void sift_v6_par_node_explain(const SiftV6ParNode *par, struct SiftExplainStatsV6 *ex);
 extern const char *sift_v6_par_strategy_name(int strategy);
 
 #endif							/* SIFT_AGG_V6_PAR_NODE_H */

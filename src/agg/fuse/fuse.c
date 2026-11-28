@@ -211,7 +211,7 @@ nested(const SiftV6FuseArm *a, const SiftV6FuseArm *b)
 static bool
 may_join(const SiftV6FuseArm *lead, const SiftV6FuseArm *b)
 {
-	return b != lead && !b->started && !b->detached && !excluded(b) && b->indexoid == lead->indexoid && b->snap == lead->snap && b->ordered == lead->ordered &&
+	return b != lead && !b->started && !b->detached && !excluded(b) && b->indexoid == lead->indexoid && b->snap == lead->snap && b->ordered == lead->ordered && b->unnest == lead->unnest &&
 		!nested(lead, b);
 }
 
@@ -241,7 +241,9 @@ sift_v6_fuse_lead(EState *estate, SiftV6FuseArm *arm, bool shared_keys_only, boo
 
 		if (!may_join(arm, b))
 			continue;
-		if (b->scan_sig != arm->scan_sig)
+		if (b->scan_sig != arm->scan_sig && arm->unnest)
+			c->same_keys = false;
+		else if (b->scan_sig != arm->scan_sig)
 		{
 			if (shared_keys_only || (arm->may_union != NULL && !arm->may_union(arm, b)) || !sift_v6_fuse_union_keys(&c->union_keys, &b->key_set, &keys) || !sift_v6_fuse_union_time(&c->union_time, &b->time_win, &time))
 				continue;

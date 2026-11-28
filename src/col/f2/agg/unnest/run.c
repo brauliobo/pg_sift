@@ -337,7 +337,7 @@ json_column(UnRun *u, int i, const SiftF2ExtBatch *b, const SiftBatchSel *bs)
 		{
 			const uint16 r = (uint16) (w * 64 + __builtin_ctzll(bits));
 			uint32		len;
-			const char *payload = sift_f2_pull_payload(u->pull, i, r, &len);
+			const char *payload = sift_f2_pull_payload(u->pull, u->pcol[i], r, &len);
 			const Oid	typid = u->cols[i].cls == SV6C_TEXT ? TEXTOID : u->cols[i].typid;
 			const bool	held = u->cols[i].cls == SV6C_I64 && !u->cols[i].jint;
 			SiftV6JsonValue val;
@@ -493,8 +493,8 @@ emit_tested(UnRun *u, const SiftF2ExtBatch *b, uint64 *fallback)
 		sift_f2_unnest_emit_pairs(u, u->fv, NULL, m);
 }
 
-static void
-run_batch(UnRun *u, const SiftF2ExtBatch *b)
+void
+sift_f2_unnest_batch(UnRun *u, const SiftF2ExtBatch *b)
 {
 	SiftBatchSel *bs = &u->bs;
 	const int	n = b->n;
@@ -838,8 +838,8 @@ unrun_buffers(UnRun *u)
 	}
 }
 
-static void
-unrun_end(UnRun *u)
+void
+sift_f2_unnest_close(UnRun *u)
 {
 	sift_v6_pipe_finish(u->pipe);
 	sift_v6_vet_end(&u->vet);
@@ -868,15 +868,12 @@ host_leaves(Relation host, bool table)
 }
 
 void
-sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
-	UnRun		run = {.host = index != NULL ? index : heap,.table = index == NULL};
-	UnRun	   *u = &run;
-	SiftF2PullSpec ps;
-	SiftV6MapPreagg *map;
-	const SiftF2ExtBatch *b;
-	const UnLeaves r = host_leaves(u->host, u->table);
+	UnLeaves	r;
 
+	*u = (UnRun) {.host = index != NULL ? index : heap,.table = index == NULL,.snap = snap};
+	r = host_leaves(u->host, u->table);
 	unrun_init(u, spec, stats);
 	setup_cols(u, &r);
 	setup_clauses(u, &r);
@@ -884,20 +881,31 @@ sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 	setup_pipe(u, &r, g, star);
 	unrun_buffers(u);
 	sift_v6_vet_begin(&u->vet, heap, snap, stats);
-	ps = pull_spec(u);
+	u->ps = pull_spec(u);
+	for (int i = 0; i < u->ncols; i++)
+		u->pcol[i] = i;
 	if (!u->table)
-		sift_f2_unnest_where_preds(u, &r, &ps);
+		sift_f2_unnest_where_preds(u, &r, &u->ps);
+}
+
+void
+sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+{
+	UnRun		run;
+	UnRun	   *u = &run;
+	SiftV6MapPreagg *map;
+	const SiftF2ExtBatch *b;
+
+	sift_f2_unnest_open(u, spec, g, heap, index, snap, stats, star);
 	map = sift_v6_map_preagg_begin(spec, g, &u->vet, stats);
-	ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
-	ps.gran_arg = map;
-	u->ps = ps;
-	u->snap = snap;
+	u->ps.gran_sink = map != NULL ? sift_v6_map_preagg_try_granule : NULL;
+	u->ps.gran_arg = map;
 	u->pull = sift_f2_pull_begin(u->host, snap, &u->ps);
 	if (map != NULL || !unnest_par(u, g))
 		while ((b = sift_f2_pull_next(u->pull)) != NULL)
-			run_batch(u, b);
+			sift_f2_unnest_batch(u, b);
 	sift_f2_pull_end(u->pull);
 	if (map != NULL)
 		sift_v6_map_preagg_end(map);
-	unrun_end(u);
+	sift_f2_unnest_close(u);
 }

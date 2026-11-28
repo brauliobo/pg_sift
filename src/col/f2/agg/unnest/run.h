@@ -17,4 +17,8 @@ struct SiftV6StarRun;
 /* One pass over the dimensions of star (NULL: the unnest reads no other relation); index NULL: heap is a sift_table, whose store gives the rows and the elements */
 extern void sift_v6_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
 
+/* The arms of a cohort over one pull of the index (arms.c); alone[i]: the leaves of arm i did not fit the shared pull and it read its own after it */
+struct SiftV6FuseCohort;
+extern void sift_v6_unnest_run_arms(struct SiftV6FuseCohort *cohort, const SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone);
+
 #endif							/* SIFT_COL_F2_V6_UNNEST_RUN_H */

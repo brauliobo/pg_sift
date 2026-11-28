@@ -34,6 +34,7 @@ typedef struct SiftV6FuseArm
 	const void *snap;			/* compared as a pointer: the arms of one statement share the snapshot of its estate */
 	uint64		scan_sig;		/* of the scan keys: equal signatures are equal keys */
 	bool		ordered;		/* the arm reads its rows in the order of the index */
+	bool		unnest;			/* the arm unnests an array of the rows: it shares a pass only with arms that unnest too (SiftJsonbOps.unnest_arms) */
 	bool		parallel;		/* a parallel-aware node or a worker */
 	bool		param_exec;		/* depends on a parameter another node sets: it scans again for each value */
 	bool		cube_served;	/* reads a pre-aggregate, which is cheaper than any shared pass */

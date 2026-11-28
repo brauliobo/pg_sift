@@ -721,6 +721,7 @@ col/v1_engine/store_ops_scope.c
 col/v1_engine/store_ops_text.c
 col/v1_engine/store_ops_vet.c
 col/v1_engine/store_ops_unnest.c
+col/v1_engine/store_ops_unnest_arms.c
 col/v1_engine/store_ops_unnest.h
 col/v1_engine/store_ops_unnest_emit.c
 col/v1/verify.c
@@ -1023,6 +1024,7 @@ col/f2/agg/scan_int.h
 col/f2/agg/scope/int.h
 col/f2/agg/scope/run.c
 col/f2/agg/scope/topn.c
+col/f2/agg/unnest/arms.c
 col/f2/agg/unnest/run.c
 col/f2/agg/unnest/where.c
 col/f2/agg/unnest/rows.c

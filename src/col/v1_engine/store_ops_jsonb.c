@@ -185,5 +185,6 @@ const SiftJsonbOps v1_jsonb_ops = {
 	.key_exists = true,
 	.key_presence = true,
 	.path_declared = jsonb_path_declared,
-	.unnest_run = sift_v1_unnest_run
+	.unnest_run = sift_v1_unnest_run,
+	.unnest_arms = sift_v1_unnest_run_arms
 };

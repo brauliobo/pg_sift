@@ -50,6 +50,10 @@ extern const SiftOrderOps v1_order_ops;
 extern const SiftPreaggOps v1_preagg_ops;
 extern const SiftJsonbOps v1_jsonb_ops;
 extern void sift_v1_unnest_run(const struct SiftV6Spec *spec, struct SiftV6Group *g, Relation heap, Relation index, Snapshot snap, struct SiftV6ScanStats *stats, const struct SiftV6StarRun *star);
+/* SiftJsonbOps.unnest_arms over Format 1 (col/v1_engine/store_ops_unnest_arms.c) */
+struct SiftV6FuseCohort;
+struct SiftV6ScanArm;
+extern void sift_v1_unnest_run_arms(struct SiftV6FuseCohort *cohort, const struct SiftV6ScanArm *arms, Relation heap, Relation index, Snapshot snap, bool *alone);
 extern const SiftHybridOps v1_hybrid_ops;
 extern const SiftScopeOps sift_v1_scope_ops;
 

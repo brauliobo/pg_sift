@@ -1,5 +1,5 @@
 -- UNION ALL arms that join the same lookup and read the same rows but ask for other aggregates run in one pass over the index: the pass has the
--- union of the aggregates and each set updates its own. Arms whose aggregates are numbered by their own list (a percentile) keep their scans.
+-- union of the aggregates and each set updates its own, a percentile and arms that look nothing up too.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -55,13 +55,13 @@ SELECT arms_shared(:'none') AS none_shared, same(:'none') AS none_same;
 \set lines 'SELECT l.k AS a, NULL::text AS b, count(*) AS n, avg(l.v) AS m ' :lines_from ' GROUP BY l.k UNION ALL SELECT l.k, l.p, count(l.v), max(l.v) ' :lines_from ' GROUP BY l.k, l.p UNION ALL SELECT NULL, l.p, count(*), min(l.v) ' :lines_from ' GROUP BY l.p'
 SELECT arms_shared(:'lines') AS lines_shared, same(:'lines') AS lines_same;
 
--- a percentile or GROUPING number their own aggregates and keys: arms with other aggregates and one of them keep their scans
+-- a percentile in both arms or in one: each arm keeps its own aggregates in the pass
 \set pct 'SELECT e.kind AS a, count(*) AS n, percentile_cont(0.5) WITHIN GROUP (ORDER BY e.price) AS m ' :from ' GROUP BY e.kind UNION ALL SELECT d.label, count(e.qty), percentile_cont(0.5) WITHIN GROUP (ORDER BY e.price) ' :from ' GROUP BY d.label'
 SELECT arms_shared(:'pct') AS pct_shared, same(:'pct') AS pct_same;
 \set pct_other 'SELECT e.kind AS a, count(*) AS n, percentile_cont(0.5) WITHIN GROUP (ORDER BY e.price) AS m ' :from ' GROUP BY e.kind UNION ALL SELECT d.label, count(e.qty), max(e.price) ' :from ' GROUP BY d.label'
 SELECT arms_shared(:'pct_other') AS pct_other_shared, same(:'pct_other') AS pct_other_same;
 
--- arms that look nothing up keep their scans, as the arms with another WHERE do
+-- arms that look nothing up share the pass too
 \set no_join 'SELECT kind AS a, count(*) AS n, sum(qty) AS s FROM ev GROUP BY kind UNION ALL SELECT grp::text, count(qty), min(qty) FROM ev GROUP BY grp'
 SELECT arms_shared(:'no_join') AS no_join_shared, same(:'no_join') AS no_join_same;
 

@@ -528,7 +528,7 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 			ExplainPropertyUInteger("Filters In Source", NULL, st->src_filters, es);
 		else if (st->src_filters > 0)
 			xl_item(&l, "(" UINT64_FORMAT " filters in source)", st->src_filters);
-		if (es->format != EXPLAIN_FORMAT_TEXT)
+		if (st->point_rows > 0 && es->format != EXPLAIN_FORMAT_TEXT)
 			ExplainPropertyUInteger("Rows From Point Directory", NULL, st->point_rows, es);
 		else if (st->point_rows > 0)
 			xl_item(&l, "from point directory (" UINT64_FORMAT " rows)", st->point_rows);
@@ -664,4 +664,24 @@ sift_agg_explain_v6(ExplainState *es, const SiftExplainStatsV6 *st, const char *
 	if (es->verbose && st->dict_shared_hits + st->dict_shared_misses > 0)
 		ExplainPropertyText("Shared Dictionaries", psprintf("hits " INT64_FORMAT ", misses " INT64_FORMAT, st->dict_shared_hits, st->dict_shared_misses), es);
 	ExplainCloseGroup("Sift", "Sift", true, es);
+}
+
+void
+sift_v6_explain_members(const SiftV6Spec *spec, TupleDesc desc, ExplainState *es)
+{
+	StringInfoData b;
+
+	if (spec->jmembers == NIL)
+		return;
+	initStringInfo(&b);
+	for (int m = 1; m <= list_length(spec->jmembers); m++)
+	{
+		const SiftV6Col c = sift_v6_member_col(spec, sift_v6_member_vatt(m, false));
+
+		appendStringInfo(&b, "%s%s", m > 1 ? ", " : "", NameStr(TupleDescAttr(desc, c.attno - 1)->attname));
+		foreach_node(String, k, sift_v6_member_path(spec, m))
+			appendStringInfo(&b, "['%s']", strVal(k));
+		appendStringInfo(&b, " %s", format_type_be(c.typid));
+	}
+	ExplainPropertyText("Map Keys", b.data, es);
 }

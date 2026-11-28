@@ -164,6 +164,7 @@ typedef struct UnRun
 	uint64	   *jvalid[SIFT_F2_PULL_MAX_COLS];
 	SiftF2Pull *pull;
 	SiftF2PullSpec ps;
+	int			pcol[SIFT_F2_PULL_MAX_COLS];	/* the column of the pull each column of the run is: itself, or the column of the shared pull of fused arms (arms.c) */
 	Snapshot	snap;
 	SiftUnPairs *pairs;			/* the plain unnest the compute threads fold: the pairs of the leader's own folds (par_plain) */
 	uint32		pulled;			/* the batches of the index the pass has read */
@@ -192,6 +193,10 @@ flag_slot(const UnRun *u, int k)
 	return u->ncols + u->nel + u->spec->nderive + k;
 }
 
+/* run.c: the run of spec over its own pull (ps the leaves it reads, pull not begun), one batch of the pull, its end */
+extern void sift_f2_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star);
+extern void sift_f2_unnest_batch(UnRun *u, const SiftF2ExtBatch *b);
+extern void sift_f2_unnest_close(UnRun *u);
 extern void sift_f2_unnest_emit_pairs(UnRun *u, const SiftVec *fact, const SiftVec *elems, uint32 m);
 /* rows.c: the rows of the batch in the TID range whose heap row the snapshot sees; then those the batch quals keep (u->bq), on the columns as the statement reads them (u->fv) */
 extern uint16 sift_f2_unnest_vet_rows(UnRun *u, const SiftF2ExtBatch *b);

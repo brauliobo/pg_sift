@@ -119,25 +119,6 @@ source_host(const SiftV6ScanSrc *src)
 	return src->index != NULL ? src->index : src->heap;
 }
 
-/* EXPLAIN: the members of documents the scan reads by a path (SiftV6Spec.jmembers), as `attname['key'] type, ..` (desc: the attributes of the host) */
-static char *
-members_text(const SiftV6Spec *spec, TupleDesc desc)
-{
-	StringInfoData b;
-
-	initStringInfo(&b);
-	for (int m = 1; m <= list_length(spec->jmembers); m++)
-	{
-		const SiftV6Col c = sift_v6_member_col(spec, sift_v6_member_vatt(m, false));
-
-		appendStringInfo(&b, "%s%s", m > 1 ? ", " : "", NameStr(TupleDescAttr(desc, c.attno - 1)->attname));
-		foreach_node(String, k, sift_v6_member_path(spec, m))
-			appendStringInfo(&b, "['%s']", strVal(k));
-		appendStringInfo(&b, " %s", format_type_be(c.typid));
-	}
-	return b.data;
-}
-
 /* After the quarantine net of sift_v6_source_enter, which says why an index is out: an index with no format left service some other way (REINDEX CONCURRENTLY marks the replaced one invalid) */
 static void
 require_formats(const V6State *st)
@@ -149,11 +130,22 @@ require_formats(const V6State *st)
 							errhint("Run the statement again: it is planned without the index.")));
 }
 
+/* the rows the arm reads come from a scan a cohort can share: of the index alone, of a star join, or of an unnest the format runs for several arms (SiftJsonbOps.unnest_arms) */
+static bool
+fusable_source(const V6State *st)
+{
+	const SiftV6Ext *x = st->spec->ext;
+
+	if (x != NULL && x->unnest)
+		return st->sources[0].ops->jsonb != NULL && st->sources[0].ops->jsonb->unnest_arms != NULL;
+	return x == NULL || st->star != NULL;
+}
+
 static bool
 v6_fusable(const V6State *st)
 {
-	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && sift_v6_fuse_batch_quals_ok(st->spec) &&
-		(st->spec->ext == NULL || (st->star != NULL && !st->spec->ext->unnest)) && st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid) && !st->spec->rows && st->spec->topk == 0;
+	return st->sources[0].ops->zone != NULL && st->spec->nparts == 0 && !st->spec->is_table && sift_v6_fuse_batch_quals_ok(st->spec) && fusable_source(st) &&
+		st->spec->par_strategy == 0 && !OidIsValid(st->spec->text_indexoid) && !st->spec->rows && st->spec->topk == 0;
 }
 
 static void
@@ -165,7 +157,7 @@ begin_arm(V6State *st, CustomScanState *node, EState *estate, int eflags)
 		return;
 	st->explain_only = (eflags & EXEC_FLAG_EXPLAIN_ONLY) != 0;
 	st->arm = (SiftV6FuseArm) {.owner = st,.indexoid = st->spec->relid,.snap = estate->es_snapshot,.scan_sig = scan_signature(st->spec),
-	.parallel = node->ss.ps.plan->parallel_aware || IsParallelWorker(),.param_exec = node->ss.ps.plan->extParam != NULL};
+	.parallel = node->ss.ps.plan->parallel_aware || IsParallelWorker(),.param_exec = node->ss.ps.plan->extParam != NULL,.unnest = st->spec->ext != NULL && st->spec->ext->unnest};
 	sift_v6_fuse_describe(&st->arm, src->index, st->spec);
 	sift_v6_fuse_arm_add(estate, &st->arm);
 }
@@ -398,6 +390,44 @@ run_alone(V6State *owner, EState *estate)
 	v6_scan(owner, estate->es_snapshot);
 }
 
+/* The pass over, the dimensions of each arm are closed and its groups done */
+static void
+finish_arms(const SiftV6FuseCohort *c, const SiftV6ScanArm *arms)
+{
+	for (int i = 0; i < c->narms; i++)
+	{
+		V6State    *owner = c->arms[i]->owner;
+
+		if (owner->star != NULL)
+		{
+			owner->star_passes = sift_v6_star_passes(owner->star);
+			owner->star_shared = sift_v6_star_shared(owner->star);
+			sift_v6_star_close(owner->star);
+		}
+		sift_v6_group_finish(arms[i].group);
+	}
+}
+
+/* One pass of the unnests of the arms: an arm whose columns the shared read could not take read the index on its own, and leaves the cohort */
+static void
+run_fused_unnest(V6State *st, SiftV6FuseCohort *c, EState *estate)
+{
+	const SiftV6ScanSrc *src = &st->sources[0];
+	SiftV6ScanArm *arms = palloc(c->narms * sizeof(SiftV6ScanArm));
+	bool		alone[SIFT_V6_FUSE_MAX_ARMS];
+
+	for (int i = 0; i < c->narms; i++)
+	{
+		arms[i] = arm_groups(c->arms[i]->owner, estate);
+		arms[i].star = ((V6State *) c->arms[i]->owner)->star;
+	}
+	src->ops->jsonb->unnest_arms(c, arms, src->heap, src->index, estate->es_snapshot, alone);
+	finish_arms(c, arms);
+	for (int i = c->narms - 1; i >= 0; i--)
+		if (alone[i])
+			sift_v6_fuse_detach(c->arms[i]);
+}
+
 /* One pass for the arms of the cohort that this node leads: the groups of each are done when its node is asked */
 static void
 v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
@@ -419,6 +449,11 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 		run_alone(alone[i], estate);
 	if (nalone == narms)
 		return;
+	if (st->spec->ext != NULL && st->spec->ext->unnest)
+	{
+		run_fused_unnest(st, c, estate);
+		return;
+	}
 	quals = c->same_keys ? NIL : sift_v6_fuse_union_quals(c, src->index, &common);
 	keys = pass_keys(st, c, quals, &nkeys);
 	arms = palloc(c->narms * sizeof(SiftV6ScanArm));
@@ -437,18 +472,7 @@ v6_run_fused(V6State *st, SiftV6FuseCohort *c, EState *estate)
 		}
 	}
 	src->ops->zone->scan_arms(c, arms, src->heap, src->index, keys, nkeys, estate->es_snapshot);
-	for (int i = 0; i < c->narms; i++)
-	{
-		V6State    *owner = c->arms[i]->owner;
-
-		if (owner->star != NULL)
-		{
-			owner->star_passes = sift_v6_star_passes(owner->star);
-			owner->star_shared = sift_v6_star_shared(owner->star);
-			sift_v6_star_close(owner->star);
-		}
-		sift_v6_group_finish(arms[i].group);
-	}
+	finish_arms(c, arms);
 }
 
 static bool
@@ -816,27 +840,6 @@ topk_dropped(const V6State *st)
 }
 
 static void
-explain_par(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
-{
-	SiftV6ParSummary ps;
-
-	sift_v6_par_node_summary(par, &ps);
-	ex->par_strategy = ps.strategy;
-	ex->par_ran = ps.ran;
-	ex->par_escalated = ps.escalated;
-	ex->grans_scanned += ps.grans_scanned;
-	ex->grans_pruned_zone += ps.grans_pruned_zone;
-	ex->grans_pruned_skip += ps.grans_pruned_skip;
-	ex->grans_preagg += ps.grans_preagg;
-	ex->grans_preagg_delta += ps.grans_preagg_delta;
-	ex->heap_vet_rows += ps.heap_vet_rows;
-	ex->par_morsels_stolen = ps.morsels_stolen;
-	ex->par_radix_parts = ps.radix_parts;
-	ex->par_partial_recs = ps.partial_recs;
-	ex->par_partial_bytes = ps.partial_bytes;
-}
-
-static void
 v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 {
 	V6State    *st = (V6State *) node;
@@ -902,8 +905,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	}
 	if (st->spec->ext != NULL && st->spec->ext->unnest)
 		ExplainPropertyText("Unnest", st->spec->ext->elem.left ? "left lateral columnar" : "lateral columnar", es);
-	if (st->spec->jmembers != NIL)
-		ExplainPropertyText("Map Keys", members_text(st->spec, RelationGetDescr(source_host(&st->sources[0]))), es);
+	sift_v6_explain_members(st->spec, RelationGetDescr(source_host(&st->sources[0])), es);
 	if (st->spec->ext != NULL && st->spec->ext->unnest && st->spec->ext->elem.vread != SV6V_NONE)
 		ExplainPropertyText("Unnest Value", psprintf("%s.*.value", NameStr(TupleDescAttr(RelationGetDescr(source_host(&st->sources[0])), st->spec->ext->elem.attno - 1)->attname)), es);
 	if (st->star_passes > 1)
@@ -926,7 +928,7 @@ v6_explain(CustomScanState *node, List *ancestors, ExplainState *es)
 	ex.dict_shared_hits = sift_stat_v[SIFT_STAT_DICT_SHARED_HITS] - st->dict_shared0[0];
 	ex.dict_shared_misses = sift_stat_v[SIFT_STAT_DICT_SHARED_MISSES] - st->dict_shared0[1];
 	if (st->par != NULL)
-		explain_par(st->par, &ex);
+		sift_v6_par_node_explain(st->par, &ex);
 	if (st->par != NULL && !es->analyze)
 		ExplainPropertyText("Parallel Strategy", ex.par_strategy, es);
 	if (es->verbose && st->spec->serial_because != NULL)

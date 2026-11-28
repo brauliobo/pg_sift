@@ -14,6 +14,7 @@
 #include <math.h>
 
 #include "agg/cost/model.h"
+#include "agg/explain.h"
 #include "agg/group/int.h"
 #include "agg/par/dist.h"
 #include "agg/par/pg.h"
@@ -330,4 +331,25 @@ sift_v6_par_node_shutdown(SiftV6ParNode *pn)
 	pn->escalated = pg_atomic_read_u32(&h->escalated) != 0;
 	pn->have_total = true;
 	pn->hdr = NULL;
+}
+
+void
+sift_v6_par_node_explain(const SiftV6ParNode *par, SiftExplainStatsV6 *ex)
+{
+	SiftV6ParSummary ps;
+
+	sift_v6_par_node_summary(par, &ps);
+	ex->par_strategy = ps.strategy;
+	ex->par_ran = ps.ran;
+	ex->par_escalated = ps.escalated;
+	ex->grans_scanned += ps.grans_scanned;
+	ex->grans_pruned_zone += ps.grans_pruned_zone;
+	ex->grans_pruned_skip += ps.grans_pruned_skip;
+	ex->grans_preagg += ps.grans_preagg;
+	ex->grans_preagg_delta += ps.grans_preagg_delta;
+	ex->heap_vet_rows += ps.heap_vet_rows;
+	ex->par_morsels_stolen = ps.morsels_stolen;
+	ex->par_radix_parts = ps.radix_parts;
+	ex->par_partial_recs = ps.partial_recs;
+	ex->par_partial_bytes = ps.partial_bytes;
 }

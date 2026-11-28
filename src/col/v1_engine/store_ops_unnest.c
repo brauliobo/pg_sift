@@ -322,12 +322,11 @@ emit_elems(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 			sift_v1_unnest_emit_heap_row(u, b, w * 64 + (uint32) __builtin_ctzll(bits));
 }
 
-static void
-run_batch(UnRun *u, const SiftV6Batch *b)
+void
+sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb)
 {
 	SiftBatchSel *bs = &u->bs;
 	const int	words = (b->n + 63) / 64;
-	const SiftV1ElemBatch *eb = u->has_elems ? sift_v1_source_elems(u->src) : NULL;
 
 	u->stats->batches++;
 	if (u->row_slot >= 0)
@@ -401,38 +400,31 @@ source_quals(const UnRun *u, Relation host, SiftV6Input *in)
 	return vx;
 }
 
+/* the columns the source of the run gives (u->in) and the elements it reads with them (u->espec when u->has_elems) */
 static void
-open_source(UnRun *u, Relation heap, Relation index, Snapshot snap)
+source_input(UnRun *u, Relation heap, Relation index)
 {
-	SiftV6Input in;
 	const SiftSrcLayout *lay = sift_v1_reader_of(u->spec->is_table)->layout(u->spec->is_table ? heap : index);
 	SiftVecType type[SIFT_V6_XELEM_COLS];
 	int			leaf[SIFT_V6_XELEM_COLS];
-	SiftV1Scan	scan = {0};
 
 	if (u->spec->is_table)
-		sift_v6_input_init_table(&in, heap);
+		sift_v6_input_init_table(&u->in, heap);
 	else
-		sift_v6_input_init_rel(&in, index);
+		sift_v6_input_init_rel(&u->in, index);
 	for (int i = 0; i < u->ncols; i++)
-		in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.scale = u->cols[i].scale,.type = col_vec_type(&u->cols[i])};
-	in.ncols = u->ncols;
+		u->in.col[i] = (SiftV6InCol) {.attno = u->cols[i].attno,.typid = u->cols[i].typid,.scale = u->cols[i].scale,.type = col_vec_type(&u->cols[i])};
+	u->in.ncols = u->ncols;
 	memcpy(type, u->etype, sizeof(type));
 	memcpy(leaf, u->x->elem.col_leaf, sizeof(leaf));
 	u->has_elems = sift_v1_elem_spec(lay, u->x->elem.group_leaf, u->nel, leaf, type, u->x->elem.col_kind, &u->espec);
 	u->espec.objects = u->x->elem.fn == SV6E_RECORDSET || u->x->elem.fn == SV6E_PATH;
-	scan.elem = u->has_elems ? &u->espec : NULL;
-	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &in, source_quals(u, u->spec->is_table ? heap : index, &in), &scan);
 }
 
 void
-sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, SiftV6ScanStats *stats, const SiftV6StarRun *star)
 {
-	UnRun		run = {0};
-	UnRun	   *u = &run;
-	SiftV6Batch b;
-
-	u->spec = spec;
+	*u = (UnRun) {.spec = spec};
 	u->row_slot = -1;
 	u->x = spec->ext;
 	u->index = index;
@@ -471,11 +463,30 @@ sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relati
 			u->mdata[i] = MemoryContextAllocAligned(CurrentMemoryContext, SIFT_VEC_LEN * sizeof(int64) + SIFT_VEC_PAD, SIFT_VEC_ALIGN, 0);
 			u->mvalid[i] = palloc0(SIFT_VEC_WORDS * sizeof(uint64));
 		}
-	open_source(u, heap, index, snap);
-	while (u->src->next(u->src, &b))
-		run_batch(u, &b);
-	u->src->close(u->src);
+	source_input(u, heap, index);
+}
+
+void
+sift_v1_unnest_close(UnRun *u)
+{
 	sift_v6_pipe_finish(u->pipe);
 	sift_v1_unnest_heap_close(u);
 	MemoryContextDelete(u->bcx);
+}
+
+void
+sift_v1_unnest_run(const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, Snapshot snap, SiftV6ScanStats *stats, const SiftV6StarRun *star)
+{
+	UnRun		run;
+	UnRun	   *u = &run;
+	SiftV6Batch b;
+	SiftV1Scan	scan = {0};
+
+	sift_v1_unnest_open(u, spec, g, heap, index, stats, star);
+	scan.elem = u->has_elems ? &u->espec : NULL;
+	u->src = sift_v1_source_open(CurrentMemoryContext, snap, &u->in, source_quals(u, spec->is_table ? heap : index, &u->in), &scan);
+	while (u->src->next(u->src, &b))
+		sift_v1_unnest_batch(u, &b, u->has_elems ? sift_v1_source_elems(u->src) : NULL);
+	u->src->close(u->src);
+	sift_v1_unnest_close(u);
 }

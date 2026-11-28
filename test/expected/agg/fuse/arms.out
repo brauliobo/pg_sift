@@ -94,7 +94,7 @@ SELECT same($$SELECT kind AS k, count(*) AS n, sum(qty) AS s FROM ev GROUP BY ki
 SELECT arms_shared(:'line_arms') AS line_arms_shared, same(:'line_arms') AS line_arms_same;
  line_arms_shared | line_arms_same 
 ------------------+----------------
-                0 | t
+                3 | t
 (1 row)
 
 SELECT reread(:'line_arm') > 0 AS arm_rereads, reread(:'line_arms') = reread(:'line_arm') AS rereads_once;
@@ -174,14 +174,14 @@ ANALYZE kmap;
 SELECT arms_shared(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind') AS mapped_arms_shared, same(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind') AS mapped_arms_same;
  mapped_arms_shared | mapped_arms_same 
 --------------------+------------------
-                  0 | t
+                  2 | t
 (1 row)
 
 SELECT arms_shared(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_shared,
        same(:'flag_a' || :'arm_names' || ' UNION ALL ' || :'arm_kind' || ' UNION ALL ' || :'arm_all') AS mapped_three_same;
  mapped_three_shared | mapped_three_same 
 ---------------------+-------------------
-                   0 | t
+                   3 | t
 (1 row)
 
 SELECT reread(:'flag_a' || :'arm_names') > 0 AS mapped_arm_rereads,
@@ -243,7 +243,7 @@ SELECT arms_shared(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label
        reread(:'periods' || :'lines_both' || ' UNION ALL ' || :'lines_label' || ' UNION ALL ' || :'lines_kind') = reread(:'periods' || :'lines_both') AS periods_lines_once;
  periods_lines_shared | periods_lines_same | periods_lines_reread | periods_lines_once 
 ----------------------+--------------------+----------------------+--------------------
-                    0 | t                  | t                    | t
+                    3 | t                  | t                    | t
 (1 row)
 
 -- an arm inside the plan of another (the dimension of a star join reads the same index) is not one of its cohort: the outer pass needs the inner rows first.

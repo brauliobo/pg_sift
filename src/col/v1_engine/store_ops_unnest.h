@@ -83,6 +83,7 @@ typedef struct UnRun
 	AttrNumber	heap_att;		/* the array column of the table */
 	bool		has_elems;		/* the leaves of the index hold the elements of the array: the rows they cannot hold are read from the heap */
 	SiftV1ElemSpec espec;
+	SiftV6Input in;				/* the columns of the table the run reads, as its source gives them */
 	int16		typlen;
 	bool		typbyval;
 	char		typalign;
@@ -173,5 +174,9 @@ extern void sift_v1_unnest_emit_heap_row(UnRun *u, const SiftV6Batch *b, uint32 
 /* the tests of the rows of the batch: the rows they keep are one pair each, those the leaves cannot hold are the heap's */
 extern void sift_v1_unnest_run_tests(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb);
 extern void sift_v1_unnest_setup_tests(UnRun *u);
+/* the run of spec (its source not opened: u->in its columns, u->espec its elements when u->has_elems), one batch of a source with the elements of its rows, its end */
+extern void sift_v1_unnest_open(UnRun *u, const SiftV6Spec *spec, SiftV6Group *g, Relation heap, Relation index, SiftV6ScanStats *stats, const SiftV6StarRun *star);
+extern void sift_v1_unnest_batch(UnRun *u, const SiftV6Batch *b, const SiftV1ElemBatch *eb);
+extern void sift_v1_unnest_close(UnRun *u);
 
 #endif							/* SIFT_COL_V1_ENGINE_V1_STORE_OPS_UNNEST_H */
