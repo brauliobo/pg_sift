@@ -57,7 +57,7 @@ step s2q: SELECT n, total, agree FROM iso_wv_q('agg', 0);
 step s2x: SELECT sift.col_verify('iso_wv_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wv_idx')) AS index_rows, (SELECT count(*) FROM iso_wv) AS heap_rows;
 verified|index_rows|heap_rows
 --------+----------+---------
-t       |       260|      230
+t       |       230|      230
 (1 row)
 
 
@@ -118,6 +118,6 @@ step s2q: SELECT n, total, agree FROM iso_wv_q('agg', 0);
 step s2x: SELECT sift.col_verify('iso_wv_idx')::text = '' AS verified, (SELECT sum(rows) FROM sift.col_segments('iso_wv_idx')) AS index_rows, (SELECT count(*) FROM iso_wv) AS heap_rows;
 verified|index_rows|heap_rows
 --------+----------+---------
-t       |       260|      230
+t       |       230|      230
 (1 row)
 
