@@ -30,6 +30,9 @@
 
 static planner_hook_type prev_planner_hook;
 
+/* PostgreSQL's fuzz factor of path costs (STD_FUZZ_FACTOR, optimizer/util/pathnode.c): its planner takes plans this close as costing the same */
+#define CTE_COST_FUZZ	1.01
+
 /* does the relation hold the rows of an aggregate scan: a sift_table, or a table with a sift_col index */
 static bool
 scannable_rel(Oid relid)
@@ -284,16 +287,16 @@ runs_agg_scan(const PlannedStmt *stmt)
 	return false;
 }
 
-/* a ranks before b as PostgreSQL ranks paths: fewer nodes an enable_ setting disabled, then the lower cost */
+/* a ranks with or before b as PostgreSQL ranks paths: fewer nodes an enable_ setting disabled, then a cost no higher within CTE_COST_FUZZ */
 static bool
-cheaper(const Plan *a, const Plan *b)
+no_costlier(const Plan *a, const Plan *b)
 {
 	double		ca,
 				cb;
 	const int	da = sift_plan_disabled(a, &ca),
 				db = sift_plan_disabled(b, &cb);
 
-	return da != db ? da < db : ca < cb;
+	return da != db ? da < db : ca <= cb * CTE_COST_FUZZ;
 }
 
 static PlannedStmt *
@@ -304,8 +307,8 @@ plan_query(SIFT_PLANNER_PARAMS)
 
 /*
  * The statement with its unread laterals dropped and its json_build_object calls on sift.json_build_object planned, or, when it has shared CTEs or the rewrites of flat_rewrite.c, lateral_union.c or
- * of agg/scope/rewrite.c apply, the plan with the CTEs inline and the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs less
- * unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
+ * of agg/scope/rewrite.c apply, the plan with the CTEs inline and the rewrites made if that one runs the aggregate scan (a scope read, for the rewrites of a scope alone), and costs no more
+ * (within CTE_COST_FUZZ) unless it only moved HAVING conditions to WHERE; the loser's memory goes with its context
  */
 static PlannedStmt *
 plan_statement(SIFT_PLANNER_PARAMS)
@@ -349,7 +352,7 @@ plan_statement(SIFT_PLANNER_PARAMS)
 	rewritten = plan_query(SIFT_PLANNER_ARGS(alt));
 	MemoryContextSwitchTo(caller);
 	if (runs_agg_scan(rewritten) && (!scoped || sift_v6_scope_planned(rewritten)) &&
-		(!priced || sift_agg_force || cheaper(rewritten->planTree, plain->planTree)))
+		(!priced || sift_agg_force || no_costlier(rewritten->planTree, plain->planTree)))
 		return rewritten;
 	MemoryContextDelete(cx);
 	return plain;
