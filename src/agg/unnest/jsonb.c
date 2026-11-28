@@ -555,14 +555,13 @@ value_read(const V6Plan *p, const Expr *e)
 	return SV6V_NONE;
 }
 
-/* an expression of the statement that is the value of the member, read as the leaf of the map holds it: the type the leaf has */
+/* the read of the value is read (of the type of the expression, or SV6V_INT* of a float8 leaf), the one the statement makes: the column of the leaf */
 static bool
-value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
+value_slot(V6Plan *p, SiftV6ValueRead read, SiftV6Col *out)
 {
 	SiftV6XElem *el = &p->xseed->elem;
-	const SiftV6ValueRead read = value_read(p, e);
 
-	if (read == SV6V_NONE || exprType((const Node *) e) != el->col_type[1] || (el->vread != SV6V_NONE && el->vread != read))
+	if (el->vread != SV6V_NONE && el->vread != read)
 		return false;
 	el->vread = read;
 	*out = (SiftV6Col) {.attno = el->attno,.typid = el->col_type[1],.src = SV6SRC_ELEM,.slot = 1};
@@ -596,6 +595,26 @@ present_column(V6Plan *p, SiftV6Col *out)
 	}
 	*out = (SiftV6Col) {.attno = el->attno,.typid = INT8OID,.src = SV6SRC_ELEM,.slot = at};
 	return true;
+}
+
+/* an expression of the statement that is the value of the member, read as the leaf of the map holds it: the type the leaf has */
+static bool
+value_column(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	const SiftV6ValueRead read = value_read(p, e);
+
+	return read != SV6V_NONE && exprType((const Node *) e) == p->xseed->elem.col_type[1] && value_slot(p, read, out);
+}
+
+bool
+sift_v6_unnest_value_int(V6Plan *p, const Expr *e, SiftV6Col *out)
+{
+	const SiftV6XElem *el = p->xseed != NULL && p->elem_rel != NULL ? &p->xseed->elem : NULL;
+	const Oid	fn = IsA(e, FuncExpr) ? ((const FuncExpr *) e)->funcid : InvalidOid;
+	const SiftV6ValueRead read = fn == F_INT2_JSONB ? SV6V_INT2 : fn == F_INT4_JSONB ? SV6V_INT4 : fn == F_INT8_JSONB ? SV6V_INT8 : SV6V_NONE;
+
+	return el != NULL && el->fn == SV6E_EACH && !SIFT_JSON_NULL_CAST_RAISES && read != SV6V_NONE && el->col_type[1] == FLOAT8OID &&
+		is_value_var(p, linitial(((const FuncExpr *) e)->args), JSONBOID) && value_slot(p, read, out);
 }
 
 bool
@@ -662,6 +681,13 @@ jsonb_cast_fn(Oid type)
 	return type == INT2OID ? F_INT2_JSONB : type == INT4OID ? F_INT4_JSONB : type == INT8OID ? F_INT8_JSONB : F_FLOAT8_JSONB;
 }
 
+/* the cast of jsonb_each's jsonb that a member the leaf cannot hold is read with */
+static Oid
+value_cast_fn(SiftV6ValueRead read, Oid type)
+{
+	return read == SV6V_INT2 ? F_INT2_JSONB : read == SV6V_INT4 ? F_INT4_JSONB : read == SV6V_INT8 ? F_INT8_JSONB : jsonb_cast_fn(type);
+}
+
 /* the columns of the members of jsonb_each and jsonb_each_text: the key and the value, as the function gives them */
 static void
 each_columns(TupleDesc desc, const SiftV6XElem *e)
@@ -709,7 +735,7 @@ sift_v6_recfn_new(MemoryContext cx, const SiftV6XElem *e, const List *names)
 	sift_tupdesc_finalize(f->desc);
 	BlessTupleDesc(f->desc);
 	if (f->fn >= SV6E_EACH)
-		fmgr_info(f->vread == SV6V_CAST ? jsonb_cast_fn(f->type[1]) : F_JSONB_EXTRACT_PATH_TEXT, &f->vfn);
+		fmgr_info(f->vread >= SV6V_CAST ? value_cast_fn(f->vread, f->type[1]) : F_JSONB_EXTRACT_PATH_TEXT, &f->vfn);
 	fmgr_info(f->fn == SV6E_MEMBERS ? F_JSONB_ARRAY_ELEMENTS : sift_v6_elem_fn_oid(f->fn), &f->flinfo);
 	f->econtext = CreateStandaloneExprContext();
 	f->slot = MakeSingleTupleTableSlot(f->desc, &TTSOpsMinimalTuple);
@@ -879,13 +905,14 @@ member_value(SiftV6RecFn *f, uint32 k, bool *isnull)
 	*isnull = f->val_null[k];
 	if (*isnull)
 		return (Datum) 0;
-	if (f->vread == SV6V_CAST)
+	if (f->vread >= SV6V_CAST)
 	{
 		InitFunctionCallInfoData(*fcinfo, &f->vfn, 1, InvalidOid, NULL, NULL);
 		fcinfo->args[0] = (NullableDatum) {d, false};
 		d = FunctionCallInvoke(fcinfo);
 		*isnull = fcinfo->isnull;
-		return d;
+		return f->vread == SV6V_INT2 ? Float8GetDatum(DatumGetInt16(d)) : f->vread == SV6V_INT4 ? Float8GetDatum(DatumGetInt32(d)) :
+			f->vread == SV6V_INT8 ? Float8GetDatum((double) DatumGetInt64(d)) : d;
 	}
 	if (f->fn == SV6E_EACH)
 	{

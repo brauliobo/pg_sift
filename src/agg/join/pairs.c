@@ -3,15 +3,17 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_type_d.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/placeholder.h"
-#include "catalog/pg_type_d.h"
+#include "utils/fmgroids.h"
 
 #include "agg/expr/pg.h"
 #include "agg/join/pairs.h"
+#include "agg/unnest/jsonb.h"
 
 typedef struct PairCtx
 {
@@ -20,24 +22,24 @@ typedef struct PairCtx
 	bool		ok;
 } PairCtx;
 
-/* a column the pairs carry: a column of the fact table, of the element or of a dimension, what the index holds of an expression of the fact table (jsonb_exists(doc, 'k') of an expression column),
+/* a column the pairs carry: a column of the fact table, of the element (or the cast of the value of a member) or of a dimension, what the index holds of an expression of the fact table (jsonb_exists(doc, 'k') of an expression column),
  * or the flag of a test of the row (INDEX_VAR) */
 static bool
 pair_source(V6Plan *p, Node *n, SiftV6Col *out)
 {
 	const Var  *v = (const Var *) n;
 
-	if (!IsA(n, Var))
-		return bms_equal(pull_varnos(p->root, n), p->rel->relids) && sift_v6_read_of(p, (const Expr *) n, false, out) && out->src == SV6SRC_ATTR;
-	if (v->varlevelsup != 0)
-		return false;
-	if (v->varno == INDEX_VAR)
+	if (IsA(n, Var) && v->varno == INDEX_VAR)
 	{
 		*out = (SiftV6Col) {.attno = v->varattno,.typid = BOOLOID};
 		return sift_v6_col_is_flag(out) && v->varattno - SIFT_V6_XFLAG_VATT < p->xseed->ntests;
 	}
-	if (p->elem_rel != NULL && v->varno == p->elem_rel->relid)
-		return sift_v6_unnest_column(p, (const Expr *) v, out);
+	if (p->elem_rel != NULL && bms_equal(pull_varnos(p->root, n), p->elem_rel->relids))
+		return sift_v6_unnest_column(p, (const Expr *) n, out) || sift_v6_unnest_value_int(p, (const Expr *) n, out);
+	if (!IsA(n, Var))
+		return bms_equal(pull_varnos(p->root, n), p->rel->relids) && sift_v6_read_of(p, (const Expr *) n, false, out) && out->src == SV6SRC_ATTR;
+	if (v->varlevelsup != 0)
+		return false;
 	return sift_v6_plan_read_column(p, (const Expr *) v, true, out);
 }
 
@@ -58,30 +60,52 @@ pair_col(V6Plan *p, Node *n)
 	return i;
 }
 
+/* a copy of n whose Vars name no outer join that nulls them */
+static Node *
+unnulled(Node *n, void *cx)
+{
+	if (n != NULL && IsA(n, Var))
+	{
+		Var		   *v = copyObject((Var *) n);
+
+		v->varnullingrels = NULL;
+		return (Node *) v;
+	}
+	return expression_tree_mutator(n, unnulled, cx);
+}
+
+/* the integer cast of the float8 the pairs hold of the value of a member (sift_v6_unnest_value_int), through numeric as the cast of the jsonb's number */
+static Node *
+as_type(Var *v, Oid type)
+{
+	const Oid	fn = type == INT2OID ? F_INT2_NUMERIC : type == INT4OID ? F_INT4_NUMERIC : F_INT8_NUMERIC;
+	FuncExpr   *num = makeFuncExpr(F_NUMERIC_FLOAT8, NUMERICOID, list_make1(v), InvalidOid, InvalidOid, COERCE_EXPLICIT_CAST);
+
+	return v->vartype == type ? (Node *) v : (Node *) makeFuncExpr(fn, type, list_make1(num), InvalidOid, InvalidOid, COERCE_EXPLICIT_CAST);
+}
+
 /* n as the column of the pairs it is (a Var without the outer joins that null it, which the pairs carry as NULLs, or a call the index holds), or NULL when it is none */
-static Var *
+static Node *
 pair_column(PairCtx *c, Node *n)
 {
-	Node	   *src = copyObject(n);
+	Node	   *src = unnulled(n, NULL);
 	Var		   *nv;
 	int			i;
 
-	if (IsA(src, Var))
-		((Var *) src)->varnullingrels = NULL;
-	else if (!(IsA(src, FuncExpr) || IsA(src, OpExpr)) || !contain_var_clause(src))
+	if (!IsA(src, Var) && (!(IsA(src, FuncExpr) || IsA(src, OpExpr)) || !contain_var_clause(src)))
 		return NULL;
 	if ((i = pair_col(c->p, src)) < 0)
 		return NULL;
-	nv = makeVar(1, (AttrNumber) (i + 1), exprType(n), exprTypmod(n), exprCollation(n), 0);
+	nv = makeVar(1, (AttrNumber) (i + 1), c->p->xseed->rcol[i].typid, exprTypmod(n), exprCollation(n), 0);
 	nv->varnosyn = 1;
 	nv->varattnosyn = nv->varattno;
-	return nv;
+	return as_type(nv, exprType(n));
 }
 
 static Node *
 pair_var(Node *n, PairCtx *c)
 {
-	Var		   *nv;
+	Node	   *nv;
 
 	if (n == NULL || !c->ok)
 		return n;
@@ -104,7 +128,7 @@ pair_var(Node *n, PairCtx *c)
 		return n;
 	}
 	if ((nv = pair_column(c, n)) != NULL)
-		return (Node *) nv;
+		return nv;
 	if (!IsA(n, Var))
 		return expression_tree_mutator(n, pair_var, c);
 	c->ok = false;

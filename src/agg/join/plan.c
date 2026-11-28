@@ -635,7 +635,7 @@ pairs_ok(const SiftV6JoinShape *sh)
 	{
 		const SiftV6JoinDim *d = &sh->dim[i];
 
-		if ((d->nkeys == 0 || d->on != NIL) && ((sh->elem != NULL && d->nkeys == 0) || sift_star_filters(d->mode) || sift_star_period(d->mode)))
+		if ((d->nkeys == 0 || d->on != NIL) && (sift_star_filters(d->mode) || sift_star_period(d->mode)))
 			return false;
 	}
 	return true;

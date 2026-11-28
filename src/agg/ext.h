@@ -67,12 +67,19 @@ typedef enum SiftV6ElemFn
 	SV6E_EACH_TEXT
 } SiftV6ElemFn;
 
-/* How the statement reads the value of a member of jsonb_each / jsonb_each_text: through its text, (value #>> '{}')::T or value::T of the text, or as jsonb_each's jsonb cast to T: a string or a boolean raises for the cast and not for the text */
+/*
+ * How the statement reads the value of a member of jsonb_each / jsonb_each_text: through its text, (value #>> '{}')::T or value::T of the text, or as jsonb_each's jsonb cast to T: a string or a
+ * boolean raises for the cast and not for the text. SV6V_INT*: the jsonb cast to an integer type from a float8 leaf, which the pairs hold as the float8 and cast through numeric
+ * (sift_v6_unnest_value_int); a member the leaf cannot hold is read with the cast to the integer, whose errors are the statement's.
+ */
 typedef enum SiftV6ValueRead
 {
 	SV6V_NONE = 0,
 	SV6V_TEXT,
-	SV6V_CAST
+	SV6V_CAST,
+	SV6V_INT2,
+	SV6V_INT4,
+	SV6V_INT8
 } SiftV6ValueRead;
 
 /*

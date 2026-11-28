@@ -41,6 +41,11 @@ extern bool sift_v6_unnest_rte(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *
 extern bool sift_v6_unnest_rte_joined(PlannerInfo *root, RelOptInfo *fact, RelOptInfo *elem_rel, SiftV6ElemRte *out);
 /* the function of a lateral function scan, over the column v: unnest of an array, or jsonb_to_recordset of a jsonb one with the columns it declares */
 extern bool sift_v6_unnest_rte_function(const RangeTblFunction *rtf, const Expr *v, SiftV6ElemRte *out);
+/*
+ * e is value::int2, ::int4 or ::int8 of jsonb_each over a float8 leaf: out is the column of the leaf, which the expression of the pairs casts through numeric (the cast the jsonb's number takes)
+ * after float8_numeric gives back the number the document wrote with up to 15 digits
+ */
+extern bool sift_v6_unnest_value_int(V6Plan *p, const Expr *e, SiftV6Col *out);
 /* e is date_trunc('month', c)::date of a date column c of the fact table in a statement that unnests: k is c */
 extern bool sift_v6_unnest_month_key(V6Plan *p, const Expr *e, SiftV6Col *k);
 /* rte is the function scan of the sub-select of the EXISTS sp, which takes an array of the fact table (an expression of the parameters sp passes); false for any other. out->array is that array in the terms of the fact table */
