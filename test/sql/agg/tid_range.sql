@@ -140,20 +140,29 @@ SELECT count(*) AS statements, count(*) FILTER (WHERE plan LIKE 'SiftAgg%') AS s
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= ''(50,30)'' AND ctid < ''(52,10)'' AND v < 60 GROUP BY g');
 SELECT * FROM same('SELECT g, count(*) AS n, sum(v) AS s FROM tt WHERE ctid >= (SELECT min(ctid) FROM tt WHERE id > 20000) GROUP BY g');
 
--- parallel workers take the granules of the range (the test library plans them for tables this small)
-\set with_workers 'SiftAgg'
+-- parallel workers take the granules of the range (the test library plans them for tables this small; the release library as its cost says)
+\set with_workers 'SiftAgg%'
 \if :testing
 SET sift.test_agg_par_min_rows = 0;
 \set with_workers 'SiftAgg with workers'
 \endif
 SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0; SET min_parallel_table_scan_size = 0; SET min_parallel_index_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
-SELECT plan = :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th') GROUP BY 1;
-SELECT plan = :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt') GROUP BY 1;
-SET max_parallel_workers_per_gather = 0;
+SELECT plan LIKE :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('th') GROUP BY 1;
+SELECT plan LIKE :'with_workers' AS planned, count(*) AS statements, sum(vs_normal_plan) AS differing_rows FROM all_ranges('tt') GROUP BY 1;
 \if :testing
 RESET sift.test_agg_par_min_rows;
 \endif
+-- as the cost says, with launches that cost nothing: a range of one granule takes no workers, the whole table does. The planner reads a ctid range of a sift_table by the TIDs of its
+-- granules, not by the pages of the relation
+CREATE TABLE tu (id int, g int, v int, pad text) USING sift_table;
+INSERT INTO tu SELECT i, i % 7, i % 100, repeat('x', 100) FROM generate_series(1, 30000) i;
+VACUUM (FREEZE, ANALYZE) tu;
+SELECT t, plan_of(format('SELECT count(*), sum(v) FROM %I WHERE ctid BETWEEN ''(0,1)'' AND ''(2,5)''', t)) AS first_blocks,
+       plan_of(format('SELECT count(*), sum(v) FROM %I WHERE ctid >= ''(100000,1)''', t)) AS beyond_the_end,
+       plan_of(format('SELECT count(*), sum(v) FROM %I WHERE ctid >= ''(0,1)'' AND ctid <= ''(4294967295,65535)''', t)) AS whole_table
+FROM (VALUES ('tg'), ('tu')) v(t) ORDER BY t;
+SET max_parallel_workers_per_gather = 0;
 
 -- what stays on the normal plan: <>, ctid in an expression, an OR, a list, a column of another table, a partitioned table, a parameter of a generic plan
 SELECT plan_of('SELECT count(*) FROM th WHERE ctid <> ''(3,2)''') AS ne,
@@ -200,6 +209,6 @@ DROP FUNCTION all_ranges(text);
 DROP FUNCTION th_q(int, int);
 DROP FUNCTION same(text);
 DROP FUNCTION plan_of(text);
-DROP TABLE tp, tr_range, tt, th, th_before, th_dim, tg;
+DROP TABLE tp, tr_range, tt, th, th_before, th_dim, tg, tu;
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift;

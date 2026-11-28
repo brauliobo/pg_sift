@@ -265,6 +265,9 @@ typedef struct SiftV6RowOut
 
 /* the end of the keys of a TID range: no block is as large as this */
 #define SIFT_V6_TID_END	(UINT64CONST(1) << 48)
+/* The ctid bounds by constant TIDs among the RestrictInfos clauses of the base relation relid as one range [*lo, *hi) of keys (block << 16 | offset), the other clauses in *rest; false: no bound
+ * (agg/plan/tid.c) */
+extern bool sift_v6_tid_bounds(Index relid, const List *clauses, uint64 *lo, uint64 *hi, List **rest);
 
 typedef struct SiftV6Spec
 {

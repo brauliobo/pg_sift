@@ -23,11 +23,11 @@ tid_key(const Const *c)
 }
 
 static bool
-ctid_of(const V6Plan *p, const Node *n)
+ctid_of(Index relid, const Node *n)
 {
 	const Var  *v = (const Var *) n;
 
-	return IsA(n, Var) && v->varno == p->rel->relid && v->varlevelsup == 0 && v->varattno == SelfItemPointerAttributeNumber;
+	return IsA(n, Var) && v->varno == relid && v->varlevelsup == 0 && v->varattno == SelfItemPointerAttributeNumber;
 }
 
 static bool
@@ -58,19 +58,56 @@ column_first(Oid opno, bool column_on_left)
 }
 
 static void
-narrow(SiftV6Spec *s, Oid opno, uint64 key)
+narrow(Oid opno, uint64 key, uint64 *lo, uint64 *hi)
 {
-	if (!s->tid_range)
-		s->tid_hi = SIFT_V6_TID_END;
-	s->tid_range = true;
 	if (opno == TIDEqualOperator || opno == TIDGreaterEqOperator)
-		s->tid_lo = Max(s->tid_lo, key);
+		*lo = Max(*lo, key);
 	if (opno == TIDGreaterOperator)
-		s->tid_lo = Max(s->tid_lo, key + 1);
+		*lo = Max(*lo, key + 1);
 	if (opno == TIDLessOperator)
-		s->tid_hi = Min(s->tid_hi, key);
+		*hi = Min(*hi, key);
 	if (opno == TIDLessEqOperator || opno == TIDEqualOperator)
-		s->tid_hi = Min(s->tid_hi, key + 1);
+		*hi = Min(*hi, key + 1);
+}
+
+/* the clause bounds the ctid of the base relation relid by a constant TID: the operator with the column on the left, and the key of the TID */
+static bool
+tid_bound(Index relid, const Expr *clause, Oid *opno, uint64 *key)
+{
+	const OpExpr *op = (const OpExpr *) clause;
+	bool		left;
+
+	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return false;
+	left = ctid_of(relid, linitial(op->args));
+	if (!(left ? tid_const(lsecond(op->args)) : ctid_of(relid, lsecond(op->args)) && tid_const(linitial(op->args))))
+		return false;
+	*opno = column_first(op->opno, left);
+	*key = tid_key((const Const *) (left ? lsecond(op->args) : linitial(op->args)));
+	return OidIsValid(*opno);
+}
+
+bool
+sift_v6_tid_bounds(Index relid, const List *clauses, uint64 *lo, uint64 *hi, List **rest)
+{
+	bool		bounded = false;
+	Oid			opno;
+	uint64		key;
+
+	*lo = 0;
+	*hi = SIFT_V6_TID_END;
+	*rest = NIL;
+	foreach_node(RestrictInfo, ri, (List *) clauses)
+	{
+		if (!ri->pseudoconstant && tid_bound(relid, ri->clause, &opno, &key))
+		{
+			narrow(opno, key, lo, hi);
+			bounded = true;
+		}
+		else
+			*rest = lappend(*rest, ri);
+	}
+	return bounded;
 }
 
 /* the scan narrows the rows of the table by their TID: the scan of the one table of the statement or of the fact of its join, or the unnest of its array by a store that runs the quals of its rows (SiftJsonbOps.row_quals) */
@@ -86,17 +123,15 @@ scan_narrows_tids(const V6Plan *p)
 bool
 sift_v6_tid_qual(V6Plan *p, const RestrictInfo *ri)
 {
-	const OpExpr *op = (const OpExpr *) ri->clause;
-	const bool	left = IsA(ri->clause, OpExpr) && list_length(op->args) == 2 && ctid_of(p, linitial(op->args));
 	Oid			opno;
+	uint64		key;
 
-	if (planner_rt_fetch(p->rel->relid, p->root)->inh || !scan_narrows_tids(p) || p->in_filter || p->rel->reloptkind != RELOPT_BASEREL || !IsA(ri->clause, OpExpr) || list_length(op->args) != 2)
+	if (planner_rt_fetch(p->rel->relid, p->root)->inh || !scan_narrows_tids(p) || p->in_filter || p->rel->reloptkind != RELOPT_BASEREL ||
+		!tid_bound(p->rel->relid, ri->clause, &opno, &key))
 		return false;
-	if (!(left ? tid_const(lsecond(op->args)) : ctid_of(p, lsecond(op->args)) && tid_const(linitial(op->args))))
-		return false;
-	opno = column_first(op->opno, left);
-	if (!OidIsValid(opno))
-		return false;
-	narrow(&p->spec, opno, tid_key((const Const *) (left ? lsecond(op->args) : linitial(op->args))));
+	if (!p->spec.tid_range)
+		p->spec.tid_hi = SIFT_V6_TID_END;
+	p->spec.tid_range = true;
+	narrow(opno, key, &p->spec.tid_lo, &p->spec.tid_hi);
 	return true;
 }

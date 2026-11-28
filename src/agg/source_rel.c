@@ -78,8 +78,9 @@ qual_cols(RelOptInfo *rel, AttrNumber key)
 static void
 table_scan_price(PlannerInfo *root, RelOptInfo *rel, const Bitmapset *cols, Cost *open, Cost *total)
 {
-	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, 0),.groups = 1,
-	.row_frac = sift_v6_rel_row_frac(planner_rt_fetch(rel->relid, root)->relid)};
+	const Oid	relid = planner_rt_fetch(rel->relid, root)->relid;
+	SiftV6CostIn in = {.tuples = rel->tuples,.rows = rel->rows,.pages = rel->pages,.f_prune = sift_v6_table_prune(root, rel->relid, rel->baserestrictinfo, sift_v6_table_lead(relid)),.groups = 1,
+	.row_frac = sift_v6_rel_row_frac(relid)};
 	Cost		startup;
 
 	in.ncols_read = bms_num_members(cols);
@@ -108,12 +109,18 @@ sift_v6_source_filter_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelS
 		sift_v6_scan_price(root, rel, s->ix, key, open, total);
 }
 
+AttrNumber
+sift_v6_table_lead(Oid relid)
+{
+	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
+
+	return ops->order != NULL ? ops->order->lead_att(relid, true) : 0;
+}
+
 void
 sift_v6_table_spec_cost(PlannerInfo *root, RelOptInfo *rel, Oid relid, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total)
 {
-	const SiftStoreOps *ops = sift_store_ops_for_oid(relid, true);
-	const AttrNumber lead = ops->order != NULL ? ops->order->lead_att(relid, true) : 0;
-	const SiftV6CostIn in = {.tuples = rel->tuples,.pages = rel->pages,.rows = rel->rows,.f_prune = sift_v6_clause_prune(root, rel->baserestrictinfo, lead),.groups = groups,
+	const SiftV6CostIn in = {.tuples = rel->tuples,.pages = rel->pages,.rows = rel->rows,.f_prune = sift_v6_table_prune(root, rel->relid, rel->baserestrictinfo, sift_v6_table_lead(relid)),.groups = groups,
 	.row_frac = sift_v6_rel_row_frac(relid),.ncols_read = sift_v6_spec_ncols_read(spec)};
 
 	sift_v6_scan_cost(&in, startup, total);

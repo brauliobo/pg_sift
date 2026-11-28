@@ -107,5 +107,8 @@ extern double sift_v6_lookups_guess(PlannerInfo *root, RelOptInfo *rel, const At
 
 /* The share of the granules the clauses leave of a relation that has no statistics of its own: a column that follows the order of the rows keeps the share of the rows, any other (Yao) nearly all */
 extern double sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att);
+/* The same for the clauses of the sift_table relid: its ctid bounds keep the share of its sampled granules that have a row on a block of the range, as its scan reads them (PostgreSQL prices
+ * them by the pages of the relation, which are not its TID space); a format that keeps no TID envelope of its granules, the share of the virtual blocks it handed out that the range covers */
+extern double sift_v6_table_prune(PlannerInfo *root, Index relid, const List *clauses, AttrNumber lead_att);
 
 #endif							/* SIFT_AGG_V6_CARD_H */

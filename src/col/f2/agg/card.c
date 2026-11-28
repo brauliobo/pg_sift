@@ -386,7 +386,7 @@ build_view(Relation index, const CardRel *f, const SiftPlanSnapshot *plan)
 	}
 	for (uint32 s = 0; s < nsample; s++)
 		((SiftSampleGranule *) v->sample)[s] = (SiftSampleGranule) {.part_idx = chosen[at[s].part].pi,.nrows = chosen[at[s].part].dir[at[s].g].nrows,
-		.weight = (float4) ((double) stride * (double) live / Max((double) read_rows, 1.0))};
+		.tid_min = chosen[at[s].part].dir[at[s].g].tid_min,.tid_max = chosen[at[s].part].dir[at[s].g].tid_max,.weight = (float4) ((double) stride * (double) live / Max((double) read_rows, 1.0))};
 	for (int c = 0; c < f->ncols; c++)
 	{
 		SiftColCardStats *cs = &((SiftColCardStats *) v->cols)[c];

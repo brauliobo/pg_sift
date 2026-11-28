@@ -51,6 +51,8 @@ extern void sift_v6_source_scan_price(PlannerInfo *root, RelOptInfo *rel, const 
 /* The price of a scan of the source that decodes only the key and the columns of the quals, and fetches the columns of the rows it keeps by their tags (the fetches are the caller's) */
 extern void sift_v6_source_filter_price(PlannerInfo *root, RelOptInfo *rel, const SiftV6RelSource *s, AttrNumber key, Cost *open, Cost *total);
 
+/* The attribute of the sift_table relid that sorts its rows first (0: none) */
+extern AttrNumber sift_v6_table_lead(Oid relid);
 /* The price of the compiled statement over the sift_table relid as its aggregate scan runs it: the columns of spec decoded over the granules the quals of rel leave, into groups */
 extern void sift_v6_table_spec_cost(PlannerInfo *root, RelOptInfo *rel, Oid relid, const SiftV6Spec *spec, double groups, Cost *startup, Cost *total);
 

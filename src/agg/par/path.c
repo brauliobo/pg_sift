@@ -33,6 +33,7 @@
 #include "agg/test_gucs.h"
 #include "agg/plan/rewrite.h"
 #include "agg/settings.h"
+#include "agg/source_rel.h"
 #include "core/par/pool.h"
 #include "core/sift.h"
 
@@ -148,6 +149,12 @@ read_rows(PlannerInfo *root, RelOptInfo *rel, const SiftV6Spec *spec, double gro
 	foreach_ptr(Var, v, pull_var_clause((Node *) quals_of(spec), 0))
 		if (sift_v6_class(v->vartype) == SV6C_TEXT && !is_key_column(spec, v->varattno))
 			return rel->tuples;
+	if (spec->is_table)
+	{
+		const double prune = sift_v6_table_prune(root, rel->relid, rel->baserestrictinfo, sift_v6_table_lead(spec->relid));
+
+		return spec->tid_range ? rel->tuples * prune : Max(rel->rows, rel->tuples * prune);
+	}
 	if (ix == NULL)
 		return Max(rel->rows, rel->tuples * sift_v6_clause_prune(root, rel->baserestrictinfo, 0));
 	return Max(rel->rows, price.in.g_eff * GRANULE_ROWS);

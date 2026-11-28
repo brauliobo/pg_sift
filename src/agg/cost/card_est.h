@@ -86,6 +86,8 @@ typedef struct SiftSampleGranule
 	uint16		pad;
 	float4		weight;
 	uint32		pad2;
+	uint64		tid_min;		/* the envelope of the TIDs of its rows (block << 16 | offset); tid_max 0: the format keeps none */
+	uint64		tid_max;
 } SiftSampleGranule;
 
 typedef struct SiftCardPartition

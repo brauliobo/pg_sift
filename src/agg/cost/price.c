@@ -6,6 +6,7 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#include "access/table.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/bitmapset.h"
@@ -29,6 +30,7 @@
 #include "agg/unnest/jsonb.h"
 #include "agg/vexpr.h"
 #include "core/store/ops.h"
+#include "core/visibility/visibility.h"
 
 static const SiftCardStatsView *
 index_view(const IndexOptInfo *ix)
@@ -259,6 +261,57 @@ sift_v6_clause_prune(PlannerInfo *root, const List *clauses, AttrNumber lead_att
 	return share;
 }
 
+/* the share of the sampled granules of view that have a row on a block of the TID range [lo, hi) (blocks, as the scan compares them: an index keeps the root of a HOT chain); -1: the view keeps
+ * no TID envelope of its granules */
+static double
+tid_share(const SiftCardStatsView *view, uint64 lo, uint64 hi)
+{
+	uint32		hit = 0;
+
+	if (view == NULL || view->n_sample == 0)
+		return -1.0;
+	for (uint32 s = 0; s < view->n_sample; s++)
+	{
+		const SiftSampleGranule *g = &view->sample[s];
+
+		if (g->tid_max == 0)
+			return -1.0;
+		hit += hi > lo && (g->tid_max >> 16) >= (lo >> 16) && (g->tid_min >> 16) <= ((hi - 1) >> 16);
+	}
+	return (double) hit / view->n_sample;
+}
+
+/* the share of the virtual blocks the sift_table reloid handed out that the TID range [lo, hi) covers: the rows of the share when its rows are in the order of their TIDs (lead_att 0), scattered
+ * over its granules (Yao) when a key sorts them */
+static double
+block_share(Oid reloid, uint64 lo, uint64 hi, AttrNumber lead_att)
+{
+	Relation	rel = table_open(reloid, NoLock);
+	const double blocks = Max((double) sift_vis_nblocks(rel), 1.0);
+	const double first = (double) (lo >> 16);
+	const double last = hi <= lo ? -1.0 : Min((double) ((hi - 1) >> 16), blocks - 1.0);
+
+	table_close(rel, NoLock);
+	if (last < first)
+		return 0.0;
+	return lead_att == 0 ? (last - first + 1.0) / blocks : yao_share((last - first + 1.0) / blocks);
+}
+
+double
+sift_v6_table_prune(PlannerInfo *root, Index relid, const List *clauses, AttrNumber lead_att)
+{
+	const Oid	reloid = planner_rt_fetch(relid, root)->relid;
+	uint64		lo,
+				hi;
+	List	   *rest;
+	double		share;
+
+	if (!sift_v6_tid_bounds(relid, clauses, &lo, &hi, &rest))
+		return sift_v6_clause_prune(root, clauses, lead_att);
+	share = tid_share(sift_v6_rel_card_view(reloid, true), lo, hi);
+	return (share >= 0 ? share : block_share(reloid, lo, hi, lead_att)) * sift_v6_clause_prune(root, rest, lead_att);
+}
+
 /* the attribute of the table the parts of the index are sorted by first (0: none) */
 static AttrNumber
 lead_heap_att(const IndexOptInfo *ix)
@@ -274,9 +327,17 @@ lead_heap_att(const IndexOptInfo *ix)
 static double
 f_prune(PlannerInfo *root, RelOptInfo *rel, const IndexOptInfo *ix, const SiftCardStatsView *view, double granules, AttrNumber lead)
 {
-	List	   *rest;
+	List	   *rest,
+			   *others;
 	const double zones = sift_v6_card_prune(root, rel, ix, view, &rest);
-	const double share = (zones < 0 ? 1.0 : zones) * sift_v6_clause_prune(root, rest, lead);
+	uint64		lo,
+				hi;
+	double		tids = sift_v6_tid_bounds(rel->relid, rest, &lo, &hi, &others) ? tid_share(view, lo, hi) : -1.0;
+	double		share;
+
+	if (tids >= 0)
+		rest = others;
+	share = (zones < 0 ? 1.0 : zones) * (tids < 0 ? 1.0 : tids) * sift_v6_clause_prune(root, rest, lead);
 
 	return Min(Max(share, 1.0 / granules), 1.0);
 }
