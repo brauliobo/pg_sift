@@ -15,7 +15,7 @@ extern void sift_agg_drop_unused_laterals(Query *q);
  */
 extern bool sift_agg_having_to_where(Query *q, bool apply);
 
-/* ... a one-row sub-select without FROM joined LATERAL, its columns made the expressions it computes, taken the same way ... */
+/* ... a one-row sub-select without FROM joined LATERAL, its columns made the expressions it computes, or the outputs that may raise of one with FROM computed by the query, taken the same way ... */
 extern bool sift_agg_inline_laterals(Query *q, bool apply);
 
 /* ... and a scalar sub-select of one aggregate, an EXISTS or a LATERAL sub-select of aggregates tied to the query by equalities of columns made a join to the table grouped by them, taken when it costs less */

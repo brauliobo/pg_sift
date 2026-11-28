@@ -7,6 +7,8 @@
  *   right side unique on the join conditions and `ON true` gives none;
  * - a LATERAL (SELECT exprs [WHERE gate] LIMIT 1) without FROM gives one row of exprs for each row of its left side (none or nulls where the gate fails): its columns are the exprs, the gate a
  *   condition of the query (CASE WHEN gate THEN expr END under a LEFT JOIN). An expr that may raise moves only where it runs for the same rows as the sub-select's;
+ * - an output that may raise of a LATERAL (.. LIMIT 1) with FROM is computed by the query from the columns it reads, for the rows the sub-select gave one (the aggregate scan plans a
+ *   lookup that computes its outputs for every key), under the same rule;
  * - a scalar sub-select of one aggregate over one table tied to the query by equalities of columns, `(SELECT max(b.v) FROM t b WHERE b.k = a.k)`, is a LEFT JOIN of the query to
  *   `t GROUP BY k`: a k has one group at most, a NULL k or a k with no row matches none, and the aggregates taken are NULL over no row as the sub-select's is. An EXISTS of the select
  *   list tied the same way is the LEFT JOIN to `t GROUP BY k` and whether the outer row found a group;
@@ -377,7 +379,7 @@ fromless_row(RangeTblEntry *rte)
 typedef struct Inline
 {
 	Index		rti;			/* the sub-select's entry */
-	List	   *cols;			/* the expressions of its columns in the terms of the query, NULL for a column that is no plain one */
+	List	   *cols;			/* the expression each column of it becomes, in the terms of the query; NULL: the column stays */
 	int			depth;
 	bool		whole;			/* a whole-row reference of the entry */
 	Bitmapset  *raising;		/* the columns that may raise */
@@ -392,9 +394,9 @@ inline_mutator(Node *n, Inline *in)
 
 	if (n == NULL)
 		return NULL;
-	if (IsA(n, Var) && ((Var *) n)->varlevelsup == in->depth && ((Var *) n)->varno == in->rti)
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == in->depth && ((Var *) n)->varno == in->rti && list_nth(in->cols, ((Var *) n)->varattno - 1) != NULL)
 	{
-		r = copyObject(list_nth(in->cols, ((Var *) n)->varattno - 1));
+		r = add_nulling_relids(copyObject(list_nth(in->cols, ((Var *) n)->varattno - 1)), bms_make_singleton(in->rti), ((Var *) n)->varnullingrels);
 		IncrementVarSublevelsUp(r, in->depth, 0);
 		return r;
 	}
@@ -488,53 +490,163 @@ raising_inline_ok(Query *q, Inline *in, JoinExpr *j)
 	return bms_is_subset(in->read, in->always);
 }
 
-/* the join at *at of the FROM list of q, or one of the inner joins and left sides below it, whose right side is a one-row sub-select without FROM, inlined (apply) */
+/* CASE WHEN cond THEN e END */
+static Node *
+when(Node *cond, Node *e)
+{
+	CaseExpr   *c = makeNode(CaseExpr);
+	CaseWhen   *w = makeNode(CaseWhen);
+
+	w->expr = (Expr *) cond;
+	w->result = (Expr *) e;
+	w->location = -1;
+	c->casetype = exprType(e);
+	c->casecollid = exprCollation(e);
+	c->args = list_make1(w);
+	c->defresult = (Expr *) makeNullConst(c->casetype, exprTypmod(e), c->casecollid);
+	c->location = -1;
+	return (Node *) c;
+}
+
+/* an expression of a sub-select in the terms of the query a level up */
+static Node *
+lifted(Node *e)
+{
+	e = copyObject(e);
+	IncrementVarSublevelsUp(e, -1, 1);
+	return e;
+}
+
+/* the columns of a sub-select without FROM: the expressions of its select list, NULL where the gate fails under a LEFT JOIN */
+static void
+fromless_cols(const Query *s, JoinType jointype, Inline *in)
+{
+	foreach_node(TargetEntry, te, s->targetList)
+	{
+		Node	   *e = lifted((Node *) te->expr);
+
+		if (agg_node_may_raise(e))
+			in->raising = bms_add_member(in->raising, te->resno);
+		in->cols = lappend(in->cols, s->jointree->quals != NULL && jointype == JOIN_LEFT ? when(lifted(s->jointree->quals), e) : e);
+	}
+}
+
+/* a one-row sub-select of a FROM list whose outputs that may raise move out of it: none of them is a key of its order */
+static bool
+raising_lookup(RangeTblEntry *rte, Inline *in)
+{
+	Query	   *s = rte->subquery;
+
+	if (rte->rtekind != RTE_SUBQUERY || !one_row_query(s) || s->jointree->fromlist == NIL || s->hasAggs || s->hasWindowFuncs || s->hasTargetSRFs || s->groupClause != NIL ||
+		s->setOperations != NULL || s->distinctClause != NIL || s->limitOffset != NULL)
+		return false;
+	foreach_node(TargetEntry, te, s->targetList)
+		if (!te->resjunk && agg_node_may_raise((Node *) te->expr))
+		{
+			if (te->ressortgroupref != 0)
+				return false;
+			in->raising = bms_add_member(in->raising, te->resno);
+		}
+	return !bms_is_empty(in->raising);
+}
+
+typedef struct Hoist
+{
+	Index		rti;
+	Query	   *s;
+	RangeTblEntry *rte;
+} Hoist;
+
+/* the output of s that is the expression e, added before the junk columns (a new column of the entry) when there is none */
+static AttrNumber
+output_of(Hoist *h, Expr *e, const char *name)
+{
+	int			at = 0;
+	TargetEntry *te;
+
+	foreach_node(TargetEntry, o, h->s->targetList)
+	{
+		if (!o->resjunk && equal(o->expr, e))
+			return o->resno;
+		at += !o->resjunk;
+	}
+	te = makeTargetEntry((Expr *) copyObject(e), at + 1, pstrdup(name), false);
+	h->s->targetList = list_insert_nth(h->s->targetList, at, te);
+	h->rte->eref->colnames = lappend(h->rte->eref->colnames, makeString(te->resname));
+	foreach_node(TargetEntry, o, h->s->targetList)
+		o->resno = foreach_current_index(o) + 1;
+	return te->resno;
+}
+
+/* an expression of the sub-select in the terms of the query: its own columns as outputs of its entry, the columns a level up as the query's */
+static Node *
+hoist_mutator(Node *n, Hoist *h)
+{
+	if (n == NULL)
+		return NULL;
+	if (IsA(n, Var) && ((Var *) n)->varlevelsup == 0)
+	{
+		Var		   *v = (Var *) n;
+
+		return (Node *) makeVar(h->rti, output_of(h, (Expr *) v, "sift_col"), v->vartype, v->vartypmod, v->varcollid, 0);
+	}
+	if (IsA(n, Var))
+	{
+		Var		   *v = copyObject((Var *) n);
+
+		v->varlevelsup--;
+		return (Node *) v;
+	}
+	return expression_tree_mutator(n, hoist_mutator, h);
+}
+
+/* the outputs of the sub-select that may raise become the columns they read and whether it gave a row: the query computes them for the rows it joins */
+static void
+hoist_cols(Index rti, RangeTblEntry *rte, Inline *in)
+{
+	Hoist		h = {rti, rte->subquery, rte};
+	const int	n = list_length(h.s->targetList);
+	Node	   *found = (Node *) makeVar(rti, output_of(&h, (Expr *) makeBoolConst(true, false), "sift_found"), BOOLOID, -1, InvalidOid, 0);
+	TargetEntry *te;
+
+	for (int c = 1; c <= n; c++)
+		in->cols = lappend(in->cols, NULL);
+	for (int c = -1; (c = bms_next_member(in->raising, c)) >= 0;)
+	{
+		te = list_nth_node(TargetEntry, h.s->targetList, c - 1);
+		lfirst(list_nth_cell(in->cols, c - 1)) = when(found, hoist_mutator((Node *) te->expr, &h));
+		te->expr = (Expr *) makeNullConst(exprType((Node *) te->expr), exprTypmod((Node *) te->expr), exprCollation((Node *) te->expr));
+	}
+}
+
+/*
+ * The join at *at of the FROM list of q, or one of the inner joins and left sides below it, whose right side is a one-row sub-select: one without FROM inlined, one with outputs that may
+ * raise with those outputs computed by the query (apply)
+ */
 static bool
 inline_in(Query *q, Node **at, bool apply)
 {
 	JoinExpr   *j = (JoinExpr *) *at;
 	Index		rti;
 	RangeTblEntry *rte;
-	Query	   *s;
 	Inline		in = {0};
-	Node	   *gate;
+	bool		fromless;
 
 	if (!IsA(*at, JoinExpr) || (j->jointype != JOIN_INNER && j->jointype != JOIN_LEFT))
 		return false;
 	if (inline_in(q, &j->larg, apply) || (j->jointype == JOIN_INNER && inline_in(q, &j->rarg, apply)))
 		return true;
-	if (!IsA(j->rarg, RangeTblRef) || !fromless_row(rte = rt_fetch(rti = ((RangeTblRef *) j->rarg)->rtindex, q->rtable)))
+	if (!IsA(j->rarg, RangeTblRef))
+		return false;
+	rte = rt_fetch(rti = ((RangeTblRef *) j->rarg)->rtindex, q->rtable);
+	in.rti = rti;
+	fromless = fromless_row(rte);
+	if (!fromless && !raising_lookup(rte, &in))
 		return false;
 	if (j->jointype == JOIN_LEFT && j->quals != NULL && !(IsA(j->quals, Const) && !((Const *) j->quals)->constisnull && DatumGetBool(((Const *) j->quals)->constvalue)))
 		return false;
-	s = rte->subquery;
-	gate = s->jointree->quals;
-	in.rti = rti;
-	foreach_node(TargetEntry, te, s->targetList)
-	{
-		Node	   *e = copyObject((Node *) te->expr);
-
-		if (agg_node_may_raise(e))
-			in.raising = bms_add_member(in.raising, te->resno);
-		IncrementVarSublevelsUp(e, -1, 1);
-		if (gate != NULL && j->jointype == JOIN_LEFT)
-		{
-			CaseExpr   *c = makeNode(CaseExpr);
-			CaseWhen   *w = makeNode(CaseWhen);
-
-			w->expr = copyObject((Expr *) gate);
-			IncrementVarSublevelsUp((Node *) w->expr, -1, 1);
-			w->result = (Expr *) e;
-			w->location = -1;
-			c->casetype = exprType(e);
-			c->casecollid = exprCollation(e);
-			c->args = list_make1(w);
-			c->defresult = (Expr *) makeNullConst(c->casetype, exprTypmod(e), c->casecollid);
-			c->location = -1;
-			e = (Node *) c;
-		}
-		in.cols = lappend(in.cols, e);
-	}
+	if (fromless)
+		fromless_cols(rte->subquery, j->jointype, &in);
 	query_tree_walker(q, cols_walker, &in, QTW_IGNORE_JOINALIASES);
 	if (in.whole || (j->rtindex != 0 && is_read(q, j, j->rtindex, NULL)))
 		return false;
@@ -543,23 +655,24 @@ inline_in(Query *q, Node **at, bool apply)
 		return false;
 	if (!apply)
 		return true;
-	if (j->jointype == JOIN_INNER)
+	if (!fromless)
+		hoist_cols(rti, rte, &in);
+	else
 	{
-		List	   *conds = make_ands_implicit((Expr *) q->jointree->quals);
-
-		if (j->quals != NULL)
-			conds = lappend(conds, j->quals);
-		if (gate != NULL)
+		if (j->jointype == JOIN_INNER)
 		{
-			gate = copyObject(gate);
-			IncrementVarSublevelsUp(gate, -1, 1);
-			conds = lappend(conds, gate);
+			List	   *conds = make_ands_implicit((Expr *) q->jointree->quals);
+
+			if (j->quals != NULL)
+				conds = lappend(conds, j->quals);
+			if (rte->subquery->jointree->quals != NULL)
+				conds = lappend(conds, lifted(rte->subquery->jointree->quals));
+			q->jointree->quals = conds == NIL ? NULL : (Node *) make_ands_explicit(conds);
 		}
-		q->jointree->quals = conds == NIL ? NULL : (Node *) make_ands_explicit(conds);
+		if (j->rtindex != 0)
+			rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_INNER;
+		*at = j->larg;
 	}
-	if (j->rtindex != 0)
-		rt_fetch(j->rtindex, q->rtable)->jointype = JOIN_INNER;
-	*at = j->larg;
 	*q = *(Query *) query_tree_mutator(q, inline_mutator, &in, 0);
 	return true;
 }
