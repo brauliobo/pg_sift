@@ -8,6 +8,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "utils/lsyscache.h"
 
 #include "agg/plan/int.h"
 #include "agg/filter/pg.h"
@@ -64,6 +65,40 @@ bool_compare(Expr *c)
 	return make_opclause(BooleanEqualOperator, BOOLOID, false, arg, (Expr *) makeBoolConst(!negated, false), InvalidOid, InvalidOid);
 }
 
+/*
+ * IS TRUE, IS FALSE, IS NOT TRUE or IS NOT FALSE of `x op c`, x a column of the table, c a constant that is not NULL and op strict with a negator: the comparison, its negation, or either
+ * with the rows where x is NULL, which the comparison makes NULL (c: any other clause)
+ */
+static Expr *
+truth_compare(Expr *c)
+{
+	const BooleanTest *bt = IsA(c, BooleanTest) ? (const BooleanTest *) c : NULL;
+	OpExpr	   *op = bt != NULL && IsA(bt->arg, OpExpr) ? (OpExpr *) bt->arg : NULL;
+	const bool	has = bt != NULL && (bt->booltesttype == IS_TRUE || bt->booltesttype == IS_NOT_FALSE);
+	const Oid	negator = op == NULL || has ? InvalidOid : get_negator(op->opno);
+	Expr	   *x,
+			   *k,
+			   *test;
+	NullTest   *null;
+
+	if (op == NULL || list_length(op->args) != 2 || !op_strict(op->opno) || (!has && !OidIsValid(negator)))
+		return c;
+	x = IsA(linitial(op->args), Const) ? lsecond(op->args) : linitial(op->args);
+	k = x == linitial(op->args) ? lsecond(op->args) : linitial(op->args);
+	if (!IsA(x, Var) || ((Var *) x)->varattno <= 0 || sift_v6_vatt_is_json(((Var *) x)->varattno) || !IsA(k, Const) || ((Const *) k)->constisnull)
+		return c;
+	test = has ? (Expr *) op : make_opclause(negator, BOOLOID, false, linitial(op->args), lsecond(op->args), InvalidOid, op->inputcollid);
+	if (!has)
+		((OpExpr *) test)->opfuncid = get_opcode(negator);
+	if (bt->booltesttype == IS_TRUE || bt->booltesttype == IS_FALSE)
+		return test;
+	null = makeNode(NullTest);
+	null->arg = x;
+	null->nulltesttype = IS_NULL;
+	null->location = -1;
+	return makeBoolExpr(OR_EXPR, list_make2(test, null), -1);
+}
+
 static Expr *conjunct_qual(V6Plan *p, Expr *conjunct);
 
 /* an OR of conjuncts the scan decides: the OR of their quals */
@@ -87,7 +122,7 @@ or_qual(V6Plan *p, const BoolExpr *or)
 static Expr *
 conjunct_qual(V6Plan *p, Expr *conjunct)
 {
-	Expr	   *c = bool_compare(conjunct);
+	Expr	   *c = truth_compare(bool_compare(conjunct));
 	Expr	   *q = sift_v6_unnest_test_qual(p, (Node *) c);
 
 	if (q != NULL)

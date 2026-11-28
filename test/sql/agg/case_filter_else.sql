@@ -2,7 +2,7 @@
 -- for min and max (integers, float4, float8) with ELSE k, avg (integers and numerics, float4 and float8 with 0): the ELSE values are values, so a group where p never holds is 0, not NULL, and the zeros count in an average. Each statement runs
 -- with the scan and without it and the rows must be the same text (scale of a numeric and sign of a zero included).
 -- The shapes where the two forms could differ: groups where p never holds, always holds, or holds only for NULL values; NULL conditions; negative values (min and max against the zero); an empty
--- input; a filter of the aggregate; the types that stay as written (a numeric for min and max, a float for avg with an ELSE that is not a zero), DISTINCT and a value that raises.
+-- input; a filter of the aggregate, and a filter that is IS [NOT] TRUE or FALSE of a comparison (the rows of a NULL condition); the types that stay as written (a numeric for min and max, a float for avg with an ELSE that is not a zero), DISTINCT and a value that raises.
 CREATE EXTENSION pg_sift;
 CREATE EXTENSION pg_sift_helpers;
 SET client_min_messages = warning;
@@ -89,7 +89,11 @@ INSERT INTO shapes VALUES
   (57, 'avg else 0.0 numeric',      $q$SELECT k, avg(CASE WHEN p = 'c' THEN n ELSE 0.0 END) a, avg(CASE WHEN p = 'c' THEN i ELSE 0.0 END) b FROM cfe GROUP BY k$q$),
   (58, 'avg else 0.5 numeric empty and filter', $q$SELECT avg(CASE WHEN p = 'a' THEN n ELSE 0.5 END) a FROM cfe WHERE k > 100 UNION ALL SELECT avg(CASE WHEN p = 'a' THEN n ELSE 0.5 END) FILTER (WHERE id % 3 <> 0) FROM cfe GROUP BY k$q$),
   (59, 'avg else 1 float4 stays',   $q$SELECT k, avg(CASE WHEN p = 'a' THEN f4 ELSE 1 END) FROM cfe GROUP BY k$q$),
-  (60, 'avg else k of 22 decimals',  $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 0.5000000000000000000000 END) FROM cfe GROUP BY k$q$);
+  (60, 'avg else k of 22 decimals',  $q$SELECT k, avg(CASE WHEN p = 'a' THEN n ELSE 0.5000000000000000000000 END) FROM cfe GROUP BY k$q$),
+  (61, 'filter is not true',        $q$SELECT k, count(*) FILTER (WHERE (p = 'a') IS NOT TRUE), sum(i) FILTER (WHERE (x > 0) IS NOT TRUE) FROM cfe GROUP BY k$q$),
+  (62, 'filter is false',           $q$SELECT k, count(*) FILTER (WHERE (p = 'a') IS FALSE), sum(i) FILTER (WHERE (0 < x) IS FALSE) FROM cfe GROUP BY k$q$),
+  (63, 'filter is not false',       $q$SELECT k, count(*) FILTER (WHERE (p = 'b') IS NOT FALSE), sum(b) FILTER (WHERE (n >= 1) IS NOT FALSE) FROM cfe GROUP BY k$q$),
+  (64, 'filter is true',            $q$SELECT k, count(*) FILTER (WHERE (p = 'c') IS TRUE), avg(i) FILTER (WHERE (x <= 1) IS TRUE) FROM cfe GROUP BY k$q$);
 
 -- rows: the text of the rows of the scan equals that of the normal plan (scale and sign of zero included)
 SELECT n, label, sift_helpers.agg_check_outcome(q) AS outcome FROM shapes ORDER BY n;
