@@ -113,6 +113,7 @@ In testing builds (`SIFT_TESTING=1`), `SET sift.test_limits = 'id=value,...'` lo
 | the dictionary of the zstd compression of a part | `16,384 (16 KiB) bytes` | a larger dictionary is not written; the part is compressed without it | — | `col/compress.h` `SIFT_ZSTD_DICT_MAX_BYTES` |
 | dimensions of the cube of a sift_col index of format major 2 | `4 dimensions` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/f2/preagg/v2.h` `SIFT_PREAGG_MAX_DIMS` |
 | measures of the cube of a sift_col index of format major 2 | `8 measures` | option rejected at CREATE or ALTER INDEX | `cube option` | `col/f2/preagg/v2.h` `SIFT_PREAGG_MAX_MEAS` |
+| leaves of the elements of lists a rollup of the option preagg of format major 2 names, dimensions or measures | `16 leaves` | option rejected at CREATE or ALTER INDEX | `rollup option` | `col/f2/preagg/v2.h` `SIFT_PREAGG_MAX_RLEAVES` |
 
 ## Search index, storage and queries (`src/core`, `src/bm25`)
 

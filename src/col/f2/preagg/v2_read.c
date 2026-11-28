@@ -171,7 +171,7 @@ copy_cells(Relation rel, const SiftPart *part, const char *sec, uint64 slen, con
  * its granules so far, as if it had been written whole: a granule a cube leaves out is marked in dir (SIFT_GDESC_PREAGG_SKIP)
  */
 void *
-sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, SiftGranuleDesc *dir, bool declared, uint64 *len)
+sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, SiftGranuleDesc *dir, const SiftPreaggDecl *decl, uint64 *len)
 {
 	SiftPreaggSecHdr h0 = {0};
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
@@ -237,7 +237,7 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, SiftGranuleDesc *
 				if (pf[g] == pf[g + 1])
 					continue;
 				bytes = copy_cells(rel, src[i], sec, slen, &cd[k], pf, g, &cells[k], &dist);
-				if (i > 0 && !(declared && !elements) && !sift_preagg_v2_fits(&budget, elements, bytes))
+				if (i > 0 && !sift_preagg_cube_declared(decl, &cd[k]) && !sift_preagg_v2_fits(&budget, elements, bytes))
 				{
 					cells[k].len = at;
 					dist.len = dat;

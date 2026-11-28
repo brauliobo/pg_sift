@@ -360,6 +360,8 @@
 	  "dimensions of the cube of a sift_col index of format major 2", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
 	X(preagg_meas, "SIFT_PREAGG_MAX_MEAS", "col/f2/preagg/v2.h", 8, "measures", \
 	  "measures of the cube of a sift_col index of format major 2", "option rejected at CREATE or ALTER INDEX", "cube option", 0) \
+	X(preagg_rleaves, "SIFT_PREAGG_MAX_RLEAVES", "col/f2/preagg/v2.h", 16, "leaves", \
+	  "leaves of the elements of lists a rollup of the option preagg of format major 2 names, dimensions or measures", "option rejected at CREATE or ALTER INDEX", "rollup option", 0) \
 	X(first_cols, "SIFT_V6_FIRST_MAX_COLS", "agg/first/first.h", SIFT_V6_FIRST_MAX_COLS, "columns", \
 	  "ORDER BY columns of a DISTINCT ON that SiftAggV6First keeps the first row of each group by (the DISTINCT ON columns are among them)", \
 	  "the normal plan sorts the rows and keeps the first of each group", "-", 0) \

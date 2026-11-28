@@ -106,7 +106,7 @@ sift_compact_join_parts(Relation rel, uint64 part_id, const SiftPartDesc **at, i
 			}
 	}
 	*out = sift_part_write_joined(rel, (uint32) part_id, res->new_gen, Min(level + 1, SIFT_MAX_PART_LEVEL), src, sorted, n,
-								  spec->preagg_decl != NULL && spec->preagg_decl->ndims > 0, kll, &ngranules, &writer_bytes);
+								  spec->preagg_decl, kll, &ngranules, &writer_bytes);
 	for (int i = 0; i < n; i++)
 	{
 		res->rows_in += at[i]->nrows;

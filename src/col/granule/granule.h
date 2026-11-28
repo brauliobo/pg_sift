@@ -653,11 +653,11 @@ extern SiftGranuleDesc *sift_part_granule_dir(Relation rel, const SiftPart *part
 /*
  * Parts that can be joined as they are: the same schema and dictionaries, rows frozen, no pre-aggregate. sift_part_write_joined writes one part whose granules are those of the
  * parts in the order given (their keys ascend from one to the next), copied with their zones, address index, time strides and exceptions, and their pre-aggregates within the budget of one
- * part (preagg_declared: the cubes of the rows are declared and have none); *granules is how many. The granules are read from the parts and written
+ * part (preagg_decl: what the option preagg declares, whose cubes have none; NULL: nothing); *granules is how many. The granules are read from the parts and written
  * one page at a time, so what the writer holds is the metadata of the sections and one granule, *writer_bytes of them.
  */
 extern bool sift_parts_joinable(Relation rel, SiftPart *const *src, int n);
-extern SiftPartDesc sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, bool preagg_declared,
+extern SiftPartDesc sift_part_write_joined(Relation rel, uint32 part_id, uint64 part_gen, uint16 level, SiftPart *const *src, const SiftPartDesc *sdesc, int n, const struct SiftPreaggDecl *preagg_decl,
 										  struct SiftF2KllBuild *kll, uint64 *granules, uint64 *writer_bytes);
 
 /* The inserter transactions of the rows of granule g (xmin, cmin per row; a granule of one transaction and command keeps none in SEC_VERS and is made from its entry), or NULL when the granule is frozen */

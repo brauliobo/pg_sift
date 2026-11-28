@@ -654,7 +654,7 @@ sift_proj_move_part(Relation rel, uint16 proj_id, uint64 proj_gen)
 	if (!sift_parts_joinable(rel, &src, 1))
 		return false;
 	gen = sift_manifest_new_gen(rel, 1);
-	moved = sift_part_write_joined(rel, SIFT_PROJ_PART_ID, gen, d->level, &src, d, 1, false, NULL, &granules, &writer_bytes);
+	moved = sift_part_write_joined(rel, SIFT_PROJ_PART_ID, gen, d->level, &src, d, 1, NULL, NULL, &granules, &writer_bytes);
 	moved_link = *link;
 	moved_link.proj_gen = gen;
 	delta = (SiftProjDelta) {.proj_id = proj_id,.drop_proj_gens = &proj_gen,.ndrop_parts = 1,.add_parts = &moved,.nadd_parts = 1,

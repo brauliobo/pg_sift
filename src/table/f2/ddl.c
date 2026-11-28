@@ -139,7 +139,7 @@ declare_preagg(Relation rel, SiftF2Store *store)
 	if (bad != NULL)
 		ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("option preagg of table \"%s\" is not valid: %s", RelationGetRelationName(rel), bad)));
 	store->spec.preagg = !off;
-	store->spec.preagg_decl = decl->ndims > 0 ? decl : NULL;
+	store->spec.preagg_decl = decl->ndims > 0 || decl->nrdims > 0 ? decl : NULL;
 }
 
 /* The leaves of the columns of rel and of the paths that paths_relid declares for them (the table itself, or the one a rewrite copies from) */

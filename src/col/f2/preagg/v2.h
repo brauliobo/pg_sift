@@ -188,10 +188,14 @@ sift_pag_dist(const SiftPreaggCubeDesc *c, const SiftPreaggGroupHdr *grp, int d)
 
 /* ---- writing ---- */
 
+#define SIFT_PREAGG_MAX_RLEAVES	16	/* the leaves of the elements a rollup declares, dimensions or measures */
+#define SIFT_PAG_DECLARED_GROUPS	4096	/* the most cells a declared cube has in a granule */
+
 /*
  * The cubes the user declared with preagg = 'cube(dimension: measure, ...; dimension ...)': the leaves of the dimensions and the measures (those of every entry together). A part that has a declaration
  * keeps a cube of no dimension, one for each declared dimension it can hold (an integer, or a string it has a dictionary of) and one of them all when their groups fit, each with the declared
- * measures (the numeric columns when none is declared) and no sets of distinct values.
+ * measures (the numeric columns when none is declared) and no sets of distinct values. A rollup(dimension, ...: measure, ...) declares the leaves of the elements of a list the same way: the list
+ * keeps a cube of each of its declared dimensions and one of them all when their groups fit, with its declared measures (its numeric leaves when none is declared).
  */
 typedef struct SiftPreaggDecl
 {
@@ -199,6 +203,10 @@ typedef struct SiftPreaggDecl
 	int			dim[SIFT_PREAGG_MAX_DIMS];
 	int			nmeas;
 	int			meas[SIFT_PREAGG_MAX_MEAS];
+	int			nrdims;
+	int			rdim[SIFT_PREAGG_MAX_RLEAVES];
+	int			nrmeas;
+	int			rmeas[SIFT_PREAGG_MAX_RLEAVES];
 } SiftPreaggDecl;
 
 struct SiftColSchema;
@@ -213,7 +221,7 @@ typedef struct SiftPreaggPlan
 {
 	int			ncubes;
 	int			ncols;			/* of the rows */
-	bool		declared;		/* the cubes of the rows are those of the option preagg: exactly these, with no byte budget */
+	uint32		exempt;			/* bit k: cube k is one the option preagg declared, which takes no byte budget (sift_preagg_cube_declared) */
 	SiftPreaggCubeDesc cube[SIFT_PREAGG_MAX_CUBES];
 } SiftPreaggPlan;
 
@@ -223,7 +231,7 @@ extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
 /*
- * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and the slack more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none.
+ * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and the slack more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes (sift_preagg_cube_declared) have none.
  * A part is granted SIFT_PAG_BUDGET_SLACK; the outputs of a compaction the share of it their live rows are of their partition's, so that a partition rewritten in pieces holds the slack once.
  */
 #define SIFT_PAG_BUDGET_PERCENT	4
@@ -269,8 +277,10 @@ extern void *sift_preagg_v2_assemble(int ncubes, const SiftPreaggCubeDesc *cube,
 /* ---- joining ---- */
 
 struct SiftPart;
-/* The section of the parts joined end to end (dir: the granules of the joined part; declared: its cubes of the rows are those of the option preagg), or NULL when their cubes are not the same */
-extern void *sift_preagg_v2_join(Relation rel, struct SiftPart *const *src, int n, SiftGranuleDesc *dir, bool declared, uint64 *len);
+/* The section of the parts joined end to end (dir: the granules of the joined part; decl: what the option preagg declares, NULL: nothing), or NULL when their cubes are not the same */
+extern void *sift_preagg_v2_join(Relation rel, struct SiftPart *const *src, int n, SiftGranuleDesc *dir, const SiftPreaggDecl *decl, uint64 *len);
+/* The cube is one decl declares (decl NULL: none is): a cube of the rows when the rows are declared, or a cube of the elements of a list whose dimensions the rollup names */
+extern bool sift_preagg_cube_declared(const SiftPreaggDecl *decl, const SiftPreaggCubeDesc *cd);
 
 /* ---- reading ---- */
 

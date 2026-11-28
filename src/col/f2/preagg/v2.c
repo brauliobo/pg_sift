@@ -20,7 +20,6 @@
 #define PAG_AUTO_GROUPS			512		/* the most cells a cube of a granule has: a dimension and its NULL group, or the product of the dimensions of the joint cube */
 #define PAG_AUTO_CELL_BYTES		65536	/* ... and the most bytes of them: the budget of SIFT_PAG_BUDGET_PERCENT would leave the cube out of most granules otherwise */
 #define PAG_SPARSE_PERCENT		2		/* a column that has a value in at most this share of its rows (a soft-delete stamp) is a dimension of whether it has one, whatever the distinct values a part samples */
-#define PAG_EXPLICIT_GROUPS		4096
 #define PAG_SAMPLE_ROWS			16384
 
 /* ---- which cubes ---- */
@@ -275,12 +274,11 @@ plan_declared(const SiftRows *rows, const SiftDictEnc *const *dicts, ColInfo *ci
 	for (int c = 0; c < nc && dc->nmeas > 0; c++)
 		ci[c].numeric &= listed(dc->meas, dc->nmeas, c);
 	nd = declared_dims(dc, ci, nc, dims);
-	plan->declared = true;
-	add_cube(plan, ci, nc, dims, 0, NULL, 0, PAG_EXPLICIT_GROUPS);
+	add_cube(plan, ci, nc, dims, 0, NULL, 0, SIFT_PAG_DECLARED_GROUPS);
 	for (int i = 0; i < nd; i++)
-		add_cube(plan, ci, nc, &dims[i], 1, NULL, 0, PAG_EXPLICIT_GROUPS);
-	if (nd > 1 && observed_groups(rows, dicts, ci, dims, nd, PAG_EXPLICIT_GROUPS) <= PAG_EXPLICIT_GROUPS)
-		add_cube(plan, ci, nc, dims, nd, NULL, 0, PAG_EXPLICIT_GROUPS);
+		add_cube(plan, ci, nc, &dims[i], 1, NULL, 0, SIFT_PAG_DECLARED_GROUPS);
+	if (nd > 1 && observed_groups(rows, dicts, ci, dims, nd, SIFT_PAG_DECLARED_GROUPS) <= SIFT_PAG_DECLARED_GROUPS)
+		add_cube(plan, ci, nc, dims, nd, NULL, 0, SIFT_PAG_DECLARED_GROUPS);
 }
 
 static bool
@@ -318,6 +316,8 @@ plan_rows(const SiftRows *rows, const SiftDictEnc *const *dicts, SiftPreaggPlan 
 			add_cube(plan, ci, nc, dims, njoint, dist, 0, groups);
 	}
 	sift_pag_add_elem_cubes(rows, dicts, plan);
+	for (int k = 0; k < plan->ncubes; k++)
+		plan->exempt |= (uint32) sift_preagg_cube_declared(rows->preagg_decl, &plan->cube[k]) << k;
 	pfree(ci);
 	pfree(dims);
 	pfree(dist);
@@ -838,7 +838,7 @@ sift_preagg_v2_add_granule(SiftPreaggBuild *b, uint32 g, const SiftColIn *cols, 
 
 		initStringInfo(&cells);
 		initStringInfo(&dist);
-		ok = cube_granule(&b->plan.cube[k], cols, b->plan.ncols, nrows, dicts, &cells, &dist, &ncells, &cflags) && ((b->plan.declared && !elements) || sift_preagg_v2_fits(b->budget, elements, cells.len + dist.len));
+		ok = cube_granule(&b->plan.cube[k], cols, b->plan.ncols, nrows, dicts, &cells, &dist, &ncells, &cflags) && (((b->plan.exempt >> k) & 1) || sift_preagg_v2_fits(b->budget, elements, cells.len + dist.len));
 		b->first[k][g] = b->ncells[k];
 		if (ok)
 		{

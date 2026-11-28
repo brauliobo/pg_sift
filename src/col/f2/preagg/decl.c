@@ -5,8 +5,9 @@
  *   clause := cube( entry { ';' entry } ) | rollup( ... ) | calendar( ... )
  *   entry  := dimension [ ':' measure { ',' measure } ]   (a bare dimension may be followed by ',' and the next entry)
  *
- * Names are those of the columns of the relation, double quoted when they need it. A rollup and a calendar name leaves of array elements and date buckets that a part of Format 2.0 keeps no cells of: they are
- * read for their syntax and left at that.
+ * Names are those of the columns of the relation, double quoted when they need it. A rollup names leaves of the elements of a list (items[].kind), its entries `dimension, ... [: measure, ...]`
+ * separated by ';': the cubes of the elements of the lists it names are the declared ones. A calendar names date buckets that a part of Format 2.0 keeps no cells of: it is read for its syntax
+ * and left at that.
  */
 #include "postgres.h"
 
@@ -103,6 +104,20 @@ find_leaf(const SiftColSchema *s, const char *name)
 	return -1;
 }
 
+/* The leaf of an element of a list whose path is this name; -1: none */
+static int
+find_elem_leaf(const SiftColSchema *s, const char *name)
+{
+	for (int i = 0; i < s->ncols; i++)
+	{
+		const SiftColDef *d = &s->cols[i];
+
+		if (d->parent >= 0 && d->lane == 0 && d->kind == SIFT_COLK_SCALAR && d->path != NULL && strcmp(d->path, name) == 0)
+			return i;
+	}
+	return -1;
+}
+
 static bool
 listed(const int *v, int n, int leaf)
 {
@@ -112,9 +127,9 @@ listed(const int *v, int n, int leaf)
 	return false;
 }
 
-/* A column of an entry: what its leaf is added to (the dimensions or the measures); NULL, or why not */
+/* A column of an entry: what its leaf (of the rows, or of the elements of a list) is added to (the dimensions or the measures); NULL, or why not */
 static const char *
-add_leaf(const SiftColSchema *s, bool strict, const char *name, int *v, int *n, int max, const char *what)
+add_leaf(const SiftColSchema *s, bool strict, bool elem, const char *name, int *v, int *n, int max, const char *what)
 {
 	int			leaf;
 
@@ -122,7 +137,7 @@ add_leaf(const SiftColSchema *s, bool strict, const char *name, int *v, int *n, 
 		return psprintf("a cube %s name is missing", what);
 	if (s == NULL)
 		return NULL;
-	leaf = find_leaf(s, name);
+	leaf = elem ? find_elem_leaf(s, name) : find_leaf(s, name);
 	if (leaf < 0)
 		return strict ? psprintf("cube %s \"%s\" is not a column of the relation", what, name) : NULL;
 	if (listed(v, *n, leaf))
@@ -145,19 +160,45 @@ cube_clause(Cur *c, const SiftColSchema *s, bool strict, SiftPreaggDecl *decl)
 		char	   *dim = take_name(c, &bad);
 		bool		measures = false;
 
-		if (bad != NULL || (bad = add_leaf(s, strict, dim, decl->dim, &decl->ndims, SIFT_PREAGG_MAX_DIMS, "dimension")) != NULL)
+		if (bad != NULL || (bad = add_leaf(s, strict, false, dim, decl->dim, &decl->ndims, SIFT_PREAGG_MAX_DIMS, "dimension")) != NULL)
 			return bad;
 		for (bool again = eat(c, ':'); again; again = eat(c, ','))
 		{
 			char	   *m = take_name(c, &bad);
 
 			measures = true;
-			if (bad != NULL || (bad = add_leaf(s, strict, m, decl->meas, &decl->nmeas, SIFT_PREAGG_MAX_MEAS, "measure")) != NULL)
+			if (bad != NULL || (bad = add_leaf(s, strict, false, m, decl->meas, &decl->nmeas, SIFT_PREAGG_MAX_MEAS, "measure")) != NULL)
 				return bad;
 		}
 		more = eat(c, ';') || (!measures && eat(c, ','));
 	} while (more);
 	return eat(c, ')') ? NULL : "expected ) at the end of cube(...)";
+}
+
+/* "rollup(" was read: the entries up to ")", each dimensions of the elements of one list and their measures; a name that is no leaf of the elements of a list declares nothing */
+static const char *
+rollup_clause(Cur *c, const SiftColSchema *s, SiftPreaggDecl *decl)
+{
+	const char *bad = NULL;
+
+	do
+	{
+		do
+		{
+			char	   *dim = take_name(c, &bad);
+
+			if (bad != NULL || (bad = add_leaf(s, false, true, dim, decl->rdim, &decl->nrdims, SIFT_PREAGG_MAX_RLEAVES, "dimension")) != NULL)
+				return bad;
+		} while (eat(c, ','));
+		for (bool again = eat(c, ':'); again; again = eat(c, ','))
+		{
+			char	   *m = take_name(c, &bad);
+
+			if (bad != NULL || (bad = add_leaf(s, false, true, m, decl->rmeas, &decl->nrmeas, SIFT_PREAGG_MAX_RLEAVES, "measure")) != NULL)
+				return bad;
+		}
+	} while (eat(c, ';'));
+	return eat(c, ')') ? NULL : "expected ) at the end of rollup(...)";
 }
 
 /* A clause whose cells a part of Format 2.0 does not keep: up to its closing parenthesis, the names in double quotes left alone */
@@ -201,7 +242,7 @@ sift_preagg_decl_parse(const char *opt, const SiftColSchema *schema, bool strict
 		if (word(&c, "cube"))
 			bad = eat(&c, '(') ? cube_clause(&c, schema, strict, decl) : "expected ( after cube";
 		else if (word(&c, "rollup"))
-			bad = skip_clause(&c, "rollup");
+			bad = eat(&c, '(') ? rollup_clause(&c, schema, decl) : "expected ( after rollup";
 		else if (word(&c, "calendar"))
 			bad = skip_clause(&c, "calendar");
 		else
@@ -213,4 +254,19 @@ sift_preagg_decl_parse(const char *opt, const SiftColSchema *schema, bool strict
 		skip_ws(&c);
 	} while (*c.p != '\0');
 	return NULL;
+}
+
+bool
+sift_preagg_cube_declared(const SiftPreaggDecl *decl, const SiftPreaggCubeDesc *cd)
+{
+	const uint8 kind = cd->flags & SIFT_PCUBE_KIND;
+
+	if (decl == NULL || (kind != 0 && kind != SIFT_PCUBE_KIND))
+		return false;
+	if (kind == 0)
+		return decl->ndims > 0;
+	for (int d = 0; d < cd->ndims; d++)
+		if (!listed(decl->rdim, decl->nrdims, cd->dim_leaf[d]))
+			return false;
+	return cd->ndims > 0;
 }

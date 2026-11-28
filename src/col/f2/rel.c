@@ -137,7 +137,7 @@ sift_f2_preagg_decl(Relation index, const SiftColSchema *schema, bool *on)
 	if (bad != NULL)
 		sift_col_option_error("preagg", sift_col_options_preagg(index), bad);
 	*on = !off;
-	return decl->ndims > 0 ? decl : NULL;
+	return decl->ndims > 0 || decl->nrdims > 0 ? decl : NULL;
 }
 
 /* The options the declarations of the index name, read before its state: what they look up can take a lock that reloads the entry, which frees the cached state and the options (not the leaves) */
