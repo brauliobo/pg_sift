@@ -23,15 +23,20 @@ EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
 
--- units of the SiftAgg node, those it answered from the pre-aggregates, and the groups of units among them (NULL: the plan has no SiftAgg, or the query fails)
+-- units of the SiftAggV6 node (read, pruned or answered), those it answered from the pre-aggregates, and the groups of units among them (NULL: the plan has no SiftAggV6,
+-- or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT sup int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		sup := coalesce(substring(l from '(\d+) superunits')::int, sup);
+		IF l ~ 'SiftAggV6' AND units IS NULL THEN
+			units := 0; pre := 0; sup := 0;
+		ELSIF l ~ '^\s*Granules: ' THEN
+			units := units + (SELECT sum(m[1]::int) FROM regexp_matches(l, '(?:scanned|pruned_\w+|preagg)=(\d+)', 'g') m);
+			pre := pre + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			sup := sup + coalesce(substring(l from ' preagg_groups=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; sup := NULL;

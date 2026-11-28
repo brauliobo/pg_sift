@@ -27,10 +27,14 @@ DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		net := coalesce(substring(l from '(\d+) net of exceptions')::int, net);
-		scan := coalesce(substring(l from '(\d+) with exceptions scanned')::int, scan);
+		IF l ~ 'SiftAggV6' AND units IS NULL THEN
+			units := 0; pre := 0; net := 0; scan := 0;
+		ELSIF l ~ '^\s*Granules: ' THEN
+			units := units + (SELECT sum(m[1]::int) FROM regexp_matches(l, '(?:scanned|pruned_\w+|preagg)=(\d+)', 'g') m);
+			pre := pre + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			net := net + coalesce(substring(l from ' preagg_net=(\d+)')::int, 0);
+			scan := scan + coalesce(substring(l from ' except_read=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; net := NULL; scan := NULL;

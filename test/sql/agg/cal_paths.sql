@@ -1,8 +1,9 @@
 -- The calendar cells of a date or timestamp column are written beside jsonb paths when calendar_columns names them (not by default there), and a unit whose date has too many days for a histogram answers a range from its cells:
 -- a comparison, an AND or an OR of them is decided cell by cell by the cell's span (inside it passes, outside it does not, a bound that cuts a cell leaves the unit to
--- a scan). Every shape is checked against the plain plan.
+-- a scan). Every shape is checked against the plain plan. The cells are Format 1 storage; a Format 2 index, which has none, answers the same shapes from its granules.
 CREATE EXTENSION pg_sift_test CASCADE;
 CREATE EXTENSION pg_sift_helpers;
+SET sift.test_create_format1 = on;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET max_parallel_maintenance_workers = 0;
@@ -54,12 +55,14 @@ BEGIN
 END $$;
 SELECT count(*) AS shapes, count(*) FILTER (WHERE ca_rows(q, true) = ca_rows(q, false)) AS same FROM ca_q;
 
--- the cells answer units the histogram of d cannot: a range aligned to months, an OR of ranges, and the cells of a timestamp
-SELECT q.n, u.units, u.pre > 0 AS from_cells FROM (VALUES
+-- the cells answer units the histogram of d cannot: a range aligned to months, an OR of ranges, and the cells of a timestamp; every unit the zones do not rule out is
+-- answered from them (units counts the pruned ones too)
+CREATE TABLE ca_cells (n int, q text);
+INSERT INTO ca_cells VALUES
 	(1, 'SELECT count(*) FROM ct WHERE d >= ''2000-01-01'' AND d < ''2004-01-01'''),
 	(2, 'SELECT count(*), sum(v) FROM ct WHERE d >= ''2000-01-01'' AND d < ''2001-01-01'' OR d >= ''2002-01-01'' AND d < ''2003-01-01'''),
-	(3, 'SELECT count(*) FROM ct WHERE ts >= ''2005-01-01'' AND ts < ''2006-01-01'' OR ts >= ''2006-07-01'' AND ts < ''2007-01-01''')
-) q(n, q), LATERAL pa_units(q.q) u ORDER BY q.n;
+	(3, 'SELECT count(*) FROM ct WHERE ts >= ''2005-01-01'' AND ts < ''2006-01-01'' OR ts >= ''2006-07-01'' AND ts < ''2007-01-01''');
+SELECT q.n, u.units, u.pre AS from_cells FROM ca_cells q, LATERAL pa_units(q.q) u ORDER BY q.n;
 
 -- the cells are there beside the paths, and the answers are the plain plan's after a rebuild
 SELECT sift.col_verify('ct_col', true);
@@ -72,9 +75,18 @@ ALTER TABLE ct2 ALTER COLUMN pad SET STORAGE PLAIN;
 VACUUM (FREEZE, ANALYZE) ct2;
 CREATE INDEX ct2_col ON ct2 USING sift_col (id, d, ts, v);
 SELECT count(*) AS shapes, count(*) FILTER (WHERE ca_rows(replace(q, 'FROM ct ', 'FROM ct2 '), true) = ca_rows(replace(q, 'FROM ct ', 'FROM ct2 '), false)) AS same FROM ca_q;
-SELECT u.units, u.pre > 0 AS from_cells FROM pa_units('SELECT count(*) FROM ct2 WHERE d >= ''2000-01-01'' AND d < ''2004-01-01'' OR d >= ''2007-01-01'' AND d < ''2008-01-01''') u;
+SELECT u.units, u.pre AS from_cells FROM pa_units('SELECT count(*) FROM ct2 WHERE d >= ''2000-01-01'' AND d < ''2004-01-01'' OR d >= ''2007-01-01'' AND d < ''2008-01-01''') u;
 
-DROP TABLE ct, ct2, ca_q;
+-- Format 2: no calendar cells, the same answers
+SET sift.test_create_format1 = off;
+CREATE TABLE ct3 AS SELECT id, d, ts, v, pad FROM ct;
+ALTER TABLE ct3 ALTER COLUMN pad SET STORAGE PLAIN;
+VACUUM (FREEZE, ANALYZE) ct3;
+CREATE INDEX ct3_col ON ct3 USING sift_col (id, d, ts, v);
+SELECT count(*) AS shapes, count(*) FILTER (WHERE ca_rows(replace(q, 'FROM ct ', 'FROM ct3 '), true) = ca_rows(replace(q, 'FROM ct ', 'FROM ct3 '), false)) AS same FROM ca_q;
+SELECT q.n, u.units, u.pre AS from_cells FROM ca_cells q, LATERAL pa_units(replace(q.q, 'FROM ct ', 'FROM ct3 ')) u ORDER BY q.n;
+
+DROP TABLE ct, ct2, ct3, ca_q, ca_cells;
 DROP FUNCTION ca_rows(text, bool), pa_units(text);
 DROP EXTENSION pg_sift_helpers;
 DROP EXTENSION pg_sift_test, pg_sift CASCADE;

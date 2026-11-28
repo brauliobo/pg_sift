@@ -21,15 +21,20 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
 	RETURN 'ERROR: ' || SQLERRM;
 END $$;
--- units of the SiftAgg node, those it answered from the pre-aggregates, and the groups of units among them (NULL: the plan has no SiftAgg, or the query fails)
+-- units of the SiftAggV6 node (read, pruned or answered), those it answered from the pre-aggregates, and the groups of units among them (NULL: the plan has no SiftAggV6,
+-- or the query fails)
 CREATE FUNCTION pa_units(q text, OUT units int, OUT pre int, OUT sup int) LANGUAGE plpgsql AS $$
 DECLARE l text;
 BEGIN
 	PERFORM set_config('sift.enable_agg', 'on', true);
 	FOR l IN EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) ' || q LOOP
-		units := coalesce(substring(l from '^\s*Units: (\d+)')::int, units);
-		pre := coalesce(substring(l from '(\d+) from pre-aggregates')::int, pre);
-		sup := coalesce(substring(l from '(\d+) superunits')::int, sup);
+		IF l ~ 'SiftAggV6' AND units IS NULL THEN
+			units := 0; pre := 0; sup := 0;
+		ELSIF l ~ '^\s*Granules: ' THEN
+			units := units + (SELECT sum(m[1]::int) FROM regexp_matches(l, '(?:scanned|pruned_\w+|preagg)=(\d+)', 'g') m);
+			pre := pre + coalesce(substring(l from ' preagg=(\d+)')::int, 0);
+			sup := sup + coalesce(substring(l from ' preagg_groups=(\d+)')::int, 0);
+		END IF;
 	END LOOP;
 EXCEPTION WHEN OTHERS THEN
 	units := NULL; pre := NULL; sup := NULL;
@@ -144,32 +149,32 @@ SELECT * FROM pa_check('su');
   2 | by text key         | all  | yes | t
   3 | whole               | all  | yes | t
   4 | whole, int8 sum     | all  | yes | t
-  5 | min and max by kind | -    | -   | t
-  6 | float: units        | -    | -   | t
+  5 | min and max by kind | none | no  | t
+  6 | float: units        | none | no  | t
   7 | range cuts groups   | some | yes | t
   8 | range on a date     | some | yes | t
   9 | range, no key       | some | yes | t
- 10 | keys in list        | -    | -   | t
+ 10 | keys in list        | all  | yes | t
  11 | test of dim, no key | all  | yes | t
  12 | NULL key group      | all  | yes | t
  13 | FILTER on the dim   | all  | yes | t
- 14 | other test: scan    | none | -   | t
+ 14 | other test: scan    | none | no  | t
  15 | having, limit       | all  | yes | t
- 16 | two keys: units     | -    | -   | t
- 17 | grouping sets       | -    | -   | t
+ 16 | two keys: units     | none | no  | t
+ 17 | grouping sets       | none | no  | t
  18 | only NULLs          | all  | yes | t
- 19 | no rows             | none | -   | t
- 20 | expression: scan    | -    | -   | t
+ 19 | no rows             | none | no  | t
+ 20 | expression: scan    | none | no  | t
 (20 rows)
 
 SELECT 'su_off' AS tbl, * FROM pa_sum('su_off') UNION ALL SELECT 'su_two', * FROM pa_sum('su_two') UNION ALL SELECT 'su_big', * FROM pa_sum('su_big')
 UNION ALL SELECT 'su_old', * FROM pa_sum('su_old') ORDER BY 1;
   tbl   | queries | differ | with_super 
 --------+---------+--------+------------
- su_big |      20 |      0 |          9
+ su_big |      20 |      0 |         10
  su_off |      20 |      0 |          0
  su_old |      20 |      0 |          0
- su_two |      20 |      0 |         12
+ su_two |      20 |      0 |         13
 (4 rows)
 
 -- a count(*) of one text test whose dictionary holds no row counts (count_columns is off for few strings) is answered by the groups of units too
@@ -191,22 +196,22 @@ SELECT * FROM pa_check('su');
   2 | by text key         | some | yes | t
   3 | whole               | some | yes | t
   4 | whole, int8 sum     | some | yes | t
-  5 | min and max by kind | -    | -   | t
-  6 | float: units        | -    | -   | t
+  5 | min and max by kind | none | no  | t
+  6 | float: units        | none | no  | t
   7 | range cuts groups   | some | yes | t
   8 | range on a date     | some | yes | t
   9 | range, no key       | some | yes | t
- 10 | keys in list        | -    | -   | t
+ 10 | keys in list        | some | yes | t
  11 | test of dim, no key | some | yes | t
  12 | NULL key group      | some | yes | t
  13 | FILTER on the dim   | some | yes | t
- 14 | other test: scan    | none | -   | t
+ 14 | other test: scan    | none | no  | t
  15 | having, limit       | some | yes | t
- 16 | two keys: units     | -    | -   | t
- 17 | grouping sets       | -    | -   | t
+ 16 | two keys: units     | none | no  | t
+ 17 | grouping sets       | none | no  | t
  18 | only NULLs          | some | yes | t
- 19 | no rows             | none | -   | t
- 20 | expression: scan    | -    | -   | t
+ 19 | no rows             | none | no  | t
+ 20 | expression: scan    | none | no  | t
 (20 rows)
 
 -- 3. after VACUUM, and the write buffer promoted into units of their own
@@ -221,7 +226,7 @@ CALL pa_settle();
 SELECT * FROM pa_sum('su');
  queries | differ | with_super 
 ---------+--------+------------
-      20 |      0 |         12
+      20 |      0 |         13
 (1 row)
 
 SELECT sift.col_verify('su_col', true);
@@ -246,22 +251,22 @@ SELECT * FROM pa_check('su');
   2 | by text key         | some | yes | t
   3 | whole               | some | yes | t
   4 | whole, int8 sum     | some | yes | t
-  5 | min and max by kind | -    | -   | t
-  6 | float: units        | -    | -   | t
+  5 | min and max by kind | none | no  | t
+  6 | float: units        | none | no  | t
   7 | range cuts groups   | some | yes | t
   8 | range on a date     | some | yes | t
   9 | range, no key       | some | yes | t
- 10 | keys in list        | -    | -   | t
+ 10 | keys in list        | some | yes | t
  11 | test of dim, no key | some | yes | t
  12 | NULL key group      | some | yes | t
  13 | FILTER on the dim   | some | yes | t
- 14 | other test: scan    | none | -   | t
+ 14 | other test: scan    | none | no  | t
  15 | having, limit       | some | yes | t
- 16 | two keys: units     | -    | -   | t
- 17 | grouping sets       | -    | -   | t
+ 16 | two keys: units     | none | no  | t
+ 17 | grouping sets       | none | no  | t
  18 | only NULLs          | some | yes | t
- 19 | no rows             | none | -   | t
- 20 | expression: scan    | -    | -   | t
+ 19 | no rows             | none | no  | t
+ 20 | expression: scan    | none | no  | t
 (20 rows)
 
 SELECT sift.col_verify('su_col', true);
@@ -290,7 +295,7 @@ SELECT array_agg(DISTINCT format ORDER BY format) AS minors FROM sift.col_segmen
 SELECT * FROM pa_sum('su_off');
  queries | differ | with_super 
 ---------+--------+------------
-      20 |      0 |          9
+      20 |      0 |         10
 (1 row)
 
 SELECT sift.col_verify('su_off_col', true);
