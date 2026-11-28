@@ -589,7 +589,7 @@ par_written(Relation rel, uint64 part_id, const CompactIn *in, int ngens, const 
  */
 static bool
 write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const SiftPartSpec *spec, const SiftCompactCut *cut, bool bounds_hold, bool join_only, bool slice, SiftXidHorizonCache *hc, void *fold,
-			  SiftCompactResult *res, SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
+			  uint64 slack, SiftCompactResult *res, SiftExtent **rel_ext, int *nrel, SiftMemTracker *mem, SiftPartDesc **out, int *nout)
 {
 	const SiftPartDesc **at = palloc(Max(ngens, 1) * sizeof(SiftPartDesc *));
 	SiftDictMerge *dm;
@@ -641,7 +641,7 @@ write_outputs(Relation rel, uint64 part_id, CompactIn *in, int ngens, const Sift
 			dominant = i;
 	if (dominant >= 0)
 		adopt = sift_part_dicts(rel, dominant_part = sift_compact_open_input(rel, at[dominant], (uint32) part_id, &adopt_cx));
-	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,.cut = cut,.bounds_hold = bounds_hold,.horizon = hc->horizon,.folding = folds_any(fold, at, ngens),.open = {-1, -1},
+	sink = (Sink) {.rel = rel,.part_id = (uint32) part_id,.level = level,.spec = &mspec,.dm = dm,.adopt = adopt,.mem = mem,.flush_bytes = mem->budget / SIFT_COMPACT_FLUSH_SHARE,.split = split,.cut = cut,.bounds_hold = bounds_hold,.horizon = hc->horizon,.folding = folds_any(fold, at, ngens),.open = {-1, -1},.preagg = {{.budget.slack = slack}, {.budget.slack = slack}},
 		.res = res,.cx = CurrentMemoryContext};
 	sink.rb[0] = sift_rowbuf_new(&mspec);
 	sink.rb[1] = split ? sift_rowbuf_new(&mspec) : NULL;
@@ -697,7 +697,7 @@ sift_compact_write_slice(Relation rel, uint64 part_id, const SiftPartSpec *spec,
 		ci[i].g_lo = lo[i];
 		ci[i].g_hi = hi[i];
 	}
-	read = write_outputs(rel, part_id, ci, nin, spec, cut, bounds_hold, false, true, &hc, NULL, res, &rel_ext, &nrel, &mem, &written, nout);
+	read = write_outputs(rel, part_id, ci, nin, spec, cut, bounds_hold, false, true, &hc, NULL, SIFT_PAG_BUDGET_SLACK, res, &rel_ext, &nrel, &mem, &written, nout);
 	if (read && *nout > out_cap)
 	{
 		sift_compact_release_outputs(rel, part_id, written, *nout);
@@ -880,7 +880,7 @@ compact_online(Relation rel, uint64 part_id, const uint8 *key_lo, const uint64 *
 	parts = sift_manifest_read_parts(rel, &mr.entries[0], &nparts);
 	in = read_inputs(rel, part_id, parts, nparts, gens, ngens);
 	fold = sift_compact_fold != NULL ? sift_compact_fold->open(rel, &mr.entries[0], parts, nparts, gens, ngens, horizon) : NULL;
-	if (!write_outputs(rel, part_id, in, ngens, spec, cut, bounds_hold, join_only, false, &hc, fold, res, &rel_ext, &nrel, mem, &out, &nout))
+	if (!write_outputs(rel, part_id, in, ngens, spec, cut, bounds_hold, join_only, false, &hc, fold, sift_compact_preagg_slack(parts, nparts, gens, ngens), res, &rel_ext, &nrel, mem, &out, &nout))
 	{
 		UnlockPage(rel, SIFT_COMPACT_LOCK_BLKNO(part_id), ExclusiveLock);
 		return false;

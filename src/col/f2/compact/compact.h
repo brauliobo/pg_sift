@@ -118,6 +118,9 @@ extern void sift_compact_release_part(const SiftPart *part, SiftExtent **rel_ext
 extern void sift_compact_release_outputs(Relation rel, uint64 part_id, const SiftPartDesc *out, int nout);
 extern void sift_compact_release_outputs_dv(Relation rel, const SiftPartDesc *out);
 
+/* The slack of the cubes of the outputs of the parts gens: the share of SIFT_PAG_BUDGET_SLACK their live rows are of the partition's (col/f2/preagg/v2.h) */
+extern uint64 sift_compact_preagg_slack(const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens);
+
 /*
  * The parts at[0 .. n) as one part of the level above, their granules copied as they are, the blocks of the parts added to *rel_ext: possible when no row is dead, the parts follow one
  * another, share a schema and their dictionaries and have all rows frozen (so that the horizon has nothing to drop or freeze). false: nothing is written and the rows have to be read.

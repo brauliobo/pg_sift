@@ -223,7 +223,8 @@ extern bool sift_preagg_v2_plan(const SiftRows *rows, const SiftDictEnc *const *
 typedef struct SiftPreaggBuild SiftPreaggBuild;
 
 /*
- * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and SIFT_PAG_BUDGET_SLACK more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none.
+ * The cells and sets of all the granules may take SIFT_PAG_BUDGET_PERCENT of the bytes of the granules written so far and the slack more: a granule that would go over is left out of the cube it does not fit. The cubes of the members of the maps have a budget of their own; the declared cubes of the rows have none.
+ * A part is granted SIFT_PAG_BUDGET_SLACK; the outputs of a compaction the share of it their live rows are of their partition's, so that a partition rewritten in pieces holds the slack once.
  */
 #define SIFT_PAG_BUDGET_PERCENT	4
 #define SIFT_PAG_BUDGET_SLACK	65536
@@ -232,12 +233,13 @@ typedef struct SiftPreaggBudget
 {
 	uint64		data;			/* the bytes of the granules */
 	uint64		used[2];		/* the bytes of the cells and sets of the cubes of the rows, and of the cubes of the members of the maps */
+	uint64		slack;
 } SiftPreaggBudget;
 
 static inline bool
 sift_preagg_v2_fits(const SiftPreaggBudget *b, bool elements, uint64 bytes)
 {
-	return b->used[elements] + bytes <= b->data / 100 * SIFT_PAG_BUDGET_PERCENT + SIFT_PAG_BUDGET_SLACK;
+	return b->used[elements] + bytes <= b->data / 100 * SIFT_PAG_BUDGET_PERCENT + b->slack;
 }
 
 /*

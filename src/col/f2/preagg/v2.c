@@ -505,6 +505,7 @@ sift_preagg_v2_begin(const SiftPreaggPlan *plan, uint32 ngranules, SiftPreaggBud
 {
 	SiftPreaggBuild *b = palloc0(sizeof(SiftPreaggBuild));
 
+	b->own.slack = SIFT_PAG_BUDGET_SLACK;
 	b->budget = budget != NULL ? budget : &b->own;
 	b->cx = CurrentMemoryContext;
 	b->gcx = sift_mem_allocset_create(CurrentMemoryContext, "sift preagg v2 granule");

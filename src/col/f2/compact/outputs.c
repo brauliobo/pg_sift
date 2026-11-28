@@ -1,9 +1,31 @@
 /*
- * col/f2/compact/outputs.c - the output parts of a compaction given back (compact.h).
+ * col/f2/compact/outputs.c - the output parts of a compaction: the slack of their cubes, and the parts given back (compact.h).
  */
 #include "core/host.h"
 
 #include "col/f2/compact/compact.h"
+#include "col/f2/preagg/v2.h"
+
+static uint64
+live_rows(const SiftPartDesc *d)
+{
+	return d->nrows - Min(d->ndead, d->nrows);
+}
+
+uint64
+sift_compact_preagg_slack(const SiftPartDesc *parts, int nparts, const uint64 *gens, int ngens)
+{
+	uint64		mine = 0,
+				all = 0;
+
+	for (int i = 0; i < nparts; i++)
+	{
+		all += live_rows(&parts[i]);
+		for (int k = 0; k < ngens; k++)
+			mine += parts[i].part_gen == gens[k] ? live_rows(&parts[i]) : 0;
+	}
+	return all == 0 ? SIFT_PAG_BUDGET_SLACK : SIFT_PAG_BUDGET_SLACK * mine / all;
+}
 
 void
 sift_compact_release_outputs_dv(Relation rel, const SiftPartDesc *out)

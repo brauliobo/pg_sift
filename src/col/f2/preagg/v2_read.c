@@ -181,7 +181,7 @@ sift_preagg_v2_join(Relation rel, SiftPart *const *src, int n, SiftGranuleDesc *
 	uint32		ng = 0,
 				goff = 0,
 				flags = 0;
-	SiftPreaggBudget budget = {0};
+	SiftPreaggBudget budget = {.slack = SIFT_PAG_BUDGET_SLACK};
 	void	   *out = NULL;
 
 	for (int i = 0; i < n; i++)
