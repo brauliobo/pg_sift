@@ -7,6 +7,7 @@
 
 #include "access/sysattr.h"
 #include "access/table.h"
+#include "catalog/index.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type_d.h"
 #include "nodes/bitmapset.h"
@@ -19,6 +20,7 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
+#include "utils/syscache.h"
 
 #include "agg/cost/model.h"
 #include "agg/safety.h"
@@ -371,8 +373,34 @@ string_width(const RelOptInfo *rel, const IndexOptInfo *ix, int col)
 }
 
 /*
+ * The decoded bytes a row of an array of index column col (0-based) costs for the dictionary entries of its granule: each array a granule has not seen is interned as an entry, its image
+ * inflated whole, SIFT_IMAGE_INFLATE times the work of a byte of a column of numbers. PostgreSQL's statistics of the column of the table size the arrays and count the distinct ones; none
+ * without them.
+ */
+static double
+image_bytes(const SiftCardStatsView *view, const IndexOptInfo *ix, int col)
+{
+	const AttrNumber att = col >= 0 && col < ix->ncolumns ? ix->indexkeys[col] : 0;
+	const double rows = Max((double) view->total_live_rows, 1.0),
+				granule_rows = rows / Max((double) view->total_granules, 1.0);
+	HeapTuple	tp;
+	Form_pg_statistic st;
+	double		bytes;
+
+	if (att <= 0 || !type_is_array(exprType((Node *) ((TargetEntry *) list_nth(ix->indextlist, col))->expr)))
+		return 0;
+	tp = SearchSysCache3(STATRELATTINH, ObjectIdGetDatum(IndexGetRelation(ix->indexoid, false)), Int16GetDatum(att), BoolGetDatum(false));
+	if (!HeapTupleIsValid(tp))
+		return 0;
+	st = (Form_pg_statistic) GETSTRUCT(tp);
+	bytes = SIFT_IMAGE_INFLATE * st->stawidth * sift_card_ndv(st->stadistinct < 0 ? -st->stadistinct * rows : st->stadistinct, rows, granule_rows) / granule_rows;
+	ReleaseSysCache(tp);
+	return bytes;
+}
+
+/*
  * the bytes of a row of the columns in cols (the attributes of the index the Vars of INDEX_VAR name when index_cols, else those of the table), decoded or as stored: those of the view, or unsized
- * for a column it has no size of; decoded, a string of wide at least its width in rel (NULL: none)
+ * for a column it has no size of; decoded, a string of wide at least its width in rel (NULL: none), and an array the entries of its images
  */
 static double
 cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptInfo *ix, bool index_cols, const RelOptInfo *rel, const Bitmapset *wide, bool stored,
@@ -390,6 +418,7 @@ cols_bytes(const SiftCardStatsView *view, const Bitmapset *cols, const IndexOptI
 		const int	icol = index_cols ? col - 1 : ix != NULL ? agg_index_col(ix, col) : -1;
 
 		bytes += Max(b > 0 ? b : unsized, stored || !bms_is_member(a, wide) ? 0 : string_width(rel, ix, icol));
+		bytes += stored || c == NULL ? 0 : image_bytes(view, ix, icol);
 	}
 	return bytes;
 }

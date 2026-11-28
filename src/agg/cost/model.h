@@ -44,6 +44,8 @@ typedef struct SiftCostInputs
 } SiftCostInputs;
 
 #define SIFT_COST_R_BW_CPU		12.0
+/* the work of a byte of an array image a granule interns as a new dictionary entry over a byte of a column of numbers: its zstd frame inflated, 3.3 ns a byte warm against 0.37 */
+#define SIFT_IMAGE_INFLATE		9.0
 
 /* The share of the pages of a relation that is neither in shared buffers nor in the cache of the operating system (effective_cache_size): what f_cold is for a scan of it */
 extern double sift_agg_cold_share(double pages);
