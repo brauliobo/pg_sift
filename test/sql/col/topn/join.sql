@@ -110,8 +110,8 @@ INSERT INTO jt_shapes VALUES
 	(5, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g WHERE f.k_mix > 5 AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(6, 'SELECT f.id, f.k_rand FROM jd d JOIN jf f ON f.g = d.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(7, 'SELECT f.id, f.k_rand FROM jf f JOIN jd2 e ON e.h = f.h WHERE e.tier = 1 ORDER BY f.k_rand, f.id LIMIT 10'),
-	-- refused: a table with no unique index on the key, an outer join (to a table without a unique index: PostgreSQL 19 removes one to a unique key that nothing reads), a condition that reads the scanned row,
-	-- an expression of the scanned column as the key, a second key, a join to a sub-select, an aggregate
+	-- refused: a condition other than an equality that reads the scanned row (14); a table with no unique index on the key, an outer join, an expression of the scanned column as the key,
+	-- a second key and a join to a sub-select run in the scan
 	(12, 'SELECT f.id, f.k_rand FROM jf f JOIN jn d ON d.g = f.g WHERE d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(13, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN jn d ON d.g = f.g AND d.label = ''label_7'' ORDER BY f.k_rand, f.id LIMIT 10'),
 	(14, 'SELECT f.id, f.k_rand FROM jf f JOIN jd d ON d.g = f.g AND d.region > f.k_mix % 5 ORDER BY f.k_rand, f.id LIMIT 10'),
@@ -122,7 +122,11 @@ INSERT INTO jt_shapes VALUES
 	-- pushed: a text key (its keys are the conjunct `lab = ANY(keys)`); a column of the table in the result; a sub-select PostgreSQL pulls up into a semi join (IN, EXISTS) is a filter of the same kind, it needs no unique key
 	(15, 'SELECT f.id, f.k_rand FROM jf f JOIN jl d ON d.label = f.lab WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
 	(11, 'SELECT f.id, d.label FROM jf f JOIN jd d ON d.g = f.g WHERE d.region = 2 ORDER BY f.k_rand, f.id LIMIT 10'),
-	(20, 'SELECT f.id, f.k_rand FROM jf f WHERE f.g IN (SELECT g FROM jd WHERE region = 2) ORDER BY f.k_rand, f.id LIMIT 10');
+	(20, 'SELECT f.id, f.k_rand FROM jf f WHERE f.g IN (SELECT g FROM jd WHERE region = 2) ORDER BY f.k_rand, f.id LIMIT 10'),
+	-- a dimension that is no table (a function, a VALUES list, a CTE) has no unique index to look up
+	(21, 'SELECT f.id, f.k_rand FROM jf f JOIN unnest(ARRAY[3, 7, 12]) d(g) ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10'),
+	(22, 'SELECT f.id, f.k_rand FROM jf f LEFT JOIN (VALUES (3), (7)) d(g) ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10'),
+	(23, 'WITH d AS MATERIALIZED (SELECT g FROM jd WHERE region = 2) SELECT f.id, f.k_rand FROM jf f JOIN d ON d.g = f.g ORDER BY f.k_rand, f.id LIMIT 10');
 SELECT s.n, r.topn, r.pushed_md5 = r.plain_md5 AS same_rows FROM jt_shapes s, LATERAL jt_run(s.q) r ORDER BY s.n;
 
 -- the plan: one scan of the fact table, the table's rows loaded as a set (EXPLAIN shows the conjunct), no workers

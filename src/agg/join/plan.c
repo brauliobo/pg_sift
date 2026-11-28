@@ -657,7 +657,7 @@ static bool
 rows_dim_ok(PlannerInfo *root, const SiftV6JoinDim *d)
 {
 	return sift_star_filters(d->mode) ||
-		((d->mode == SV6J_INNER_EQUI || d->mode == SV6J_LEFT_EQUI) && d->rel->reloptkind == RELOPT_BASEREL && d->on == NIL && unique_on_keys(root, d));
+		((d->mode == SV6J_INNER_EQUI || d->mode == SV6J_LEFT_EQUI) && d->rel->rtekind == RTE_RELATION && d->on == NIL && unique_on_keys(root, d));
 }
 
 /* the best K rows of the join are fact rows its dimensions keep, each at most once, with no condition on the pairs */
