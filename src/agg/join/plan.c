@@ -707,6 +707,7 @@ seed_dims(V6Plan *p, const SiftV6JoinShape *sh, GroupPathExtraData *extra)
 		SiftV6XDim *xd = &x->dim[d];
 
 		xd->mode = jd->mode;
+		xd->first_row = jd->lateral;
 		xd->nkeys = jd->nkeys;
 		for (int k = 0; k < jd->nkeys; k++)
 		{

@@ -261,7 +261,7 @@ sift_v6_ext_pack(const SiftV6Ext *x)
 	{
 		const SiftV6XDim *xd = &x->dim[d];
 
-		ints = lappend_int(lappend_int(ints, (int) xd->mode), xd->nkeys);
+		ints = lappend_int(lappend_int(lappend_int(ints, (int) xd->mode), xd->first_row), xd->nkeys);
 		for (int k = 0; k < xd->nkeys; k++)
 		{
 			ints = lappend_int(lappend_int(lappend_int(lappend_int(ints, xd->fatt[k]), (int) xd->ftype[k]), (int) xd->ktype[k]), xd->kcol[k]);
@@ -341,6 +341,7 @@ sift_v6_ext_unpack(const List *l)
 		SiftV6XDim *xd = &x->dim[d];
 
 		xd->mode = (SiftV6JoinMode) list_nth_int(ints, at++);
+		xd->first_row = list_nth_int(ints, at++);
 		xd->nkeys = list_nth_int(ints, at++);
 		for (int k = 0; k < xd->nkeys; k++, at += 10)
 		{

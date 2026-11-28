@@ -35,6 +35,7 @@ sift_v6_col_is_flag(const SiftV6Col *c)
 typedef struct SiftV6XDim
 {
 	SiftV6JoinMode mode;
+	bool		first_row;		/* a lateral sub-select cut to its first row (agg/lateral_plan.h) */
 	int			nkeys;
 	int			fatt[SIFT_STAR_MAX_KEYS];	/* the attribute of the index each key is of the fact table (fsrc SV6SRC_ATTR) */
 	Oid			ftype[SIFT_STAR_MAX_KEYS];
