@@ -553,6 +553,13 @@ pred_vals(ValArena *a, const SiftCardPred *p)
 	return r;
 }
 
+/* An equality on a column with no common values shares the rest out evenly: a guess that must not cap the rows the zones of the sample count where they hold that one value */
+static bool
+eq_share_guessed(const SiftCardStatsView *s, const SiftCardPred *p)
+{
+	return (p->kind == SCP_EQ || p->kind == SCP_IN) && p->col < s->ncols && !(s->cols[p->col].flags & SIFT_CSTAT_HAS_MCV);
+}
+
 static void
 estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, ValArena *arena)
 {
@@ -589,7 +596,8 @@ estimate(const SiftCardStatsView *s, const SiftCardQuery *q, SiftCardEst *out, V
 		sg[i] = single_of(s, &q->preds[i], &pv[i]);
 		zero |= sg[i].exact_zero;
 		prod *= sg[i].sel;
-		min_sel = Min(min_sel, sg[i].sel);
+		if (!eq_share_guessed(s, &q->preds[i]))
+			min_sel = Min(min_sel, sg[i].sel);
 		conf = Min(conf, sg[i].conf);
 		out->used_scope_l2 |= q->preds[i].kind == SCP_SCOPE_IN && sg[i].conf == 1.0;
 	}
