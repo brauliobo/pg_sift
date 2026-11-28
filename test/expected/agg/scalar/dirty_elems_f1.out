@@ -122,7 +122,7 @@ SELECT n, plan_of(q) AS plan, outcome(q) FROM e_q ORDER BY n;
  case               | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
  element condition  | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
  filter on the cast | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
- on the cast        | normal | same ERR 22P02 invalid input syntax for type double precision: "abc"
+ on the cast        | scan   | same ERR 22P02 invalid input syntax for type double precision: "abc"
 (5 rows)
 
 SET sift.enable_agg = on;
