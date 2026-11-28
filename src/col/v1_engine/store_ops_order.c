@@ -152,6 +152,7 @@ typedef struct GOrdShape
 	bool		desc;
 	bool		nulls_first;
 	uint32		rows;
+	uint64		skip;			/* the first rows of the order the Top-N passes over (its OFFSET): read unordered where the walk can */
 } GOrdShape;
 
 typedef struct GOrdPlan
@@ -163,6 +164,7 @@ typedef struct GOrdPlan
 	ExprState  *quals;
 	ExprContext *econtext;
 	bool		ties;			/* more sort columns than the first: the rows that tie on it are all read */
+	uint64		skip;			/* GOrdShape.skip */
 } GOrdPlan;
 
 /* the rows the walk found, before the Top-N takes them: a walk that cannot answer leaves the Top-N as it was */
@@ -171,6 +173,7 @@ typedef struct GOrdWinners
 	int			nkeys;
 	uint32		n;
 	uint32		room;
+	uint64		skipped;		/* the first rows of the order passed over before the winners (sift_v1_gord_skip) */
 	Datum	   *val;
 	bool	   *nul;
 	uint64	   *tid;
@@ -233,7 +236,7 @@ gorder_plan(const GOrdShape *sh, Relation heap, Relation index, Snapshot snap, G
 	const SiftSrcLayout *lay = sift_v1_reader_of(false)->layout(index);
 	const SiftSrcLeaf *leaf;
 
-	*p = (GOrdPlan) {.nkeys = sh->nkeys,.ties = sh->nkeys > 1};
+	*p = (GOrdPlan) {.nkeys = sh->nkeys,.ties = sh->nkeys > 1,.skip = sh->skip};
 	if (sh->rows == 0 || sh->rows > SIFT_CORDER_MAX_ROWS)
 		return false;
 	for (int i = 0; i < sh->nkeys; i++)
@@ -317,6 +320,8 @@ gorder_walk(SiftV1GOrd *g, const GOrdPlan *p, uint32 rows, GOrdWinners *w)
 	bool		last_null = false,
 				done = false;
 
+	w->skipped = p->ties || p->quals != NULL ? 0 : sift_v1_gord_skip(g, p->skip);
+	rows -= (uint32) w->skipped;
 	while (!(w->n >= rows && !p->ties) && sift_v1_gord_next(g, &row))
 	{
 		if (w->n >= rows && (row.isnull != last_null || row.key != last))
@@ -461,7 +466,8 @@ topn_close(void *src)
 static bool
 order_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *in, const SiftV6Vexpr *quals, SiftV6TopNSource *dst)
 {
-	const GOrdShape sh = {.nkeys = spec->nkeys,.key = spec->key,.desc = spec->order[0].desc,.nulls_first = spec->order[0].nulls_first,.rows = (uint32) Min(spec->rows, SIFT_CORDER_MAX_ROWS + 1)};
+	const GOrdShape sh = {.nkeys = spec->nkeys,.key = spec->key,.desc = spec->order[0].desc,.nulls_first = spec->order[0].nulls_first,.rows = (uint32) Min(spec->rows, SIFT_CORDER_MAX_ROWS + 1),
+		.skip = spec->skip};
 	MemoryContext cx = sift_mem_allocset_create(estate->es_query_cxt, "sift v1 topn");
 	Relation	index = index_open(spec->indexoid, AccessShareLock);
 	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
@@ -483,7 +489,7 @@ order_topn_open(EState *estate, const SiftV6TopNSpec *spec, const SiftV6Input *i
 	s->slot = table_slot_create(heap, NULL);
 	index_close(index, NoLock);
 	*dst = (SiftV6TopNSource) {.ops = {.expand = topn_unused,.frontier_next = topn_unused,.scan = topn_scan},.src = s,.seed = topn_seed,.fetch = topn_fetch,.close = topn_close,
-		.global_order = true};
+		.skipped = s->w.skipped,.global_order = true};
 	return true;
 }
 

@@ -749,6 +749,7 @@ topn_run(TopNState *st, EState *estate)
 	Relation	source = sift_v6_source_open(st->spec->indexoid, st->spec->is_table, AccessShareLock, &in);
 
 	st->skip = st->spec->skips_offset ? sift_v6_offset_value(st->spec->offset, st->css.ss.ps.ps_ExprContext) : 0;
+	st->spec->skip = (uint64) st->skip;
 	sift_v6_source_enter(source, st->spec->is_table, estate->es_snapshot);
 	st->cx = sift_mem_allocset_create(estate->es_query_cxt, "sift agg v6 topn");
 	sift_v6_input_bind(&in, estate);
@@ -768,6 +769,7 @@ topn_run(TopNState *st, EState *estate)
 	topn_device(st, estate, source, &in);
 	sift_v6_source_close(source, st->spec->is_table, NoLock);
 	st->rows = sift_v6_topn_run(st->cx, st->spec, &st->src, &st->tourn, &st->nrows);
+	st->skip -= (int64) st->src.skipped;
 	topn_rewind(st);
 }
 

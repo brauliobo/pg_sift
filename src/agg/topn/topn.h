@@ -29,6 +29,7 @@ typedef struct SiftV6TopNSpec
 	Node	   *limit;			/* of the query: an int8 Const or external Param; a NULL value is LIMIT ALL */
 	Node	   *offset;			/* NULL: none */
 	uint64		rows;			/* offset + limit, when a run found them small enough for the tournament */
+	uint64		skip;			/* the OFFSET rows of rows the run passes over (skips_offset): a source may pass over the first of them unread */
 	bool		with_ties;
 	bool		skips_offset;	/* the node passes over the OFFSET rows itself: the Limit above it has none */
 	char	   *desc;			/* EXPLAIN: the sort keys */
@@ -65,6 +66,7 @@ typedef struct SiftV6TopNSource
 	bool		(*fetch) (void *src, const SiftTopNWinRow *w, const AttrNumber *attnos, int n, Datum *values, bool *isnull);
 	void		(*close) (void *src);
 	const SiftV6SkipStats *skips;
+	uint64		skipped;		/* the first rows of the order the source passed over unread, of SiftV6TopNSpec.skip: the tournament has rows - skipped */
 	bool		global_order;	/* the winners are read off an order of the key the store keeps (the order arrays of Format 1), not off its parts */
 } SiftV6TopNSource;
 

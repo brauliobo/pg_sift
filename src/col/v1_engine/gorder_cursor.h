@@ -45,6 +45,9 @@ typedef struct SiftV1GRow
 extern SiftV1GOrd *sift_v1_gord_open(MemoryContext cx, const SiftV1GOrdSpec *spec);
 /* The next row the snapshot sees, in order; false at the end, or where the order is not known any further (sift_v1_gord_short) */
 extern bool sift_v1_gord_next(SiftV1GOrd *g, SiftV1GRow *row);
+/* Before the first sift_v1_gord_next: passes over up to n rows of the order by their addresses alone, without their keys (a compact chunk reads those from the heap). Only a lone source (no
+ * merge to order) is passed over, up to its first entry that is not exact, the end of its region or the budget; returns the rows passed over */
+extern uint64 sift_v1_gord_skip(SiftV1GOrd *g, uint64 n);
 /* The heap row of the entry sift_v1_gord_next gave, in the slot of the cursor until the next call */
 extern TupleTableSlot *sift_v1_gord_row(SiftV1GOrd *g, SiftV1GRow *row);
 /* The entries examined so far, and whether the walk ended because it examined more than its budget: the rows given are the order's first, those it would give next are not known */

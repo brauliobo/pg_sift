@@ -105,6 +105,17 @@ cur_at(SiftV1GOrd *g, GCur *c, uint32 p, int64 *key, uint64 *addr)
 	*addr = b->addr[p - b->at];
 }
 
+/* the address of entry p alone: the keys of a compact chunk, which come from the heap, are not read */
+static uint64
+cur_addr(SiftV1GOrd *g, GCur *c, uint32 p)
+{
+	SiftCGOrdBuf *b = c->buf;
+
+	if (p - b->at - b->afrom >= b->an)
+		sift_col_gorder_head(g->cs, c->src, g->spec.leaf, p, UINT32_MAX, b);
+	return b->addr[p - b->at];
+}
+
 /* the region of the cursor that ends (nulls: the NULL rows) is cut short: the segment has entries after its last, in the order of the scan, that the block does not */
 static bool
 cur_cut(const SiftV1GOrd *g, const GCur *c, bool nulls)
@@ -306,6 +317,35 @@ cur_open(SiftV1GOrd *g, GCur *c, int src)
 	else
 		c->buf = buf_new(CurrentMemoryContext, g->spec.desc);
 	return true;
+}
+
+uint64
+sift_v1_gord_skip(SiftV1GOrd *g, uint64 n)
+{
+	GCur	   *c = g->ncur == 1 && !g->started ? &g->cur[0] : NULL;
+	uint64		skipped = 0;
+
+	while (c != NULL && skipped < n && c->region < 2 && g->examined < g->spec.budget)
+	{
+		const bool	nulls = (c->region == 0) == g->spec.nulls_first;
+		const uint32 lo = nulls ? c->ns : c->vs;
+		const uint32 hi = nulls ? c->ne : c->ve;
+
+		if (c->taken == hi - lo)
+		{
+			if (cur_cut(g, c, nulls))
+				break;
+			c->region++;
+			c->taken = 0;
+			continue;
+		}
+		if (sift_col_gorder_exact(g->cs, c->src, cur_addr(g, c, nulls || !g->spec.desc ? lo + c->taken : hi - 1 - c->taken)) != GORD_EXACT)
+			break;
+		c->taken++;
+		g->examined++;
+		skipped++;
+	}
+	return skipped;
 }
 
 SiftV1GOrd *
