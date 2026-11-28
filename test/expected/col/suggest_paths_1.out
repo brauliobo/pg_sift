@@ -1,0 +1,147 @@
+-- sift.suggest_paths(rel, column, sample): the paths option that a jsonb column asks for, read from a sample of its documents (evenly spaced blocks: the same
+-- answer for the same table). Typed paths for scalar keys (int4, int8 beyond 32 bits, float8 with fractions, text, bool, astext for a mix), a wildcard for a map of
+-- more than 4 keys of one type, a group for an array of objects; a rare key, one without a single shape and free text (values over 64 bytes on average) are left out. The answer is a spec the option accepts,
+-- an index built with it verifies, and what it pushes answers as the plain plan does.
+CREATE EXTENSION pg_sift_test CASCADE;
+NOTICE:  installing required extension "pg_sift"
+CREATE EXTENSION pg_sift_helpers;
+SET client_min_messages = warning;
+SET max_parallel_workers_per_gather = 0;
+SET max_parallel_maintenance_workers = 0;
+CREATE TABLE sp (id int, doc jsonb, other jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO sp SELECT i, jsonb_build_object(
+	'name', 'n' || i, 'count', i % 100, 'big', i::bigint * 10000000, 'ratio', i / 7.0, 'ok', i % 2 = 0,
+	'mixed', CASE WHEN i % 3 = 0 THEN to_jsonb(i) ELSE to_jsonb('s' || i) END,
+	'rare', CASE WHEN i % 500 = 0 THEN to_jsonb(1) ELSE 'null'::jsonb END,
+	'meta', jsonb_build_object('lang', 'l' || i % 5, 'depth', i % 9),
+	'tags', jsonb_build_array('a' || i % 3, 'b'),
+	'parts', jsonb_build_array(jsonb_build_object('cat', 'c' || i % 4, 'score', i % 10), jsonb_build_object('cat', 'd', 'score', 2.5)),
+	'weird key', 1,
+	'note', repeat('free text ', 10) || i,
+	'metrics_a', jsonb_build_object('a', i % 5 + 0.5, 'b', i % 6 + 0.5, 'c', 1.5, 'd', 2.5, 'e', i % 7 + 0.5),
+	'metrics', (SELECT jsonb_object_agg('m' || g, g % 7) FROM generate_series(1, 40) g),
+	'shape', CASE WHEN i % 2 = 0 THEN '[1]'::jsonb ELSE '{"a":1}'::jsonb END), NULL FROM generate_series(1, 3000) i;
+VACUUM (FREEZE, ANALYZE) sp;
+SELECT sift.suggest_paths('sp', 'doc');
+                                                                                                                         suggest_paths                                                                                                                         
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ doc.big int8, doc.count int4, doc.meta.depth int4, doc.meta.lang text, doc.metrics.* int4, doc.metrics_a.* float8, doc.mixed astext, doc.name text, doc.ok bool, doc.parts[]{cat text, score float8}, doc.ratio float8, doc.tags[] text, doc."weird key" int4
+(1 row)
+
+-- the same answer again, and with a smaller sample the keys are those of the documents it reads
+SELECT sift.suggest_paths('sp', 'doc') = sift.suggest_paths('sp', 'doc', 2000) AS same_default, sift.suggest_paths('sp', 'doc', 50) IS NOT NULL AS small_sample;
+ same_default | small_sample 
+--------------+--------------
+ t            | t
+(1 row)
+
+-- no document, no key
+SELECT sift.suggest_paths('sp', 'other');
+ suggest_paths 
+---------------
+ 
+(1 row)
+
+-- the index of the suggestion builds, verifies, and answers like the plain plan
+SELECT format('CREATE INDEX sp_col ON sp USING sift_col (id, doc) WITH (paths = %L)', sift.suggest_paths('sp', 'doc')) AS ddl \gset
+:ddl;
+SELECT sift.col_verify('sp_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+CREATE FUNCTION sp_rows(q text, push bool) RETURNS text LANGUAGE sql AS $$ SELECT sift_helpers.rows_agg_four_scans_or_no_rows(q, push) $$;
+CREATE FUNCTION sp_pushed(q text) RETURNS bool LANGUAGE sql AS $$ SELECT sift_helpers.plan_has_siftagg_with_scans_off(q) $$;
+SELECT n, sp_rows(q, true) = sp_rows(q, false) AS same, sp_pushed(q) AS pushed FROM (VALUES
+	(1, 'SELECT doc->''meta''->>''lang'', count(*) FROM sp GROUP BY 1'),
+	(2, 'SELECT (doc->>''count'')::int, count(*) FROM sp WHERE doc->>''name'' > ''n5'' GROUP BY 1'),
+	(3, 'SELECT e->>''cat'', count(*), sum((e->>''score'')::float8) FROM sp, jsonb_array_elements(doc->''parts'') e GROUP BY 1'),
+	(4, 'SELECT doc->>''mixed'', count(*) FROM sp WHERE doc->>''mixed'' LIKE ''s1%'' GROUP BY 1'),
+	(5, 'SELECT sum((doc->>''big'')::bigint), count(*) FROM sp WHERE (doc->''ok'')::bool')) AS t(n, q) ORDER BY n;
+ n | same | pushed 
+---+------+--------
+ 1 | t    | t
+ 2 | t    | t
+ 3 | t    | t
+ 4 | t    | t
+ 5 | t    | f
+(5 rows)
+
+-- documents that are arrays: a group of the column's own path, without the arrays inside its elements (sift_col holds one level of them); a list of scalars
+CREATE TABLE sp_arr (id int, doc jsonb, nums jsonb) WITH (autovacuum_enabled = off);
+INSERT INTO sp_arr SELECT i, CASE WHEN i % 3 = 0 THEN NULL ELSE jsonb_build_array(jsonb_build_object('type', 't' || i % 4, 'comment', 'c' || i, 'tags', jsonb_build_array('a', 'b'))) END,
+	jsonb_build_array(i % 5, i % 7) FROM generate_series(1, 3000) i;
+SELECT sift.suggest_paths('sp_arr', 'doc');
+         suggest_paths          
+--------------------------------
+ doc[]{comment text, type text}
+(1 row)
+
+SELECT sift.suggest_paths('sp_arr', 'nums');
+ suggest_paths 
+---------------
+ nums[] int4
+(1 row)
+
+CREATE INDEX sp_arr_col ON sp_arr USING sift_col (id, doc, nums);
+SELECT sp_rows('SELECT e->>''type'', count(*) FROM sp_arr, jsonb_array_elements(doc) e GROUP BY 1', true) = sp_rows('SELECT e->>''type'', count(*) FROM sp_arr, jsonb_array_elements(doc) e GROUP BY 1', false) AS same_group;
+ same_group 
+------------
+ t
+(1 row)
+
+SELECT sift.col_verify('sp_arr_col', true);
+ col_verify 
+------------
+ 
+(1 row)
+
+-- errors
+SELECT sift.suggest_paths('sp', 'id');
+ERROR:  column "id" is not jsonb
+SELECT sift.suggest_paths('sp', 'nope');
+ERROR:  column "nope" does not exist
+SELECT sift.suggest_paths('sp_col', 'doc');
+ERROR:  cannot open relation "sp_col"
+DETAIL:  This operation is not supported for indexes.
+SELECT sift.suggest_paths('sp', 'doc', 0);
+ERROR:  sample must be between 1 and 100000
+CREATE ROLE sp_user NOLOGIN;
+SET ROLE sp_user;
+SELECT sift.suggest_paths('sp', 'doc');
+ERROR:  permission denied for table sp
+RESET ROLE;
+GRANT SELECT ON sp TO sp_user;
+ALTER TABLE sp ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sp_all ON sp FOR SELECT USING (id < 10);
+SET ROLE sp_user;
+SELECT sift.suggest_paths('sp', 'doc');
+ERROR:  "sp" has row-level security
+HINT:  Declare the paths by hand: the documents are not read past a policy.
+RESET ROLE;
+-- a sift_table has no heap blocks to take stretches of: its documents are read by a scan of the table, and the same documents give the same answer as the heap's
+CREATE TABLE sp_heap (id int, doc jsonb);
+INSERT INTO sp_heap SELECT id, doc FROM sp WHERE id <= 300;
+CREATE TABLE sp_tbl (id int, doc jsonb) USING sift_table;
+INSERT INTO sp_tbl SELECT id, doc FROM sp_heap;
+SELECT sift.suggest_paths('sp_tbl', 'doc') = sift.suggest_paths('sp_heap', 'doc') AS table_as_heap, sift.suggest_paths('sp_tbl', 'doc') IS NOT NULL AS suggested;
+ table_as_heap | suggested 
+---------------+-----------
+ t             | t
+(1 row)
+
+-- documents of endless distinct keys: the paths kept are bounded, and the keys past the bound name no path
+CREATE TABLE sp_wild (id int, doc jsonb);
+INSERT INTO sp_wild SELECT i, (SELECT jsonb_object_agg('k' || (i * 100 + j), j) FROM generate_series(1, 100) j) FROM generate_series(1, 100) i;
+SELECT sift.suggest_paths('sp_wild', 'doc') IS NOT NULL AS bounded_keys;
+ bounded_keys 
+--------------
+ t
+(1 row)
+
+DROP TABLE sp, sp_arr, sp_heap, sp_tbl, sp_wild;
+DROP FUNCTION sp_rows(text, bool), sp_pushed(text);
+DROP ROLE sp_user;
+DROP EXTENSION pg_sift_helpers;
+DROP EXTENSION pg_sift_test, pg_sift CASCADE;

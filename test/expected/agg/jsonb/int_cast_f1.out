@@ -20,11 +20,10 @@ ANALYZE dim_a;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
 \ir test/common/sql/agg/base.sql
 \set ECHO none
--- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan and the column shows what 18 does
-CREATE FUNCTION check_query(name text, q text, in_scan bool DEFAULT true) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+-- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
-  RETURN QUERY SELECT name, runs_in_scan(q) OR (in_scan AND current_setting('server_version_num')::int < 180000),
-                      outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
 -- a filter: 6.5 and 2.5 round up, -2.5 down, the JSON null and the missing keys are no row
 SELECT * FROM check_query('filter 7', 'SELECT count(*) FROM facts WHERE CAST(metrics -> ''m_total'' AS integer) = 7');
@@ -106,13 +105,13 @@ SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WH
 -- a member that is no number is a value the leaf cannot hold: the normal plan raises PostgreSQL's error
 INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"m_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1', false);
+SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1');
      label     | scan | same |     outcome      
 ---------------+------+------+------------------
  string member | f    | t    | [{"count": 444}]
 (1 row)
 
-SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1', false);
+SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1');
          label          | scan | same |                    outcome                     
 ------------------------+------+------+------------------------------------------------
  string member, reached | f    | t    | 22023 cannot cast jsonb string to type integer
@@ -121,7 +120,7 @@ SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts 
 -- beside an inner join the cast of the fact's WHERE clause raises for a row the join keeps, as PostgreSQL tests it before the join
 SELECT * FROM check_query('string member, join', $q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id WHERE f.id > 20002 AND (f.metrics -> 'm_total')::int = 1 GROUP BY 1
-$q$, false);
+$q$);
         label        | scan | same |                    outcome                     
 ---------------------+------+------+------------------------------------------------
  string member, join | f    | t    | 22023 cannot cast jsonb string to type integer
@@ -152,6 +151,6 @@ SELECT * FROM check_query('bigint past 2^52', 'SELECT sum((metrics -> ''m_total'
  bigint past 2^52 | t    | t    | [{"low": -9223372036854775808, "total": -9214364837600021313}]
 (1 row)
 
-DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dim_a, ties;
 DROP EXTENSION pg_sift;

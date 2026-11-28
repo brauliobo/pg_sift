@@ -1,6 +1,7 @@
 -- the subscript of a jsonb column (x['k'] is x -> 'k'): a typed path as a cast, as a key (#>> '{}' is its text) and as a filter
 -- shape: flat
 -- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- key: 1
 -- scenario: yes
 SELECT o.attributes['channel'] #>> '{}' AS channel, o.attributes ->> 'channel' AS plain, count(*) AS n, avg((o.metrics['m_total'])::float8) AS m_total

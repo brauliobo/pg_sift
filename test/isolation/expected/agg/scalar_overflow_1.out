@@ -33,15 +33,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -123,15 +122,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -182,15 +180,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -249,15 +246,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -308,15 +304,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -381,15 +376,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------
@@ -447,15 +441,14 @@ Sort
         Pushed Aggregates: sum(((iso_sc.doc ->> 'v'::text))::double precision)
 (6 rows)
 
-QUERY PLAN                                                                   
------------------------------------------------------------------------------
-Sort                                                                         
-  Sort Key: grp                                                              
-  ->  Custom Scan (SiftAggV6)                                                
-        Index: iso_sc_col                                                    
-        Group Keys: grp                                                      
-        Pushed Aggregates: sum(((iso_sc.doc -> 'v'::text))::double precision)
-(6 rows)
+QUERY PLAN                    
+------------------------------
+GroupAggregate                
+  Group Key: grp              
+  ->  Sort                    
+        Sort Key: grp         
+        ->  Seq Scan on iso_sc
+(5 rows)
 
 QUERY PLAN                                                                     
 -------------------------------------------------------------------------------

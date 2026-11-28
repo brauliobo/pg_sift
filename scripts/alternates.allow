@@ -11,7 +11,10 @@ removed	test/expected/col_topn_join_1.out	17 18 18-arm64 19
 removed	test/expected/json_build_object_1.out	17 18 18-arm64 19	
 removed	test/expected/lang_config_1.out	17 18 18-arm64 19	
 test/expected/agg/append_children_1.out	5cd2ba5d2b7850383285de762257a1d653fdf733	17	f      | t        |           0
+test/expected/agg/child/member_value_1.out	a3cd0f22ffbf7eb536454bcc61c88d9d45edce9d	17	float cast | t    | t
+test/expected/agg/child/member_value_1.out	d382ae8e60a98118dc9011f67feb05033c5d9477	17	int cast | t    | t
 test/expected/agg/correlated/fanout_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
+test/expected/agg/exists_elements_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
 test/expected/agg/explain_sift_1.out	27fe9942929a7ef582728ce2070736dc6237f482	17	sift_lines
 test/expected/agg/explain_sift_1.out	4148b089f33064724d2716c1c96edd654a2b36ad	17	sift_refusals
 test/expected/agg/explain_sift_1.out	4d62704eb61a993f373809a6e0ed25d6a1926139	17	sift_lines
@@ -41,6 +44,20 @@ test/expected/agg/jsonb_each_map_1.out	af1841420b9063f79d36166f091025f39c0e735d	
 test/expected/agg/jsonb_each_map_1.out	c6b6503f68a596b55ef5cd81660a0d0aea2c7bbd	17	
 test/expected/agg/jsonb_each_map_1.out	d26252bc94006016fd657c2b2efd341aa01d851c	17	same
 test/expected/agg/jsonb_each_map_1.out	dbeadf12287f441a7377d6e8e125eeee37d91ee4	17	same node error 22023 cannot cast jsonb boolean to type double precision SELECT
+test/expected/agg/jsonb/int_cast_1.out	13ff0310cf3812baccceab28076b9f899189716e	17	filter 7 | t    | t    | [{"count": 2668}]
+test/expected/agg/jsonb/int_cast_1.out	246646463402127ff913ed470fcad86ee27ae58c	17	bigint | t    | t    | [{"count": 4446}]
+test/expected/agg/jsonb/int_cast_1.out	249395a7a0b8aa79ebc878b0ab78f9f030e18185	17	join  | t    | t    | [{"n": 1721, "ids": 1721, "kind": "b"}, {"n": 723, "ids":
+test/expected/agg/jsonb/int_cast_1.out	28dde070f3472932dae5c4197447f7cfdbe67564	17	out of range, bigint | t    | t    | [{"count": 1}]
+test/expected/agg/jsonb/int_cast_1.out	41d482fdc26b54ec5c376d7ed8f707b5f86087df	17	filter -3 | t    | t    | [{"count": 2222}]
+test/expected/agg/jsonb/int_cast_1.out	42ec024e4723550519617d75708215635b424807	17	string member, join | t    | t    | 22023 cannot cast jsonb string to type inte
+test/expected/agg/jsonb/int_cast_1.out	4694f62bbac7e49f1ede0d55278c893c67bd92f6	17	string member, reached | t    | t    | 22023 cannot cast jsonb string to type i
+test/expected/agg/jsonb/int_cast_1.out	6a9c5f29c0c982692bfc77ac88c512246aa31940	17	filter 3 | t    | t    | [{"count": 2666}]
+test/expected/agg/jsonb/int_cast_1.out	88af72ae0bb17848a5bd95b589b9a102a3092893	17	aggregate | t    | t    | [{"g": 0, "total": 9446}, {"g": 1, "total": 8346}, {"
+test/expected/agg/jsonb/int_cast_1.out	8a878042d934a95a96e8720e7d4b65011edc0364	17	out of range | t    | t    | 22003 integer out of range
+test/expected/agg/jsonb/int_cast_1.out	8d35616c26baf123b5190ecfc3e7eac9214e008c	17	group key | t    | t    | [{"n": 2222, "score": -3}, {"n": 2666, "score": 3}, {
+test/expected/agg/jsonb/int_cast_1.out	97750b0eef4c00c2d990a981c90e0455ebddc7b4	17	out of range, excluded | t    | t    | [{"count": 444}]
+test/expected/agg/jsonb/int_cast_1.out	a36dda2358b21b3489f612a6424293edd1abcebc	17	string member | t    | t    | [{"count": 444}]
+test/expected/agg/jsonb/int_cast_1.out	d5a44605c7a86c70749b65dc0406f30b9bc44ed3	17	filter clause | t    | t    | [{"n": 20000, "threes": 2666}]
 test/expected/agg/jsonb_map_keyread_1.out	037aa4c0ada0392d3e71dee50bfc856f3213981a	17	same node ok SELECT attributes['channel'] #>> '{}', avg((metrics['m_total'])::f
 test/expected/agg/jsonb_map_keyread_1.out	28b3388e177383583944c1d378c6b3f4c4ddcf8c	17	same
 test/expected/agg/jsonb_map_keyread_1.out	6b8fd9e0475211bc048938b872bf09a7996a8843	17	Custom Scan (SiftAggV6)
@@ -55,12 +72,25 @@ test/expected/agg/lateral_flatten_f2_1.out	6f540c46750276a381d5c0b16ae5a727f7740
 test/expected/agg/lateral_flatten_f2_1.out	7c04f665678c062b18861951cfda5e346f850c1c	17	mapping below an outer join | t    | t    | [{"day": "2026-01-01", "score": 2,
 test/expected/agg/lateral_flatten_f2_1.out	c898e7851734dc226ee26ee83ef2e75072874d9d	17	cast out of range | t    | t    | 22003 integer out of range
 test/expected/agg/lateral_table_params_1.out	cf6e13eb70caae21f5b356b92c8b038ae0c6c868	17	id | fmt |     engine     | result_rows | vs_heap
+test/expected/agg/left_each_1.out	02e83faa3bf71f4fffb0b7aeaf9d5508ce231684	17	count | t    | t    | [{"k": 0, "rows": 7000, "dim_b": 4000, "total": 20006}, {
+test/expected/agg/left_each_1.out	1f21d12106ba3b329111872ee90eea29f789855a	17	int out of range | t    | t    | 22003 integer out of range
+test/expected/agg/left_each_1.out	33338e39d7442ad8da1f89e912cbbecf44fd68e4	17	array document | t    | t    | 22023 cannot call jsonb_each on a non-object
+test/expected/agg/left_each_1.out	78a2ae2788bd4a5e9e1c373f83c049ebd350695d	17	string member | t    | t    | 22023 cannot cast jsonb string to type double pre
+test/expected/agg/left_each_1.out	afd0e3e281d72433c5a8c3fa87ff9a943af54e98	17	filter | t    | t    | [{"n": 15000, "mean": 5.000058329444704}]
+test/expected/agg/left_each_1.out	bb85101bb7d8f8704b5d599a43ccef33c7c81614	17	excluded row | t    | t    | [{"n": 14571, "category": "low"}, {"n": 19999, "ca
+test/expected/agg/left_each_1.out	cce7fb05597567164f58b1326ba5a55c50f16bd8	17	child | t    | t    | [{"n": 14572, "ids": 14572, "category": "low"}, {"n": 200
 test/expected/agg/matrix_join_parity_1.out	739fe00e0cd47b533ec99b08c5e8f34891517d84	19	32 | SiftAggV6 |           2 |       0
 test/expected/agg/matrix_join_parity_1.out	94c8419784ad5e0be51a841d71c5b87544879197	19	32 | SiftAggV6 |           3 |       0
+test/expected/agg/natural_cost_1.out	34e961520954aa6a017c1cfc71553a64a7cfcfcc	17	key_filters
+test/expected/agg/natural_cost_1.out	4d5fe00f9133c0037b601097b3c8235205f49ea5	17	plan   | result_rows | vs_normal_plan
+test/expected/agg/natural_cost_1.out	5b0e8ace259f103e17e6cd0494cc84bcfd5705dc	17	plan   | result_rows | vs_normal_plan
+test/expected/agg/partial_index_1.out	33b7a1fbb9d5fa58aca5ec63aea3a9edfa0e958e	17	path                   | t    | t    | [{"k": 0, "count": 2150}, {"k": 1, "coun
+test/expected/agg/partial_index_1.out	38327ccd089607e70f461e2dc9a905c4e1b0b61c	17	path                   | t    | t    | [{"k": 0, "count": 1430}, {"k": 1, "coun
 test/expected/agg/plan_inval_1.out	6ab53ce63347db3f14ccc55c1976a1c74635a77f	17	json map key     | v6 same
 test/expected/agg/plan/tables_1.out	a1de4d3fcc0ea5fe62a6f71958da8515d3e1bd6e	19	Lookup Joins: ANY_subquery (subquery) (semi)
 test/expected/agg/plan/tables_1.out	ca1668186929bafd661088ed0aef3fb20f8725aa	19	QUERY PLAN
 test/expected/agg/plan/tables_1.out	e27dc9de096ede2f9088587ed6eb69289afab2e5	19	plan                  | result_rows | vs_normal_plan
+test/expected/agg/preserved_where_1.out	1620e547ae2fe412ad843d6cd7e06295e86c80a1	17	t      | t        |           0
 test/expected/agg/scalar/dirty_1.out	294d9e4bc2415f209f17e89f4d603cc926d16b8e	17	cast float8 raises    | t      | same ERR 22023 cannot cast jsonb string to typ
 test/expected/agg/scalar/dirty_1.out	3a02e2e359dab9074cb9aef22b7cc7b0ac5a7cb1	17	n        | pushed | reread |  outcome
 test/expected/agg/scalar/dirty_1.out	50f22d4942a479a5e9b35321b1895226c916b208	17	cast float8 deleted | t      | same ERR 22023 cannot cast jsonb string to type
@@ -121,9 +151,15 @@ test/expected/agg/subplan_lut_1.out	e78e16e5116dbe6668acd8776b984acc39b99fc0	19	
 test/expected/agg/subplan_lut_1.out	eb43e0d6f621cf781fd23135e374e6bb88037161	19	before_drop
 test/expected/agg/subplan_lut_1.out	ee208c932140974d0cdcc51cf2166c3d5dc84436	19	nested_subplan
 test/expected/agg/subplan_lut_1.out	fb4b779dbfb651256a43e667dc8449c760f00be8	19	plan          | result_rows | vs_normal_plan
+test/expected/agg/table_full_parity_1.out	28776f0623101487414cdd9ed3f0ac057cfefd0c	17	min/max                             | v6      | n/a     | v6      | v6      | v
+test/expected/agg/table_full_parity_1.out	c2739b03e980c09c7e3fecc52d3cd74232a3dd87	17	min/max                             |     10 |       0 | t       | t
+test/expected/agg/table_full_parity_1.out	d15865cf509f7f96b3707558d2832ac85f19c58b	17	404 |      404 | t
 test/expected/agg/table_text_match_1.out	f0c7915f000eb2d84dbeead4ba6cedd642583560	17	no_match|none|0
 test/expected/agg/table_text_match_1.out	f90c16b017231e407aec6f12ce195efdb88ec056	17	rare|none|0
 test/expected/agg/unnest_int_cast_scale_1.out	0ebcce9191420918a25619f394c021983ee5b60c	17	4 | [{"sum": 6000}]                                    | t    | t
+test/expected/agg/unnest_int_cast_scale_f1_1.out	0ebcce9191420918a25619f394c021983ee5b60c	17	4 | [{"sum": 6000}]                                    | t    | t
+test/expected/agg/zone/cost_1.out	5b0e8ace259f103e17e6cd0494cc84bcfd5705dc	17	plan   | result_rows | vs_normal_plan
+test/expected/agg/zone/cost_1.out	5b118e6595000f4e166ab90b4e37af260df65806	17	plan   | result_rows | vs_normal_plan
 test/expected/bm25/conflict_1.out	015a9ef6270ad8053a855f788e25b1ff423d7afe	17	id  | code
 test/expected/bm25/conflict_1.out	206942de823ad6dbb4c89c5d6ff9dc62cd18e0ed	17	2 |      1
 test/expected/bm25/conflict_1.out	241da297e9ff1d28770020bf954de33b99a4218f	17	id  |  code   |  n
@@ -173,6 +209,21 @@ test/expected/col/ord_rowcompare_1.out	95a66444f07d0ce4128817ceb17d9386acd0a691	
 test/expected/col/point/dir_1.out	04a7b4965d2a574eec22a01d19697bc4823c5634	17	t = timestamp '1999-01-01'
 test/expected/col/point/dir_1.out	089b736f352809b9a5e23c37515171e2564f3ccb	17	d = date '2030-01-01'
 test/expected/col/point/dir_1.out	2e3f51aea843ac2ad4e29d2b67cf22ebb119ca8d	17	i2 = 1500
+test/expected/col/scope/covered_1.out	9dc90d1a3b5280912d00be3de0cd619e4094aca7	17	n | same |                   route
+test/expected/col/scope/covered_1.out	f6687a7681a077d6a06956e18d0a3469befbb7eb	17	5 | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	2041786e447c773c152035e24ca49a50c38e2704	17	6 | count  | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	25c3b1872dce24c177c1b70d7a2ef435f6391fe4	17	1 | count | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	865db996d574501fcb37e041f46d3bed0f21eaf2	17	1 | count  | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	8ee5056b85ce3cafd8049a493f39f71c121d24de	17	4 | count | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	9201c9e53a4cf6a5d4b1dd129972f504cbb71e0d	17	3 | count  | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	93e64ace2b4375ace0beafa7087b9e58ede736d3	17	4 | count  | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	c03a8f4926ee9ec7264c73841d4c9272e8fb10fe	17	5 | count  | t    | scan of the facts (the members of the key)
+test/expected/col/scope/dedupe_1.out	d9891fd5a822d01769c7614b9cd6bd494ea485cc	17	5 | count | t    | scan of the facts (the members of the key)
+test/expected/col/scope/hot_chain_1.out	9dc90d1a3b5280912d00be3de0cd619e4094aca7	17	n | same |                   route
+test/expected/col/scope/hot_chain_1.out	f6687a7681a077d6a06956e18d0a3469befbb7eb	17	5 | t    | scan of the facts (the members of the key)
+test/expected/col/scope/manymany_1.out	3c4d9706f59c7eeb26267649acf7081abd9363c1	17	n | same |                   route
+test/expected/col/scope/stamp_1.out	6dc03f671ab2297eee293fed1a5b550cd0be854c	17	2 | t    | scan of the facts (the members of the key)
+test/expected/col/scope/stamp_1.out	9dc90d1a3b5280912d00be3de0cd619e4094aca7	17	n | same |                   route
 test/expected/col/skip_map_1.out	200271921995c65698d6521f4cb726bcc492fec3	18	sm_o | avg(f)  | 6 | k < 0                 | normal                    |
 test/expected/col/skip_map_1.out	42c9691c59600b08f1427499788fe9278580ae86	18	sm_o | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	5a8f08ada73519eef481c9df90c4f91e234796f7	18	sm   | sum(id) | 3 | k = 500               | normal                    |
@@ -185,6 +236,7 @@ test/expected/col/skip_map_1.out	bfde826c67f6f744a27ca4d008cd34e0ccf69546	18	sm 
 test/expected/col/skip_map_1.out	d90b0b4dfa757a4884a224c2f7433556ab57ef1b	18	sm   | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	f8f4825b56bd92ba01a2773d6c6cb884eb7b03df	18	sm_z | avg(f)  | 3 | k = 500               | normal                    |
 test/expected/col/skip_map_1.out	fcfb8eb492b07fe4cc2646c01efefe1e869aae9d	18	sm   | sum(id) | 6 | k < 0                 | normal                    |
+test/expected/col/suggest_paths_1.out	36bba91cc3486ccd0e47eb5f3659a4cc13fe31e8	17	5 | t    | t
 test/expected/col/unique_include_1.out	3dbdb29126bde0c2e9c857c87803f3ce048f2659	17	ERROR:  duplicate key value violates unique constraint "oc_t"
 test/expected/col/unique_include_1.out	66ea0d72f447342901b546843f5ab5aa70e96f71	17	id | t |  v
 test/expected/col/unique_include_1.out	7d210d41f1846891ffbd61ed4ebeddb8fda9fe70	17	ERROR:  unexpected non-btree speculative unique index

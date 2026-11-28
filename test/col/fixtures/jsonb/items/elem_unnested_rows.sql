@@ -1,6 +1,7 @@
 -- EXISTS over the items beside an unnest of the order's metrics: the test is of the order, its answer is kept for the tuples that repeat it
 -- shape: join
 -- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- key: -
 -- scenario: yes
 SELECT m.key, count(*) AS n, count(DISTINCT o.id) AS orders, avg(m.value::float8) AS mean

@@ -22,11 +22,10 @@ VACUUM (FREEZE, ANALYZE) facts;
 ANALYZE dim_a;
 -- The result, or the SQLSTATE and message, with the scan off and on. on: the table scans are off, so a Custom Scan (SiftAgg) runs when the query is one it can run.
 \ir test/common/sql/agg/base.sql
--- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan and the column shows what 18 does
-CREATE FUNCTION check_query(name text, q text, in_scan bool DEFAULT true) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
+-- scan: the query runs in the scan; before PostgreSQL 18, where the cast of a JSON null raises, the cast keeps the normal plan
+CREATE FUNCTION check_query(name text, q text) RETURNS TABLE (label text, scan bool, same bool, outcome text) LANGUAGE plpgsql AS $$
 BEGIN
-  RETURN QUERY SELECT name, runs_in_scan(q) OR (in_scan AND current_setting('server_version_num')::int < 180000),
-                      outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
+  RETURN QUERY SELECT name, runs_in_scan(q), outcome(q, false) = outcome(q, true), left(outcome(q, true), 100);
 END $$;
 -- a filter: 6.5 and 2.5 round up, -2.5 down, the JSON null and the missing keys are no row
 SELECT * FROM check_query('filter 7', 'SELECT count(*) FROM facts WHERE CAST(metrics -> ''m_total'' AS integer) = 7');
@@ -53,12 +52,12 @@ SELECT * FROM check_query('out of range, bigint', 'SELECT count(*) FROM facts WH
 -- a member that is no number is a value the leaf cannot hold: the scan reads it from the exception and raises PostgreSQL's error where the normal plan does
 INSERT INTO facts VALUES (20003, 3, '2026-03-01', '{"m_total": "high"}');
 VACUUM (FREEZE, ANALYZE) facts;
-SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1', false);
-SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1', false);
+SELECT * FROM check_query('string member', 'SELECT count(*) FROM facts WHERE day < ''2026-02-01'' AND (metrics -> ''m_total'')::int = 1');
+SELECT * FROM check_query('string member, reached', 'SELECT count(*) FROM facts WHERE id > 20002 AND (metrics -> ''m_total'')::int = 1');
 -- beside an inner join the cast of the fact's WHERE clause raises for a row the join keeps, as PostgreSQL tests it before the join
 SELECT * FROM check_query('string member, join', $q$
  SELECT e.kind, count(*) AS n FROM facts f JOIN dim_a e ON e.id = f.dim_a_id WHERE f.id > 20002 AND (f.metrics -> 'm_total')::int = 1 GROUP BY 1
-$q$, false);
+$q$);
 -- a float8 leaf holds a decimal rounded: the integer cast of a member whose leaf does not tell it (a tie that a longer decimal stands for, an integer past 2^52) is the document's
 CREATE TABLE ties (id int, metrics jsonb);
 INSERT INTO ties SELECT i, jsonb_build_object('m_total', i % 10) FROM generate_series(1, 3000) i;
@@ -69,6 +68,6 @@ VACUUM (FREEZE, ANALYZE) ties;
 SELECT * FROM check_query('tie of a longer decimal', 'SELECT count(*), sum(id) FROM ties WHERE id < 3004 AND (metrics -> ''m_total'')::int = 2');
 SELECT * FROM check_query('tie, group key', 'SELECT (metrics -> ''m_total'')::int AS score, count(*) AS n, sum(id) AS ids FROM ties WHERE id < 3004 GROUP BY 1');
 SELECT * FROM check_query('bigint past 2^52', 'SELECT sum((metrics -> ''m_total'')::bigint) AS total, min((metrics -> ''m_total'')::bigint) AS low FROM ties');
-DROP FUNCTION check_query(text, text, bool), outcome(text, bool), runs_in_scan(text), pushed, runq;
+DROP FUNCTION check_query(text, text), outcome(text, bool), runs_in_scan(text), pushed, runq;
 DROP TABLE facts, dim_a, ties;
 DROP EXTENSION pg_sift;

@@ -1,6 +1,7 @@
 -- the value of jsonb_each cast to a number (not through its text), as a key's value to average and to compare
 -- shape: flat
 -- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- key: 1
 -- scenario: yes
 SELECT kv.key, avg(kv.value::float8) AS avg_value, count(*) FILTER (WHERE kv.value::float8 >= 4) AS high, count(DISTINCT o.id) AS orders

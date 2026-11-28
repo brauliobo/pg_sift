@@ -1,6 +1,7 @@
 -- the integer cast of a metric (a member of an object leaf held as float8): the cast of the jsonb its stored float stands for, as a filter, a group key and an aggregate filter
 -- shape: flat
 -- expect: agg
+-- requires: SELECT current_setting('server_version_num')::int >= 180000
 -- key: 1
 -- scenario: yes
 SELECT (metrics -> 'm_total')::int AS score, count(*) AS orders, count(*) FILTER (WHERE (metrics -> 'quality')::bigint >= 4) AS good
