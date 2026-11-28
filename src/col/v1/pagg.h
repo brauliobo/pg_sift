@@ -42,6 +42,8 @@ extern bool sift_col_unit_dead_leaf(const SiftColUnit *unit, int col, uint32 *nd
 
 /* count(*) of a test of a string leaf over the stored segment of the unit, from the row counts of its dictionary, when every unit of the segment is exact (col/v1/scan/unit.c) */
 extern bool sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows);
+/* The key table of leaf col (col/v1/ktab.h) of the stored segment of the unit, every unit of which is exact (col/v1/scan/unit.c); NULL: none */
+extern const SiftCHistDim *sift_col_unit_seg_ktab(const SiftColUnit *unit, int col);
 
 /* A range of the keys of a leaf: [lo, hi] of an integer leaf, or for a text leaf the strings from slo to shi (NULL: no bound; excl: the bound itself is out) under the collation collid */
 typedef struct SiftColRange

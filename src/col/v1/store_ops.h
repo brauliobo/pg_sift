@@ -168,6 +168,13 @@ extern SiftV1Scan sift_v1_spec_scan(const SiftV1Scan *scan, const struct SiftV6S
 struct SiftSrcFoldArgs;
 extern SiftV1UnitSink *sift_v1_cube_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx);
 extern void sift_v1_cube_set_group(SiftV1UnitSink *sink, struct SiftV6Group *g);
+/* For the key tables of whole segments (col/v1_engine/store_ops_ktab.c): the leaf whose groups decide every test and the key of the statement of the cube (-1: none), and the groups of h,
+ * a histogram of that leaf over a whole segment, folded into its group; false when h lacks what an aggregate reads */
+extern int	sift_v1_cube_seg_leaf(const SiftV1UnitSink *sink);
+extern bool sift_v1_cube_fold_seg(SiftV1UnitSink *sink, const SiftSrcHist *h);
+/* The segments of an index whose key table of that leaf answers them whole, at the first unit of each the source offers, next (the cube) the units of the others. Not for a participant
+ * of a parallel scan, whose morsels split the units of a segment */
+extern SiftV1UnitSink *sift_v1_ktab_begin(const struct SiftSrcFoldArgs *a, MemoryContext cx, SiftV1UnitSink *cube);
 /* count(*) of one test of a string leaf answered from the row counts of the dictionaries of the segments (col/v1_engine/store_ops_dict_count.c), next the sink of the units it does not
  * answer (NULL: they are read); next when the statement is no such count. Not for a participant of a parallel scan, whose morsels split the units of a segment */
 extern SiftV1UnitSink *sift_v1_dict_count_begin(const struct SiftSrcFoldArgs *a, const SiftV1Scan *scan, MemoryContext cx, SiftV1UnitSink *next);

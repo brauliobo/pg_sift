@@ -78,6 +78,8 @@ typedef struct SiftV1ReaderOps
 	/* count(*) of the rows of that segment whose key of leaf lies in r, from the global order of the leaf: the entries of its exact units, and the superblocks of the others in *read (in cx),
 	 * which are read (sift_col_unit_seg_range); false: the segment is read */
 	bool		(*seg_range_count) (void *impl, const SiftSrcUnit *unit, int leaf, const SiftColRange *r, MemoryContext cx, uint64 *rows, Bitmapset **read);
+	/* GROUP BY dim over every row of that segment, from its key table of dim (col/v1/ktab.h), when every unit of it is exact; false: the segment is read */
+	bool		(*seg_hist) (void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h);
 } SiftV1ReaderOps;
 
 extern const SiftV1ReaderOps sift_v1_idx_reader;
@@ -99,6 +101,7 @@ extern bool sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef
 /* The rollup of the rows of a stored unit, the leaves of need translated as for sift_v1_unit_hist; rdict holds the dictionaries of its string dims */
 extern bool sift_v1_unit_rollup(const SiftColUnit *unit, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need, SiftSrcDict *rdict,
 								SiftSrcRollup *r);
+extern bool sift_v1_seg_hist(const SiftColUnit *unit, int col, SiftSrcHist *h);
 extern bool sift_v1_unit_presence(const SiftColUnit *unit, int col, MemoryContext mcxt, SiftSrcPresence *p);
 
 /* The histograms a spec writes, as the planner sees them */

@@ -293,7 +293,7 @@ bind_hist(SiftV1Cube *c, const SiftSrcHist *h)
 		int			m = 0;
 
 		g->slot = -1;
-		if (g->leaf < 0 || g->leaf == c->key_leaf[0])
+		if (g->leaf < 0 || g->leaf == c->key_leaf[0] || (g->leaf == c->hist_leaf && g->a->kind == SV6_COUNT))
 			continue;
 		while (m < h->nmeas && h->meas[m] != g->leaf)
 			m++;
@@ -425,29 +425,29 @@ unit_groups(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUn
 	return OidIsValid(c->cal_type) && rd->unit_hist(src, unit, SIFT_SRC_CAL + c->hist_leaf, &c->need, h) && cells_key(c, h) && cells_decided(c, h);
 }
 
+/* The groups of h (by_group: those the tests keep) folded into the group; false when it lacks what an aggregate reads */
 static bool
-fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
+fold_groups(SiftV1Cube *c, const SiftSrcHist *h)
 {
-	SiftSrcHist h;
 	int			n = 0;
 
-	if (!unit_groups(c, rd, src, unit, &h) || (c->hist_text && h.dict == NULL) || !bind_hist(c, &h))
+	if ((c->hist_text && h->dict == NULL) || !bind_hist(c, h))
 		return false;
-	for (uint32 r = 0; r < h.ngroups; r++)
-		if (h.count[r] > 0 && !group_acc(c, &h, r, c->acc))
+	for (uint32 r = 0; r < h->ngroups; r++)
+		if (h->count[r] > 0 && !group_acc(c, h, r, c->acc))
 			return false;
-	batch_start(c, h.has_null);
-	for (uint32 r = 0; r < h.ngroups; r++)
+	batch_start(c, h->has_null);
+	for (uint32 r = 0; r < h->ngroups; r++)
 	{
-		if (h.count[r] == 0 || (c->by_group && !group_kept(c, &h, r)))
+		if (h->count[r] == 0 || (c->by_group && !group_kept(c, h, r)))
 			continue;
 		if (c->nkeys > 0)
-			put_key(c, &h, r, n);
-		group_acc(c, &h, r, &c->acc[n * c->spec->naggs]);
+			put_key(c, h, r, n);
+		group_acc(c, h, r, &c->acc[n * c->spec->naggs]);
 		if (++n == SIFT_VEC_LEN)
 		{
 			merge(c, hist_keys(c, n), n);
-			batch_start(c, h.has_null);
+			batch_start(c, h->has_null);
 			n = 0;
 		}
 	}
@@ -455,8 +455,16 @@ fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit
 		merge(c, hist_keys(c, n), n);
 	for (int j = 0; j < c->spec->naggs; j++)
 		if (c->agg[j].a->kind == SV6_COUNT_DISTINCT)
-			sift_v1_hist_merge_dist(c->group, j, &h, c->key_text[0], c->kdata, c->by_group ? group_kept : NULL, c);
+			sift_v1_hist_merge_dist(c->group, j, h, c->key_text[0], c->kdata, c->by_group ? group_kept : NULL, c);
 	return true;
+}
+
+static bool
+fold_hist(SiftV1Cube *c, const SiftV1ReaderOps *rd, void *src, const SiftSrcUnit *unit)
+{
+	SiftSrcHist h;
+
+	return unit_groups(c, rd, src, unit, &h) && fold_groups(c, &h);
 }
 
 /* A unit from the rollup of its rows: the tuples the tests keep fold into the groups of their keys */
@@ -752,4 +760,28 @@ void
 sift_v1_cube_set_group(SiftV1UnitSink *sink, SiftV6Group *g)
 {
 	((SiftV1Cube *) sink->arg)->group = g;
+}
+
+int
+sift_v1_cube_seg_leaf(const SiftV1UnitSink *sink)
+{
+	const SiftV1Cube *c = sink->arg;
+
+	if (c->hist_leaf < 0 || c->hist_text || c->nkeys > 1 || c->cal_key != NULL || (c->nkeys == 0 && c->dist_leaf >= 0))
+		return -1;
+	for (int i = 0; i < c->npred; i++)
+		if (c->pred[i].leaf != c->hist_leaf)
+			return -1;
+	return c->hist_leaf;
+}
+
+bool
+sift_v1_cube_fold_seg(SiftV1UnitSink *sink, const SiftSrcHist *h)
+{
+	SiftV1Cube *c = sink->arg;
+
+	if (!sift_v6_group_takes_cells(c->group))
+		return false;
+	c->by_group = c->npred > 0;
+	return fold_groups(c, h);
 }

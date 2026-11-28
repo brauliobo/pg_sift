@@ -78,6 +78,25 @@ src_dict(const SiftColDict *d, SiftSrcDict *out)
 	*out = (SiftSrcDict) {(const void *) (uintptr_t) d->id, d->n, d->off, d->bytes};
 }
 
+/* The histogram d of the columns of a schema as one of the leaves of a source; false when a measure is no leaf of it */
+static bool
+hist_of(const SiftCHistDim *d, const int *leaf_of_col, SiftSrcHist *h)
+{
+	*h = (SiftSrcHist) {.ngroups = d->ngroups,.has_null = d->has_null,.key = d->key,.count = d->count,.nmeas = d->nmeas,.grain = d->leaf / SIFT_PAGG_CAL};
+	for (int m = 0; m < d->nmeas; m++)
+	{
+		h->meas[m] = leaf_of_col ? leaf_of_col[d->meas[m]] : d->meas[m];
+		if (h->meas[m] < 0)
+			return false;
+		h->nn[m] = d->nn[m];
+		h->sum[m] = d->sum[m];
+		h->sumf[m] = d->sumf[m];
+		h->min[m] = d->min[m];
+		h->max[m] = d->max[m];
+	}
+	return true;
+}
+
 bool
 sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, MemoryContext mcxt, const int *col_of_leaf, const int *leaf_of_col, const SiftSrcRollupNeed *need,
 				  SiftSrcDict *hdict, SiftSrcHist *h)
@@ -87,20 +106,8 @@ sift_v1_unit_hist(const SiftColUnit *unit, int col, const SiftColDef *def, Memor
 	SiftCRollupNeed cn;
 
 	cube_need(need, col_of_leaf, false, &cn);
-	if (!sift_col_unit_hist(unit, col, mcxt, &cn, &d, &dict))
+	if (!sift_col_unit_hist(unit, col, mcxt, &cn, &d, &dict) || !hist_of(&d, leaf_of_col, h))
 		return false;
-	*h = (SiftSrcHist) {.ngroups = d.ngroups,.has_null = d.has_null,.key = d.key,.count = d.count,.nmeas = d.nmeas,.grain = d.leaf / SIFT_PAGG_CAL};
-	for (int m = 0; m < d.nmeas; m++)
-	{
-		h->meas[m] = leaf_of_col ? leaf_of_col[d.meas[m]] : d.meas[m];
-		if (h->meas[m] < 0)
-			return false;
-		h->nn[m] = d.nn[m];
-		h->sum[m] = d.sum[m];
-		h->sumf[m] = d.sumf[m];
-		h->min[m] = d.min[m];
-		h->max[m] = d.max[m];
-	}
 	if (def->store == SIFT_COLS_STR)
 	{
 		src_dict(&dict, hdict);
@@ -158,4 +165,12 @@ sift_v1_unit_presence(const SiftColUnit *unit, int col, MemoryContext mcxt, Sift
 	if (has)
 		*p = (SiftSrcPresence) {c.wbase, c.nwords, c.words, c.nkeys, c.keys};
 	return has;
+}
+
+bool
+sift_v1_seg_hist(const SiftColUnit *unit, int col, SiftSrcHist *h)
+{
+	const SiftCHistDim *d = sift_col_unit_seg_ktab(unit, col);
+
+	return d != NULL && hist_of(d, NULL, h);
 }

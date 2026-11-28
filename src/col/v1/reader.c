@@ -395,6 +395,14 @@ idx_seg_range_count(void *impl, const SiftSrcUnit *unit, int leaf, const SiftCol
 	return !r->sel.compact && sift_col_unit_seg_range(&r->unit, leaf, range, cx, rows, read);
 }
 
+static bool
+idx_seg_hist(void *impl, const SiftSrcUnit *unit, int dim, SiftSrcHist *h)
+{
+	SiftV1Idx  *r = impl;
+
+	return !r->sel.compact && sift_v1_seg_hist(&r->unit, dim, h);
+}
+
 const SiftV1ReaderOps sift_v1_idx_reader = {
 	.layout = sift_v1_idx_layout,
 	.stats = sift_v1_idx_stats,
@@ -427,5 +435,6 @@ const SiftV1ReaderOps sift_v1_idx_reader = {
 	.seg_range_count = idx_seg_range_count,
 	.super = idx_super,
 	.split = idx_split,
-	.unit_except = idx_unit_except
+	.unit_except = idx_unit_except,
+	.seg_hist = idx_seg_hist
 };

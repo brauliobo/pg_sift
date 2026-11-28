@@ -548,21 +548,36 @@ sift_col_unit_exact(const SiftColUnit *unit)
  * segment exact (every page all-visible by the page masks of its summary, then the directory current, then no dead row or exception), as the pre-aggregates of a unit want. false: the
  * segment is read.
  */
-bool
-sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows)
+static bool
+seg_exact(SiftColSource *src, SiftColSegment *seg)
 {
-	ColUnit    *cu = unit->priv;
-	SiftColSource *src = cu->src;
-	SiftColSegment *seg = cu->seg;
 	uint64		pm[SIFT_PAGEMASK_WORDS];
 
-	if (seg == NULL || src->sx_on || (src->flags & COLO_TABLE) || !sift_cseg_dict_counted(seg, col))
+	if (src->sx_on || (src->flags & COLO_TABLE))
 		return false;
 	for (uint32 u = 0; u < seg->nsb; u++)
 		if (!sift_cseg_unit_pagemask(seg, u, pm) || (sift_cseg_keyed(&seg->entry) ? !col_range_allvisible(src, seg, (uint32) pm[0], (uint32) (pm[0] >> 32)) :
 													  !col_sb_covers(src, seg, sift_cseg_unit_sb(seg, u), NULL, pm)))
 			return false;
-	return segments_current(src) && !sift_cseg_dirty_any(seg, 0, seg->nsb) && sift_cseg_dict_count(seg, col, op, c, rows);
+	return segments_current(src) && !sift_cseg_dirty_any(seg, 0, seg->nsb);
+}
+
+bool
+sift_col_unit_seg_count(const SiftColUnit *unit, int col, SiftColOp op, const SiftColValue *c, uint64 *rows)
+{
+	ColUnit    *cu = unit->priv;
+
+	return cu->seg != NULL && sift_cseg_dict_counted(cu->seg, col) && seg_exact(cu->src, cu->seg) && sift_cseg_dict_count(cu->seg, col, op, c, rows);
+}
+
+/* The key table of leaf col of the stored segment of the unit (col/v1/ktab.h) when every unit of the segment is exact, as for sift_col_unit_seg_count; NULL: the segment is read */
+const SiftCHistDim *
+sift_col_unit_seg_ktab(const SiftColUnit *unit, int col)
+{
+	ColUnit    *cu = unit->priv;
+	const SiftCHistDim *kt = cu->seg != NULL ? sift_cseg_ktab(cu->seg, col) : NULL;
+
+	return kt != NULL && seg_exact(cu->src, cu->seg) ? kt : NULL;
 }
 
 typedef struct ExactEntries

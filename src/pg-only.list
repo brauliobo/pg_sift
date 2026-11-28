@@ -712,6 +712,7 @@ col/v1_engine/store_ops_bridge.c
 col/v1_engine/store_ops_cal.c
 col/v1_engine/store_ops_cal.h
 col/v1_engine/store_ops_dict_count.c
+col/v1_engine/store_ops_ktab.c
 col/v1_engine/store_ops_ext.c
 col/v1_engine/store_ops_heap.c
 col/v1_engine/store_ops_hybrid.c
