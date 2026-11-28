@@ -259,12 +259,12 @@ unique_key(const RangeTblEntry *rte, const Ties *t)
 static bool
 needed_column(const RelOptInfo *lateral, AttrNumber attno)
 {
-	List	   *vars = list_copy(lateral->reltarget->exprs);
+	List	   *vars = pull_var_clause((Node *) lateral->reltarget->exprs, PVC_RECURSE_PLACEHOLDERS);
 
 	foreach_node(RestrictInfo, ri, lateral->baserestrictinfo)
-		vars = list_concat(vars, pull_var_clause((Node *) ri->clause, 0));
-	foreach_ptr(Node, n, vars)
-		if (IsA(n, Var) && ((Var *) n)->varattno == attno)
+		vars = list_concat(vars, pull_var_clause((Node *) ri->clause, PVC_RECURSE_PLACEHOLDERS));
+	foreach_node(Var, v, vars)
+		if (v->varno == lateral->relid && v->varattno == attno)
 			return true;
 	return false;
 }
