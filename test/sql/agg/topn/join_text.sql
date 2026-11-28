@@ -1,13 +1,14 @@
--- ORDER BY .. LIMIT over a scan joined to a table by a text key is served by Custom Scan (SiftAgg) Top-N: the keys of the loaded table are the exact condition
--- `key = ANY(keys)` of the scan, so no join is left to run for the rows of the heap. An inner join needs a unique index on the key (a duplicate key would repeat
--- the row), a semi join (IN, EXISTS) does not; an anti join, a joined column in the select list and a nondeterministic collation keep the normal plan.
--- Every statement is run with the extension and with sift.enable_agg = off: the rows must be the same.
+-- ORDER BY .. LIMIT over a scan joined to a table by a text key is served by Custom Scan (SiftAgg) Top-N: the loaded table is a dimension of the scan, so no join
+-- is left to run for the rows of the heap. An inner join by a key with duplicates repeats the row for each match, a column of the joined table comes from its
+-- match, a semi join (IN, EXISTS) keeps a row once; an anti join and a nondeterministic collation keep the normal plan.
+-- Every statement is run with the extension and with sift.enable_agg = off: the rows must be the same, each as many times.
 CREATE EXTENSION pg_sift;
 SET client_min_messages = warning;
 SET max_parallel_workers_per_gather = 0;
 SET seq_page_cost = 10000; SET random_page_cost = 10000;
 
--- title and v are in the dictionary, body is stored inline (over 255 bytes); NULLs, the empty string and repeated values; grp repeats, so the order has ties
+-- title and v are in the dictionary; body (over 255 bytes) is stored inline by Format 1, in the dictionary by Format 2 (its entries reach 1,024 bytes); NULLs, the empty string and
+-- repeated values; grp repeats, so the order has ties
 CREATE TABLE ev (id int PRIMARY KEY, grp int, title text, v varchar(20), body text, amount int) WITH (autovacuum_enabled = false);
 INSERT INTO ev
 SELECT i, i % 97,
@@ -18,7 +19,7 @@ SELECT i, i % 97,
 FROM generate_series(1, 40000) i;
 CREATE INDEX ev_col ON ev USING sift_col (id, grp, title, v, body, amount);
 VACUUM (FREEZE, ANALYZE) ev;
-SELECT path, inline_chunks > 0 AS inline FROM sift.col_leaves('ev_col') WHERE path IN ('title', 'v', 'body') ORDER BY path;
+SELECT path, (inline_chunks > 0) = (path = 'body' AND (sift.index_format('ev_col')).major = 1) AS inline_as_format FROM sift.col_leaves('ev_col') WHERE path IN ('title', 'v', 'body') ORDER BY path;
 
 -- keys: present, absent, the empty string, a case variant, a NULL, a duplicate
 CREATE TABLE ku (k text PRIMARY KEY, w int);
@@ -52,7 +53,7 @@ BEGIN
 	EXECUTE format('CREATE TEMP TABLE r_off ON COMMIT DROP AS %s', q);
 	RESET sift.enable_agg;
 	result_rows := (SELECT count(*) FROM r_on);
-	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT TABLE r_off) UNION ALL (TABLE r_off EXCEPT TABLE r_on)) d);
+	vs_normal_plan := (SELECT count(*) FROM ((TABLE r_on EXCEPT ALL TABLE r_off) UNION ALL (TABLE r_off EXCEPT ALL TABLE r_on)) d);
 	DROP TABLE r_on, r_off;
 	RETURN NEXT;
 END $$;
@@ -75,9 +76,11 @@ SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k = ev.title JOIN kv x 
 SELECT * FROM same($$SELECT ev.id, ev.grp FROM ev JOIN kmany k ON k.k = ev.title ORDER BY ev.grp DESC, ev.id LIMIT 10$$);
 SELECT * FROM same($$SELECT ev.id FROM ev JOIN kempty k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
 SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k = ev.title WHERE k.w = 4 ORDER BY ev.id LIMIT 10$$);
--- not taken: an inner join by a key with duplicates (each match is a row), a column of the joined table in the select list, an anti join, a nondeterministic collation
+-- an inner join by a key with duplicates (each match is a row), a column of the joined table in the select list
 SELECT * FROM same($$SELECT ev.id FROM ev JOIN kd k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
 SELECT * FROM same($$SELECT ev.id, k.w FROM ev JOIN ku k ON k.k = ev.title ORDER BY ev.id LIMIT 10$$);
+SELECT * FROM same($$SELECT ev.id, k.w FROM ev JOIN kd k ON k.k = ev.title ORDER BY ev.id, k.w LIMIT 10$$);
+-- not taken: an anti join, a nondeterministic collation
 SELECT * FROM same($$SELECT ev.id FROM ev WHERE NOT EXISTS (SELECT 1 FROM ku k WHERE k.k = ev.title) ORDER BY ev.id LIMIT 10$$);
 CREATE COLLATION ci_nd (provider = icu, locale = 'und-u-ks-level2', deterministic = false);
 SELECT * FROM same($$SELECT ev.id FROM ev JOIN ku k ON k.k COLLATE ci_nd = ev.title COLLATE ci_nd ORDER BY ev.id LIMIT 10$$);
