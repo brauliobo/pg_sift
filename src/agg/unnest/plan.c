@@ -385,12 +385,12 @@ reread_cost(const V6Plan *p)
 
 /*
  * the pairs of the rows of the granules the zones of the quals of the table leave, which a column the rows are not ordered by does not narrow: their elements are read, and those of the rows
- * the scan keys of the key columns keep are decoded
+ * the scan keys of the key columns keep are decoded; the pairs of the statement stand for no fewer rows of the table than PostgreSQL clamps its estimate to (one row)
  */
 Cost
 sift_v6_unnest_pairs_cost(const V6Plan *p, const RelOptInfo *input_rel)
 {
-	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel->baserestrictinfo), 0, JOIN_INNER, NULL), 1.0e-6),
+	const double sel = Max(clauselist_selectivity(p->root, known_quals(p->rel->baserestrictinfo), 0, JOIN_INNER, NULL), p->rel->rows / Max(p->rel->tuples, 1.0)),
 				read = Min(sift_v6_granule_rows(p->root, p->rel, &p->spec, 1.0) / Max(p->rel->tuples, 1.0), 1.0),
 				keys = Max(clauselist_selectivity(p->root, known_quals(p->key_quals), 0, JOIN_INNER, NULL), sel),
 				pairs = input_rel->rows / sel;
