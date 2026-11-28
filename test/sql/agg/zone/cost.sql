@@ -47,7 +47,7 @@ SELECT * FROM same(query_of('r.ts >= date ''2025-01-01'''));
 SELECT * FROM same(query_of('r.parent_id <= 100 AND r.ts >= date ''2025-01-01'''));
 -- a few hundred rows of one parent: the btree plan reads them
 SELECT * FROM same(query_of('r.parent_id = 7 AND r.id < 1800'));
--- a short list of parents: the btree plan reads their 750 rows as fast as the scan reads the units whose zone holds one of them (2.1 ms each)
+-- a short list of parents: the scan decodes only the elements of their 750 rows in the units whose zone holds one of them (1.8 ms, the btree plan 3.3 ms)
 SELECT * FROM same(query_of('r.parent_id IN (3, 200, 470)'));
 
 -- the zones decide the price: the windows that meet in no unit cost 30% less than either alone (the start of the scan is the rest: its rows count in the units of the normal plan), the list of three parents 30% less than the window
