@@ -105,7 +105,7 @@ FROM (VALUES (1, 'cv'), (2, 'cv_nn'), (3, 'cv_f1')) t(ord, tbl), shapes ORDER BY
  cv    | 23 | array                 | plain same
  cv    | 24 | empty object          | plain same
  cv    | 25 | undeclared            | plain same
- cv    | 26 | under or              | plain same
+ cv    | 26 | under or              | scan same why
  cv    | 27 | not of a member       | plain same
  cv_nn |  1 | integer               | scan same why
  cv_nn |  2 | string                | scan same why
@@ -132,7 +132,7 @@ FROM (VALUES (1, 'cv'), (2, 'cv_nn'), (3, 'cv_f1')) t(ord, tbl), shapes ORDER BY
  cv_nn | 23 | array                 | plain same
  cv_nn | 24 | empty object          | plain same
  cv_nn | 25 | undeclared            | plain same
- cv_nn | 26 | under or              | plain same
+ cv_nn | 26 | under or              | scan same why
  cv_nn | 27 | not of a member       | plain same
  cv_f1 |  1 | integer               | plain same
  cv_f1 |  2 | string                | plain same

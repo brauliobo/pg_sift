@@ -19,6 +19,7 @@
 #include "agg/agg.h"
 #include "agg/ht/ht.h"
 #include "agg/engine.h"
+#include "agg/qual/contains.h"
 #include "agg/qual/qual.h"
 #include "agg/unnest/jsonb.h"
 #include "col/am.h"
@@ -615,6 +616,7 @@ vars_mutator(Node *n, VarsCtx *ctx)
 	int			vatt;
 	const bool	truth = ctx->truth;
 	Node	   *out;
+	List	   *tests;
 
 	if (n == NULL)
 		return NULL;
@@ -623,6 +625,8 @@ vars_mutator(Node *n, VarsCtx *ctx)
 		return (Node *) makeVar(ctx->rel->relid, vatt, typid, -1, exprCollation(n), 0);
 	if ((out = presence_test(ctx, n)) != NULL)
 		return out;
+	if (ctx->truth && (tests = sift_v6_contains_quals(ctx->rel, (const Expr *) n)) != NIL)
+		return (Node *) make_ands_explicit(tests);
 	if (IsA(n, CaseWhen))
 	{
 		CaseWhen   *w = palloc(sizeof(CaseWhen));
